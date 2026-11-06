@@ -36,10 +36,10 @@
 
 **How much that is. There is no fixed bound, and no user-facing text may state one (ask #1077).** With the Mac running and the phone in touch, a stolen phone opens the current epoch and the previous one: up to 7 + 7 days of recorded data (ask #843). Four cases go past that:
 
-- **Mac closed or hub paused.** No new epoch begins (F1, ask #1077), so one epoch's keys stay current on the phone for as long as that lasts. Little is sealed in that time: nothing from the hub, only the phone's own actions.
+- **Mac closed.** No new epoch begins (F1), so one epoch's keys stay current on the phone for as long as that lasts. Little is sealed in that time: nothing from the hub, only the phone's own actions.
 - **Phone offline.** It erases nothing until it reads a newer keybox, because retention starts at the merge. Stolen after six months away, it still opens what it held when it left.
 - **Phone offline while the hub rotates.** Every epoch of the absence is sealed to its one last offer, so that phone's theft opens **all of those epochs**, however many weeks they span. The same holds, for one extra week, after a lost ack (F8).
-- **A relay-only phone the relay refused.** It gets neither `hub_on_relay` nor a follow, so it keeps its keys for a term: 21 days from the first refusal, when the hub's own are gone too. It erases them the next time the app runs past that, so a phone never opened keeps them until then ("The term on a refused phone's keys").
+- **A relay-only phone the relay refused.** It gets neither `hub_on_relay` nor a follow, so it keeps its keys for a term: 21 days from the first refusal. The link then ends, the next time the app runs past that; a phone never opened keeps them until then ("The term on a refused phone's link").
 
 **What it does not fix:**
 
@@ -61,7 +61,7 @@
 - Existing frozen vectors do not change. New vectors are additive (`kdf.json`, `go-sealed.json`, `hub_contract_cases.json`).
 - Sim rule 13's byte-for-byte switch resend, and the `action_seq` that never resets, stay.
 - Ephemeral private keys live only in the `hub.<id>` Keychain item (`whenUnlocked`, `ThisDeviceOnly`). They and the derived relay keys never reach the `afterFirstUnlock` alert material or any log.
-- **Two new phone states on Now, the parked row and the left-behind banner, and no other new text; no Desktop change** (see "Phone screens").
+- **Two new phone states on Now, the parked row and the left-behind banner, one link notice, and no other new text; no Desktop change** (see "Phone screens").
 - Go hub ↔ Kit bytes change together: `wire.KeyboxKeys`/`KeyboxKeys`, `wire.Control`/`ControlPayload`, `secure.EphemeralRelayKey`/`KeyDerivation.ephemeralRelayKey`.
 - Agent-run rules (the relay launch `common.md`): TDD with RED and GREEN logs, inner loop only, foreground only, no repo-built CLI on live data, no live data in the repo, guard files untouched, a stop-and-report on any contract, wire or behaviour change beyond the rulings below.
 
@@ -83,7 +83,7 @@ Relay does not turn on for users until all of these hold. Task 12 adds them to t
    - Relay design §9: "waits for items 1–6 and 8; key rotation (item 7) concerns only links via the relay and may arrive in the next client release — it does not block the launch." becomes "waits for items 1–8. Key rotation (item 7) concerns only links via the relay."
    - `sim/README.md` rule 5, in place of "`resend_from(n+1)` once per gap": "`resend_from` is once per gap, and repeated when the ask is 10 minutes old, or dated in the future, and another action is read ahead of that gap (watchtower ask #1073)."
    - `docs/watchtower-client-requirements.md` §1a: "Launch for users waits for items 1–7 and 9; item 8 (key rotation) may come in the next client release." becomes "Launch for users waits for items 1–9."
-6. **The G2 lane has merged the `lapse` change (ask #1075):** the Mac stays on the relay while someone else pays, and moves when nobody pays, routes playing no part. **"Someone pays" means a paying phone holding this Mac in its slots, linked or not (ask #1079).** On an unreadable account: **a phone's own `entitlement_expired` request moves the Mac at once, by the relay's rule 10 (ask #1079). The relay's own signal waits:** the undecided lapse is kept in `hub_meta.lapse_pending` and retried at every Step, about every 30 s, with no cap on tries, across a restart, until a read answers (ask #1079; the retry was read at `941954c1d` on `relay-lc/g2`, in review).
+6. **The G2 lane has merged the `lapse` change (ask #1075):** the Mac stays on the relay while someone else pays, and moves when nobody pays, routes playing no part. **"Someone pays" means a paying phone holding this Mac in its slots, linked or not (ask #1079).** On an unreadable account: **a phone's own `entitlement_expired` request moves the Mac at once, by the relay's rule 10 (ask #1079). The relay's own signal waits:** the undecided lapse is kept in `hub_meta.lapse_pending` and retried at every Step, about every 30 s, with no cap on tries, across a restart, until a read answers (ask #1079). A waiting lapse ends when the phone is listed paying past `LapseFresh`, 2 minutes. Read at `affeebb8e`, PR #702, in CI, not merged.
 
 ## Review Focus
 
@@ -101,15 +101,14 @@ The plan's reviewer cannot read this branch, so this is where to look. Each was 
 |---|---|
 | The table "What the merged code gives Phase 5", `lapse`, `owe`'s call and package note, `sealEpochFor`, `TransportFollowerPolicy`, `SideMailboxReader.look`, `TransportRequest`'s relay-only refusal, `NowOutboxRows`, `HostedRelayTransport.fetchForPush`, PROJ-21's words | `92636f852` |
 | `resend_from` and its re-ask, `askDue`, `drainHeld`, `ResendAskAgainAfter`, the outbox's `closeAskedGap`, `ActionOutbox.retry` (a new id and seq), `withdrawUnanswered`, the ledger key and `repeat` | `2bfcae86f` |
-| G2's `checkNoPayer`, `fingerprint` with `ICloudRoutes`, every linked phone needing a route | `24d9781aa` on `relay-lc/g2`, unmerged |
-| `lapse`, `queueLapse`, `lapse_pending`, `RelayAccountCenter`'s event handling, `RelayBannerModel`, `refusesTheAccount` | `941954c1d` on `relay-lc/g2`, in review |
+| G2's `checkNoPayer`, `fingerprint` with `ICloudRoutes`, every linked phone needing a route; `lapse`, `queueLapse`, `lapse_pending`, `Config.AccountPhones`, `LapseFresh`, `owe` (it marks a route-less phone lapsed); `RelayAccountCenter`'s event handling, `RelayBannerModel`, `refusesTheAccount`, `LinkNotice`, `endLink` | `affeebb8e`, PR #702 on `relay-lc/g2`, in CI, unmerged |
 | G1's rules | `g1-design.md`, a design; its code was not read |
 | The relay's `COALESCE_MS`, PITR, and `zoneAccess` (`worker/src/do/zone/acl.ts`): a phone with no slot gets `FORBIDDEN` on a mailbox save or read and may still delete; a slotted phone not paying gets `ENTITLEMENT_INACTIVE` on a save; a non-reader gets `FORBIDDEN` on the data zone; the Mac too gets `FORBIDDEN` on a mailbox whose phone holds no slot | relay `bcca870` |
 
 **Two claims are not settled by reading, and each has a step.**
 
 - **A phone's resend over an unreadable echo overwrites under sim rule 3, and the real hub answers it as a repeat.** Read: the rule in `sim/README.md` and the repeat path in `order.go`. Run: Task 6's `TestLostResendFromFilledByResendingUnechoed` on the fake, and Task 11 step 4 on the stand, before PR C can merge. **If it is false,** the drop's requeue does not recover, so F16 and the `resend_from` row change. The implementer stops and reports; the fallback is a dropped record listing the unechoed rows Not delivered.
-- **`owe` marks a route-less phone lapsed.** The G2 lane is still changing it, so this is not a claim about one commit: the working copy on `relay-lc/g2` does mark, and `941954c1d` does not. Re-check at Task 13: read `owe` as merged. If it marks, `ReaderLost` only calls it; if not, `ReaderLost` also calls `state.LapseRelay`. `TestReaderLostMarksARouteLessPhoneLapsed` holds either way.
+- **G2's code as merged.** PR #702 is not merged. Task 13's re-check reads `owe`, `queueLapse` and `AccountPhones` as they land. If `owe` stops marking a route-less phone, `ReaderLost` also calls `state.LapseRelay`; `TestReaderLostMarksARouteLessPhoneLapsed` holds either way.
 
 The relay's refusals were read in `acl.ts` and are also asserted on the real relay in Task 11 step 7.
 
@@ -117,8 +116,8 @@ The relay's refusals were read in `acl.ts` and are also asserted on the real rel
 
 The owner has ruled on all four; the code is landing while this plan is under review. The table below is pinned to `92636f852`. **Before Task 2, and again before Tasks 3, 4 and 13,** the implementer compares what merged with what this section says and reports any difference to the controller; a difference in a rule below goes back to the owner before the task continues.
 
-- **G2 (asks #1055, #1070, #1072).** The rule: the Mac moves to iCloud by itself **only** when the account lists no paying phone on two answered reads at least `NoPayerPoll` (5 min) apart **and every linked phone has an iCloud route** (ask #1072). A paying phone not linked to this Mac: the Mac stays (ask #1070). A linked phone with no route: the Mac stays (asks #1070, #1072). Every phone with a route and a long empty list: it moves after two reads (ask #1070). Unknown moves nothing. `relay-lc/g2` at `24d9781aa`, unmerged, read for this plan: `checkNoPayer` has the two reads, `ErrNotFresh` and the stay on a paying phone, and its `fingerprint` requires a route on every linked phone (`ICloudRoutes`). The re-check confirms that what merges still says this. Task 13's outcomes below are written against these rules. 
-  `lapse` is a separate rule, for an explicit expiry or the phone's own request (ask #1075): the Mac stays while someone else pays, meaning a paying phone holding this Mac in its slots, linked or not (ask #1079), and moves when nobody pays, whatever the routes; a route-less phone is then left to re-link. It reads the account afresh. On a failed read, a phone's own request moves the Mac at once (rule 10, ask #1079), and the relay's own signal waits and retries at every Step from `hub_meta.lapse_pending` with no cap (launch condition 6). The G2 lane builds this. G2's self-move keeps ask #1072's rule (ask #1075): nobody paying and a phone with no route, the Mac stays, serving nobody, because the relay answers `ENTITLEMENT_INACTIVE` then. The re-check compares what merges with both rules, with "someone pays", with the two failed-read paths and with that retry, checks `queueLapse` still exists as the one entry for Task 13's clear and writes `lapse_pending` first, and reads `owe` as above.
+- **G2 (asks #1055, #1070, #1072).** The rule: the Mac moves to iCloud by itself **only** when the account lists no paying phone on two answered reads at least `NoPayerPoll` (5 min) apart **and every linked phone has an iCloud route** (ask #1072). A paying phone not linked to this Mac: the Mac stays (ask #1070). A linked phone with no route: the Mac stays (asks #1070, #1072). Every phone with a route and a long empty list: it moves after two reads (ask #1070). Unknown moves nothing. PR #702 at `affeebb8e`, unmerged, read for this plan: `checkNoPayer` has the two reads, `ErrNotFresh` and the stay on a paying phone, and its `fingerprint` requires a route on every linked phone (`ICloudRoutes`). The re-check confirms that what merges still says this. Task 13's outcomes below are written against these rules. 
+  `lapse` is a separate rule, for an explicit expiry or the phone's own request (ask #1075): the Mac stays while someone else pays, meaning a paying phone holding this Mac in its slots, linked or not (ask #1079), and moves when nobody pays, whatever the routes; a route-less phone is then left to re-link. It reads the account afresh through `Config.AccountPhones`, and a waiting lapse ends if the phone is listed paying past `LapseFresh`. On a failed read, a phone's own request moves the Mac at once (rule 10, ask #1079), and the relay's own signal waits and retries at every Step from `hub_meta.lapse_pending` with no cap (launch condition 6). The G2 lane builds this. G2's self-move keeps ask #1072's rule (ask #1075), and **rule 16 wins over it (ask #1087):** nobody paying and a phone with no route, the Mac stays only until a refused write or the relay's signal runs `lapse`, which moves it. So "serving nobody" is brief. The re-check compares what merges with both rules, with "someone pays", with the two failed-read paths and with that retry, checks `queueLapse` still exists as the one entry for Task 13's clear and writes `lapse_pending` first, and reads `owe` as above.
 - **G1 (ask #1056: on the relay the phone's sealed record and the mailbox rule replace the creator check; a 3-second pause before `remove_slot`).** A phone's relay-lane record is AEAD under the pairwise key, not signed, so its authority is that key, the sender check and the mailbox's write rule. The ask's own word was "signature"; this plan uses what the code does. Design: `g1-design.md` in the launch directory. Three consequences:
   - `epoch_ack` is a control, not a `device` record, and never had a creator check. Its authority on the relay is the same mailbox rule plus the pairwise key. The offer needs no signature of its own, and Task 2's `decide` gate does not change.
   - `device` records now arrive on the relay, sealed in the phone's newest epoch, so they follow the same key rule. A record sealed under deleted rows or a retired epoch is dropped; the hourly `touchIfStale` rewrite heals it after the next merge. A **farewell** is not rewritten: F32.
@@ -177,7 +176,7 @@ An all-zero shared secret is refused on either side.
 | Present, with a stored pair | — | the stored pair |
 | Present, no pair | — | static (`wt/relay/v1/`) |
 | Absent | no (iCloud, a hub without the hub half, before the first offer) | static, any epoch, as today |
-| Absent, epoch above the newest held | yes | `epochKeysPending`: on the active route the batch replays with its token kept, **for at most `keyboxWaitCap` = 1 h from the first sighting** (`relay_wait_since` in replica meta). Then the feed **parks**: token kept, nothing skipped, no more fetches until a merge, a foreground or a launch. In the side reader, or while `waitsForKeybox` is false (no key source), it holds nothing back and drops nothing: the look handles what it can open behind it, and keeps its token at that batch, so the record is read again once the keys come |
+| Absent, epoch above the newest held | yes | `epochKeysPending`: on the active route the batch replays with its token kept, **for at most `keyboxWaitCap` = 1 h from the first sighting** (`relay_wait_since` in replica meta). Then the feed **parks**: token kept, nothing skipped, no more fetches until a merge, a foreground or a launch. In the side reader it holds nothing back and drops nothing: the look handles what it can open behind it, and keeps its token at that batch, so the record is read again once the keys come. While `waitsForKeybox` is false (no key source) the feed parks at once with no row |
 | Absent, epoch at or below the newest held | yes | `epochKeysGone`: the record is dropped, the feed moves on |
 
 **One exception to every row above:** when no row's key opens an h2p record, the phone tries the static key, and accepts the result **only if the frame is a `hub_on_relay` control**. Anything else opened that way is unopenable. So a thief holding only an old `dev_kx` can at worst push the phone off the relay, visibly, and cannot forge echoes. See "Losing and regaining reader status".
@@ -198,7 +197,7 @@ An all-zero shared secret is refused on either side.
 
 ## Losing and regaining reader status
 
-**A relay-eligible phone** is linked, not lapsed, and held in a slot by the last account read that answered. An offer exists only for such a phone, with one exception: the held keys of the empty-list case below, when no age rotation runs. That is what lets `RotateToward` derive for every row with an offer and nothing else; an unlink's rotation in that held case derives a row nobody can use, and the zone keybox still carries no keys.
+**A relay-eligible phone** is linked, not lapsed, and held in a slot by the last account read that answered. An offer exists only for such a phone, with one exception: the held offer of the empty-list case below. That is what lets `RotateToward` derive for every row with an offer and nothing else; in that held case it derives a row used only if the phone comes back, and the zone keybox carries no keys until then.
 
 **The signals the hub really has** (checked in `internal/hub/switcher/entitlement.go`, `transport/relay/pairing.go`, `runtime.go`):
 
@@ -207,7 +206,7 @@ An all-zero shared secret is refused on either side.
 | The relay's `ENTITLEMENT_EXPIRED` naming the phone (`OnControl`) | runs `lapse`, which sets `devices.relay_lapsed_at` | Subscription ended |
 | The phone's own `transport_switch(cloudkit, entitlement_expired)` (`Request`) | same | A move or end the phone heard of. On all three, the Mac itself follows ask #1075 |
 | A mailbox write refused `ENTITLEMENT_INACTIVE` (`EntitlementInactive`) | same, at the next Step | The relay refuses that phone |
-| `AnyPaying` false on two reads, every phone with a route (G2, `checkNoPayer`, ask #1072) | moves the whole hub; the rotation clears all offers | Nobody pays, and everyone can follow |
+| `AnyPaying` false on two reads, every phone with a route (G2, `checkNoPayer`, ask #1072) | moves the whole hub; the rotation clears all offers | Nobody pays, and everyone can follow. With a route-less phone, the hub waits for the rows above (ask #1087) |
 | `get_account_state`: a linked phone in no slot (`SetReadersFrom`) | in memory only | A phone gone with the Mac staying: the relay sends **no** control, G2 stays quiet, and today nothing acts on it. See the outcomes below |
 | `Paying` read lists the phone again (`recheckLapsed`, every `PollOther`) | clears `relay_lapsed_at` (`endLapse`) | Paying again |
 
@@ -219,24 +218,18 @@ An all-zero shared secret is refused on either side.
 |---|---|---|---|---|
 | Another linked phone in a slot | any | stays | offer and rows cleared, no more keys in the zone | Task 13 |
 | A paying phone not linked to this Mac, holding this Mac in its slots | any | **stays** | the same: that phone counts only as making the list non-empty | asks #1070, #1079 |
-| Nobody pays, the list is not empty, a linked phone has no route | not on all | **stays, serving nobody; no rotation** (ask #1081) | the same for a phone absent from the list; the hold below for those still on it. A route-less phone gets no `hub_on_relay`: it hears the relay's refusal, and on its return its keybox and a new offer put it back | ask #1072 |
-| The list is **empty**, a linked phone has no route | not on all | **stays** | **held, for at most 14 days** (ask #1077): offer and rows stay at first. No rotation while no linked phone is a reader, so nothing new is sealed to it, and the zone keybox carries no keys. An empty answer cannot be told from a revoked account, and clearing a phone that is really there at once would break a link that has no iCloud way out | asks #1070, #1072 |
+| Nobody pays, the list is not empty, a linked phone has no route | not on all | **stays, until a refused write or the relay's signal moves it** (ask #1087) | the same for a phone absent from the list. A route-less phone gets no `hub_on_relay`: it hears the relay's refusal | asks #1072, #1087 |
+| The list is **empty**, a linked phone has no route | not on all | **stays, until the same** | **held:** offer and rows stay, the zone keybox carries no keys, and rotation goes on, so each key still retires on the usual rule. An empty answer cannot be told from a revoked account, and clearing a phone that is really there would break a link that has no iCloud way out | asks #1070, #1072, #1087 |
 | Empty or nobody pays, every phone has a route | all | **moves** after two reads | G2 goes first in the poll; the rotation clears every offer; `checkDeparted` skips this poll | asks #1070, #1072 |
 | A failed read, `ErrNotFresh`, unreadable phones | — | stays | nothing moves, nothing is cleared, the count does not advance | ask #1070 |
 
 **That table is for a phone gone with no signal. On an explicit signal `lapse` runs instead (ask #1075):** a paying phone other than this one holds this Mac in its slots, linked or not (ask #1079): the Mac stays, that phone's keys are cleared, and it leaves through `hub_on_relay` where it has an iCloud mailbox. Nobody pays: the Mac moves whatever the routes, the rotation clears every offer, and a route-less phone is left to re-link. A failed account read: on the phone's own request the Mac moves at once (ask #1079); on the relay's signal it moves nothing and retries from `lapse_pending`. That phone's keys are already cleared in both cases: on the relay's signal by ask #1081, on the phone's own request by the agent's inference, since `queueLapse` is one entry. `TestLapseClearsKeysUnderEveryAnswer`, over each of these.
 
-**How the hub knows it serves nobody.** From the answered `get_account_state`, not from refusals: a relay refusal says one write failed, and it can come from a quota or a single phone's lapse. The hub keeps `relay_serving_nobody_since` in `hub_meta`: set when an answered read holds no linked phone in a slot **or no phone pays** (ask #1081), cleared when an answered read has a paying phone and a linked phone in a slot, so it survives a restart. A failed read changes nothing. A refusal alone never sets it (`TestRefusalAloneDoesNotSetServingNobody`).
-
-**The end of the hold (ask #1077).** At 14 days, the mailbox TTL, after which no relay record sealed under those keys remains, the hub rotates once and clears every remaining offer and row. The rotation is local; a held hub publishes later. The old epoch retires and is erased under the usual 7-day rule, so the old keys are gone about 21 days after the list went empty. Today's current-epoch key exists on any running hub.
-
-**What it costs a phone that really is there.** It has stored keys for the old epoch, and the hub no longer does. When it reappears on the list, the rotation has already happened, so the hub's keybox for the new epoch, static and sealed to `dev_kx`, gets keys in the zone. The phone merges it and works, with one static week before its new offer counts. An action it wrote in between does not open and gets no answer. Its next action reaches `hold`, the hub asks for the gap, and the old row is resealed from the keys the phone still holds. If it writes nothing more, that action stays unanswered.
-
-**Rotation and a restart.** After a restart the reader list is unknown until the first answer. `relay_serving_nobody_since` decides, under its own clearing rule: if set, no rotation until an answered read clears it (a paying phone and a linked phone in a slot). If not set, an unknown list rotates when due, as a hub with readers should. **After the day-14 rotation the mark may still be set.** That rotation also writes `relay_serving_nobody_rotated` in its own transaction, so it runs once, and no later cycle or restart repeats it. Clearing the mark clears both, and the normal age applies, which is usually due at once (`TestDay14RotationOnceAcrossRestart`).
+**Why there is no special state for a hub nobody reads.** Rotation does not stop for a held or unread hub, on the relay. It is a local write, the publish waits while the hub is held or refused, and the wiped hashes cost one republish when it can publish again. So old keys retire on the usual 7 days whatever the account says, with no mark, no clock and no second rule. A phone really there when the list returns finds a keybox sealed to its offer, naming fresh keys. An action it wrote meanwhile in a retired epoch draws `resend_from` at its next action. `TestRotatesWhileHeldAndPublishesNothing`, `TestReturnAfterAnEmptyListOpensTheKeybox`.
 
 **What a relay action already written does.** Sealed under the deleted rows, it no longer opens; `Lapsed` already says no relay action written before a lapse is applied, and the phone lists it Not delivered on `hub_on_relay`. Nothing that would have been applied is lost.
 
-**What the phone really hears, and what changes (read in `RelayAccountCenter` at `941954c1d` and `acl.ts`).** A slotted phone not paying gets `ENTITLEMENT_INACTIVE` on a save: `syncThenLapse`, then `lapseRelay()`, `relayLapsed`. **A phone out of the slot gets `FORBIDDEN`, and its subscription may stand. `RelayAccountCenter` ignores `.forbidden` today,** and `SLOT_REMOVED` only re-reads the account, so nothing tells the session. A paying phone also has no banner, as `needsRelay` returns nil for `.paying`. Its queued rows do go Not delivered one by one, because a `FORBIDDEN` save is a permanent refusal, but rows already `sent` hang.
+**What the phone really hears, and what changes (read in `RelayAccountCenter` at `affeebb8e` and `acl.ts`).** A slotted phone not paying gets `ENTITLEMENT_INACTIVE` on a save: `syncThenLapse`, then `lapseRelay()`, `relayLapsed`. **A phone out of the slot gets `FORBIDDEN`, and its subscription may stand. `RelayAccountCenter` ignores `.forbidden` today,** and `SLOT_REMOVED` only re-reads the account, so nothing tells the session. A paying phone also has no banner, as `needsRelay` returns nil for `.paying`. Its queued rows do go Not delivered one by one, because a `FORBIDDEN` save is a permanent refusal, but rows already `sent` hang.
 
 **New: `slotLost` (Task 13, ask #1081).** On `.forbidden` and on `SLOT_REMOVED`, the center reads the account. If that read answers and a relay-route hub's Mac is in none of this phone's slots, it calls `HubSession.relaySlotLost()`, which sends `FollowerInput.slotLost` to the follower. A failed read does nothing and waits for the next event. A `FORBIDDEN` with the Mac still in a slot, a hub that has not named it a reader yet, does nothing. The policy: with another route, withdraw (below), then move as `withoutHub` does, without waiting for `hub_on_relay`, which is then read and marked handled. With none, as below.
 
@@ -244,11 +237,11 @@ An all-zero shared secret is refused on either side.
 
 **A departed phone with no iCloud route (relay-only link).** `hub_on_relay` cannot reach it. On `relayLapsed` or `slotLost` with no other route, the rule above applies, and the route stays relay. **What is true of its written actions:** a withdrawn one is never applied. One the hub read before the withdrawal may have been applied, and its echo says so if the phone can read it. One whose delete was refused stays `sent` until a later pass; once the hub has cleared the phone's rows it no longer opens either: `droppable`, dropped with no answer. On its return, its next action leaves a gap, the hub asks, the phone has no row, and `skip_to` closes it (#1498). Requeue does not fire here, as nothing was `epochGone`. `testRelayOnlyLapseWithdrawsAndLists`, `testSlotLostWithASubscriptionWithdrawsAndLists`, `TestDepartedPhoneActionNotAppliedOnceRowsAreCleared`, `TestReturnAfterDepartureSkipsTheGap`.
 
-**The term on a refused phone's keys.** A relay-only link gets no proof, and today retention runs only on a merge. So `LinkRecord.relayRefusedSince` is set at the first `relayLapsed`, `slotLost` or move read with no other route. It is cleared by a keybox merge, and, unless the Mac is known to have moved, by a lapse's end or an answered read with the Mac in a slot. While it is set the phone sends no offer and no `epoch_ack`, which the relay would refuse anyway. `HubSession` checks it at boot and at each foreground, and **at 21 days, when the hub's keys for that time are gone too, it erases every key of this link through `updateHubLink`:** the two private keys, stored pairs, and all `K_data` and `K_alert`, the alert copy with them. `K_meta` and the hub's public keys stay, so a later keybox to `dev_kx` still works. Its replica stays as ciphertext and cannot be read until then; the banner already says why. A link with another route is untouched, as it gets proof. `testRelayOnlyKeysEraseAt21DaysWithoutAMerge`, `testTheTermRunsAtBootAndForeground`, `testAnAnsweredSlotStopsTheTerm`, `testAKeyboxAfterTheTermOpensAndRestoresTheLink`, `testARoutedLinkHasNoTerm`, `testNoOfferWhileRefused`.
+**The term on a refused phone's link.** A relay-only link gets no proof, and today retention runs only on a merge. So `LinkRecord.relayRefusedSince` is set at the first `relayLapsed`, `slotLost` or move read with no other route. Unless the Mac is known to have moved, it is cleared by a merge that raises the newest epoch, a lapse's end, or an answered read with the Mac in a slot. A marker toward the relay clears it in any case. `HubSession` checks it at boot and at each foreground. **At 21 days the link ends, by today's `endLink(row, farewell: false, keepRecordings: true)`, the path a pre-encryption link takes:** the Keychain item with every key goes (ask #1086), the replica's files go, recordings stay, and the row leaves Settings → Macs. `LinkNotice.relayEnded(macName)`: "The link to <Mac> ended after 21 days without Relay. Link it again to see its data." S60. **The cost: a person back on day 22 has no history of that Mac on this phone and must link it again, even if they paid.** Everything after follows from there being no link: no new action can be made for it, a stored keybox has nothing to merge into, and a hub that comes back seals to an offer nobody holds, which a re-link clears. `testRelayOnlyLinkEndsAt21DaysWithoutAMerge`, `testTheTermRunsAtBootAndForeground`, `testAnAnsweredSlotStopsTheTerm`, `testAStoredKeyboxDoesNotStopTheTerm`, `testARoutedLinkHasNoTerm`, `testTheNoticeNamesTheMac`, Go `TestRelinkAfterTheTermClearsOfferAndRelayKeys`.
 
-**A route-less phone left behind (ask #1075): what it can know.** After the Mac moves to iCloud, only a new link brings this phone back, but `needsRelay` says "<Mac> needs Relay." with **Subscribe**, and paying alone does nothing. The phone can know in two cases: it reads `transport_switched{cloudkit}` or the marker while its read window lasts, or it is paying and its Mac is in no slot (`slotLost`). Both set `LinkRecord.relayLinkGone` with its cause (`.macMoved`, `.slot`), the follower does not move the route, unechoed rows are withdrawn and listed as above (a move made by another phone brings no `relayLapsed`), and Now shows S59 in place of the needs-Relay banner: "<Mac> can't be reached over Relay any more. Link this iPhone to it again." with **Forget This Mac** (Task 17, ask #1081). **It cannot know otherwise:** a lapsed phone past its read window, whose slot stays, reads nothing, so it keeps "<Mac> needs Relay." and **Subscribe**. Paying then gives it the read, the marker, and S59, so the person may pay and still have to re-link. That limit stays, and the guide says so. **It clears** on a keybox merge or an opened echo, for either cause; on an answered read with the Mac in a slot, for `.slot`; on a marker toward the relay, for `.macMoved`.
+**A route-less phone left behind (ask #1075): what it can know.** After the Mac moves to iCloud, only a new link brings this phone back, but `needsRelay` says "<Mac> needs Relay." with **Subscribe**, and paying alone does nothing. The phone can know in two cases: it reads `transport_switched{cloudkit}` or the marker while its read window lasts, or it is paying and its Mac is in no slot (`slotLost`). Both set `LinkRecord.relayLinkGone` with its cause (`.macMoved`, `.slot`), the follower does not move the route, **and a route-less phone does not merge the switch notice's keybox, as it cannot follow,** unechoed rows are withdrawn and listed as above (a move made by another phone brings no `relayLapsed`), and Now shows S59 in place of the needs-Relay banner: "<Mac> can't be reached over Relay any more. Link this iPhone to it again." with **Forget This Mac** (Task 17, ask #1081). **It cannot know otherwise:** a lapsed phone past its read window, whose slot stays, reads nothing, so it keeps "<Mac> needs Relay." and **Subscribe**. Paying then gives it the read, the marker, and S59, so the person may pay and still have to re-link. That limit stays, and the guide says so. **It clears,** for `.slot`, on a merge that raises the newest epoch or an answered read with the Mac in a slot; for `.macMoved`, only on a marker toward the relay, because a stale keybox left in the relay zone could still raise. An old echo clears nothing.
 
-**Going out, on the phone.** On `relayLapsed` it queues its `transport_switch` (sealed with what it holds, as today). On `relayLapsed` and `slotLost` it clears `relay_feed_parked_since`, and **while it has no key source it does not park again:** `SecureTransport` asks `waitsForKeybox`, false while `canUseRelay == .no` or `relayRefusedSince` is set, and a pending record is then handled as in the side reader: nothing waits, the token stays at that batch, no parked row. An answered read or a merge turns it back on. **It erases no key then:** the hub may not have acted yet (it waits for two reads, or holds up to 14 days), and a slot given back in that gap would otherwise leave a keybox sealed to an erased offer, which is F17 with no way out. The private keys and stored pairs go only on proof the hub has cleared them, `droppingEphemeral()` on an opened `hub_on_relay`, or at the term above. **`hub_on_relay` is sealed static** because the rows are gone, and the exception above lets the phone read it while it still holds its state; the side reader never replays, so owed echoes ahead of it in the iCloud mailbox cannot hold it back. It then leaves: route to iCloud, unechoed actions Not delivered, relay mailbox drained, control marked handled, exactly `withoutHub` today.
+**Going out, on the phone.** On `relayLapsed` it queues its `transport_switch` (sealed with what it holds, as today). On `relayLapsed` and `slotLost` it clears `relay_feed_parked_since`, and **while it has no key source it parks at once, silently:** `SecureTransport` asks `waitsForKeybox`, false while `canUseRelay == .no` or `relayRefusedSince` is set, and a pending record then stops the feed as parking does, token kept, no refetch until a merge, a foreground or a launch, with no parked mark and no row. So nothing rereads a batch on every pass. An answered read or a merge turns it back on. **It erases no key then:** the hub may not have acted yet (it waits for two reads, or holds on an empty list), and a slot given back in that gap would otherwise leave a keybox sealed to an erased offer, which is F17 with no way out. The private keys and stored pairs go only on proof the hub has cleared them, `droppingEphemeral()` on an opened `hub_on_relay`, or with the link at the term above. **`hub_on_relay` is sealed static** because the rows are gone, and the exception above lets the phone read it while it still holds its state; the side reader never replays, so owed echoes ahead of it in the iCloud mailbox cannot hold it back. It then leaves: route to iCloud, unechoed actions Not delivered, relay mailbox drained, control marked handled, exactly `withoutHub` today.
 
 **The keybox is the one truth for an epoch's keys.** It is signed by `hub_sig`, so only the hub can say this. For an epoch it carries: `relay_kx` means that pair; no `relay_kx` means static, and **the phone drops any stored pair it holds for that epoch**, whatever else it thinks. So a hub that cleared a phone's rows inside an epoch and a phone that kept its pair agree as soon as the keybox arrives. A lost ack's mismatch ends the same way. On such a keybox for the newest epoch, with an offer outstanding, the phone clears `epoch_ack_kx` **only when that merge really dropped a stored pair,** so its offer goes again once: merges run after every fetch and at unlock, and a first week's static keybox has no pair to drop. The offer is refused while the phone is lapsed.
 
@@ -271,8 +264,8 @@ An all-zero shared secret is refused on either side.
 | A paying phone lapses, another phone still pays, hub stays on the relay | "Losing and regaining reader status": offer and rows gone in `queueLapse`, keybox without keys, `hub_on_relay` readable static, phone back on iCloud with static keys. The other phone keeps rotating. | `TestLapseWithAnotherPayerClearsOfferAndRows`, `testHubOnRelayOpensOverAStaleEphemeralState` |
 | The same phone's subscription moved and the phone is gone, another linked phone in a slot | `ReaderLost` after two answered reads. The Mac stays; the gone phone's offer and rows go. | `TestReaderLostAfterTwoReadsClearsKeys`, `TestOneMissingReadChangesNothing` |
 | The paying phone is not linked to this Mac (ask #1070) | The Mac stays on the relay. A linked phone absent from the list departs: its keys go. | `TestDepartedUnlinkedPayerMacStaysKeysCleared` |
-| A linked phone with no iCloud route, nobody pays, no explicit signal (asks #1070, #1072, #1075) | G2 keeps the Mac on the relay, serving nobody. A phone absent from a non-empty list departs. | `TestDepartedPhoneNoRouteMacStaysKeysCleared`, `TestDepartedRelayOnlyPhoneReturnsAndOffersAgain` |
-| No route on some phone, the relay answers an empty list (ask #1070) | The Mac stays. `ReaderLost` is silent; keys are held for at most 14 days (ask #1077); no rotation; no keys in the zone. | `TestEmptyListNoRouteMacStaysKeysHeldNoRotation`, `TestEmptyListHoldEndsAt14DaysRotatesOnceAndClears` |
+| A linked phone with no iCloud route, nobody pays, no explicit signal (asks #1070, #1072, #1087) | G2 keeps the Mac on the relay until a refused write or the relay's signal moves it (ask #1087). A phone absent from a non-empty list departs. | `TestDepartedPhoneNoRouteMacStaysKeysCleared`, `TestDepartedRelayOnlyPhoneReturnsAndOffersAgain` |
+| No route on some phone, the relay answers an empty list (ask #1070) | The Mac stays until a refused write or the relay's signal moves it (ask #1087). `ReaderLost` is silent; keys are held; rotation goes on; no keys in the zone. | `TestEmptyListNoRouteMacStaysKeysHeld`, `TestRotatesWhileHeldAndPublishesNothing` |
 | An explicit expiry, nobody else pays, a phone has no route (ask #1075) | `lapse` moves the Mac to iCloud; the rotation clears every offer; the route-less phone is left to re-link | `TestLapseClearsKeysUnderEveryAnswer`; the move's own tests are the G2 lane's |
 | Nobody pays and **every** phone has a route | G2 moves the whole hub to iCloud after two reads; the rotation clears every offer. | `TestNoPayerMoveClearsOffers`, `TestAllRoutesNobodyPaysG2MovesDepartedSkips` |
 | A lapsed phone on iCloud, the hub still on the relay, pays again | "Coming back": keybox merged at the reader wait, request accepted, follow, new offer | `testAwaitReaderMergesTheKeyboxBeforeTheRequest`, `TestRenewedPhoneOffersAgain`, Task 11 step 8 |
@@ -290,7 +283,7 @@ The last column is the task whose test pins the row.
 | F2 | Failure midway through a rotation (a seal fails for the second phone) | Nothing written; next housekeeping retries | `TestRotationFailureMidwayWritesNothing` | 3 |
 | F3 | Restart after commit, before the republish | Hashes stay wiped, publish resumes, no second rotation | `TestRuntime_RestartAfterRotationRepublishesOnce` | 6 |
 | F4 | Relay unreachable at rotation | Rotation is local; keybox and slices wait. The phone stays on the old epoch; echoes stay in its acked epoch | `TestRotationWhileRelayDownPublishesOnReturn` | 6 |
-| F5 | Hub paused or unvouched on the relay | No rotation: nothing can be published | `TestRotateIfDueSkippedWhileHeldOnRelay` | 3 |
+| F5 | Hub paused or unvouched on the relay | It rotates as usual and publishes nothing; one republish when it can publish | `TestRotatesWhileHeldAndPublishesNothing` | 3 |
 | F6 | Phone offline for one rotation | The keybox, sealed to its offer, is read on return; the offer is promoted | Task 11 step 3 | 11 |
 | F7 | Phone offline past retention (three or more rotations) | The keybox still opens: the hub reuses the last offer with a fresh `hub_eph`. Old actions get `resend_from` and are resealed; one past its own key is Not delivered, and an action that old is answered expired anyway | Task 11 step 4, `testAnOutboxRowPastItsKeyIsNotDelivered` | 11, 8 |
 | F8 | `epoch_ack` lost (TTL purge, failed write) | Hub keeps the old offer and seals to it; the phone still holds it. Next raise re-sends the offer. Early retirement simply does not happen; the 7-day cap still does | `testALostAckResendsTheOfferAtTheNextRaise`, `TestLostAckStillRetiresAt7Days` | 8, 3 |
@@ -302,7 +295,7 @@ The last column is the task whose test pins the row.
 | F14 | Keychain write fails during a merge | Epoch unmerged; the next pass retries from the stored keybox | `testAFailedSaveKeepsTheOldLinkAndRetries` | 10 |
 | F15 | Echo arrives before the keybox | Feed replays with its token untouched, for at most 1 h, then parks; `keysMerged` wakes it. Nothing is lost | `testAnEchoAboveTheNewestEpochWaitsForTheKeybox` | 8 |
 | F16 | Any record in an epoch the phone will never hold | Dropped as unopenable; all unechoed actions are queued again once per batch ("What a dropped or parked record costs") | `testARelayRecordInAGoneEpochIsDroppedNotReplayed` | 8 |
-| F17 | Keybox names a key the phone no longer has. Only a restored hub sidecar reaches this: the phone erases its offer only after `hub_on_relay`, a follow to iCloud, or the term, when the hub has already cleared it | Merge refused, link kept, logged once, nothing wiped. Stale data until re-link (ask #1077) | `testAKeyboxNamingAnUnknownKeyIsNotMerged` | 7 |
+| F17 | Keybox names a key the phone no longer has. Only a restored hub sidecar reaches this: the phone erases its offer only after `hub_on_relay` or a follow to iCloud, when the hub has already cleared it | Merge refused, link kept, logged once, nothing wiped. Stale data until re-link (ask #1077). A phone past the term has no link at all, so a closed Mac's old offer never reaches this | `testAKeyboxNamingAnUnknownKeyIsNotMerged` | 7 |
 | F18 | Age rotation inside a running switch | Skipped; the next cycle decides | `TestRotateIfDueSkipsWhileASwitchIsRunning` | 3 |
 | F19 | Unlink during a rotation cycle | Serialised by the transaction; the removed phone's rows go with it; no keybox keys for it | `TestUnlinkRemovesOfferAndRelayKeys` | 3 |
 | F20 | Recording sealed in an epoch the hub retired | Resealed before each send; a raise re-arms a stuck row; if its key is gone it is sealed afresh from the plain file | Task 9's tests | 9 |
@@ -311,7 +304,7 @@ The last column is the task whose test pins the row.
 | F23 | Phone linked while a rotation commits | Static until its first offer | `TestLinkDuringRotationStartsStatic` | 3 |
 | F24 | Rotation and a lapse in the same moment | Serialised. Rotate first: the row it wrote is deleted by the lapse. Lapse first: no offer, no row | `TestLapseAndRotationEitherOrder` | 13 |
 | F25 | Restart between the lapse's commit and `hub_on_relay` written | `owe` is durable as today; the offer and rows stayed cleared | `TestLapseRestartKeepsKXCleared` | 13 |
-| F26 | Phone reads its feed on the relay route after the hub cleared its rows, and `epoch` is above its newest | Parks after 1 h, losing nothing, and Now says so (F38). The relay's refusal or the side reader's `hub_on_relay` gets it out, on a hub with both routes. On a relay-only host the refusal clears the parked mark and stops it parking again | `testAPendingEpochParksAfterTheCapAndLosesNothing` | 8 |
+| F26 | Phone reads its feed on the relay route after the hub cleared its rows, and `epoch` is above its newest | Parks after 1 h, losing nothing, and Now says so (F38). The relay's refusal or the side reader's `hub_on_relay` gets it out, on a hub with both routes. On a relay-only host the refusal clears the parked mark, and the feed then stays stopped with no row | `testAPendingEpochParksAfterTheCapAndLosesNothing` | 8 |
 | F27 | A false absence from one account read | Nothing happens; two answered reads `NoPayerPoll` apart are needed | `TestOneMissingReadChangesNothing` | 13 |
 | F28 | A forged static record that is not `hub_on_relay` | Unopenable | `testAStaticEchoIsRefusedOnAnEphemeralLink` | 13 |
 | F29 | A renewed phone's offer arrives before its lapse ended | Refused, sent again at the next raise | `TestOfferRefusedWhileLapsed` | 2 |
@@ -323,17 +316,15 @@ The last column is the task whose test pins the row.
 | F33 | Dropped `resend_from` with later actions held | The resend of unechoed actions fills the gap and releases them | `TestLostResendFromFilledByResendingUnechoed` | 6 |
 | F34 | Unknown account read during `checkDeparted` | Nothing moves or clears; the count holds | `TestUnknownReadMovesAndClearsNothing` | 13 |
 | F35 | Restart between the two reads | The count is in memory, so it starts again, which only delays | `TestRestartRestartsTheDepartureCount` | 13 |
-| F36 | Mac stays with no reader on an answered list, the rotation is due, including after a restart | No rotation, by `relay_serving_nobody_since`; it runs at the first cycle after an answered read clears the mark | `TestNoRotationWithNoReaderOnAnsweredList`, `TestRestartWithNoReaderMetaDoesNotRotate`, `TestUnknownListWithoutMetaRotates` | 3 |
 | F37 | A departed phone returns to the list | Its lapse ends by the `Paying` read, keys in the zone, static, a new offer at its ack | `TestDepartedRelayOnlyPhoneReturnsAndOffersAgain` | 13 |
-| F38 | Feed parked (F21, F26) | Now shows the row with its count; it goes on a merge, a lapse or `slotLost`, and does not come back while there is no key source | `testNowShowsTheParkedRowWithSentCount`, `testTheRowGoesOnAMerge`, Task 13's `testALapseClearsTheParkedRow`, `testAPhoneWithNoKeySourceDoesNotParkAgain` | 16, 13 |
+| F38 | Feed parked (F21, F26) | Now shows the row with its count; it goes on a merge, a lapse or `slotLost`, and does not come back while there is no key source, when the feed stays stopped | `testNowShowsTheParkedRowWithSentCount`, `testTheRowGoesOnAMerge`, Task 13's `testALapseClearsTheParkedRow`, `testAPhoneWithNoKeySourceDoesNotParkAgain` | 16, 13 |
 | F39 | A departed phone with no iCloud route has unechoed actions | On `relayLapsed`, `slotLost` or a move read on `switched` or the marker, each is withdrawn and listed, and then never applied. One the hub already applied returns as its echo. A refused delete keeps the row `sent` for the next pass. On return `skip_to` closes the gap | `testRelayOnlyLapseWithdrawsAndLists`, `testSlotLostWithASubscriptionWithdrawsAndLists`, `testAMoveReadOnARelayOnlyLinkListsUnechoed`, `TestDepartedPhoneActionNotAppliedOnceRowsAreCleared`, `TestReturnAfterDepartureSkipsTheGap` | 13, 17 |
 | F39b | The hub reads an action in the moment before its withdrawal | The delete conflicts, the echo is taken, and the row is not listed, so Retry is not offered. If the hub's echo write fails on the deleted record, the row is listed while the hub applied it: today's 24-hour limit, unchanged | `testAnEchoMetOnWithdrawalIsAppliedNotListed`, `TestAWithdrawnActionIsNeverApplied` | 13 |
-| F39c | A refused relay-only phone reaches 21 days | Every key of the link goes, with no merge needed | `testRelayOnlyKeysEraseAt21DaysWithoutAMerge` | 13 |
+| F39c | A refused relay-only phone reaches 21 days | The link ends: every key, the replica and the row go, recordings stay, the notice names the Mac. Day 22's person links again | `testRelayOnlyLinkEndsAt21DaysWithoutAMerge`, `testAStoredKeyboxDoesNotStopTheTerm`, `testTheNoticeNamesTheMac` | 17 |
 | F41 | `FORBIDDEN` with the subscription standing | The center reads the account: Mac in no slot is `slotLost`; Mac in a slot, or a failed read, does nothing | `testForbiddenWithTheMacGoneIsSlotLost`, `testForbiddenWithTheMacInASlotDoesNothing`, `testForbiddenWithAFailedReadDoesNothing` | 13 |
-| F42 | Nobody pays, the list is not empty, the rotation is due | No rotation, and the 14-day end applies | `TestNobodyPaysListNotEmptyNoRotation`, `TestRefusalAloneDoesNotSetServingNobody`, Task 13's `TestNobodyPaysListNotEmptyEndsAt14Days` | 3, 13 |
-| F43 | The relay's signal with a failed read, then a restart | Keys already cleared; the lapse stays in `lapse_pending` and is retried | The G2 lane's retry test; `TestLapseClearsKeysUnderEveryAnswer` | 13 |
+| F42 | Nobody pays, a phone has no route, no signal yet | The Mac stays and rotates. The first refused write or the relay's signal runs `lapse`, which moves it, and the rotation clears every offer (ask #1087) | `TestFirstRefusedWriteEndsG2sHold` | 13 |
+| F43 | The relay's signal with a failed read, then a restart; or the phone renews meanwhile | Keys already cleared; the lapse stays in `lapse_pending` and is retried, or ends when the phone is listed paying past `LapseFresh`, and a new offer is then taken | The G2 lane's retry test; `TestLapseClearsKeysUnderEveryAnswer`, `TestLapseEndedByRenewalAcceptsANewOffer` | 13 |
 | F44 | A phone's own request with a failed read | The Mac moves at once (rule 10, ask #1079); the rotation clears every offer; that phone's keys were cleared first | The G2 lane's test; `TestLapseClearsKeysUnderEveryAnswer` | 13 |
-| F40 | The empty-list hold reaches 14 days, including across a restart | One local rotation, offers and rows cleared; a phone really there recovers on the static epoch | `TestEmptyListHoldEndsAt14DaysRotatesOnceAndClears`, `TestHoldClockSurvivesRestart`, `TestRealPhoneAfterHoldEndRecovers` | 13 |
 
 ## Writers and races
 
@@ -342,9 +333,8 @@ The last column is the task whose test pins the row.
 | `hub_epochs`, `epoch_relay_keys` | The daemon's housekeeping (age), its switcher (switch), its link center (unlink), or the CLI under `hub.lock` when no hub runs | One holder of `hub.lock`; `BEGIN IMMEDIATE` serialises the daemon's goroutines. The later transaction builds on the committed newest epoch |
 | `devices.kx_offer`, `kx_offer_epoch` | Processor (`epoch_ack`), switcher (clear on leaving the relay, in `queueLapse`, in `ReaderLost`), link center (relink, unlink) | Highest ack epoch; a clear beats any offer read afterwards, because the ack's transaction reads `hub_meta.transport`, `relay_lapsed_at` and `lapse_pending` |
 | `HubLinkKeys` (`hub.<id>`) | Link flow's merge, the upgrade's merge at the reader wait, the session's offer, the follower's clear or drop, re-link, unlink | New `PhoneKeyStore.updateHubLink` under the store's lock, so no read-modify-write is lost. **It returns nil and writes nothing when the link is gone**, so an unlink is never undone |
-| `relay_serving_nobody_since`, `relay_serving_nobody_rotated` in `hub_meta` | The runtime on an answered account read sets and clears the mark; the day-14 rotation writes `rotated` in its own transaction | The newest answered read wins. A clearing read and the rotation are serialised; whichever is later leaves the state true: clearing removes both |
 | `lapse_pending` in `hub_meta` | The switcher, `queueLapse` and `decideLapses`, under its lock; read by the processor in the ack's transaction | Writes are serial. An ack before the key is written may store an offer, and `queueLapse`'s clear, after that write, removes it. An ack after is refused |
-| `relayLinkGone`, `relayRefusedSince` on `LinkRecord` | The follower sets; the session and the follower clear, on an answered read, a merge or an echo | Main-actor registry writes; the newest event wins, and a re-link starts with neither |
+| `relayLinkGone`, `relayRefusedSince` on `LinkRecord` | The follower sets; the session and the follower clear, on an answered read or a raising merge | Main-actor registry writes; the newest event wins, and a re-link starts with neither |
 | `epoch_ack_*` replica meta, `outbound_controls` | `ActionOutbox`'s chain | Serial; an unsent ack is replaced by a newer one |
 | Alert material (`alert.<id>`) | `saveHubLink` only | The extension only reads it |
 | Second phone | Its own `devices` row, relay-key rows and Keychain | Independent. Early retirement needs every phone's ack, with the 7-day cap |
@@ -353,13 +343,14 @@ The last column is the task whose test pins the row.
 
 ## Phone screens
 
-**Two new states, both on Now, each with a frame drawn before any code (Task 0): the parked feed's row (Task 16, ask #1077, S58) and the left-behind phone's banner (Task 17, S59, ask #1081).** A row already `sent` has no state of its own to show: Waiting to send covers only queued rows after a stopped flush, so a parked feed would otherwise leave actions unanswered with nothing on screen. Rotation itself is automatic (relay design §7.5). Every other outcome reuses a state that already has text and a test:
+**Two new states on Now and one notice, each with a frame drawn before any code (Task 0): the parked feed's row (Task 16, ask #1077, S58), the left-behind phone's banner (Task 17, S59, ask #1081), and the notice when a link ends at the term (Task 17, S60).** A row already `sent` has no state of its own to show: Waiting to send covers only queued rows after a stopped flush, so a parked feed would otherwise leave actions unanswered with nothing on screen. Rotation itself is automatic (relay design §7.5). Every other outcome reuses a state that already has text and a test:
 
 - **Not delivered:** `ActionOutbox.refusedMessage`.
 - **An uploader row:** its existing states.
 - **A lapsed relay-only phone:** S47 and S53's "<Mac> needs Relay.", which is why S58b was dropped (ask #1081).
 - **A locked phone's content-free notification:** `AlertOpener`'s fallback.
 - **An unreadable keybox:** `readGrant`'s `.unreadable`, logged, never judged.
+- **Past the term:** no row and no replica, so no new action and no Now for that Mac; S60 says why, once.
 
 Apart from S59, the reader transition has no new text: `hub_on_relay` shows what it shows today (Phase 4's S51 banner, Not delivered rows).
 
@@ -379,7 +370,7 @@ Task 8, Task 0 ─ Task 16 (PR A)
 Task 13, Task 0 ─ Task 17 (PR C)
 ```
 
-**No code starts until this plan is approved** (the review ends in ask #1082). Task 0 is a mockup, not code, and may run first, so the owner can see the frames. Go and Kit are parallel lanes after Task 1. Each Swift lane gets its own worktree and simulator.
+**No code starts until this plan is approved.** Task 0 is a mockup, not code, and may run first, so the owner can see the frames. Go and Kit are parallel lanes after Task 1. Each Swift lane gets its own worktree and simulator.
 
 **PRs into `feature/relay-client-next`, in this merge order:** Plan = this plan and Task 0, from `relay-p5/plan`. A = Tasks 1, 7–10, 15, 16 (the phone first: its offers go to a hub that ignores them, the "new phone, old hub" row, and no Release build is on a relay route). B = Tasks 2–6, plus Task 14 (the hub now rotates weekly on the relay, and the phones on this branch already have Tasks 8 and 9). C = Tasks 13, 17, 11, 12. **PR B does not merge before PR A:** other lanes on this branch would otherwise run a weekly hub with phones that can lose uploads.
 
@@ -389,15 +380,15 @@ Task 13, Task 0 ─ Task 17 (PR C)
 
 ### Task 0: Draw the frames
 
-**Depends on:** none. It needs no code: the text is in Task 16 and "A route-less phone left behind".
+**Depends on:** none. It needs no code: the text is in Task 16, "A route-less phone left behind" and "The term".
 
 **Files:**
-- Modify: `docs/design/mockups/relay-client/index.html` (S58, S59)
+- Modify: `docs/design/mockups/relay-client/index.html` (S58, S59, S60)
 
 **Interfaces:** the strings the two tasks then pin.
 
-- [ ] **Step 1:** Draw S58 (Now, the parked row, secondary tone, with one and with two sent actions) and S59 (Now, the calm card of ask #1040 with **Forget This Mac**), under `docs/design/desktop-style-guide.md`'s rules as the phone's mockups follow them.
-- [ ] **Step 2: Commit on `relay-p5/plan`,** the plan's branch. `docs: mockup frames for the parked row and the left-behind banner (#1248)`. Tasks 16 and 17 compare with the mockup there, or on `feature/relay-client-next` once it merges.
+- [ ] **Step 1:** Draw S58 (Now, the parked row, secondary tone, with one and with two sent actions) and S59 (Now, the calm card of ask #1040 with **Forget This Mac**) and S60 (the link notice), under `docs/design/desktop-style-guide.md`'s rules as the phone's mockups follow them.
+- [ ] **Step 2: Commit on `relay-p5/plan`,** the plan's branch. `docs: mockup frames for the parked row, the left-behind banner and the term's notice (#1248)`. Tasks 16 and 17 compare with the mockup there, or on `feature/relay-client-next` once it merges.
 - [ ] **Step 3:** The controller shows them to the owner. Tasks 16 and 17 start only after that.
 
 ### Task 1: Derivation, wire fields, vectors
@@ -476,9 +467,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `TestRotationFailureMidwayWritesNothing`
   - `TestRotateToCloudKitClearsOffersAndDerivesNone`
   - `TestRotateIfDueSkipsWhileASwitchIsRunning`
-  - `TestRotateIfDueSkippedWhileHeldOnRelay`, with a held CloudKit hub still rotating at 90 days as today
-  - `TestNobodyPaysListNotEmptyNoRotation`, `TestRefusalAloneDoesNotSetServingNobody`, `TestFailedReadLeavesServingNobodyAsItWas`
-  - `TestNoRotationWithNoReaderOnAnsweredList`, `TestRestartWithNoReaderMetaDoesNotRotate`, `TestUnknownListWithoutMetaRotates`
+  - `TestRotatesWhileHeldAndPublishesNothing`: held, on the relay; a held CloudKit hub still rotates at 90 days as today
   - `TestKeyboxRecipientIsTheOfferForALinkedPhone`: a pending, revoked or refused device still gets `dev_kx`
   - `TestKeyboxKeysNameBothEpochs`
   - `TestStaticKeyboxOmitsAnEphemeralPreviousEpoch`
@@ -493,13 +482,13 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `TestEchoSealedInAckedEpochWhileKeyboxIsStuck`
   - `TestNeverOfferedPhoneSealsInCurrentEpoch`
   - `TestRelayKeyCacheDropsAnErasedEpoch`
-- [ ] **Step 2: Run** `go test ./internal/hub/identity ./internal/hub/actions ./internal/hub -run 'Rotat|Keybox|Erase|Echo|Unlink|Lost|Link|Retention|Release|ICloudHub|NeverOffered|RelayKeyCache|NoErase|ServingNobody'`. Expected: FAIL.
+- [ ] **Step 2: Run** `go test ./internal/hub/identity ./internal/hub/actions ./internal/hub -run 'Rotat|Keybox|Erase|Echo|Unlink|Lost|Link|Retention|Release|ICloudHub|NeverOffered|RelayKeyCache|NoErase'`. Expected: FAIL.
 - [ ] **Step 3: Implement:**
   - **`rotationDue`** picks `relayRotationAge` when `MetaTransport` is `relay`, else `RotationAge`.
   - **`RotateToward`:** in the transaction, after `also`, inserting the epoch with `on_relay` set from `onRelay`: when `onRelay`, for each `devices` row with an offer draw `ecdh.X25519().GenerateKey`, derive, seal, insert; when not `onRelay`, `ClearKXOffers`. Log `epoch N begun (reason): k ephemeral, m static`, numbers only.
   - **`RelayKey`:** the sealed row if there is one, else today's derivation; cache as today, dropped by `EraseExpired`.
   - **`KeyboxRecipient`:** the offer for a linked row with `kx_offer`, else today's order.
-  - **`housekeeping`:** `RotateIfDue` gets an `also` that returns `ErrSkipRotation` when the switch record is in progress (`switcher.RotationBlocked`), and the call is skipped when on the relay and `isHeld()`, or when `relay_serving_nobody_since` is set. The runtime writes that `hub_meta` key at each answered account read. After `RetireOld`, `EraseExpired`, and only if it erased something a best-effort `wal_checkpoint(TRUNCATE)`.
+  - **`housekeeping`:** `RotateIfDue` gets an `also` that returns `ErrSkipRotation` when the switch record is in progress (`switcher.RotationBlocked`). Holding does not skip it. After `RetireOld`, `EraseExpired`, and only if it erased something a best-effort `wal_checkpoint(TRUNCATE)`.
   - **Echoes and controls** for a phone use `Sealer.InEpoch(PhoneEpoch(dev))` when non-zero.
   - **`EraseExpired`** erases only epochs with `on_relay = 1` (ask #1066). It sets `PRAGMA secure_delete = ON` on its connection only when it has an epoch to erase.
   - **`make hub-staging`** builds the headless binary with `-tags relaystaging`, for the staging run only (ask #1077).
@@ -578,11 +567,10 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `EphemeralKey: Codable, Sendable { publicKey: Data; privateKey: Data }`
   - `HubLinkKeys.currentKX: EphemeralKey?`, `.offeredKX: EphemeralKey?` (absent keys decode as nil)
   - `EpochKeys.relayKeys: EpochRelayKeys?` with `p2h`, `h2p`, `Data`
-  - `HubLinkKeys.merging(_ keys: KeyboxKeys, identity: DeviceIdentityKeys, hubID: UUID, deviceID: UUID, now: Date) throws -> HubLinkKeys`, which throws `KeyboxKeysError.unknownEphemeral`
+  - `HubLinkKeys.merging(_ keys: KeyboxKeys, identity: DeviceIdentityKeys, hubID: UUID, deviceID: UUID, now: Date) throws -> KeyboxMerge` (`keys: HubLinkKeys`, `droppedNewestPair: Bool`), which throws `KeyboxKeysError.unknownEphemeral`
   - `HubLinkKeys.withOffer() -> (HubLinkKeys, publicKey: Data)`, a no-op when one exists
   - `HubLinkKeys.clearingEphemeral() -> HubLinkKeys` (the two private keys go; stored pairs stay)
   - `HubLinkKeys.droppingEphemeral() -> HubLinkKeys` (stored pairs go too: the link is static for every epoch), only on an opened `hub_on_relay`
-  - `HubLinkKeys.erasingEpochKeys() -> HubLinkKeys`: private keys, pairs and every epoch go; `metaKey` and hub keys stay (the term)
   - `PhoneKeyStore.updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys?`
   - `SecureTransportError.epochKeysGone`, `.epochKeysPending`
   - `SecureKeyProvider.keyboxRecipients() throws -> [Curve25519.KeyAgreement.PrivateKey]`
@@ -591,9 +579,8 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `testOldItemDecodesWithNoEphemeralState`
   - `testMergeDerivesPromotesAndErases`: after the merge `currentKX` is the old offer, `offeredKX` nil, the older private key nowhere in the encoded item
   - `testMergeDerivesThePreviousEpochTooWhenMissing`
-  - `testMergeWithoutRelayKXIsStatic`, and `testAStaticKeyboxDropsThatEpochsPairAndOffersAgain`: a held pair for that epoch goes, the offer stays, and the merge reports it (the session then clears `epoch_ack_kx`)
+  - `testMergeWithoutRelayKXIsStatic`, and `testAStaticKeyboxDropsThatEpochsPairAndOffersAgain`: a held pair for that epoch goes, the offer stays, and `droppedNewestPair` is true
   - `testAStaticKeyboxWithNoPairReportsNothing`; `testRepeatedMergesReportOnce`
-  - `HubLinkKeys.erasingEpochKeys()`: `testErasingEpochKeysKeepsMetaAndHubKeys`
   - `testAKeyboxNamingAnUnknownKeyIsNotMerged`
   - `testMergeIsOneKeychainWrite`
   - `testUpdateHubLinkOnARemovedLinkWritesNothing`
@@ -624,7 +611,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
 - Produces:
   - `SealedBox.open(_:envelopeClass:recipients:info:context:verifier:)`
   - `ActionOutbox.enqueueEpochAck(epoch: UInt32, nextKX: Data?) async throws -> Bool`
-  - `ReplicaStore.epochAckDue(_ epoch: UInt32, nextKX: Data?) throws -> Bool` (new meta key `epoch_ack_kx`)
+  - `ReplicaStore.epochAckDue(_ epoch: UInt32, nextKX: Data?) throws -> Bool` (new meta key `epoch_ack_kx`); `ActionOutbox.offerAgain()` clears it
   - `ActionOutbox.requeueUnechoedAfterDrop() async throws -> Int`
   - `SecureTransport.keyboxWaitCap: TimeInterval = 3600`, `SecureTransport.waitsForKeybox: @Sendable () -> Bool` (true by default; Task 13 sets it)
   - `RelayFeed.resumeIfParked()`; `relay_feed_parked_since` in replica meta (Task 16 reads it)
@@ -641,7 +628,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `testADroppedSwitchIsFollowedByTheMarker`
   - `testTwoDropsInABatchRequeueOnce`
   - `testAPendingEpochParksAfterTheCapAndLosesNothing`: a `resend_from` behind the pending record is read, in order, after the merge
-  - `testNoKeySourceHandlesAPendingRecordWithoutWaiting`: `waitsForKeybox` false
+  - `testNoKeySourceStopsTheFeedSilently`: `waitsForKeybox` false: token kept, no parked mark, no fetch until a merge, a foreground or a launch
   - `testAMergeClearsTheWaitSince`; `testResumeIfParkedFetchesAgain`; `testParkingWritesTheMetaKeyAndAResumeRemovesIt`
   - `testAnOutboxRowPastItsKeyIsNotDelivered`: `reseal` returns nil on `epochKeysGone`
   - `testALostAckResendsTheOfferAtTheNextRaise`
@@ -691,7 +678,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
 
 **Interfaces:**
 - Consumes: Tasks 7–9.
-- Produces: no new public surface. `mergeKeys` goes through `keys.updateHubLink` and `merging`; `.unknownEphemeral` logs once and returns false.
+- Produces: `mergeKeys` goes through `keys.updateHubLink` and `merging`; `.unknownEphemeral` logs once and returns false. `droppedNewestPair` reaches `HubSession.keysMerged(newestEpochRaised:droppedNewestPair:)`, which calls `outbox.offerAgain()` and acknowledges.
 
 - [ ] **Step 1: Failing tests:**
   - `testARelayRoutePhoneOffersOnEveryRaise`
@@ -699,6 +686,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `testAnICloudRoutePhoneNeverOffers`: a guard for "CloudKit crypto does not change"; the control's bytes have no `next_kx`
   - `testAnOfferNotYetAckedGoesAtBoot`
   - `testAFailedSaveKeepsTheOldLinkAndRetries`
+  - `testADroppedPairSendsOneAckAcrossRepeatedMerges`, at each fetch and unlock
   - `testFollowingToICloudClearsEphemeralState`, after the keybox merge, in the follower's crash-safe order
   - `testFollowingToRelayOffersAfterTheMove`
   - `testARaiseKicksTheUploader`
@@ -734,7 +722,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
   4. Three rotations with the phone away, an action held in its outbox (`created_at` on the hub's moved clock, within the age window). `resend_from`, resealed under the same `action_seq`, applied once. A sealed recording in the same state is resealed and received once. The mailbox feed is not jammed. **Then one echo left in a gone epoch:** the phone drops it, resends, its write overwrites under sim rule 3, and the real hub answers it as a repeat.
   5. Switch to iCloud in the middle of an outstanding offer. New epoch static, offer cleared on both sides, an action applied. Back to the relay after the 5-minute rule: a static epoch, then ephemeral after one more rotation.
   6. A second, static test phone (no offers) stays linked through steps 2–3 and opens every epoch.
-  7. A paying phone not linked to the hub, a linked phone out of its slot: **the real relay answers that phone `FORBIDDEN` on a save and a read, and a slotted, non-paying one `ENTITLEMENT_INACTIVE`;** the relay lets it delete its own record with no slot; the phone reaches `slotLost`, withdraws and lists its unechoed actions; the hub stays on the relay and clears that phone's keys. Then an empty list with a route-less phone: the hub stays and does not rotate.
+  7. A paying phone not linked to the hub, a linked phone out of its slot: **the real relay answers that phone `FORBIDDEN` on a save and a read, and a slotted, non-paying one `ENTITLEMENT_INACTIVE`;** the relay lets it delete its own record with no slot; the phone reaches `slotLost`, withdraws and lists its unechoed actions; the hub stays on the relay and clears that phone's keys. Then an empty list with a route-less phone: the hub stays and rotates, until a refused write moves it.
   8. Two paying phones; one lapses on the stand's `/dev/entitlement` with the hub staying on the relay. Its offer and rows are gone, it reads `hub_on_relay` and leaves, the other phone rotates. It pays again 15 moved days later: keybox merged at the reader wait, request accepted, followed, new offer, ephemeral at the next rotation.
 - [ ] **Step 2: Run** `make relay-interop-kit-hub RELAY=<relay checkout>`. Expected: FAIL at the first new assertion until the steps above are wired, then PASS.
 - [ ] **Step 3: Run** `go test -tags interop ./internal/hub -run TestInterop_KitPhone` and `make kit-test FILTER=KitGoHubInteropTests` if the script's CI mode needs them separately. Expected: PASS.
@@ -762,7 +750,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
 
 **Files:**
 - Modify: `internal/hub/switcher/entitlement.go` (`queueLapse`), `internal/hub/switcher/departed.go` (new: `checkDeparted`, `ReaderLost`), the switcher's poll, its `Config` (`Slotted`, with G2's `ErrNotFresh`), `internal/hub/state/devices.go` if `ClearDeviceKX` needs a transaction form
-- Modify: `WatchtowerKit/Sources/WatchtowerSync/Secure/SecureTransport.swift` (the static exception), `Relay/TransportFollowerPolicy.swift` (a `dropEphemeral` command on an opened `hub_on_relay`; `withdrawUnechoed` on `slotLost`, and on `relayLapsed` with no other route; a new `FollowerState.hasOtherRoute`), `WatchtowerMobile/Sources/App/Hubs/TransportFollower.swift`, `SideMailboxReader.swift` and `RelayFeed`'s side read (the pending rule), `RelayUpgrade.swift` (`awaitReader`), `WatchtowerMobile/Sources/App/Relay/RelayAccountCenter.swift` (`.forbidden`, `SLOT_REMOVED`), `HubSession.swift` (`relaySlotLost`, the term, `waitsForKeybox`), `WatchtowerKit/Sources/WatchtowerSync/Relay/ActionOutbox+Ordered.swift`, `WatchtowerMobile/Sources/App/LinkStore.swift`
+- Modify: `WatchtowerKit/Sources/WatchtowerSync/Secure/SecureTransport.swift` (the static exception), `Relay/TransportFollowerPolicy.swift` (a `dropEphemeral` command on an opened `hub_on_relay`; `withdrawUnechoed` on `slotLost`, and on `relayLapsed` with no other route; a new `FollowerState.hasOtherRoute`), `WatchtowerMobile/Sources/App/Hubs/TransportFollower.swift`, `SideMailboxReader.swift` and `RelayFeed`'s side read (the pending rule), `RelayUpgrade.swift` (`awaitReader`), `WatchtowerMobile/Sources/App/Relay/RelayAccountCenter.swift` (`.forbidden`, `SLOT_REMOVED`), `HubSession.swift` (`relaySlotLost`, `waitsForKeybox`), `WatchtowerKit/Sources/WatchtowerSync/Relay/ActionOutbox+Ordered.swift`, `WatchtowerMobile/Sources/App/LinkStore.swift`
 - Test: `internal/hub/switcher/switcher_test.go`, `internal/hub/actions/device_record_test.go`, `SecureTransportTests.swift`, `TransportFollowerWiringTests.swift`, `RelayUpgradeWiringTests.swift`, `WatchtowerMobile/Tests/RelayAccountCenterTests.swift`; Kit twin in `WatchtowerHostedRelayTests/Sim/SimPhone.swift` runs the new command
 
 **Interfaces:**
@@ -778,14 +766,13 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `TestHubOnRelaySealedStaticAfterLapse`
   - `TestReaderLostAfterTwoReadsClearsKeys`, `TestOneMissingReadChangesNothing`, `TestAnUnansweredReadCountsAsNothing`, `TestReaderLostIgnoresAPhoneWithNoEphemeralState`, `TestReaderLostNeverMovesTheMac`, `TestReaderLostMarksARouteLessPhoneLapsed`
   - `TestDepartedUnlinkedPayerMacStaysKeysCleared`, `TestDepartedPhoneNoRouteMacStaysKeysCleared`, `TestDepartedRelayOnlyPhoneReturnsAndOffersAgain`
-  - `TestEmptyListHoldEndsAt14DaysRotatesOnceAndClears`, `TestHoldClockSurvivesRestart`, `TestRealPhoneAfterHoldEndRecovers`
+  - `TestReturnAfterAnEmptyListOpensTheKeybox`, `TestFirstRefusedWriteEndsG2sHold`, `TestLapseEndedByRenewalAcceptsANewOffer`
   - `TestDepartedPhoneActionNotAppliedOnceRowsAreCleared`, `TestAWithdrawnActionIsNeverApplied`, `TestReturnAfterDepartureSkipsTheGap`
-  - `TestEmptyListNoRouteMacStaysKeysHeldNoRotation`, `TestAllRoutesNobodyPaysG2MovesDepartedSkips`, `TestUnknownReadMovesAndClearsNothing`, `TestRestartRestartsTheDepartureCount`
+  - `TestEmptyListNoRouteMacStaysKeysHeld`, `TestAllRoutesNobodyPaysG2MovesDepartedSkips`, `TestUnknownReadMovesAndClearsNothing`, `TestRestartRestartsTheDepartureCount`
   - `TestNoPayerMoveClearsOffers`
   - `TestDeviceRecordInARetiredEpochDroppedRewriteApplies`, `TestFarewellInARetiredEpochLeavesTheRowAndStopsKeys`
   - `TestLapsedPhoneKeyboxHasNoKeysAndIsRepublished`
   - `TestOldAckInTheLapseWindowLeavesHubOnRelayStatic`: `queueLapse` with a failed read, an old `epoch_ack` read, then the read answers
-  - `TestNobodyPaysListNotEmptyEndsAt14Days`, `TestDay14RotationOnceAcrossRestart`
   - `TestRenewedPhoneGetsKeysInZoneThenOffersAgain`, `TestRenewedPhoneOffersAgain`
 
   Kit and phone:
@@ -795,16 +782,15 @@ Task 13, Task 0 ─ Task 17 (PR C)
   - `testAResendFromInTheICloudMailboxIsCoveredByTheFollow`
   - `testRelayOnlyLapseWithdrawsAndLists`: reason `.refused`, route stays relay, keys kept
   - `testSlotLostWithASubscriptionWithdrawsAndLists`, `testSlotLostWithARouteWithdrawsMovesAndLists`, `testARefusedDeleteKeepsTheRowSent`, `testAnEchoMetOnWithdrawalIsAppliedNotListed`
-  - `testAPhoneWithNoKeySourceDoesNotParkAgain`: lapse, then a record above the newest epoch, past the cap: no parked mark, no row; `testAnAnsweredSlotAllowsParkingAgain`
-  - `testRelayOnlyKeysEraseAt21DaysWithoutAMerge`, `testTheTermRunsAtBootAndForeground`, `testAnAnsweredSlotStopsTheTerm`, `testAKeyboxAfterTheTermOpensAndRestoresTheLink`, `testARoutedLinkHasNoTerm`, `testNoOfferWhileRefused`
+  - `testAPhoneWithNoKeySourceDoesNotParkAgain`: lapse, then a record above the newest epoch, past the cap: no parked mark, no row, no refetch; `testAnAnsweredSlotAllowsParkingAgain`
   - `testForbiddenWithTheMacGoneIsSlotLost`, `testForbiddenWithTheMacInASlotDoesNothing`, `testForbiddenWithAFailedReadDoesNothing`
   - `testALapseClearsTheParkedRow`, for `relayLapsed`, `withoutHub` and `slotLost`
   - `testRelayLapsedQueuesTheRequestAndKeepsKeys`, `testSlotLostKeepsKeys`, `testHubOnRelayDropsEphemeral`; `testAPlainFollowToICloudKeepsStoredPairs`
   - `testSlotLostThenSlotBackBeforeTheHubActsKeepsTheLink`: the keybox sealed to the offer still opens, keys intact
   - `testAPhoneBackOnICloudWithTheHubOnRelayStaysStatic`
   - `testAwaitReaderMergesTheKeyboxBeforeTheRequest`, `testAwaitReaderWithNoKeysYetKeepsWaiting`, `testAwaitReaderLimitStillEndsInReaderNotConfirmed`
-- [ ] **Step 2: Run** `go test ./internal/hub/switcher ./internal/hub/link ./internal/hub/actions -run 'Lapse|ReaderLost|Renewed|OneMissing|Unanswered|NoPayer|OldAck|Day14|EndsAt14|Departed|EmptyList|HoldClock|RealPhone|ReturnAfter|AllRoutes|UnknownRead|RestartRestarts|HubOnRelay|RotationAfter|DeviceRecord|Farewell'`, `make kit-test FILTER='SecureTransportTests|TransportFollowerPolicyTests|RelaySimSwitchTwins'`, `make mobile-test SIM='<yours>' MOBILE_FILTER='TransportFollowerWiringTests|RelayUpgradeWiringTests|RelayAccountCenterTests|EphemeralRotationWiringTests'`. Expected: FAIL.
-- [ ] **Step 3: Implement** as "Losing and regaining reader status" states. The clear sits in `queueLapse`, before any read, so an undecided lapse has it too and a retry finds nothing to clear, because `SetKXOffer` refuses throughout. The outcomes table and "The end of the hold" are the specification of `checkDeparted`. The two-read rule is in memory, like G2's: a restart starts counting again, which only delays. If `fingerprint` does not have ask #1072's rule at the re-check, report it; do not edit G2's check here.
+- [ ] **Step 2: Run** `go test ./internal/hub/switcher ./internal/hub/link ./internal/hub/actions -run 'Lapse|ReaderLost|Renewed|OneMissing|Unanswered|NoPayer|OldAck|FirstRefused|Withdrawn|Departed|EmptyList|ReturnAfter|AllRoutes|UnknownRead|RestartRestarts|HubOnRelay|RotationAfter|DeviceRecord|Farewell'`, `make kit-test FILTER='SecureTransportTests|TransportFollowerPolicyTests|ActionOutboxOrderedTests|RelaySimSwitchTwins'`, `make mobile-test SIM='<yours>' MOBILE_FILTER='TransportFollowerWiringTests|RelayUpgradeWiringTests|RelayAccountCenterTests|EphemeralRotationWiringTests'`. Expected: FAIL.
+- [ ] **Step 3: Implement** as "Losing and regaining reader status" states. The clear sits in `queueLapse`, before any read, so an undecided lapse has it too and a retry finds nothing to clear, because `SetKXOffer` refuses throughout. The outcomes table is the specification of `checkDeparted`. The two-read rule is in memory, like G2's: a restart starts counting again, which only delays. If `fingerprint` does not have ask #1072's rule at the re-check, report it; do not edit G2's check here.
 - [ ] **Step 4: Run** Step 2, then `make lint-diff` and `make lint-swift`. Expected: PASS, no new issues.
 - [ ] **Step 5: Commit.** `fix: a phone that stops being a reader leaves cleanly and can come back (#1248)`
 
@@ -818,7 +804,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
 
 **Interfaces:** `hub status --json` adds `epoch`, `epoch_age_days`; `hub phones --json` adds `keys` = `"ephemeral"|"static"` per phone (a relay-key row in the current epoch). No key material; no names beyond what these verbs already print.
 
-- [ ] **Step 1: Failing tests.** `TestHubPhonesJSONKeysPinned`, `TestHubStatusShowsEpochAge`, `TestStuckRotationLogsOncePerDay`: a relay hub, not held, epoch older than 14 days.
+- [ ] **Step 1: Failing tests.** `TestHubPhonesJSONKeysPinned`, `TestHubStatusShowsEpochAge`, `TestStuckRotationLogsOncePerDay`: a running relay hub, epoch older than 14 days.
 - [ ] **Step 2: Run** `go test ./cmd -run 'HubPhones|HubStatus'` and `go test ./internal/hub -run StuckRotation`. Expected: FAIL.
 - [ ] **Step 3: Implement** the additive keys and the log line.
 - [ ] **Step 4: Run** Step 2. Expected: PASS.
@@ -833,9 +819,9 @@ Task 13, Task 0 ─ Task 17 (PR C)
 - Create: `WatchtowerKit/Sources/WatchtowerHostedRelay/Transport/RelayTrafficMeter.swift`
 - Test: `WatchtowerKit/Tests/WatchtowerHostedRelayTests/HostedRelayTransportTests.swift`
 
-**Interfaces:** `RelayTrafficMeter`, a counter of bytes per `changes` page and per download and of `fetchForPush` calls, compiled only under `#if DEBUG`. It logs one `relay traffic: pages N, bytes B, downloads D, download bytes E, wakes W` line per pass, numbers only, at notice level.
+**Interfaces:** `RelayTrafficMeter`, a counter of bytes per `changes` page and per download and of `fetchForPush` calls, compiled only under `#if DEBUG`. It logs one `relay traffic: pages N, bytes B, downloads D, download bytes E, wakes W` line per pass, numbers only, at notice level. A parked or stopped feed adds nothing to it, which `testAStoppedFeedAddsNoPages` pins.
 
-- [ ] **Step 1: Failing tests.** `testTheMeterCountsPagesDownloadsAndWakes` over `FakeHostedRelay`; `testTheMeterLineHoldsNumbersOnly`.
+- [ ] **Step 1: Failing tests.** `testTheMeterCountsPagesDownloadsAndWakes` over `FakeHostedRelay`; `testTheMeterLineHoldsNumbersOnly`; `testAStoppedFeedAddsNoPages`.
 - [ ] **Step 2: Run** `make kit-test FILTER=HostedRelayTransportTests`. Expected: FAIL.
 - [ ] **Step 3: Implement** behind `#if DEBUG`, so a Release build has no meter.
 - [ ] **Step 4: Run** Step 2. Expected: PASS. `make lint-swift`.
@@ -851,7 +837,7 @@ Task 13, Task 0 ─ Task 17 (PR C)
 
 **Interfaces:**
 - Consumes: `relay_feed_parked_since` in replica meta (Task 8), `ReplicaStore.outboxCounts`, which gains `sent`; the hub's display name.
-- Produces: `NowOutboxRows.parked: NowParkedRow?` with `title`, `detail`, and a `ToneUse` with `.secondary`, `.info`, never orange. The strings live in the model, for the hub on screen, and must be true whether the Mac is closed, online with its keybox refused (F21), or has cleared this phone (F26). S58: "Waiting for new keys from <Mac>", under it "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the Mac." ("1 action has"; the first two sentences go with none sent.) A phone with no key source never shows it (Task 13's `waitsForKeybox`), so S58's advice is always worth following.
+- Produces: `NowOutboxRows.parked: NowParkedRow?` with `title`, `detail`, and a `ToneUse` with `.secondary`, `.info`, never orange. The strings live in the model, for the hub on screen, and must be true whether the Mac is closed, online with its keybox refused (F21), or has cleared this phone (F26). S58: "Waiting for new keys from <Mac>", under it "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the Mac." ("1 action has"; the first two sentences go with none sent.) A phone with no key source never shows it (Task 13's `waitsForKeybox`: its feed stops with no mark), so S58's advice is always worth following.
 
 - [ ] **Step 1: Failing tests.** `testNowShowsTheParkedRowWithSentCount`, with both strings exact and the Mac's name; `testOneSentActionReadsSingular`; `testNoSentActionsOmitsTheCountSentences`; `testTwoMacsEachNameTheirOwn`; `testTheRowGoesOnAMerge`; `testNoParkedRowWhileReplayingUnderTheCap`; `testParkedRowUsesNoOrange` beside `OrangeToneTests`; `testParkedAndWaitingToSendShowTogether`. Screenshot frame S58.
 - [ ] **Step 2: Run** `make mobile-test SIM='<yours>' MOBILE_FILTER=NowWiringTests`. Expected: FAIL.
@@ -859,18 +845,18 @@ Task 13, Task 0 ─ Task 17 (PR C)
 - [ ] **Step 4: Run** Step 2, then `make mobile-shots SHOTS_ONLY=relay-phase5 SIM='<yours>'` and compare with the mockup. `make lint-swift`. Expected: PASS.
 - [ ] **Step 5: Commit.** `feat: Now says when actions wait for the Mac's new keys (#1248)`
 
-### Task 17: The left-behind phone's banner
+### Task 17: The left-behind phone's banner and the term
 
 **Depends on:** Task 13; Task 0, seen by the owner
 
 **Files:**
-- Modify: `WatchtowerMobile/Sources/App/LinkStore.swift` (`relayLinkGone`, an optional key with its cause), `WatchtowerKit/Sources/WatchtowerSync/Relay/TransportFollowerPolicy.swift` (a command, on `slotLost`, `switched` or `marker` toward iCloud with no other route), `WatchtowerMobile/Sources/App/Hubs/TransportFollower.swift`, `WatchtowerMobile/Sources/Features/Now/RelayBannerModel.swift`, `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (S59). The banner is the plain, calm card of ask #1040, not amber
-- Test: `WatchtowerMobile/Tests/RelayBannerModelTests.swift`, `TransportFollowerWiringTests.swift`
+- Modify: `WatchtowerMobile/Sources/App/LinkStore.swift` (`relayLinkGone`, an optional key with its cause), `WatchtowerKit/Sources/WatchtowerSync/Relay/TransportFollowerPolicy.swift` (a command, on `slotLost`, `switched` or `marker` toward iCloud with no other route), `WatchtowerMobile/Sources/App/Hubs/TransportFollower.swift`, `WatchtowerMobile/Sources/Features/Now/RelayBannerModel.swift`, `WatchtowerMobile/Sources/Features/Onboarding/LinkNotice.swift`, `LinkingViewModel.swift` (`endLink` at the term), `WatchtowerMobile/Sources/App/Hubs/HubSession.swift` (the check at boot and foreground), `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (S59, S60). The banner is the plain, calm card of ask #1040, not amber
+- Test: `WatchtowerMobile/Tests/RelayBannerModelTests.swift`, `TransportFollowerWiringTests.swift`, `LinkingViewModelTests.swift`
 
-**Interfaces:** `FollowerCommand.markRelayLinkGone(cause)`, with `withdrawUnechoed`; `RelayBannerModel` takes `relayLinkGone`, ahead of `needsRelay`. S59's string lives in the model. On a move read it also sets `relayRefusedSince` (Task 13).
+**Interfaces:** `FollowerCommand.markRelayLinkGone(cause)`, with `withdrawUnechoed`; `RelayBannerModel` takes `relayLinkGone`, ahead of `needsRelay`. `LinkNotice.relayEnded(macName:)`. S59's and the notice's strings live in the model. On a move read it also sets `relayRefusedSince` (Task 13).
 
-- [ ] **Step 1: Failing tests.** `testLinkGoneBeatsNeedsRelayAndSubscribe`, with the exact string and **Forget This Mac**; `testAPayingPhoneWithItsSlotGoneShowsLinkGone`; `testAMarkerTowardICloudOnARelayOnlyLinkDoesNotMoveTheRoute`; `testAMoveReadOnARelayOnlyLinkListsUnechoed`, for `switched` and the marker, a move made by another phone; `testForgetWorksWhenTheRelayRefusesTheFarewell`: the row and local data go, the unsent farewell and `remove_slot` retry at launch and block nothing; `testLinkGoneBannerUsesNoOrange` beside `OrangeToneTests`; `testAnEchoOpenedAgainClearsLinkGone`; `testAnAnsweredSlotClearsLinkGoneOfCauseSlotOnly`; `testAKeyboxMergeClearsLinkGone`; `testAMarkerTowardTheRelayClearsMacMoved`; `testARelinkStartsWithoutLinkGone`; `testLapsedPastTheReadWindowKeepsNeedsRelay`.
-- [ ] **Step 2: Run** `make mobile-test SIM='<yours>' MOBILE_FILTER='RelayBannerModelTests|TransportFollowerWiringTests'` and `make kit-test FILTER=TransportFollowerPolicyTests`. Expected: FAIL.
+- [ ] **Step 1: Failing tests.** `testLinkGoneBeatsNeedsRelayAndSubscribe`, with the exact string and **Forget This Mac**; `testAPayingPhoneWithItsSlotGoneShowsLinkGone`; `testAMarkerTowardICloudOnARelayOnlyLinkDoesNotMoveTheRoute`; `testAMoveReadOnARelayOnlyLinkListsUnechoed`, for `switched` and the marker, a move made by another phone; `testForgetWorksWhenTheRelayRefusesTheFarewell`: the row and local data go, the unsent farewell and `remove_slot` retry at launch and block nothing; `testLinkGoneBannerUsesNoOrange` beside `OrangeToneTests`; `testAnOldEchoClearsNothing`; `testTheSwitchNoticesKeyboxIsNotMergedOnARelayOnlyLink`; `testRelayOnlyLinkEndsAt21DaysWithoutAMerge`, `testTheTermRunsAtBootAndForeground`, `testAnAnsweredSlotStopsTheTerm`, `testAStoredKeyboxDoesNotStopTheTerm`: at the next unlock, an unchanged re-merge clears nothing; `testARoutedLinkHasNoTerm`; `testTheNoticeNamesTheMac`; `testAnAnsweredSlotClearsLinkGoneOfCauseSlotOnly`; `testARaisingMergeClearsLinkGoneOfCauseSlotOnly`; `testAStaleKeyboxDoesNotClearMacMoved`; `testAMarkerTowardTheRelayClearsMacMoved`; `testARelinkStartsWithoutLinkGone`; `testLapsedPastTheReadWindowKeepsNeedsRelay`.
+- [ ] **Step 2: Run** `make mobile-test SIM='<yours>' MOBILE_FILTER='RelayBannerModelTests|TransportFollowerWiringTests|LinkingViewModelTests'` and `make kit-test FILTER=TransportFollowerPolicyTests`, and `go test ./internal/hub/link -run RelinkAfterTheTerm`. Expected: FAIL.
 - [ ] **Step 3: Implement** in the model, tones only, one banner at a time as Phase 4's order says.
 - [ ] **Step 4: Run** Step 2, then `make mobile-shots SHOTS_ONLY=relay-phase5 SIM='<yours>'`. `make lint-swift`. Expected: PASS.
 - [ ] **Step 5: Commit.** `feat: a phone left behind by a move says it needs a new link (#1248)`
@@ -892,6 +878,7 @@ Never a dev CLI on the live database. **The numbers go to the ask's answer only,
 
 - **Hub upload:** the Task 6 log line, `complete` only.
 - **Phone traffic:** Task 15's meter line, read from Console by the owner or controller.
+- **A refused phone:** the same line stays flat while its feed is stopped.
 - **Wakes:** with the phone locked and the app in the background, the same line's `wakes`, per rotation. The relay coalesces silent pushes per device into one per 2 s window (`COALESCE_MS`), and a republish lasting minutes can ask for many; APNs may throttle them further, so a device count is the only real figure.
 
 **Thresholds, each checkable from those three readings:**
@@ -941,7 +928,8 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | Every rotation re-sends the window, transcript assets included (at most 200 × 20 MiB). Measured on staging; launch on a pass or the owner's ruling | ask #1077 |
 | No keys in the relay data zone for a non-reader or a lapsed phone; an unknown reader list keeps keys, for availability at startup. Limit: a free phone's `transport_switched` at the switch to the relay carries the first, static, relay epoch's keybox, in iCloud | ask #1077 |
 | Relay alert pushes are sealed in the epoch the phone acked while it is retained. Limit: a phone not unlocked and merged for over 14 days gets the content-free notification | ask #1077 |
-| A held hub, or one with no reader on an answered list, does not rotate on the relay; the epoch's calendar life stretches with nothing sent under it. A CloudKit hub stays as it is | ask #1077 |
+| Rotation does not stop for a held or unread hub on the relay: it is local, the publish waits, and old keys retire on the usual rule. **Replaces ask #1077's "a held hub does not rotate" and "the empty-list hold ends at 14 days" and ask #1081's "no rotation when nobody pays": ask #1087 made that state brief, so `relay_serving_nobody_since`, its clock and the day-14 rotation are gone.** A CloudKit hub stays as it is | decided by the agent on the controller's instruction after ask #1087; for the owner to confirm |
+| With nobody paying and a phone without a route, a refused write or the relay's signal moves the Mac; G2's hold lasts only until then. Refines asks #1072, #1075 | ask #1087 |
 | Two limits with no screen: a hub closed over 7 days right after a partial republish leaves those rows unreadable until it returns; a keybox naming a key the phone lost (only a restored sidecar) leaves it stale until a re-link, logged only | ask #1077 |
 | The first week after a link, a switch or a renewal is static | ask #1077 |
 | No user-facing number for exposure. Any text says keys change about weekly while the Mac runs and a stolen phone can open what it still holds, with no figure | ask #1077 |
@@ -954,9 +942,7 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | The relay's own expiry signal with a failed account read: that phone's keys are cleared at the signal, before the read. A wrong signal costs it one static week | ask #1081 |
 | A relay-only phone refused by the relay: its sent and queued actions go to Not delivered, with today's text | ask #1081 |
 | The phone left behind after the Mac moved to iCloud gets banner S59, "<Mac> can't be reached over Relay any more. Link this iPhone to it again." with **Forget This Mac**, when it can know; S58b is dropped. Limit: a lapsed phone past its read window can't know, keeps **Subscribe**, and may pay and still need a new link | ask #1081 |
-| No rotation when an answered read shows nobody pays, ending at 14 days like the empty-list hold. The hub knows from that read, not from refusals | ask #1081 |
 | A phone out of its slot while its subscription stands reads the account and, with its Mac in no slot, acts at once (`slotLost`): with a route it moves to iCloud without waiting for `hub_on_relay`, without one it lists its actions and shows S59 | ask #1081 |
-| The empty-list hold ends at 14 days with one rotation and a clear. A relay fault that long costs each phone on the hub a static week and possibly one unanswered action | ask #1077 |
 | `ReaderLost` clears a gone phone's offer and rows and marks it lapsed, whoever pays, after two reads of a non-empty list. A wrong answer repeated 5 minutes apart pushes a real phone out: with a route through `hub_on_relay`, without one until its return | ask #1077 |
 | The hub's age depends on the transport only; the earlier "no offering phone stays at 90 days" gate is dropped. A hub with only static phones pays the republish with no gain, which at launch lasts minutes | ask #1077 |
 | Relay links rotate; CloudKit keeps 90 days and static keys | relay design §7 item 4; relay client spec §1 |
@@ -975,12 +961,14 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | "Someone pays" means a paying phone holding this Mac in its slots, linked or not | ask #1079 |
 | A phone's own `entitlement_expired` request on an unreadable account moves the Mac at once, by the relay's rule 10. The relay's own signal with a failed read waits and retries | ask #1079 |
 | That phone's keys are cleared on its own request, whether or not the account can be read: `queueLapse` is the one entry for both signals | decided by the agent, an inference; ask #1079's answer speaks only of the Mac's move |
-| G2's self-move keeps ask #1072's rule: nobody paying and a phone with no route, the Mac stays, serving nobody | ask #1075 |
+| G2's self-move keeps ask #1072's rule: nobody paying and a phone with no route, it does not move the Mac by itself | ask #1075 |
 | The hub asks a gap again after 10 minutes; a late copy of a skipped action gets `expired` (#1498) | ask #1073 |
 | #1497's window is an accepted limit | ask #1060 |
-| The phone erases no key on a refusal or `slotLost`, only on an opened `hub_on_relay`, a follow, or at the term below; the keybox alone says each epoch's keys | accepted by the owner with a term, ask #1082 |
-| A relay-only phone's keys have a term of about 21 days from the first refusal; then every key of the link goes, without a merge | ask #1082; the exact mechanics by the agent |
-| A phone with no key source does not park or show S58 | ask #1082's comment; mechanism by the agent |
+| The phone erases no key on a refusal or `slotLost`, only on an opened `hub_on_relay` or a follow, or with the link at the term below; the keybox alone says each epoch's keys | accepted by the owner with a term, ask #1082 |
+| A relay-only phone's keys have a term of about 21 days from the first refusal | ask #1082 |
+| At the term all link keys go | ask #1086 |
+| The term is carried out by ending the link through today's `endLink`: the replica and the row go too, recordings stay, and the person links again, even if they paid. Replaces a separate erased-keys state | decided by the agent after ask #1085; **for the owner to confirm** |
+| A phone with no key source does not park or show S58; its feed stops until a merge, a foreground or a launch | ask #1082's comment; mechanism by the agent |
 | Before listing, a written action is withdrawn through today's `withdrawUnanswered`, so a Retry cannot run it twice | decided by the agent after reading `retry`; ask #1082's comment |
 | An offer is refused while the phone is in `lapse_pending` | decided by the agent, review of ask #1080 |
 | Offer on `epoch_ack`, no new control kind, no grant capability field | decided by the agent |
@@ -992,11 +980,11 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | Age rotation skips a running switch | decided by the agent |
 | The reader transition: `relay_lapsed_at` as the durable signal, keys static after it; `ReaderLost` never moves the Mac | decided by the agent, rounds 1 and 3; its keys in ask #1077 |
 | No Desktop change; a content-free log line per rotation | decided by the agent |
-| No phone screen or text but the parked row and the banner of ask #1081 | decided by the agent; relay design §7 item 5 |
+| No phone screen or text but the parked row, the banner of ask #1081 and the term's notice | decided by the agent; relay design §7 item 5 |
 
 ## Still waiting on later owner steps
 
 - **The numeric thresholds in "Measuring the cost."** The owner sets them before the measuring run; the controller asks.
-- **Frames S58 and S59.** Shown to the owner before Tasks 16 and 17 (Task 0).
+- **Frames S58, S59 and S60.** Shown to the owner before Tasks 16 and 17 (Task 0).
 
 **Contracts:** no `PROJ-*` change is proposed. `docs/inventory/` has no entry on epochs or rotation. PROJ-16's dated note ("every relay record is sealed") stays true. PROJ-21 says a prompt is answered "only by the owner's explicit Allow once or Deny, from a device allowed for it on the Mac, through the hook; the answer types nothing, allows one call, and never answers a prompt the Mac answered first". Rotation changes none of that: a resealed answer goes through the same device gate and compare-and-set (F30), and one whose key is gone becomes Not delivered, leaving the prompt on the Mac. Its guards do not change; if review reads it otherwise, it goes to the owner. Task 12 re-checks both. Guard `TestKeyring_RotatesAt90DaysOrSeqCap` keeps its assertions: it runs with no relay transport, on the 90-day path. The amended, non-guard Kit test is `epoch_ack`'s "never for an epoch at or below", which gains the same-epoch-new-offer case in Task 8. If review reads that as a contract, it goes to the owner.
