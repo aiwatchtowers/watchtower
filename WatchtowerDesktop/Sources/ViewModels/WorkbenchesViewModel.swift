@@ -426,6 +426,10 @@ final class WorkbenchesViewModel {
     var sessionWork: [Int64: SessionWorkSnapshot] = [:]
     /// `loadSessionWork`'s reads started per workbench: only the latest applies.
     @ObservationIgnored var sessionWorkReads: [Int64: Int] = [:]
+    /// Which lane worktree roots exist (a seam for tests; stat'ed off the main actor).
+    @ObservationIgnored var statLaneRoots: @Sendable (Set<String>) async -> Set<String> = { roots in
+        await WorkbenchesViewModel.existingLaneRoots(roots)
+    }
     /// The worktrees the last delete kept because work was in them
     /// (`keptWorktreesNotice`): a neutral line under the list, not an error,
     /// until the owner dismisses it or the next delete replaces it.
@@ -637,8 +641,6 @@ final class WorkbenchesViewModel {
             // A session started, stopped or began a run: whether its stored
             // cwd is trusted may have moved (board #565).
             sessionPlaces?.cwdsMayHaveChanged()
-            // A new run or a new lane worktree moves the row's lanes (#987).
-            self?.reloadSessionWork()
         }
         agentStates?.onRead = { [weak lineDelivery, weak sessionPlaces = self.sessionPlaces, weak agentStates] in
             lineDelivery?.statesRead()

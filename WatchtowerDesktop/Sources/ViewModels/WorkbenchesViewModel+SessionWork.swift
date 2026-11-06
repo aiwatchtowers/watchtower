@@ -23,7 +23,11 @@ struct SessionWorkSnapshot: Equatable {
 
 extension WorkbenchesViewModel {
     /// Reads workbench `projectID`'s session work links and stats their
-    /// worktree roots off the main actor. A failed read keeps the last
+    /// worktree roots off the main actor. Runs with the session list
+    /// (`loadSessions`), so the 30 s poll of the page on screen
+    /// (`refreshOnPoll` → `reload`) picks up a new lane, a new run and a
+    /// worktree removed while the sessions sit idle; one read per workbench
+    /// per tick, never per agent state change. A failed read keeps the last
     /// snapshot (logged): the line then shows the last known lanes. Only
     /// the latest read started applies, so an older one never undoes it.
     func loadSessionWork(projectID: Int64) async {
@@ -40,9 +44,7 @@ extension WorkbenchesViewModel {
                 return
             }
             let roots = Set(links.values.flatMap { $0.worktrees.map { SessionLanes.normalized($0.root) } })
-            let existing = await Task.detached(priority: .utility) {
-                Set(roots.filter { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0, isDirectory: true)) })
-            }.value
+            let existing = await statLaneRoots(roots)
             guard read == sessionWorkReads[projectID] else { return }
             sessionWork[projectID] = SessionWorkSnapshot(links: links, workbenchFolder: folder, existingRoots: existing)
         } catch {
@@ -51,11 +53,11 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// The session states changed (a run started or stopped, an agent moved):
-    /// every listed workbench's work links are read again.
-    func reloadSessionWork() {
-        for projectID in terminalSessions.keys {
-            Task { await loadSessionWork(projectID: projectID) }
-        }
+    /// Which of `roots` exist, stat'ed off the main actor (`statLaneRoots`'
+    /// default).
+    nonisolated static func existingLaneRoots(_ roots: Set<String>) async -> Set<String> {
+        await Task.detached(priority: .utility) {
+            Set(roots.filter { CodeRootPolicy.directoryExists(URL(fileURLWithPath: $0, isDirectory: true)) })
+        }.value
     }
 }
