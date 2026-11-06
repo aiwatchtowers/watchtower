@@ -24,7 +24,7 @@ import (
 
 const (
 	cxParent = "00000000-0000-0000-0000-00000000c0d1"
-	cxFork   = "00000000-0000-0000-0000-00000000c0d2"
+	cxFork   = "00000000-0000-0000-0000-00000000c0d0" // sorts before cxParent: a start tie would hand the fork the replayed rows
 	cxOther  = "00000000-0000-0000-0000-00000000c0d3"
 )
 
