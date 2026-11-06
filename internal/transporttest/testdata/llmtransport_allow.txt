@@ -4,26 +4,6 @@
 # "permanent:" entries stay (decoders, display names, URL/MCP schemes, path
 # conventions); every other entry names the task that removes it.
 
-cmd/ai.go | runAITest | "claude" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runAITest | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runAITest | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai.go | runConnectionProbe | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_routing_status.go | init | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_routing_status.go | init | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session.go | newSessionBackend | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai_session.go | newSessionBackend | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/ai_session.go | sessionPromptOptions | "codex" | 1 | A2: prompt options decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session.go | sessionPromptOptions | "ollama" | 1 | A2: prompt options decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session_gate.go | resolveClaudeAI | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session_routing.go | reserveConnectionsCapable | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session_routing.go | routedSessionBackend | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session_routing.go | routedSessionBackend | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/ai_session_routing.go | routedSessionBackend | "ollama" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/automations_backends.go | (*cliAgentRunner).Run | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/automations_backends.go | (*cliAgentRunner).routingRequest | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/automations_backends.go | (*cliAgentRunner).routingRequest | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/automations_backends.go | newAutomationAgentRunner | "claude" | 1 | A4: automation agent runner factory, moves into cmd/transport_wiring.go
-cmd/automations_backends.go | newAutomationAgentRunner | "codex" | 1 | A4: automation agent runner factory, moves into cmd/transport_wiring.go
 cmd/connections.go | requireSecretTransport | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | runConnectionsList | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections.go | runConnectionsOAuth | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
@@ -32,18 +12,10 @@ cmd/connections.go | validateHTTPURL | "http" | 1 | permanent: a Quick Connectio
 cmd/connections_import.go | importCandidateLine | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | importConnection | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/connections_import.go | runConnectionsImport | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
-cmd/generator.go | buildAIClient | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildAIClient | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildGenerator | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | buildGenerator | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/generator.go | codexEnvSkips | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
 cmd/generator.go | connectionServer | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
-cmd/generator.go | newQueryClient | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/generator.go | newQueryClient | assert *codex.Client | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/integrate_workbench.go | execCommandRunner | "claude" | 1 | permanent: resolves the claude binary for `claude mcp add` (install plumbing, no model call)
 cmd/terminal.go | terminalAgentHome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/tool_routing.go | (*toolRouteProvider).request | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-cmd/tool_routing.go | (*toolRouteProvider).request | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
 cmd/workbench_askguard.go | var workbenchAskGuardCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_askguard_stop.go | (*askGuardSession).hasStateHooks | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_brief.go | runWorkbenchBrief | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
@@ -61,8 +33,6 @@ cmd/workbench_session_probe.go | probeSession | agentkind.Codex | 1 | G5: codex 
 cmd/workbench_session_probe.go | sessionOutcome | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_state.go | recordAgentTurn | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 cmd/workbench_session_state.go | var workbenchSessionStateCmd | agentkind.Codex | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
-cmd/workbench_spec_review.go | (*specReviewCLIAgent).Review | "codex" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-cmd/workbench_spec_review.go | (*specReviewCLIAgent).Review | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 cmd/workbench_worktree.go | installWorktreeIntegration | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Kind.DisplayName | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
@@ -70,16 +40,10 @@ internal/agentkind/kind.go | Kind.Label | agentkind.Claude | 1 | permanent: the 
 internal/agentkind/kind.go | Kind.Label | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Parse | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/agentkind/kind.go | Parse | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
-internal/chat/claudeai.go | ClaudeAIAvailability | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/chat/prompt_sections.go | writeProjectBinaryFiles | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/config/ai_routing.go | AIConfig.Validate | "ollama" | 2 | A2: fallback pair rule decided from the provider name; reads providers.Capabilities (reserve peer) instead
 internal/config/ai_routing.go | KnownAIProvider | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/config/ai_routing.go | KnownAIProvider | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/config/ai_routing.go | KnownAIProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/confluenceedit/xhtml.go | safeHref | "http" | 1 | permanent: URL scheme check, not an LLM transport
-internal/daemon/coach.go | var coachGeneratorFactory | "claude" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
-internal/daemon/coach.go | var coachGeneratorFactory | "codex" | 2 | A4: client factory switch, moves into cmd/transport_wiring.go
-internal/daemon/coach.go | var coachGeneratorFactory | "ollama" | 1 | A4: client factory switch, moves into cmd/transport_wiring.go
 internal/db/chat_routing.go | (*DB).SetChatRouting | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/db/chat_routing.go | (*DB).SetChatRouting | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
@@ -94,17 +58,9 @@ internal/mcpoauth/discovery.go | requireSecure | "http" | 1 | permanent: URL sch
 internal/media/linkrule/linkrule.go | NormalizeURL | "http" | 2 | permanent: URL scheme check, not an LLM transport
 internal/media/webfetch/fetch.go | webScheme | "http" | 1 | permanent: URL scheme check, not an LLM transport
 internal/policy/policy.go | Policy.ConnectionAllowed | "http" | 1 | permanent: a Quick Connection's MCP transport kind ("http" vs "stdio"), not an LLM transport
-internal/providerhealth/store.go | validScope | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/providerhealth/store.go | validScope | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/providerrouting/router.go | (*Router).Run | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/providerrouting/router.go | (*Router).Run | "codex" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/providerrouting/router.go | (*Router).Run | "ollama" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
 internal/providerrouting/router.go | configProvider | "claude" | 1 | permanent: validates a stored provider id against the known set (config decoder)
 internal/providerrouting/router.go | configProvider | "codex" | 1 | permanent: validates a stored provider id against the known set (config decoder)
 internal/providerrouting/router.go | configProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config decoder)
-internal/providerrouting/router.go | modelQuota | "claude" | 1 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/providerrouting/router.go | validPair | "claude" | 2 | A2: capability decided from the provider name; reads providers.Capabilities instead
-internal/providerrouting/router.go | validPair | "codex" | 2 | A2: capability decided from the provider name; reads providers.Capabilities instead
 internal/sessioncleanup/deps.go | protectedExe | "claude" | 1 | permanent: process names protected from cleanup (executable path convention)
 internal/sessioncleanup/deps.go | protectedExe | "codex" | 1 | permanent: process names protected from cleanup (executable path convention)
 internal/sessionfeed/read.go | ReadSession | agentkind.Claude | 1 | A5: Workbench agent kind branch, moves behind the internal/sessionagent adapter

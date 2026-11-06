@@ -13,11 +13,9 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
 )
-
-// Runtime B is wired like claude and codex.
-var _ externalMCPConfigurable = (*agentloop.Client)(nil)
 
 // seedQuickConnection writes one enabled stdio connection with a read and a
 // write tool and its secret, in cfg's workspace database.
@@ -73,7 +71,7 @@ func TestAIQuery_RuntimeBMountsQuickConnectionsExceptEditor(t *testing.T) {
 	aiFlagTools, aiFlagModel = "chat", "llama"
 	servers := func(surface string) []ai.ExternalMCPServer {
 		aiFlagSurface = surface
-		client, cleanup, err := newQueryClient(cfg, dbPath)
+		client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 		require.NoError(t, err)
 		defer cleanup()
 		loop, ok := client.(*agentloop.Client)

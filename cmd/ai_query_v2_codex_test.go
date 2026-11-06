@@ -16,8 +16,9 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
-	"watchtower/internal/codex"
+	"watchtower/internal/config"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/providers/transport"
 )
 
 // v2CodexStub prints one codex chat turn: a preamble, an MCP call, the
@@ -58,8 +59,8 @@ func v2Events(t *testing.T, p ai.Provider) []chat.Event {
 // `ai query --events v2` on codex renders the turn like the chat session:
 // the tool call as a step, the preamble as its own paragraph, the usage.
 func TestAIQueryV2_CodexGetsChatEvents(t *testing.T) {
-	c := codex.NewClient("gpt-x", "", v2CodexStub(t))
-	enableChatEvents(c)
+	c := buildQuerier(&config.Config{CodexPath: v2CodexStub(t), AI: config.AIConfig{Provider: "codex"}},
+		transport.Options{Model: "gpt-x", ToolEvents: true})
 	evs := v2Events(t, c)
 	var types []string
 	var text strings.Builder
@@ -75,12 +76,21 @@ func TestAIQueryV2_CodexGetsChatEvents(t *testing.T) {
 	assert.Equal(t, 7, evs[5].TokensOut)
 }
 
-// The tool router hands the chat events to the leaf it builds.
+// The tool router builds its leaf with the query's options: the chat events
+// reach the leaf.
 func TestToolRouteProvider_ForwardsChatEvents(t *testing.T) {
-	leaf := codex.NewClient("gpt-x", "", v2CodexStub(t))
-	p := &toolRouteProvider{}
-	enableChatEvents(p)
-	require.NoError(t, p.configureLeaf("codex", leaf))
+	cfg := &config.Config{CodexPath: v2CodexStub(t), AI: config.AIConfig{Provider: "codex"}}
+	cfg.AI.Fallback.Enabled, cfg.AI.Fallback.Provider = true, "claude"
+	client, cleanup, err := newQueryClient(cfg, "", transport.Options{ToolEvents: true})
+	require.NoError(t, err)
+	t.Cleanup(cleanup)
+	p, ok := client.(*toolRouteProvider)
+	require.True(t, ok, "%T", client)
+	actual := *cfg
+	actual.AI.Fallback.Enabled = false
+	leaf, cleanupLeaf, err := p.build(&actual)
+	require.NoError(t, err)
+	t.Cleanup(cleanupLeaf)
 	evs := v2Events(t, leaf)
 	var tools int
 	for _, e := range evs {
@@ -94,7 +104,7 @@ func TestToolRouteProvider_ForwardsChatEvents(t *testing.T) {
 // `ai query --events v2` through the real CLI entry, on codex directly and
 // through the tool router (fallback on): the turn's tool call reaches stdout
 // as tool_start/tool_end and its usage as a usage event. Guards the wiring
-// in runAIQuery (enableChatEvents) and in the router's run (configureLeaf),
+// in runAIQuery (transport.Options.ToolEvents) and in the router's leaf build,
 // which the tests above call by hand.
 func TestAIQueryV2_CodexChatEventsThroughTheCLI(t *testing.T) {
 	for name, fallback := range map[string]string{

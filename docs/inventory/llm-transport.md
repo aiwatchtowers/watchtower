@@ -9,7 +9,7 @@
 > that would break a guard test or grow a baseline must be raised as a
 > question before touching code.
 
-**Module:** every LLM consumer — `cmd/`, `internal/` outside the adapters, `WatchtowerDesktop/Sources`, `WatchtowerKit/Sources`. Adapters (spec §1): `internal/ai`, `internal/digest`, `internal/codex`, `internal/ollama`, `internal/agentloop`, `internal/providers`, `internal/sessionagent`, `internal/chat/{claude_backend,claude_translate,attachments}.go`, `cmd/transport_wiring.go`, plus `internal/transporttest` (the contract suite's fakes name every transport by design). `internal/sessionagent` and `cmd/transport_wiring.go` are planned (A5, A4); the Go guard fails on a listed adapter path that does not exist unless it is planned, and on a planned one that now exists.
+**Module:** every LLM consumer — `cmd/`, `internal/` outside the adapters, `WatchtowerDesktop/Sources`, `WatchtowerKit/Sources`. Adapters (spec §1): `internal/ai`, `internal/digest`, `internal/codex`, `internal/ollama`, `internal/agentloop`, `internal/providers` (with the client factory `internal/providers/transport`), `internal/sessionagent`, `internal/chat/{claude_backend,claude_translate,attachments}.go`, `cmd/transport_wiring.go`, plus `internal/transporttest` (the contract suite's fakes name every transport by design). `internal/sessionagent` is planned (A5); the Go guard fails on a listed adapter path that does not exist unless it is planned, and on a planned one that now exists.
 **Last full audit:** 2026-11-05
 
 ## LLMTRANSPORT-01 — A consumer decides by capability, never by transport identity
@@ -38,4 +38,6 @@
 
 ## Changelog
 
+- 2026-11-06 (board #979 A4, plan ask #519): the Go baseline shrinks by the 21 A4 entries; the client factory switches and the codex-only rules move into `internal/providers/transport` (generators and queriers built from an `Options` struct, read by cmd and the daemon's coach) and `cmd/transport_wiring.go` (chat backends, agent() children, the spec reviewer, the codex probe nonce, the Quick Connection launch environment), and `cmd/transport_wiring.go` leaves the planned adapter paths; no entry added.
+- 2026-11-06 (board #969 A2, plan ask #519): the Go baseline shrinks by the 23 A2 entries, now read from `providers.Capabilities`; three A2 entries whose name check is the codex adapter's (`runConnectionProbe`'s nonce, `reserveConnectionsCapable`'s env skips, `(*cliAgentRunner).Run`'s codex client) are retagged A4, which moves them into `cmd/transport_wiring.go` (spec §3.4); no entry added.
 - 2026-11-05: file created with LLMTRANSPORT-01 (spec `docs/superpowers/specs/2026-11-05-llm-transport-independence-design.md` §4.4, approved in ask #514; plan task A6, ask #519), with the full baseline of today's hits.

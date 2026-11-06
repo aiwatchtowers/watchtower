@@ -15,10 +15,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/chat"
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 )
 
 // readFolderFixture is a config whose claude is a stub that answers with its
@@ -157,13 +158,10 @@ func TestAIQueryReadFolder_AbsentKeepsTodaysRun(t *testing.T) {
 // read-only sandbox; ollama has no file tools at all, so its run is refused.
 func TestAIQueryReadFolder_ProviderWiring(t *testing.T) {
 	cfg := &config.Config{ActiveWorkspace: "test-ws", AI: config.AIConfig{Provider: "codex"}}
-	codexClient := newAIClientWithModel(cfg, "", "gpt-5.4")
-	_, ok := codexClient.(readFolderConfigurable)
-	assert.True(t, ok, "codex reads the folder with its own tools")
-	_, ok = newAIClientWithModel(&config.Config{AI: config.AIConfig{Provider: "claude"}}, "", "m").(readFolderConfigurable)
-	assert.True(t, ok, "claude reads the folder with its own tools")
-	_, ok = newAIClientWithModel(&config.Config{AI: config.AIConfig{Provider: "ollama"}}, "", "m").(readFolderConfigurable)
-	assert.False(t, ok, "ollama has no file tools: a read-folder run is refused (TestAIQuery_ReadFolderWithoutFileToolsIsRefused)")
+	codexClient := buildQuerier(cfg, transport.Options{Model: "gpt-5.4", ReadFolder: "/work"})
+	assert.Contains(t, codexClient.(*codex.Client).ArgsForTest("sys", "user"), "/work", "codex reads the folder with its own tools")
+	assert.True(t, providers.ByID("claude").Caps.ReadsFolder(), "claude reads the folder with its own tools")
+	assert.False(t, providers.ByID("ollama").Caps.ReadsFolder(), "ollama has no file tools: a read-folder run is refused (TestAIQuery_ReadFolderWithoutFileToolsIsRefused)")
 }
 
 // TestAIQuery_ReadFolderWithoutFileToolsIsRefused (L9): a provider with no
@@ -232,7 +230,7 @@ ai:
 // untyped retryable one.
 func TestAIQuery_ReadFolderRoutedLeafWithoutFileToolsIsRefused(t *testing.T) {
 	p := &toolRouteProvider{readFolder: t.TempDir()}
-	err := p.configureLeaf("ollama", ollama.NewClient("llama", ""))
+	err := p.checkLeaf("ollama")
 	var failure *providers.Failure
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, providers.Capability, failure.Category)

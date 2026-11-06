@@ -295,7 +295,7 @@ func TestBuildSystemPrompt_ProjectBlock(t *testing.T) {
 		got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
 		require.NoError(t, err)
 		assert.NotContains(t, got, "Attached to the first message", provider)
-		assert.Contains(t, got, "Not available in this session (images and PDFs need the Claude provider): arch.png", provider)
+		assert.Contains(t, got, "Not available in this session (project images and PDFs need a provider that reads both): arch.png", provider)
 	}
 }
 

@@ -170,7 +170,7 @@ func TestFakeCLI_GroupReaped(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, bins.claude)
 	cmd.Env = append(os.Environ(), "WT_FAKECLI_FIXTURE="+fixture, "WT_FAKECLI_LOG="+log)
-	reap := ai.ConfigureChild(cmd, true, ai.GroupKillGrace)
+	reap := ai.ConfigureChild(cmd)
 	defer reap()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

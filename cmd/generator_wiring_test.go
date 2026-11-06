@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
 )
 
@@ -91,13 +92,13 @@ func TestNewQueryClientOllamaToolWiring(t *testing.T) {
 	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
 
 	aiFlagTools = "chat"
-	client, cleanup, err := newQueryClient(cfg, dbPath)
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup()
 	assert.Equal(t, "*agentloop.Client", fmt.Sprintf("%T", client), "ollama + --tools chat gets the runtime-B loop")
 
 	aiFlagTools = ""
-	plain, cleanup2, err := newQueryClient(cfg, dbPath)
+	plain, cleanup2, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup2()
 	assert.Equal(t, "*ollama.Client", fmt.Sprintf("%T", plain), "ollama without tools stays the plain client")
@@ -134,7 +135,7 @@ func TestNewQueryClientWiresEnabledExternalConnections(t *testing.T) {
 	aiFlagModel = ""
 	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
 
-	client, cleanup, err := newQueryClient(cfg, dbPath)
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup()
 
@@ -174,7 +175,7 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 	aiFlagTools, aiFlagModel = "chat", ""
 	servers := func(surface string) []ai.ExternalMCPServer {
 		aiFlagSurface = surface
-		client, cleanup, err := newQueryClient(cfg, dbPath)
+		client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 		require.NoError(t, err)
 		defer cleanup()
 		c, ok := client.(*ai.Client)
@@ -192,7 +193,7 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 	cfg.AI.Provider = "codex"
 	override := func(surface string) string {
 		aiFlagSurface = surface
-		client, cleanup, err := newQueryClient(cfg, dbPath)
+		client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 		require.NoError(t, err)
 		defer cleanup()
 		c, ok := client.(*codex.Client)
@@ -232,7 +233,7 @@ func TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully(t *test
 	aiFlagModel = ""
 	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
 
-	client, cleanup, err := newQueryClient(cfg, dbPath)
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup()
 

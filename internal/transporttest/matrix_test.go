@@ -28,10 +28,11 @@ var update = flag.Bool("update", false, "rewrite testdata/matrix.golden from tod
 const goldenPath = "testdata/matrix.golden"
 
 // openGaps are the open parity gaps of the spec's §2.2. Closed: L2 (#957),
-// L12 (G1b), L1 (G1), L7-L10 (G3), S7-S8 (G6), S3-S5 and S10 (G7). L13 was
-// found by this suite, as L12 was. A gap:<id> cell must name one of them.
+// L12 (G1b), L1 (G1), L3-L4 and L13 (G2), L7-L10 (G3), S7-S8 (G6), S3-S5
+// and S10 (G7). L12 and L13 were found by this suite. A gap:<id> cell must
+// name one of them.
 var openGaps = map[string]bool{
-	"L3": true, "L4": true, "L5": true, "L6": true, "L11": true, "L13": true,
+	"L5": true, "L6": true, "L11": true,
 	"S1": true, "S2": true, "S6": true, "S9": true,
 }
 
@@ -147,12 +148,10 @@ func TestTransportSuite(t *testing.T) {
 // flips its cells to pass; a fix that only changes the failure updates the
 // signature.
 var gapSignatures = map[string]*regexp.Regexp{
-	"L3":  regexp.MustCompile(`a response past the cap ran|no turn cap in force`),
-	"L5":  regexp.MustCompile(`web search`),
-	"L6":  regexp.MustCompile(`images and PDFs need the Claude provider`),
-	"L13": regexp.MustCompile(`without a budget failure`),
-	"S1":  regexp.MustCompile(`no pull signal`),
-	"S2":  regexp.MustCompile(`no pull signal`),
+	"L5": regexp.MustCompile(`web search`),
+	"L6": regexp.MustCompile(`need a provider that reads them`),
+	"S1": regexp.MustCompile(`no pull signal`),
+	"S2": regexp.MustCompile(`no pull signal`),
 }
 
 // runMatrixCell runs one cell as a subtest and checks it against the
