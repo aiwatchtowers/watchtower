@@ -309,7 +309,7 @@ func TestAgentloopQuery_CapKeepsShownTextAndFails(t *testing.T) {
 		}
 	}
 	require.NotNil(t, usage, "the calls made at the cap keep their usage")
-	assert.Equal(t, 40, usage.InputTokens)
+	assert.Equal(t, 40, usage.InputTokens())
 }
 
 // A tool name split across deltas is joined; a server that repeats the
