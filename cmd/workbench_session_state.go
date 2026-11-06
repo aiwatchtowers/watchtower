@@ -130,9 +130,11 @@ func (in hookEvent) agentFailure() *db.AgentFailure {
 // turn started without a prompt (a teammate or background-task message, a
 // wakeup fires no UserPromptSubmit); one stamped before the stop's "waiting", or whose
 // tool call the transcript places before the stop, writes nothing. A
-// main-thread PreToolUse (a tool starts) and PostToolUseFailure (a tool
-// failed) are the same signal under the same turn order, but never over
-// "needs approval" (board #988, ask #525: hookTurn.notOverApproval). A
+// PostToolUseFailure (a tool ran and failed) is a PostToolUse, unless the
+// owner interrupted the tool (is_interrupt: nothing recorded). A main-thread
+// PreToolUse (a tool starts) is the same signal under the same turn order,
+// but never over "needs approval" (board #988, ask #525:
+// hookTurn.notOverApproval). A
 // SubagentStart or SubagentStop records no state (ok true, state ""):
 // recordHookAgentState routes it to the agent turns and the background count
 // (boards #411, #543). A Codex PermissionRequest is Claude Code's
@@ -207,7 +209,8 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		return fmt.Errorf("reading the hook input: %w", err)
 	}
 	state, ok := agentStateFor(in.Event, in.NotificationType)
-	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) || in.subagentToolStart() {
+	if !ok || in.SessionID == "" || (in.agentTurnEvent() && !in.recordsAgentTurn()) || in.subagentToolStart() ||
+		in.interruptedTool() {
 		return nil
 	}
 	turn, subagentToolRun := in.toolRunTurn()
@@ -224,10 +227,6 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 	switch {
 	case in.agentTurnEvent():
 		err = recordAgentTurn(database, rowID, workbenchID, in, at, agentkind.Claude, turn.lock)
-	case subagentToolRun && in.Event == "PostToolUseFailure":
-		// A subagent's failed tool is a heartbeat only: it never ends a
-		// `waiting` or hides a permission dialog (ask #525).
-		err = recordBackgroundReport(database, rowID, workbenchID, in.SessionID, at, nil, turn.lock)
 	case subagentToolRun:
 		err = recordSubagentToolRun(database, rowID, workbenchID, in.SessionID, state, at, turn.lock)
 	default:
@@ -381,9 +380,16 @@ func (in hookEvent) subagentToolStart() bool {
 	return in.Event == "PreToolUse" && in.AgentID != ""
 }
 
+// interruptedTool says the event is a PostToolUseFailure of a tool the owner
+// interrupted: it records nothing (after an interrupt no Stop comes, so a
+// `working` would stay until the next event).
+func (in hookEvent) interruptedTool() bool {
+	return in.Event == "PostToolUseFailure" && in.IsInterrupt
+}
+
 // toolRunTurn classifies a tool event: subagent is true for one fired
 // inside a subagent, and a main-thread one gets its turn placement — a
-// PreToolUse or PostToolUseFailure never over "needs approval" (ask #525).
+// PreToolUse never over "needs approval" (ask #525): the tool has not run.
 // The zero values are every other event.
 func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 	if !in.toolEvent() {
@@ -392,7 +398,7 @@ func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 	if in.AgentID != "" {
 		return hookTurn{}, true
 	}
-	return hookTurn{toolRun: true, notOverApproval: in.Event != "PostToolUse",
+	return hookTurn{toolRun: true, notOverApproval: in.Event == "PreToolUse",
 		transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}, false
 }
 
@@ -403,9 +409,9 @@ func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 // stop's "waiting" back into "working". The zero value is every other event.
 type hookTurn struct {
 	toolRun bool // a main-thread tool event
-	// notOverApproval holds a main-thread tool start or failed tool back
-	// over "needs approval" (board #988, ask #525): only a tool that ran
-	// says the dialog was answered.
+	// notOverApproval holds a main-thread tool start back over "needs
+	// approval" (board #988, ask #525): only a tool that ran — PostToolUse
+	// or PostToolUseFailure — says the dialog was answered.
 	notOverApproval           bool
 	stop                      bool // the sync Stop hook
 	transcriptPath, toolUseID string

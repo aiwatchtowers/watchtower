@@ -69,10 +69,9 @@ func TestProj11_PreToolUseOutOfWaitingIsWorking(t *testing.T) {
 
 // PROJ-11, board #988 (ask #525): a tool start never hides a permission
 // dialog. PreToolUse fires before the prompt; its async hook may start after
-// the prompt's notification and still writes nothing over `approval`. The
-// same holds for a failed tool's PostToolUseFailure (a denied call).
+// the prompt's notification and still writes nothing over `approval`.
 func TestProj11_PreToolUseNeverOverwritesApproval(t *testing.T) {
-	for _, event := range []string{"PreToolUse", "PostToolUseFailure"} {
+	for _, event := range []string{"PreToolUse"} {
 		database, pid, row := briefSessionFixture(t)
 		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 		_, at := hookClock(t)
@@ -189,12 +188,60 @@ func TestSessionState_InjectedMessageTurnIsWorking(t *testing.T) {
 	assert.Equal(t, "working", storedAgentState(t, database, row), "the injected turn's first tool result")
 }
 
-// A subagent's tool start writes nothing (its state stays the main thread's),
-// and a subagent's failed tool is only a heartbeat of the Stop's count: it
-// never turns `waiting` or `approval` into `working`.
+// Board #988 review (F4): a failed tool ran, so — like a PostToolUse — it
+// ends the "needs approval" of a granted permission, on the main thread and
+// in a subagent; a tool the owner interrupted (is_interrupt) records
+// nothing, on either.
+func TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted(t *testing.T) {
+	for _, tc := range []struct {
+		name, agentID string
+		interrupt     bool
+		want          string
+	}{
+		{"main thread", "", false, "working"},
+		{"subagent", "a1b2c3", false, "working"},
+		{"main thread, interrupted", "", true, "approval"},
+		{"subagent, interrupted", "a1b2c3", true, "approval"},
+	} {
+		database, pid, row := briefSessionFixture(t)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		_, at := hookClock(t)
+		recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+		recordToolEvent(t, pid, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
+		before := rowSnapshot(t, database, row)
+		payload := toolEventPayload("PostToolUseFailure", "toolu_A", "", tc.agentID)
+		if tc.interrupt {
+			payload = strings.TrimSuffix(payload, "}") + `,"is_interrupt":true}`
+		}
+		recordToolEvent(t, pid, at, 3, payload)
+		assert.Equal(t, tc.want, storedAgentState(t, database, row), tc.name)
+		if tc.interrupt {
+			assert.Equal(t, before, rowSnapshot(t, database, row), "%s: an interrupted tool wrote", tc.name)
+		}
+	}
+}
+
+// An interrupted main-thread tool out of `waiting` records nothing either:
+// no Stop follows an interrupt, so a `working` would stay.
+func TestSessionState_InterruptedToolOutOfWaitingRecordsNothing(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	recordToolEvent(t, pid, at, 1, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	before := rowSnapshot(t, database, row)
+	recordToolEvent(t, pid, at, 2, strings.TrimSuffix(toolEventPayload("PostToolUseFailure", "toolu_A", "", ""), "}")+`,"is_interrupt":true}`)
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+}
+
+// A subagent's tool start writes nothing (its state stays the main thread's)
+// over `approval` or `waiting`; a subagent's failed tool, like its tool
+// result, never ends a `waiting`.
 func TestSessionState_SubagentToolStartOrFailureNeverMovesTheState(t *testing.T) {
 	for _, from := range []string{"approval", "waiting"} {
 		for _, event := range []string{"PreToolUse", "PostToolUseFailure"} {
+			if from == "approval" && event == "PostToolUseFailure" {
+				continue // a tool that ran ends the dialog: TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted
+			}
 			database, pid, row := briefSessionFixture(t)
 			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 			_, at := hookClock(t)

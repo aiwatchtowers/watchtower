@@ -304,7 +304,7 @@ func TestProj11_ToolRunOutOfWaitingClearsFinished(t *testing.T) {
 	}
 }
 
-// PROJ-11, board #988 (ask #525): a tool start's or failed tool's `working`
+// PROJ-11, board #988 (ask #525): a tool start's `working`
 // (AgentOrder.NotOverApproval) lands out of `waiting` and out of the run
 // mark (a stamp, no state), and never over `approval`.
 func TestProj11_ToolStartNeverOverwritesApproval(t *testing.T) {

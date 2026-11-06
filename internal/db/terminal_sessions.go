@@ -401,9 +401,9 @@ type AgentOrder struct {
 	ToolRun     bool
 	SeenTurnEnd sql.NullInt64
 	// NotOverApproval holds the write back over a stored `approval`: a
-	// main-thread tool start (PreToolUse) or failed tool
-	// (PostToolUseFailure) says nothing about a permission dialog being
-	// answered (board #988, ask #525).
+	// main-thread tool start (PreToolUse) comes before the tool's
+	// permission dialog and says nothing about it being answered (board
+	// #988, ask #525).
 	NotOverApproval bool
 	// Stop marks the sync Stop hook's write. It replaces a `working` a
 	// main-thread PostToolUse wrote whatever that write's time: no main-thread
