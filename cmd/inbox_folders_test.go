@@ -300,6 +300,27 @@ func TestInboxFoldersCLI_RouteRefusals(t *testing.T) {
 	}
 }
 
+func TestInboxFoldersCLI_NeedsApprovalHoldsNothingElse(t *testing.T) {
+	c := newFoldersCLI(t)
+	approvals := c.approvalsID()
+	ordinary := c.automation("acme-digest", "")
+	moving := c.create("Release")
+	rev := c.rev()
+	for _, args := range [][]string{
+		{"create", "--title", "Inside", "--parent", approvals},
+		{"route", ordinary, "--folder", approvals},
+		{"route", ordinary, "--new-title", "Inside", "--parent", approvals},
+		{"move", moving, "--parent", approvals, "--position", "0"},
+	} {
+		out, _, err := runFolders(t, append(args, "--expect-revision", rev, "--json")...)
+		require.Error(t, err, args)
+		assert.Equal(t, "Needs approval holds only its own approvals", err.Error(), args)
+		assert.Empty(t, out, args)
+	}
+	assert.Equal(t, rev, c.rev(), "nothing written")
+	assert.Equal(t, []any{}, c.folderByID(approvals)["automation_ids"])
+}
+
 func TestInboxFoldersCLI_ConflictExitAndMessage(t *testing.T) {
 	c := newFoldersCLI(t)
 	id := c.create("Release") // revision 2
