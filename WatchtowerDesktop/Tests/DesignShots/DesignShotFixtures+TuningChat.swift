@@ -25,6 +25,11 @@ enum TuningChatShotFixtures {
         case abProposeRefused = "ab-propose-refused", conversationRemoved = "conversation-removed"
         /// Retry (or Run) refused because the prompt changed since the run: Discard only.
         case abRunRefused = "ab-run-refused"
+        /// The same removed conversation open in the Chats panel: no New button, the typed text kept.
+        case conversationRemovedInChats = "conversation-removed-in-chats"
+
+        /// A removed conversation keeps the owner's typed text in the composer (§4.5).
+        var keepsDraft: Bool { self == .conversationRemoved || self == .conversationRemovedInChats }
 
         /// Which fixture coach backs the state.
         var coachVariant: String {
@@ -49,7 +54,7 @@ enum TuningChatShotFixtures {
     static var shots: [DesignShot] {
         let panes = State.allCases.map { state in
             DesignShot(name: "tuning-chat-\(state.rawValue)",
-                       size: NSSize(width: state == .narrow ? 820 : 1040, height: state == .narrow ? 1200 : 800)) {
+                       size: size(state)) {
                 screen(state)
             }
         }
@@ -69,7 +74,18 @@ enum TuningChatShotFixtures {
         ]
     }
 
+    private static func size(_ state: State) -> NSSize {
+        switch state {
+        case .narrow: NSSize(width: 820, height: 1200)
+        case .conversationRemovedInChats: NSSize(width: 640, height: 480)
+        default: NSSize(width: 1040, height: 800)
+        }
+    }
+
     static func screen(_ state: State) -> AnyView {
+        if state == .conversationRemovedInChats {
+            return AnyView(ChatsRemovedShot())
+        }
         do {
             return AnyView(TuningPaneShot(state: state, coach: try loaded(state.coachVariant)))
         } catch {
@@ -231,6 +247,8 @@ enum TuningChatTexts {
     static let conversationRemoved = "This conversation was removed with the source data it read. "
         + "Its open proposals were withdrawn; accepted ones stay."
     static let showAccepted = "Show in Accepted edits"
+    /// The owner's text kept in the composer after the conversation was removed (mockup only).
+    static let keptDraft = "Also check why digest.daily repeats the channel names"
     static let claudeOnly = "Claude Code only"
     static let tooFew = "Only 2 past calls of digest.channel match the current prompt — A/B needs 3. "
         + "It will be possible after the prompt runs again."
@@ -415,7 +433,11 @@ private struct TuningPanelShot: View {
 
     private var composer: some View {
         HStack(spacing: Spacing.compact) {
-            Text(TuningChatTexts.placeholder).foregroundStyle(.tertiary).lineLimit(1)
+            if state.keepsDraft {
+                Text(TuningChatTexts.keptDraft).lineLimit(1)
+            } else {
+                Text(TuningChatTexts.placeholder).foregroundStyle(.tertiary).lineLimit(1)
+            }
             Spacer(minLength: Spacing.compact)
             Image(systemName: busy ? "stop.fill" : "arrow.up")
                 .font(.caption.weight(.semibold))
@@ -462,7 +484,8 @@ private struct TuningFeed: View {
             case .abRemoved: replayTurn(nil, line: (TuningChatTexts.abRemoved, "trash", .secondary))
             case .abProposeRefused: replayTurn(.proposeRefused)
             case .abRunRefused: replayTurn(.runRefused)
-            case .conversationRemoved: conversationRemoved
+            case .conversationRemoved: Self.conversationRemoved(offersNew: true)
+            case .conversationRemovedInChats: Self.conversationRemoved(offersNew: false)
             case .abTooFew: tooFew
             case .narrow:
                 skillTurn(folded: false)
@@ -564,13 +587,16 @@ private struct TuningFeed: View {
     }
 
     /// The whole conversation was deleted with the captured inputs it read (§4.5).
-    @ViewBuilder private var conversationRemoved: some View {
+    /// In the Chats panel the removed line offers no New button (§4.5).
+    static func conversationRemoved(offersNew: Bool) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Label(TuningChatTexts.conversationRemoved, systemImage: "trash")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(TuningChatTexts.newChat) {}.buttonStyle(.kitSecondary)
+            if offersNew {
+                Button(TuningChatTexts.newChat) {}.buttonStyle(.kitSecondary)
+            }
         }
         .padding(Spacing.cozy)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -624,5 +650,44 @@ private struct TuningToolLines: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Chats panel
+
+/// A tuning conversation open in the Chats panel when its source data is
+/// removed (§4.5): the removed line without New, the typed text kept.
+private struct ChatsRemovedShot: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Spacing.regular) {
+                Text("Digests miss the decision owner").font(.headline).lineLimit(1)
+                Spacer(minLength: Spacing.regular)
+            }
+            .padding(Spacing.medium)
+            ScrollView {
+                TuningFeed.conversationRemoved(offersNew: false)
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.vertical, Spacing.regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .defaultScrollAnchor(.bottom)
+            HStack(spacing: Spacing.compact) {
+                Text(TuningChatTexts.keptDraft).lineLimit(1)
+                Spacer(minLength: Spacing.compact)
+                Image(systemName: "arrow.up")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: IconSize.composerLarge, height: IconSize.composerLarge)
+                    .help("Send")
+            }
+            .font(.callout)
+            .padding(Spacing.cozy)
+            .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.control))
+            .padding(.horizontal, Spacing.medium)
+            .padding(.bottom, Spacing.medium)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .detailBackground()
     }
 }
