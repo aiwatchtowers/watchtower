@@ -28,6 +28,13 @@ const (
 	waitingNameRunes = 120
 )
 
+// ReadPrimitives are the built-ins' read primitives
+// (automations.ReadPrimitiveNames) over d: what every executor and dry run
+// carries, since a dry run calls them.
+func ReadPrimitives(d *db.DB, now func() time.Time) map[string]automations.PrimitiveFunc {
+	return WaitingPrimitives(d, now)
+}
+
 // WaitingPrimitives returns attention.waiting over d: the open attention
 // items (db.OpenInboxItems, newest first, at most WaitingLimit) as
 // {status: "done", items: [{id, who, where, text, trigger, permalink, at,
