@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -111,8 +112,6 @@ func init() {
 
 	inboxFoldersMoveCmd.Flags().Int64Var(&ifFlags.parent, "parent", 0, "the new parent folder's id (required)")
 	inboxFoldersMoveCmd.Flags().IntVar(&ifFlags.position, "position", 0, "the position among the new siblings (required)")
-	_ = inboxFoldersMoveCmd.MarkFlagRequired("parent")
-	_ = inboxFoldersMoveCmd.MarkFlagRequired("position")
 
 	inboxFoldersRouteCmd.Flags().Int64Var(&ifFlags.folder, "folder", 0, "an existing folder's id")
 	inboxFoldersRouteCmd.Flags().StringVar(&ifFlags.newTitle, "new-title", "", "create a folder with this title and route to it")
@@ -351,6 +350,10 @@ func runInboxFoldersUpdate(cmd *cobra.Command, args []string) error {
 func runInboxFoldersMove(cmd *cobra.Command, args []string) error {
 	if err := checkInboxFolderWrite(cmd); err != nil {
 		return err
+	}
+	// Checked here, not by cobra, so the agent refusal comes first.
+	if !cmd.Flags().Changed("parent") || !cmd.Flags().Changed("position") {
+		return errors.New("move needs --parent and --position")
 	}
 	id, err := parseInboxFolderID("folder", args[0])
 	if err != nil {

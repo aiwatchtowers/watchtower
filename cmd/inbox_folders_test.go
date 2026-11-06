@@ -347,8 +347,10 @@ func TestInboxFoldersCLI_AgentMarkerRefusesWritesNotList(t *testing.T) {
 				{"move", id, "--parent", id, "--position", "0", "--expect-revision", rev},
 				{"delete", id, "--expect-revision", rev},
 				{"route", "1", "--folder", id, "--expect-revision", rev},
-				// The refusal comes before the revision check.
+				// The refusal comes before the revision check and the
+				// move's own flags.
 				{"delete", id},
+				{"move", id, "--expect-revision", rev},
 			} {
 				out, _, err := runFolders(t, append(args, "--json")...)
 				require.Error(t, err, args)
@@ -362,6 +364,23 @@ func TestInboxFoldersCLI_AgentMarkerRefusesWritesNotList(t *testing.T) {
 	}
 	assert.Equal(t, rev, c.rev(), "nothing written")
 	assert.Equal(t, "Release", c.folderByID(id)["title"])
+}
+
+func TestInboxFoldersCLI_MoveNeedsParentAndPosition(t *testing.T) {
+	c := newFoldersCLI(t)
+	id := c.create("Release")
+	rev := c.rev()
+	for _, args := range [][]string{
+		{"move", id},
+		{"move", id, "--parent", "1"},
+		{"move", id, "--position", "0"},
+	} {
+		out, _, err := runFolders(t, append(args, "--expect-revision", rev, "--json")...)
+		require.Error(t, err, args)
+		assert.Equal(t, "move needs --parent and --position", err.Error(), args)
+		assert.Empty(t, out, args)
+	}
+	assert.Equal(t, rev, c.rev())
 }
 
 func TestInboxFoldersCLI_NonNumericID(t *testing.T) {
