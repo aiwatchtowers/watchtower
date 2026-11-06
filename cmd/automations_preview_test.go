@@ -126,7 +126,7 @@ func TestAutomationsCLI_PreviewPinnedKeys(t *testing.T) {
 	assert.Equal(t, []string{"args", "error", "kind", "name", "permission", "result", "seq", "status", "tokens"},
 		previewKeys(dry.Steps[0]))
 	require.Len(t, dry.Outputs, 1)
-	assert.Equal(t, []string{"actions", "blocks", "body", "content_hash", "key", "kind", "priority", "title"}, previewKeys(dry.Outputs[0]))
+	assert.Equal(t, []string{"actions", "blocks", "body", "content_hash", "folder", "folder_title", "key", "kind", "priority", "title"}, previewKeys(dry.Outputs[0]))
 	assert.Equal(t, "null", string(dry.Outputs[0]["blocks"]))
 	assert.Equal(t, `""`, string(dry.Outputs[0]["key"]))
 	assert.Equal(t, "[]", string(dry.Outputs[0]["actions"]))

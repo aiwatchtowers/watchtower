@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -638,4 +639,51 @@ func TestEvaluateDraft_DryRunsAnUnconfirmedRecipe(t *testing.T) {
 		t.Fatalf("result = %+v (dry run %+v); want a succeeded dry run of digest", res, res.DryRun)
 	}
 	f.assertNoRowWritten(t, before)
+}
+
+// TestDraftAutomation_OutputCarriesFolder (Inbox builder B): a would-be inbox
+// output carries the slug output.inbox({folder}) named and that folder's
+// title, read for the preview only; a slug no folder takes has an empty
+// title; nothing is written (no folder, no output, no journal step).
+func TestDraftAutomation_OutputCarriesFolder(t *testing.T) {
+	f := newDraftFixture(t)
+	var root int64
+	if err := f.d.QueryRow(`SELECT id FROM inbox_folders WHERE kind = 'root'`).Scan(&root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO inbox_folders (kind, parent_id, slug, title) VALUES ('owner', ?, 'release', 'Release')`, root); err != nil {
+		t.Fatal(err)
+	}
+	before := draftTableCounts(t, f.d)
+	script := `output.inbox({title: "a", body: "b", folder: "release"});
+output.inbox({title: "c", body: "d", folder: "nope"}); output.inbox({title: "e", body: "f"}); return 1`
+	res, raw := f.call(t, map[string]any{"recipe_text": recipeText(nil, "outputs: [inbox]\n", script)})
+	if res.DryRun == nil || len(res.DryRun.Outputs) != 3 {
+		t.Fatalf("dry run = %+v (errors %v); want three outputs", res.DryRun, res.Errors)
+	}
+	got := [][2]string{}
+	for _, o := range res.DryRun.Outputs {
+		got = append(got, [2]string{o.Folder, o.FolderTitle})
+	}
+	want := [][2]string{{"release", "Release"}, {"nope", ""}, {"", ""}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("folders = %v; want %v", got, want)
+	}
+	if !strings.Contains(raw, `"folder":"release","folder_title":"Release"`) {
+		t.Errorf("JSON %s; want the folder keys", raw)
+	}
+	if after := draftTableCounts(t, f.d); after != before {
+		t.Errorf("table counts %s → %s; a dry run writes nothing", before, after)
+	}
+}
+
+func draftTableCounts(t *testing.T, d *db.DB) string {
+	t.Helper()
+	var folders, outputs, steps, revision int64
+	if err := d.QueryRow(`SELECT (SELECT COUNT(*) FROM inbox_folders), (SELECT COUNT(*) FROM automation_outputs),
+		(SELECT COUNT(*) FROM automation_run_steps), (SELECT revision FROM inbox_folder_state)`).
+		Scan(&folders, &outputs, &steps, &revision); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprint(folders, outputs, steps, revision)
 }

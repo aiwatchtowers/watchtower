@@ -267,7 +267,7 @@ func (f *exFixture) dump(t *testing.T) string {
 	for _, q := range []string{
 		`SELECT automation_id || '|' || state_json || '|' || IFNULL(run_id, '') || '|' || updated_at FROM automation_state ORDER BY automation_id`,
 		`SELECT id || '|' || automation_id || '|' || run_id || '|' || kind || '|' || title || '|' || body || '|' ||
-			priority || '|' || created_at || '|' || IFNULL(output_key, '') || '|' || content_hash || '|' || blocks_json
+			priority || '|' || created_at || '|' || IFNULL(output_key, '') || '|' || content_hash || '|' || blocks_json || '|' || IFNULL(folder_id, '')
 			FROM automation_outputs ORDER BY id`,
 	} {
 		rows, err := f.d.Query(q)

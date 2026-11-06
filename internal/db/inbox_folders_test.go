@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -410,4 +412,121 @@ func TestInboxFolders_TreeOrderNestedAndHidden(t *testing.T) {
 	assert.False(t, hidden[now])
 	require.NotNil(t, folders[7].ParentID)
 	assert.Equal(t, now, *folders[7].ParentID)
+}
+
+// A commit resolves a buffered slug to its folder inside the transaction; a
+// slug no folder takes stays NULL and journals one log step.
+func TestInboxFolders_CommitResolvesFolderSlug(t *testing.T) {
+	d := openTestDB(t)
+	root, _ := inboxRootAndApprovals(t, d)
+	f := insertOwnerFolder(t, d, "release", root)
+	a := seedRunnableAutomation(t, d, "acme-digest")
+	run := runOnce(t, d, a, runTestNow, &RunCommit{Outputs: []AutomationOutput{
+		{Kind: "inbox", Title: "found", Body: "b", FolderSlug: "release"},
+		{Kind: "inbox", Title: "missing", Body: "b", FolderSlug: "nope"},
+	}})
+	outs, err := d.ListAutomationOutputsForRun(run, 0)
+	require.NoError(t, err)
+	require.Len(t, outs, 2)
+	require.NotNil(t, outs[0].FolderID)
+	assert.Equal(t, f, *outs[0].FolderID)
+	assert.Nil(t, outs[1].FolderID)
+	steps, err := d.ListAutomationRunSteps(run)
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	assert.Equal(t, "log", steps[0].Kind)
+	assert.Equal(t, "ok", steps[0].Status)
+	assert.Equal(t, `folder "nope" not found — shown in Inbox`, steps[0].ArgsJSON)
+}
+
+// A living upsert takes the new run's folder (the last run's choice wins),
+// also on a same-hash rewrite, which keeps the read state; no folder puts the
+// artifact back on its route.
+func TestInboxFolders_LivingUpsertMovesFolder(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	root, _ := inboxRootAndApprovals(t, d)
+	release := insertOwnerFolder(t, d, "release", root)
+	people := insertOwnerFolder(t, d, "people", root)
+	a := seedRunnableAutomation(t, d, "acme-digest")
+	card := func(slug string) *RunCommit {
+		o := livingOut("k", "same", "h1")
+		o.FolderSlug = slug
+		return &RunCommit{Outputs: []AutomationOutput{o}}
+	}
+	runOnce(t, d, a, runTestNow, card("release"))
+	first := outputByKey(t, d, a, "k")
+	require.NotNil(t, first.FolderID)
+	assert.Equal(t, release, *first.FolderID)
+	_, err := d.Exec(`UPDATE automation_outputs SET read_at = ? WHERE id = ?`, formatAutomationTime(runTestNow), first.ID)
+	require.NoError(t, err)
+
+	runOnce(t, d, a, runTestNow.Add(time.Hour), card("people"))
+	moved := outputByKey(t, d, a, "k")
+	assert.Equal(t, first.ID, moved.ID, "the upsert keeps the artifact")
+	require.NotNil(t, moved.FolderID)
+	assert.Equal(t, people, *moved.FolderID)
+	assert.NotNil(t, moved.ReadAt, "a same-hash rewrite keeps the read state")
+
+	runOnce(t, d, a, runTestNow.Add(2*time.Hour), card(""))
+	back := outputByKey(t, d, a, "k")
+	assert.Nil(t, back.FolderID, "no folder: the artifact follows its route again")
+	folder, err := d.InboxArtifactFolder(ctx, back.ID)
+	require.NoError(t, err)
+	assert.Equal(t, root, folder)
+}
+
+// Needs approval takes an explicit folder only from the needs-approval
+// built-in; the draft read (automation 0) never resolves it.
+func TestInboxFolderForOutput(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	root, approvals := inboxRootAndApprovals(t, d)
+	release := insertOwnerFolder(t, d, "release", root)
+	owner := seedRunAutomation(t, d, "acme-digest", 1)
+	builtin := seedRunAutomation(t, d, "acme-approvals", 1)
+	_, err := d.Exec(`UPDATE automations SET origin = 'builtin', builtin_id = 'needs-approval' WHERE id = ?`, builtin)
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name       string
+		automation int64
+		slug       string
+		want       int64
+		title      string
+	}{
+		{"owner folder", owner, "release", release, "release"},
+		{"draft owner folder", 0, "release", release, "release"},
+		{"root", owner, "inbox", root, "Inbox"},
+		{"approvals from the built-in", builtin, "needs-approval", approvals, "Needs approval"},
+		{"approvals from an owner recipe", owner, "needs-approval", 0, ""},
+		{"approvals from a draft", 0, "needs-approval", 0, ""},
+		{"missing", owner, "nope", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, title, found, err := d.InboxFolderForOutput(ctx, tc.automation, tc.slug)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want != 0, found)
+			assert.Equal(t, tc.want, id)
+			assert.Equal(t, tc.title, title)
+		})
+	}
+}
+
+// The miss line is clipped like any journal step (a slug the SDK would refuse
+// as too long reaches the db only from a direct commit).
+func TestInboxFolders_MissLineClipped(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunnableAutomation(t, d, "acme-digest")
+	run := runOnce(t, d, a, runTestNow, &RunCommit{Outputs: []AutomationOutput{
+		{Kind: "inbox", Title: "t", Body: "b", FolderSlug: strings.Repeat("é", StepClipBytes)},
+	}})
+	steps, err := d.ListAutomationRunSteps(run)
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	line := steps[0].ArgsJSON
+	assert.LessOrEqual(t, len(line), StepClipBytes)
+	assert.Greater(t, len(line), StepClipBytes-2, "cut on the last rune boundary")
+	assert.True(t, utf8.ValidString(line))
+	assert.True(t, strings.HasPrefix(line, `folder "éé`))
 }

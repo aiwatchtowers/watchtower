@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 )
 
 // InboxFolder is one row of inbox_folders (00175): the root (kind 'root',
@@ -170,4 +171,84 @@ func (db *DB) InboxArtifactFolder(ctx context.Context, outputID int64) (int64, e
 		return 0, fmt.Errorf("reading the folder of inbox artifact %d: %w", outputID, err)
 	}
 	return folderID, nil
+}
+
+// outputFolderSQL finds the folder a recipe's output.inbox({folder}) names:
+// the folder with that slug, except Needs approval for any automation but
+// the needs-approval built-in (Needs approval holds only its own approvals).
+// Arguments: the slug, the automation id (0 = none, as in a draft).
+const outputFolderSQL = `SELECT f.id, f.title FROM inbox_folders f WHERE f.slug = ?
+	AND (f.kind <> 'approvals' OR EXISTS (SELECT 1 FROM automations a
+		WHERE a.id = ? AND a.origin = 'builtin' AND a.builtin_id = 'needs-approval'))`
+
+// routeTitleSQL is the title of the folder automation ? writes into: its
+// route's folder, else the root's.
+const routeTitleSQL = `SELECT COALESCE(
+	(SELECT f.title FROM inbox_folder_routes r JOIN inbox_folders f ON f.id = r.folder_id WHERE r.automation_id = ?),
+	(SELECT title FROM inbox_folders WHERE kind = 'root'), 'Inbox')`
+
+// InboxFolderForOutput is the folder output.inbox({folder: slug}) of
+// automation automationID (0 = a draft with none) would land in: its id
+// and title, found = false when no such folder may take it. A dry run's
+// preview reads it; a run's commit resolves the slug in its own transaction.
+func (db *DB) InboxFolderForOutput(ctx context.Context, automationID int64, slug string) (id int64, title string, found bool, err error) {
+	err = db.QueryRowContext(ctx, outputFolderSQL, slug, automationID).Scan(&id, &title)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, fmt.Errorf("reading inbox folder %q: %w", slug, err)
+	}
+	return id, title, true, nil
+}
+
+// resolveOutputFolderTx is output o's folder_id inside a run's commit
+// transaction: o.FolderID when the recipe named no folder, else the folder
+// with o.FolderSlug. A slug no folder takes (never created, or deleted
+// after the call) is NULL — the card follows its route — and the run's
+// journal gets a log step saying where it went, in the same transaction.
+// Resolving here, not at the call, keeps a folder delete from failing the
+// commit: a delete is a BEGIN IMMEDIATE transaction too, so it lands wholly
+// before the lookup or wholly after the insert.
+func resolveOutputFolderTx(tx *sql.Tx, automationID, runID int64, stamp string, o AutomationOutput) (*int64, error) {
+	if o.FolderSlug == "" {
+		return o.FolderID, nil
+	}
+	var id int64
+	var title string
+	err := tx.QueryRow(outputFolderSQL, o.FolderSlug, automationID).Scan(&id, &title)
+	if err == nil {
+		return &id, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("reading inbox folder %q: %w", o.FolderSlug, err)
+	}
+	var route string
+	if err := tx.QueryRow(routeTitleSQL, automationID).Scan(&route); err != nil {
+		return nil, fmt.Errorf("reading the inbox folder of automation %d: %w", automationID, err)
+	}
+	line := clipStepText(fmt.Sprintf("folder %q not found — shown in %s", o.FolderSlug, route))
+	if _, err := tx.Exec(`INSERT INTO automation_run_steps (run_id, seq, kind, name, args_json, status, started_at, finished_at)
+		VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM automation_run_steps WHERE run_id = ?), 'log', 'log', ?, 'ok', ?, ?)`,
+		runID, runID, line, stamp, stamp); err != nil {
+		return nil, fmt.Errorf("journaling the missing folder %q: %w", o.FolderSlug, err)
+	}
+	return nil, nil
+}
+
+// StepClipBytes is the most a journal step's args_json or result_summary
+// holds (automations.StepClipBytes is this constant).
+const StepClipBytes = 4 * 1024
+
+// clipStepText cuts s to StepClipBytes on a rune boundary, as the journal
+// clips the steps it writes.
+func clipStepText(s string) string {
+	if len(s) <= StepClipBytes {
+		return s
+	}
+	cut := StepClipBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }

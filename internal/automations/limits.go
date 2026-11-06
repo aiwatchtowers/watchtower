@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"watchtower/internal/automations/blocks"
+	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
 
@@ -60,8 +61,9 @@ const (
 	// MaxOutputsPerRun caps the outputs a run buffers (output.inbox,
 	// output.report, output.briefing); the next one is a ValidationError.
 	MaxOutputsPerRun = 50
-	// StepClipBytes clips a step's args_json and result_summary.
-	StepClipBytes = 4 * 1024
+	// StepClipBytes clips a step's args_json and result_summary (the db
+	// clips the steps a commit writes itself to the same size).
+	StepClipBytes = db.StepClipBytes
 	// SummaryClipBytes clips a run's summary.
 	SummaryClipBytes = 1024
 	// MaxEventsPerRun caps the events carried by one event run (spec §8).
