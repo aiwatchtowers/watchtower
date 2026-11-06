@@ -88,3 +88,15 @@ func TestSessionAgent_LoadSessionReadsTheStoredPathByAdapter(t *testing.T) {
 	_, err = LoadSession(d, 999)
 	assert.ErrorIs(t, err, db.ErrTerminalSessionNotFound)
 }
+
+// The phone's not-found reason and message for a start whose binary is
+// missing: the wire values the Kit's ActionReason decodes, and the
+// Desktop's TerminalLaunch.exitMessage(code: 127) copy.
+func TestSessionAgent_NotFound(t *testing.T) {
+	assert.Equal(t, "claude_not_found", claudeAdapter{}.NotFoundReason())
+	assert.Equal(t, "codex_not_found", codexAdapter{}.NotFoundReason())
+	assert.Equal(t, "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart.",
+		claudeAdapter{}.NotFoundMessage())
+	assert.Equal(t, "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again.",
+		codexAdapter{}.NotFoundMessage())
+}

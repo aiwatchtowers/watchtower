@@ -31,6 +31,8 @@ package struct CodexSessionAgent: SessionAgent {
         "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."
     }
 
+    package var notFoundReason: String { "codex_not_found" }
+
     /// Runs `codex` as `launch-args` resolved it, its script in
     /// `TerminalLaunch.codexCommandEnv`; without one there is no binary to
     /// run and the start exits 127 (`TerminalCenter.start` refuses such a

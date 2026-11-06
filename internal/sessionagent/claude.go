@@ -150,6 +150,13 @@ func (claudeAdapter) LaunchCommand(s Start) LaunchCommand {
 	}
 }
 
+func (claudeAdapter) NotFoundReason() string { return "claude_not_found" }
+
+// NotFoundMessage: `exec claude` found no claude on the login shell's PATH.
+func (claudeAdapter) NotFoundMessage() string {
+	return "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
+}
+
 // StoresTranscriptPath: Claude readers find a transcript by session id.
 func (claudeAdapter) StoresTranscriptPath() bool { return false }
 

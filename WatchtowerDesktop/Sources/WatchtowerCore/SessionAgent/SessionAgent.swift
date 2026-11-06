@@ -23,6 +23,9 @@ package protocol SessionAgent: Sendable {
     /// The terminal pane's line when the start exited 127: the shell found no
     /// binary to run.
     var notFoundMessage: String { get }
+    /// The phone's action reason for that start (the Kit's `ActionReason`
+    /// raw value; Go `Adapter.NotFoundReason`).
+    var notFoundReason: String { get }
     /// The login shell's command for one start (Go `Adapter.LaunchCommand`).
     func launchCommand(_ start: AgentStart) -> AgentLaunchCommand
     /// Whether the agent has a transcript for session `id`, through its own

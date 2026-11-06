@@ -162,6 +162,13 @@ func (codexAdapter) LaunchCommand(s Start) LaunchCommand {
 	}
 }
 
+func (codexAdapter) NotFoundReason() string { return "codex_not_found" }
+
+// NotFoundMessage: launch-args found no codex binary.
+func (codexAdapter) NotFoundMessage() string {
+	return "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."
+}
+
 // StoresTranscriptPath: the rollout path Codex's SessionStart reported, so
 // its readers need not walk the sessions tree.
 func (codexAdapter) StoresTranscriptPath() bool { return true }

@@ -21,8 +21,6 @@ WatchtowerDesktop/Sources/Services/ConfigService.swift | selectPreferredProvider
 WatchtowerDesktop/Sources/Services/ConfigService.swift | validateAISelection | "claude" | 2 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table (the known-set check moves with it)
 WatchtowerDesktop/Sources/Services/ConfigService.swift | validateAISelection | "codex" | 2 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table (the known-set check moves with it)
 WatchtowerDesktop/Sources/Services/ConfigService.swift | validateAISelection | "ollama" | 2 | A2: fallback pair rule re-implemented in Swift; reads the Go routing table (the known-set check moves with it)
-WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | notFoundReason | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
-WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | outcome | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .claude | 1 | permanent: display-name table of the closed AIProvider enum
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .codex | 1 | permanent: display-name table of the closed AIProvider enum
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .ollama | 1 | permanent: display-name table of the closed AIProvider enum

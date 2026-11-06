@@ -77,6 +77,13 @@ final class SessionAgentTests: XCTestCase {
         XCTAssertEqual(calls, ["claude \(id)", "codex \(id) /r.jsonl /Users/example/.codex"])
     }
 
+    /// The phone's reason for a start whose binary is missing (the Kit's
+    /// `ActionReason` raw values; Go `Adapter.NotFoundReason`).
+    func testNotFoundReason() {
+        XCTAssertEqual(AgentKind.claude.session.notFoundReason, "claude_not_found")
+        XCTAssertEqual(AgentKind.codex.session.notFoundReason, "codex_not_found")
+    }
+
     func testTranscriptHome() {
         XCTAssertNil(AgentKind.claude.session.transcriptHome(environment: ["CODEX_HOME": "/x"]))
         XCTAssertEqual(AgentKind.codex.session.transcriptHome(environment: ["CODEX_HOME": "/x/codex"])?.path, "/x/codex")

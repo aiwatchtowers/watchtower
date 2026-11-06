@@ -186,8 +186,13 @@ func TestAMissingAgentFailsWithTheAgentsReason(t *testing.T) {
 	le := startEnv(t)
 	target := le.target(le.wb, 0, "Ship it")
 	cases := []struct{ agent, reason, message string }{
-		{"claude", "claude_not_found", claudeNotFoundMessage},
-		{"codex", "codex_not_found", codexNotFoundMessage},
+		{"claude", "claude_not_found",
+			"Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."},
+		{"codex", "codex_not_found",
+			"Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."},
+		// A value that is no agent kind reads as Claude Code's, as before.
+		{"gemini", "claude_not_found",
+			"Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."},
 	}
 	for _, c := range cases {
 		le.lp.startErr = &AgentNotFoundError{Agent: c.agent}
