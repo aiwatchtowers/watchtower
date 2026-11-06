@@ -362,8 +362,10 @@ func runFeaturesDisable(cmd *cobra.Command, args []string) error {
 		}
 		disabled = dependents
 	}
+	// The key is written: the disable stands. A failed row update is a
+	// warning — the daemon's next built-in sync turns the rows off.
 	if err := turnOffBuiltinsOfDisabled(cfg); err != nil {
-		return fmt.Errorf("%q is disabled, but its built-in automations stay on until the daemon restarts: %w", id, err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %q is disabled, but its built-in automations stay on until the daemon restarts: %v\n", id, err)
 	}
 
 	return printDisableResult(out, id, disabled, featuresDisableFlagJSON, false)

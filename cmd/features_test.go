@@ -576,3 +576,32 @@ func TestFeaturesDisable_ApprovalCardsTurnsTheBuiltinOffAtOnce(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, runs, "Fire queues nothing while approval-cards is off")
 }
+
+// TestFeaturesDisable_BuiltinRowFailureIsAWarning: once the config key is
+// written the disable stands — a failed built-in row update is a warning on
+// stderr and the result is still printed.
+func TestFeaturesDisable_BuiltinRowFailureIsAWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	ws := cfg.WorkspaceDir()
+	require.NoError(t, os.MkdirAll(ws, 0o700))
+	require.NoError(t, os.Chmod(ws, 0o000)) // the database cannot even be looked at
+	t.Cleanup(func() { _ = os.Chmod(ws, 0o700) })
+	if _, err := os.Stat(cfg.DBPath()); err == nil || os.IsNotExist(err) {
+		t.Skipf("stat in an unreadable directory gave %v (running as root?)", err)
+	}
+
+	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
+	featuresDisableCmd.SetOut(out)
+	featuresDisableCmd.SetErr(errOut)
+	t.Cleanup(func() { featuresDisableCmd.SetOut(nil); featuresDisableCmd.SetErr(nil) })
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+
+	after, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, after.ApprovalCards.Enabled, "the key is written")
+	assert.NotEmpty(t, out.String(), "the result is still printed")
+	assert.Contains(t, errOut.String(), `warning: "approval-cards" is disabled, but its built-in automations stay on`)
+}
