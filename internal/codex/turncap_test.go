@@ -52,6 +52,14 @@ func toolDone(id string) string {
 	return `{"type":"item.completed","item":{"id":"` + id + `","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"status":"completed"}}`
 }
 
+// rolloutTokenCount is the token_count of a response whose cumulative
+// usage is total: each response's total grows, a rate-limit refresh
+// repeats the last one.
+func rolloutTokenCount(total int) string {
+	return `{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":` +
+		strconv.Itoa(total) + `},"last_token_usage":{"input_tokens":1}}},"synthetic":true}`
+}
+
 func message(id, text string) string {
 	return `{"type":"item.completed","item":{"id":"` + id + `","type":"agent_message","text":"` + text + `"}}`
 }
@@ -61,8 +69,7 @@ const (
 	turnCompleted = `{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}`
 	// One model response as the rollout records it: the record after the
 	// response, the token_count after its tool results.
-	rolloutRecord     = `{"type":"token_usage_record","payload":{},"synthetic":true}`
-	rolloutTokenCount = `{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}},"synthetic":true}`
+	rolloutRecord = `{"type":"token_usage_record","payload":{},"synthetic":true}`
 	// A model's tool call and its result as the rollout records them.
 	rolloutCall   = `{"type":"response_item","payload":{"type":"function_call"},"synthetic":true}`
 	rolloutOutput = `{"type":"response_item","payload":{"type":"function_call_output"},"synthetic":true}`
@@ -138,7 +145,7 @@ func TestTurnCounter_TokenCountAfterSequentialToolsKeepsTheRollout(t *testing.T)
 		"R:" + rolloutCall, "R:" + rolloutCall, "R:" + rolloutCall, "R:" + rolloutCall,
 		toolStart("a"), toolDone("a"), "R:" + rolloutOutput, toolStart("b"), toolDone("b"), "R:" + rolloutOutput,
 		toolStart("c"), toolDone("c"), "R:" + rolloutOutput, toolStart("d"), toolDone("d"), "R:" + rolloutOutput,
-		"R:" + rolloutTokenCount, message("m", "done"), "R:" + rolloutTokenCount, turnCompleted}
+		"R:" + rolloutTokenCount(1), message("m", "done"), "R:" + rolloutTokenCount(2), turnCompleted}
 	c, _ := cappedClient(t, steps, 2, t.TempDir())
 	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
 	require.NoError(t, err, "two responses at a cap of 2")
@@ -149,7 +156,7 @@ func TestTurnCounter_TokenCountAfterSequentialToolsKeepsTheRollout(t *testing.T)
 func TestCodexClient_OwnFailureIsNotRelabelledBudget(t *testing.T) {
 	steps := []string{turnStarted, message("m", "done"),
 		`{"type":"turn.failed","error":{"message":"usage limit reached"}}`,
-		"R:" + rolloutRecord, "R:" + rolloutTokenCount, "R:" + rolloutRecord, "R:" + rolloutTokenCount}
+		"R:" + rolloutRecord, "R:" + rolloutTokenCount(3), "R:" + rolloutRecord, "R:" + rolloutTokenCount(4)}
 	c, _ := cappedClient(t, steps, 1, t.TempDir())
 	_, err := runQuery(t, c)
 	require.Error(t, err)
@@ -169,7 +176,7 @@ func TestCodexClient_OwnFailureIsNotRelabelledBudget(t *testing.T) {
 // not count when codex writes token_usage_records: those decide.
 func TestRolloutTurns_RecordsWinOverRepeatedTokenCounts(t *testing.T) {
 	home := t.TempDir()
-	writeRollout(t, home, rolloutRecord+"\n"+rolloutTokenCount+"\n"+rolloutTokenCount+"\n"+rolloutTokenCount+"\n")
+	writeRollout(t, home, rolloutRecord+"\n"+rolloutTokenCount(5)+"\n"+rolloutTokenCount(6)+"\n"+rolloutTokenCount(7)+"\n")
 	n, ok := (&rolloutTurns{home: home}).read()
 	require.True(t, ok)
 	assert.Equal(t, 1, n)
@@ -179,6 +186,17 @@ func TestTurnCounter_ReasoningOpensTheNextTurn(t *testing.T) {
 	reasoning := `{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"thinking"}}`
 	lines := []string{turnStarted, toolStart("a"), toolDone("a"), reasoning, toolStart("b"), toolDone("b")}
 	assert.Equal(t, 2, streamTurns(t, lines), "the reasoning opens turn 2, its tool belongs to it")
+}
+
+// On a codex that writes no token_usage_record, a token_count repeating
+// the last usage (a rate-limit refresh, no new response) does not count.
+func TestRolloutTurns_RepeatedTokenCountWithoutRecordsCountsOnce(t *testing.T) {
+	home := t.TempDir()
+	writeRollout(t, home, rolloutTokenCount(10)+"\n"+rolloutTokenCount(10)+"\n"+rolloutTokenCount(10)+"\n"+
+		rolloutTokenCount(20)+"\n"+rolloutTokenCount(20)+"\n")
+	n, ok := (&rolloutTurns{home: home}).read()
+	require.True(t, ok)
+	assert.Equal(t, 2, n, "two responses, each refreshed")
 }
 
 // The rollout records one token_count with usage per model response (and,
@@ -201,11 +219,12 @@ func TestRolloutTurns_CountsResponses(t *testing.T) {
 	assert.False(t, ok, "no rollout yet")
 	assert.NoError(t, r.err, "a rollout not written yet is not unreadable")
 	rateOnly := `{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}},"synthetic":true}`
-	path := writeRollout(t, home, rateOnly+"\n"+rolloutTokenCount+"\n"+rolloutTokenCount[:20])
+	second := rolloutTokenCount(9)
+	path := writeRollout(t, home, rateOnly+"\n"+rolloutTokenCount(8)+"\n"+second[:20])
 	n, ok := r.read()
 	require.True(t, ok)
 	assert.Equal(t, 1, n, "a rate-limit token_count and a half line do not count")
-	appendFile(t, path, rolloutTokenCount[20:]+"\n")
+	appendFile(t, path, second[20:]+"\n")
 	n, _ = r.read()
 	assert.Equal(t, 2, n, "the finished line counts")
 	appendFile(t, path, rolloutRecord+"\n")
@@ -225,7 +244,7 @@ func TestTurnCounter_RolloutTokenCountIsOneTurnPerResponse(t *testing.T) {
 	steps := []string{"R:" + rolloutRecord}
 	steps = append(steps, serial[:3]...) // thread, turn, preamble
 	steps = append(steps, serial[3:9]...)
-	steps = append(steps, "R:"+rolloutTokenCount, "R:"+rolloutRecord, serial[9], "R:"+rolloutTokenCount, serial[10])
+	steps = append(steps, "R:"+rolloutTokenCount(9), "R:"+rolloutRecord, serial[9], "R:"+rolloutTokenCount(10), serial[10])
 	c, _ := cappedClient(t, steps, 2, home)
 	text, err := runQuery(t, c)
 	require.NoError(t, err)
@@ -260,8 +279,8 @@ func TestCodexClient_StopsWhenTurnNPlus1Starts(t *testing.T) {
 // run when its first item arrives, and a run whose last, text-only response
 // passes the cap fails when codex ends, as claude's error_max_turns does.
 func TestCodexClient_RolloutStopsWhenTurnNPlus1Starts(t *testing.T) {
-	steps := []string{"R:" + rolloutRecord, turnStarted, toolStart("a"), toolDone("a"), "R:" + rolloutTokenCount,
-		"R:" + rolloutRecord, toolStart("b"), toolDone("b"), "R:" + rolloutTokenCount,
+	steps := []string{"R:" + rolloutRecord, turnStarted, toolStart("a"), toolDone("a"), "R:" + rolloutTokenCount(11),
+		"R:" + rolloutRecord, toolStart("b"), toolDone("b"), "R:" + rolloutTokenCount(12),
 		"R:" + rolloutRecord, toolStart("c"), "HOLD"}
 	c, pid := cappedClient(t, steps, 2, t.TempDir())
 	_, _, err := c.QuerySync(context.Background(), "sys", "hi", "")
@@ -270,7 +289,7 @@ func TestCodexClient_RolloutStopsWhenTurnNPlus1Starts(t *testing.T) {
 
 	// The rollout's last lines land after the last stdout line.
 	steps = []string{turnStarted, message("m", "done"), turnCompleted,
-		"R:" + rolloutRecord, "R:" + rolloutTokenCount, "R:" + rolloutRecord, "R:" + rolloutTokenCount}
+		"R:" + rolloutRecord, "R:" + rolloutTokenCount(13), "R:" + rolloutRecord, "R:" + rolloutTokenCount(14)}
 	c, _ = cappedClient(t, steps, 1, t.TempDir())
 	_, _, err = c.QuerySync(context.Background(), "sys", "hi", "")
 	assertBudget(t, err, 1)

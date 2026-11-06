@@ -751,9 +751,10 @@ func codexResponses(n int) string {
 // codexRollout is a rollout recording n model responses (structure only).
 func codexRollout(n int) string {
 	var b strings.Builder
-	for range n {
+	for i := range n {
 		b.WriteString(`{"type":"token_usage_record","payload":{},"synthetic":true}` + "\n")
-		b.WriteString(`{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}},"synthetic":true}` + "\n")
+		b.WriteString(`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":` +
+			strconv.Itoa(i+1) + `},"last_token_usage":{"input_tokens":1}}},"synthetic":true}` + "\n")
 	}
 	return b.String()
 }

@@ -157,6 +157,9 @@ type rolloutTurns struct {
 	// partial is the unfinished last line of the previous read.
 	partial            []byte
 	tokenCount, record int
+	// lastInfo is the usage of the last token_count counted: a refresh that
+	// repeats it (a rate-limit update) is no new response.
+	lastInfo []byte
 	// afterOutput: a tool result was recorded; drift: a model item came
 	// after one while the rollout holds no response marker at all — codex
 	// records a response's marker before its next response, so the markers
@@ -238,9 +241,12 @@ func (r *rolloutTurns) count(line []byte) {
 	case ev.Type == "token_usage_record":
 		r.record++
 	case ev.Type == "event_msg" && ev.Payload.Type == "token_count":
-		// A token_count without usage info only carries rate limits.
-		if info := bytes.TrimSpace(ev.Payload.Info); len(info) > 0 && !bytes.Equal(info, []byte("null")) {
+		// A token_count without usage info, or repeating the last one's
+		// cumulative usage, only carries rate limits.
+		info := bytes.TrimSpace(ev.Payload.Info)
+		if len(info) > 0 && !bytes.Equal(info, []byte("null")) && !bytes.Equal(info, r.lastInfo) {
 			r.tokenCount++
+			r.lastInfo = append(r.lastInfo[:0], info...)
 		}
 	case ev.Type == "response_item":
 		r.item(ev.Payload.Type)

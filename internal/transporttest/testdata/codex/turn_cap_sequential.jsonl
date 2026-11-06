@@ -4,11 +4,11 @@
 #! rollout {"type":"token_usage_record","payload":{},"synthetic":true}
 {"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":null,"error":null,"status":"in_progress"},"synthetic":true}
 {"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}],"structured_content":null},"error":null,"status":"completed"},"synthetic":true}
-#! rollout {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}},"synthetic":true}
+#! rollout {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":10},"last_token_usage":{"input_tokens":1}}},"synthetic":true}
 #! rollout {"type":"token_usage_record","payload":{},"synthetic":true}
 {"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":null,"error":null,"status":"in_progress"},"synthetic":true}
 {"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}],"structured_content":null},"error":null,"status":"completed"},"synthetic":true}
-#! rollout {"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1}}},"synthetic":true}
+#! rollout {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":20},"last_token_usage":{"input_tokens":1}}},"synthetic":true}
 #! rollout {"type":"token_usage_record","payload":{},"synthetic":true}
 {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"THIRD RESPONSE"},"synthetic":true}
 {"type":"turn.completed","usage":{"input_tokens":1007,"cached_input_tokens":1000,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":0},"synthetic":true}

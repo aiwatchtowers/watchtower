@@ -16,9 +16,9 @@
 {"type":"event_msg","payload":{"type":"item_completed"},"synthetic":true}
 {"type":"event_msg","payload":{"type":"item_completed"},"synthetic":true}
 {"type":"response_item","payload":{"type":"custom_tool_call_output"},"synthetic":true}
-{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"output_tokens":0}}},"synthetic":true}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":10},"last_token_usage":{"input_tokens":0,"output_tokens":0}}},"synthetic":true}
 {"type":"event_msg","payload":{"type":"item_completed"},"synthetic":true}
 {"type":"response_item","payload":{"type":"message"},"synthetic":true}
 {"type":"token_usage_record","synthetic":true}
-{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":0,"output_tokens":0}}},"synthetic":true}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":20},"last_token_usage":{"input_tokens":0,"output_tokens":0}}},"synthetic":true}
 {"type":"event_msg","payload":{"type":"task_complete"},"synthetic":true}
