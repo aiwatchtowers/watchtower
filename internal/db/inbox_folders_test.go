@@ -377,3 +377,37 @@ func TestWithInboxFolderRevision_BusyWritesNothing(t *testing.T) {
 	assert.Equal(t, int64(1), inboxRevision(t, holder))
 	wantRowCount(t, holder, "inbox_folders", 2)
 }
+
+// InboxFolderTree's order: the root first, then one group per parent (by
+// parent id), each group by position and then id. Hidden reads as true.
+func TestInboxFolders_TreeOrderNestedAndHidden(t *testing.T) {
+	d := openTestDB(t)
+	root, approvals := inboxRootAndApprovals(t, d)
+	add := func(slug string, parent int64, position, hidden int) int64 {
+		t.Helper()
+		var id int64
+		require.NoError(t, d.QueryRow(`INSERT INTO inbox_folders (kind, parent_id, slug, title, position, hidden)
+			VALUES ('owner', ?, ?, ?, ?, ?) RETURNING id`, parent, slug, slug, position, hidden).Scan(&id))
+		return id
+	}
+	release := add("release", root, 2, 0)
+	people := add("people", root, 1, 0)
+	acme := add("acme", root, 1, 0) // same position as people: id breaks the tie
+	later := add("later", release, 1, 0)
+	now := add("now", release, 0, 0)
+	archive := add("archive", now, 0, 1) // two levels below the root's children
+
+	_, folders, _, err := d.InboxFolderTree(context.Background())
+	require.NoError(t, err)
+	got := make([]int64, len(folders))
+	hidden := map[int64]bool{}
+	for i, f := range folders {
+		got[i] = f.ID
+		hidden[f.ID] = f.Hidden
+	}
+	assert.Equal(t, []int64{root, approvals, people, acme, release, now, later, archive}, got)
+	assert.True(t, hidden[archive], "hidden = 1 reads as true")
+	assert.False(t, hidden[now])
+	require.NotNil(t, folders[7].ParentID)
+	assert.Equal(t, now, *folders[7].ParentID)
+}
