@@ -97,8 +97,14 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
     package let watched: Bool
 
     package init(
-        row: Int64, run: String, pid: Int, startedAtMs: Int64, exited: Bool, code: Int?,
-        scope: String = "", watched: Bool = false
+        row: Int64,
+        run: String,
+        pid: Int,
+        startedAtMs: Int64,
+        exited: Bool,
+        code: Int?,
+        scope: String = "",
+        watched: Bool = false
     ) {
         self.row = row
         self.run = run

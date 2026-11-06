@@ -24,7 +24,11 @@ package struct AgentSessionCaps: Equatable, Sendable {
     package let rolloutWatch: Bool
 
     package init(
-        midturnInput: Bool, phoneInput: Bool, permissionWait: Bool, idleSignal: Bool, elicitation: Bool,
+        midturnInput: Bool,
+        phoneInput: Bool,
+        permissionWait: Bool,
+        idleSignal: Bool,
+        elicitation: Bool,
         rolloutWatch: Bool = false
     ) {
         self.midturnInput = midturnInput
