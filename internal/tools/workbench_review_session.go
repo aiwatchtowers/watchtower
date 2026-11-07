@@ -124,12 +124,15 @@ func ReviewSourceIn(ctx context.Context, d *db.DB, p *db.Workbench, sessionID in
 	}
 	src := ReviewSource{Folder: folder}
 	ticket, err := d.SessionTicket(sessionID)
-	if err != nil || ticket == 0 {
-		return src, repo, err
+	if err != nil {
+		return ReviewSource{}, nil, fmt.Errorf("reading session %d's ticket: %w", sessionID, err)
+	}
+	if ticket == 0 {
+		return src, repo, nil
 	}
 	chain, err := d.TicketBranchChain(p.ID, ticket)
 	if err != nil {
-		return ReviewSource{}, nil, err
+		return ReviewSource{}, nil, fmt.Errorf("reading ticket #%d's branches: %w", ticket, err)
 	}
 	branch, base := TaskBranch(chain)
 	if branch == "" {
