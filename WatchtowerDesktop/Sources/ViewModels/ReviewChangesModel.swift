@@ -1114,7 +1114,15 @@ final class ReviewChangesModel {
             let reopened = rows.filter {
                 ($0.id == id || $0.carriedFrom == id) && ($0.status == .draft || $0.status == .carried) && $0.path != nil
             }
-            try await replace(reopened, round: info)
+            do {
+                try await replace(reopened, round: info)
+            } catch {
+                // The reopen is committed: a row left on its pre-move lines is
+                // re-placed by the next Refresh, which re-checks every comment.
+                commentsPlacedOn = nil
+                try reloadComments()
+                throw error
+            }
             try reloadComments()
         }
     }

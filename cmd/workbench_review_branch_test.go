@@ -516,3 +516,31 @@ func TestWorkbenchReview_DeletedSubfolderKeepsRefreshing(t *testing.T) {
 	assert.NotEqual(t, first["tree_sha"], r["tree_sha"])
 	assert.Equal(t, []string{"new.txt"}, roundFiles(t, wb, r))
 }
+
+// Board #1013: the agent's overview (`review overview --session`) reads the
+// same place as the round — the branch tip against its base — so it shares
+// the round's cache and covers the branch's work only.
+func TestReviewOverview_SessionFormReadsTheBranchTip(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	commitOnBranch(t, repo, "feature", "feature.txt")
+	ticketTarget(t, database, wb, s, 0, "feature", true)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("uncommitted on main\n"), 0o644))
+	g := &fakeReviewGen{out: overviewReply}
+	useReviewGen(t, g)
+
+	out := reviewJSON(t, wb, "overview", "--session", itoa(s))
+	require.Equal(t, true, out["ok"], out)
+	require.Len(t, g.users, 1)
+	assert.Contains(t, g.users[0], "feature.txt")
+	assert.NotContains(t, g.users[0], "uncommitted on main", "main's uncommitted edit is not the branch's work")
+	var tree, base string
+	require.NoError(t, database.QueryRow(`SELECT tree_sha, base_sha FROM review_overviews`).Scan(&tree, &base))
+	assert.Equal(t, reviewGit(t, repo, "rev-parse", "feature^{tree}"), tree)
+	assert.Equal(t, reviewGit(t, repo, "rev-parse", "main"), base)
+
+	r := startRound(t, wb, s)
+	require.Equal(t, db.ReviewSourceBranch, r["source"])
+	again := reviewJSON(t, wb, "overview", "--round", itoa(int64(r["id"].(float64))))
+	assert.Equal(t, true, again["overview_cached"], "the branch round reads the agent's overview")
+	assert.Equal(t, 1, g.calls)
+}

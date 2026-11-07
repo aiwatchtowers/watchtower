@@ -316,6 +316,35 @@ extension ReviewChangesModelTests {
         XCTAssertEqual(reopened?.startLine, 1, "placed on the new base's old side")
     }
 
+    /// Board #1020: a reopen whose re-placement fails is committed all the
+    /// same; the pane shows the row and the next Refresh re-anchors it.
+    func testFailedReopenPlacementIsRetriedByTheNextRefresh() async throws {
+        let h = try harness()
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+        h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "c", tree: "t7")])
+        h.cli.script("file", [fileJSON(old: "x\ny\n", new: "n\n"), fileJSON(old: "y\n", new: "n\n"),
+                              #"{"ok":false,"error":"boom"}"#, fileJSON(old: "y\n", new: "n\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        try await h.model.addComment(path: "a.go", side: "old", startLine: 2, endLine: 2, body: "on y")
+        let id = try await h.comments().first { $0.body == "on y" }?.id ?? 0
+        try await h.db.write { try $0.execute(sql: "UPDATE review_comments SET status = 'resolved' WHERE id = ?", arguments: [id]) }
+        await h.model.refresh()
+        do {
+            try await h.model.reopen(id)
+            XCTFail("the side read fails")
+        } catch {}
+        XCTAssertEqual(h.model.lastError, "boom")
+        XCTAssertEqual(h.model.comments.first { $0.id == id }?.status, .draft, "the reopen is shown")
+        let stale = try await h.comments().first { $0.id == id }
+        XCTAssertEqual(stale?.startLine, 2, "still on the old base's lines")
+        await h.model.refresh()
+        XCTAssertNil(h.model.lastError)
+        let placed = try await h.comments().first { $0.id == id }
+        XCTAssertEqual(placed?.startLine, 1, "re-placed on the new base's old side")
+        XCTAssertEqual(placed?.status, .draft)
+    }
+
     /// Codex round 6: an empty file side has no lines, so a blank-line draft
     /// on line 1 goes outdated when the file is emptied.
     func testBlankLineDraftOnAnEmptiedFileIsOutdated() async throws {

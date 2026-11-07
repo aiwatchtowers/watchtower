@@ -241,4 +241,20 @@ final class CommentAnchorTests: XCTestCase {
         let prose = try anchor("alice,bob", in: "Ping alice,bob today.")
         XCTAssertNil(prose.locate(in: "Ping someone today. Then alice\nbob."), "commas are CSV only in a table artifact")
     }
+
+    /// A tie between equally good candidates goes to the one nearest to
+    /// `near`, the earlier one on an equal distance; `near` before the first
+    /// or past the last candidate picks that end.
+    func testATieGoesToTheCandidateNearestToNear() {
+        let text = "\nsame\nmidd\nsame\n"
+        let made = CommentAnchor(quote: "same", prefix: "\n", suffix: "\n", heading: "")
+        let offset = { (found: Range<String.Index>?) in found.map { text.distance(from: text.startIndex, to: $0.lowerBound) } }
+        let at = { (n: Int) in text.index(text.startIndex, offsetBy: n) }
+        XCTAssertEqual(offset(made.locate(in: text)), 1, "no near: the first")
+        XCTAssertEqual(offset(made.locate(in: text, near: text.startIndex)), 1)
+        XCTAssertEqual(offset(made.locate(in: text, near: at(6))), 1, "5 back, 5 ahead: the earlier")
+        XCTAssertEqual(offset(made.locate(in: text, near: at(7))), 11)
+        XCTAssertEqual(offset(made.locate(in: text, near: at(11))), 11)
+        XCTAssertEqual(offset(made.locate(in: text, near: text.endIndex)), 11)
+    }
 }

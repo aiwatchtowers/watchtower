@@ -36,32 +36,28 @@ const maxListedLeaves = 20
 // var for tests.
 var finishGateExecutable = os.Executable
 
-// ReviewSnapshot is a session folder as it stands, for the AI overview.
+// ReviewSnapshot is a session's review place as it stands, for the AI
+// overview: the folder's snapshot, or the task branch's tip on a branch-tip
+// place (board #1013) — the tree and base a review round there would read.
 type ReviewSnapshot struct {
 	Repo *reviewdiff.Repo
-	// Folder is the snapshot folder's root (ReviewSessionFolder).
+	// Folder is the review folder's root (ReviewSource.Folder).
 	Folder     string
 	Tree, Base string
 	// Empty: the tree is the base's — nothing to review.
 	Empty bool
 }
 
-// SnapshotReviewSession snapshots session sessionID's review folder and finds
-// its base (the merge-base with the default branch).
+// SnapshotReviewSession reads session sessionID's review place the way
+// `workbench review start` does (ResolveReviewSource, ReviewSource.Read), so
+// the overview is cached under the key the owner's round on the same place
+// reads.
 func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (ReviewSnapshot, error) {
-	folder, err := ReviewSessionFolder(ctx, d, p, sessionID)
+	src, repo, err := ResolveReviewSource(ctx, d, p, sessionID)
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	repo, err := reviewdiff.Open(folder, nil)
-	if err != nil {
-		return ReviewSnapshot{}, err
-	}
-	tree, err := repo.Snapshot(ctx)
-	if err != nil {
-		return ReviewSnapshot{}, err
-	}
-	base, err := repo.Base(ctx)
+	tree, base, err := src.Read(ctx, repo)
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
@@ -69,7 +65,7 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	return ReviewSnapshot{Repo: repo, Folder: folder, Tree: tree, Base: base.SHA, Empty: same}, nil
+	return ReviewSnapshot{Repo: repo, Folder: src.Folder, Tree: tree, Base: base.SHA, Empty: same}, nil
 }
 
 // checkFinishGates runs both gates for session on workbench p; a refusal is

@@ -1739,8 +1739,10 @@ no row or audit row (`Scope` runs again at apply, where a refusal caused by a
 change in between lands as a `failed` audit row, as for any tool) —
 while (1) the ticket has an open leaf (`todo`/`in_progress`/`in_review`;
 `blocked`, `done` and `dismissed` leaves do not count), listed in the
-refusal, or (2) the session's folder (`ReviewSessionFolder`) differs from its
-base and the AI overview cache (`review_overviews`) holds no overview for that
+refusal, or (2) the session's review place differs from its base — since
+board #1013 the place a review round reads (`SnapshotReviewSession` through
+`ResolveReviewSource`/`ReviewSource.Read`: the folder's snapshot, or the task
+branch's committed tip against its base branch) — and the AI overview cache (`review_overviews`) holds no overview for that
 exact tree, base and intent hash, or that overview lacks a `done` coverage
 entry for any intent item (a missing entry counts as not done). A folder
 outside git, or no git, an empty diff, and the workbench folder of a session
