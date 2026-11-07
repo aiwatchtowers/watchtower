@@ -16,7 +16,8 @@
       "analytics": true,
       "launch_hooks": false,
       "background_tasks": true,
-      "app_session_id": true
+      "app_session_id": true,
+      "analytics_context": true
     },
     "codex": {
       "state_events": ["SessionStart", "UserPromptSubmit", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "Interrupt", "Stop"],
@@ -33,7 +34,8 @@
       "analytics": true,
       "launch_hooks": true,
       "background_tasks": false,
-      "app_session_id": false
+      "app_session_id": false,
+      "analytics_context": false
     }
   }
 }

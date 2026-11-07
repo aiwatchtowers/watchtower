@@ -28,6 +28,9 @@ public struct AgentSessionCapabilities: Decodable, Equatable, Sendable {
     /// The app chooses the agent's session id when it starts a new session
     /// (Claude Code's `--session-id`); otherwise the agent mints its own.
     public let appSessionID: Bool
+    /// The transcript records the context parts and the skill listing that
+    /// agent analytics' Context and Skills blocks read.
+    public let analyticsContext: Bool
 
     enum CodingKeys: String, CodingKey {
         case stateEvents = "state_events"
@@ -45,6 +48,7 @@ public struct AgentSessionCapabilities: Decodable, Equatable, Sendable {
         case launchHooks = "launch_hooks"
         case backgroundTasks = "background_tasks"
         case appSessionID = "app_session_id"
+        case analyticsContext = "analytics_context"
     }
 
     /// A line may go into the session while its agent works: mid-turn input,

@@ -28,6 +28,7 @@ final class AgentSessionCapsTests: XCTestCase {
             XCTAssertEqual((row["failure_signal"] as? String) == "pull", caps.rolloutWatch, kind.rawValue)
             XCTAssertEqual(row["launch_hooks"] as? Bool, caps.launchHooks, kind.rawValue)
             XCTAssertEqual(row["app_session_id"] as? Bool, caps.appSessionID, kind.rawValue)
+            XCTAssertEqual(row["analytics_context"] as? Bool, caps.analyticsContext, kind.rawValue)
         }
     }
 
@@ -35,7 +36,7 @@ final class AgentSessionCapsTests: XCTestCase {
     func testRowsMatchGo() {
         XCTAssertEqual(AgentSessionCaps.of(AgentKind.claude), AgentSessionCaps(
             midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true,
-            appSessionID: true
+            appSessionID: true, analyticsContext: true
         ))
         XCTAssertEqual(AgentSessionCaps.of(AgentKind.codex), AgentSessionCaps(
             midturnInput: true, phoneInput: true, permissionWait: false, idleSignal: false, elicitation: false,
@@ -51,5 +52,14 @@ final class AgentSessionCapsTests: XCTestCase {
         XCTAssertTrue(AgentSessionCaps.of(AgentKind.claude).takesInterrupt)
         XCTAssertFalse(AgentSessionCaps.of(AgentKind.codex).takesLineWhileWorking)
         XCTAssertFalse(AgentSessionCaps.of(AgentKind.codex).takesInterrupt)
+    }
+
+    /// Analytics' caption names the agents whose transcripts record no
+    /// context breakdown, from the capability rows; nil when every one does.
+    func testContextNotMeasuredCaption() {
+        XCTAssertEqual(AgentSessionCaps.contextNotMeasuredCaption(), "Not measured for Codex sessions.")
+        let all = AgentSessionCaps(midturnInput: false, phoneInput: false, permissionWait: false, idleSignal: false,
+                                   elicitation: false, analyticsContext: true)
+        XCTAssertNil(AgentSessionCaps.contextNotMeasuredCaption { _ in all })
     }
 }

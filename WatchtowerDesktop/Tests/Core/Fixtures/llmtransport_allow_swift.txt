@@ -10,8 +10,6 @@ WatchtowerDesktop/Sources/Services/ChatSurfaces/AutomationEditorChatSurface.swif
 WatchtowerDesktop/Sources/Services/ConfigService.swift | applyWorkbenchSection | .claude | 1 | permanent: config writer omits the default workbench.default_agent value
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "claude" | 1 | permanent: config migration: the legacy model regexes
 WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "codex" | 1 | permanent: config migration: the legacy model regexes
-WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | notFoundReason | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
-WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionStartStopHandlers.swift | outcome | .codex | 1 | G7: phone start/stop reasons decided by agent kind; becomes not_supported by capability
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .claude | 1 | permanent: display-name table of the closed AIProvider enum
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .codex | 1 | permanent: display-name table of the closed AIProvider enum
 WatchtowerDesktop/Sources/ViewModels/ChatViewModel.swift | var displayName | .ollama | 1 | permanent: display-name table of the closed AIProvider enum

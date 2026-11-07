@@ -123,7 +123,7 @@ func (claudeAdapter) Caps() Caps {
 		FailureSignal: SignalHook, InterruptSignal: SignalHook,
 		IdleSignal: true, PermissionWait: true, MidturnInput: true, PhoneInput: true, Elicitation: true,
 		RegistryProbe: true, SubagentFeed: true, Analytics: true, BackgroundTasks: true,
-		AppSessionID: true,
+		AppSessionID: true, AnalyticsContext: true,
 	}
 }
 
@@ -148,6 +148,13 @@ func (claudeAdapter) LaunchCommand(s Start) LaunchCommand {
 		Prompt: new(positionalPrompt(*s.Prompt)),
 		Runs:   true,
 	}
+}
+
+func (claudeAdapter) NotFoundReason() string { return "claude_not_found" }
+
+// NotFoundMessage: `exec claude` found no claude on the login shell's PATH.
+func (claudeAdapter) NotFoundMessage() string {
+	return "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
 }
 
 // StoresTranscriptPath: Claude readers find a transcript by session id.

@@ -109,4 +109,18 @@ final class AgentAnalyticsPaneTests: XCTestCase {
         XCTAssertFalse(try texts(overviewView(claudeOnly)).contains(caption))
         XCTAssertEqual(AgentAnalyticsCodexShare.of([]), .none)
     }
+
+    /// The share counts the sessions whose agent's capability row has no
+    /// context breakdown (`AgentSessionCaps.analyticsContext`), not a kind.
+    func testShareReadsTheAnalyticsContextCapability() throws {
+        let mixed = try CodexAnalyticsShotFixtures.overview()
+        XCTAssertEqual(AgentAnalyticsCodexShare.of(mixed.sessions), .some)
+        let none = AgentSessionCaps(midturnInput: false, phoneInput: false, permissionWait: false, idleSignal: false,
+                                    elicitation: false)
+        let withoutBreakdown = AgentAnalyticsCodexShare.of(mixed.sessions) { _ in none }
+        XCTAssertEqual(withoutBreakdown, .all, "every agent without the breakdown")
+        let all = AgentSessionCaps(midturnInput: false, phoneInput: false, permissionWait: false, idleSignal: false,
+                                   elicitation: false, analyticsContext: true)
+        XCTAssertEqual(AgentAnalyticsCodexShare.of(mixed.sessions) { _ in all }, .none)
+    }
 }

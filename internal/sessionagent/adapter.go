@@ -61,6 +61,12 @@ type Adapter interface {
 	// LaunchCommand is the login shell's command for one start of the
 	// agent (sessionstart.Launch; the Desktop's TerminalLaunch.make).
 	LaunchCommand(s Start) LaunchCommand
+	// NotFoundReason is the phone's action reason for a start whose binary
+	// is missing (the Kit's ActionReason raw value).
+	NotFoundReason() string
+	// NotFoundMessage is that start's line (the Desktop's
+	// TerminalLaunch.exitMessage for exit 127).
+	NotFoundMessage() string
 	// StoresTranscriptPath reports that the row keeps the transcript path
 	// the agent's SessionStart reported (agent_transcript_path), which
 	// LoadSession reads.

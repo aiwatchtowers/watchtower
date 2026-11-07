@@ -11,7 +11,7 @@ package struct ClaudeSessionAgent: SessionAgent {
     package var caps: AgentSessionCaps {
         AgentSessionCaps(
             midturnInput: true, phoneInput: true, permissionWait: true, idleSignal: true, elicitation: true,
-            appSessionID: true
+            appSessionID: true, analyticsContext: true
         )
     }
 
@@ -24,6 +24,8 @@ package struct ClaudeSessionAgent: SessionAgent {
     package var notFoundMessage: String {
         "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
     }
+
+    package var notFoundReason: String { "claude_not_found" }
 
     /// `exec claude` with the app's id, `--resume` for a resume. A first
     /// prompt travels in `TerminalLaunch.firstPromptEnv`: `/bin/sh` reads the

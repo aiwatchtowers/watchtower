@@ -19,20 +19,22 @@ enum AgentAnalyticsBlockState: Equatable {
     }
 }
 
-/// How much of the period is Codex sessions. A rollout records no baseline
-/// parts or skill listing, so the Context and Skills blocks skip them and
-/// say so in one caption (U4).
+/// How much of the period is sessions whose agent's transcript records no
+/// baseline parts or skill listing (`AgentSessionCaps.analyticsContext`
+/// false: Codex), so the Context and Skills blocks skip them and say so in
+/// one caption (U4).
 enum AgentAnalyticsCodexShare: Equatable {
     case none
     case some
     case all
 
-    static let notMeasuredLine = "Not measured for Codex sessions."
+    /// The caption, naming those agents from the capability rows.
+    static var notMeasuredLine: String { AgentSessionCaps.contextNotMeasuredCaption() ?? "" }
 
-    static func of(_ sessions: [AgentSessionRow]) -> Self {
-        let codex = sessions.filter { $0.agentKind == .codex }.count
-        if codex == 0 { return .none }
-        return codex == sessions.count ? .all : .some
+    static func of(_ sessions: [AgentSessionRow], caps: (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of) -> Self {
+        let unmeasured = sessions.filter { row in row.agentKind.map { !caps($0).analyticsContext } ?? false }.count
+        if unmeasured == 0 { return .none }
+        return unmeasured == sessions.count ? .all : .some
     }
 }
 

@@ -63,6 +63,10 @@ type Caps struct {
 	// its creation and a relaunch resumes it; otherwise the agent mints its
 	// own and its first SessionStart reports it.
 	AppSessionID bool `json:"app_session_id"`
+	// AnalyticsContext: the transcript records the context parts at session
+	// start and the skill listing, which agent analytics' Context and Skills
+	// blocks read (Claude Code's; a Codex rollout records neither).
+	AnalyticsContext bool `json:"analytics_context"`
 }
 
 // TakesLineWhileWorking reports whether a line may go into the session while
