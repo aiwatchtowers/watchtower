@@ -541,8 +541,9 @@ const (
 	readStateRefreshInterval = time.Hour
 	rosterRefreshInterval    = 24 * time.Hour
 	// readStateDigestWindow bounds the read-cursor pass to channels whose
-	// unread channel digest ended within it; older unread digests are never
-	// auto-marked read from Slack (#881). The pass goes away with digests.
+	// unread channel digest ended within it; an older unread digest no longer
+	// triggers a cursor refresh of its own (#881). The pass goes away with
+	// digests.
 	readStateDigestWindow = 7 * 24 * time.Hour
 )
 
