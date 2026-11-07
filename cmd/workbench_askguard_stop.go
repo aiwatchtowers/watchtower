@@ -115,7 +115,7 @@ type askGuardModelOutput struct {
 	// Context is kept raw: a context that is no JSON string (null, an
 	// array) reads as none and never costs the verdict.
 	Context json.RawMessage `json:"context"`
-	Options            []struct {
+	Options []struct {
 		Label       string `json:"label"`
 		Recommended bool   `json:"recommended"`
 	} `json:"options"`
