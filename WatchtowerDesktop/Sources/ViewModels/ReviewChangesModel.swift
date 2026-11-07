@@ -233,6 +233,8 @@ final class ReviewChangesModel {
     /// The session states in which the agent may still edit the folder.
     static let agentWorkingKinds: Set<SessionSwitcherPresentation.State.Kind> = [.working, .background]
     static let agentWorkingMessage = "The agent is working in this session — undo when it stops."
+    /// A round on the task branch's tip reads commits, not a folder (board #1012).
+    static let branchTipUndoMessage = "Undo is not available on a branch review: it reads the branch's commits, not a folder."
 
     /// The pane's reading of `isAgentWorking`: the session's dot state
     /// (a session that is not live does not work, whatever its last hook said).
@@ -364,6 +366,9 @@ final class ReviewChangesModel {
             if rows.isEmpty, marks.isEmpty, info.prevRoundId > 0 {
                 try await carryOver(from: info.prevRoundId, into: info)
                 marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
+            } else {
+                // Go moved the open round to the session's new place (board #1012): its comments follow as on a Refresh.
+                try await replaceStale(rows, round: info)
             }
             try reloadComments()
             viewed = marks
@@ -433,19 +438,7 @@ final class ReviewChangesModel {
             let roundID = info.id
             sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
-            let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
-            if !stale.isEmpty {
-                let plan = try await plan(stale, round: info)
-                try await write { db in
-                    for c in stale {
-                        if let place = plan.moved[c.id] {
-                            try ReviewQueries.replace(db, id: c.id, placement: place, treeSHA: info.treeSha)
-                        } else if plan.lost.contains(c.id) {
-                            try ReviewQueries.markOutdated(db, id: c.id)
-                        }
-                    }
-                }
-            }
+            try await replaceStale(rows, round: info)
             try reloadComments()
             try reloadReverts()
             await reloadSides()
@@ -1038,12 +1031,16 @@ final class ReviewChangesModel {
     // MARK: - Undo
 
     var canUndo: Bool {
-        round?.status == "open" && !sending && !undoing && !isAgentWorking()
+        round?.status == "open" && round?.isBranchTip == false && !sending && !undoing && !isAgentWorking()
     }
 
     /// Undoes one hunk of the shown diff in the work tree (Go checks the blob
     /// and `apply --check -R`); refused here while the agent works.
     func undo(hunkID: String) async {
+        guard round?.isBranchTip != true else {
+            lastError = Self.branchTipUndoMessage
+            return
+        }
         guard !isAgentWorking() else {
             lastError = Self.agentWorkingMessage
             return
@@ -1359,6 +1356,23 @@ final class ReviewChangesModel {
             try ReviewQueries.carry(db, from: previous, into: info.id, plan: plan, treeSHA: info.treeSha)
             for (path, key) in oldMarks where keys[path] == key {
                 try ReviewQueries.setViewed(db, roundID: info.id, path: path, contentSHA: key)
+            }
+        }
+    }
+
+    /// Re-places the round's drafts and carried comments made on another tree
+    /// onto its current one: moved, or outdated when their lines are lost.
+    private func replaceStale(_ rows: [ReviewComment], round info: ReviewRoundInfo) async throws {
+        let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
+        guard !stale.isEmpty else { return }
+        let plan = try await plan(stale, round: info)
+        try await write { db in
+            for c in stale {
+                if let place = plan.moved[c.id] {
+                    try ReviewQueries.replace(db, id: c.id, placement: place, treeSHA: info.treeSha)
+                } else if plan.lost.contains(c.id) {
+                    try ReviewQueries.markOutdated(db, id: c.id)
+                }
             }
         }
     }

@@ -22,10 +22,18 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     /// '' | `ReviewOutcome.changes` | `ReviewOutcome.approved` (00155). `review start` answers only open
     /// rounds ('' there); the model sets its copy after a Send or Approve.
     package var outcome: String
+    /// `session` reviews the folder's work tree; `pr` the task branch's committed
+    /// tip, read-only (board #1012). Absent in older output: `session`.
+    package let source: String
+    /// The branch a `pr` round reviews; "" otherwise.
+    package let branch: String
+
+    /// The round reads a branch's commits, not a folder: no uncommitted edits, no Undo.
+    package var isBranchTip: Bool { source == "pr" }
 
     private enum CodingKeys: String, CodingKey {
         case id, status, mode, folderRoot, baseSha, baseLabel, treeSha, prevRoundId, prevTreeSha, prevTreeLost
-        case phase, chapterKey, activeSeconds, outcome
+        case phase, chapterKey, activeSeconds, outcome, source, branch
     }
 
     package init(from decoder: Decoder) throws {
@@ -44,6 +52,8 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
         chapterKey = try c.decodeIfPresent(String.self, forKey: .chapterKey) ?? ""
         activeSeconds = try c.decodeIfPresent(Int.self, forKey: .activeSeconds) ?? 0
         outcome = try c.decodeIfPresent(String.self, forKey: .outcome) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? "session"
+        branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
     }
 }
 
