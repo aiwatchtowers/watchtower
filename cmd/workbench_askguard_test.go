@@ -1454,3 +1454,69 @@ func TestAskGuardDiagnostics(t *testing.T) {
 	assert.Empty(t, out)
 	assert.Contains(t, errOut, `read the classifier's request "maybe" as none`)
 }
+
+// Classifier v5: a chat request's context is kept on one line, clipped to
+// askGuardContextRunes, dropped when it only repeats the question (case
+// folded, after normalising) or is blank, and cleared for any request other
+// than chat.
+func TestAskGuardContextNormalisation(t *testing.T) {
+	decode := func(t *testing.T, m map[string]any) askGuardVerdict {
+		t.Helper()
+		b, err := json.Marshal(m)
+		require.NoError(t, err)
+		v, err := decodeAskGuardVerdict(string(b))
+		require.NoError(t, err)
+		return v
+	}
+	chat := func(question, context string) map[string]any {
+		return map[string]any{"request": "chat", "question": question, "context": context, "options": []any{}}
+	}
+
+	v := decode(t, chat("Ship it?", "  The tests pass.\nShipping   now saves a day;\n\nI recommend yes.  "))
+	assert.Equal(t, "The tests pass. Shipping now saves a day; I recommend yes.", v.Context, "one line, whitespace collapsed")
+
+	long := strings.Repeat("é", askGuardContextRunes+50)
+	v = decode(t, chat("Ship it?", long))
+	assert.Equal(t, askGuardContextRunes, utf8.RuneCountInString(v.Context), "clipped")
+
+	for _, same := range []string{"Ship it?", "  ship IT?\n", "", "   \n "} {
+		v = decode(t, chat("Ship it?", same))
+		assert.Empty(t, v.Context, "%q repeats the question or is blank", same)
+	}
+
+	for _, request := range []string{"full", "none", "maybe"} {
+		v = decode(t, map[string]any{"request": request, "question": "Why?", "context": "Because the spec is new."})
+		assert.Empty(t, v.Context, "request %s carries no context", request)
+	}
+	// A chat request with no question reads as full, so its context goes too.
+	v = decode(t, chat("", "Because the spec is new."))
+	assert.Equal(t, askRequestFull, v.Request)
+	assert.Empty(t, v.Context)
+
+	// A closed yes/no question's two answers are ordinary options.
+	v = decode(t, map[string]any{"request": "chat", "question": "Merge the PR now?", "context": "CI is green.",
+		"options": []map[string]any{{"label": "Yes", "recommended": true}, {"label": "No"}}})
+	assert.Equal(t, []db.ChatQuestionOption{{Label: "Yes", Recommended: true}, {Label: "No"}}, v.Options)
+	assert.Equal(t, "CI is green.", v.Context)
+}
+
+// The Stop guard records a chat question's context with it, so the
+// escalation can show it.
+func TestStopGuardRecordsTheQuestionsContext(t *testing.T) {
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	useAskGuardGen(t, &stubAskGuardGen{reply: `{"request":"chat","question":"Merge the PR now?",` +
+		`"context":"CI is green; merging now unblocks the release. I recommend yes.",` +
+		`"options":[{"label":"Yes","recommended":true},{"label":"No"}]}`})
+
+	out, _, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10),
+		strings.NewReader(guardPayload("CI is green; merging now unblocks the release. Merge the PR now? I recommend yes.", false)))
+
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	q := storedChatQuestion(t, database, row)
+	require.NotNil(t, q)
+	assert.Equal(t, db.ChatQuestion{Question: "Merge the PR now?",
+		Context: "CI is green; merging now unblocks the release. I recommend yes.",
+		Options: []db.ChatQuestionOption{{Label: "Yes", Recommended: true}, {Label: "No"}}}, *q)
+}

@@ -4,9 +4,10 @@ Return exactly one JSON object, no other text:
 {"request": "none" | "chat" | "full", "names_ask": true | false, "request_outside_ask": true | false,
  "closing_summary": true | false, "complete_unreported": true | false,
  "question": "<the question to the owner, at most 300 characters; empty unless request is chat>",
+ "context": "<what the owner needs to answer, at most 600 characters; empty unless request is chat>",
  "options": [{"label": "<at most 40 characters>", "recommended": true | false}]}
 1. Default: {"request": "none", "names_ask": false, "request_outside_ask": false, "closing_summary": false,
-   "complete_unreported": false, "question": "", "options": []}. Return the default unless a case below clearly
+   "complete_unreported": false, "question": "", "context": "", "options": []}. Return the default unless a case below clearly
    applies, and when unsure.
 2. names_ask is true when the message names an ask ("ask #<number>"), including step-by-step help for the owner on
    that ask. request_outside_ask is true when the message's request (chat or full) is something other than what a
@@ -19,8 +20,13 @@ Return exactly one JSON object, no other text:
    related decisions, or the owner would need more than the message to answer.
 5. request "chat": the message waits on the owner for one thing answerable from the conversation: a clarification, a
    yes/no, a choice among a few named options. Put that question in "question" and the options the message itself
-   names in "options", with "recommended" true on the one the message recommends; never invent options. A question to
-   the owner beside a named ask is still a request (request_outside_ask true).
+   names in "options", with "recommended" true on the one the message recommends. For a closed yes/no question,
+   "options" are its two answers in the message's language (for example "Yes" and "No", or "Да" and "Нет"), with
+   "recommended" true on the one the message recommends and on neither when it recommends none. Never invent options
+   for any other question. Put in "context" 1-3 sentences copied from the message, verbatim or nearly so and in its
+   language, that the owner needs to answer: why the agent asks, what each answer changes, what the agent recommends.
+   Never repeat the question in "context"; leave it empty when the message gives nothing beyond the question. A
+   question to the owner beside a named ask is still a request (request_outside_ask true).
 6. Not requests: rhetorical questions, questions the agent answers itself, and offers such as "say if you want X".
    The request check takes priority over the not-complete list in 7: a question or request to the owner inside a
    progress report is still "chat" or "full".
