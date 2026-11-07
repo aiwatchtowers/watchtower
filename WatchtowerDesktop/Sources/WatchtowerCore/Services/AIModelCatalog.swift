@@ -50,22 +50,37 @@ package final class AIModelCatalog {
     package private(set) var isLoading = false
     package private(set) var lastError: String?
 
+    /// `watchtower ai models --json`'s output; nil when the CLI is not found.
+    package typealias Fetch = @Sendable () async -> ProcessOutput?
+
+    /// Posted on the main actor after a read replaced the rows: surfaces that
+    /// decided something before the catalog was read (AGENT-04's tool
+    /// access) decide again.
+    package static let didLoadNotification = Notification.Name("AIModelCatalog.didLoad")
+
     /// The app's one catalog: what the chat surfaces read a provider's
     /// capabilities from (AppState.aiModelCatalog is this instance; it is
-    /// read once at launch, and again by Settings and the chat).
+    /// read at launch, tray-only included, and again by Settings and the chat).
     package static let shared = AIModelCatalog()
 
-    package init() {}
+    @ObservationIgnored private let fetch: Fetch
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+
+    package init(fetch: @escaping Fetch = AIModelCatalog.fetchFromCLI) {
+        self.fetch = fetch
+    }
 
     /// A catalog already read (tests, previews).
     package init(providers: [Provider]) {
+        fetch = Self.fetchFromCLI
         self.providers = providers
     }
 
     /// Replaces the rows as a read would (tests seed the shared catalog
-    /// with the Go-written fixture).
+    /// with the Go-written fixture), and says so like a read.
     package func replaceProviders(_ providers: [Provider]) {
         self.providers = providers
+        NotificationCenter.default.post(name: Self.didLoadNotification, object: self)
     }
 
     package func provider(_ id: String) -> Provider? {
@@ -137,32 +152,44 @@ package final class AIModelCatalog {
         try JSONDecoder().decode(Output.self, from: data)
     }
 
-    /// Fetch the registry from the CLI. Safe to call repeatedly; concurrent
-    /// calls collapse into one run.
+    /// Fetch the registry from the CLI. Safe to call repeatedly: a call
+    /// while a read runs waits for that read instead of starting another.
     package func load() async {
-        guard !isLoading else { return }
+        if let loadTask {
+            await loadTask.value
+            return
+        }
+        let task = Task { await performLoad() }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    private func performLoad() async {
         isLoading = true
         defer { isLoading = false }
-
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let output = await fetch() else {
             lastError = "watchtower CLI not found"
             return
         }
-
-        let output = await Self.fetchModels(cliPath: cliPath)
         guard output.exitCode == 0 else {
             let detail = CLILog.detail(output.stderr)
             lastError = "watchtower ai models failed (exit \(output.exitCode))" + (detail.isEmpty ? "" : ": \(detail)")
             return
         }
-        let data = Data(output.stdout.utf8)
         do {
-            let parsed = try Self.parse(data)
-            providers = parsed.providers
+            let parsed = try Self.parse(Data(output.stdout.utf8))
             lastError = nil
+            replaceProviders(parsed.providers)
         } catch {
             lastError = "parsing ai models output: \(error.localizedDescription)"
         }
+    }
+
+    /// The production read: the CLI found by `Constants.findCLIPath`.
+    nonisolated package static func fetchFromCLI() async -> ProcessOutput? {
+        guard let cliPath = Constants.findCLIPath() else { return nil }
+        return await fetchModels(cliPath: cliPath)
     }
 
     /// `watchtower ai models --json`, set up off the main actor; the login

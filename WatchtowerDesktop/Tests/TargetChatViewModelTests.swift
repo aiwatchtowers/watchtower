@@ -1633,3 +1633,94 @@ extension TargetChatViewModelTests {
         XCTAssertFalse(AIModelCatalog().isKnownCLI("claude"), "a catalog not read yet: draft-only (AGENT-04 fails closed)")
     }
 }
+
+extension TargetChatViewModelTests {
+    /// AGENT-04 before and after the catalog's first read: a target chat
+    /// opened before it is draft-only, then gets tools on claude and codex
+    /// once the read lands and stays draft-only on ollama (a local server).
+    func testToolAccessDecidedAgainWhenTheCatalogLoads() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        defer { ProviderCatalogFixture.seedShared() }
+        for (provider, tools) in [("claude", true), ("codex", true), ("ollama", false)] {
+            AIModelCatalog.shared.replaceProviders([])
+            let conv = try manager.dbPool.write { db in
+                try ChatConversationQueries.create(db, title: provider, contextType: "target", contextID: String(target.id)).id
+            }
+            let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                           conversationID: conv) { provider }
+            XCTAssertFalse(chat.toolsAvailable, "\(provider): draft-only before the catalog is read")
+            XCTAssertEqual(chat.engine.spec.toolAccess, .draftOnly)
+
+            ProviderCatalogFixture.seedShared() // the read lands and is announced
+            XCTAssertEqual(chat.toolsAvailable, tools, provider)
+            XCTAssertEqual(chat.engine.spec.toolAccess, tools ? .actions(surface: "target") : .draftOnly, provider)
+            chat.stop()
+        }
+    }
+}
+
+extension TargetChatViewModelTests {
+    /// The catalog's read lands while a turn runs: that turn finishes as it
+    /// started (draft-only) and the next one carries the tools. A read of
+    /// another catalog instance changes nothing, and after `stop()` the chat
+    /// no longer listens.
+    func testCatalogReadDuringATurnAppliesToTheNextTurn() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        defer { ProviderCatalogFixture.seedShared() }
+        AIModelCatalog.shared.replaceProviders([])
+        let mock = MockClaudeService(eventSequence: [[.text("one"), .done], [.text("two"), .done]], thenAwaitsRelease: true)
+        let conv = try await manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(target.id)).id
+        }
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       conversationID: conv, aiService: mock) { "claude" }
+
+        // Another catalog's read is not the app's: no change.
+        AIModelCatalog(providers: []).replaceProviders(ProviderCatalogFixture.providers())
+        XCTAssertFalse(chat.toolsAvailable)
+
+        chat.inputText = "first"
+        chat.send()
+        let started = await eventually { mock.toolModes.count == 1 }
+        XCTAssertTrue(started)
+        XCTAssertTrue(chat.isStreaming)
+        ProviderCatalogFixture.seedShared() // the read lands mid-turn
+        XCTAssertTrue(chat.toolsAvailable)
+        XCTAssertTrue(chat.isStreaming, "the running turn is not touched")
+        mock.release()
+        await chat.engine.finished()
+        let idle = await eventually { !chat.isStreaming }
+        XCTAssertTrue(idle)
+        XCTAssertNil(chat.errorMessage)
+        XCTAssertNil(mock.toolModes[0], "the first turn ran draft-only")
+
+        chat.inputText = "second"
+        chat.send()
+        let second = await eventually { mock.toolModes.count == 2 }
+        XCTAssertTrue(second, "the second turn reached the provider")
+        XCTAssertNotNil(mock.toolModes.count == 2 ? mock.toolModes[1] : nil, "the next turn carries the tools")
+        await chat.engine.finished()
+
+        chat.stop()
+        AIModelCatalog.shared.replaceProviders([])
+        XCTAssertTrue(chat.toolsAvailable, "a stopped chat no longer listens")
+    }
+
+    /// The launch reads the catalog only after the CLI store sync, so the
+    /// read runs the binary the store now holds.
+    func testLaunchReadsTheCatalogAfterTheCLIStoreSync() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = root.appendingPathComponent("Sources/App/AppState.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let launch = try XCTUnwrap(source.range(of: "launchTask = Task {"))
+        let sync = try XCTUnwrap(source.range(of: "await syncCLIBinaryStore()", range: launch.upperBound..<source.endIndex))
+        let read = try XCTUnwrap(source.range(of: "loadModelCatalogAtLaunch()", range: launch.upperBound..<source.endIndex))
+        XCTAssertLessThan(sync.lowerBound, read.lowerBound)
+    }
+}

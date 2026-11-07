@@ -11,6 +11,12 @@ package struct ProcessOutput: Sendable {
     package let stdout: String
     package let stderr: String
 
+    package init(exitCode: Int32, stdout: String, stderr: String) {
+        self.exitCode = exitCode
+        self.stdout = stdout
+        self.stderr = stderr
+    }
+
     /// Both streams trimmed of surrounding whitespace, as the tuple the ad-hoc
     /// wrappers hand their callers.
     package var trimmed: (exitCode: Int32, stdout: String, stderr: String) {

@@ -400,9 +400,6 @@ struct WatchtowerApp: App {
             // Screen links render only for the screens visible right now.
             .environment(\.markdownNavScreens, appState.visibleHelpScreenIDs)
             .environment(\.dictationCenter, appState.dictationCenter)
-            // The providers' capability rows the chat surfaces read (tools,
-            // folder reading, attachments, the fallback pair).
-            .task { await appState.aiModelCatalog.load() }
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap
                 // (same singleton, `initialize()` latched by `isInitializing`).
