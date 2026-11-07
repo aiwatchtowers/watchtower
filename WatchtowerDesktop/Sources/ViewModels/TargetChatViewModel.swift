@@ -418,7 +418,7 @@ final class TargetChatViewModel {
     /// the engine stores AFTER the reply, keeping the transcript in
     /// assistant-then-system order.
     private func surfaceActions(_ input: ChatPostTurnInput) async -> ChatPostTurnResult {
-        // Actions only from the text after the last tool step: a block the
+        // Actions only from the text after the last tool call started: a block the
         // model revised after a tool result is applied once (TGT-BRIEF-03).
         let parsed = TargetActionParser.parse(reply: input.reply, finalText: input.finalText)
         // When the AI emits only an action block, visible prose is empty; show a

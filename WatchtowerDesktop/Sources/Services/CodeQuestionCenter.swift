@@ -238,12 +238,15 @@ final class CodeQuestionCenter {
     @discardableResult
     func ask(_ text: String, workbenchID: Int64) async -> Bool {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, let session = sessions[workbenchID], !session.isStarting,
+        guard !question.isEmpty else { return false }
+        // Before the session is read: a popover replaced during the wait is
+        // the one this question goes to only if it is still the shown one.
+        await readCatalogIfUnread()
+        guard let session = sessions[workbenchID], !session.isStarting,
               !isDeleting(session.conversationID) else { return false }
         if session.conversationID == nil {
             guard await startConversation(workbenchID: workbenchID) else { return false }
         }
-        await readCatalogIfUnread()
         guard let engine = engine(workbenchID: workbenchID) else { return false }
         guard engine.send(question) else {
             sessions[workbenchID]?.notice = "Wait for the answer to finish, then ask again."

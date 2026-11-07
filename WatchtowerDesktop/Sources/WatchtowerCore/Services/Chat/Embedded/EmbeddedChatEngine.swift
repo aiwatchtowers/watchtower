@@ -174,8 +174,8 @@ package final class EmbeddedChatEngine {
         let bannerAtBegin: String?
         var stopRequested = false
         var failure: EmbeddedChatErrorClassifier.Failure?
-        /// The reply's text when its latest tool step started or ended: what
-        /// follows it is `ChatPostTurnInput.finalText`.
+        /// The reply's text when its latest tool step started: what follows
+        /// it is `ChatPostTurnInput.finalText`.
         var textAtLastStep = ""
     }
 
@@ -502,10 +502,10 @@ package final class EmbeddedChatEngine {
                     continue
                 }
                 if recordStepOrUsage(event, turn: turn) {
-                    switch event {
-                    case .toolStart, .toolEnd: running?.textAtLastStep = turn.fullText
-                    default: break
-                    }
+                    // A tool call's start is the cutoff, not its end: a
+                    // provider may close an open step after the final text
+                    // (a skipped result line), which must not drop it.
+                    if case .toolStart = event { running?.textAtLastStep = turn.fullText }
                     continue
                 }
                 switch reducer.apply(event) {

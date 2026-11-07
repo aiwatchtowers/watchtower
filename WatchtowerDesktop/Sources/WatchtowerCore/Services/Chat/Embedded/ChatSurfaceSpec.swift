@@ -81,8 +81,8 @@ package struct ChatTurnInput: Sendable {
 package struct ChatPostTurnInput: Sendable {
     /// The whole reply, with the text written before its tool calls.
     package let reply: String
-    /// The reply's text after its last tool step (the whole reply when it
-    /// called no tool). A surface reads directives from here only: a block
+    /// The reply's text after its last tool call started (the whole reply
+    /// when it called no tool). A surface reads directives from here only: a block
     /// written before a tool call and revised after it is acted on once, in
     /// its final version (TGT-BRIEF-03).
     package let finalText: String

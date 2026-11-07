@@ -173,7 +173,8 @@ final class EmbeddedChatEngineTests: XCTestCase {
     }
 
     /// postTurn reads directives from the text after the reply's last tool
-    /// step only (TGT-BRIEF-03); the stored reply keeps the whole text.
+    /// call started only (TGT-BRIEF-03); the stored reply keeps the whole
+    /// text, and a late synthetic step end moves nothing.
     func testPostTurnGetsTheTextAfterTheLastToolStep() async throws {
         var input: ChatPostTurnInput?
         let engine = makeEngine(spec: spec { input = $0; return .identity($0) })
@@ -185,7 +186,10 @@ final class EmbeddedChatEngineTests: XCTestCase {
                 .text(" Middle."),
                 .toolStart(ChatToolStart(turnID: "query", id: "t2", name: "get_target", argsJSON: "{}")),
                 .toolEnd(ChatToolEnd(turnID: "query", id: "t2", ok: true, summary: "ok", sources: [])),
-                .text(" Final."), .done)
+                .text(" Final."),
+                // A provider closing a step whose result line it skipped,
+                // after the final text: not a cutoff.
+                .toolEnd(ChatToolEnd(turnID: "query", id: "t3", ok: false, summary: "", sources: [])), .done)
         ai.finish()
         expectTrue(await waitIdle(engine))
         XCTAssertEqual(input?.reply, "Draft. Middle. Final.")

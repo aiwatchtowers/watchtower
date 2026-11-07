@@ -131,7 +131,11 @@ enum CodeQuestionSurface {
                 return defaultModelChoice()
             }
         }
+        // Whether the catalog read had failed when the turn started: its
+        // run options then gave no folder, whatever a later read says.
+        let turnStart = TurnCatalogState()
         let runOptions = { @MainActor () -> ChatRunOptions in
+            turnStart.unread = AIModelCatalog.shared.unreadReason != nil
             let choice = currentChoice()
             return ChatRunOptions(provider: choice.provider.rawValue,
                                   model: choice.model.isEmpty ? nil : choice.model,
@@ -152,7 +156,7 @@ enum CodeQuestionSurface {
                 var result = ChatPostTurnResult.identity(input)
                 // The model's notice is stored for good: written only when the
                 // row is known. A turn built after the catalog read failed says so.
-                if let notice = turnNotice(catalog: .shared, choice: currentChoice()),
+                if let notice = turnNotice(unreadAtStart: turnStart.unread, catalog: .shared, choice: currentChoice()),
                    !hasNotice(notice, conversationID: conversationID, dbPool: dbPool) {
                     result.notices = [notice]
                 }
@@ -164,10 +168,10 @@ enum CodeQuestionSurface {
     }
 
     /// The notice a finished turn carries: the catalog could not be read
-    /// (the turn had no folder), or the model reads no files; nil while the
-    /// rows are not known and no read failed.
-    static func turnNotice(catalog: AIModelCatalog, choice: ModelChoice) -> String? {
-        if catalog.unreadReason != nil { return capabilitiesUnreadNotice }
+    /// when it started (the turn had no folder), or the model reads no
+    /// files; nil while the rows are not known and no read failed.
+    static func turnNotice(unreadAtStart: Bool, catalog: AIModelCatalog, choice: ModelChoice) -> String? {
+        if unreadAtStart { return capabilitiesUnreadNotice }
         guard catalog.isLoaded, !catalog.capabilities(for: choice.provider.rawValue).readsFolder else { return nil }
         return cannotReadFilesNotice
     }
@@ -253,4 +257,10 @@ enum CodeQuestionSurface {
         - Be concise.
         """
     }
+}
+
+/// What a code question's turn saw of the catalog when it started.
+@MainActor
+private final class TurnCatalogState {
+    var unread = false
 }

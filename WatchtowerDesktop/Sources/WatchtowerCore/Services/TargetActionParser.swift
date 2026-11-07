@@ -8,7 +8,7 @@ package enum TargetActionParser {
 
     /// A reply that may have called tools: the visible text is the whole
     /// reply without its blocks, the actions and errors come from
-    /// `finalText` only (the text after the last tool step,
+    /// `finalText` only (the text after the last tool call started,
     /// `ChatPostTurnInput.finalText`). A block written before a tool call is
     /// a draft the model may revise after the result; only the final version
     /// is applied, so an execute-mode change never lands twice

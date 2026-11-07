@@ -177,19 +177,20 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         XCTAssertTrue(CodeQuestionSurface.readingInstructions(.none).contains("You cannot read any other file"))
     }
 
-    /// A catalog read that failed with no rows: the turn had no folder and
-    /// says why, whatever the provider; an unread catalog with no failure
-    /// (nothing finished yet) says nothing it cannot know.
-    func testATurnAfterAFailedCatalogReadNamesIt() async {
+    /// A turn started after the catalog read failed had no folder and says
+    /// why, whatever the provider and whatever a later read says; an unread
+    /// catalog with no failure says nothing it cannot know.
+    func testATurnAfterAFailedCatalogReadNamesIt() {
         let claude = CodeQuestionSurface.ModelChoice(provider: .claude, model: "")
-        let failed = AIModelCatalog { nil }
-        XCTAssertNil(CodeQuestionSurface.turnNotice(catalog: failed, choice: claude), "no read finished yet")
-        await failed.load()
-        XCTAssertEqual(CodeQuestionSurface.turnNotice(catalog: failed, choice: claude),
-                       CodeQuestionSurface.capabilitiesUnreadNotice)
         let read = AIModelCatalog(providers: ProviderCatalogFixture.providers())
-        XCTAssertNil(CodeQuestionSurface.turnNotice(catalog: read, choice: claude))
-        XCTAssertEqual(CodeQuestionSurface.turnNotice(catalog: read, choice: .init(provider: .ollama, model: "")),
+        XCTAssertEqual(CodeQuestionSurface.turnNotice(unreadAtStart: true, catalog: read, choice: claude),
+                       CodeQuestionSurface.capabilitiesUnreadNotice,
+                       "a read that recovered while the turn ran does not hide that the turn had no folder")
+        XCTAssertNil(CodeQuestionSurface.turnNotice(unreadAtStart: false, catalog: AIModelCatalog { nil }, choice: claude),
+                     "no read finished yet")
+        XCTAssertNil(CodeQuestionSurface.turnNotice(unreadAtStart: false, catalog: read, choice: claude))
+        XCTAssertEqual(CodeQuestionSurface.turnNotice(unreadAtStart: false, catalog: read,
+                                                      choice: .init(provider: .ollama, model: "")),
                        CodeQuestionSurface.cannotReadFilesNotice)
     }
 
