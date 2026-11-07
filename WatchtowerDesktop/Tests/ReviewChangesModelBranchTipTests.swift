@@ -191,4 +191,26 @@ extension ReviewChangesModelTests {
         XCTAssertTrue(h.model.previousTreeLost)
         XCTAssertFalse(h.cli.calls("diff").contains { $0.contains("--since") })
     }
+
+    /// Codex round 3: a draft on a blank line has no quote to find; a plain
+    /// reopen (which re-places old-side drafts) leaves it as it is.
+    func testReopenLeavesADraftOnABlankLine() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["file": fileJSON(old: "x\n\ny\n", new: "n\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        try await h.model.addComment(path: "a.go", side: "old", startLine: 2, endLine: 2, body: "blank")
+        // A fresh pane on the same round: it has not placed the comments yet.
+        let cli = ReviewScriptedRunner(db: h.db, projectID: h.projectID, sessionID: h.sessionID)
+        cli.script(["start": startJSON(id: 7, prev: 0), "context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"]),
+                    "file": fileJSON(old: "x\n\ny\n", new: "n\n")])
+        let fresh = ReviewChangesModel(projectID: h.projectID, sessionID: h.sessionID, cli: WorkbenchCLI(runner: cli), db: h.db,
+                                       lineDelivery: h.sink) { false }
+        await fresh.open()
+        XCTAssertEqual(fresh.load, .ready)
+        let row = try await h.comments().first { $0.body == "blank" }
+        XCTAssertEqual(row?.status, .draft)
+        XCTAssertEqual(row?.startLine, 2)
+    }
 }

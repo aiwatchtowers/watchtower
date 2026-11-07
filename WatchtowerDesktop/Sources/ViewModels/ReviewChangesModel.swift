@@ -1390,13 +1390,16 @@ final class ReviewChangesModel {
 
     /// The round's drafts and carried comments placed on another diff: made
     /// on another tree, or on the old side when the base may have changed
-    /// (a row records only its tree).
+    /// (a row records only its tree). A comment on blank lines has no quote
+    /// to look for, so it is left where it is rather than marked outdated.
     private static func stale(_ rows: [ReviewComment], round info: ReviewRoundInfo, baseChanged: Bool) -> [ReviewComment] {
         rows.filter {
             ($0.status == .draft || $0.status == .carried) && $0.path != nil
+                && !$0.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && ($0.treeSHA != info.treeSha || (baseChanged && $0.side == "old"))
         }
     }
+
 
     /// The `commentsPlacedOn` key of a round.
     private static func placement(_ info: ReviewRoundInfo) -> String { "\(info.id):\(info.baseSha)" }
