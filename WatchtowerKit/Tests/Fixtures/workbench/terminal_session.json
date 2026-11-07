@@ -11,6 +11,8 @@
   "oldest_ask_id": 12,
   "open_asks": 1,
   "report_done": 1,
+  "report_merged": 1,
+  "report_merged_stale": true,
   "report_pr_line": "PR #175 open",
   "report_target_id": 415,
   "report_total": 2,

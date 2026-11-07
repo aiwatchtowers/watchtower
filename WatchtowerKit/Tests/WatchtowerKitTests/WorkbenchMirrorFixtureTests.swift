@@ -239,6 +239,44 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.reportDone, 1)
         XCTAssertEqual(session.reportTotal, 2)
         XCTAssertEqual(session.reportPRLine, "PR #175 open")
+        XCTAssertEqual(session.reportMerged, 1)
+        XCTAssertEqual(session.reportMergedStale, true)
+        XCTAssertEqual(session.reportMergedText, "1 merged (unchecked)")
+    }
+
+    /// Board #1008: a payload from a Mac before the merged share decodes,
+    /// reads as nothing merged and checked, and adds no merged text.
+    func testTerminalSessionWithoutTheMergedShareDecodes() throws {
+        var json = try object("terminal_session")
+        json["report_merged"] = nil
+        json["report_merged_stale"] = nil
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.reportMerged)
+        XCTAssertNil(session.reportMergedStale)
+        XCTAssertNil(session.reportMergedText)
+        XCTAssertEqual(session.reportDone, 1, "the rest of the report decodes as before")
+    }
+
+    /// The merged share is worded as the Mac's session row
+    /// (`SessionReportPresentation.rowCaption`): only with tasks in scope.
+    func testTheMergedTextMatchesTheMacRow() throws {
+        let cases: [(merged: Int?, stale: Bool?, total: Int?, text: String?)] = [ // swiftlint:disable:this discouraged_optional_boolean
+            (25, nil, 32, "25 merged"),
+            (25, true, 32, "25 merged (unchecked)"),
+            (0, true, 32, "merged not checked"),
+            (nil, true, 32, "merged not checked"),
+            (0, nil, 32, nil),
+            (25, nil, 0, nil),
+            (25, nil, nil, nil)
+        ]
+        for item in cases {
+            var json = try object("terminal_session")
+            json["report_merged"] = item.merged
+            json["report_merged_stale"] = item.stale
+            json["report_total"] = item.total
+            let session = try TerminalSessionState.decode(payload: try data(json))
+            XCTAssertEqual(session.reportMergedText, item.text, "\(item)")
+        }
     }
 
     /// `codex_cli` decodes as the known Codex agent; an agent this build does
