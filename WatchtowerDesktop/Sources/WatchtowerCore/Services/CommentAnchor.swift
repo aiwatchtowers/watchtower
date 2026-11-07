@@ -47,18 +47,20 @@ package struct CommentAnchor: Hashable, Sendable {
 
     /// - Parameter csv: the anchor was made on a `table` artifact, whose
     ///   anchor text used to be its raw CSV.
-    package func locate(in text: String, csv: Bool = false) -> Range<String.Index>? {
+    /// - Parameter near: where the anchor last sat; on a tie between equally
+    ///   good candidates the one nearest to it wins (else the first).
+    package func locate(in text: String, csv: Bool = false, near: String.Index? = nil) -> Range<String.Index>? {
         let needle = Array(Self.collapsed(quote).trimmingCharacters(in: .whitespacesAndNewlines))
         guard !needle.isEmpty else { return nil }
         let exact = Self.exactOccurrences(of: quote, in: text)
         let candidates = exact.isEmpty ? Self.collapsedOccurrences(of: needle, in: text) : exact
-        if !candidates.isEmpty { return pick(candidates, in: text) }
+        if !candidates.isEmpty { return pick(candidates, in: text, near: near) }
         guard let legacy = Self.legacy(quote, csv: csv) else { return nil }
         let legacyNeedle = Array(Self.collapsed(legacy).trimmingCharacters(in: .whitespacesAndNewlines))
         guard !legacyNeedle.isEmpty else { return nil }
         let migrated = Self(quote: legacy, prefix: Self.legacy(prefix, csv: csv) ?? prefix,
                             suffix: Self.legacy(suffix, csv: csv) ?? suffix, heading: heading)
-        return migrated.pick(Self.collapsedOccurrences(of: legacyNeedle, in: text), in: text, requireContext: true)
+        return migrated.pick(Self.collapsedOccurrences(of: legacyNeedle, in: text), in: text, requireContext: true, near: near)
     }
 
     /// `value` as today's rendering would show it, when it was taken from an
@@ -80,7 +82,8 @@ package struct CommentAnchor: Hashable, Sendable {
     private func pick(
         _ candidates: [Range<String.Index>],
         in text: String,
-        requireContext: Bool = false
+        requireContext: Bool = false,
+        near: String.Index? = nil
     ) -> Range<String.Index>? {
         guard candidates.count > 1 || requireContext else { return candidates.first }
         let edge = { (value: String) in requireContext ? value.trimmingCharacters(in: .whitespacesAndNewlines) : value }
@@ -93,7 +96,10 @@ package struct CommentAnchor: Hashable, Sendable {
             return (candidate, score)
         }
         guard let best = scored.map(\.1).max(), best > 0 else { return nil }
-        return scored.first { $0.1 == best }?.0
+        let tied = scored.filter { $0.1 == best }.map(\.0)
+        guard let near, tied.count > 1 else { return tied.first }
+        let distance = { (r: Range<String.Index>) in abs(text.distance(from: near, to: r.lowerBound)) }
+        return tied.min { distance($0) < distance($1) }
     }
 
     private static func commonSuffixLength(_ lhs: [Character], _ rhs: [Character]) -> Int {
