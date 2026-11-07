@@ -1500,6 +1500,37 @@ func TestAskGuardContextNormalisation(t *testing.T) {
 	assert.Equal(t, "CI is green.", v.Context)
 }
 
+// A context that is no JSON string never costs the verdict: it reads as
+// none, and the hook says so on stderr.
+func TestAskGuardContextNotAStringKeepsTheVerdict(t *testing.T) {
+	for _, raw := range []string{`["a","b"]`, `null`, `{"x":1}`, `7`} {
+		v, err := decodeAskGuardVerdict(`{"request":"chat","question":"Merge the PR now?","context":` + raw +
+			`,"options":[{"label":"Yes","recommended":true},{"label":"No"}]}`)
+		require.NoError(t, err, raw)
+		assert.Equal(t, askRequestChat, v.Request, raw)
+		assert.Equal(t, "Merge the PR now?", v.Question, raw)
+		assert.Len(t, v.Options, 2, raw)
+		assert.Empty(t, v.Context, raw)
+		assert.True(t, v.BadContext, raw)
+	}
+	v, err := decodeAskGuardVerdict(`{"request":"chat","question":"Merge?","options":[]}`)
+	require.NoError(t, err)
+	assert.False(t, v.BadContext, "an absent context is no bad one")
+
+	database, pid, row := stopGuardFixture(t)
+	setOwnerPresence(t, database, row, time.Now())
+	useAskGuardGen(t, &stubAskGuardGen{reply: `{"request":"chat","question":"Merge the PR now?","context":["CI is green"],` +
+		`"options":[{"label":"Yes","recommended":true},{"label":"No"}]}`})
+	out, errOut, err := runAskGuardStopHook(t, strconv.FormatInt(pid, 10),
+		strings.NewReader(guardPayload("Merge the PR now?", false)))
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, errOut, "context, which is no string, as none")
+	q := storedChatQuestion(t, database, row)
+	require.NotNil(t, q, "the question is recorded all the same")
+	assert.Equal(t, "", q.Context)
+}
+
 // The Stop guard records a chat question's context with it, so the
 // escalation can show it.
 func TestStopGuardRecordsTheQuestionsContext(t *testing.T) {

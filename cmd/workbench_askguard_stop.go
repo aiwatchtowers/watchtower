@@ -92,6 +92,9 @@ type askGuardVerdict struct {
 	// recommends); "" for any other request.
 	Context string
 	Options []db.ChatQuestionOption
+	// BadContext is set when the model's context was present but no JSON
+	// string (null included); it reads as none.
+	BadContext bool
 	// UnknownRequest is the model's request value when it was none of
 	// none/chat/full and so read as none ("" otherwise, or for an empty one,
 	// which also reads as none).
@@ -109,7 +112,9 @@ type askGuardModelOutput struct {
 	ClosingSummary     bool    `json:"closing_summary"`
 	CompleteUnreported bool    `json:"complete_unreported"`
 	Question           string  `json:"question"`
-	Context            string  `json:"context"`
+	// Context is kept raw: a context that is no JSON string (null, an
+	// array) reads as none and never costs the verdict.
+	Context json.RawMessage `json:"context"`
 	Options            []struct {
 		Label       string `json:"label"`
 		Recommended bool   `json:"recommended"`
@@ -140,7 +145,11 @@ func decodeAskGuardVerdict(reply string) (askGuardVerdict, error) {
 		ClosingSummary:     out.ClosingSummary,
 		CompleteUnreported: out.CompleteUnreported,
 		Question:           out.Question,
-		Context:            out.Context,
+	}
+	if len(out.Context) > 0 {
+		if err := json.Unmarshal(out.Context, &v.Context); err != nil || out.Context[0] != '"' {
+			v.Context, v.BadContext = "", true
+		}
 	}
 	for _, o := range out.Options {
 		v.Options = append(v.Options, db.ChatQuestionOption{Label: o.Label, Recommended: o.Recommended})
@@ -602,6 +611,9 @@ func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Confi
 	}
 	if v.UnknownRequest != "" {
 		fmt.Fprintf(stderr, "watchtower: ask guard read the classifier's request %q as none\n", briefClip(v.UnknownRequest, 40))
+	}
+	if v.BadContext {
+		fmt.Fprintln(stderr, "watchtower: ask guard read the classifier's context, which is no string, as none")
 	}
 	return &v, true
 }
