@@ -136,7 +136,7 @@ Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same 
 
 ### Artifacts
 
-Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider a page, deck or doc is published to your claude.ai account instead. See [Artifacts in Chats](ai-chat-artifacts.md).
+Documents, tables, drafts, events, code and HTML pages open in the artifact panel beside the chat, where you edit, comment, export or present them. On the Claude provider you can ask for a page, deck or doc on claude.ai instead. See [Artifacts in Chats](ai-chat-artifacts.md).
 
 ### Ask about a passage
 <!-- learn
