@@ -419,3 +419,65 @@ func TestReviewRounds_SendSetsOutcomeChanges(t *testing.T) {
 		t.Fatalf("outcome = %q", o)
 	}
 }
+
+// RepointReviewRound moves only an open round, keeping its id and comments.
+func TestReviewRounds_RepointMovesOnlyAnOpenRound(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/tmp/wb-review",
+		BaseSHA: "b", BaseLabel: "main", TreeSHA: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`INSERT INTO review_comments (round_id, path, start_line, end_line, quote, body) VALUES (?, 'a.go', 1, 1, 'x', 'keep')`, id); err != nil {
+		t.Fatal(err)
+	}
+	moved := ReviewRound{ID: id, FolderRoot: "/tmp/wb-review-wt", Source: ReviewSourceBranch, BaseSHA: "b2",
+		BaseLabel: "origin/feature", TreeSHA: "t2"}
+	if err := d.RepointReviewRound(moved); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.GetReviewRound(pid, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FolderRoot != moved.FolderRoot || got.Source != ReviewSourceBranch || got.BaseSHA != "b2" ||
+		got.BaseLabel != "origin/feature" || got.TreeSHA != "t2" || got.Status != "open" {
+		t.Fatalf("round = %+v", got)
+	}
+	if cs, _ := d.ReviewRoundComments(id); len(cs) != 1 || cs[0].Body != "keep" {
+		t.Fatalf("comments = %+v", cs)
+	}
+	if _, _, err := d.SendReviewRound(pid, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RepointReviewRound(moved); !errors.Is(err, ErrReviewRoundNotOpen) {
+		t.Fatalf("repoint of a sent round = %v", err)
+	}
+}
+
+// TicketBranchChain lists the target's branch, then each ancestor's.
+func TestTicketBranchChain(t *testing.T) {
+	d := openTestDB(t)
+	pid, _ := seedReviewSession(t, d)
+	root := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "root")
+	mid := SeedTestWorkbenchTarget(t, d, pid, nullInt(root), "mid")
+	leaf := SeedTestWorkbenchTarget(t, d, pid, nullInt(mid), "leaf")
+	if _, err := d.Exec(`UPDATE targets SET branch = ' feature/x ' WHERE id = ?`, root); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.TicketBranchChain(pid, leaf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0] != "" || got[1] != "" || got[2] != "feature/x" {
+		t.Fatalf("chain = %q", got)
+	}
+	other, err := d.CreateWorkbench("other", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := d.TicketBranchChain(other, leaf); err != nil || len(got) != 0 {
+		t.Fatalf("chain on another workbench = %q, %v", got, err)
+	}
+}

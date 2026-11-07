@@ -26,8 +26,7 @@ func (r *Repo) Base(ctx context.Context) (Base, error) {
 	for _, ref := range r.defaultRefs(ctx) {
 		out, err := r.git(ctx, nil, "merge-base", "HEAD", ref)
 		if err == nil {
-			label := strings.TrimPrefix(strings.TrimPrefix(ref, "refs/remotes/"), "refs/heads/")
-			return Base{SHA: strings.TrimSpace(string(out)), Label: label}, nil
+			return Base{SHA: strings.TrimSpace(string(out)), Label: refLabel(ref)}, nil
 		}
 	}
 	if err := ctx.Err(); err != nil {

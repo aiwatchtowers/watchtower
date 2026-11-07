@@ -65,10 +65,14 @@ func init() {
 	workbenchCmd.AddCommand(workbenchReviewCmd)
 }
 
+// reviewRoundJSON: Source "session" reviews the folder's work tree, "pr" the
+// task branch's committed tip, read-only, named by Branch (board #1012).
 type reviewRoundJSON struct {
 	ID            int64  `json:"id"`
 	Status        string `json:"status"`
 	Mode          string `json:"mode"`
+	Source        string `json:"source"`
+	Branch        string `json:"branch"`
 	FolderRoot    string `json:"folder_root"`
 	BaseSHA       string `json:"base_sha"`
 	BaseLabel     string `json:"base_label"`
@@ -151,7 +155,7 @@ func failReview(cmd *cobra.Command, err error) error {
 }
 
 func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (*reviewRoundJSON, error) {
-	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
+	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, Source: r.Source, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
 		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA, Phase: r.Phase, ChapterKey: r.ChapterKey,
 		ActiveSeconds: r.ActiveSeconds}
 	if r.PrevRoundID.Valid {
@@ -168,11 +172,16 @@ func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *d
 	return out, nil
 }
 
-// writeRound answers the round's envelope.
-func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) error {
+// writeRound answers the round's envelope; src names the branch a branch
+// round reviews.
+func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound,
+	src tools.ReviewSource) error {
 	out, err := roundJSON(ctx, repo, database, r)
 	if err != nil {
 		return failReview(cmd, err)
+	}
+	if src.Tip != nil {
+		out.Branch = src.Tip.Name
 	}
 	return writeReview(cmd, reviewEnvelope{OK: true, Round: out})
 }
@@ -191,46 +200,48 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if open == nil && reviewFlagRefresh {
 		return failReview(cmd, errNoOpenReviewRound)
 	}
-	var folder string
-	if open != nil {
-		folder = open.FolderRoot
-	} else if folder, err = tools.ReviewSessionFolder(ctx, database, p, reviewFlagSession); err != nil {
-		return failReview(cmd, err)
-	}
-	repo, err := reviewdiff.Open(folder, nil)
+	// The place is resolved on every start: an open round whose place moved
+	// (the agent went into the branch's worktree, or the folder left the
+	// task branch) is moved with it (board #1012).
+	src, repo, err := tools.ResolveReviewSource(ctx, database, p, reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	if open != nil && !reviewFlagRefresh {
-		return writeRound(ctx, cmd, repo, database, open)
+	moved := open != nil && (open.FolderRoot != src.Folder || open.Source != src.Source())
+	if open != nil && !moved && !reviewFlagRefresh {
+		return writeRound(ctx, cmd, repo, database, open, src)
 	}
-	tree, err := repo.Snapshot(ctx)
+	tree, base, err := src.Read(ctx, repo)
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	if open != nil {
+	switch {
+	case open == nil:
+		created, err := createReviewRound(database, p, src, tree, base)
+		if err != nil {
+			return failReview(cmd, err)
+		}
+		return writeRound(ctx, cmd, repo, database, created, src)
+	case moved || src.Tip != nil:
+		// A branch round's base moves with its branches, so its Refresh re-reads both.
+		open.FolderRoot, open.Source, open.BaseSHA, open.BaseLabel, open.TreeSHA = src.Folder, src.Source(), base.SHA, base.Label, tree
+		if err := database.RepointReviewRound(*open); err != nil {
+			return failReview(cmd, err)
+		}
+	default:
 		if err := database.UpdateReviewRoundTree(open.ID, tree); err != nil {
 			return failReview(cmd, err)
 		}
 		open.TreeSHA = tree
-		return writeRound(ctx, cmd, repo, database, open)
 	}
-	created, err := createReviewRound(ctx, repo, database, p, folder, tree)
-	if err != nil {
-		return failReview(cmd, err)
-	}
-	return writeRound(ctx, cmd, repo, database, created)
+	return writeRound(ctx, cmd, repo, database, open, src)
 }
 
-// createReviewRound opens a new round on the snapshot tree, linked to the
+// createReviewRound opens a new round on the place's tree, linked to the
 // session's last sent round.
-func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, p *db.Workbench, folder, tree string) (*db.ReviewRound, error) {
-	base, err := repo.Base(ctx)
-	if err != nil {
-		return nil, err
-	}
+func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base) (*db.ReviewRound, error) {
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
-		FolderRoot: folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
+		Source: src.Source(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
 	last, err := database.LastSentReviewRound(p.ID, reviewFlagSession)
 	if err != nil {
 		return nil, fmt.Errorf("last sent review round: %w", err)
