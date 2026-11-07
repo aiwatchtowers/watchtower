@@ -374,6 +374,9 @@ func TestWorkbenchReview_RemovedWorktreeKeepsTheOpenRound(t *testing.T) {
 // symbolic-ref HEAD exit 128 — before, that read as a detached HEAD and moved
 // the folder round to the origin branch's tip.
 func TestWorkbenchReview_GitFailureDoesNotMoveTheRound(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 directory")
+	}
 	database, wb, s, repo := reviewFixture(t)
 	commitOnBranch(t, repo, "feature", "feature.txt")
 	reviewGit(t, repo, "update-ref", "refs/remotes/origin/feature", reviewGit(t, repo, "rev-parse", "feature"))
