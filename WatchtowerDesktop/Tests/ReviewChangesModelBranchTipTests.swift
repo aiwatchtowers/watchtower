@@ -159,4 +159,36 @@ extension ReviewChangesModelTests {
         let after = try await h.comments().first { $0.body == "on y" }
         XCTAssertEqual(after?.startLine, 1, "re-placed on the retry")
     }
+
+    /// REVIEW-03 across a place change (board #1012): the round after a sent
+    /// round of another place carries its unresolved comments, and since Go
+    /// answers that round's tree as lost, the pane opens on All changes.
+    func testRoundAtAnotherPlaceCarriesCommentsAndShowsAllChanges() async throws {
+        let h = try harness()
+        let r6 = try await h.db.write { db -> Int64 in
+            try db.execute(sql: """
+                INSERT INTO review_rounds (project_id, session_id, folder_root, base_sha, tree_sha, status)
+                VALUES (?, ?, '/r', 'b', 't6', 'sent')
+                """, arguments: [h.projectID, h.sessionID])
+            return db.lastInsertedRowID
+        }
+        let anchor = ReviewCommentAnchor.anchor(text: "old line\n", startLine: 1, endLine: 1)
+        try await h.db.write { db in
+            let id = try ReviewQueries.addDraft(db, roundID: r6, path: "a.go", side: "new", startLine: 1, endLine: 1,
+                                                anchor: anchor, treeSHA: "t6", body: "fix this")
+            try db.execute(sql: "UPDATE review_comments SET status='sent' WHERE id=?", arguments: [id])
+        }
+        h.baseScript(id: 7, prev: r6)
+        h.cli.script(["start": """
+            {"ok":true,"round":{"id":7,"status":"open","mode":"quick","source":"pr","branch":"feature/x","folder_root":"/r",
+             "base_sha":"b","base_label":"main","tree_sha":"t7","prev_round_id":\(r6),"prev_tree_sha":"t6","prev_tree_lost":true}}
+            """, "file": fileJSON(old: "old line\n", new: "inserted\nold line\n")])
+        await h.model.open()
+        let carried = try await h.comments()
+        XCTAssertEqual(carried.map(\.status), [.carried])
+        XCTAssertEqual(carried.first?.body, "fix this")
+        XCTAssertEqual(h.model.view, .all)
+        XCTAssertTrue(h.model.previousTreeLost)
+        XCTAssertFalse(h.cli.calls("diff").contains { $0.contains("--since") })
+    }
 }

@@ -302,38 +302,37 @@ func sendRound(t *testing.T, database *db.DB, r map[string]any) {
 	require.NoError(t, err)
 }
 
-// m3 (F4): a round links only to a sent round of its own place; a move to
-// another place drops the link, so "Since round N" never diffs unrelated trees.
-func TestWorkbenchReview_PreviousRoundOnlyFromTheSamePlace(t *testing.T) {
+// REVIEW-03 across a place change (board #1012): a round always links to
+// the session's last sent round, so its unresolved comments carry, but a
+// previous round of another place has no tree to diff since — "Since round
+// N" reads it as lost and shows all changes.
+func TestWorkbenchReview_PreviousRoundOfAnotherPlace(t *testing.T) {
 	database, wb, s, repo := reviewFixture(t)
 	commitOnBranch(t, repo, "feature", "feature.txt")
 	folderRound := startRound(t, wb, s)
 	sendRound(t, database, folderRound)
 
-	// Same place: the next round follows the sent one up.
+	// Same place: the next round follows the sent one up, Since included.
 	second := startRound(t, wb, s)
 	assert.Equal(t, folderRound["id"], second["prev_round_id"])
+	assert.Equal(t, false, second["prev_tree_lost"])
 
-	// The ticket gets a branch: the open round moves to the tip and drops the link.
+	// The ticket gets a branch: the open round moves to the tip and keeps its link.
 	ticketTarget(t, database, wb, s, 0, "feature", true)
 	moved := startRound(t, wb, s)
 	assert.Equal(t, second["id"], moved["id"])
 	assert.Equal(t, db.ReviewSourceBranch, moved["source"])
-	assert.Equal(t, float64(0), moved["prev_round_id"])
-	var prev sql.NullInt64
-	require.NoError(t, database.QueryRow(`SELECT prev_round_id FROM review_rounds WHERE id = ?`, int64(moved["id"].(float64))).Scan(&prev))
-	assert.False(t, prev.Valid)
+	assert.Equal(t, folderRound["id"], moved["prev_round_id"], "the link stays: its comments carry")
+	assert.Equal(t, true, moved["prev_tree_lost"], "another place's tree is no Since base")
+	since := reviewJSON(t, wb, "diff", "--round", itoa(int64(moved["id"].(float64))), "--since")
+	assert.Equal(t, true, since["previous_tree_lost"])
+	assert.Equal(t, moved["base_sha"], since["from"], "all changes, from the base")
 
-	// A new round on the tip does not link to the folder round either.
+	// A new round on the tip links to the folder round's successor too.
 	sendRound(t, database, moved)
 	onTip := startRound(t, wb, s)
-	assert.Equal(t, moved["id"], onTip["prev_round_id"], "the tip's own sent round")
-	sendRound(t, database, onTip)
-	_, err := database.Exec(`UPDATE targets SET branch = '' WHERE id = (SELECT target_id FROM terminal_sessions WHERE id = ?)`, s)
-	require.NoError(t, err)
-	backOnFolder := startRound(t, wb, s)
-	assert.Equal(t, db.ReviewSourceFolder, backOnFolder["source"])
-	assert.Equal(t, folderRound["id"], backOnFolder["prev_round_id"], "the folder's last sent round, not the tip's")
+	assert.Equal(t, moved["id"], onTip["prev_round_id"])
+	assert.Equal(t, false, onTip["prev_tree_lost"], "same place: Since works")
 }
 
 // M2: a removed worktree (#535 cleanup) is not a move: the open round stays

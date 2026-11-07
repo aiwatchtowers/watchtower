@@ -169,7 +169,9 @@ func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *d
 				return nil, err
 			}
 			out.PrevTreeSHA = prev.TreeSHA
-			out.PrevTreeLost = !exists
+			// A previous round of another place has no tree to diff since
+			// (board #1012): it reads as lost, while its comments still carry.
+			out.PrevTreeLost = !exists || !samePlace(prev, r)
 		}
 	}
 	return out, nil
@@ -232,12 +234,10 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		return writeRound(ctx, cmd, repo, database, created)
 	case moved || src.Tip != nil:
 		// A move, or a branch round's Refresh: its base moves with its
-		// branches, so both are re-read. "Since round N" never diffs another
-		// place's tree: a move drops the link.
+		// branches, so both are re-read. The previous-round link stays, so
+		// its unresolved comments still carry (REVIEW-03); "Since round N"
+		// reads it as lost when it is of another place (roundRange).
 		from := open.Source
-		if moved {
-			open.PrevRoundID = sql.NullInt64{}
-		}
 		open.FolderRoot, open.Source, open.Branch = src.Folder, src.Source(), src.Branch()
 		open.BaseSHA, open.BaseLabel, open.TreeSHA = base.SHA, base.Label, tree
 		if err := database.RepointReviewRound(*open); err != nil {
@@ -256,15 +256,20 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	return writeRound(ctx, cmd, repo, database, open)
 }
 
+// samePlace reports whether rounds a and b review the same place.
+func samePlace(a, b *db.ReviewRound) bool {
+	return a.FolderRoot == b.FolderRoot && a.Source == b.Source && a.Branch == b.Branch
+}
+
 // atPlace reports whether round r reviews src's place: the same folder,
 // source and branch (a ticket whose branch was renamed is another place).
 func atPlace(r *db.ReviewRound, src tools.ReviewSource) bool {
 	return r.FolderRoot == src.Folder && r.Source == src.Source() && r.Branch == src.Branch()
 }
 
-// createReviewRound opens a new round on the place's tree, in the mode of
-// the session's last sent round, linked to the last sent round of the same
-// place only (board #1012).
+// createReviewRound opens a new round on the place's tree, linked to the
+// session's last sent round (whatever its place: its unresolved comments
+// carry, REVIEW-03).
 func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base) (*db.ReviewRound, error) {
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
 		Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
@@ -273,14 +278,8 @@ func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource,
 		return nil, fmt.Errorf("last sent review round: %w", err)
 	}
 	if last != nil {
+		r.PrevRoundID = sql.NullInt64{Int64: last.ID, Valid: true}
 		r.Mode = last.Mode
-	}
-	prev, err := database.LastSentReviewRoundAt(p.ID, reviewFlagSession, r.Source, r.FolderRoot, r.Branch)
-	if err != nil {
-		return nil, fmt.Errorf("last sent review round at this place: %w", err)
-	}
-	if prev != nil {
-		r.PrevRoundID = sql.NullInt64{Int64: prev.ID, Valid: true}
 	}
 	id, err := database.CreateReviewRound(r)
 	if err != nil {
@@ -290,7 +289,8 @@ func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource,
 }
 
 // roundRange: from/to of the round's diff; since → the previous round's tree
-// when it still exists, else the base with lost=true. A done context is an
+// when it still exists and is of the same place (board #1012), else the base
+// with lost=true. A done context is an
 // error, never "lost".
 func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (from string, lost bool, err error) {
 	if !reviewFlagSince || !r.PrevRoundID.Valid {
@@ -299,6 +299,9 @@ func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *
 	prev, err := database.GetReviewRound(r.ProjectID, r.PrevRoundID.Int64)
 	if err != nil {
 		return r.BaseSHA, true, nil //nolint:nilerr // a missing previous round reads as lost, as a pruned tree does
+	}
+	if !samePlace(prev, r) {
+		return r.BaseSHA, true, nil
 	}
 	exists, err := repo.TreeExists(ctx, prev.TreeSHA)
 	if err != nil {
