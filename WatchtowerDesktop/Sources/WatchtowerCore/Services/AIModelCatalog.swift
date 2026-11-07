@@ -3,7 +3,8 @@ import Foundation
 /// The provider/model registry as reported by `watchtower ai models --json`.
 /// This is the Desktop app's single source of model lists — no model names
 /// are hardcoded in Swift. `load()` is best-effort: on any failure the
-/// catalog stays empty and callers fall back to free-text input.
+/// catalog keeps its rows (empty before the first read), logs the failure's
+/// class, and `unreadReason` names it on the surfaces it degrades.
 @Observable
 @MainActor
 package final class AIModelCatalog {
@@ -49,6 +50,15 @@ package final class AIModelCatalog {
     package private(set) var providers: [Provider] = []
     package private(set) var isLoading = false
     package private(set) var lastError: String?
+
+    /// What a capability-gated surface shows while it runs degraded because
+    /// no read has succeeded (draft-only chats, a code question without the
+    /// folder).
+    package static let unreadNotice = "Provider capabilities could not be read — see Settings → System → AI."
+
+    /// `unreadNotice` when the last read failed and no earlier one gave rows;
+    /// nil while the rows are known or before any read finished.
+    package var unreadReason: String? { !isLoaded && lastError != nil ? Self.unreadNotice : nil }
 
     /// `watchtower ai models --json`'s output; nil when the CLI is not found.
     package typealias Fetch = @Sendable () async -> ProcessOutput?
@@ -165,16 +175,40 @@ package final class AIModelCatalog {
         loadTask = nil
     }
 
+    /// Returns when the read in flight, if any, has finished; starts none.
+    package func readInFlight() async {
+        await loadTask?.value
+    }
+
+    /// The launch read: `load()`, tried again after each of `retryDelays`
+    /// while it keeps failing (a CLI not resolved yet at launch, a crash),
+    /// so the capability rows do not wait for the Chat tab or Settings to
+    /// open. Stops at the first success, including another caller's read
+    /// during a wait, and when the task is cancelled.
+    package func loadRetrying(
+        retryDelays: [Duration] = [.seconds(5), .seconds(30), .seconds(120)],
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async {
+        await load()
+        for delay in retryDelays {
+            guard lastError != nil else { return }
+            do { try await sleep(delay) } catch { return }
+            guard lastError != nil else { return }
+            await load()
+        }
+    }
+
     private func performLoad() async {
         isLoading = true
         defer { isLoading = false }
         guard let output = await fetch() else {
-            lastError = "watchtower CLI not found"
+            fail("watchtower CLI not found", logged: "cli_not_found")
             return
         }
         guard output.exitCode == 0 else {
             let detail = CLILog.detail(output.stderr)
-            lastError = "watchtower ai models failed (exit \(output.exitCode))" + (detail.isEmpty ? "" : ": \(detail)")
+            fail("watchtower ai models failed (exit \(output.exitCode))" + (detail.isEmpty ? "" : ": \(detail)"),
+                 logged: "exit \(output.exitCode)")
             return
         }
         do {
@@ -182,8 +216,16 @@ package final class AIModelCatalog {
             lastError = nil
             replaceProviders(parsed.providers)
         } catch {
-            lastError = "parsing ai models output: \(error.localizedDescription)"
+            fail("parsing ai models output: \(error.localizedDescription)", logged: "unparsable output")
         }
+    }
+
+    /// A failed read: the owner's text in `lastError` (Settings shows it),
+    /// only the class in the log — the CLI's stderr can carry paths and
+    /// names (FILES-01).
+    private func fail(_ message: String, logged failureClass: String) {
+        lastError = message
+        NSLog("AIModelCatalog: reading the provider catalog failed: %@", failureClass)
     }
 
     /// The production read: the CLI found by `Constants.findCLIPath`.

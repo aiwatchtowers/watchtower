@@ -132,6 +132,8 @@ final class ChatViewModel {
     /// Why the composer takes no images or PDFs here (U1); nil when it does
     /// or the provider's row is not known yet.
     var attachUnavailableReason: String? { providerCapabilities?.attachUnavailableReason }
+    /// Why the composer refuses a PDF from a provider that takes images only.
+    var pdfUnavailableReason: String? { providerCapabilities?.pdfUnavailableReason }
 
     /// Refresh only local metadata on chat/lifecycle/turn events; never an upstream probe.
     func refreshRoutingStatus() async {

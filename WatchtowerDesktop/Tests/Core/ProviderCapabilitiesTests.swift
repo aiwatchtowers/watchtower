@@ -52,6 +52,10 @@ final class ProviderCapabilitiesTests: XCTestCase {
         XCTAssertEqual(catalog.capabilities(for: "gemini"), .none)
         XCTAssertNotNil(ProviderCapabilities.none.attachUnavailableReason)
         XCTAssertNil(catalog.capabilities(for: "codex").attachUnavailableReason)
+        XCTAssertEqual(catalog.capabilities(for: "codex").pdfUnavailableReason, "PDFs need a provider that reads them.",
+                       "Codex takes images, not PDFs")
+        XCTAssertNil(catalog.capabilities(for: "claude").pdfUnavailableReason)
+        XCTAssertNil(ProviderCapabilities.none.pdfUnavailableReason, "no attachments at all: U1's reason covers PDFs")
 
         XCTAssertEqual(catalog.fallbackPair(preferred: "claude"), .claudeFirst)
         XCTAssertEqual(catalog.fallbackPair(preferred: "codex"), .codexFirst)

@@ -89,4 +89,11 @@ package struct ProviderCapabilities: Decodable, Equatable, Sendable {
     package var attachUnavailableReason: String? {
         takesAttachments ? nil : "Images and PDFs need a provider that reads them."
     }
+
+    /// Why the composer refuses a PDF from a transport that takes images
+    /// only (Codex); nil when it takes PDFs, or takes no attachment at all
+    /// (`attachUnavailableReason` names that).
+    package var pdfUnavailableReason: String? {
+        takesAttachments && !pdfs ? "PDFs need a provider that reads them." : nil
+    }
 }

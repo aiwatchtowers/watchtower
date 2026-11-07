@@ -162,6 +162,15 @@ final class ChatSessionPool {
         }
     }
 
+    /// Whether the session's transport may load claude.ai tools: its own
+    /// row, else the catalog's; unknown (neither read yet) retires too, since
+    /// a restart costs less than a stale tool set.
+    private static func mayLoadClaudeAITools(_ client: ChatSessionClient) -> Bool {
+        if let capabilities = client.driver.actualCapabilities { return capabilities.claudeAITools }
+        let catalog = AIModelCatalog.shared
+        return !catalog.isLoaded || catalog.capabilities(for: client.config.provider).claudeAITools
+    }
+
     /// The claude.ai connector switches changed (#737): a session reads them
     /// when it starts, so each launched idle session closes now and a busy
     /// one after its turn (CHAT-03 — a running turn is never cut); the next
@@ -172,15 +181,6 @@ final class ChatSessionPool {
     /// next session replays the history). Only sessions whose transport
     /// loads claude.ai tools (its capability row) retire; the others are
     /// left alone.
-    /// Whether the session's transport may load claude.ai tools: its own
-    /// row, else the catalog's; unknown (neither read yet) retires too, since
-    /// a restart costs less than a stale tool set.
-    private static func mayLoadClaudeAITools(_ client: ChatSessionClient) -> Bool {
-        if let capabilities = client.driver.actualCapabilities { return capabilities.claudeAITools }
-        let catalog = AIModelCatalog.shared
-        return !catalog.isLoaded || catalog.capabilities(for: client.config.provider).claudeAITools
-    }
-
     func retireIdleSessions() {
         for (id, client) in clients where !client.isPending && (client.config.automatic
             || Self.mayLoadClaudeAITools(client)) {

@@ -62,4 +62,18 @@ extension ChatRoutingPresentationTests {
             }
         }
     }
+
+    /// F8: an images-only row (Codex) names the missing PDFs; a row with
+    /// neither kind keeps U1's "images" wording.
+    @MainActor
+    func testMissingCapabilitiesNamePDFsForAnImagesOnlyProvider() {
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        func missing(_ id: String) -> String? {
+            ChatRoutingPresentation(pair: nil, automatic: false, actualProvider: nil, actualModel: nil, reason: nil,
+                                    health: nil, busy: false, capabilities: catalog.capabilities(for: id)).missingCapabilities
+        }
+        XCTAssertEqual(missing("codex"), "No PDFs with this provider.")
+        XCTAssertEqual(missing("ollama"), "No images or file reading with this provider.")
+        XCTAssertNil(missing("claude"))
+    }
 }

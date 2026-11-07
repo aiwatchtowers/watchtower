@@ -20,7 +20,11 @@ enum AutomationEditorChatSurface {
     static let draftContextType = "automation_draft"
     static let surface = AgentSurface.automationEditor.rawValue
     static let dryRunAgainText = "Dry run the draft again."
-    static let unavailableHelp = "Needs Claude or Codex"
+    /// Why the Chat segment is off: a provider without tools, or a catalog
+    /// that could not be read (then the provider may well be Claude).
+    @MainActor static func unavailableHelp(catalog: AIModelCatalog = .shared) -> String {
+        catalog.unreadReason ?? "Needs Claude or Codex"
+    }
     static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
     /// AGENT-04 (ask #270): only a provider known to run as a CLI child (the

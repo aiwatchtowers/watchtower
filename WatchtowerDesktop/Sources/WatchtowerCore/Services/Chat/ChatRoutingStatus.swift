@@ -112,7 +112,7 @@ package struct ChatRoutingPresentation {
     package var missingCapabilities: String? {
         guard let capabilities else { return nil }
         var missing: [String] = []
-        if !capabilities.takesAttachments { missing.append("images") }
+        if !capabilities.takesAttachments { missing.append("images") } else if !capabilities.pdfs { missing.append("PDFs") }
         if !capabilities.readsFolder { missing.append("file reading") }
         guard !missing.isEmpty else { return nil }
         return "No " + missing.joined(separator: " or ") + " with this provider."

@@ -243,7 +243,7 @@ final class AppState {
     /// The Meetings goal's download ahead of use (`autoDownloadTranscriptionModel`).
     @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
-    @ObservationIgnored var aiModelCatalog = AIModelCatalog.shared
+    @ObservationIgnored var modelCatalogLaunchOverride: (@MainActor () async -> Void)? // tests: no CLI at launch
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?

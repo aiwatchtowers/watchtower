@@ -41,7 +41,7 @@ extension AppState {
             onboardingGoals: onboardingGoals?(defaults)
         ) { managedPolicy } // never this Mac's managed preferences
         appState.daemonControlOverride = FakeDaemon()
-        appState.aiModelCatalog = AIModelCatalog { nil } // never runs the CLI
+        appState.modelCatalogLaunchOverride = {} // never runs the CLI
         appState.daemonStartQueue = DaemonStartQueue()
         appState.wireAppDatabaseOverride = { _ in }
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()

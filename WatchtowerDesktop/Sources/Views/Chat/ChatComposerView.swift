@@ -57,6 +57,7 @@ struct ChatComposerView: View {
                                                        removing: chatVM.composerAttachments.removing,
                                                        sendWaits: chatVM.isWaitingForAttachments),
                 attachUnavailableReason: chatVM.attachUnavailableReason,
+                pdfUnavailableReason: chatVM.pdfUnavailableReason,
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
                     chatVM.composer.update(text: text, cursor: cursor)

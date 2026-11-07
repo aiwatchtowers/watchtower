@@ -1828,15 +1828,11 @@ extension AppStateTests {
     /// capability rows and AGENT-04's tool access never wait for a window.
     func testLaunchReadsTheModelCatalogWithoutAWindow() async throws {
         let appState = AppState.isolated()
-        let rows = #"{"active_provider":"claude","providers":[{"id":"claude","display_name":"Claude","kind":"cli","#
-            + #""default_light":"","default_strong":"","live_models":false,"resolved_light":"","resolved_strong":""}]}"#
-        let catalog = AIModelCatalog { ProcessOutput(exitCode: 0, stdout: rows, stderr: "") }
-        appState.aiModelCatalog = catalog
-        let loaded = expectation(forNotification: AIModelCatalog.didLoadNotification, object: catalog)
+        let read = expectation(description: "the launch read the catalog")
+        appState.modelCatalogLaunchOverride = { read.fulfill() }
         appState.loadModelCatalogAtLaunch()
-        await fulfillment(of: [loaded], timeout: 5)
-        XCTAssertTrue(catalog.isLoaded)
-        XCTAssertTrue(catalog.isKnownCLI("claude"))
-        XCTAssertNil(catalog.lastError)
+        await fulfillment(of: [read], timeout: 5)
+        XCTAssertTrue(appState.aiModelCatalog === AIModelCatalog.shared, "one catalog for every surface")
     }
+
 }

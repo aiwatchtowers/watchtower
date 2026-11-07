@@ -28,6 +28,12 @@ enum CodeQuestionSurface {
     static let contextType = CodeQuestionList.contextType
     static let cannotReadFilesNotice =
         "This model cannot read other files: the answer uses only the code sent with the question."
+    /// A turn built after the catalog read failed with no rows: the
+    /// provider's row is unknown, so the answer had no folder access (shown
+    /// once).
+    static let capabilitiesUnreadNotice =
+        "Provider capabilities could not be read, so the answer uses only the code sent with the question "
+        + "— see Settings → System → AI."
 
     /// The provider/model pick of the composer's picker; `model` "" = Auto,
     /// the provider's default (strong) tier.
@@ -144,11 +150,11 @@ enum CodeQuestionSurface {
             turnPrompt: { $0.text },
             postTurn: { input in
                 var result = ChatPostTurnResult.identity(input)
-                // The notice is stored for good: written only when the row is
-                // known, never on a catalog not read yet.
-                if AIModelCatalog.shared.isLoaded, !capabilities(currentChoice()).readsFolder,
-                   !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
-                    result.notices = [cannotReadFilesNotice]
+                // The model's notice is stored for good: written only when the
+                // row is known. A turn built after the catalog read failed says so.
+                if let notice = turnNotice(catalog: .shared, choice: currentChoice()),
+                   !hasNotice(notice, conversationID: conversationID, dbPool: dbPool) {
+                    result.notices = [notice]
                 }
                 return result
             },
@@ -157,15 +163,25 @@ enum CodeQuestionSurface {
         )
     }
 
-    /// Whether the conversation already told the owner its model reads no
-    /// files. A failed read shows it again rather than never.
-    private static func hasCannotReadNotice(conversationID: Int64, dbPool: DatabasePool) -> Bool {
+    /// The notice a finished turn carries: the catalog could not be read
+    /// (the turn had no folder), or the model reads no files; nil while the
+    /// rows are not known and no read failed.
+    static func turnNotice(catalog: AIModelCatalog, choice: ModelChoice) -> String? {
+        if catalog.unreadReason != nil { return capabilitiesUnreadNotice }
+        guard catalog.isLoaded, !catalog.capabilities(for: choice.provider.rawValue).readsFolder else { return nil }
+        return cannotReadFilesNotice
+    }
+
+    /// Whether the conversation already shows `notice` (its model reads no
+    /// files, or its capabilities were unread). A failed read shows it again
+    /// rather than never.
+    private static func hasNotice(_ notice: String, conversationID: Int64, dbPool: DatabasePool) -> Bool {
         do {
             return try dbPool.read { db in
                 try Bool.fetchOne(db, sql: """
                     SELECT EXISTS (SELECT 1 FROM chat_messages
                                    WHERE conversation_id = ? AND role = 'system' AND text = ?)
-                    """, arguments: [conversationID, cannotReadFilesNotice]) ?? false
+                    """, arguments: [conversationID, notice]) ?? false
             }
         } catch {
             NSLog("CodeQuestionSurface: reading the notices of conversation %lld: %@",
