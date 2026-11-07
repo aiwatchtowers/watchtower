@@ -112,8 +112,9 @@ final class ChatViewModel {
     /// own (its session_ready), else the catalog's for the provider the next
     /// turn runs on: a pinned chat's choice; an automatic chat's preferred
     /// provider, or its last actual provider when that is the preferred
-    /// one's reserve (Go keeps a chat on the reserve until the owner
-    /// switches); nil while neither is known.
+    /// one's reserve and fallback is not known off (Go keeps a chat on the
+    /// reserve until the owner switches or turns fallback off); nil while
+    /// neither is known.
     var providerCapabilities: ProviderCapabilities? {
         let driver = pool.client(for: conversationID)?.driver
         if let capabilities = driver?.actualCapabilities { return capabilities }
@@ -121,7 +122,8 @@ final class ChatViewModel {
         guard catalog.isLoaded else { return nil }
         let provider = automaticRouting ? preferredProvider : selectedProvider
         let history = currentConversation?.actualProvider.flatMap { actual in
-            automaticRouting && actual == catalog.reservePeer(of: provider.rawValue) ? actual : nil
+            automaticRouting && routingStatus?.enabled != false
+                && actual == catalog.reservePeer(of: provider.rawValue) ? actual : nil
         }
         let id = driver?.actualProvider ?? history ?? provider.rawValue
         return catalog.capabilities(for: id)
