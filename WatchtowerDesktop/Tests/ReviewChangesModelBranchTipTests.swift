@@ -256,4 +256,25 @@ extension ReviewChangesModelTests {
         XCTAssertEqual(h.model.view, .all)
         XCTAssertEqual(h.cli.calls("diff").last?.contains("--since"), false)
     }
+
+    /// Codex round 4: a blank-line draft skips only the quote search: on a
+    /// file gone from the new tree it is outdated, on one still there it is
+    /// left as it is (REVIEW-03).
+    func testBlankLineDraftOnADeletedFileIsOutdated() async throws {
+        for deleted in [true, false] {
+            let h = try harness()
+            h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+            h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "b", tree: "u7")])
+            let gone = #"{"ok":true,"old":{"exists":true,"text":"x\n","binary":false,"too_large":false},"#
+                + #""new":{"exists":false,"text":"","binary":false,"too_large":false}}"#
+            h.cli.script("file", [fileJSON(old: "x\n", new: "a\n\nb\n"), deleted ? gone : fileJSON(old: "x\n", new: "a\n\nb\n")])
+            await h.model.open()
+            await h.model.select("a.go")
+            try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "blank")
+            await h.model.refresh()
+            let row = try await h.comments().first { $0.body == "blank" }
+            XCTAssertEqual(row?.status, deleted ? .outdated : .draft, "deleted: \(deleted)")
+            XCTAssertEqual(row?.startLine, 2)
+        }
+    }
 }

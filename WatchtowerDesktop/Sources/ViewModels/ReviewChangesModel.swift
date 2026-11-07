@@ -1393,12 +1393,10 @@ final class ReviewChangesModel {
 
     /// The round's drafts and carried comments placed on another diff: made
     /// on another tree, or on the old side when the base may have changed
-    /// (a row records only its tree). A comment on blank lines has no quote
-    /// to look for, so it is left where it is rather than marked outdated.
+    /// (a row records only its tree).
     private static func stale(_ rows: [ReviewComment], round info: ReviewRoundInfo, baseChanged: Bool) -> [ReviewComment] {
         rows.filter {
             ($0.status == .draft || $0.status == .carried) && $0.path != nil
-                && !$0.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && ($0.treeSHA != info.treeSha || (baseChanged && $0.side == "old"))
         }
     }
@@ -1427,7 +1425,9 @@ final class ReviewChangesModel {
         }
     }
 
-    /// Where each line comment lands on the round's current tree.
+    /// Where each line comment lands on the round's current tree. A comment
+    /// on blank lines has no quote to look for: it is outdated only when its
+    /// side of the file is gone, else left where it is.
     private func plan(_ list: [ReviewComment], round info: ReviewRoundInfo) async throws -> ReviewCommentAnchor.Plan {
         var loaded: [String: Sides] = [:]
         for path in Set(list.compactMap(\.path)).sorted() {
@@ -1436,11 +1436,16 @@ final class ReviewChangesModel {
         }
         var result = ReviewCommentAnchor.Plan()
         for side in ["old", "new"] {
-            let part = ReviewCommentAnchor.plan(list.filter { $0.side == side }) { path in
+            let text = { (path: String) -> String? in
                 guard let both = loaded[path] else { return nil }
                 let s = side == "old" ? both.old : both.new
                 return s.exists && !s.binary && !s.tooLarge ? s.text : nil
             }
+            let onSide = list.filter { $0.side == side }
+            // A design comment (no path) is left to ReviewCommentAnchor.plan, which leaves it alone.
+            let blank = onSide.filter { $0.path != nil && $0.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            for c in blank where c.path.flatMap(text) == nil { result.lost.insert(c.id) }
+            let part = ReviewCommentAnchor.plan(onSide.filter { !blank.contains($0) }, textFor: text)
             result.moved.merge(part.moved) { first, _ in first }
             result.lost.formUnion(part.lost)
         }
