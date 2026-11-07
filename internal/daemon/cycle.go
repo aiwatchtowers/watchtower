@@ -238,25 +238,32 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 			recheck.Stop()
 		}
 	}()
-	deferCycle := func() {
+	// deferredAt is when the deferral began, on the wall clock (Round(0)
+	// drops the monotonic reading, which stops while the Mac sleeps — and a
+	// deferral spans sleeps).
+	var deferredAt time.Time
+	deferCycle := func(caps uint32) {
 		if recheck == nil {
-			d.logger.Println("dark wake (Power Nap), deferring the cycle until full wake")
+			d.logger.Printf("dark wake (Power Nap, caps 0x%02x), deferring the cycle until full wake", caps)
 			recheck = time.NewTicker(darkWakeRecheckInterval)
+			deferredAt = time.Now().Round(0)
 		}
 	}
-	// clearDeferred folds a deferred cycle into the cycle starting now.
+	// clearDeferred folds a deferred cycle into the cycle starting now and
+	// logs how long it was deferred.
 	clearDeferred := func() {
 		if recheck != nil {
 			recheck.Stop()
 			recheck = nil
+			d.logger.Printf("the cycle deferred by a dark wake starts after %s", time.Now().Round(0).Sub(deferredAt).Round(time.Second))
 		}
 	}
 
 	// The initial cycle, right away — unless the Mac is in a dark wake.
-	if d.inFullWake() {
+	if caps, full := d.wakeState(); full {
 		cycle = d.startCycle(ctx, true)
 	} else {
-		deferCycle()
+		deferCycle(caps)
 	}
 
 	for {
@@ -312,9 +319,11 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 				// The owner asked for it: never gated.
 			case !d.config.Sync.SyncOnWake && recheck == nil:
 				continue
-			case !d.inFullWake():
-				deferCycle()
-				continue
+			default:
+				if caps, full := d.wakeState(); !full {
+					deferCycle(caps)
+					continue
+				}
 			}
 			d.logger.Println("syncing after wake")
 			triggerQueued = false
@@ -324,18 +333,18 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 			// Never a start here: the deferral stays marked, so the delay's
 			// end runs the owed cycle (sync_on_wake off too) after asking the
 			// probe again, and a late sleep report starts the delay over.
-			if d.inFullWake() {
-				d.logger.Printf("full wake, starting the deferred cycle after the %s network wait", wakeSettleDelay)
+			if caps, full := d.wakeState(); full {
+				d.logger.Printf("full wake (caps 0x%02x), starting the deferred cycle after the %s network wait", caps, wakeSettleDelay)
 				settle = time.NewTimer(wakeSettleDelay)
 			}
 		case <-tickC:
 			if recheck != nil {
 				continue // collapsed into the deferred cycle
 			}
-			if d.inFullWake() {
+			if caps, full := d.wakeState(); full {
 				cycle = d.startCycle(ctx, false)
 			} else {
-				deferCycle()
+				deferCycle(caps)
 			}
 		// Both watchers close their channel once ctx is cancelled, and a closed
 		// channel is always ready in a select — without the ok check the loop

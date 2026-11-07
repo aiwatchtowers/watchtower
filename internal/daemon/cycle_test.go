@@ -217,7 +217,7 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	d.loopMono = mono.now
 	fullWake := &atomic.Bool{}
 	fullWake.Store(!o.darkWake)
-	d.SetFullWakeProbe(fullWake.Load)
+	d.SetFullWakeProbe(boolProbe(fullWake))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	h := &loopHarness{d: d, probe: probe, wake: o.wake, trigger: trigger, mono: mono, fullWake: fullWake, logs: logs,

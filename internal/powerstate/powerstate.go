@@ -31,7 +31,9 @@
 package powerstate
 
 import (
+	"log"
 	"sync"
+	"sync/atomic"
 )
 
 // Capability bits in the public IOPM.h layout; reader_darwin.go checks at
@@ -43,26 +45,56 @@ const (
 )
 
 var (
+	// readErrLogged is set once the first read error has been logged:
+	// one line per process, however often the probe is asked.
+	readErrLogged atomic.Bool
+	// logf is the package logger (the standard logger, which the daemon
+	// routes to its log file); a seam for tests.
+	logf = log.Printf
+)
+
+var (
 	mu sync.RWMutex
 	// reader returns the system capability bits. nil until main calls
 	// UseSystemReader, so a test binary never reads the real state.
 	reader func() (uint32, error)
 )
 
-// FullWake reports whether the Mac is fully awake. It is false only when the
-// installed reader reports a dark wake; every other case is true (fail open).
-func FullWake() bool {
+// Read returns the raw capability bits, the verdict and the read error. With
+// no reader installed it is (0, true, nil); on a read error it is
+// (0, true, err) — the verdict always fails open. The first read error of the
+// process is logged once ("powerstate: cannot read System Capabilities
+// (<reason>), dark-wake guard off"); later ones are not.
+func Read() (caps uint32, full bool, err error) {
 	mu.RLock()
 	r := reader
 	mu.RUnlock()
 	if r == nil {
-		return true
+		return 0, true, nil
 	}
-	caps, err := r()
+	caps, err = r()
 	if err != nil {
-		return true
+		if readErrLogged.CompareAndSwap(false, true) {
+			logf("powerstate: cannot read System Capabilities (%v), dark-wake guard off", err)
+		}
+		return 0, true, err
 	}
-	return fullWakeFrom(caps)
+	return caps, fullWakeFrom(caps), nil
+}
+
+// Probe is Read without the error: the shape of the daemon's and the
+// automations' full-wake probes, whose dark/full transition log lines carry
+// caps (as 0x%02x).
+func Probe() (caps uint32, full bool) {
+	caps, full, _ = Read()
+	return caps, full
+}
+
+// FullWake reports whether the Mac is fully awake. It is false only when the
+// installed reader reports a dark wake; every other case is true (fail open).
+func FullWake() bool {
+	_, full := Probe()
+	return full
 }
 
 // fullWakeFrom decides from capability bits: the CPU bit without the

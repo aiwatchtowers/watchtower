@@ -1484,12 +1484,13 @@ func TestSyncChannelReadStateCancelledPassIsNoRefresh(t *testing.T) {
 func TestSyncChannelReadStateOnlyWindowedDigests(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	for _, tc := range []struct {
-		name   string
-		recent bool
-		want   []string
+		name    string
+		recent  bool
+		want    []string
+		wantLog string // "" = no skip line
 	}{
-		{"recent and old unread", true, []string{"C001"}},
-		{"only old unread", false, nil},
+		{"recent and old unread", true, []string{"C001"}, ""},
+		{"only old unread", false, nil, "channel read state: no unread digest within the window, skipping (1 older channels left out)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []string
@@ -1517,8 +1518,15 @@ func TestSyncChannelReadStateOnlyWindowedDigests(t *testing.T) {
 			}
 			seed("C002", now.Add(-readStateDigestWindow-time.Hour))
 
+			var logs bytes.Buffer
+			ts.orch.SetLogger(log.New(&logs, "", 0))
 			require.NoError(t, ts.orch.syncChannelReadState(context.Background()))
 			assert.Equal(t, tc.want, got)
+			if tc.wantLog == "" {
+				assert.NotContains(t, logs.String(), "no unread digest within the window")
+			} else {
+				assert.Contains(t, logs.String(), tc.wantLog)
+			}
 		})
 	}
 }

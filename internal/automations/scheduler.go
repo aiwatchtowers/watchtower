@@ -48,12 +48,15 @@ type Scheduler struct {
 	// beforeWrite, when set (tests), runs between reading a row and writing
 	// its schedule.
 	beforeWrite func(db.Automation)
-	// fullWake reports whether the Mac is fully awake (SetFullWakeProbe);
-	// false in a Power Nap dark wake holds Run's ticks. Always true until set.
-	fullWake func() bool
+	// fullWake reports the system capability bits and whether the Mac is
+	// fully awake (SetFullWakeProbe); false in a Power Nap dark wake holds
+	// Run's ticks. Always awake until set.
+	fullWake func() (caps uint32, full bool)
 	// holding is set while Run holds the schedule for a dark wake, so the
-	// deferral is logged once per dark wake. Only Run's goroutine touches it.
-	holding bool
+	// hold is logged once when it starts and once when it ends; heldSince is
+	// the clock's time at its start. Only Run's goroutine touches them.
+	holding   bool
+	heldSince time.Time
 }
 
 // NewScheduler returns a scheduler over d. ix rescans the personal and
@@ -68,19 +71,22 @@ func NewScheduler(d *db.DB, ix *Indexer, clock Clock, wake func()) *Scheduler {
 }
 
 // alwaysFullWake is the default full-wake probe: every tick runs.
-func alwaysFullWake() bool { return true }
+func alwaysFullWake() (caps uint32, full bool) { return 0, true }
 
 // SetFullWakeProbe sets the probe Run asks before each tick whether the Mac
 // is fully awake (board #877). In a Power Nap dark wake (probe false) Run
 // skips the tick entirely — no folder rescan, no run queued and
 // last_scheduled_for left as it is — so at full wake the usual rules decide
 // (AUTO-10: on time within ScheduleGrace → `schedule`, else `missed`).
-// Tick, the test seam, never asks it. A nil probe keeps the current one.
-// Call it before Run.
-func (s *Scheduler) SetFullWakeProbe(probe func() bool) {
-	if probe != nil {
-		s.fullWake = probe
+// caps are the raw system capability bits the hold's log lines carry
+// (powerstate.Probe). Tick, the test seam, never asks it. nil restores the
+// default (always awake), as Daemon.SetFullWakeProbe does. Call it before
+// Run.
+func (s *Scheduler) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
+	if probe == nil {
+		probe = alwaysFullWake
 	}
+	s.fullWake = probe
 }
 
 // SetLogger sets where Run reports tick errors (the daemon's logger);
@@ -121,15 +127,22 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	}
 }
 
-// awake asks the full-wake probe and logs the change into a dark wake once.
+// awake asks the full-wake probe and logs the change into a dark wake and
+// back out of it once each.
 func (s *Scheduler) awake() bool {
-	if s.fullWake() {
-		s.holding = false
+	caps, full := s.fullWake()
+	if full {
+		if s.holding {
+			s.holding = false
+			s.logger.Printf("automations: full wake (caps 0x%02x), schedule resumed after ~%s",
+				caps, s.clock.Now().Sub(s.heldSince).Round(time.Second))
+		}
 		return true
 	}
 	if !s.holding {
 		s.holding = true
-		s.logger.Printf("automations: dark wake (Power Nap), holding the schedule until full wake")
+		s.heldSince = s.clock.Now()
+		s.logger.Printf("automations: dark wake (Power Nap, caps 0x%02x), holding the schedule until full wake", caps)
 	}
 	return false
 }

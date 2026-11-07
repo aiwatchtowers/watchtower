@@ -2,6 +2,7 @@ package automations_test
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync/atomic"
@@ -16,7 +17,18 @@ import (
 // and network but no graphics, and work started then hangs. The scheduler
 // holds its ticks and the executor claims nothing until full wake.
 
-const darkWakeLog = "dark wake (Power Nap), holding the schedule until full wake"
+const darkWakeLog = "dark wake (Power Nap, caps 0x0d), holding the schedule until full wake"
+
+// boolProbe is a full-wake probe over b with the capability bits of a real
+// read: 0x0f (CPU, graphics, audio, network) awake, 0x0d (no graphics) dark.
+func boolProbe(b *atomic.Bool) func() (uint32, bool) {
+	return func() (uint32, bool) {
+		if b.Load() {
+			return 0x0f, true
+		}
+		return 0x0d, false
+	}
+}
 
 // darkWakeRun starts s.Run over clock and returns a stop func.
 func darkWakeRun(t *testing.T, s *automations.Scheduler) (stop func()) {
@@ -61,7 +73,7 @@ func TestScheduler_DarkWakeHoldsTheSchedule(t *testing.T) {
 			clock := &stepClock{now: nine.Add(30 * time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
 			s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
 			s.SetLogger(log.New(logs, "", 0))
-			s.SetFullWakeProbe(awake.Load)
+			s.SetFullWakeProbe(boolProbe(&awake))
 			stop := darkWakeRun(t, s)
 			defer stop()
 
@@ -90,6 +102,9 @@ func TestScheduler_DarkWakeHoldsTheSchedule(t *testing.T) {
 				wantRun(t, rs[0], tc.trigger, nine)
 			}
 			wantTime(t, "last_scheduled_for", f.get(t, a.ID).LastScheduledFor, nine)
+			// Held from the start tick (09:00:30) to the full-wake tick.
+			mustContain(t, "log", logs.String(), fmt.Sprintf("automations: full wake (caps 0x0f), schedule resumed after ~%s",
+				tc.wakeAt-30*time.Second))
 		})
 	}
 }
@@ -103,7 +118,7 @@ func TestScheduler_DarkWakeLogsOncePerDeferral(t *testing.T) {
 	clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
 	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
 	s.SetLogger(log.New(logs, "", 0))
-	s.SetFullWakeProbe(awake.Load)
+	s.SetFullWakeProbe(boolProbe(&awake))
 	stop := darkWakeRun(t, s)
 	defer stop()
 	clock.waitAfter(t) // dark
@@ -114,6 +129,28 @@ func TestScheduler_DarkWakeLogsOncePerDeferral(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), darkWakeLog); n != 2 {
 		t.Fatalf("dark wake logged %d times over two dark wakes; want 2:\n%s", n, logs.String())
+	}
+	if n := strings.Count(logs.String(), "schedule resumed after"); n != 1 {
+		t.Fatalf("full wake logged %d times over one full wake; want 1:\n%s", n, logs.String())
+	}
+}
+
+// TestScheduler_NilProbeRestoresAlwaysAwake: SetFullWakeProbe(nil) after a
+// dark probe puts the default back, so the start tick runs (no hold).
+func TestScheduler_NilProbeRestoresAlwaysAwake(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	logs := &syncBuffer{}
+	clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
+	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
+	s.SetLogger(log.New(logs, "", 0))
+	var dark atomic.Bool // false: the probe reports a dark wake
+	s.SetFullWakeProbe(boolProbe(&dark))
+	s.SetFullWakeProbe(nil)
+	stop := darkWakeRun(t, s)
+	defer stop()
+	clock.waitAfter(t) // the start tick
+	if strings.Contains(logs.String(), "dark wake") {
+		t.Fatalf("a nil probe still held the schedule:\n%s", logs.String())
 	}
 }
 
@@ -126,20 +163,20 @@ func sameTime(a, b *time.Time) bool {
 
 func TestExecutor_NoClaimsInDarkWake(t *testing.T) {
 	var awake atomic.Bool
-	f := newExFixture(t, exOpts{fullWake: awake.Load})
+	f := newExFixture(t, exOpts{fullWake: boolProbe(&awake)})
 	id := f.enqueue(t, f.seed(t, "digest", `return 1`, false), db.TriggerManual)
 	unconfirmed := f.enqueue(t, f.seed(t, "draft", `return 1`, true), db.TriggerManual)
 	f.step(t, 0)
 	f.step(t, 0)
 	f.wantRun(t, id, db.RunQueued, "")
 	f.wantRun(t, unconfirmed, db.RunCancelled, db.ErrKindNotRunnable) // still cancelled in a dark wake
-	if n := strings.Count(f.logs.String(), "no run is claimed until full wake"); n != 1 {
+	if n := strings.Count(f.logs.String(), "dark wake (Power Nap, caps 0x0d), no run is claimed until full wake"); n != 1 {
 		t.Fatalf("dark wake logged %d times over two polls; want once:\n%s", n, f.logs.String())
 	}
 	awake.Store(true)
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
-	mustContain(t, "log", f.logs.String(), "full wake; claiming again")
+	mustContain(t, "log", f.logs.String(), "full wake (caps 0x0f); claiming again")
 }
 
 // TestExecutor_DarkWakeDoesNotResumeKeptRun: a waiting run the previous
@@ -147,7 +184,7 @@ func TestExecutor_NoClaimsInDarkWake(t *testing.T) {
 func TestExecutor_DarkWakeDoesNotResumeKeptRun(t *testing.T) {
 	var awake atomic.Bool
 	awake.Store(true)
-	w := newWriteFixtureOpts(t, exOpts{fullWake: awake.Load})
+	w := newWriteFixtureOpts(t, exOpts{fullWake: boolProbe(&awake)})
 	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox",
 		`const r = `+resumeAskCall+`; return JSON.stringify(r)`)
 	id := w.enqueue(t, a, db.TriggerManual)
