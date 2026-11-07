@@ -54,7 +54,7 @@ Type into **Message the session…** and send. Your line shows under it:
 
 ### Stop, finish or see the report
 
-The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. The report shows the targets' progress, the pull requests and the session's milestones.
+The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
 
 ### Run an automation
 
