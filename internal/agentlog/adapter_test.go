@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,4 +112,49 @@ func TestAgentlog_NoInterimRolloutDiscovery(t *testing.T) {
 			return true
 		})
 	}
+}
+
+// A rollout the adapter located but the importer cannot stat is counted:
+// gone in between = missing; any other stat error = a failed file naming
+// the session, never the path (FILES-01).
+func TestAgentlog_CodexRolloutStatFailureCounted(t *testing.T) {
+	codex, ok := sessionagent.For(agentkind.Codex)
+	require.True(t, ok)
+	scanWith := func(f *fixture, path string) *Result {
+		fake := &fakeCodexAdapter{Adapter: codex, path: path}
+		sessions := func(k sessionagent.Kind) (sessionagent.Adapter, bool) {
+			if k == agentkind.Codex {
+				return fake, true
+			}
+			return sessionagent.For(k)
+		}
+		r, err := Scan(t.Context(), f.d, f.al, f.wb, Options{ClaudeDir: f.claude, CodexHome: f.codex, Sessions: sessions})
+		require.NoError(t, err)
+		return r
+	}
+	t.Run("gone", func(t *testing.T) {
+		f := newFixture(t)
+		f.codexRow(f.wb, cxParent, f.folder, "")
+		r := scanWith(f, filepath.Join(t.TempDir(), "rollout-2026-11-01T10-00-00-"+cxParent+".jsonl"))
+		assert.Equal(t, 1, r.CodexRolloutsMissing)
+		assert.Zero(t, r.FailedFiles)
+	})
+	t.Run("unreadable folder", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root stats through a mode-000 folder")
+		}
+		f := newFixture(t)
+		f.codexRow(f.wb, cxParent, f.folder, "")
+		dir := t.TempDir()
+		p := filepath.Join(dir, "rollout-2026-11-01T10-00-00-"+cxParent+".jsonl")
+		require.NoError(t, os.WriteFile(p, []byte(cxSession(t, cxParent, f.folder)), 0o600))
+		require.NoError(t, os.Chmod(dir, 0))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+		r := scanWith(f, p)
+		require.Equal(t, 1, r.FailedFiles)
+		msg := r.FirstFailure.Error()
+		assert.Contains(t, msg, cxParent)
+		assert.NotContains(t, msg, dir)
+		assert.ErrorIs(t, r.FirstFailure, fs.ErrPermission)
+	})
 }
