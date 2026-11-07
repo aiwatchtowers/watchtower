@@ -201,10 +201,12 @@ package enum SessionReportPresentation {
     /// ticket, X/Y when anything is in scope (then "N merged" when tasks not
     /// done have their branch merged into their parent's, board #986), Go's
     /// PR line. A merged share the refresh could not check (`mergedStale`)
-    /// reads "N merged (unchecked)", or "merged not checked" with none counted.
-    /// A summary kept
-    /// from an earlier run after a failed refresh ends in "· stale", so a
-    /// failure never reads as a blank line; "" when there is nothing to say.
+    /// reads "N merged (unchecked)", or "merged not checked" with none counted
+    /// — the phone words it the same in the Kit's
+    /// `TerminalSessionState.reportMergedText` (board #1008); change both.
+    /// A summary kept from an earlier run after a failed refresh ends in
+    /// "· stale", so a failure never reads as a blank line; "" when there is
+    /// nothing to say.
     package static func rowCaption(_ summary: SessionReportSummary, stale: Bool = false) -> String {
         var parts: [String] = []
         if let target = summary.targetID { parts.append("#\(target)") }

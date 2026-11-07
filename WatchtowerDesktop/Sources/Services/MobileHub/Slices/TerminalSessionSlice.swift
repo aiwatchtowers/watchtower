@@ -72,6 +72,12 @@ struct TerminalSessionSlice: SliceSource {
         let reportTargetID: Int64?
         let reportDone: Int?
         let reportTotal: Int?
+        /// Tasks not done whose branch is merged into their parent's (board
+        /// #986, #1008); with the summary, 0 when none.
+        let reportMerged: Int?
+        /// Only `true` (the summary's `merged_stale`: the merge ref could not
+        /// be checked), else absent.
+        let reportMergedStale: Bool? // swiftlint:disable:this discouraged_optional_boolean
         let reportPRLine: String?
         let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
@@ -85,7 +91,7 @@ struct TerminalSessionSlice: SliceSource {
             case oldestAskID = "oldest_ask_id"
             case closedAsks, finishSummary, finishSummaryClipped, agentError, agentErrorClipped
             case reportTargetID = "report_target_id"
-            case reportDone, reportTotal
+            case reportDone, reportTotal, reportMerged, reportMergedStale
             case reportPRLine = "report_pr_line"
             case reportPRLineClipped = "report_pr_line_clipped"
         }
