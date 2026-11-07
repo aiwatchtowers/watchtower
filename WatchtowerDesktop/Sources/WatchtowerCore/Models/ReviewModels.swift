@@ -259,8 +259,7 @@ package struct ReviewEnvelope: Decodable, Sendable {
     package let written: String?
     /// `review start`: the session's worktree was removed; the open round stays
     /// on the folder it was opened on (board #1012).
-    // swiftlint:disable:next discouraged_optional_boolean
-    package let placeMissing: Bool?
+    package let placeMissing: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     /// The hunk an undo reverted.
     package struct RevertInfo: Decodable, Equatable, Sendable {
