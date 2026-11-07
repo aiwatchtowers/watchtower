@@ -443,7 +443,10 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 		sess.stopWatch = cancel
 		p, _ := sessionagent.PullerOf(req.Watch.Agent) // openCodexWatch checked it
 		watch := NewCodexWatch(req.Row, req.Watch.Agent, p, store, p.HomeOf(req.Env), s.opts.Logf)
-		go watch.run(ctx, s.opts.codexWatchEvery, s.opts.Now)
+		go func() {
+			defer cancel()
+			watch.run(ctx, s.opts.codexWatchEvery, s.opts.Now)
+		}()
 	}
 	go s.watch(sess)
 	if req.Detach {

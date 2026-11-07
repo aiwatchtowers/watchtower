@@ -1324,10 +1324,13 @@ func TestGate_HaltReasonIsSetWithTheHaltedState(t *testing.T) {
 // child staying up — never a row left executing until the session ends.
 func TestGate_SkippedResultLineSettlesTheCall(t *testing.T) {
 	old := maxWarmLine
-	maxWarmLine = 64 << 10
+	maxWarmLine = 16 << 10
 	t.Cleanup(func() { maxWarmLine = old })
 	fx := gateFake(t, gmailSend("r1", "tu1"))
-	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT="+strings.Repeat("x", 128<<10))
+	// The result rides in one environment string, which Linux caps at
+	// 128 KiB (MAX_ARG_STRLEN): a bigger one fails the child's exec, so
+	// the session would end before it is ready. Twice the cap is enough.
+	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT="+strings.Repeat("x", 2*maxWarmLine))
 	h := startSession(t, NewClaudeBackend(fx.opts), nil)
 	h.next(EventSessionReady)
 	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send it"})

@@ -343,6 +343,14 @@ func cappedClient(t *testing.T, steps []string, maxTurns int, runHome string) (*
 		switch {
 		case s == "HOLD":
 			b.WriteString("sleep 60 &\nwait\n")
+		case strings.Contains(s, "\n"):
+			// Lines in one write: they reach the pipe together, before a
+			// stop the first of them causes can end the stub.
+			b.WriteString("printf '%s\\n'")
+			for _, l := range strings.Split(s, "\n") {
+				b.WriteString(" '" + l + "'")
+			}
+			b.WriteString("\n")
 		case strings.HasPrefix(s, "R:"):
 			b.WriteString(`mkdir -p "$(dirname "$R")"; printf '%s\n' '` + s[2:] + `' >> "$R"` + "\n")
 		default:
@@ -430,8 +438,10 @@ func appendFile(t *testing.T, path, content string) {
 
 // The usage codex reports after the cap stopped the turn still counts.
 func TestCodexClient_UsageAfterTheCapStillCounts(t *testing.T) {
-	steps := []string{turnStarted, toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"), toolStart("c"),
-		`{"type":"turn.completed","usage":{"input_tokens":70,"output_tokens":9}}`, "HOLD"}
+	// The usage line goes out with the start of the turn past the cap: as
+	// separate writes the cap's kill can land between them.
+	steps := []string{turnStarted, toolStart("a"), toolDone("a"), toolStart("b"), toolDone("b"),
+		toolStart("c") + "\n" + `{"type":"turn.completed","usage":{"input_tokens":70,"output_tokens":9}}`, "HOLD"}
 	c, _ := cappedClient(t, steps, 2, "")
 	c.EmitToolEvents()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
