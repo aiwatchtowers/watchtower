@@ -90,3 +90,13 @@ extension AppState {
         return model
     }
 }
+
+extension AppState {
+    /// Reads the provider catalog at launch, tray-only launches included
+    /// (not when a window opens): the capability rows, the fallback pair and
+    /// AGENT-04's tool access need it. Not awaited by the launch; a second
+    /// read while this one runs waits for it (`AIModelCatalog.load`).
+    func loadModelCatalogAtLaunch() {
+        Task { [aiModelCatalog] in await aiModelCatalog.load() }
+    }
+}

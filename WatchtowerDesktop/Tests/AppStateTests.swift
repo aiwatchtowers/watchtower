@@ -1821,3 +1821,22 @@ final class AppStateTests: XCTestCase {
         await appState.stopSidebarCounts()?.value
     }
 }
+
+extension AppStateTests {
+    /// A tray-only launch has no window: the launch itself reads the provider
+    /// catalog (`loadModelCatalogAtLaunch`, called by `initialize()`), so the
+    /// capability rows and AGENT-04's tool access never wait for a window.
+    func testLaunchReadsTheModelCatalogWithoutAWindow() async throws {
+        let appState = AppState.isolated()
+        let rows = #"{"active_provider":"claude","providers":[{"id":"claude","display_name":"Claude","kind":"cli","#
+            + #""default_light":"","default_strong":"","live_models":false,"resolved_light":"","resolved_strong":""}]}"#
+        let catalog = AIModelCatalog { ProcessOutput(exitCode: 0, stdout: rows, stderr: "") }
+        appState.aiModelCatalog = catalog
+        let loaded = expectation(forNotification: AIModelCatalog.didLoadNotification, object: catalog)
+        appState.loadModelCatalogAtLaunch()
+        await fulfillment(of: [loaded], timeout: 5)
+        XCTAssertTrue(catalog.isLoaded)
+        XCTAssertTrue(catalog.isKnownCLI("claude"))
+        XCTAssertNil(catalog.lastError)
+    }
+}

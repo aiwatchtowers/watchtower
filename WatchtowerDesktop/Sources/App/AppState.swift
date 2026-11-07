@@ -243,9 +243,7 @@ final class AppState {
     /// The Meetings goal's download ahead of use (`autoDownloadTranscriptionModel`).
     @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
-    /// Provider/model registry from `watchtower ai models --json`, shared by
-    /// the chat model picker and Settings suggestions; read at window open.
-    let aiModelCatalog = AIModelCatalog.shared
+    @ObservationIgnored var aiModelCatalog = AIModelCatalog.shared
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
@@ -613,11 +611,12 @@ final class AppState {
         provider: String,
         panelDraftBox: PanelDraftBox,
         onSaved: @escaping (Int64?) -> Void,
-        makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
+        makeSpec: @escaping (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {
         AutomationEditorChat(
             conversationID: conversationID, dbPool: pool,
             toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
+            decideTools: { AutomationEditorChatSurface.toolsAvailable(provider: provider) },
             center: embeddedChatCenter, panelDraftBox: panelDraftBox, onSaved: onSaved, makeSpec: makeSpec
         )
     }
@@ -816,6 +815,7 @@ final class AppState {
             // the store copy may still be the stale one, and DaemonManager
             // caches whatever path it first resolves.
             daemonManager.startPolling()
+            loadModelCatalogAtLaunch()
             do {
                 let manager = try await migrateCompactOpen().get()
                 ambiguousWorkspaces = []

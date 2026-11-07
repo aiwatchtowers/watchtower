@@ -1633,3 +1633,31 @@ extension TargetChatViewModelTests {
         XCTAssertFalse(AIModelCatalog().isKnownCLI("claude"), "a catalog not read yet: draft-only (AGENT-04 fails closed)")
     }
 }
+
+extension TargetChatViewModelTests {
+    /// AGENT-04 before and after the catalog's first read: a target chat
+    /// opened before it is draft-only, then gets tools on claude and codex
+    /// once the read lands and stays draft-only on ollama (a local server).
+    func testToolAccessDecidedAgainWhenTheCatalogLoads() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        defer { ProviderCatalogFixture.seedShared() }
+        for (provider, tools) in [("claude", true), ("codex", true), ("ollama", false)] {
+            AIModelCatalog.shared.replaceProviders([])
+            let conv = try manager.dbPool.write { db in
+                try ChatConversationQueries.create(db, title: provider, contextType: "target", contextID: String(target.id)).id
+            }
+            let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                           conversationID: conv) { provider }
+            XCTAssertFalse(chat.toolsAvailable, "\(provider): draft-only before the catalog is read")
+            XCTAssertEqual(chat.engine.spec.toolAccess, .draftOnly)
+
+            ProviderCatalogFixture.seedShared() // the read lands and is announced
+            XCTAssertEqual(chat.toolsAvailable, tools, provider)
+            XCTAssertEqual(chat.engine.spec.toolAccess, tools ? .actions(surface: "target") : .draftOnly, provider)
+            chat.stop()
+        }
+    }
+}

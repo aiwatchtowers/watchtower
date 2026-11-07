@@ -144,11 +144,16 @@ final class TargetChatViewModel {
     let actionFeed: AgentActionFeed
 
     /// Provider kind is chosen app-wide for Discuss chats; the VM passes
-    /// `model: nil` and the CLI resolves the provider — so the only case
-    /// without tools is the app-wide Ollama provider. Resolved once at init
-    /// (the `memoryChatEnabled` injection precedent) rather than re-read from
-    /// config.yaml on every turn, so it stays a stable, test-injectable value.
-    let toolsAvailable: Bool
+    /// `model: nil` and the CLI resolves the provider. AGENT-04: tools only
+    /// for a provider the catalog knows runs as a CLI child, so a local HTTP
+    /// server, or a catalog not read yet, is draft-only. Unless a test injects
+    /// it, it is decided again when the catalog finishes a read
+    /// (`AIModelCatalog.didLoadNotification`), never left at its first answer.
+    private(set) var toolsAvailable: Bool
+    @ObservationIgnored private let conversationID: Int64
+    @ObservationIgnored private var catalogObserver: NSObjectProtocol?
+    /// The app-wide provider (config.yaml's `ai.provider`; tests pass one).
+    @ObservationIgnored private let providerID: @MainActor () -> String
 
     /// The rows as the tab renders them (and as tests read them).
     var messages: [ChatMessage] { engine.chatMessages }
@@ -181,13 +186,16 @@ final class TargetChatViewModel {
         cliRunner: CLIRunnerProtocol? = nil,
         // AGENT-04: nil = tools only for a provider known to run as a CLI.
         toolsAvailable: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
-        center: EmbeddedChatCenter? = nil
+        center: EmbeddedChatCenter? = nil,
+        providerID: @escaping @MainActor () -> String = { Constants.aiProviderID() }
     ) {
+        self.providerID = providerID
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
-        self.toolsAvailable = toolsAvailable ?? AIModelCatalog.shared.isKnownCLI(Constants.aiProviderID())
+        self.toolsAvailable = toolsAvailable ?? AIModelCatalog.shared.isKnownCLI(providerID())
+        self.conversationID = conversationID
         let spec = Self.placeholderSpec(targetID: target.id, conversationID: conversationID)
         self.engine = center?.engine(for: spec) ?? EmbeddedChatEngine(
             spec: spec,
@@ -204,6 +212,22 @@ final class TargetChatViewModel {
         engine.onTurnFinished = { [weak self] outcome in self?.turnFinished(outcome) }
         startMessageObservation(conversationID: conversationID)
         actionFeed.start(conversationID: conversationID)
+        if toolsAvailable == nil {
+            catalogObserver = NotificationCenter.default.addObserver(
+                forName: AIModelCatalog.didLoadNotification, object: AIModelCatalog.shared, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshToolAccess() }
+            }
+        }
+    }
+
+    /// The catalog finished a read: tool access is decided again and, when
+    /// it changed, the engine's spec is rebuilt for the next turn.
+    func refreshToolAccess() {
+        let now = AIModelCatalog.shared.isKnownCLI(providerID())
+        guard now != toolsAvailable else { return }
+        toolsAvailable = now
+        engine.update(spec: makeSpec(conversationID: conversationID))
     }
 
     /// Tears the VM's long-lived work down: the GRDB message observation and any
@@ -212,6 +236,8 @@ final class TargetChatViewModel {
     /// these tasks (the `CustomTrackTimelineViewModel.stop()` precedent), and
     /// without it the observation would keep the pool observed forever.
     func stop() {
+        if let catalogObserver { NotificationCenter.default.removeObserver(catalogObserver) }
+        catalogObserver = nil
         observationTask?.cancel()
         observationTask = nil
         engine.stop()
