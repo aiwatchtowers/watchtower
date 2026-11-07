@@ -174,6 +174,9 @@ package final class EmbeddedChatEngine {
         let bannerAtBegin: String?
         var stopRequested = false
         var failure: EmbeddedChatErrorClassifier.Failure?
+        /// The reply's text when its latest tool step started or ended: what
+        /// follows it is `ChatPostTurnInput.finalText`.
+        var textAtLastStep = ""
     }
 
     package init(
@@ -498,7 +501,13 @@ package final class EmbeddedChatEngine {
                     }
                     continue
                 }
-                if recordStepOrUsage(event, turn: turn) { continue }
+                if recordStepOrUsage(event, turn: turn) {
+                    switch event {
+                    case .toolStart, .toolEnd: running?.textAtLastStep = turn.fullText
+                    default: break
+                    }
+                    continue
+                }
                 switch reducer.apply(event) {
                 case .text(let text):
                     turn.replaceText(text, now: clock())
@@ -711,8 +720,9 @@ package final class EmbeddedChatEngine {
 
     private func finalizeCompleted(_ current: RunningTurn, reply text: String) async -> TurnOutcome {
         let turn = current.turn
-        let result = await spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
-                                                           alreadyApplied: current.request.alreadyApplied))
+        let result = await spec.postTurn(ChatPostTurnInput(
+            reply: text, finalText: ChatPostTurnInput.textAfter(current.textAtLastStep, in: text),
+            turnID: turn.turnID, messageID: turn.messageID, alreadyApplied: current.request.alreadyApplied))
         // An action surface may answer with tool proposals only and show a
         // placeholder; a reply that still has nothing to show is an error.
         if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

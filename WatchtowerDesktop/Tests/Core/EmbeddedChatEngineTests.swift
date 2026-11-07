@@ -172,6 +172,26 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(engine.messages.last?.steps.map(\.toolID), ["t1"], "the finished row keeps its steps")
     }
 
+    /// postTurn reads directives from the text after the reply's last tool
+    /// step only (TGT-BRIEF-03); the stored reply keeps the whole text.
+    func testPostTurnGetsTheTextAfterTheLastToolStep() async throws {
+        var input: ChatPostTurnInput?
+        let engine = makeEngine(spec: spec { input = $0; return .identity($0) })
+        engine.send("q")
+        await engine.finished()
+        ai.emit(.text("Draft."),
+                .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "ok", sources: [])),
+                .text(" Middle."),
+                .toolStart(ChatToolStart(turnID: "query", id: "t2", name: "get_target", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "query", id: "t2", ok: true, summary: "ok", sources: [])),
+                .text(" Final."), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(input?.reply, "Draft. Middle. Final.")
+        XCTAssertEqual(input?.finalText, " Final.")
+    }
+
     /// A stored session id is never resumed (#604 G11): a Claude turn of a
     /// chat with history sends the system prompt and replays the history.
     func testAStoredSessionIsNeverResumedAndTheHistoryIsReplayed() async throws {

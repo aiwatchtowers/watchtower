@@ -146,4 +146,48 @@ final class TargetActionParserTests: XCTestCase {
         XCTAssertEqual(r.actions.count, 1)
         XCTAssertEqual(r.actions.first?.isExecute, true)
     }
+
+    /// TGT-BRIEF-03: a block written before a tool call and revised after
+    /// it is one action, the final version; the dropped draft is counted.
+    func testARevisedBlockAcrossAToolCallYieldsOnlyTheFinalVersion() {
+        let draft = """
+        ```watchtower-action
+        {"type":"add_sub_item","text":"first draft","mode":"execute","reason":"owner said"}
+        ```
+        """
+        let revised = draft.replacingOccurrences(of: "first draft", with: "checked wording")
+        let finalText = "\n\nChecked.\n\(revised)"
+        let reply = "Let me look.\n\(draft)" + finalText
+        let r = TargetActionParser.parse(reply: reply, finalText: finalText)
+        XCTAssertEqual(r.actions.map(\.text), ["checked wording"])
+        XCTAssertEqual(r.ignored, 1)
+        XCTAssertTrue(r.errors.isEmpty)
+        XCTAssertFalse(r.text.contains("watchtower-action"), "every block leaves the visible text")
+        XCTAssertTrue(r.text.contains("Let me look."), "the preamble stays visible")
+    }
+
+    /// A block the model repeats unchanged after the tool call is kept and
+    /// not reported as dropped; a malformed draft before the call is ignored.
+    func testABlockRepeatedAfterAToolCallIsNotCountedAsIgnored() {
+        let block = """
+        ```watchtower-action
+        {"type":"update_due_date","due_date":"2026-09-01","reason":"r","mode":"execute"}
+        ```
+        """
+        let broken = "```watchtower-action\n{\"type\":\n```"
+        let finalText = "\nDone.\n\(block)"
+        let r = TargetActionParser.parse(reply: "\(broken)\n\(block)" + finalText, finalText: finalText)
+        XCTAssertEqual(r.actions.count, 1)
+        XCTAssertEqual(r.ignored, 0)
+        XCTAssertTrue(r.errors.isEmpty, "the pre-tool text is a draft, not a proposal")
+    }
+
+    /// A reply with no tool call: the final text is the whole reply.
+    func testAReplyWithoutToolsParsesAsBefore() {
+        let reply = "Ok.\n```watchtower-action\n{\"type\":\"update_due_date\",\"due_date\":\"2026-09-01\",\"reason\":\"r\"}\n```"
+        let r = TargetActionParser.parse(reply: reply, finalText: reply)
+        XCTAssertEqual(r.actions.count, 1)
+        XCTAssertEqual(r.ignored, 0)
+        XCTAssertEqual(r.text, "Ok.")
+    }
 }

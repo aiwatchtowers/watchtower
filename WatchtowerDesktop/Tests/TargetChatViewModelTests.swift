@@ -139,6 +139,48 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertLessThan(assistantIdx, summaryIdx)
     }
 
+    /// TGT-BRIEF-03: an execute block the model wrote before a tool call and
+    /// revised after it is applied once, in its final version; the owner is
+    /// told the draft was dropped.
+    func testABlockRevisedAfterAToolCallIsAppliedOnceInItsFinalVersion() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let draft = """
+        Adding it.
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "first draft", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let revised = """
+
+        Checked the board — better wording:
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "checked wording", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [
+            .sessionID("s1"), .text(draft),
+            .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")),
+            .toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "ok", sources: [])),
+            .text(revised), .done
+        ])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+
+        chat.inputText = "add a step"
+        chat.send()
+        await chat.engine.finished()
+        try await waitForStreamEnd(chat)
+
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertEqual(after.decodedSubItems.map(\.text), ["checked wording"])
+        XCTAssertEqual(chat.actionCards.count, 1)
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("1 action(s) written before a tool call were not used")
+        })
+    }
+
     /// The VM is cached per target in an app-wide container and holds a `Target`
     /// VALUE, so a checklist edit made on the detail view around it (drag-
     /// reorder, tick, inline edit) would otherwise never reach the prompt: the

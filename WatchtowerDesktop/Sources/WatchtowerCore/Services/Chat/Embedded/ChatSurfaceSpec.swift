@@ -79,18 +79,42 @@ package struct ChatTurnInput: Sendable {
 }
 
 package struct ChatPostTurnInput: Sendable {
+    /// The whole reply, with the text written before its tool calls.
     package let reply: String
+    /// The reply's text after its last tool step (the whole reply when it
+    /// called no tool). A surface reads directives from here only: a block
+    /// written before a tool call and revised after it is acted on once, in
+    /// its final version (TGT-BRIEF-03).
+    package let finalText: String
     package let turnID: String
     /// The assistant row the reply is stored in.
     package let messageID: Int64
     /// As `ChatTurnInput.alreadyApplied`: a surface must not apply these again.
     package let alreadyApplied: [ChatAppliedChange]
 
-    package init(reply: String, turnID: String, messageID: Int64, alreadyApplied: [ChatAppliedChange] = []) {
+    package init(
+        reply: String,
+        finalText: String? = nil,
+        turnID: String,
+        messageID: Int64,
+        alreadyApplied: [ChatAppliedChange] = []
+    ) {
         self.reply = reply
+        self.finalText = finalText ?? reply
         self.turnID = turnID
         self.messageID = messageID
         self.alreadyApplied = alreadyApplied
+    }
+
+    /// The part of `reply` after `prefix`, the text streamed up to the last
+    /// tool step. A reply that no longer starts with it (a v1 stream replaced
+    /// its text) has no earlier segment: the whole reply.
+    package static func textAfter(_ prefix: String, in reply: String) -> String {
+        // Scalars, not Characters: a chunk that starts with a combining mark
+        // joins the prefix's last Character, the scalars stay put.
+        let scalars = reply.unicodeScalars
+        guard !prefix.isEmpty, scalars.starts(with: prefix.unicodeScalars) else { return reply }
+        return String(String.UnicodeScalarView(scalars.dropFirst(prefix.unicodeScalars.count)))
     }
 }
 

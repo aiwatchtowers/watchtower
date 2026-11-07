@@ -221,6 +221,10 @@ final class TargetChatViewModel {
         }
     }
 
+    /// Shown above the feed while the chat runs draft-only because the
+    /// provider catalog could not be read (not for a provider without tools).
+    var toolsNotice: String? { toolsAvailable ? nil : AIModelCatalog.shared.unreadReason }
+
     /// The catalog finished a read: tool access is decided again and, when
     /// it changed, the engine's spec is rebuilt for the next turn.
     func refreshToolAccess() {
@@ -414,7 +418,9 @@ final class TargetChatViewModel {
     /// the engine stores AFTER the reply, keeping the transcript in
     /// assistant-then-system order.
     private func surfaceActions(_ input: ChatPostTurnInput) async -> ChatPostTurnResult {
-        let parsed = TargetActionParser.parse(input.reply)
+        // Actions only from the text after the last tool step: a block the
+        // model revised after a tool result is applied once (TGT-BRIEF-03).
+        let parsed = TargetActionParser.parse(reply: input.reply, finalText: input.finalText)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
         let displayText: String
@@ -491,10 +497,21 @@ final class TargetChatViewModel {
                 "automatically — decide on their cards."
             )
         }
-        for err in parsed.errors {
-            systemMessages.append("⚠️ Invalid action proposal: \(err)")
-        }
+        systemMessages += Self.parseNotices(ignored: parsed.ignored, errors: parsed.errors)
         return ChatPostTurnResult(displayText: displayText, notices: systemMessages, applied: appliedChanges)
+    }
+
+    /// The notices of what the parse dropped: drafts written before a tool
+    /// call, and one warning per malformed block.
+    private static func parseNotices(ignored: Int, errors: [String]) -> [String] {
+        var notices: [String] = []
+        if ignored > 0 {
+            notices.append(
+                "\(ignored) action(s) written before a tool call were not used — " +
+                "only the actions at the end of the reply count."
+            )
+        }
+        return notices + errors.map { "⚠️ Invalid action proposal: \($0)" }
     }
 
     /// Feed a follow-up turn back into the conversation. The text is shown as a
@@ -806,6 +823,10 @@ final class TargetChatViewModel {
     people's blockers) go into your prose reply, NEVER into actions. Never emit
     actions the owner did not ask for, and never create targets outside this
     task's vertical line.
+
+    WHERE BLOCKS GO: write action blocks after your last tool call, at the end
+    of your reply. A block written before a tool call is ignored, so after a
+    tool result write the final version of every action you still mean.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every
