@@ -450,3 +450,45 @@ func TestArtifactID_Forms(t *testing.T) {
 		assert.Equal(t, want, artifactID(in), in)
 	}
 }
+
+// After a skipped line the result closes the turn's open calls, and only
+// this turn's: a call an earlier, killed child left open is dropped when
+// the next turn starts, never ended under the new turn's id (CHAT-02).
+func TestClaudeTranslator_SkippedLineClosesOnlyThisTurnsCalls(t *testing.T) {
+	turn := "t1"
+	tr := NewClaudeTranslator(func() string { return turn })
+	start := func(id string) {
+		_, err := tr.Feed([]byte(`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"` + id + `","name":"mcp__watchtower__list_targets"}}}`))
+		require.NoError(t, err)
+		_, err = tr.Feed([]byte(`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`))
+		require.NoError(t, err)
+	}
+	result := `{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"s"}`
+
+	start("old") // the child dies here: no result, no tool_result
+	turn = "t2"
+	tr.startTurn()
+	start("new")
+	tr.MarkLineSkipped()
+	f, err := tr.feed([]byte(result))
+	require.NoError(t, err)
+	var ends []Event
+	for _, e := range f.events {
+		if e.Type == EventToolEnd {
+			ends = append(ends, e)
+		}
+	}
+	require.Len(t, ends, 1)
+	assert.Equal(t, "new", ends[0].ID)
+	assert.Equal(t, "t2", ends[0].TurnID)
+	assert.Equal(t, lostResultSummary, ends[0].Summary)
+	assert.Equal(t, []string{"new"}, f.lost)
+
+	// The mark is the turn's: the next result closes nothing.
+	turn = "t3"
+	tr.startTurn()
+	start("later")
+	f, err = tr.feed([]byte(result))
+	require.NoError(t, err)
+	assert.Empty(t, f.lost)
+}

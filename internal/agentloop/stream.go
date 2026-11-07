@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"unicode"
 
@@ -260,7 +261,8 @@ func (m *streamMessage) resolveNames() {
 // tool_calls finish with no call assembled, a tool call next to an
 // undecodable chunk (it may have held a fragment of the arguments), or
 // nothing at all after one (it may have held the answer). A lost text
-// fragment only shortens the text. Counts only (FILES-01).
+// fragment only shortens the text, and its count is logged. Counts only
+// (FILES-01).
 func (m *streamMessage) check(skipped int) error {
 	switch {
 	case m.finish == "tool_calls" && len(m.calls) == 0:
@@ -272,6 +274,8 @@ func (m *streamMessage) check(skipped int) error {
 	case skipped > 0 && m.content.Len() == 0:
 		return providers.WithFailure("ollama", providers.InvalidOutput,
 			fmt.Errorf("model stream had no message, %d undecodable chunks", skipped))
+	case skipped > 0:
+		log.Printf("runtime B: %d undecodable stream chunk(s) ignored", skipped)
 	}
 	return nil
 }

@@ -376,11 +376,12 @@ func (g *turnCap) done(reported, failed bool) error {
 	return nil
 }
 
-// turnFailed says whether a run's JSONL output ends its turn with a
-// failure codex reported (a turn.failed or error event carrying an error,
-// queryStream's terminal), not a bare retry notice.
-func turnFailed(output []byte) bool {
-	failed := false
+// turnOutcome reads how a run's JSONL output ends its turn: failed when
+// with a failure codex reported (a turn.failed or error event carrying an
+// error, queryStream's terminal), not a bare retry notice; completed when
+// with turn.completed (the only successful end, parseJSONLOutputForModel's
+// rule).
+func turnOutcome(output []byte) (failed, completed bool) {
 	for line := range bytes.SplitSeq(output, []byte("\n")) {
 		var event CodexEvent
 		if json.Unmarshal(bytes.TrimSpace(line), &event) != nil {
@@ -390,10 +391,10 @@ func turnFailed(output []byte) bool {
 		case (event.Type == "turn.failed" || event.Type == "error") && event.Error != nil:
 			failed = true
 		case event.Type == "turn.started" || event.Type == "turn.completed":
-			failed = false
+			failed, completed = false, event.Type == "turn.completed"
 		}
 	}
-	return failed
+	return failed, completed
 }
 
 // checkLocked stops the run once its turns pass the cap.

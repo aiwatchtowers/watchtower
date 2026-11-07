@@ -1084,7 +1084,11 @@ func codexWatchGiveUp(e *sessionEnv) error {
 		turnErr = errors.New("codex: the watch recorded a turn from a missing rollout")
 		return turnErr
 	}}
-	w := sessionhost.NewCodexWatch(e.row, store, filepath.Join(e.home, ".codex"), func(string, ...any) {})
+	p, ok := sessionagent.PullerOf(string(agentkind.Codex))
+	if !ok {
+		return errors.New("codex: the adapter pulls nothing")
+	}
+	w := sessionhost.NewCodexWatch(e.row, string(agentkind.Codex), p, store, filepath.Join(e.home, ".codex"), func(string, ...any) {})
 	now := time.Now()
 	for range 16 {
 		now = now.Add(sessionhost.CodexWatchEvery)

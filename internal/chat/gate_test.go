@@ -1317,3 +1317,33 @@ func TestGate_HaltReasonIsSetWithTheHaltedState(t *testing.T) {
 	assert.Equal(t, reasonSessionEnded, row.reason)
 	assert.Empty(t, cliAnswers(t, p, r), "no answer is due to a dead child")
 }
+
+// An approved call whose tool_result line is over the reader's cap is
+// skipped, not a failed turn: the turn's result closes its step as failed
+// with a reason (CHAT-02) and records the row as of unknown outcome, the
+// child staying up — never a row left executing until the session ends.
+func TestGate_SkippedResultLineSettlesTheCall(t *testing.T) {
+	old := maxWarmLine
+	maxWarmLine = 64 << 10
+	t.Cleanup(func() { maxWarmLine = old })
+	fx := gateFake(t, gmailSend("r1", "tu1"))
+	fx.opts.Env = append(fx.opts.Env, "FAKE_GATE_RESULT="+strings.Repeat("x", 128<<10))
+	h := startSession(t, NewClaudeBackend(fx.opts), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send it"})
+	h.until(EventToolWait)
+	require.True(t, fx.sink.approve(1, ""))
+	end := h.next(EventToolEnd)
+	assert.Equal(t, "tu1", end.ID)
+	require.NotNil(t, end.OK)
+	assert.False(t, *end.OK)
+	assert.Equal(t, lostResultSummary, end.Summary)
+	h.next(EventUsage)
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	row := fx.sink.row(1)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, reasonOutcomeUnknown, row.callErr)
+	assert.Equal(t, 1, row.finishes)
+	assert.NoError(t, syscall.Kill(readPIDFile(t, fx.files.pid), 0), "the child stays up")
+	require.NoError(t, h.finish())
+}
