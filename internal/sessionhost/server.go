@@ -441,7 +441,8 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 	if store != nil {
 		ctx, cancel := context.WithCancel(context.Background())
 		sess.stopWatch = cancel
-		watch := NewCodexWatch(req.Row, store, codexPuller().HomeOf(req.Env), s.opts.Logf)
+		p, _ := sessionagent.PullerOf(req.Watch.Agent) // openCodexWatch checked it
+		watch := NewCodexWatch(req.Row, req.Watch.Agent, p, store, p.HomeOf(req.Env), s.opts.Logf)
 		go watch.run(ctx, s.opts.codexWatchEvery, s.opts.Now)
 	}
 	go s.watch(sess)
@@ -458,7 +459,10 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 // path-free, FILES-01).
 func (s *Server) openCodexWatch(req LaunchReq) CodexWatchStore {
 	w := req.Watch
-	if s.opts.CodexWatch == nil || w == nil || !sessionagent.CapsOf(w.Agent).RolloutWatch() || w.Database == "" {
+	if s.opts.CodexWatch == nil || w == nil || w.Database == "" {
+		return nil
+	}
+	if _, pulls := sessionagent.PullerOf(w.Agent); !pulls {
 		return nil
 	}
 	store, err := s.opts.CodexWatch(w.Database)

@@ -2,9 +2,9 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/logredact"
 	"watchtower/internal/sessionagent"
@@ -41,7 +41,9 @@ func openCodexWatchStore(dbPath string) (sessionhost.CodexWatchStore, error) {
 	return &sessionhost.DBWatchStore{DB: d, Record: recordCodexPull}, nil
 }
 
-// recordCodexPull writes a codex turn the rollout pull read (board #959,
+// recordCodexPull writes a turn the rollout pull read, through the pull
+// reader of the row's kind (an error for a kind with none: every caller
+// checked it), (board #959,
 // ask #499 option A) through the hooks' own path: a failed turn is the
 // StopFailure's write (`waiting` with agent_failed_at and the
 // codex_error_info), an aborted one the Interrupt's plain `waiting`, both
@@ -52,9 +54,9 @@ func recordCodexPull(database *db.DB, row db.CodexWatchRow, turn sessionfeed.Cod
 	if turn.At.IsZero() {
 		return nil
 	}
-	puller, ok := sessionagent.MustFor(agentkind.Codex).Watch()
+	puller, ok := sessionagent.PullerOf(row.Kind)
 	if !ok {
-		return nil
+		return fmt.Errorf("terminal session %d: kind %q has no pulled turn ends", row.ID, row.Kind)
 	}
 	ev, ok := puller.Event(row.SessionID, turn)
 	if !ok {
