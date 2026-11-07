@@ -174,6 +174,7 @@ func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
 		Providers []struct {
 			ID           string          `json:"id"`
 			DisplayName  string          `json:"display_name"`
+			Kind         string          `json:"kind"`
 			Capabilities json.RawMessage `json:"capabilities"`
 		} `json:"providers"`
 	}
@@ -182,6 +183,7 @@ func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
 	type row struct {
 		ID           string          `json:"id"`
 		DisplayName  string          `json:"display_name"`
+		Kind         string          `json:"kind"`
 		Capabilities json.RawMessage `json:"capabilities"`
 	}
 	rows := make([]row, 0, len(parsed.Providers))

@@ -14,6 +14,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
+        // AGENT-04 reads the registry's kind from the shared catalog.
+        await MainActor.run { ProviderCatalogFixture.seedShared() }
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
     }
 

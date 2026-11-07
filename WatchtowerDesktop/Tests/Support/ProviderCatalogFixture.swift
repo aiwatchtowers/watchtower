@@ -25,7 +25,7 @@ package enum ProviderCatalogFixture {
             fatalError("ProviderCatalogFixture: unreadable \(url.path)")
         }
         let providers = rows.map { row -> [String: Any] in
-            ["id": row["id"] ?? "", "display_name": row["display_name"] ?? row["id"] ?? "", "kind": "cli", "default_light": "",
+            ["id": row["id"] ?? "", "display_name": row["display_name"] ?? row["id"] ?? "", "kind": row["kind"] ?? "cli", "default_light": "",
              "default_strong": "", "live_models": false, "resolved_light": "", "resolved_strong": "",
              "capabilities": row["capabilities"] ?? [:]]
         }

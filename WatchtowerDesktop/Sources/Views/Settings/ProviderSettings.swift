@@ -20,7 +20,7 @@ struct ProviderSettings: View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             preferredSection
             if let reserve { reserveSection(reserve) }
-            if preferred == "ollama" { ollamaSection }
+            if catalog.isLocalServer(preferred) { ollamaSection }
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text(ProviderSettingsCopy.workers).font(.caption).foregroundStyle(.secondary)
                 TextField(ProviderSettingsCopy.workers, value: $config.aiWorkers, format: .number).textFieldStyle(.kit)
@@ -49,7 +49,7 @@ struct ProviderSettings: View {
             .managedByOrganization(policy.allowedAIProviders == [preferred])
             Text(connection.label(for: preferred)).font(.caption).foregroundStyle(.secondary)
             models(provider: preferred, reserve: false)
-            if preferred != "ollama" { pathField(preferred) }
+            if !catalog.isLocalServer(preferred) { pathField(preferred) }
             connectionActions(preferred)
         }
     }
@@ -133,11 +133,12 @@ struct ProviderSettings: View {
         return .init(provider: provider, model: model ?? "",
                      path: (provider == "codex" ? config.codexPath : config.claudePath) ?? "",
                      configPath: config.connectionConfigPath, serverURL: config.aiOllamaURL,
-                     lightModel: config.aiModelLight ?? catalog.provider(provider)?.resolvedLight)
+                     lightModel: config.aiModelLight ?? catalog.provider(provider)?.resolvedLight,
+                     localServer: catalog.isLocalServer(provider))
     }
     private func connectionActions(_ provider: String) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text(provider == "ollama" ? ProviderConnection.localWarning : ProviderConnection.warning)
+            Text(catalog.isLocalServer(provider) ? ProviderConnection.localWarning : ProviderConnection.warning)
                 .font(.caption).foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {
                 HStack { checkButton(provider); testButton(provider) }

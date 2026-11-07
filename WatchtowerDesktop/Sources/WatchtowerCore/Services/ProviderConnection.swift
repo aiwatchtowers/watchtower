@@ -13,8 +13,19 @@ package final class ProviderConnection {
         package var serverURL: String?
         package var lightModel: String?
         package var configPath: String
-        package init(provider: String, model: String, path: String, configPath: String, serverURL: String? = nil, lightModel: String? = nil) {
-            self.serverURL = serverURL; self.lightModel = lightModel
+        /// A local HTTP server (`AIModelCatalog.isLocalServer`): tested over
+        /// HTTP, no CLI metadata.
+        package var localServer: Bool
+        package init(
+            provider: String,
+            model: String,
+            path: String,
+            configPath: String,
+            serverURL: String? = nil,
+            lightModel: String? = nil,
+            localServer: Bool = false
+        ) {
+            self.serverURL = serverURL; self.lightModel = lightModel; self.localServer = localServer
             self.provider = provider; self.model = model; self.path = path; self.configPath = configPath
         }
     }
@@ -46,11 +57,11 @@ package final class ProviderConnection {
     package init(
         catalog: AIModelCatalog = .shared,
         metadata: @escaping (Selection) async throws -> Metadata = { selected in
-            if selected.provider == "ollama" { return .notVerified }
+            if selected.localServer { return .notVerified }
             return try ProviderExecutableMetadata.check(provider: selected.provider, override: selected.path)
         },
         test: @escaping (Selection) async throws -> Result = { selected in
-            if selected.provider == "ollama" { return try await ProviderConnection.testLocal(selected) }
+            if selected.localServer { return try await ProviderConnection.testLocal(selected) }
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             let data = try await runner.run(args: ProviderConnection.arguments(selected), timeout: 55)
             return try JSONDecoder().decode(Result.self, from: data)
@@ -217,7 +228,7 @@ package final class ProviderConnection {
         let pair = catalog.fallbackPair(preferred: selection.provider) ?? .init(preferred: side, reserve: side)
         if testing {
             return .init(title: Self.testingLabel,
-                         detail: selection.provider == "ollama" ? Self.localWarning : Self.warning,
+                         detail: selection.localServer ? Self.localWarning : Self.warning,
                          action: nil, emphasis: .neutral, busy: true)
         }
         if state == .ready {
@@ -230,8 +241,10 @@ package final class ProviderConnection {
         let detail = state == .connectionError
             ? "Sign in to the \(Self.name(selection.provider)) CLI in Terminal, then test connection again."
             : state == .checking ? "Checking the installed CLI without reading credentials or sending an AI prompt." : approved.detail
-        if selection.provider == "ollama" {
-            return .init(title: state == .policy ? "Ollama / Local is blocked by your organization" : "Local connection isn't verified",
+        if selection.localServer {
+            let title = state == .policy
+                ? "\(Self.name(selection.provider)) is blocked by your organization" : "Local connection isn't verified"
+            return .init(title: title,
                          detail: state == .policy ? approved.detail : Self.localWarning, action: action,
                          emphasis: approved.emphasis, busy: approved.busy)
         }

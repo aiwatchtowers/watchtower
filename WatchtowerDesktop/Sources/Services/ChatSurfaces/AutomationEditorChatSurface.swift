@@ -23,11 +23,10 @@ enum AutomationEditorChatSurface {
     static let unavailableHelp = "Needs Claude or Codex"
     static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
-    /// AGENT-04 (ask #270): under ollama the editor chat is draft-only. It
-    /// stays a name check until the owner decides whether runtime B's tools
-    /// (its capability row) open it (ask pending, A2).
-    static func toolsAvailable(provider: String?) -> Bool {
-        (provider ?? Constants.aiProviderID()) != "ollama"
+    /// AGENT-04 (ask #270): under a local HTTP server (runtime B, the
+    /// registry's `kind`) the editor chat is draft-only.
+    @MainActor static func toolsAvailable(provider: String?) -> Bool {
+        !AIModelCatalog.shared.isLocalServer(provider ?? Constants.aiProviderID())
     }
 
     /// The automation's conversation, created on first use.
@@ -61,7 +60,7 @@ enum AutomationEditorChatSurface {
     /// `outcomes` renders the decisions since the previous owner message.
     /// `defaultPrompts`: a built-in's shipped prompts by name (`show`'s
     /// `builtin.default_prompts`), listed in the context block.
-    static func spec(
+    @MainActor static func spec(
         automation: Automation,
         defaultPrompts: [String: String] = [:],
         provider: String?,
@@ -98,7 +97,7 @@ enum AutomationEditorChatSurface {
     /// (`AppState.draftContextID`): no automation yet, so the CLI gets
     /// `--surface automation_editor` with no context. With a `workbench` the
     /// prompt names it and its `workbench_id`.
-    static func newSpec(
+    @MainActor static func newSpec(
         provider: String?,
         contextID: String,
         workbench: NewWorkbench?,

@@ -3,6 +3,7 @@
     {
       "id": "claude",
       "display_name": "Claude",
+      "kind": "cli",
       "capabilities": {
         "tools": "watchtower+quick_connections",
         "tool_events": true,
@@ -24,6 +25,7 @@
     {
       "id": "codex",
       "display_name": "Codex",
+      "kind": "cli",
       "capabilities": {
         "tools": "watchtower+quick_connections",
         "tool_events": true,
@@ -45,6 +47,7 @@
     {
       "id": "ollama",
       "display_name": "Ollama / Local",
+      "kind": "http",
       "capabilities": {
         "tools": "watchtower+quick_connections",
         "tool_events": true,

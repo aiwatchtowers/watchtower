@@ -98,6 +98,13 @@ package final class AIModelCatalog {
         reservePeer(of: id).map { .init(preferred: fallbackSide(id), reserve: fallbackSide($0)) }
     }
 
+    /// Whether provider id is a local HTTP server (the registry's `kind`,
+    /// runtime B): a server URL instead of a CLI path, tested over HTTP, and
+    /// the draft-only surfaces of AGENT-04. False for an unknown id.
+    package func isLocalServer(_ id: String) -> Bool {
+        provider(id)?.kind == "http"
+    }
+
     /// Whether the catalog has been read (a row for any provider).
     package var isLoaded: Bool { !providers.isEmpty }
 

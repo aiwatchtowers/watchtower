@@ -133,7 +133,7 @@ final class ProviderConnectionTests: XCTestCase {
             }
         }
         let local = ProviderConnection()
-        await local.check(.init(provider: "ollama", model: "fixture", path: "", configPath: "unused"), policy: .none)
+        await local.check(.init(provider: "ollama", model: "fixture", path: "", configPath: "unused", localServer: true), policy: .none)
         XCTAssertEqual(local.copy?.title, "Local connection isn't verified")
         XCTAssertTrue(local.copy?.detail.contains("per distinct light and strong model") == true)
     }

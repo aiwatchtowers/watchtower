@@ -1626,6 +1626,9 @@ extension TargetChatViewModelTests {
         }
         XCTAssertFalse(catalog.capabilities(for: "gemini").hasTools, "an unknown provider has no tools")
         XCTAssertFalse(AIModelCatalog().capabilities(for: "claude").hasTools, "a catalog not read yet offers nothing")
-        XCTAssertFalse(AutomationEditorChatSurface.toolsAvailable(provider: "ollama"), "AGENT-04: draft-only")
+        XCTAssertFalse(AutomationEditorChatSurface.toolsAvailable(provider: "ollama"), "AGENT-04: draft-only on a local server")
+        XCTAssertTrue(AutomationEditorChatSurface.toolsAvailable(provider: "codex"))
+        XCTAssertTrue(catalog.isLocalServer("ollama"))
+        XCTAssertFalse(catalog.isLocalServer("claude"))
     }
 }
