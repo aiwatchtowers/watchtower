@@ -1037,8 +1037,14 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 // snapshot, Flush keyed by its own start — so a calendar change made while
 // the daemon was stopped still fires, though this pass writes it before the
 // first runSync's snapshot. With no bus, or no calendar subscriber, it just
-// runs the two phases.
+// runs the two phases. In a Power Nap dark wake (SetFullWakeProbe) it syncs
+// nothing: the pass would be cut off when the Mac sleeps again, and the
+// first cycle, deferred to the full wake, syncs the calendars anyway.
 func (d *Daemon) startupCalendarSync(ctx context.Context) {
+	if caps, full := d.wakeState(); !full {
+		d.logger.Printf("dark wake (Power Nap, caps 0x%02x), skipping the startup calendar sync; the first full-wake cycle syncs calendars", caps)
+		return
+	}
 	start := time.Now()
 	d.cycleEvents = d.beginAutomationEvents()
 	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
