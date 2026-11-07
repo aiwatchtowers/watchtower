@@ -162,6 +162,64 @@ package enum OwnerAskPresentation {
         return minutes < 1 ? "From chat · <1 min" : "From chat · \(minutes) min"
     }
 
+    /// An ask's summary as the drawer's header card shows it: `body` in the
+    /// bubble (none when empty) and, under it, `reason` as a caption.
+    package struct SummaryParts: Equatable, Sendable {
+        package let body: String
+        package let reason: String?
+
+        /// Nothing for the header card to show from the summary.
+        package var isEmpty: Bool { body.isEmpty && reason == nil }
+    }
+
+    /// The summary split for the drawer. An ask Watchtower raised from the
+    /// agent's terminal question (`origin: chat`, Go's `escalatedAsk`) ends
+    /// with a reason line (`escalateReasonLine`); that line becomes the
+    /// caption. The rest is the agent's context — or, on an ask raised before
+    /// the context existed, the question itself.
+    ///
+    /// The question is shown once in full, on the question card: the drawer
+    /// header keeps the title (Go's one-line clip of the question, at most
+    /// 120 runes, cut again by the header's line limit), and the bubble drops
+    /// every paragraph — else every line — that is a question's text or the
+    /// title, whitespace aside. Every other ask's summary is shown as written.
+    package static func summaryParts(for ask: OwnerAsk) -> SummaryParts {
+        guard ask.origin == .chat else { return SummaryParts(body: ask.summary, reason: nil) }
+        var lines = ask.summary.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        var reason: String?
+        if let last = lines.last?.trimmingCharacters(in: .whitespaces), isChatReasonLine(last) {
+            reason = last
+            lines.removeLast()
+        }
+        let repeats = Set((ask.payload.questions.map(\.question) + [ask.title]).map(normalisedText).filter { !$0.isEmpty })
+        let isRepeat = { (text: String) in repeats.contains(normalisedText(text)) }
+        let paragraphs = lines.joined(separator: "\n").components(separatedBy: "\n\n").compactMap { paragraph -> String? in
+            if isRepeat(paragraph) { return nil }
+            let kept = paragraph.components(separatedBy: "\n").filter { !isRepeat($0) }
+            return kept.allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } ? nil : kept.joined(separator: "\n")
+        }
+        let body = paragraphs.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return SummaryParts(body: body, reason: reason)
+    }
+
+    /// Go's three reason lines (`escalateReasonLine`), exactly.
+    private static func isChatReasonLine(_ line: String) -> Bool {
+        if line == "Asked in the terminal; you left the session." || line == "Asked in the terminal while you were away." {
+            return true
+        }
+        let prefix = "Asked in the terminal; no answer for ", suffix = " min."
+        guard line.hasPrefix(prefix), line.hasSuffix(suffix), line.count > prefix.count + suffix.count else { return false }
+        let minutes = line.dropFirst(prefix.count).dropLast(suffix.count)
+        return minutes.allSatisfy(\.isASCII) && minutes.allSatisfy(\.isNumber)
+    }
+
+    /// Words joined by single spaces: two texts that differ only in their
+    /// whitespace compare equal.
+    private static func normalisedText(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
     package static func askKindIcon(_ kind: OwnerAskKind) -> String {
         switch kind {
         case .review: "doc.text.magnifyingglass"
