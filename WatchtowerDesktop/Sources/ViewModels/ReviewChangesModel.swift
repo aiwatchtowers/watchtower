@@ -439,6 +439,9 @@ final class ReviewChangesModel {
             round = info
             placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
+            // A round moved to another place has no previous round (board
+            // #1012): the Since view is gone with its picker, as in open().
+            if view == .sinceLastRound, info.prevRoundId == 0 { view = .all }
             let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
             context = ctx.items ?? []
             lenses = ctx.lenses ?? []

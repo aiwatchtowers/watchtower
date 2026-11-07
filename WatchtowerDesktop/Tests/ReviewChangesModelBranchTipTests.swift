@@ -119,4 +119,24 @@ extension ReviewChangesModelTests {
         await h.model.refresh()
         XCTAssertFalse(h.model.placeMissing)
     }
+
+    /// Codex verify: a Refresh that finds the round moved (no previous round
+    /// any more) leaves the Since view, whose picker is gone, for All changes.
+    func testRefreshOfAMovedRoundFallsBackToAllChanges() async throws {
+        let h = try harness()
+        let r6 = try await h.db.write { db -> Int64 in
+            try db.execute(sql: """
+                INSERT INTO review_rounds (project_id, session_id, folder_root, base_sha, tree_sha, status)
+                VALUES (?, ?, '/r', 'b', 't6', 'sent')
+                """, arguments: [h.projectID, h.sessionID])
+            return db.lastInsertedRowID
+        }
+        h.baseScript(id: 7, prev: r6)
+        h.cli.script("start", [startJSON(id: 7, prev: r6), startJSON(id: 7, prev: 0, tree: "u")])
+        await h.model.open()
+        XCTAssertEqual(h.model.view, .sinceLastRound)
+        await h.model.refresh()
+        XCTAssertEqual(h.model.view, .all)
+        XCTAssertEqual(h.cli.calls("diff").last?.contains("--since"), false, "the moved round's diff is read whole")
+    }
 }
