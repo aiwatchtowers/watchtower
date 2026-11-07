@@ -50,7 +50,7 @@ By default (ask guard **strict**, finish check **on**), Claude Code's own questi
 
 The methodology can change this; see [Methodology](methodology.md) and **Agent Settings…**. With **soft**, Claude Code's question dialog works while you are in the session, and plain-text questions are recorded instead of bounced back. With **off**, nothing is checked. The finish check can be switched off on its own.
 
-One short question may stay in the terminal while you are in that session. If you don't answer it, Watchtower files it for you as a Quick ask marked **From chat · N min**. It becomes a regular ask when it does not fit a Quick ask (four options, or an option label over 40 characters), and so does a request recorded under **soft**. It is filed:
+One short question may stay in the terminal while you are in that session. If you don't answer it, Watchtower files it for you as a Quick ask marked **From chat · N min**. It becomes a regular ask when it does not fit a Quick ask (four options, or an option label over 40 characters), and so does a request recorded under **soft**. The question is the ask's title. Below it you see what the agent's message said you need to answer: why it asks, what each answer changes, what it recommends. A yes/no question gets its two answers as buttons, in the language of the message. It is filed:
 
 - after 10 minutes unanswered;
 - after you have been away from the session for 90 seconds;

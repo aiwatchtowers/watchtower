@@ -218,8 +218,8 @@ func escalateQuestion(database *db.DB, a escalateArgs, now time.Time) (escalateR
 
 // escalatedAsk builds the raised ask (Part 5.3 step 2): one question q1 with
 // the stored options, the question clipped to the title on one line, the
-// full question then the reason's line as the summary, the session's single
-// linked target (none for none or several), origin chat asked at a.at;
+// summary from escalatedSummary, the session's single linked target (none
+// for none or several), origin chat asked at a.at;
 // validated with origin chat, its level classified (Full for a recorded full request).
 func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion, now time.Time) (db.OwnerAsk, string, error) {
 	opts := make([]asks.Option, 0, len(q.Options))
@@ -229,7 +229,7 @@ func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion
 	in := asks.Input{
 		Kind:      asks.KindQuestion,
 		Title:     clipRunes(oneLine(q.Question), asks.MaxTitleRunes),
-		Summary:   q.Question + "\n" + escalateReasonLine(a.reason, now.Sub(a.asked)),
+		Summary:   escalatedSummary(q, escalateReasonLine(a.reason, now.Sub(a.asked))),
 		Questions: []asks.Question{{ID: "q1", Question: q.Question, Options: opts}},
 	}
 	payload, err := asks.Validate(in, asks.OriginChat)
@@ -264,6 +264,22 @@ func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion
 		Origin:      asks.OriginChat,
 		ChatAskedAt: a.at,
 	}, level, nil
+}
+
+// escalatedSummary is the raised ask's summary, reasonLine always its last
+// line (the Desktop shows that line apart): for a chat question the recorded
+// context, a blank line and reasonLine, or reasonLine alone without a
+// context — the question is the title and q1, never repeated here; for a
+// recorded full request its whole text (the substance of the ask, only
+// clipped into the title), a newline and reasonLine.
+func escalatedSummary(q db.ChatQuestion, reasonLine string) string {
+	switch {
+	case q.Level == asks.LevelFull:
+		return q.Question + "\n" + reasonLine
+	case q.Context != "":
+		return q.Context + "\n\n" + reasonLine
+	}
+	return reasonLine
 }
 
 // escalateReasonLine is the summary's last line for reason, waited being how
