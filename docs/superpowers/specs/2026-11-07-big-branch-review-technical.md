@@ -180,18 +180,29 @@ separate key on the chapter, never mixed); unknown keys/paths dropped entry by e
 `ParseOverview` does today. Chapters no longer carry `lenses`: since #958 no screen shows a
 per-chapter lens list (`ReviewChapters.lenses(for:)` has no caller) — it is deleted.
 
-### 3.2 Budgets
+### 3.2 Budgets (by size)
 
 | Item | Value |
 |---|---|
-| Parallel batch calls | 3 |
-| One batch call | 4 min |
+| Parallel batch calls | `min(batches, 4)` |
+| One batch call | `90 s + 60 s × ceil(lines / 1000)` of the batch's shown diff lines |
 | Summary call | 2 min |
-| Whole command | 30 min (was 5); chapters not reached → `state: "not_started"` events, `incomplete` lists them, no summary call; `--continue` describes only chapters without a part row, then the summary |
+| One run | `waves × max(call budget) + summary`, `waves = ceil(batches / parallel)`, capped at 45 min |
 | Desktop wait | no total timeout on the streamed form; fails when no line arrives for 5 min |
+
+Chapters not reached before the run's ceiling get `state: "not_started"`; `--continue`
+describes only chapters without a part row.
 
 The strong tier as today; purposes `review.overview`, `review.chapters`, `review.summary` in
 the LLM usage ledger.
+
+**Summary always runs** at the end of a run with ≥ 1 described chapter (multi-batch) — it
+never waits for every chapter. Chapters with no part row (failed or not reached) go into its
+input as `key, title, paths, signals, "not described"`; its reply's `not_covered: [key]`
+lists them (validated against the input) and the prompt rule caps an intent item whose
+evidence lies only in such chapters at `partial`. The assembled overview is written to
+`review_overviews` with `incomplete` = those keys; a later chapter retry rewrites it
+(summary re-run). With zero described chapters no summary is made and nothing is assembled.
 
 ### 3.3 Cache
 
@@ -205,9 +216,8 @@ the LLM usage ledger.
 - Batches are made only of chapters without a part row. A batch's reply is written as one row
   per chapter.
 - The assembled overview is written to `review_overviews` under today's key
-  `(project, tree, base, intent_hash)` only when every packable chapter has a description and
-  the summary exists. Otherwise nothing is written there and the envelope says which chapters
-  are missing.
+  `(project, tree, base, intent_hash)` whenever a summary exists (§3.2), with `incomplete`
+  naming the chapters it could not see. No summary → nothing written there.
 
 ### 3.4 Overview JSON (additive)
 
@@ -244,7 +254,7 @@ overview only).
 
 Error classes: `timeout`, `provider`, `parse`, `cancelled`, `too_large` (the diff cap). Text
 for the owner, one sentence, no repetition of the provider's words:
-`timeout` → "The overview of “<title>” did not finish in 4 min." ; `provider` → "The AI
+`timeout` → "The overview of “<title>” did not finish in <N> min." (N = its budget, rounded up) ; `provider` → "The AI
 provider failed on “<title>”." ; `parse` → "The AI answer for “<title>” could not be read." ;
 summary failures the same with "the summary". The provider's own text goes to stderr and the
 envelope's `detail` (the Desktop shows it behind a disclosure), never into the log file:
@@ -254,8 +264,9 @@ logs carry the class, the chapter's index and counts only (FILES-01).
 
 `checkOverviewGate` is unchanged in what it checks: every `source: session` intent item
 `done` (lane items are the owner's view only, §3.1). It reads the
-assembled overview as today; a missing one (including an incomplete one, which is never
-assembled) refuses with today's text plus "Re-run it; only the missing chapters are redone."
+assembled overview as today (an `incomplete` one counts; its coverage already caps items
+whose work it could not see); a missing one refuses with today's text plus "Re-run it; only
+the missing chapters are redone."
 The agent's form (`--session`) runs the same packing.
 
 ## 5. Desktop (phase 2)

@@ -2,6 +2,7 @@
 
 **Date:** 2026-11-07 · **Board:** #1025 · **Technical spec:** `2026-11-07-big-branch-review-technical.md` (for the agents)
 **Builds on:** `docs/features/diff-reviewer.md`, `docs/inventory/review.md` (REVIEW-01..05)
+**Mockups:** `docs/design/mockups/big-branch-review/` (`index.html`, light; `#dark` for dark)
 
 ## The problem
 
@@ -33,21 +34,29 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    `.watchtower/review.md` is already a review lens. On top sits
    **Breaking and significant** — that is what to read first; noise is last.
 3. **AI per chapter, as it arrives.** Chapters are described in their own model calls (one
-   per batch, item 5): what a chapter does, what can break and why. At most 3 calls run at
-   once, each with 4 minutes; the summary has 2 minutes; one run of the overview stops at 30
-   minutes (today: one call, 5 minutes). Chapters the run did not reach by then are shown as
-   "not described yet" with one **Continue (N chapters)** button: it describes only them
-   (the finished ones are cached) and then makes the summary; the summary is made only once
-   every chapter is described. Chapters fill in as they finish; a chapter that
-   fails or runs out of time shows a plain line ("The overview of chapter X did not finish
-   in 4 min — Retry") and Retry redoes only that chapter. The provider's own error text is
+   per batch, item 5): what a chapter does, what can break and why. The budget follows the
+   branch's size: as many calls at once as there are batches, up to 4; each call gets 90 s
+   plus 1 min per 1,000 diff lines it carries (≈2–4 min for a full batch); the summary gets
+   2 min; one run's ceiling is what its batches need in those waves plus the summary,
+   capped at 45 min (today: one call, 5 min, whatever the size). A small PR is one call
+   with one short budget; a big branch gets more parallel calls and a longer ceiling, never
+   all-or-nothing. Chapters fill in as they finish; a chapter that fails or runs out of
+   time shows a plain line ("The overview of chapter X did not finish in 3 min — Retry")
+   and Retry redoes only that chapter, then the summary again. Chapters a run did not reach
+   before its ceiling show "Not described yet" with one **Describe N remaining** button. The provider's own error text is
    behind a disclosure; the log file gets only the error class and counts, never names or
    text (FILES-01). Finished chapters are cached and survive Retry, relaunch and Refresh;
    only chapters whose code changed are redone.
 4. **Checked against the goal.** A short summary on top checks the whole branch against the
    intent of its ticket(s) — the session's ticket and every lane's ticket found on the board
    or in Jira: done, partial, not found, and what was done outside the goal. The agent's
-   finish check still looks at its own session's ticket only. If the summary fails while the
+   finish check still looks at its own session's ticket only. **The summary never waits for
+   every chapter:** it is made at the end of every run from what is described; a chapter
+   that failed or was not reached goes in by its title, files and danger signals, marked
+   "not described", and the summary lists it under **Not covered** (an intent item whose
+   work sits only there is at most `partial`). So one chapter that keeps failing never
+   leaves the owner without a summary or the agent unable to finish — the agent can hand it
+   over with an ask. Retrying a chapter redoes the summary afterwards. If the summary fails while the
    chapters are ready, the chapters stay shown, the summary place says so with its own
    **Retry** (it redoes only the summary, from the cached chapters), and the agent's finish
    check refuses with "re-run the overview; only what is missing is redone" — the same as
@@ -124,6 +133,14 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
 - A branch past 50k changed lines shows the size banner; a one-chapter PR shows no chapter
   list and makes exactly one model call.
 - The summary's failure leaves the chapters shown and its Retry redoes only the summary.
+- A chapter that fails on every try still gets a summary, with that chapter under **Not
+  covered**; the agent's session can still be finished (with a handover ask).
+- With the map command failing, the review shows the plain file list, the diff and the
+  "Chapters could not be built — Retry" banner; Retry rebuilds the chapters.
+- Every new state (chapter list with danger sections, chapter states, **Can skip**,
+  summary and its failure, both banners, the one-chapter PR, the reviewer panel) matches
+  the mockups in `docs/design/mockups/big-branch-review/` and uses the design kit's shared
+  empty, loading and error states.
 - Phase 3: the reviewer answers a cross-chapter question from a session in its own
   worktree, its failed turn shows Retry, and **Send to author** adds one design comment to
   the open round — nothing reaches the author's session without that press.
@@ -149,18 +166,19 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
 - Noise goes into a folded **Can skip** chapter and never into the model's budget; a branch
   past the diff cap gets a banner — target #1025's requirements 3 and 8 (the owner's
   target text), kept as written.
-- The numbers (3 parallel calls, 4 min per call, 2 min summary, ≈2,500
-  lines per call) — agent's call, replacing the target's "2 min" example: a smaller call
-  finishes sooner, and 4 min leaves room on a slow provider.
+- Budgets follow the branch's size (requirement 9 of the target): parallel calls = batches
+  up to 4, per call 90 s + 1 min per 1,000 lines, summary 2 min, run ceiling = the waves'
+  need + summary, capped at 45 min; ≈2,500 lines per call — agent's call on the numbers
+  (ask #564 asked for size-dependent budgets).
+- The summary is made at the end of every run, with failed or unreached chapters marked
+  "not described" and listed as not covered; it never waits for all chapters — ask #564.
 - The danger patterns' file is `.watchtower/review-map.md`, not `review.md` (which the
   conversation named): every heading of `review.md` is a lens — agent's call.
 - REVIEW-01 amendment and Go-only chapters — agent's call, approved with this spec.
 - A round saved on an old `ai:` chapter reopens on its first chapter — agent's call: only the
   reading position of rounds made before this release is lost; keeping `ai:` keys alive
   would need a second chapter source just for them.
-- 30-minute ceiling per run with **Continue** for the rest (replaces the 15 minutes of the
-  previous draft) — agent's call: 3 × 4 min calls over a 35k-line branch can need about 20
-  minutes in the worst case.
+- Chapters a run did not reach get **Describe N remaining** — agent's call.
 
 ## What the spike showed (lane attribution, no AI)
 
