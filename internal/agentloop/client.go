@@ -221,6 +221,11 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 		out.boundary()
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
+			// A stop dispatches nothing more: a registry tool need not honour
+			// a stopped context, and a write must never run after Stop.
+			if err := ctx.Err(); err != nil {
+				return "", usage, err
+			}
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
 			result := c.dispatch(ctx, call, ext)
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Done: true,
