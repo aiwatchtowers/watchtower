@@ -277,4 +277,21 @@ extension ReviewChangesModelTests {
             XCTAssertEqual(row?.startLine, 2)
         }
     }
+
+    /// Codex round 5: a blank-line draft is kept only while its file side
+    /// still reaches its lines; a shorter file outdates it.
+    func testBlankLineDraftPastTheEndOfAShorterFileIsOutdated() async throws {
+        for (newText, status) in [("a\n", ReviewComment.Status.outdated), ("a\n\nb\nc\n", .draft)] {
+            let h = try harness()
+            h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+            h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "b", tree: "u7")])
+            h.cli.script("file", [fileJSON(old: "x\n", new: "a\n\nb\n"), fileJSON(old: "x\n", new: newText)])
+            await h.model.open()
+            await h.model.select("a.go")
+            try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "blank")
+            await h.model.refresh()
+            let row = try await h.comments().first { $0.body == "blank" }
+            XCTAssertEqual(row?.status, status, newText)
+        }
+    }
 }

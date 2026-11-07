@@ -1401,6 +1401,12 @@ final class ReviewChangesModel {
         }
     }
 
+    /// The number of lines in text (a final newline ends the last line).
+    private static func lineCount(_ text: String) -> Int {
+        let parts = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        return text.hasSuffix("\n") ? parts - 1 : parts
+    }
+
     /// The `commentsPlacedOn` key of a round.
     private static func placement(_ info: ReviewRoundInfo) -> String { "\(info.id):\(info.baseSha)" }
 
@@ -1426,8 +1432,8 @@ final class ReviewChangesModel {
     }
 
     /// Where each line comment lands on the round's current tree. A comment
-    /// on blank lines has no quote to look for: it is outdated only when its
-    /// side of the file is gone, else left where it is.
+    /// on blank lines has no quote to look for: it is outdated when its side
+    /// of the file is gone or no longer reaches its lines, else left where it is.
     private func plan(_ list: [ReviewComment], round info: ReviewRoundInfo) async throws -> ReviewCommentAnchor.Plan {
         var loaded: [String: Sides] = [:]
         for path in Set(list.compactMap(\.path)).sorted() {
@@ -1444,7 +1450,9 @@ final class ReviewChangesModel {
             let onSide = list.filter { $0.side == side }
             // A design comment (no path) is left to ReviewCommentAnchor.plan, which leaves it alone.
             let blank = onSide.filter { $0.path != nil && $0.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            for c in blank where c.path.flatMap(text) == nil { result.lost.insert(c.id) }
+            for c in blank where !(c.path.flatMap(text).map { Self.lineCount($0) >= c.endLine } ?? false) {
+                result.lost.insert(c.id)
+            }
             let part = ReviewCommentAnchor.plan(onSide.filter { !blank.contains($0) }, textFor: text)
             result.moved.merge(part.moved) { first, _ in first }
             result.lost.formUnion(part.lost)
