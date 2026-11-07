@@ -81,6 +81,33 @@ func (c Caps) TakesLineWhileWorking() bool { return c.MidturnInput && c.Elicitat
 // no unreported form can be open (Elicitation).
 func (c Caps) TakesInterrupt() bool { return c.PermissionWait && c.Elicitation }
 
+// PhoneCaps is what the hub takes from the phone for a session of the
+// agent: the terminal_session slice's `phone` key (spec 2026-11-05 §3.5,
+// U5), which the phone reads to show the composer, the permission card and
+// Interrupt, and the rows the hub's handlers refuse and hold by. The Kit
+// fixture phone_caps.json pins it for Go, the Desktop hub and the Kit.
+type PhoneCaps struct {
+	// Input: lines and the finish request (PROJ-16).
+	Input bool `json:"input"`
+	// InputWhileWorking: a line goes in while the agent works; otherwise
+	// the hub holds it until the agent is idle (TakesLineWhileWorking).
+	InputWhileWorking bool `json:"input_while_working"`
+	// PermissionAnswer: the phone answers a held permission prompt (PROJ-21).
+	PermissionAnswer bool `json:"permission_answer"`
+	// Interrupt: the phone's one Esc (PROJ-21, TakesInterrupt).
+	Interrupt bool `json:"interrupt"`
+}
+
+// Phone is the row's PhoneCaps.
+func (c Caps) Phone() PhoneCaps {
+	return PhoneCaps{
+		Input:             c.PhoneInput,
+		InputWhileWorking: c.PhoneInput && c.TakesLineWhileWorking(),
+		PermissionAnswer:  c.PermissionWait,
+		Interrupt:         c.TakesInterrupt(),
+	}
+}
+
 // RolloutWatch reports that a failed or interrupted turn is read from the
 // agent's transcript, not a hook (failure_signal "pull"): the session host's
 // watch, or the app's bridge probe (spec 2026-11-05 §3.5, G5).

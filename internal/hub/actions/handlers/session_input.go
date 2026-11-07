@@ -318,7 +318,7 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 func LineGate(row sessionstate.Row, now time.Time) (hold string, whileBusy bool) {
 	s := sessionstate.Resolve(row, now)
 	agent, _ := agentkind.Parse(row.Kind)
-	working := sessionstate.IsWorking(s) && sessionCaps(agent).TakesLineWhileWorking()
+	working := sessionstate.IsWorking(s) && sessionCaps(agent).Phone().InputWhileWorking
 	switch {
 	case sessionstate.NeedsApproval(s):
 		return inputReasonNeedsApproval, false

@@ -3,6 +3,7 @@ package sources
 import (
 	"context"
 	"database/sql"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +115,7 @@ func TestTerminalSessionMatchesKitFixtureKeys(t *testing.T) {
 	assertWireShape(t, p, kitFixture(t, "workbench/terminal_session.json"),
 		"title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
 		"finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
-		"report_total", "report_pr_line", "report_pr_line_clipped", "watch_issue")
+		"report_total", "report_pr_line", "report_pr_line_clipped", "watch_issue", "watch_help")
 	keys := allKeys(p)
 	for _, k := range neverPublishedKeys {
 		if keys[k] {
@@ -202,6 +203,34 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 	}
 }
 
+// A not-watched session carries the Mac's tooltip text for its issue (U6),
+// so the phone shows it as given: the Kit fixture watch_help.json, the
+// table the Desktop's watchIssueHelp is pinned to as well. A code the table
+// does not know reads as unreadable.
+func TestWatchHelpMatchesKitFixture(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	issues := kitFixture(t, "workbench/watch_help.json")["issues"].(map[string]any)
+	ids := map[string]int64{}
+	var live []int64
+	for issue := range issues {
+		id := insertSession(t, r.d, project, sessionSeed{kind: "codex"})
+		r.setState(id, stateSeed{state: ptr("working")})
+		exec(t, r.d, `UPDATE terminal_sessions SET agent_watch_issue = ? WHERE id = ?`, issue, id)
+		ids[issue] = id
+		live = append(live, id)
+	}
+	all := payloads(t, r.source(live, time.Time{}, nil))
+	for issue, id := range ids {
+		if p := all[id]; p["watch_help"] != issues[issue] {
+			t.Errorf("%s: watch_help = %v, fixture %v", issue, all[id]["watch_help"], issues[issue])
+		}
+	}
+	if got := watchHelp("future"); got != issues["unreadable"] {
+		t.Errorf("unknown issue = %q", got)
+	}
+}
+
 // A watch issue left on a row that no longer reads working (a write the
 // hooks race) is never shown: not watched is a Working presentation only.
 func TestWatchIssueShowsOnlyOnWorking(t *testing.T) {
@@ -211,7 +240,7 @@ func TestWatchIssueShowsOnlyOnWorking(t *testing.T) {
 	r.setState(id, stateSeed{state: ptr("approval")})
 	exec(t, r.d, `UPDATE terminal_sessions SET kind = 'codex', agent_watch_issue = 'missing' WHERE id = ?`, id)
 	p := payloads(t, r.source([]int64{id}, time.Time{}, nil))[id]
-	if _, has := p["watch_issue"]; has || p["state_caption"] != "Needs approval" {
+	if _, has := p["watch_issue"]; has || p["watch_help"] != nil || p["state_caption"] != "Needs approval" {
 		t.Errorf("payload = %v", p)
 	}
 }
@@ -299,6 +328,28 @@ func TestSliceAgentPerKind(t *testing.T) {
 	all := payloads(t, r.source([]int64{claude}, time.Time{}, nil))
 	if all[claude]["agent"] != "claude_code" || all[codex]["agent"] != "codex_cli" {
 		t.Errorf("agents %v %v", all[claude]["agent"], all[codex]["agent"])
+	}
+}
+
+// Each session carries what the hub takes from the phone for its agent
+// (U5): the Kit fixture phone_caps.json's row, the table the Desktop hub
+// and the Kit are pinned to as well.
+func TestSessionPublishesItsPhoneCaps(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	ids := map[string]int64{
+		"claude": insertSession(t, r.d, project, sessionSeed{}),
+		"codex":  insertSession(t, r.d, project, sessionSeed{kind: "codex"}),
+	}
+	all := payloads(t, r.source(nil, time.Time{}, nil))
+	rows := kitFixture(t, "workbench/phone_caps.json")["agents"].(map[string]any)
+	if len(rows) != len(ids) {
+		t.Fatalf("fixture rows %v", rows)
+	}
+	for kind, id := range ids {
+		if !reflect.DeepEqual(all[id]["phone"], rows[kind]) {
+			t.Errorf("%s phone = %v, fixture %v", kind, all[id]["phone"], rows[kind])
+		}
 	}
 }
 

@@ -211,7 +211,7 @@ final class SessionInputHandlers: HubCompanion {
         guard let agent = try await boardAgent(sessionID) else {
             return .failed(.notFound, message: "This session no longer exists on the Mac")
         }
-        guard caps(agent).phoneInput else { return .notSupported(.input, agent: agent) }
+        guard caps(agent).phone.input else { return .notSupported(.input, agent: agent) }
         guard terminalCenter.liveIDs.contains(sessionID) else {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
@@ -315,7 +315,7 @@ final class SessionInputHandlers: HubCompanion {
         // it while working (PROJ-16 amended, ask #614); any other (Codex: an
         // MCP form it opens mid-turn raises no state) waits for idle. A
         // permission prompt holds either.
-        let whileWorking = terminalCenter.agent(of: line.sessionID).map { caps($0).takesLineWhileWorking } ?? false
+        let whileWorking = terminalCenter.agent(of: line.sessionID).map { caps($0).phone.inputWhileWorking } ?? false
         let check = whileWorking ? control.workchatLineCheck(line.sessionID) : control.lineCheck(line.sessionID)
         switch check {
         case .go: return nil

@@ -10,6 +10,12 @@
   "live": true,
   "oldest_ask_id": 12,
   "open_asks": 1,
+  "phone": {
+    "input": true,
+    "input_while_working": true,
+    "interrupt": true,
+    "permission_answer": true
+  },
   "report_done": 1,
   "report_pr_line": "PR #175 open",
   "report_target_id": 415,
@@ -21,6 +27,7 @@
   "state_tone": "orange",
   "target_id": 415,
   "title": "Archive closed targets",
+  "watch_help": "This session's log is compressed, so Watchtower can't read it. Watching starts again with the next prompt.",
   "watch_issue": "compressed",
   "workbench_id": 7
 }

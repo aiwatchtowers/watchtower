@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionstate"
 )
 
@@ -124,6 +125,15 @@ type sessionPayload struct {
 	// (missing/permission/compressed/unreadable, spec 2026-11-05 §3.5);
 	// absent when watched. The caption then reads "Working · not watched".
 	WatchIssue *string `json:"watch_issue,omitempty"`
+	// WatchHelp is the Mac's tooltip for WatchIssue (watchHelp, the Swift
+	// SessionStatePresentation.watchIssueHelp), which the phone shows as
+	// given; absent when watched.
+	WatchHelp *string `json:"watch_help,omitempty"`
+	// Phone is what the hub takes from the phone for this session (U5,
+	// sessionagent.Caps.Phone): the phone shows the composer, the
+	// permission card and Interrupt by it. A record from a Mac older than
+	// the key has none, and the phone keeps that Mac's Claude-only rule.
+	Phone sessionagent.PhoneCaps `json:"phone"`
 }
 
 // publishedSession is one session of the window with its resolved state.
@@ -188,10 +198,11 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 		ClosedAsks:    closedAsks,
 		FinishSummary: finish, FinishSummaryClipped: finishClipped,
 		AgentError: agentErr, AgentErrorClipped: agentErrClipped,
+		Phone: sessionagent.CapsOf(string(p.agent)).Phone(),
 	}
 	if st.notWatched() {
-		issue := st.watchIssue
-		out.WatchIssue = &issue
+		issue, help := st.watchIssue, watchHelp(st.watchIssue)
+		out.WatchIssue, out.WatchHelp = &issue, &help
 	}
 	if s.o.ReportSummary != nil {
 		if sum, ok := s.o.ReportSummary(p.workbenchID, p.id); ok {
@@ -264,7 +275,7 @@ SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_ac
        (SELECT COUNT(*) FROM owner_asks a
         WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'review')
 FROM terminal_sessions s
-WHERE s.project_id IS NOT NULL AND s.kind IN ('claude','codex')
+WHERE s.project_id IS NOT NULL AND s.kind IN `+agentkind.SQLKinds()+`
 ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		var (
 			p                            publishedSession
@@ -368,6 +379,22 @@ type sessionState struct {
 	oldestAskID              *int64 // nil without open asks
 	agents                   int    // background agents of a background session
 	watchIssue               string // agent_watch_issue; shown only on a working session
+}
+
+// watchHelp is SessionStatePresentation.watchIssueHelp: the tooltip of a
+// session not watched for issue (U6); a code it does not know reads as
+// unreadable. The Kit fixture workbench/watch_help.json pins both.
+func watchHelp(issue string) string {
+	reason := "Watchtower can't read this session's log."
+	switch issue {
+	case db.WatchIssueMissing:
+		reason = "Watchtower can't find this session's log."
+	case db.WatchIssuePermission:
+		reason = "Watchtower isn't allowed to read this session's log."
+	case db.WatchIssueCompressed:
+		reason = "This session's log is compressed, so Watchtower can't read it."
+	}
+	return reason + " Watching starts again with the next prompt."
 }
 
 // notWatched: a working session the Mac cannot watch (§3.5, U6).

@@ -515,9 +515,16 @@ final class SessionAgentStatusTests: XCTestCase {
         XCTAssertEqual(SessionStatePresentation.caption(for: state), "Working · not watched")
         XCTAssertEqual(
             SessionStatePresentation.watchIssueHelp(for: state),
-            "Watchtower can't read this Codex session's log (compressed). Watching starts again with the next prompt."
+            "This session's log is compressed, so Watchtower can't read it. Watching starts again with the next prompt."
         )
         XCTAssertEqual(SessionStatePresentation.color(for: state), .green)
+        var unknown = watched
+        unknown.agentWatchIssue = "future"
+        XCTAssertEqual(
+            SessionStatePresentation.watchIssueHelp(for: SessionAgentStatus.effective(row: unknown, live: true, startedAt: started, now: readAt)),
+            "Watchtower can't read this session's log. Watching starts again with the next prompt.",
+            "a code the table does not know reads as unreadable"
+        )
 
         var asks = watched
         asks.openAsks = 1

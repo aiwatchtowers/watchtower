@@ -1,0 +1,17 @@
+{
+  "comment": "What a session of each agent kind takes from the phone: the terminal_session slice's `phone` key (spec 2026-11-05-llm-transport-independence §3.5, U5). Derived from the session capability rows by Go sessionagent.Caps.Phone (TestSessionAgent_PhoneCapsMatchKitFixture), the Desktop's AgentSessionCaps.phone (TerminalSessionSliceTests) and the Kit's TerminalSessionState.PhoneCaps(_:) (WorkbenchMirrorFixtureTests).",
+  "agents": {
+    "claude": {
+      "input": true,
+      "input_while_working": true,
+      "permission_answer": true,
+      "interrupt": true
+    },
+    "codex": {
+      "input": true,
+      "input_while_working": false,
+      "permission_answer": false,
+      "interrupt": false
+    }
+  }
+}
