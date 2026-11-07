@@ -37,7 +37,9 @@ extension TerminalSessionSlice {
             reportTotal: summary?.total,
             reportPRLine: prLine?.text,
             reportPRLineClipped: prLine?.clipped,
-            watchIssue: state.watchIssue
+            watchIssue: state.watchIssue,
+            watchHelp: SessionStatePresentation.watchIssueHelp(for: state),
+            phone: AgentSessionCaps.of(item.agent).phone
         )
     }
 

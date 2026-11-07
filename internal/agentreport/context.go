@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"slices"
 
-	"watchtower/internal/agentlog"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/sessionagent"
 )
 
 const (
@@ -189,10 +189,11 @@ type contextAcc struct {
 }
 
 // contextMeasured says whether a session's context and skills were
-// measured: it has the v2 facts and is not a codex rollout, which records no
-// baseline parts or skill listing ("Not measured for Codex sessions").
+// measured: it has the v2 facts and its agent's transcript records the
+// baseline parts and skill listing (Caps.AnalyticsContext; a codex rollout
+// does not: "Not measured for Codex sessions").
 func contextMeasured(s agentlogdb.AgentReportSession) bool {
-	return s.Facts && s.Agent != agentlog.AgentCodex
+	return s.Facts && sessionagent.CapsOf(s.Agent).AnalyticsContext
 }
 
 // Context measures the period's context from the sessions' events (keyed by

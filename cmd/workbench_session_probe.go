@@ -126,8 +126,8 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 		return sessionProbeResult{}, fmt.Errorf("terminal session %d is not in workbench %d", sessionID, workbenchID)
 	}
 	res := sessionProbeResult{OK: true, Outcome: probeNotStale}
-	if puller, pulls := sessionPuller(row.Kind); pulls && row.AgentState.String == agentStateWorking {
-		detail, outcome, err := pullCodexTurn(database, puller, row, now, logOut)
+	if puller, pulls := sessionagent.PullerOf(row.Kind); pulls && row.AgentState.String == agentStateWorking {
+		detail, outcome, err := pullCodexTurn(database, puller, row, now)
 		if err != nil {
 			return sessionProbeResult{}, err
 		}
@@ -169,9 +169,10 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 
 // pullCodexTurn is the app's bridge for a working codex row the session
 // host does not watch (a local-PTY fallback session, an older host): it
-// stores the Error state when the rollout ends its last turn on an error
-// (board #959): Codex has no StopFailure hook and its Stop does not fire on
-// a failed turn, so the rollout's task_complete is the only signal. The
+// stores the Error state when the rollout ends its last turn on an error,
+// and a plain `waiting` when it ends on an interrupt (board #959): Codex has
+// no StopFailure hook and its Stop does not fire on a failed turn, so the
+// rollout's task_complete or turn_aborted is the only signal. The
 // write is recordCodexPull's — the session host's watch writes the same
 // way, so the two report a turn once — under recordAgentState's guards:
 // only over `working`, only for the conversation the row runs, and only
@@ -181,12 +182,12 @@ func probeSession(workbenchID, sessionID int64, now time.Time, logOut io.Writer)
 // When the rollout cannot be read it follows the watch's table (spec
 // 2026-11-05 §3.5) without the watch's ticks: a refused read or a
 // compressed rollout that does not decode marks the row not watched at
-// once; a rollout missing while the row has worked CodexMissingGiveUp, or
-// an undecodable tail on a file unchanged for CodexUnreadableGiveUp, marks
-// it too. detail is the clipped error of a failure or the class of a
+// once; a rollout missing while the row has worked CodexMissingGiveUp, an
+// undecodable tail on a file unchanged for CodexUnreadableGiveUp, or a
+// turn that ended with no readable time, marks it too. detail is the clipped error of a failure or the class of a
 // not-watched mark; outcome is probeFailed or probeNotWatched when this
 // probe wrote, "" otherwise.
-func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.TerminalSession, now time.Time, logOut io.Writer) (detail, outcome string, err error) {
+func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.TerminalSession, now time.Time) (detail, outcome string, err error) {
 	sessionID := row.ClaudeSessionID.String
 	if sessionID == "" {
 		return "", "", nil
@@ -222,15 +223,15 @@ func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.Terminal
 			return markCodexNotWatched(database, row, db.WatchIssueUnreadable, now)
 		}
 	}
-	if !turn.Failed {
+	if !turn.Failed && !turn.Aborted {
 		return "", "", nil
 	}
 	if turn.At.IsZero() {
-		// No time, no ordering against the stored state: never written.
-		_, _ = fmt.Fprintf(logOut, "session-probe: session %d: the codex turn failed but its time is unreadable\n", row.ID)
-		return "", "", nil
+		// No time, no ordering against the stored state: never written,
+		// so the row is not watched (as the host's watch marks it).
+		return markCodexNotWatched(database, row, db.WatchIssueUnreadable, now)
 	}
-	pull := db.CodexWatchRow{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, SessionID: sessionID}
+	pull := db.CodexWatchRow{ID: row.ID, WorkbenchID: row.WorkbenchID.Int64, Kind: row.Kind, SessionID: sessionID}
 	if err := recordCodexPull(database, pull, turn); err != nil {
 		return "", "", err
 	}
@@ -247,24 +248,13 @@ func pullCodexTurn(database *db.DB, puller sessionagent.Puller, row *db.Terminal
 	return "", "", nil
 }
 
-// sessionPuller is the pull signal reader of a stored kind's adapter
-// (sessionagent.Adapter.Watch); false for an agent whose hooks report every
-// turn end, or no agent.
-func sessionPuller(kind string) (sessionagent.Puller, bool) {
-	a, ok := sessionagent.Of(kind)
-	if !ok {
-		return nil, false
-	}
-	return a.Watch()
-}
-
 // markCodexNotWatched marks row not watched with issue, only while the
 // stored row is still the one this probe read (db.SetAgentWatchIssue);
 // outcome is probeNotWatched only when this probe wrote it.
 func markCodexNotWatched(database *db.DB, row *db.TerminalSession, issue string, now time.Time) (detail, outcome string, err error) {
 	seen := db.CodexWatchRow{ID: row.ID, SessionID: row.ClaudeSessionID.String,
 		TranscriptPath: row.TranscriptPath.String, StateAt: row.AgentStateAt}
-	written, err := database.SetAgentWatchIssue(seen, issue, now)
+	written, err := database.SetAgentWatchIssue(seen, issue, now, sessionagent.RolloutWatchKinds())
 	if err != nil || !written {
 		return "", "", err
 	}

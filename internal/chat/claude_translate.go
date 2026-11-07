@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +43,8 @@ type claudeLine struct {
 	// APIKeySource is the init event's auth source: "none" under the
 	// claude.ai login (probe answer 9).
 	APIKeySource string `json:"apiKeySource"`
+	// Model is the init event's model.
+	Model string `json:"model"`
 }
 
 type claudeUsage struct {
@@ -127,6 +131,9 @@ type fedLine struct {
 	// the line has none).
 	init         bool
 	apiKeySource string
+	// lost are the tool_use ids a result line closed unread: their result
+	// was on a line the reader skipped (MarkLineSkipped).
+	lost []string
 }
 
 type pendingBlock struct {
@@ -166,12 +173,18 @@ type ClaudeTranslator struct {
 	childCost    float64
 	childOutputs map[string]int64
 	childSession string
+	// initModel is the model the child's last init named: the ledger label
+	// of a turn that failed before any message or model usage named one.
+	initModel string
 	// textTurn is the turn id that last emitted text; newMessage records that
 	// a new assistant message started since that text. Together they put a
 	// paragraph break between the text of separate assistant messages of one
 	// turn (text, tool call, more text) instead of gluing them together.
 	textTurn   string
 	newMessage bool
+	// lineSkipped records that the reader skipped a line of the running
+	// turn (over its cap): the result then closes the calls left open.
+	lineSkipped bool
 }
 
 // NewClaudeTranslator returns a translator stamping events with turnID().
@@ -186,6 +199,38 @@ func (t *ClaudeTranslator) MarkInterrupted() {
 	t.mu.Lock()
 	t.interrupted = true
 	t.mu.Unlock()
+}
+
+// MarkLineSkipped records that the reader skipped a line of the running
+// turn: it may have held a tool's result, so the turn's result line closes
+// every call still open (a failed step with a reason, CHAT-02) instead of
+// leaving it running.
+func (t *ClaudeTranslator) MarkLineSkipped() {
+	t.mu.Lock()
+	t.lineSkipped = true
+	t.mu.Unlock()
+}
+
+// lostResultSummary is the step summary of a call whose result was on a
+// skipped line.
+const lostResultSummary = "claude's report of this tool's result could not be read"
+
+// closeLost ends every call still open after a skipped line: a failed
+// tool_end each (in id order), and their ids for the gate.
+func (t *ClaudeTranslator) closeLost() ([]Event, []string) {
+	if !t.lineSkipped {
+		return nil, nil
+	}
+	t.lineSkipped = false
+	ids := slices.Sorted(maps.Keys(t.calls))
+	events := make([]Event, 0, len(ids))
+	for _, id := range ids {
+		delete(t.calls, id)
+		ok := false
+		events = append(events, Event{Type: EventToolEnd, TurnID: t.turnID(), ID: id, OK: &ok, Summary: lostResultSummary})
+	}
+	clear(t.hidden)
+	return events, ids
 }
 
 // SessionID is the most recent Claude session id seen on any line.
@@ -257,11 +302,15 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 		f.events, f.results = t.toolResults(m)
 	case "result":
 		c := t.usageCall(l)
-		f.events = t.result(l, c.Tokens)
+		f.events, f.lost = t.closeLost()
+		f.events = append(f.events, t.result(l, c.Tokens)...)
 		call = &c
 	case "system":
 		if l.Subtype == "init" {
 			f.init, f.apiKeySource = true, l.APIKeySource
+			if l.Model != "" {
+				t.initModel = l.Model
+			}
 			// A warm child repeats its init before every turn with the same
 			// session id; only a new session (a respawned child) starts
 			// the cumulative cost and model usage over.
@@ -280,8 +329,8 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 // modelUsage add up over its life while usage is the turn's own, so the
 // turn's cost is the growth of the total since the previous result; a total
 // that shrank belongs to a new child, whose whole total is this turn's. Its
-// model is the stream's, else the one whose output grew most. It starts the
-// next turn's clock.
+// model is the stream's, else the one whose output grew most, else the
+// init's. It starts the next turn's clock.
 func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	outs := llmusage.ModelOutputs(l.ModelUsage)
 	grown := make(map[string]int64, len(outs))
@@ -296,7 +345,7 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	}
 	model := t.model
 	if model == "" {
-		model = llmusage.ModelFromOutputs(grown, "")
+		model = llmusage.ModelFromOutputs(grown, t.initModel)
 	}
 	c := llmusage.Call{
 		Provider:   "claude",
@@ -667,12 +716,16 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
-// clearInterrupted drops a pending interrupt mark. Called when a turn starts:
-// a child killed after an interrupt never delivers the result that consumes
-// the mark, and a stale mark would turn the next turn's error into
-// "interrupted".
-func (t *ClaudeTranslator) clearInterrupted() {
+// startTurn drops what an earlier turn left pending. Called when a turn
+// starts: a child killed after an interrupt never delivers the result that
+// consumes the mark, and a stale mark would turn the next turn's error into
+// "interrupted"; a child killed while a tool ran leaves its call open, which
+// a later skipped line must not close under the new turn's id (CHAT-02).
+func (t *ClaudeTranslator) startTurn() {
 	t.mu.Lock()
 	t.interrupted = false
+	t.lineSkipped = false
+	clear(t.calls)
+	clear(t.hidden)
 	t.mu.Unlock()
 }

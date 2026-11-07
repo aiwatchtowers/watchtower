@@ -133,11 +133,14 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	if err != nil {
 		return nil, err
 	}
-	codexFiles, transcripts, codexMissing, err := workbenchCodexFiles(main, id, o)
+	codexFiles, transcripts, codexMissing, codexFailed, err := workbenchCodexFiles(main, id, o)
 	if err != nil {
 		return nil, err
 	}
 	res.CodexRolloutsMissing = codexMissing
+	for _, e := range codexFailed {
+		res.fail(e)
+	}
 	files = append(files, codexFiles...)
 	deadline := time.Time{}
 	if o.Budget > 0 {
@@ -171,19 +174,20 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 // are never listed, so never opened), with the Transcript that opens it by
 // path, and counts the rows whose rollout was not found. They come after the
 // Claude transcripts. A vanished rollout has no path to list, so it is never
-// marked missing; its rows stay (AGENTLOG-03).
-func workbenchCodexFiles(main *db.DB, id int64, o Options) ([]TranscriptFile, map[string]sessionagent.Transcript, int, error) {
+// marked missing; its rows stay (AGENTLOG-03). A located rollout that is gone
+// by its stat counts as missing; any other stat failure is returned in failed
+// (a codexFailure: the session, not the path).
+func workbenchCodexFiles(main *db.DB, id int64, o Options) (files []TranscriptFile, transcripts map[string]sessionagent.Transcript,
+	missing int, failed []error, err error) {
 	rows, err := main.WorkbenchCodexSessions(id)
 	if err != nil || len(rows) == 0 {
-		return nil, nil, 0, err
+		return nil, nil, 0, nil, err
 	}
 	codex, ok := o.Sessions(agentkind.Codex)
 	if !ok {
 		panic("agentlog: no codex session adapter")
 	}
-	var files []TranscriptFile
-	var missing int
-	transcripts := map[string]sessionagent.Transcript{}
+	transcripts = map[string]sessionagent.Transcript{}
 	for _, row := range rows {
 		tr := codex.Transcript(sessionagent.Row{SessionID: row.SessionID, TranscriptPath: row.TranscriptPath, Home: o.CodexHome})
 		path, ok := tr.ImportFile()
@@ -191,15 +195,29 @@ func workbenchCodexFiles(main *db.DB, id int64, o Options) ([]TranscriptFile, ma
 			missing++
 			continue
 		}
-		if f, ok := agentfiles.StatTranscript(path); ok {
-			f.SessionUUID, f.Agent = row.SessionID, AgentCodex
-			files = append(files, f)
-			transcripts[path] = tr
+		f, ok := agentfiles.StatTranscript(path)
+		if !ok {
+			_, serr := os.Lstat(path)
+			switch {
+			case errors.Is(serr, fs.ErrNotExist):
+				missing++
+			case serr == nil:
+				failed = append(failed, &codexFailure{op: "listing", session: row.SessionID, err: errNotRegular})
+			default:
+				failed = append(failed, &codexFailure{op: "listing", session: row.SessionID, err: serr})
+			}
+			continue
 		}
+		f.SessionUUID, f.Agent = row.SessionID, AgentCodex
+		files = append(files, f)
+		transcripts[path] = tr
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
-	return files, transcripts, missing, nil
+	return files, transcripts, missing, failed, nil
 }
+
+// errNotRegular: a located rollout turned out not to be a regular file.
+var errNotRegular = errors.New("not a regular file")
 
 // recordImportProgress upserts the workbench's agent_log_import row (spec
 // D6): complete once a scan got through its whole listing, failed files
@@ -316,7 +334,7 @@ func ownsSession(st store, tf TranscriptFile, owned map[string]bool, folders []s
 	}
 	var home string
 	if tf.Agent == AgentCodex {
-		if home, err = codexCWD(st.transcripts[tf.Path], tf.Path, tf.SessionUUID); err != nil {
+		if home, _, err = codexHead(st.transcripts[tf.Path], tf.Path, tf.SessionUUID); err != nil {
 			return false, err
 		}
 	} else {
@@ -382,7 +400,7 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		}
 		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
-			return err
+			return fmt.Errorf("storing %s: %w", tf.Path, err)
 		}
 		if first {
 			res.FilesScanned++
@@ -402,7 +420,8 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 // storeSlice writes one parsed slice of tf with the offset compare-and-set
 // and returns the new offset and whether the slice was applied. The
 // sessions' terminal session ids are read from watchtower.db first, outside
-// agentlog.db's write transaction.
+// agentlog.db's write transaction. Its errors are bare: the caller names the
+// file (a Claude transcript) or the session (a codex rollout, FILES-01).
 func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
 	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: cmp.Or(tf.Agent, AgentClaude), Size: tf.Size, MTime: tf.MTime,
 		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
@@ -412,7 +431,7 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	}
 	sessions := ownedSessions(pr.Sessions, tf, wb)
 	if err := resolveTerminalSessions(st.main, tf.Agent, sessions); err != nil {
-		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
+		return 0, false, err
 	}
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
 		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
@@ -421,7 +440,7 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
-		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
+		return 0, false, err
 	}
 	return f.ReadOffset, applied, nil
 }
@@ -608,7 +627,7 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 		rc, err = openCodexAt(tr, tf.Path, 0)
 	}
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", tf.Path, err)
+		return &codexFailure{op: "opening", session: tf.SessionUUID, err: err}
 	}
 	defer rc.Close()
 	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, SessionUUID: tf.SessionUUID, MaxRows: batchRows}
@@ -616,20 +635,24 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 		if o.CodexModel, o.CodexCWD, err = st.al.CodexResumeState(tf.SessionUUID); err != nil {
 			return err
 		}
+		if _, o.CodexLineage, err = codexHead(tr, tf.Path, tf.SessionUUID); err != nil {
+			return err
+		}
 	}
 	br := bufio.NewReaderSize(rc, 64<<10)
 	for first := true; ; first = false {
 		pr, err := ParseCodex(br, start, o)
 		if err != nil {
-			return err
+			return &codexFailure{op: "reading", session: tf.SessionUUID, err: err}
 		}
 		if s := pr.Sessions[tf.SessionUUID]; s != nil {
 			o.CodexModel = cmp.Or(s.Model, o.CodexModel)
 			o.CodexCWD = cmp.Or(s.HomeCWD, o.CodexCWD)
 		}
+		o.CodexLineage = pr.CodexLineage // the next slice starts past the head
 		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
-			return err
+			return &codexFailure{op: "storing", session: tf.SessionUUID, err: err}
 		}
 		if first {
 			res.FilesScanned++
@@ -653,7 +676,7 @@ var errShorterText = errors.New("rollout text shorter than the stored offset")
 // found it) positioned at text offset start.
 func openCodexAt(tr sessionagent.Transcript, path string, start int64) (io.ReadCloser, error) {
 	if tr == nil {
-		return nil, fmt.Errorf("no transcript for %s", path)
+		return nil, errNoTranscript
 	}
 	rc, compressed, err := tr.Open(path)
 	if err != nil || start == 0 {
@@ -684,43 +707,86 @@ func openCodexAt(tr sessionagent.Transcript, path string, start int64) (io.ReadC
 	return rc, nil
 }
 
-// errRolloutUnreadable: a codex rollout's session_meta could not be read, so
-// its ownership is unknown; the file counts as failed and is asked again.
+// errRolloutUnreadable: a codex rollout's head could not be read, so its
+// ownership (or lineage) is unknown; the file counts as failed and is asked
+// again.
 var errRolloutUnreadable = errors.New("codex rollout unreadable")
 
-// codexCWD is the cwd of session id's own session_meta among the first 200
-// lines of the rollout at path, or "" when there is none (a fork replays its
-// parent's session_meta after its own; only the session's own counts). An
-// open or read failure is errRolloutUnreadable.
-func codexCWD(tr sessionagent.Transcript, path, id string) (string, error) {
+// errNoTranscript: a listed rollout has no Transcript to open it with.
+var errNoTranscript = errors.New("no transcript")
+
+// codexFailure is a codex rollout's failure as Result.FirstFailure carries it
+// to watchtower.log and `agents scan` (FILES-01): the step, the session id
+// and the error class, never the rollout's path. Unwrap keeps errors.Is.
+type codexFailure struct {
+	op, session string
+	err         error
+}
+
+func (e *codexFailure) Error() string {
+	return e.op + " codex session " + e.session + ": " + failureClass(e.err)
+}
+
+func (e *codexFailure) Unwrap() error { return e.err }
+
+// failureClass is err without the file path an os error carries: a
+// *fs.PathError reads as its operation and errno text, any other error as
+// its own text (the codex steps wrap none with a path).
+func failureClass(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		class := pe.Op + ": " + pe.Err.Error()
+		if errors.Is(err, errRolloutUnreadable) {
+			class = errRolloutUnreadable.Error() + ": " + class
+		}
+		return class
+	}
+	return err.Error()
+}
+
+// codexHead reads the first 200 lines of the codex rollout at path through
+// tr: cwd is
+// the cwd of session id's own session_meta ("" when there is none; a fork
+// writes its own session_meta, then replays its parent's, and only its own
+// counts) and lineage the rollout's codexLineage. An open or read failure is
+// a codexFailure wrapping errRolloutUnreadable.
+func codexHead(tr sessionagent.Transcript, path, id string) (cwd, lineage string, err error) {
+	unreadable := func(err error) error {
+		return &codexFailure{op: "reading the head of", session: id, err: fmt.Errorf("%w: %w", errRolloutUnreadable, err)}
+	}
 	if tr == nil {
-		return "", fmt.Errorf("%w: %s: no transcript", errRolloutUnreadable, path)
+		return "", "", unreadable(errNoTranscript)
 	}
 	rc, _, err := tr.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("%w: %s: %w", errRolloutUnreadable, path, err)
+		return "", "", unreadable(err)
 	}
 	defer rc.Close()
+	var lin codexLineage
 	br := bufio.NewReaderSize(rc, 64<<10)
 	for range 200 {
 		raw, _, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
-				return "", fmt.Errorf("%w: %s: %w", errRolloutUnreadable, path, err)
+				return "", "", unreadable(err)
 			}
-			return "", nil
+			break
 		}
 		if raw == nil {
 			continue
 		}
 		var l codexRolloutLine
-		if json.Unmarshal(raw, &l) != nil || l.Type != "session_meta" {
+		var pl codexPayload
+		if json.Unmarshal(raw, &l) != nil || !codexKnownTypes[l.Type] || json.Unmarshal(l.Payload, &pl) != nil {
 			continue
 		}
-		var pl codexPayload
-		if json.Unmarshal(l.Payload, &pl) == nil && pl.ID == id && pl.CWD != "" {
-			return pl.CWD, nil
+		lin.see(l.Type, pl.ID)
+		if l.Type == "session_meta" && pl.ID == id && pl.CWD != "" && cwd == "" {
+			cwd = pl.CWD
+		}
+		if lin.done && cwd != "" {
+			break
 		}
 	}
-	return "", nil
+	return cwd, lin.id, nil
 }

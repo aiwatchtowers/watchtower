@@ -124,7 +124,7 @@ final class PermissionAnswerHandlers {
         }
         let notFound = ActionOutcome.failed(.notFound, message: "This permission request no longer exists on the Mac")
         guard let agent = try await boardAgent(sessionID) else { return notFound }
-        guard AgentSessionCaps.of(agent).permissionWait else { return .notSupported(.permission, agent: agent) }
+        guard AgentSessionCaps.of(agent).phone.permissionAnswer else { return .notSupported(.permission, agent: agent) }
         let name = deviceName(action.deviceID) ?? Self.unnamedDevice
         switch try await control.answerPermission(requestID: requestID, sessionID: sessionID, allow: allow, decidedBy: name) {
         case let .applied(decided): return .applied(["status": .string(decided)])
@@ -159,7 +159,7 @@ final class PermissionAnswerHandlers {
         guard let agent = try await boardAgent(sessionID) else {
             return .failed(.notFound, message: Self.notFoundMessage)
         }
-        guard AgentSessionCaps.of(agent).takesInterrupt else { return .notSupported(.interrupt, agent: agent) }
+        guard AgentSessionCaps.of(agent).phone.interrupt else { return .notSupported(.interrupt, agent: agent) }
         // Running and Working come before the action's age, as the phone's
         // reasons always did; `control.interrupt` checks both again in the
         // same main-actor turn, so they cannot differ.

@@ -144,7 +144,15 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(textCh)
 		defer close(errCh)
 		defer close(sidCh)
-		_, usage, err := c.run(ctx, systemPrompt, userMessage, func(ch ai.StreamChunk) { textCh <- ch })
+		// A consumer that stopped reading never parks the loop: a stop drops
+		// the chunk, and the run then ends on the stopped context.
+		emit := func(ch ai.StreamChunk) {
+			select {
+			case textCh <- ch:
+			case <-ctx.Done():
+			}
+		}
+		_, usage, err := c.run(ctx, systemPrompt, userMessage, emit)
 		if c.toolEvents && usage != nil {
 			// The calls made count on a failed turn too (a budget stop at the
 			// cap); a stop now drops the usage, nothing else.
@@ -177,7 +185,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit func(ai.StreamChunk)) (string, *ai.Usage, error) {
 	out := &textOut{emit: emit, keep: c.toolEvents}
 	ext := c.mountExternal(ctx)
-	systemPrompt = ai.WithExternalDataRule(systemPrompt, ext.servers)
+	systemPrompt = ext.withUnavailableNote(ai.WithExternalDataRule(systemPrompt, ext.servers))
 	msgs := make([]oaMessage, 0, 4)
 	if systemPrompt != "" {
 		msgs = append(msgs, oaMessage{Role: "system", Content: systemPrompt})
@@ -213,7 +221,16 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 		out.boundary()
 		msgs = append(msgs, m)
 		for _, call := range m.ToolCalls {
+			// A stop dispatches nothing more: a registry tool need not honour
+			// a stopped context, and a write must never run after Stop.
+			if err := ctx.Err(); err != nil {
+				return "", usage, err
+			}
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
+			if err := ctx.Err(); err != nil {
+				// The start's send may have been what the stop released.
+				return "", usage, err
+			}
 			result := c.dispatch(ctx, call, ext)
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Done: true,
 				OK: !strings.HasPrefix(result, `{"error":`), Result: result})

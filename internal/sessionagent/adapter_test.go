@@ -190,3 +190,25 @@ func TestSessionAgent_CodexHomeOf(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(home, ".codex"), p.HomeOf([]string{"CODEX_HOME=relative"}))
 }
+
+// The phone's half of the capability rows (the terminal_session slice's
+// `phone` key, U5) is one table for Go, the Desktop hub and the Kit: the
+// Kit fixture phone_caps.json, which the Desktop's TerminalSessionSliceTests
+// and the Kit's WorkbenchMirrorFixtureTests read too.
+func TestSessionAgent_PhoneCapsMatchKitFixture(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "WatchtowerKit", "Tests", "Fixtures", "workbench", "phone_caps.json"))
+	require.NoError(t, err)
+	var fx struct {
+		Agents map[string]map[string]any `json:"agents"`
+	}
+	require.NoError(t, json.Unmarshal(b, &fx))
+	assert.Len(t, fx.Agents, len(All()))
+	for _, a := range All() {
+		got, err := json.Marshal(a.Caps().Phone())
+		require.NoError(t, err)
+		var row map[string]any
+		require.NoError(t, json.Unmarshal(got, &row))
+		assert.Equal(t, fx.Agents[string(a.Kind())], row, a.Kind())
+	}
+	assert.Equal(t, PhoneCaps{}, CapsOf("shell").Phone(), "a kind that is not an agent takes nothing")
+}

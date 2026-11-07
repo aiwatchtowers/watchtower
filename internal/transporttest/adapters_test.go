@@ -161,12 +161,17 @@ func (c Caps) Has(want Cap) bool {
 // transport (a turn cap, web search, a new option) changes the matching
 // adapter here in the same change and flips its cells.
 type Adapter struct {
-	Name    string // the matrix name prefix and the testdata/<Name>/ fixture dir
-	Caps    Caps
-	Batch   func(r *run) digest.Generator
-	Stream  func(r *run) chat.Querier
-	Chat    func(r *run) chat.Backend
-	Session *sessionAgent
+	Name string // the matrix name prefix and the testdata/<Name>/ fixture dir
+	// Provider is the provider id the transport runs as: the llm_calls
+	// label it records, the session_ready provider, and the production
+	// capability row its LLM Caps fields must equal
+	// (TestTransportSuite_LLMCapsMatchProviders).
+	Provider string
+	Caps     Caps
+	Batch    func(r *run) digest.Generator
+	Stream   func(r *run) chat.Querier
+	Chat     func(r *run) chat.Backend
+	Session  *sessionAgent
 }
 
 func (a *Adapter) levels() []Level {
@@ -196,7 +201,8 @@ const (
 // adapters is every transport of the suite.
 var adapters = []*Adapter{
 	{
-		Name: "claude",
+		Name:     "claude",
+		Provider: "claude",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "split",
 			CostReported: true, Images: true, PDFs: true, WebSearch: true, ReadFolder: "tools", TurnCap: "native",
 			Interrupt: "in_turn", WarmSession: true, ChildProcess: true, Quota: true,
@@ -235,7 +241,8 @@ var adapters = []*Adapter{
 		Session: claudeSession,
 	},
 	{
-		Name: "codex",
+		Name:     "codex",
+		Provider: "codex",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "message", Usage: "split",
 			Images: true, WebSearch: true, ReadFolder: "shell_sandbox", TurnCap: "counted",
 			Interrupt: "kill_turn", ChildProcess: true, Quota: true,
@@ -260,9 +267,15 @@ var adapters = []*Adapter{
 		Session: codexSession,
 	},
 	{
-		Name:  "ollama",
-		Caps:  Caps{Tools: "none", TextStream: "token", Usage: "totals", ReadFolder: "none", TurnCap: "none", Interrupt: "kill_turn"},
-		Batch: func(r *run) digest.Generator { return ollama.NewGenerator(fakeModel, fakeModel, r.serverURL()) },
+		// The raw ollama generator and client, which `ai query` without
+		// tools and the digest pipelines run: no tool loop, so no tools and
+		// no turn cap. The production "ollama" row is runtime B's (below);
+		// this row is suite-only and differs from it in exactly those three
+		// (tools, tool events, turn cap; TestTransportSuite_LLMCapsMatchProviders).
+		Name:     "ollama",
+		Provider: "ollama",
+		Caps:     Caps{Tools: "none", TextStream: "token", Usage: "totals", ReadFolder: "none", TurnCap: "none", Interrupt: "kill_turn"},
+		Batch:    func(r *run) digest.Generator { return ollama.NewGenerator(fakeModel, fakeModel, r.serverURL()) },
 		Stream: func(r *run) chat.Querier {
 			c := ollama.NewClient(fakeModel, r.serverURL())
 			c.EmitToolEvents() // `ai query --events v2`
@@ -270,7 +283,8 @@ var adapters = []*Adapter{
 		},
 	},
 	{
-		Name: "runtime-b",
+		Name:     "runtime-b",
+		Provider: "ollama",
 		Caps: Caps{Tools: "watchtower+quick_connections", ToolEvents: true, TextStream: "token", Usage: "totals",
 			ReadFolder: "none", TurnCap: "native", Interrupt: "kill_turn"},
 		Stream: func(r *run) chat.Querier { return readFolderRefusal(r, runtimeB(r)) },
@@ -652,6 +666,10 @@ func driveStream(ctx context.Context, r *run, a *Adapter, o *Outcome) {
 }
 
 func driveChat(ctx context.Context, r *run, a *Adapter, s *Scenario, o *Outcome) {
+	if s.Fixture.ViaSession {
+		driveChatSession(ctx, r, a, o)
+		return
+	}
 	b := a.Chat(r)
 	defer func() { _ = b.Close() }()
 	if _, err := b.Start(ctx); err != nil {
@@ -692,6 +710,70 @@ func driveChat(ctx context.Context, r *run, a *Adapter, s *Scenario, o *Outcome)
 	for _, l := range readLaunches(r.t, r.fakeLog) {
 		o.Alive = append(o.Alive, !pidGone(l.PID, 0))
 	}
+}
+
+// driveChatSession runs one turn through chat.Session, the `ai session`
+// loop, with the provider and model cmd/ai_session.go gives it: the events
+// are read back from the protocol's NDJSON, session_ready first. A turn's
+// typed cause does not survive the encoding, so only a scenario that reads
+// no cause drives this way.
+func driveChatSession(ctx context.Context, r *run, a *Adapter, o *Outcome) {
+	sink := &eventSink{terminal: make(chan struct{})}
+	s := chat.NewSession(a.Chat(r), chat.NewEventWriter(sink))
+	s.Provider, s.Model = a.Provider, fakeModel
+	in, feed := io.Pipe()
+	ran := make(chan error, 1)
+	go func() { ran <- s.Run(ctx, in) }()
+	cmd, err := json.Marshal(chat.Command{Type: chat.CommandTurn, TurnID: "t2", Text: userPrompt})
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	// Written aside: a session whose Start fails never reads its input.
+	go func() { _, _ = feed.Write(append(cmd, '\n')) }()
+	select {
+	case <-sink.terminal:
+	case <-ctx.Done():
+	case err := <-ran:
+		o.Err = err
+		o.Events = sink.events()
+		_ = feed.Close()
+		return
+	}
+	_ = feed.Close() // stdin EOF ends the session, as the app's going away does
+	o.Err = <-ran
+	o.Events = sink.events()
+	if o.Err == nil && ctx.Err() != nil {
+		o.Err = ctx.Err()
+	}
+}
+
+// eventSink decodes a chat.EventWriter's lines (one Write per event) and
+// signals the first turn-scoped terminal event.
+type eventSink struct {
+	mu       sync.Mutex
+	evs      []chat.Event
+	terminal chan struct{}
+	once     sync.Once
+}
+
+func (s *eventSink) Write(p []byte) (int, error) {
+	var e chat.Event
+	if err := json.Unmarshal(p, &e); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	s.evs = append(s.evs, e)
+	s.mu.Unlock()
+	if e.TurnID != "" && (e.Type == chat.EventTurnDone || e.Type == chat.EventError) {
+		s.once.Do(func() { close(s.terminal) })
+	}
+	return len(p), nil
+}
+
+func (s *eventSink) events() []chat.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]chat.Event(nil), s.evs...)
 }
 
 // attachment writes an attachment file of kind ("image" or "pdf").

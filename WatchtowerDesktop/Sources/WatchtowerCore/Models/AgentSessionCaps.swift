@@ -77,6 +77,41 @@ package struct AgentSessionCaps: Equatable, Sendable {
     /// `sessionagent.Caps.TakesInterrupt`.
     package var takesInterrupt: Bool { permissionWait && elicitation }
 
+    /// What the hub takes from the phone for a session of the agent: the
+    /// `terminal_session` slice's `phone` key (spec 2026-11-05 §3.5, U5),
+    /// which the phone shows the composer, the permission card and
+    /// Interrupt by, and the rows the hub's handlers refuse and hold by.
+    /// Go's `sessionagent.PhoneCaps`; the Kit fixture `phone_caps.json` pins
+    /// Go, this and the Kit to one table.
+    package struct Phone: Encodable, Equatable, Sendable {
+        /// Lines and the finish request (PROJ-16).
+        package let input: Bool
+        /// A line goes in while the agent works; otherwise the hub holds it
+        /// until the agent is idle.
+        package let inputWhileWorking: Bool
+        /// The phone answers a held permission prompt (PROJ-21).
+        package let permissionAnswer: Bool
+        /// The phone's one Esc (PROJ-21).
+        package let interrupt: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case input
+            case inputWhileWorking = "input_while_working"
+            case permissionAnswer = "permission_answer"
+            case interrupt
+        }
+    }
+
+    /// The row's phone half. Go's `sessionagent.Caps.Phone`.
+    package var phone: Phone {
+        Phone(
+            input: phoneInput,
+            inputWhileWorking: phoneInput && takesLineWhileWorking,
+            permissionAnswer: permissionWait,
+            interrupt: takesInterrupt
+        )
+    }
+
     /// `agent`'s row, from its session adapter.
     package static func of(_ agent: AgentKind) -> Self { agent.session.caps }
 

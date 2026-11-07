@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -98,7 +99,7 @@ func TestProj11_HostPullEndsAnAbortedTurnAsWaiting(t *testing.T) {
 	database, pid, row := codexRowFixture(t, codexTUISession)
 	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	pull := db.CodexWatchRow{ID: row, WorkbenchID: pid, SessionID: codexTUISession}
+	pull := db.CodexWatchRow{ID: row, WorkbenchID: pid, Kind: "codex", SessionID: codexTUISession}
 	require.NoError(t, recordCodexPull(database, pull, sessionfeed.CodexTurn{Aborted: true, At: at}))
 	s := codexRow(t, database, row)
 	assert.Equal(t, agentStateWaiting, s.AgentState.String)
@@ -265,4 +266,91 @@ func TestSessionProbe_CodexStaleCountReadsTheRollout(t *testing.T) {
 			assert.Equal(t, c.ended, got["ended"])
 		})
 	}
+}
+
+// A host binary never migrates the file it watches: a real database from
+// before migration 00173 (no watch columns) is refused, and the file is
+// left as it was, still without the columns and at the same goose version.
+// A missing file is refused without being created.
+func TestCodexWatch_PreWatchDatabaseIsRefusedAndNotMigrated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	database, err := db.Open(path)
+	require.NoError(t, err)
+	for _, stmt := range []string{
+		`ALTER TABLE terminal_sessions DROP COLUMN agent_watch_issue_at`,
+		`ALTER TABLE terminal_sessions DROP COLUMN agent_watch_issue`,
+		`DELETE FROM goose_db_version WHERE version_id >= 173`,
+	} {
+		_, err := database.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	require.NoError(t, database.Close())
+	gooseVersion := func() int64 {
+		d, err := db.OpenExistingRW(path, time.Second)
+		require.NoError(t, err)
+		defer func() { _ = d.Close() }()
+		var v int64
+		require.NoError(t, d.QueryRow(`SELECT MAX(version_id) FROM goose_db_version`).Scan(&v))
+		has, err := d.HasColumns("terminal_sessions", "agent_watch_issue")
+		require.NoError(t, err)
+		assert.False(t, has, "the watch column came back")
+		return v
+	}
+	before := gooseVersion()
+	require.Less(t, before, int64(173))
+
+	store, err := openCodexWatchStore(path)
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Contains(t, err.Error(), "no watch columns")
+	assert.Equal(t, before, gooseVersion(), "the host migrated the file")
+
+	missing := filepath.Join(t.TempDir(), "absent.db")
+	_, err = openCodexWatchStore(missing)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), missing, "FILES-01: the error names no path")
+	_, statErr := os.Stat(missing)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the host created the missing file")
+}
+
+// The pull write resolves its reader from the row's kind: a kind whose turn
+// ends are not pulled is an error, never codex's reader in disguise.
+func TestProj11_PullRecordResolvesTheRowKind(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	turn := sessionfeed.CodexTurn{Aborted: true, At: time.Now().UTC()}
+	for _, kind := range []string{"claude", ""} {
+		pull := db.CodexWatchRow{ID: row, WorkbenchID: pid, Kind: kind, SessionID: codexTUISession}
+		require.Error(t, recordCodexPull(database, pull, turn), "kind %q", kind)
+	}
+	assert.Equal(t, agentStateWorking, codexRow(t, database, row).AgentState.String)
+}
+
+// The kinds a not-watched mark may land on are the agents whose turn ends
+// are pulled, and the db tests' list is that list.
+func TestProj11_WatchKindsArePulledKinds(t *testing.T) {
+	for _, k := range sessionagent.RolloutWatchKinds() {
+		_, pulls := sessionagent.PullerOf(k)
+		assert.True(t, pulls, k)
+	}
+	assert.Equal(t, []string{"codex"}, sessionagent.RolloutWatchKinds(), "db's testWatchKinds")
+}
+
+// The bridge mirrors the host's watch on an interrupted turn (spec §3.5):
+// a plain `waiting`, no error, no watch issue.
+func TestSessionProbe_CodexBridgeAbortedTurnIsWaiting(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	at := time.Now().UTC().Add(time.Second).Truncate(time.Millisecond)
+	writeCodexRollout(t, home, codexTUISession, codexTurnLine(at, "task_started", ""), codexTurnLine(at, "turn_aborted", ""))
+
+	runSessionProbe(t, pid, row)
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWaiting, s.AgentState.String)
+	assert.Equal(t, db.AgentStateStamp(at), db.AgentStateStamp(s.AgentStateAt))
+	assert.Nil(t, s.AgentFailure)
+	var issue sql.NullString
+	require.NoError(t, database.QueryRow(`SELECT agent_watch_issue FROM terminal_sessions WHERE id = ?`, row).Scan(&issue))
+	assert.False(t, issue.Valid)
 }

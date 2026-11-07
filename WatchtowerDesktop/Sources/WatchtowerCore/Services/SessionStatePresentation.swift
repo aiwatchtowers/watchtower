@@ -92,11 +92,20 @@ package enum SessionStatePresentation {
         return state.openAsks > 0 ? "\(working) · \(asksOpen(state.openAsks))" : working
     }
 
-    /// The tooltip of a not-watched session (U6): why, and when watching
-    /// starts again; nil for every other state.
+    /// The tooltip of a not-watched session (U6): why, in words, and when
+    /// watching starts again; nil for every other state. The hub publishes
+    /// it as `watch_help` and the phone shows it as given. Go's `watchHelp`;
+    /// the Kit fixture `workbench/watch_help.json` pins both. A code this
+    /// does not know reads as `unreadable`.
     package static func watchIssueHelp(for state: State) -> String? {
         guard let issue = state.watchIssue else { return nil }
-        return "Watchtower can't read this Codex session's log (\(issue)). Watching starts again with the next prompt."
+        let reason = switch issue {
+        case "missing": "Watchtower can't find this session's log."
+        case "permission": "Watchtower isn't allowed to read this session's log."
+        case "compressed": "This session's log is compressed, so Watchtower can't read it."
+        default: "Watchtower can't read this session's log."
+        }
+        return "\(reason) Watching starts again with the next prompt."
     }
 
     /// `StopFailure`'s error type (`rate_limit`) read as words: "Error: rate

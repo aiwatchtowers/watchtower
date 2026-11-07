@@ -986,17 +986,51 @@ func TestClaudeBackend_CleanExitWithoutResultIsInvalidOutput(t *testing.T) {
 	}
 }
 
-// A stdout line longer than the warm reader takes ends the turn with a
-// typed invalid_output failure instead of leaving it waiting until a cancel;
-// the child is ended so the next turn gets a fresh one, which replays.
-func TestClaudeBackend_OverlongLineFailsTheTurn(t *testing.T) {
+// A skipped line that may carry the turn's control flow (here its result)
+// would leave the turn waiting for good: it fails the turn as invalid
+// output and ends the child, so the next turn gets a fresh one, which
+// replays.
+func TestClaudeBackend_OverlongProtocolLineFailsTheTurn(t *testing.T) {
+	old := maxWarmLine
+	maxWarmLine = 64 << 10
+	t.Cleanup(func() { maxWarmLine = old })
+	opts, f := fakeClaude(t, "long_line")
+	opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10), "FAKE_LONG_TYPE=result")
+	b := NewClaudeBackend(opts)
+	events := runOneTurn(t, b)
+	last := events[len(events)-1]
+	require.Equal(t, EventError, last.Type)
+	var failure *providers.Failure
+	require.ErrorAs(t, last.Cause, &failure)
+	assert.Equal(t, providers.InvalidOutput, failure.Category)
+	assert.Contains(t, last.Message, "reading claude output")
+	waitGone(t, readPIDFile(t, f.pid), "the child whose result line could not be read")
+}
+
+// A stdout line over maxWarmLine (a huge tool result) is skipped and
+// counted, as every other CLI reader does (streamline, spec §3.1/§3.4): the
+// turn goes on, completes, and the child stays up for the next turn.
+func TestClaudeBackend_OverlongLineIsSkipped(t *testing.T) {
 	old := maxWarmLine
 	maxWarmLine = 64 << 10
 	t.Cleanup(func() { maxWarmLine = old })
 	opts, f := fakeClaude(t, "long_line")
 	opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10))
+	var warn bytes.Buffer
+	opts.Warn = &warn
 	b := NewClaudeBackend(opts)
-	last := requireTypedTurnError(t, runOneTurn(t, b), providers.InvalidOutput)
-	assert.Contains(t, last.Message, "reading claude output")
-	waitGone(t, readPIDFile(t, f.pid), "the child whose output could not be read")
+	events := runOneTurn(t, b)
+	var text strings.Builder
+	for _, e := range events {
+		require.NotEqual(t, EventError, e.Type, "the turn must not fail: %+v", e)
+		if e.Type == EventTextDelta {
+			text.WriteString(e.Text)
+		}
+	}
+	assert.Equal(t, "before after", text.String())
+	assert.Equal(t, EventTurnDone, events[len(events)-1].Type)
+	assert.Contains(t, warn.String(), "chat: skipped 1 claude output line(s) over 65536 bytes")
+	assert.NotContains(t, warn.String(), "xxxx", "the skipped line's content never reaches the log")
+	pid := readPIDFile(t, f.pid)
+	assert.NoError(t, syscall.Kill(pid, 0), "the child is still up for the next turn")
 }

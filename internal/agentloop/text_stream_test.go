@@ -1,6 +1,7 @@
 package agentloop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,9 +9,11 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -413,6 +416,47 @@ func TestAgentloopQuery_UndecodableChunkIsInvalidOutput(t *testing.T) {
 			assert.Equal(t, providers.InvalidOutput, f.Category)
 		})
 	}
+}
+
+// An undecodable chunk beside a text answer only shortens the text: the
+// turn succeeds, and the count (never the chunk) reaches the log (FILES-01).
+func TestAgentloopQuery_UndecodableChunkBesideTextIsLogged(t *testing.T) {
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	srv := newSSEServer(t, []string{sseText("kept"), `data: {"choices":[{"index":0,"delta":{"content":SECRET-CHUNK}}]}`,
+		sseFinish("stop"), sseDone})
+	chunks, err := collect(t, clientWith(listTargetsReg(), srv.URL))
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(textsOf(chunks), ""), "kept")
+	assert.Contains(t, logs.String(), "runtime B: 1 undecodable stream chunk(s) ignored")
+	assert.NotContains(t, logs.String(), "SECRET-CHUNK")
+}
+
+// A consumer that stops reading and cancels never parks the loop on a full
+// text channel: the run ends, its ledger row is written and the channels
+// close.
+func TestAgentloopQuery_StoppedConsumerDoesNotParkTheLoop(t *testing.T) {
+	calls := captureCalls(t)
+	lines := make([]string, 0, 41)
+	for i := range 40 {
+		lines = append(lines, sseText("chunk "+strconv.Itoa(i)+" "))
+	}
+	srv := newSSEServer(t, append(lines, "HANG"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	textCh, errCh, _ := clientWith(listTargetsReg(), srv.URL).Query(ctx, "", "go", "")
+	// Nothing is read: the loop fills the channel's buffer and blocks.
+	require.Eventually(t, func() bool { return len(textCh) == cap(textCh) }, 5*time.Second, 10*time.Millisecond)
+	cancel()
+	select {
+	case <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the loop stayed parked on the unread text channel")
+	}
+	require.Eventually(t, func() bool { return len(calls.all()) == 1 }, 5*time.Second, 20*time.Millisecond,
+		"the stopped call's ledger row is written")
 }
 
 // A body cut short mid-response (the server died) is a transport failure.

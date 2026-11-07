@@ -54,17 +54,18 @@ const (
 
 // PhoneRefusal is the not_supported message of a phone action of
 // actionKind on a board session of agent, refused by the agent's
-// capability row; refused is false when the row takes it. The transport
-// contract suite asserts each agent's answer through it.
+// capability row's phone half (Caps.Phone, which the terminal_session slice
+// publishes to the phone); refused is false when the row takes it. The
+// transport contract suite asserts each agent's answer through it.
 func PhoneRefusal(actionKind string, agent agentkind.Kind) (message string, refused bool) {
-	caps := sessionCaps(agent)
+	phone := sessionCaps(agent).Phone()
 	var format string
 	switch {
-	case (actionKind == "session_input" || actionKind == "session_finish_request") && !caps.PhoneInput:
+	case (actionKind == "session_input" || actionKind == "session_finish_request") && !phone.Input:
 		format = notSupportedInputFormat
-	case actionKind == "permission_answer" && !caps.PermissionWait:
+	case actionKind == "permission_answer" && !phone.PermissionAnswer:
 		format = notSupportedPermissionFormat
-	case actionKind == "session_interrupt" && !caps.TakesInterrupt():
+	case actionKind == "session_interrupt" && !phone.Interrupt:
 		format = notSupportedInterruptFormat
 	default:
 		return "", false
