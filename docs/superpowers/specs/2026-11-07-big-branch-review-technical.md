@@ -187,7 +187,7 @@ per-chapter lens list (`ReviewChapters.lenses(for:)` has no caller) — it is de
 | Parallel batch calls | 3 |
 | One batch call | 4 min |
 | Summary call | 2 min |
-| Whole command | 15 min (was 5) |
+| Whole command | 30 min (was 5); chapters not reached → `state: "not_started"` events, `incomplete` lists them, no summary call; `--continue` describes only chapters without a part row, then the summary |
 | Desktop wait | no total timeout on the streamed form; fails when no line arrives for 5 min |
 
 The strong tier as today; purposes `review.overview`, `review.chapters`, `review.summary` in
@@ -227,6 +227,13 @@ envelope:
 {"event":"summary","state":"ok|failed", …}
 {"ok":true,"overview":{…},"incomplete":[…]}                 (last)
 ```
+
+Chapter states in events: `cached|ok|failed|not_started`.
+
+**Map failure on the Desktop.** If `review map` fails (exit ≠ 0, bad JSON, or no answer in
+60 s), `ReviewChangesModel` shows the diff's file list without chapters and the banner
+"Chapters could not be built — Retry" (Retry re-runs `review map`); the overview is not
+started without a map. The Go side logs the error class only.
 
 Without `--stream` the command behaves as today (one envelope). `--chapter K` redoes only K
 (ignores its part row) and the summary; `--summary` redoes only the summary from the cached

@@ -34,8 +34,11 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    **Breaking and significant** — that is what to read first; noise is last.
 3. **AI per chapter, as it arrives.** Chapters are described in their own model calls (one
    per batch, item 5): what a chapter does, what can break and why. At most 3 calls run at
-   once, each with 4 minutes; the summary has 2 minutes; the whole overview stops at 15
-   minutes (today: one call, 5 minutes). Chapters fill in as they finish; a chapter that
+   once, each with 4 minutes; the summary has 2 minutes; one run of the overview stops at 30
+   minutes (today: one call, 5 minutes). Chapters the run did not reach by then are shown as
+   "not described yet" with one **Continue (N chapters)** button: it describes only them
+   (the finished ones are cached) and then makes the summary; the summary is made only once
+   every chapter is described. Chapters fill in as they finish; a chapter that
    fails or runs out of time shows a plain line ("The overview of chapter X did not finish
    in 4 min — Retry") and Retry redoes only that chapter. The provider's own error text is
    behind a disclosure; the log file gets only the error class and counts, never names or
@@ -90,6 +93,11 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
   stay exactly as they are, so saved positions and checks in rounds keep matching; a shared
   Go↔Swift fixture pins them before the Swift code goes. Old `ai:` chapter keys stop
   matching (the round opens on its first chapter).
+- **If Go returns no chapters** (the map command fails or times out — it makes no AI call,
+  so this is a crash or a git error): the review shows the plain file list and diff as today,
+  with a banner "Chapters could not be built — Retry"; Retry asks Go again. The error class
+  goes to the log (FILES-01). Lane attribution that is too slow does not fail the map: it
+  falls back to package chapters.
 
 ## Phases
 
@@ -147,6 +155,12 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
 - The danger patterns' file is `.watchtower/review-map.md`, not `review.md` (which the
   conversation named): every heading of `review.md` is a lens — agent's call.
 - REVIEW-01 amendment and Go-only chapters — agent's call, approved with this spec.
+- A round saved on an old `ai:` chapter reopens on its first chapter — agent's call: only the
+  reading position of rounds made before this release is lost; keeping `ai:` keys alive
+  would need a second chapter source just for them.
+- 30-minute ceiling per run with **Continue** for the rest (replaces the 15 minutes of the
+  previous draft) — agent's call: 3 × 4 min calls over a 35k-line branch can need about 20
+  minutes in the worst case.
 
 ## What the spike showed (lane attribution, no AI)
 
