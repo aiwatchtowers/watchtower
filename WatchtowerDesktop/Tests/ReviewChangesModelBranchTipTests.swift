@@ -139,4 +139,24 @@ extension ReviewChangesModelTests {
         XCTAssertEqual(h.model.view, .all)
         XCTAssertEqual(h.cli.calls("diff").last?.contains("--since"), false, "the moved round's diff is read whole")
     }
+
+    /// Codex verify: a base-only re-placement that fails is retried by the
+    /// next Refresh, which re-anchors the old-side draft.
+    func testFailedBaseReplacementIsRetriedByTheNextRefresh() async throws {
+        let h = try harness()
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+        h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "c", tree: "t7")])
+        h.cli.script("file", [fileJSON(old: "x\ny\n", new: "n\n"), #"{"ok":false,"error":"boom"}"#, fileJSON(old: "y\n", new: "n\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        try await h.model.addComment(path: "a.go", side: "old", startLine: 2, endLine: 2, body: "on y")
+        await h.model.refresh()
+        XCTAssertEqual(h.model.lastError, "boom")
+        let before = try await h.comments().first { $0.body == "on y" }
+        XCTAssertEqual(before?.startLine, 2, "not placed yet")
+        await h.model.refresh()
+        XCTAssertNil(h.model.lastError)
+        let after = try await h.comments().first { $0.body == "on y" }
+        XCTAssertEqual(after?.startLine, 1, "re-placed on the retry")
+    }
 }

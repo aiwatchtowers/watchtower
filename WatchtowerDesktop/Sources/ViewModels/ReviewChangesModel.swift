@@ -121,6 +121,11 @@ final class ReviewChangesModel {
     private(set) var sessionGone = false
     /// The session's worktree was removed; the open round stayed where it was (board #1012).
     private(set) var placeMissing = false
+    /// The round and base (`id:base`) the drafts and carried comments were
+    /// last placed on. A row records only its tree, so old-side comments are
+    /// re-placed until a placement on the round's base succeeds; a failed one
+    /// is retried by the next Refresh.
+    @ObservationIgnored private var commentsPlacedOn: String?
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
 
@@ -341,9 +346,9 @@ final class ReviewChangesModel {
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: false))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
-            // The comments' rows record only their tree: unless this model saw
-            // the round on the same base, its old-side comments are re-placed.
-            let baseChanged = round?.id != info.id || round?.baseSha != info.baseSha
+            // The comments' rows record only their tree: unless this model placed
+            // them on the round's base, its old-side comments are re-placed.
+            let baseChanged = commentsPlacedOn != Self.placement(info)
             round = info
             placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
@@ -374,6 +379,7 @@ final class ReviewChangesModel {
             var marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             if rows.isEmpty, marks.isEmpty, info.prevRoundId > 0 {
                 try await carryOver(from: info.prevRoundId, into: info)
+                commentsPlacedOn = Self.placement(info)
                 marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             } else {
                 // Go moved the open round to the session's new place (board #1012): its comments follow as on a
@@ -381,6 +387,7 @@ final class ReviewChangesModel {
                 let stale = Self.stale(rows, round: info, baseChanged: baseChanged)
                 do {
                     try await replace(stale, round: info)
+                    commentsPlacedOn = Self.placement(info)
                 } catch {
                     lastError = Self.replaceFailedMessage(count: stale.count, error)
                 }
@@ -435,7 +442,7 @@ final class ReviewChangesModel {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: true))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
             let diffChanged = round?.diffKey != info.diffKey
-            let baseChanged = round?.baseSha != info.baseSha
+            let baseChanged = commentsPlacedOn != Self.placement(info)
             round = info
             placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
@@ -459,6 +466,7 @@ final class ReviewChangesModel {
             sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             try await replace(Self.stale(rows, round: info, baseChanged: baseChanged), round: info)
+            commentsPlacedOn = Self.placement(info)
             try reloadComments()
             try reloadReverts()
             await reloadSides()
@@ -1389,6 +1397,9 @@ final class ReviewChangesModel {
                 && ($0.treeSHA != info.treeSha || (baseChanged && $0.side == "old"))
         }
     }
+
+    /// The `commentsPlacedOn` key of a round.
+    private static func placement(_ info: ReviewRoundInfo) -> String { "\(info.id):\(info.baseSha)" }
 
     /// The banner when `open()` could not re-place a moved round's comments.
     static func replaceFailedMessage(count: Int, _ error: Error) -> String {
