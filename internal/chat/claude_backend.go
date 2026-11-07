@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -23,6 +22,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
+	"watchtower/internal/streamline"
 )
 
 // ClaudeOptions configures the warm Claude backend.
@@ -92,9 +92,8 @@ type claudeProc struct {
 	// unreadable is set once a JSON line the translator could not read was
 	// reported, so a protocol change is noted once per child, not per line.
 	unreadable atomic.Bool
-	// readErr holds the readError that stopped the stdout reader (a line
-	// over maxWarmLine, a failed read); exitOutcome turns it into the turn's
-	// failure.
+	// readErr holds the readError that stopped the stdout reader (a failed
+	// read); exitOutcome turns it into the turn's failure.
 	readErr atomic.Value
 }
 
@@ -582,60 +581,84 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 }
 
 // maxWarmLine is the longest stdout line the warm reader takes (tool
-// results arrive as one line each); a variable so tests can lower it.
-var maxWarmLine = 64 << 20
+// results arrive as one line each; streamline.MaxLine); a variable so tests
+// can lower it.
+var maxWarmLine = streamline.MaxLine
 
-// read translates the child's stdout into events on p.events.
+// read translates the child's stdout into events on p.events. A line over
+// maxWarmLine is skipped and counted, as every other CLI reader does
+// (streamline): the turn goes on and ends with the result event.
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
 	defer r.Close()
 	// The child is gone or replaced: a claimed call's result can no longer
 	// arrive.
 	defer b.gate.procGone(p)
-	sc := bufio.NewScanner(r)
-	// Tool results arrive as one line each; allow multi-megabyte lines.
-	sc.Buffer(make([]byte, 0, 64<<10), maxWarmLine)
-	for sc.Scan() {
-		if b.routeStatusAnswer(sc.Bytes()) || b.routeControl(p, sc.Bytes()) {
-			continue
+	lines := streamline.NewWithLimit(r, maxWarmLine)
+	skipped := 0
+	for {
+		line, readErr := lines.Next()
+		if n := lines.Skipped(); n > skipped {
+			// Counts only, never content (FILES-01).
+			fmt.Fprintf(b.warn(), "chat: skipped %d claude output line(s) over %d bytes\n", n-skipped, maxWarmLine)
+			skipped = n
 		}
-		f, err := b.tr.feed(sc.Bytes())
-		if err != nil {
-			// Non-JSON noise on stdout is not a protocol event; a JSON line
-			// the translator cannot read is a protocol change worth a note.
-			if json.Valid(sc.Bytes()) && !p.unreadable.Swap(true) {
-				fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				b.failRead(p, readErr)
 			}
-			continue
+			return
 		}
-		if f.sessionID != "" {
-			b.noteSessionID(p, f.sessionID)
-		}
-		if f.init {
-			b.noteAPIKeySource(f.apiKeySource)
-		}
-		for _, r := range f.results {
-			b.gate.onResult(r)
-		}
-		for _, e := range f.events {
-			select {
-			case p.events <- e:
-			case <-p.stop:
-				return
-			}
+		if !b.feedLine(p, line) {
+			return
 		}
 	}
-	if err := sc.Err(); err != nil {
-		// The rest of the stream cannot be read, so the turn's result never
-		// arrives: end the child, and the turn ends through exitOutcome with
-		// a typed failure instead of waiting for a cancel. The next turn gets
-		// a fresh child, which replays.
-		p.readErr.Store(readError{err})
-		fmt.Fprintf(b.warn(), "chat: reading claude output: %v\n", err)
-		if p.pgid > 1 {
-			killGroup(p)
+}
+
+// failRead ends a child whose stdout can no longer be read: the turn's
+// result never arrives, so the turn ends through exitOutcome with a typed
+// failure instead of waiting for a cancel. The next turn gets a fresh
+// child, which replays.
+func (b *claudeBackend) failRead(p *claudeProc, err error) {
+	p.readErr.Store(readError{err})
+	fmt.Fprintf(b.warn(), "chat: reading claude output: %v\n", err)
+	if p.pgid > 1 {
+		killGroup(p)
+	}
+}
+
+// feedLine routes one stdout line; false once the reader must stop (the
+// child was released).
+func (b *claudeBackend) feedLine(p *claudeProc, line []byte) bool {
+	if b.routeStatusAnswer(line) || b.routeControl(p, line) {
+		return true
+	}
+	f, err := b.tr.feed(line)
+	if err != nil {
+		// Non-JSON noise on stdout is not a protocol event; a JSON line
+		// the translator cannot read is a protocol change worth a note.
+		if json.Valid(line) && !p.unreadable.Swap(true) {
+			fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
+		}
+		return true
+	}
+	if f.sessionID != "" {
+		b.noteSessionID(p, f.sessionID)
+	}
+	if f.init {
+		b.noteAPIKeySource(f.apiKeySource)
+	}
+	for _, r := range f.results {
+		b.gate.onResult(r)
+	}
+	for _, e := range f.events {
+		select {
+		case p.events <- e:
+		case <-p.stop:
+			return false
 		}
 	}
+	return true
 }
 
 // routeControl answers the CLI's control lines: a can_use_tool goes to the
@@ -855,15 +878,11 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 }
 
 // readOutcome is the outcome of a turn whose child was ended because its
-// stdout could not be read: a line over maxWarmLine is invalid output, any
-// other read failure a broken transport.
+// stdout could not be read: a broken transport (an over-long line is
+// skipped, never a read failure).
 func readOutcome(err error) outcome {
 	cause := fmt.Errorf("reading claude output: %w", err)
-	category := providers.Transport
-	if errors.Is(err, bufio.ErrTooLong) {
-		category = providers.InvalidOutput
-	}
-	return outcome{kind: outcomeExited, msg: cause.Error(), cause: providers.WithFailure("claude", category, cause)}
+	return outcome{kind: outcomeExited, msg: cause.Error(), cause: providers.WithFailure("claude", providers.Transport, cause)}
 }
 
 // send writes the user message to the live child (spawning one if needed).

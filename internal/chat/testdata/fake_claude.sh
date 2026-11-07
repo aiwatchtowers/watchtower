@@ -173,12 +173,15 @@ while IFS= read -r line; do
           [ -n "$FAKE_STDERR" ] && printf '%s\n' "$FAKE_STDERR" >&2
           exit 0 ;;
         long_line)
-          # A stdout line longer than the reader takes, then the child stays
-          # up waiting for input, as a warm claude does.
+          # A stdout line longer than the reader takes in the middle of a
+          # turn, which then finishes as usual.
           printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}'
-          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"before "}}}'
           head -c "${FAKE_LONG_BYTES:-4096}" /dev/zero | tr '\0' 'x'
           printf '\n'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"after"}}}'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
+          printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"sess-fake","usage":{"input_tokens":3,"output_tokens":2}}'
           continue ;;
         crash_always)
           printf '%b\n' "${FAKE_CRASH:-panic: cannot decode content block}" >&2
