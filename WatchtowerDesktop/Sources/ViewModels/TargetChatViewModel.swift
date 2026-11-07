@@ -431,6 +431,9 @@ final class TargetChatViewModel {
         } else if !parsed.errors.isEmpty {
             // Only malformed blocks: the warnings below say why.
             displayText = "(invalid action proposal)"
+        } else if parsed.ignored > 0 {
+            // Only drafts before a tool call: the notice below says why.
+            displayText = "(no action proposed after the tool call)"
         } else {
             // Only registry tool calls (their proposals were written by the
             // chat-mode subprocess): name them, or this is an empty reply.

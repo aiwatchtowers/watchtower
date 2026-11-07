@@ -181,6 +181,39 @@ final class TargetChatViewModelTests: XCTestCase {
         })
     }
 
+    /// A reply that is only a draft block before a tool call applies
+    /// nothing and still shows a turn with the reason, not an empty-reply
+    /// error.
+    func testAReplyWithOnlyAPreToolDraftAppliesNothingAndSaysWhy() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let draft = """
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "first draft", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [
+            .sessionID("s1"), .text(draft),
+            .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")),
+            .toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "ok", sources: [])), .done
+        ])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+
+        chat.inputText = "add a step"
+        chat.send()
+        await chat.engine.finished()
+        try await waitForStreamEnd(chat)
+
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertTrue(after.decodedSubItems.isEmpty)
+        XCTAssertTrue(chat.actionCards.isEmpty)
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertEqual(persisted.first { $0.role == "assistant" }?.text, "(no action proposed after the tool call)")
+        XCTAssertTrue(persisted.contains { $0.role == "system" && $0.text.contains("written before a tool call") })
+    }
+
     /// The VM is cached per target in an app-wide container and holds a `Target`
     /// VALUE, so a checklist edit made on the detail view around it (drag-
     /// reorder, tick, inline edit) would otherwise never reach the prompt: the
