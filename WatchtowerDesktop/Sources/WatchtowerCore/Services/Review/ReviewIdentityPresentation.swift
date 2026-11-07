@@ -26,6 +26,9 @@ package enum ReviewIdentityPresentation {
     /// The branch line's note on a round that reads a branch's commits.
     package static let branchTipNote = "branch tip, read-only"
 
+    /// The base's help when the reviewed commit shares no history with any base branch.
+    package static let noCommonBaseHelp = "No history in common with the base branch — every file reads as added"
+
     /// The first linked target and how many more follow it.
     package struct ForLine: Equatable, Sendable {
         package var first: ReviewContextItem
@@ -51,6 +54,7 @@ package enum ReviewIdentityPresentation {
         let rawBase = round.map { $0.baseLabel.hasPrefix("origin/") ? String($0.baseLabel.dropFirst("origin/".count)) : $0.baseLabel }
         let base = (rawBase?.isEmpty ?? true) ? nil : rawBase
         var help = (round?.baseSha.isEmpty ?? true) ? "empty tree" : (round?.baseSha ?? "empty tree")
+        if round?.baseLabel == ReviewRoundInfo.noCommonBaseLabel { help = noCommonBaseHelp }
         if stale { help += "\n" + SessionPlacePresentation.staleNote }
         if let round, round.isBranchTip {
             return BranchLine(

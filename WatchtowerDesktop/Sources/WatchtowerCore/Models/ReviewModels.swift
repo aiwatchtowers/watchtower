@@ -28,8 +28,19 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     /// The branch a `pr` round reviews; "" otherwise.
     package let branch: String
 
+    /// `review_rounds.source` of a round on the task branch's tip (Go `db.ReviewSourceBranch`).
+    package static let branchTipSource = "pr"
+    /// The base label when the base branches share no history with the
+    /// reviewed commit: the base is the empty tree (Go `reviewdiff.NoCommonBase`).
+    package static let noCommonBaseLabel = "no common base"
+
     /// The round reads a branch's commits, not a folder: no uncommitted edits, no Undo.
-    package var isBranchTip: Bool { source == "pr" }
+    package var isBranchTip: Bool { source == Self.branchTipSource }
+
+    /// The diff the round shows — its base and its tree. A move or a Refresh
+    /// can change either, so whatever is derived from the diff (the overview,
+    /// comment anchors) is stale when this differs.
+    package var diffKey: String { baseSha + ".." + treeSha }
 
     private enum CodingKeys: String, CodingKey {
         case id, status, mode, folderRoot, baseSha, baseLabel, treeSha, prevRoundId, prevTreeSha, prevTreeLost
@@ -246,6 +257,10 @@ package struct ReviewEnvelope: Decodable, Sendable {
     /// Present as `[]` for `lessons propose`, absent for every other command.
     package let lessons: [ReviewLesson]?
     package let written: String?
+    /// `review start`: the session's worktree was removed; the open round stays
+    /// on the folder it was opened on (board #1012).
+    // swiftlint:disable:next discouraged_optional_boolean
+    package let placeMissing: Bool?
 
     /// The hunk an undo reverted.
     package struct RevertInfo: Decodable, Equatable, Sendable {

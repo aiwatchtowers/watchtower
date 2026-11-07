@@ -101,6 +101,22 @@ final class ReviewIdentityPresentationTests: XCTestCase {
         XCTAssertFalse(round.isBranchTip)
     }
 
+    /// Go's `reviewdiff.NoCommonBase`: the base is the empty tree and the help says why.
+    func testNoCommonBaseExplainsTheEmptyTree() throws {
+        let line = Identity.branchLine(
+            place: .main, status: WorkbenchGitStatus(branch: "island"),
+            round: try round(baseLabel: ReviewRoundInfo.noCommonBaseLabel, baseSha: "4b825dc642cb6eb9a060e54bf8d69288fbee4904"),
+            files: files([(1, 0)]), stale: false
+        )
+        XCTAssertEqual(line.base, "no common base")
+        XCTAssertEqual(line.baseHelp, Identity.noCommonBaseHelp)
+    }
+
+    func testBranchTipSourceMirrorsGo() throws {
+        XCTAssertEqual(ReviewRoundInfo.branchTipSource, "pr", "Go db.ReviewSourceBranch")
+        XCTAssertEqual(ReviewRoundInfo.noCommonBaseLabel, "no common base", "Go reviewdiff.NoCommonBase")
+    }
+
     func testUnknownPlaceReadsAsMainFolder() {
         let status = WorkbenchGitStatus(branch: "feature/x")
         XCTAssertEqual(Identity.branchLine(place: .unknown, status: status, round: nil, files: [], stale: false).place, "main folder")

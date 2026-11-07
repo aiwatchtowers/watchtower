@@ -119,6 +119,8 @@ final class ReviewChangesModel {
     private(set) var approvedAt: Date?
     /// The round's session was deleted: Approve is off (Go refuses it too).
     private(set) var sessionGone = false
+    /// The session's worktree was removed; the open round stayed where it was (board #1012).
+    private(set) var placeMissing = false
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
 
@@ -158,9 +160,10 @@ final class ReviewChangesModel {
     private(set) var overview: OverviewState = .idle
     /// The overview's load; awaited by tests, replaced when another one starts.
     @ObservationIgnored private(set) var overviewTask: Task<Void, Never>?
-    /// The tree the overview shown or loading was asked for; a refresh that
-    /// may regenerate asks again when the round's tree differs (after an Undo).
-    private var overviewTreeSHA: String?
+    /// The diff (base and tree, `ReviewRoundInfo.diffKey`) the overview shown
+    /// or loading was asked for; a refresh that may regenerate asks again when
+    /// the round's differs (after an Undo, or a move that changed only the base).
+    private var overviewDiffKey: String?
     /// The model call running (Make overview, Retry or Deep's own): a refresh
     /// or an Undo never cancels it; one landing for an earlier tree is
     /// followed up (board #585).
@@ -277,6 +280,8 @@ final class ReviewChangesModel {
         return sessionGone ? "The session is gone" : nil
     }
 
+    /// The notice when the session's worktree was removed under an open round (board #1012).
+    static let placeMissingMessage = "The session's worktree was removed — this round stays where it was opened"
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
     /// Go refused Approve on a round that is still open, with no blocker the
@@ -336,7 +341,11 @@ final class ReviewChangesModel {
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: false))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
+            // The comments' rows record only their tree: unless this model saw
+            // the round on the same base, its old-side comments are re-placed.
+            let baseChanged = round?.id != info.id || round?.baseSha != info.baseSha
             round = info
+            placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             view = info.prevRoundId > 0 && !previousTreeLost ? .sinceLastRound : .all
             let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
@@ -367,8 +376,14 @@ final class ReviewChangesModel {
                 try await carryOver(from: info.prevRoundId, into: info)
                 marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             } else {
-                // Go moved the open round to the session's new place (board #1012): its comments follow as on a Refresh.
-                try await replaceStale(rows, round: info)
+                // Go moved the open round to the session's new place (board #1012): its comments follow as on a
+                // Refresh. A failure leaves the rows as they were and the round still opens.
+                let stale = Self.stale(rows, round: info, baseChanged: baseChanged)
+                do {
+                    try await replace(stale, round: info)
+                } catch {
+                    lastError = Self.replaceFailedMessage(count: stale.count, error)
+                }
             }
             try reloadComments()
             viewed = marks
@@ -419,8 +434,10 @@ final class ReviewChangesModel {
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: true))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
-            let treeChanged = round?.treeSha != info.treeSha
+            let diffChanged = round?.diffKey != info.diffKey
+            let baseChanged = round?.baseSha != info.baseSha
             round = info
+            placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
             context = ctx.items ?? []
@@ -434,11 +451,11 @@ final class ReviewChangesModel {
             // anyway. A model call still running is left to finish
             // (`startOverview`), and followed up when it lands.
             // An empty diff drops whatever overview is shown, Undo or not.
-            if !hasChanges || (regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown) { startOverview() }
+            if !hasChanges || (regenerateOverview ? overviewDiffKey != info.diffKey : diffChanged && !overviewShown) { startOverview() }
             let roundID = info.id
             sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
-            try await replaceStale(rows, round: info)
+            try await replace(Self.stale(rows, round: info, baseChanged: baseChanged), round: info)
             try reloadComments()
             try reloadReverts()
             await reloadSides()
@@ -779,7 +796,7 @@ final class ReviewChangesModel {
         // Deep makes its overview by itself: switching to it asks for one
         // unless the current tree's is shown (a running model call finishes
         // and is followed up).
-        if m == .deep, load == .ready, !(overviewShown && overviewTreeSHA == round?.treeSha) { startOverview() }
+        if m == .deep, load == .ready, !(overviewShown && overviewDiffKey == round?.diffKey) { startOverview() }
     }
 
     func setPhase(_ p: ReviewPhase) async throws {
@@ -919,8 +936,8 @@ final class ReviewChangesModel {
         }
         if let generation, generationID == generation { generationID = nil }
         guard !Task.isCancelled, round?.id == info.id else { return }
-        guard round?.treeSha == info.treeSha else {
-            // A model call that ran past a tree change is followed up for the
+        guard round?.diffKey == info.diffKey else {
+            // A model call that ran past a tree (or base) change is followed up for the
             // new tree: Deep makes its overview; Quick reads its cache and
             // else shows a made one as being for an earlier version.
             guard generate else { return }
@@ -1245,7 +1262,7 @@ final class ReviewChangesModel {
             // still running is cancelled, and its result is dropped on landing.
             overviewTask?.cancel()
             generationID = nil
-            overviewTreeSHA = round?.treeSha
+            overviewDiffKey = round?.diffKey
             overview = .idle
             lastReadyOverview = nil
             appliedAIChapters = []
@@ -1254,7 +1271,7 @@ final class ReviewChangesModel {
         }
         guard generationID == nil else { return }
         overviewTask?.cancel()
-        overviewTreeSHA = round?.treeSha
+        overviewDiffKey = round?.diffKey
         let make = generate || mode == .deep
         let generation = make ? UUID() : nil
         generationID = generation
@@ -1360,10 +1377,24 @@ final class ReviewChangesModel {
         }
     }
 
-    /// Re-places the round's drafts and carried comments made on another tree
-    /// onto its current one: moved, or outdated when their lines are lost.
-    private func replaceStale(_ rows: [ReviewComment], round info: ReviewRoundInfo) async throws {
-        let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
+    /// The round's drafts and carried comments placed on another diff: made
+    /// on another tree, or on the old side when the base may have changed
+    /// (a row records only its tree).
+    private static func stale(_ rows: [ReviewComment], round info: ReviewRoundInfo, baseChanged: Bool) -> [ReviewComment] {
+        rows.filter {
+            ($0.status == .draft || $0.status == .carried) && $0.path != nil
+                && ($0.treeSHA != info.treeSha || (baseChanged && $0.side == "old"))
+        }
+    }
+
+    /// The banner when `open()` could not re-place a moved round's comments.
+    static func replaceFailedMessage(count: Int, _ error: Error) -> String {
+        "Could not re-place \(count) \(count == 1 ? "comment" : "comments") on the new tree: \(message(error))"
+    }
+
+    /// Re-places stale comments onto the round's current diff: moved, or
+    /// outdated when their lines are lost.
+    private func replace(_ stale: [ReviewComment], round info: ReviewRoundInfo) async throws {
         guard !stale.isEmpty else { return }
         let plan = try await plan(stale, round: info)
         try await write { db in
