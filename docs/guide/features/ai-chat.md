@@ -172,8 +172,8 @@ When your request can be read two ways, the assistant asks with a card of one to
 ## When it's empty or wrong
 
 - **A reply fails.** Your message stays. After a started-turn limit, **Review actions** opens saved actions; send a new message after checking. Other errors may offer **Retry**.
-- **Answers miss recent items.** The assistant sees only what has synced. Check the source in **Connections**, or see [Search and knowledge](search-and-knowledge.md).
-- **An attachment is refused.** It is over the size cap, or the provider cannot read that type (Codex takes no PDFs, Ollama no images or PDFs). A type the provider cannot read is refused as you drop or paste it, and the reason shows under the field.
+- **Answers miss recent items.** The assistant sees only synced data. Check **Connections**, or see [Search and knowledge](search-and-knowledge.md).
+- **An attachment is refused.** It is over the size cap, or the provider can't read that type (Codex: no PDFs; Ollama: no images or PDFs); the reason shows under the field.
 - **A project edit seems ignored.** A reply being written finishes first; the change applies from the next message.
 
 Provider not signed in? See [The Claude or Codex tool is not found or not signed in](../troubleshooting/ai-tool-not-found-or-not-signed-in.md).
