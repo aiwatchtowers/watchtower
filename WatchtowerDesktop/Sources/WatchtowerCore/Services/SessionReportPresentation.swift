@@ -203,7 +203,8 @@ package enum SessionReportPresentation {
     /// PR line. A merged share the refresh could not check (`mergedStale`)
     /// reads "N merged (unchecked)", or "merged not checked" with none counted
     /// — the phone words it the same in the Kit's
-    /// `TerminalSessionState.reportMergedText` (board #1008); change both.
+    /// `TerminalSessionState.reportMergedText` (board #1008); both are pinned
+    /// by `WatchtowerKit/Tests/Fixtures/workbench/merged_share_cases.json`.
     /// A summary kept from an earlier run after a failed refresh ends in
     /// "· stale", so a failure never reads as a blank line; "" when there is
     /// nothing to say.
