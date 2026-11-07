@@ -6,15 +6,24 @@
 // Mac sleeps, with no graphics. Network cycles started then are cut off when
 // the Mac goes back to sleep, so the daemon skips them.
 //
-// Power management reports the system's state as capability bits. Apple's own
-// IOPMGetCapabilitiesDescription (IOKit) names a state "FullWake" when both the
-// CPU and the video bits are set and "DarkWake" when the CPU bit is set
-// without the video bit; this package uses the same rule. The video bit is
-// the system's graphics capability, not the display: a display that has gone
-// to sleep on its own (display sleep, screen saver) is expected to leave the
-// system in full wake, as display sleep is not system sleep in the power
-// management model. That expectation follows from the model; it has not been
-// measured by this package's tests.
+// The power state comes from the IORegistry: IOPMrootDomain's "System
+// Capabilities" property, a number in the public IOPM.h layout
+// (kIOPMSystemCapabilityCPU = 0x01, kIOPMSystemCapabilityGraphics = 0x02,
+// Audio 0x04, Network 0x08, AOT 0x10). The CPU bit without the graphics bit is
+// a dark wake; both set is a full wake. The property's key name is not
+// declared in a public header, but it is read through public API only
+// (IOServiceGetMatchingService + IORegistryEntryCreateCFProperty), so a macOS
+// that drops or renames it makes the read fail, and FullWake fails open.
+// IOKit's IOPMConnectionGetSystemCapabilities was rejected: it is declared
+// only in Apple's private IOPMLibPrivate.h, and linking a private export means
+// a macOS that removes it stops the whole binary from loading, not just this
+// check.
+//
+// The graphics bit is the system's graphics capability, not the display: a
+// display that has gone to sleep on its own (display sleep, screen saver) is
+// expected to leave the system in full wake, as display sleep is not system
+// sleep in the power management model. That expectation follows from the
+// model; it has not been measured by this package's tests.
 //
 // FullWake fails open: no reader installed (tests, non-darwin, cgo off), a
 // read error, or an unreadable state all answer true, so a wrong answer can
@@ -26,14 +35,12 @@ import (
 	"sync"
 )
 
-// Capability bits as power management reports them. The values match the
-// public IOPM.h enum (kIOPMSystemCapabilityCPU = 0x01,
-// kIOPMSystemCapabilityGraphics = 0x02) and the bits that
-// IOPMConnectionGetSystemCapabilities returns (cpu = 0x1, vid = 0x2 in
-// IOPMGetCapabilitiesDescription's output).
+// Capability bits in the public IOPM.h layout; reader_darwin.go checks at
+// compile time that they equal kIOPMSystemCapabilityCPU and
+// kIOPMSystemCapabilityGraphics.
 const (
-	capCPU   uint32 = 0x01
-	capVideo uint32 = 0x02
+	capCPU      uint32 = 0x01
+	capGraphics uint32 = 0x02
 )
 
 // errNoCPU marks a capability read without the CPU bit: a running process
@@ -63,14 +70,14 @@ func FullWake() bool {
 	return fullWakeFrom(caps)
 }
 
-// fullWakeFrom decides from capability bits: the CPU bit without the video
-// bit is a dark wake; anything else — full wake, or a value without the CPU
-// bit that cannot describe a running process — reads as awake.
+// fullWakeFrom decides from capability bits: the CPU bit without the
+// graphics bit is a dark wake; anything else — full wake, or a value without
+// the CPU bit that cannot describe a running process — reads as awake.
 func fullWakeFrom(caps uint32) bool {
 	if caps&capCPU == 0 {
 		return true
 	}
-	return caps&capVideo != 0
+	return caps&capGraphics != 0
 }
 
 func setReader(r func() (uint32, error)) {
@@ -79,10 +86,9 @@ func setReader(r func() (uint32, error)) {
 	mu.Unlock()
 }
 
-// SetReaderForTesting is for tests only: it installs r (nil = no reader) and
-// returns a restore that puts the previous reader back. Production code never
-// calls it.
-func SetReaderForTesting(r func() (caps uint32, err error)) (restore func()) {
+// setReaderForTesting installs r (nil = no reader) and returns a restore that
+// puts the previous reader back.
+func setReaderForTesting(r func() (caps uint32, err error)) (restore func()) {
 	mu.RLock()
 	old := reader
 	mu.RUnlock()

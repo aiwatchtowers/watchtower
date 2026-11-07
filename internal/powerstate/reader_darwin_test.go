@@ -18,7 +18,7 @@ func TestReadSystem_ReturnsCPUBit(t *testing.T) {
 }
 
 func TestUseSystemReader_Installs(t *testing.T) {
-	t.Cleanup(SetReaderForTesting(nil))
+	t.Cleanup(setReaderForTesting(nil))
 	UseSystemReader()
 	mu.RLock()
 	installed := reader != nil
