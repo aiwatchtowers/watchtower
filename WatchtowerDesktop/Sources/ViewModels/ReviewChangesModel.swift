@@ -1103,11 +1103,18 @@ final class ReviewChangesModel {
         return sourceReplies[source] ?? ""
     }
 
-    /// Takes a comment the agent resolved back into the open round.
+    /// Takes a comment the agent resolved back into the open round, placed
+    /// on the round's current diff: a resolved comment is never re-placed
+    /// while resolved, so it may carry anchors from before a move.
     func reopen(_ id: Int64) async throws {
         try await run {
             let info = try openRound()
             try await writeInOpenRound { try ReviewQueries.reopen($0, commentID: id, openRoundID: info.id) }
+            let rows = try await db.read { try ReviewQueries.comments($0, roundID: info.id) }
+            let reopened = rows.filter {
+                ($0.id == id || $0.carriedFrom == id) && ($0.status == .draft || $0.status == .carried) && $0.path != nil
+            }
+            try await replace(reopened, round: info)
             try reloadComments()
         }
     }

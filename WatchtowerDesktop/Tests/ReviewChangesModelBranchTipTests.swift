@@ -294,4 +294,25 @@ extension ReviewChangesModelTests {
             XCTAssertEqual(row?.status, status, newText)
         }
     }
+
+    /// Codex round 6: a resolved comment is not re-placed on a base move;
+    /// reopening it places it on the round's current diff.
+    func testReopenedCommentIsPlacedOnTheCurrentBase() async throws {
+        let h = try harness()
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+        h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "c", tree: "t7")])
+        h.cli.script("file", [fileJSON(old: "x\ny\n", new: "n\n"), fileJSON(old: "y\n", new: "n\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        try await h.model.addComment(path: "a.go", side: "old", startLine: 2, endLine: 2, body: "on y")
+        let id = try await h.comments().first { $0.body == "on y" }?.id ?? 0
+        try await h.db.write { try $0.execute(sql: "UPDATE review_comments SET status = 'resolved' WHERE id = ?", arguments: [id]) }
+        await h.model.refresh()
+        let resolved = try await h.comments().first { $0.id == id }
+        XCTAssertEqual(resolved?.startLine, 2, "a resolved comment is left alone by the move")
+        try await h.model.reopen(id)
+        let reopened = try await h.comments().first { $0.id == id }
+        XCTAssertEqual(reopened?.status, .draft)
+        XCTAssertEqual(reopened?.startLine, 1, "placed on the new base's old side")
+    }
 }
