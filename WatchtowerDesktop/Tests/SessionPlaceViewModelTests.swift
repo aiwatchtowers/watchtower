@@ -285,4 +285,135 @@ final class SessionPlaceViewModelTests: XCTestCase {
         for _ in 0..<20 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(50))
     }
+
+    // MARK: - Target branch and lanes (board #987)
+
+    private let laneA = "/tmp/acme/.claude/worktrees/lane-a"
+    private let laneB = "/tmp/acme/.claude/worktrees/lane-b"
+
+    /// The session bound to a leaf whose group has `feature/codex-parity`,
+    /// with this run's ledger: its own worktree (mobile-a), two lanes and
+    /// the main checkout.
+    private func storeWork() async throws {
+        let (id, projectID, roots) = (sessionID, project.id, [folder, worktreeA, laneA, laneB])
+        try await pool.write { db in
+            for (target, parent, branch) in [(1, nil, "feature/codex-parity"), (2, 1, "")] as [(Int, Int?, String)] {
+                try db.execute(sql: """
+                    INSERT INTO targets (id, text, level, custom_label, period_start, period_end, source_type,
+                        project_id, parent_id, branch)
+                    VALUES (?, 't', 'custom', 'project', '2026-11-01', '2026-11-01', 'chat', ?, ?, ?)
+                    """, arguments: [target, projectID, parent, branch])
+            }
+            try db.execute(sql: "UPDATE terminal_sessions SET target_id = 2, agent_turns = ? WHERE id = ?",
+                           arguments: [#"{"since":"2026-11-06T10:00:00.000Z"}"#, id])
+            for root in roots {
+                try db.execute(
+                    sql: "INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, 'x', ?)",
+                    arguments: [id, root, "2026-11-06T10:01:00.000Z"])
+            }
+        }
+    }
+
+    /// A view model whose session sits in mobile-a (placed through its git
+    /// watch) and whose stat answers from `onDisk`.
+    private func placedVM(onDisk: LockedValue<Set<String>>) async -> WorkbenchesViewModel {
+        let (vm, _, _) = makeVM(RoutingRunner(workbenchID: project.id))
+        vm.statLaneRoots = { roots in roots.intersection(onDisk.value) }
+        await vm.startGitWatching(project: project)
+        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+        return vm
+    }
+
+    private func rowText(_ vm: WorkbenchesViewModel) throws -> String? {
+        let session = try XCTUnwrap(vm.terminalSessions[project.id]?.first)
+        return vm.sessionPlaceLabels([session])[session.id]?.text
+    }
+
+    /// The row leads with the bound target's branch (its group's) and counts
+    /// the lanes of this run on disk — never the main checkout or the
+    /// agent's own worktree.
+    func testTheRowLeadsWithTheTargetBranchAndCountsLanes() async throws {
+        try await storeWork()
+        let onDisk = LockedValue<Set<String>>([folder, worktreeA, laneA])
+        let vm = await placedVM(onDisk: onDisk)
+        await vm.loadSessions(projectID: project.id)
+        XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity · 1 lane")
+        let session = try XCTUnwrap(vm.terminalSessions[project.id]?.first)
+        let help = try XCTUnwrap(vm.sessionPlaceLabels([session])[session.id]?.help)
+        XCTAssertTrue(help.contains("Terminal: ⑂ mobile-a · feature/x"))
+        XCTAssertTrue(help.hasSuffix("Lane worktrees: \(laneA)"))
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// The page's 30 s poll reloads the list and with it the lanes: a lane
+    /// removed while the sessions sit idle drops out, a new one shows.
+    func testThePollRereadsTheLanes() async throws {
+        try await storeWork()
+        let onDisk = LockedValue<Set<String>>([laneA])
+        let vm = await placedVM(onDisk: onDisk)
+        vm.selectedWorkbenchID = project.id
+        await vm.loadSessions(projectID: project.id)
+        XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity · 1 lane")
+
+        onDisk.value = [laneA, laneB]
+        await vm.refreshOnPoll()
+        XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity · 2 lanes")
+        onDisk.value = []
+        await vm.refreshOnPoll()
+        XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity")
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// Two overlapping reads: the older finishing last never replaces the
+    /// newer snapshot.
+    func testAnOlderLaneReadFinishingLastIsDropped() async throws {
+        try await storeWork()
+        let vm = await placedVM(onDisk: LockedValue([]))
+        await vm.loadSessions(projectID: project.id)
+        let gate = StatGate()
+        vm.statLaneRoots = { roots in await gate.stat(roots) }
+        let held = Task { await vm.loadSessionWork(projectID: self.project.id) }
+        await waitUntilAsync { await gate.waiting >= 1 }
+        await gate.answerNext([laneA, laneB])
+        await vm.loadSessionWork(projectID: project.id)
+        XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity · 2 lanes")
+        await gate.releaseAll([])
+        await held.value
+        XCTAssertEqual(try rowText(vm), "⎇ feature/codex-parity · 2 lanes", "the older read is dropped")
+        vm.stopGitWatching(projectID: project.id)
+    }
+
+    /// Holds every stat until released, except the ones `answerNext` lets
+    /// through with a given answer.
+    private actor StatGate {
+        private var held: [CheckedContinuation<Set<String>, Never>] = []
+        private var nextAnswer: Set<String>?
+        var waiting: Int { held.count }
+
+        func stat(_ roots: Set<String>) async -> Set<String> {
+            if let answer = nextAnswer {
+                nextAnswer = nil
+                return roots.intersection(answer)
+            }
+            return await withCheckedContinuation { held.append($0) }
+        }
+
+        func answerNext(_ answer: Set<String>) { nextAnswer = answer }
+
+        func releaseAll(_ answer: Set<String>) {
+            for continuation in held { continuation.resume(returning: answer) }
+            held = []
+        }
+    }
+
+    private func waitUntilAsync(timeout: TimeInterval = 5, _ condition: @escaping () async -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !(await condition()) {
+            if Date() > deadline {
+                XCTFail("condition not met in \(timeout)s")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
 }

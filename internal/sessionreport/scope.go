@@ -210,18 +210,101 @@ func (s scope) leaves() []*boardEntry {
 	return out
 }
 
-func (s scope) counts() Progress {
+// counts is the progress leaves' numbers; states is the PR cache, which
+// holds the merge verdicts (mergedLeaf).
+func (s scope) counts(states map[string]db.PRState) Progress {
 	var p Progress
 	for _, e := range s.leaves() {
 		if !s.progress[e.id()] {
 			continue
 		}
 		p.Total++
-		if e.target.Status == "done" {
+		switch {
+		case e.target.Status == "done":
 			p.Done++
+		case s.b.mergedLeaf(e, states):
+			p.Merged++
 		}
 	}
 	return p
+}
+
+// mergeBase is leaf e's base for the merged share (board #986): the branch
+// of its nearest ancestor that carries one. ok is false when e has no
+// branch, no ancestor carries one, or that ancestor carries e's own branch
+// (plan tasks working on their feature's branch: nothing to merge).
+func (b *board) mergeBase(e *boardEntry) (base, branch string, ok bool) {
+	branch = strings.TrimSpace(e.target.Branch)
+	if branch == "" {
+		return "", "", false
+	}
+	for p := b.byID[e.parent]; p != nil; p = b.byID[p.parent] {
+		switch anc := strings.TrimSpace(p.target.Branch); anc {
+		case "":
+			continue
+		case branch:
+			return "", "", false
+		default:
+			return anc, branch, true
+		}
+	}
+	return "", "", false
+}
+
+// mergedLeaf reports whether leaf e is not done and git found its branch's
+// work in its base: the cached verdict of its into: ref is merged.
+func (b *board) mergedLeaf(e *boardEntry, states map[string]db.PRState) bool {
+	if e.target.Status == "done" {
+		return false
+	}
+	base, branch, ok := b.mergeBase(e)
+	return ok && states[intoRef(base, branch)].State == "merged"
+}
+
+// intoRef is the PR-cache key of branch's merge verdict into base. A git
+// branch name holds no ':', so the key reads back unambiguously.
+func intoRef(base, branch string) string { return intoPrefix + base + ":" + branch }
+
+const intoPrefix = "into:"
+
+// mergeRefs is the into: keys the merged counts read, in board order of
+// first appearance: one per not-done leaf with a base among the progress
+// leaves and the leaves under each in-scope leaf's parent (the phases count
+// those, progress or not).
+func (s scope) mergeRefs() []string {
+	var out []string
+	add := func(e *boardEntry) {
+		if e.target.Status == "done" {
+			return
+		}
+		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
+			out = append(out, intoRef(base, branch))
+		}
+	}
+	for _, e := range s.leaves() {
+		if s.progress[e.id()] {
+			add(e)
+		}
+		for _, l := range s.b.leavesUnder(e.parent) {
+			add(l)
+		}
+	}
+	return out
+}
+
+// countedMergeRefs is the into: keys counts' Merged reads: one per not-done
+// progress leaf with a base (the phase-only leaves of mergeRefs left out).
+func (s scope) countedMergeRefs() []string {
+	var out []string
+	for _, e := range s.leaves() {
+		if !s.progress[e.id()] || e.target.Status == "done" {
+			continue
+		}
+		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
+			out = append(out, intoRef(base, branch))
+		}
+	}
+	return out
 }
 
 // refs is the PR-cache keys of the in-scope targets' PRs and branches, in
@@ -261,15 +344,16 @@ func prRef(raw string) (string, sql.NullInt64) {
 
 func branchRef(branch string) string { return "branch:" + branch }
 
-// SessionRefs is the PR-cache keys ('pr:<n>' | 'branch:<name>') of the PRs
-// and branches session sessionID's in-scope targets carry: the refs a refresh
-// of its report checks.
+// SessionRefs is the PR-cache keys of session sessionID's report: the PRs
+// and branches ('pr:<n>' | 'branch:<name>') its in-scope targets carry, then
+// the merge verdicts ('into:<base>:<branch>', board #986) its counts read —
+// the refs a refresh of its report checks.
 func SessionRefs(ctx context.Context, d *db.DB, workbenchID, sessionID int64) ([]string, error) {
 	_, sc, err := loadScope(ctx, d, workbenchID, sessionID)
 	if err != nil {
 		return nil, err
 	}
-	return sc.refs(), nil
+	return append(sc.refs(), sc.mergeRefs()...), nil
 }
 
 // loadScope reads session sessionID of workbench workbenchID and its scope. A
