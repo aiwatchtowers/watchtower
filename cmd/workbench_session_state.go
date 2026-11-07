@@ -210,7 +210,10 @@ func reportStateHookError(stderr io.Writer, err error) {
 	for _, e := range joinedErrors(err) {
 		var notCleared chatQuestionNotCleared
 		var cwd agentCwdNotRecorded
+		var turnEnd turnEndNotMoved
 		switch {
+		case errors.As(e, &turnEnd):
+			fmt.Fprintf(stderr, "watchtower: %v\n", turnEnd)
 		case errors.As(e, &notCleared):
 			fmt.Fprintf(stderr, "watchtower: %v\n", notCleared)
 		case errors.As(e, &cwd):
@@ -435,8 +438,9 @@ func (in hookEvent) subagentToolStart() bool {
 // interruptedTool says the event is a PostToolUseFailure of a tool the owner
 // interrupted (Esc). No Stop follows an interrupt, so a main-thread one
 // records the turn's end itself — `waiting`, over `working` or `approval`,
-// under a tool result's turn order (board #988) — and a subagent's records
-// nothing.
+// under the time order and the turn end it checked (board #988), and with
+// it the turn end (board #1019: writeAgentState, interruptTurnEnd) — and a
+// subagent's records nothing.
 func (in hookEvent) interruptedTool() bool {
 	return in.Event == "PostToolUseFailure" && in.IsInterrupt
 }
@@ -452,6 +456,9 @@ func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 	if in.AgentID != "" {
 		return hookTurn{}, true
 	}
+	if in.interruptedTool() {
+		return hookTurn{interrupt: true, transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}, false
+	}
 	return hookTurn{toolRun: true, notOverApproval: in.Event == "PreToolUse",
 		transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}, false
 }
@@ -462,12 +469,15 @@ func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 // hook start times alone would let an ended turn's tool event turn the
 // stop's "waiting" back into "working". The zero value is every other event.
 type hookTurn struct {
-	toolRun bool // a main-thread tool event
+	toolRun bool // a main-thread tool event but an interrupted one
 	// notOverApproval holds a main-thread tool start back over "needs
 	// approval" (board #988, ask #525): only a tool that ran — PostToolUse
 	// or PostToolUseFailure — says the dialog was answered.
-	notOverApproval           bool
-	stop                      bool // the sync Stop hook
+	notOverApproval bool
+	stop            bool // the sync Stop hook
+	// interrupt marks a main-thread tool the owner interrupted: its
+	// `waiting` also ends the turn (board #1019, writeAgentState).
+	interrupt                 bool
 	transcriptPath, toolUseID string
 	// tasks is the Stop's background_tasks: recordAgentState counts it into
 	// background against the row's agent turns (boards #411, #543).
@@ -606,7 +616,7 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
-	if turn.stop {
+	if turn.stop && turn.tasks.present {
 		turns, err := database.TerminalAgentTurns(row.ID)
 		if err != nil {
 			return err
@@ -651,13 +661,22 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 // clear when a main-thread tool result ended a `waiting`.
 func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
-	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Cwd: turn.cwd, NotOverApproval: turn.notOverApproval}
-	if turn.toolRun {
-		order.ToolRun, order.SeenTurnEnd = true, row.TurnEnd
-		if row.TurnEnd.Valid && toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64) == toolCallBeforeStop {
-			// The ended turn's tool result: no state, but its cwd is the
-			// agent's.
+	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Cwd: turn.cwd, NotOverApproval: turn.notOverApproval,
+		ToolRun: turn.toolRun, Interrupt: turn.interrupt}
+	var noteErr error
+	if turn.toolRun || turn.interrupt {
+		order.SeenTurnEnd = row.TurnEnd
+		place := toolCallUnknown
+		if row.TurnEnd.Valid {
+			place = toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64)
+		}
+		if place == toolCallBeforeStop {
+			// The ended turn's tool result or interrupt: no state, but its
+			// cwd is the agent's.
 			return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at, turn.lock)
+		}
+		if turn.interrupt {
+			order.TurnEnd, noteErr = interruptTurnEnd(row, turn, place)
 		}
 	}
 	var written bool
@@ -669,13 +688,50 @@ func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64
 	if err == nil && !written {
 		// A guard held the write back after the read (a racing hook): the
 		// cwd still goes, under its own guards.
-		return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at, turn.lock)
+		return errors.Join(noteErr, recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at, turn.lock))
 	}
 	if err != nil || !turn.toolRun || row.AgentState.String != agentStateWaiting {
-		return err
+		return errors.Join(noteErr, err)
 	}
 	return clearChatQuestion(database, row, workbenchID, sessionID, at, turn.lock)
 }
+
+// interruptTurnEnd is the turn end an interrupt's `waiting` stores with it
+// (board #1019): no Stop follows an interrupt, and the tool hooks are async,
+// so a parallel call's PostToolUse or the interrupted call's own PreToolUse
+// can start after the interrupt's hook and would turn its `waiting` back
+// into `working` though the agent is idle. The transcript's size, as the
+// Stop's (recordStopTurnEnd), places every tool call of the interrupted turn
+// before it — but only when the transcript places the interrupted call
+// itself: after the stored turn end (place, toolCallAfterStop), or, with no
+// turn end stored yet, anywhere in the transcript. Otherwise the turn end
+// stays and the time order alone decides, with a turnEndNotMoved saying why
+// (one stderr line, no content; none for an input with no transcript path).
+func interruptTurnEnd(row *db.TerminalSession, turn hookTurn, place toolCallPlace) (sql.NullInt64, error) {
+	size, ok := transcriptSize(turn.transcriptPath)
+	switch {
+	case turn.transcriptPath == "":
+		return sql.NullInt64{}, nil // no transcript to place it in
+	case !ok:
+		return sql.NullInt64{}, turnEndNotMoved{"transcript unreadable"}
+	}
+	if !row.TurnEnd.Valid {
+		place = toolCallTurn(turn.transcriptPath, turn.toolUseID, size)
+		if place == toolCallBeforeStop { // found in the transcript
+			place = toolCallAfterStop
+		}
+	}
+	if place != toolCallAfterStop {
+		return sql.NullInt64{}, turnEndNotMoved{"interrupted call not placed in the transcript"}
+	}
+	return sql.NullInt64{Int64: size, Valid: true}, nil
+}
+
+// turnEndNotMoved is an interrupt whose `waiting` went without a turn end
+// (interruptTurnEnd): reported apart, never a failed state write.
+type turnEndNotMoved struct{ reason string }
+
+func (e turnEndNotMoved) Error() string { return "interrupt: turn end not moved: " + e.reason }
 
 // setTerminalAgentState is the state's write; a seam for tests.
 var setTerminalAgentState = (*db.DB).SetTerminalAgentState
