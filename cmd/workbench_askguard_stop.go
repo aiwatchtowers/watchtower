@@ -163,11 +163,11 @@ func decodeAskGuardVerdict(reply string) (askGuardVerdict, error) {
 // OR-ing its recommended; the first 4 kept; a single remaining option
 // becomes none. An unknown request reads as none, and a chat request whose
 // question is empty as full. The options therefore number 0 or 2-4. The
-// context goes on one line, clipped, and is kept only on a chat request and
+// context goes on one line, clipped (a cut one ends with "…"), and is kept only on a chat request and
 // only when it says more than the question (not equal to it, case-folded).
 func normaliseAskGuardVerdict(v askGuardVerdict) askGuardVerdict {
 	v.Question = clipRunes(oneLine(v.Question), askGuardQuestionRunes)
-	v.Context = clipRunes(oneLine(v.Context), askGuardContextRunes)
+	v.Context = briefClip(v.Context, askGuardContextRunes) // one line; a cut ends with "…"
 	if strings.EqualFold(v.Context, v.Question) {
 		v.Context = ""
 	}

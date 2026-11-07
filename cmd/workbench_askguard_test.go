@@ -1478,6 +1478,10 @@ func TestAskGuardContextNormalisation(t *testing.T) {
 	long := strings.Repeat("é", askGuardContextRunes+50)
 	v = decode(t, chat("Ship it?", long))
 	assert.Equal(t, askGuardContextRunes, utf8.RuneCountInString(v.Context), "clipped")
+	assert.True(t, strings.HasSuffix(v.Context, "…"), "a cut context says so")
+	fits := strings.Repeat("é", askGuardContextRunes)
+	v = decode(t, chat("Ship it?", fits))
+	assert.Equal(t, fits, v.Context, "a context that fits is not marked")
 
 	for _, same := range []string{"Ship it?", "  ship IT?\n", "", "   \n "} {
 		v = decode(t, chat("Ship it?", same))
