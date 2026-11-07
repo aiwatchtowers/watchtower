@@ -97,7 +97,7 @@ func (db *DB) GetReviewRound(projectID, id int64) (*ReviewRound, error) {
 // session fails on review_rounds_one_open.
 func (db *DB) CreateReviewRound(r ReviewRound) (int64, error) {
 	if r.Source == "" {
-		r.Source = "session"
+		r.Source = ReviewSourceFolder
 	}
 	if r.Mode == "" {
 		r.Mode = "quick"
@@ -119,6 +119,31 @@ func (db *DB) UpdateReviewRoundTree(id int64, tree string) error {
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fmt.Errorf("review round %d: %w", id, ErrReviewRoundNotOpen)
+	}
+	return nil
+}
+
+// Round sources (review_rounds.source): a session round reviews its folder's
+// work tree; ReviewSourceBranch reviews the task branch's committed tip,
+// read-only (board #1012). The column's 'pr' value, kept for the GitHub PR
+// side the spec shaped it for, stands for "a branch's commits, not a folder".
+const (
+	ReviewSourceFolder = "session"
+	ReviewSourceBranch = "pr"
+)
+
+// RepointReviewRound moves an open round onto another place — folder,
+// source, base and tree — when the session's place moved under it (board
+// #1012). The round keeps its id, comments, Viewed marks and previous-round
+// link; the Desktop re-places the comments on the new tree as on a Refresh.
+func (db *DB) RepointReviewRound(r ReviewRound) error {
+	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, base_sha = ?, base_label = ?, tree_sha = ?
+		WHERE id = ? AND status = 'open'`, r.FolderRoot, r.Source, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.ID)
+	if err != nil {
+		return fmt.Errorf("moving review round %d: %w", r.ID, err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("review round %d: %w", r.ID, ErrReviewRoundNotOpen)
 	}
 	return nil
 }

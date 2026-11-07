@@ -108,7 +108,8 @@ struct ReviewIdentityBar: View {
                 Text("→").foregroundStyle(.tertiary)
                 Text(base).font(.caption.monospaced()).lineLimit(1).help(line.baseHelp)
             }
-            ForEach([line.size, line.uncommitted, line.place].compactMap { $0 }, id: \.self) { part in
+            let note = line.branchTip ? ReviewIdentityPresentation.branchTipNote : nil
+            ForEach([line.size, note, line.uncommitted, line.place].compactMap { $0 }, id: \.self) { part in
                 Text("·").foregroundStyle(.tertiary)
                 Text(part).lineLimit(1)
             }
