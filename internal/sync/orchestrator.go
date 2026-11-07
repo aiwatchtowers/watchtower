@@ -603,7 +603,7 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 			return fmt.Errorf("listing older unread digest channels: %w", err)
 		}
 		if n := len(o.filterOwnAccountIDs(older)); n > 0 {
-			o.logger.Printf("channel read state: no unread digest within the window, skipping (%d older channels left out)", n)
+			o.logger.Printf("channel read state: no unread digest within the window, skipping (older channels left out: %d)", n)
 			return nil
 		}
 		// First-run path: no digests yet, pre-fetch last_read for channels without it.
