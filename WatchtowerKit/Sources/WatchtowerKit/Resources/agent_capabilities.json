@@ -2,7 +2,7 @@
   "comment": "Workbench session capabilities per agent kind (spec 2026-11-05-llm-transport-independence §3.5). Go's sessionagent adapters are the source; this file is pinned to them by TestSessionAgent_CapsFixtureMatchesAdapters and copied to WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json (AgentSessionCapabilitiesTests).",
   "agents": {
     "claude": {
-      "state_events": ["SessionStart", "UserPromptSubmit", "Notification", "PermissionRequest", "PostToolUse", "StopFailure", "SubagentStart", "SubagentStop", "Stop"],
+      "state_events": ["SessionStart", "UserPromptSubmit", "Notification", "PermissionRequest", "PreToolUse", "PostToolUse", "PostToolUseFailure", "StopFailure", "SubagentStart", "SubagentStop", "Stop"],
       "failure_signal": "hook",
       "interrupt_signal": "hook",
       "idle_signal": true,
