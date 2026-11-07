@@ -168,6 +168,43 @@ func TestProj11_LedgerRecordsANewWorktreeOnce(t *testing.T) {
 	}
 }
 
+// Board #1018: a pair a later run sees again moves its last_at to that
+// run once (first_at kept), so the Desktop counts a reused lane worktree in
+// the run that reuses it; later events of the run write nothing.
+func TestSessionStateLedger_ALaterRunTouchesAReusedWorktreeOnce(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	main := ledgerRepo(t)
+	wt := ledgerWorktree(t, main, "wt", "ref: refs/heads/feat/x")
+	stamps := func() (first, last string) {
+		t.Helper()
+		require.NoError(t, database.QueryRow(`SELECT first_at, last_at FROM terminal_session_worktrees
+			WHERE session_id = ?`, row).Scan(&first, &last))
+		return first, last
+	}
+
+	runLedgerEvent(t, pid, withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), wt))
+	first, last := stamps()
+	assert.Equal(t, first, last, "a new pair is last seen when first seen")
+	runLedgerEvent(t, pid, withCwd(t, statePayload("PostToolUse", briefLaunchID, ""), wt))
+	_, again := stamps()
+	assert.Equal(t, last, again, "no run mark after the pair: nothing to move")
+
+	marked, err := database.MarkTerminalAgentRun(row, pid, briefLaunchID, hookNow(), "")
+	require.NoError(t, err)
+	require.True(t, marked)
+	runLedgerEvent(t, pid, withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), wt))
+	gotFirst, touched := stamps()
+	assert.Equal(t, first, gotFirst, "first_at never changes")
+	assert.Greater(t, touched, last, "the new run's sighting is recorded")
+
+	runLedgerEvent(t, pid, withCwd(t, statePayload("PostToolUse", briefLaunchID, ""), wt))
+	_, after := stamps()
+	assert.Equal(t, touched, after, "a pair seen in this run is not written again")
+	assert.Len(t, ledgerRows(t, database, row), 1)
+}
+
 // PROJ-11: a ledger failure is one stderr line; the state write lands and
 // the hook exits 0 with nothing on stdout.
 func TestProj11_LedgerFailureNeverCostsTheStateWrite(t *testing.T) {

@@ -1428,7 +1428,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,
     branch     TEXT NOT NULL DEFAULT '',
-    first_at   TEXT NOT NULL,
+    first_at   TEXT NOT NULL, last_at TEXT,
     PRIMARY KEY (session_id, root, branch)
 );
 CREATE TABLE IF NOT EXISTS "tool_trust" (
