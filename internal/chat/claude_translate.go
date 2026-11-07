@@ -708,12 +708,16 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
-// clearInterrupted drops a pending interrupt mark. Called when a turn starts:
-// a child killed after an interrupt never delivers the result that consumes
-// the mark, and a stale mark would turn the next turn's error into
-// "interrupted".
-func (t *ClaudeTranslator) clearInterrupted() {
+// startTurn drops what an earlier turn left pending. Called when a turn
+// starts: a child killed after an interrupt never delivers the result that
+// consumes the mark, and a stale mark would turn the next turn's error into
+// "interrupted"; a child killed while a tool ran leaves its call open, which
+// a later skipped line must not close under the new turn's id (CHAT-02).
+func (t *ClaudeTranslator) startTurn() {
 	t.mu.Lock()
 	t.interrupted = false
+	t.lineSkipped = false
+	clear(t.calls)
+	clear(t.hidden)
 	t.mu.Unlock()
 }

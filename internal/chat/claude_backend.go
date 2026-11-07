@@ -93,7 +93,8 @@ type claudeProc struct {
 	// reported, so a protocol change is noted once per child, not per line.
 	unreadable atomic.Bool
 	// readErr holds the readError that stopped the stdout reader (a failed
-	// read); exitOutcome turns it into the turn's failure.
+	// read, an over-long protocol line); exitOutcome turns it into the
+	// turn's failure.
 	readErr atomic.Value
 }
 
@@ -585,10 +586,22 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 // can lower it.
 var maxWarmLine = streamline.MaxLine
 
+// errOversizedProtocolLine fails a turn whose skipped line may have been
+// one the turn cannot go on without (its result, a permission request):
+// skipping it would leave the turn waiting for good.
+var errOversizedProtocolLine = errors.New("a claude protocol line over the reader's limit")
+
+// skippableLineType matches the start of a line that may be skipped: a
+// message or stream event (a huge tool result or its echo). Any other line
+// — a result, a control request, an init, or one whose type does not lead —
+// fails the turn instead (errOversizedProtocolLine).
+var skippableLineType = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"(?:user|assistant|stream_event)"`)
+
 // read translates the child's stdout into events on p.events. A line over
 // maxWarmLine is skipped and counted, as every other CLI reader does
 // (streamline): the turn goes on and ends with the result event, which
-// closes the tool calls whose result may have been that line.
+// closes the tool calls whose result may have been that line. A skipped
+// line that may carry the turn's control flow ends the child instead.
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
 	defer r.Close()
@@ -596,6 +609,19 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	// arrive.
 	defer b.gate.procGone(p)
 	lines := streamline.NewWithLimit(r, maxWarmLine)
+	protocolLost := false
+	lines.OnSkip(func(head []byte) {
+		switch {
+		case protocolLost:
+		case skippableLineType.Match(head):
+			b.tr.MarkLineSkipped()
+		default:
+			// Ended at once: Next goes on to the following line, which a
+			// child waiting for its next message never writes.
+			protocolLost = true
+			b.failRead(p, errOversizedProtocolLine)
+		}
+	})
 	skipped := 0
 	for {
 		line, readErr := lines.Next()
@@ -603,7 +629,9 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			// Counts only, never content (FILES-01).
 			fmt.Fprintf(b.warn(), "chat: skipped %d claude output line(s) over %d bytes\n", n-skipped, maxWarmLine)
 			skipped = n
-			b.tr.MarkLineSkipped()
+		}
+		if protocolLost {
+			return // failRead already ended the child
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
@@ -750,7 +778,7 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	}()
 	b.tr.SetTurnContext(ctx)
 	b.curTurn.Store(c.TurnID)
-	b.tr.clearInterrupted()
+	b.tr.startTurn()
 	b.gate.resume()
 	b.active.Store(true)
 	defer b.active.Store(false)
@@ -883,11 +911,15 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 }
 
 // readOutcome is the outcome of a turn whose child was ended because its
-// stdout could not be read: a broken transport (an over-long line is
-// skipped, never a read failure).
+// stdout could not be read: an over-long protocol line is invalid output,
+// any other read failure a broken transport.
 func readOutcome(err error) outcome {
 	cause := fmt.Errorf("reading claude output: %w", err)
-	return outcome{kind: outcomeExited, msg: cause.Error(), cause: providers.WithFailure("claude", providers.Transport, cause)}
+	category := providers.Transport
+	if errors.Is(err, errOversizedProtocolLine) {
+		category = providers.InvalidOutput
+	}
+	return outcome{kind: outcomeExited, msg: cause.Error(), cause: providers.WithFailure("claude", category, cause)}
 }
 
 // send writes the user message to the live child (spawning one if needed).

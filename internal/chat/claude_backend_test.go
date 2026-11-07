@@ -986,6 +986,27 @@ func TestClaudeBackend_CleanExitWithoutResultIsInvalidOutput(t *testing.T) {
 	}
 }
 
+// A skipped line that may carry the turn's control flow (here its result)
+// would leave the turn waiting for good: it fails the turn as invalid
+// output and ends the child, so the next turn gets a fresh one, which
+// replays.
+func TestClaudeBackend_OverlongProtocolLineFailsTheTurn(t *testing.T) {
+	old := maxWarmLine
+	maxWarmLine = 64 << 10
+	t.Cleanup(func() { maxWarmLine = old })
+	opts, f := fakeClaude(t, "long_line")
+	opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10), "FAKE_LONG_TYPE=result")
+	b := NewClaudeBackend(opts)
+	events := runOneTurn(t, b)
+	last := events[len(events)-1]
+	require.Equal(t, EventError, last.Type)
+	var failure *providers.Failure
+	require.ErrorAs(t, last.Cause, &failure)
+	assert.Equal(t, providers.InvalidOutput, failure.Category)
+	assert.Contains(t, last.Message, "reading claude output")
+	waitGone(t, readPIDFile(t, f.pid), "the child whose result line could not be read")
+}
+
 // A stdout line over maxWarmLine (a huge tool result) is skipped and
 // counted, as every other CLI reader does (streamline, spec §3.1/§3.4): the
 // turn goes on, completes, and the child stays up for the next turn.
