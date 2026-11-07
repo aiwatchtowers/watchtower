@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -9,10 +10,22 @@ import (
 
 // Log lines of the dark wake gate.
 const (
-	logDarkWakeDefers = "dark wake (Power Nap), deferring the cycle until full wake"
-	logFullWakeStarts = "full wake, starting the deferred cycle after the"
+	logDarkWakeDefers = "dark wake (Power Nap, caps 0x0d), deferring the cycle until full wake"
+	logFullWakeStarts = "full wake (caps 0x0f), starting the deferred cycle after the"
+	logDeferralEnds   = "the cycle deferred by a dark wake starts after "
 	logTriggerIdle    = "manual sync trigger received, syncing"
 )
+
+// boolProbe is a full-wake probe over b with the capability bits of a real
+// read: 0x0f (CPU, graphics, audio, network) awake, 0x0d (no graphics) dark.
+func boolProbe(b *atomic.Bool) func() (uint32, bool) {
+	return func() (uint32, bool) {
+		if b.Load() {
+			return 0x0f, true
+		}
+		return 0x0d, false
+	}
+}
 
 // setDarkWakeRecheck sets darkWakeRecheckInterval for one test. Call it
 // before startLoop, so the loop has stopped before the cleanup restores it.
@@ -38,6 +51,7 @@ func TestRunLoop_DarkWakeDefersTheFirstCycleUntilFullWake(t *testing.T) {
 
 	assert.Equal(t, 1, h.logs.count(logDarkWakeDefers), "the deferral is logged once, whatever the re-checks")
 	assert.Equal(t, 1, h.logs.count(logFullWakeStarts))
+	assert.Equal(t, 1, h.logs.count(logDeferralEnds), "the deferred cycle's start logs how long it waited")
 }
 
 // A poll tick in a dark wake starts no cycle; the ticks during the deferral
@@ -218,10 +232,15 @@ func TestRunLoop_ShutdownDuringDarkWakeDeferral(t *testing.T) {
 // nothing.
 func TestSetFullWakeProbe_DefaultIsFullWake(t *testing.T) {
 	d := New(nil)
-	assert.True(t, d.inFullWake())
-	d.SetFullWakeProbe(func() bool { return false })
-	assert.False(t, d.inFullWake())
+	_, full := d.wakeState()
+	assert.True(t, full)
+	d.SetFullWakeProbe(func() (uint32, bool) { return 0x0d, false })
+	caps, full := d.wakeState()
+	assert.False(t, full)
+	assert.Equal(t, uint32(0x0d), caps)
 	d.SetFullWakeProbe(nil)
-	assert.True(t, d.inFullWake())
-	assert.True(t, (&Daemon{}).inFullWake(), "a Daemon built without New")
+	_, full = d.wakeState()
+	assert.True(t, full)
+	_, full = (&Daemon{}).wakeState()
+	assert.True(t, full, "a Daemon built without New")
 }

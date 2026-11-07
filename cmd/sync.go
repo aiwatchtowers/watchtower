@@ -918,7 +918,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetLogger(logger)
 	d.SetDB(database)
 	// #880: no scheduled cycle starts in a Power Nap dark wake.
-	d.SetFullWakeProbe(powerstate.FullWake)
+	d.SetFullWakeProbe(powerstate.Probe)
 	if al != nil {
 		defer al.Close()
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))

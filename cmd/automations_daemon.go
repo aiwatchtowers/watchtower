@@ -31,14 +31,14 @@ func wireAutomations(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen 
 // touches a protected one), the executor on
 // automationBackends with the daemon's generator, both logging to the
 // daemon logger. A run the scheduler queues wakes the executor. Both hold
-// their work while the Mac is in a Power Nap dark wake (powerstate.FullWake,
+// their work while the Mac is in a Power Nap dark wake (powerstate.Probe,
 // #880).
 func newDaemonAutomations(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (*automations.Scheduler, *automations.Executor) {
 	clock := automations.RealClock{}
-	exec := automations.NewExecutor(database, routingBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger, FullWake: powerstate.FullWake})
+	exec := automations.NewExecutor(database, routingBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger, FullWake: powerstate.Probe})
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), clock)
 	sched := automations.NewScheduler(database, ix, clock, exec.Wake)
 	sched.SetLogger(logger)
-	sched.SetFullWakeProbe(powerstate.FullWake)
+	sched.SetFullWakeProbe(powerstate.Probe)
 	return sched, exec
 }

@@ -51,3 +51,32 @@ func TestFullWake_UsesReader(t *testing.T) {
 	inner()
 	assert.False(t, FullWake(), "restore puts the previous reader back")
 }
+
+func TestRead_ReturnsCapsAndVerdict(t *testing.T) {
+	t.Cleanup(setReaderForTesting(func() (uint32, error) { return 0x0d, nil }))
+	caps, full, err := Read()
+	assert.Equal(t, uint32(0x0d), caps)
+	assert.False(t, full)
+	assert.NoError(t, err)
+
+	caps, full = Probe()
+	assert.Equal(t, uint32(0x0d), caps)
+	assert.False(t, full)
+}
+
+func TestRead_ErrorFailsOpen(t *testing.T) {
+	boom := errors.New("read failed")
+	t.Cleanup(setReaderForTesting(func() (uint32, error) { return capCPU, boom }))
+	caps, full, err := Read()
+	assert.Zero(t, caps)
+	assert.True(t, full)
+	assert.ErrorIs(t, err, boom)
+}
+
+func TestRead_NoReader(t *testing.T) {
+	t.Cleanup(setReaderForTesting(nil))
+	caps, full, err := Read()
+	assert.Zero(t, caps)
+	assert.True(t, full)
+	assert.NoError(t, err)
+}

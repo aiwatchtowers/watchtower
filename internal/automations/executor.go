@@ -44,10 +44,11 @@ type ExecutorOptions struct {
 	Modules func(b Backends) []Module
 	// Logger receives the executor's errors and notices; nil = log.Default().
 	Logger *log.Logger
-	// FullWake reports whether the Mac is fully awake (board #877); while it
-	// returns false (a Power Nap dark wake) Step claims no queued run and
-	// resumes no run kept for a resume. nil = always awake.
-	FullWake func() bool
+	// FullWake reports the system capability bits and whether the Mac is
+	// fully awake (board #877; powerstate.Probe); while full is false (a
+	// Power Nap dark wake) Step claims no queued run and resumes no run kept
+	// for a resume. caps go into the dark/full log lines. nil = always awake.
+	FullWake func() (caps uint32, full bool)
 }
 
 // Executor claims queued runs and executes them (spec §7.3): it cancels a
@@ -69,7 +70,7 @@ type Executor struct {
 	finishPause func(ctx context.Context, attempt int)
 
 	// fullWake is ExecutorOptions.FullWake (always true when unset).
-	fullWake func() bool
+	fullWake func() (caps uint32, full bool)
 
 	gated atomic.Bool // claims refused for abandoned goroutines (logged once per change)
 	dark  atomic.Bool // claims held for a dark wake (logged once per change)
@@ -280,14 +281,15 @@ func (e *Executor) claimsGated() bool {
 // once each. Runs already running, and waits resuming in their own
 // goroutine, are not touched.
 func (e *Executor) darkWakeGated() bool {
-	dark := !e.fullWake()
+	caps, full := e.fullWake()
+	dark := !full
 	if e.dark.Swap(dark) == dark {
 		return dark
 	}
 	if dark {
-		e.logger.Printf("automations: dark wake (Power Nap), no run is claimed until full wake")
+		e.logger.Printf("automations: dark wake (Power Nap, caps 0x%02x), no run is claimed until full wake", caps)
 	} else {
-		e.logger.Printf("automations: full wake; claiming again")
+		e.logger.Printf("automations: full wake (caps 0x%02x); claiming again", caps)
 	}
 	return dark
 }

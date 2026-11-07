@@ -40,7 +40,7 @@ type exOpts struct {
 	fileDB        bool                                        // a file database instead of :memory:
 	registry      func(d *db.DB) automations.ToolRegistry     // nil = fakeTools()
 	backends      func(f *exFixture, b *automations.Backends) // adjusts the executor's backends
-	fullWake      func() bool                                 // ExecutorOptions.FullWake; nil = always awake
+	fullWake      func() (uint32, bool)                       // ExecutorOptions.FullWake; nil = always awake
 }
 
 type exFixture struct {

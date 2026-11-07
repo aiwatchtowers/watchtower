@@ -249,10 +249,11 @@ type Daemon struct {
 	cycleSection    atomic.Int32
 	fetchProgressAt atomic.Int64
 	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
-	// fullWake reports whether the Mac is in a full wake rather than a Power
-	// Nap DarkWake (SetFullWakeProbe); runLoop starts no scheduled cycle
-	// while it says no. nil = always a full wake.
-	fullWake func() bool
+	// fullWake reports the system capability bits and whether the Mac is in
+	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
+	// runLoop starts no scheduled cycle while it says no. nil = always a
+	// full wake.
+	fullWake func() (caps uint32, full bool)
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -269,25 +270,29 @@ func New(cfg *config.Config) *Daemon {
 }
 
 // alwaysFullWake is the default full-wake probe: no dark wake gate.
-func alwaysFullWake() bool { return true }
+func alwaysFullWake() (caps uint32, full bool) { return 0, true }
 
 // SetFullWakeProbe sets the probe runLoop asks before it starts a scheduled
 // cycle (the first one, a poll tick, the end of the post-wake wait): while it
-// reports a dark wake (false), the cycle is deferred until it reports a full
-// wake. A manual trigger is never gated. The probe must fail open — report a
-// full wake when it cannot tell. nil restores the default (always a full
-// wake). Call it before Run.
-func (d *Daemon) SetFullWakeProbe(probe func() bool) {
+// reports a dark wake (full false), the cycle is deferred until it reports a
+// full wake. caps are the raw system capability bits the dark/full log lines
+// carry (powerstate.Probe). A manual trigger is never gated. The probe must
+// fail open — report a full wake when it cannot tell. nil restores the
+// default (always a full wake). Call it before Run.
+func (d *Daemon) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
 	if probe == nil {
 		probe = alwaysFullWake
 	}
 	d.fullWake = probe
 }
 
-// inFullWake asks the full-wake probe; a Daemon built without New has none
+// wakeState asks the full-wake probe; a Daemon built without New has none
 // and is always in a full wake.
-func (d *Daemon) inFullWake() bool {
-	return d.fullWake == nil || d.fullWake()
+func (d *Daemon) wakeState() (caps uint32, full bool) {
+	if d.fullWake == nil {
+		return alwaysFullWake()
+	}
+	return d.fullWake()
 }
 
 // SetOrchestrators attaches one Slack sync orchestrator per connected account.

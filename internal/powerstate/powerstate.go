@@ -49,20 +49,37 @@ var (
 	reader func() (uint32, error)
 )
 
-// FullWake reports whether the Mac is fully awake. It is false only when the
-// installed reader reports a dark wake; every other case is true (fail open).
-func FullWake() bool {
+// Read returns the raw capability bits, the verdict and the read error. With
+// no reader installed it is (0, true, nil); on a read error it is
+// (0, true, err) — the verdict always fails open, so a caller may log err and
+// still act on full.
+func Read() (caps uint32, full bool, err error) {
 	mu.RLock()
 	r := reader
 	mu.RUnlock()
 	if r == nil {
-		return true
+		return 0, true, nil
 	}
-	caps, err := r()
+	caps, err = r()
 	if err != nil {
-		return true
+		return 0, true, err
 	}
-	return fullWakeFrom(caps)
+	return caps, fullWakeFrom(caps), nil
+}
+
+// Probe is Read without the error: the shape of the daemon's and the
+// automations' full-wake probes, whose dark/full transition log lines carry
+// caps (as 0x%02x).
+func Probe() (caps uint32, full bool) {
+	caps, full, _ = Read()
+	return caps, full
+}
+
+// FullWake reports whether the Mac is fully awake. It is false only when the
+// installed reader reports a dark wake; every other case is true (fail open).
+func FullWake() bool {
+	_, full := Probe()
+	return full
 }
 
 // fullWakeFrom decides from capability bits: the CPU bit without the
