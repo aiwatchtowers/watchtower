@@ -105,6 +105,13 @@ package final class AIModelCatalog {
         provider(id)?.kind == "http"
     }
 
+    /// Whether provider id is known to run as a CLI child (the registry's
+    /// `kind`): false for a local server, an unknown id or a catalog not read
+    /// yet, so AGENT-04's tool surfaces fail closed.
+    package func isKnownCLI(_ id: String) -> Bool {
+        provider(id)?.kind == "cli"
+    }
+
     /// Whether the catalog has been read (a row for any provider).
     package var isLoaded: Bool { !providers.isEmpty }
 

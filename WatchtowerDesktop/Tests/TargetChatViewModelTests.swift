@@ -1630,5 +1630,6 @@ extension TargetChatViewModelTests {
         XCTAssertTrue(AutomationEditorChatSurface.toolsAvailable(provider: "codex"))
         XCTAssertTrue(catalog.isLocalServer("ollama"))
         XCTAssertFalse(catalog.isLocalServer("claude"))
+        XCTAssertFalse(AIModelCatalog().isKnownCLI("claude"), "a catalog not read yet: draft-only (AGENT-04 fails closed)")
     }
 }

@@ -179,7 +179,7 @@ final class TargetChatViewModel {
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         cliRunner: CLIRunnerProtocol? = nil,
-        // AGENT-04: nil = draft-only under a local HTTP server (runtime B).
+        // AGENT-04: nil = tools only for a provider known to run as a CLI.
         toolsAvailable: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         center: EmbeddedChatCenter? = nil
     ) {
@@ -187,7 +187,7 @@ final class TargetChatViewModel {
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
-        self.toolsAvailable = toolsAvailable ?? !AIModelCatalog.shared.isLocalServer(Constants.aiProviderID())
+        self.toolsAvailable = toolsAvailable ?? AIModelCatalog.shared.isKnownCLI(Constants.aiProviderID())
         let spec = Self.placeholderSpec(targetID: target.id, conversationID: conversationID)
         self.engine = center?.engine(for: spec) ?? EmbeddedChatEngine(
             spec: spec,

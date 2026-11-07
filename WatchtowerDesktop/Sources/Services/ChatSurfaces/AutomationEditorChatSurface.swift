@@ -23,10 +23,11 @@ enum AutomationEditorChatSurface {
     static let unavailableHelp = "Needs Claude or Codex"
     static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
-    /// AGENT-04 (ask #270): under a local HTTP server (runtime B, the
-    /// registry's `kind`) the editor chat is draft-only.
+    /// AGENT-04 (ask #270): only a provider known to run as a CLI child (the
+    /// registry's `kind`) gets tools; a local HTTP server (runtime B), or a
+    /// catalog not read yet, leaves the editor chat draft-only.
     @MainActor static func toolsAvailable(provider: String?) -> Bool {
-        !AIModelCatalog.shared.isLocalServer(provider ?? Constants.aiProviderID())
+        AIModelCatalog.shared.isKnownCLI(provider ?? Constants.aiProviderID())
     }
 
     /// The automation's conversation, created on first use.
