@@ -238,14 +238,20 @@ final class CodeQuestionCenter {
     @discardableResult
     func ask(_ text: String, workbenchID: Int64) async -> Bool {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, let asking = sessions[workbenchID]?.id else { return false }
-        await readCatalogIfUnread()
-        // The popover that asked must still be the one shown: a question is
-        // never sent with the context of a popover opened during the wait.
-        guard let session = sessions[workbenchID], session.id == asking, !session.isStarting,
+        guard !question.isEmpty, let session = sessions[workbenchID], !session.isStarting,
               !isDeleting(session.conversationID) else { return false }
+        var created: Int64?
         if session.conversationID == nil {
             guard await startConversation(workbenchID: workbenchID) else { return false }
+            created = sessions[workbenchID]?.conversationID
+        }
+        await readCatalogIfUnread()
+        // The popover that asked must still be the one shown: a question is
+        // never sent with the context of a popover opened during the wait,
+        // and a conversation just written for it would stay empty, so it goes.
+        guard sessions[workbenchID]?.id == session.id else {
+            if let created, let ref = questionRefs[created] { discardConversation(ref) }
+            return false
         }
         guard let engine = engine(workbenchID: workbenchID) else { return false }
         guard engine.send(question) else {
