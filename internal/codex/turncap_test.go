@@ -466,3 +466,25 @@ func TestCodexClient_RetryNoticeDoesNotHideTheCap(t *testing.T) {
 	assertBudget(t, err, 2)
 	assertGroupGone(t, pid())
 }
+
+// A clean exit cut off before turn.completed is the incomplete-run error on
+// both paths, never relabelled a budget failure by a rollout over the cap.
+func TestCodexClient_IncompleteRunIsNotRelabelledBudget(t *testing.T) {
+	steps := []string{turnStarted, message("m", "partial"),
+		"R:" + rolloutRecord, "R:" + rolloutTokenCount(15), "R:" + rolloutRecord, "R:" + rolloutTokenCount(16)}
+	check := func(err error) {
+		t.Helper()
+		require.Error(t, err)
+		var f *providers.Failure
+		require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+		assert.NotEqual(t, providers.Budget, f.Category, err.Error())
+		assert.ErrorIs(t, err, errNoTurnCompleted)
+	}
+	c, _ := cappedClient(t, steps, 1, t.TempDir())
+	_, err := runQuery(t, c)
+	check(err)
+
+	c, _ = cappedClient(t, steps, 1, t.TempDir())
+	_, _, err = c.QuerySync(context.Background(), "sys", "hi", "")
+	check(err)
+}
