@@ -18,9 +18,12 @@ var wakeSettleDelay = 15 * time.Second
 
 // darkWakeRecheckInterval is how often runLoop asks the full-wake probe
 // again while a scheduled cycle is deferred by the dark wake gate. A
-// monotonic ticker like the wake watcher's: a DarkWake that ends in sleep
-// carries the wait into the next wake, where the wake watcher reports the
-// sleep first. A var so tests can shorten it.
+// monotonic ticker, unrelated in phase to the wake watcher's: after a real
+// sleep the re-check can see the full wake before the watcher reports the
+// sleep, so a full wake seen here never starts the cycle at once — it starts
+// the post-wake wait (wakeSettleDelay), whose end runs the deferred cycle on
+// fresh connections, and a sleep reported meanwhile starts the wait over. A
+// var so tests can shorten it.
 var darkWakeRecheckInterval = wakeCheckInterval
 
 // manualRestartAfter is how long a cycle's Slack sync must have made no
@@ -198,11 +201,13 @@ func (d *Daemon) triggerRestarts(c *syncCycle) bool {
 // The dark wake gate: a scheduled cycle — the initial one, a tick's, the one
 // the post-wake delay ends with — starts only while the full-wake probe
 // (SetFullWakeProbe) reports a full wake. In a Power Nap DarkWake it is
-// deferred: the loop asks the probe again every darkWakeRecheckInterval and
-// starts the cycle once it reports a full wake. Ticks during the deferral
-// collapse into the deferred cycle; a sleep during it takes the post-wake
-// delay path, whose end asks the probe again (and runs the deferred cycle
-// even with sync_on_wake off). A manual trigger is never gated: it starts a
+// deferred: the loop asks the probe again every darkWakeRecheckInterval and,
+// once it reports a full wake, starts the post-wake delay, whose end runs the
+// deferred cycle (the network may not be back yet, and the wake watcher may
+// not have reported the sleep yet). Ticks during the deferral collapse into
+// the deferred cycle; a sleep during it takes the post-wake delay path. The
+// delay's end asks the probe again and runs the deferred cycle even with
+// sync_on_wake off. A manual trigger is never gated: it starts a
 // cycle at once, in a dark wake too, and the deferred cycle is folded into it.
 //
 // A trigger during the history backfill is queued: its budget bounds the
@@ -316,10 +321,12 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 			clearDeferred()
 			cycle = d.startCycle(ctx, true)
 		case <-recheckC:
+			// Never a start here: the deferral stays marked, so the delay's
+			// end runs the owed cycle (sync_on_wake off too) after asking the
+			// probe again, and a late sleep report starts the delay over.
 			if d.inFullWake() {
-				d.logger.Println("full wake, starting the deferred cycle")
-				clearDeferred()
-				cycle = d.startCycle(ctx, true)
+				d.logger.Printf("full wake, starting the deferred cycle after the %s network wait", wakeSettleDelay)
+				settle = time.NewTimer(wakeSettleDelay)
 			}
 		case <-tickC:
 			if recheck != nil {

@@ -10,7 +10,7 @@ import (
 // Log lines of the dark wake gate.
 const (
 	logDarkWakeDefers = "dark wake (Power Nap), deferring the cycle until full wake"
-	logFullWakeStarts = "full wake, starting the deferred cycle"
+	logFullWakeStarts = "full wake, starting the deferred cycle after the"
 	logTriggerIdle    = "manual sync trigger received, syncing"
 )
 
@@ -26,6 +26,7 @@ func setDarkWakeRecheck(t *testing.T, d time.Duration) {
 // A daemon started in a dark wake defers its first cycle and starts it once
 // the probe reports a full wake.
 func TestRunLoop_DarkWakeDefersTheFirstCycleUntilFullWake(t *testing.T) {
+	shortenWakeSettle(t)
 	setDarkWakeRecheck(t, 10*time.Millisecond)
 	h := startLoop(t, loopOpts{darkWake: true})
 
@@ -43,11 +44,15 @@ func TestRunLoop_DarkWakeDefersTheFirstCycleUntilFullWake(t *testing.T) {
 // collapse into one deferred cycle, started once the probe reports a full
 // wake.
 func TestRunLoop_DarkWakeDefersTicksIntoOneCycle(t *testing.T) {
+	shortenWakeSettle(t)
 	setDarkWakeRecheck(t, 10*time.Millisecond)
-	h := startLoop(t, loopOpts{poll: 20 * time.Millisecond})
+	h := startLoop(t, loopOpts{poll: 20 * time.Millisecond, blockFirst: true})
 
 	recv(t, h.probe.started, "the initial cycle, in a full wake")
+	h.probe.block.Store(false)
+	// In the dark wake before the initial cycle ends: no tick can slip in.
 	h.fullWake.Store(false)
+	h.releaseProbe(t)
 	h.logs.waitLog(t, logDarkWakeDefers, 1)
 	// Several ticks pass while the Mac stays in the dark wake.
 	requireNone(t, h.probe.started, 150*time.Millisecond, "a tick's cycle in a dark wake")
@@ -95,8 +100,8 @@ func TestRunLoop_SettleEndInDarkWakeDefers(t *testing.T) {
 	recv(t, h.probe.started, "the deferred cycle at full wake")
 	h.stop(t)
 
-	assert.Zero(t, h.logs.count("syncing after wake"), "the delay's end started nothing")
 	assert.Equal(t, 1, h.logs.count(logFullWakeStarts))
+	assert.Equal(t, 1, h.logs.count("syncing after wake"), "the cycle starts at the end of the second wait")
 }
 
 // A sleep during the deferral takes the post-wake wait; its end asks the
@@ -133,6 +138,67 @@ func TestRunLoop_DeferredCycleRunsAtSettleEndInFullWake(t *testing.T) {
 	h.stop(t)
 
 	assert.Equal(t, 1, h.logs.count("syncing after wake"))
+}
+
+// A full wake seen by the re-check never starts the cycle at once — the
+// re-check can run before the wake watcher reports the sleep, on sockets the
+// sleep killed: it starts the post-wake wait, a sleep reported meanwhile
+// starts the wait over, and the wait's end runs the owed cycle even with
+// sync_on_wake off.
+func TestRunLoop_FullWakeAfterDeferralWaitsForTheNetwork(t *testing.T) {
+	// Long enough that the late report always lands inside the first wait.
+	const settle = time.Second
+	setWakeSettle(t, settle)
+	setDarkWakeRecheck(t, 10*time.Millisecond)
+	drops := countDrops(t)
+	h := startLoop(t, loopOpts{darkWake: true})
+
+	h.logs.waitLog(t, logDarkWakeDefers, 1)
+	h.fullWake.Store(true)
+	h.logs.waitLog(t, logFullWakeStarts, 1)
+	requireNone(t, h.probe.started, 100*time.Millisecond, "a cycle before the network wait ends")
+	lateWake := time.Now()
+	h.wake <- 10 * time.Minute // the watcher reports the sleep late
+	h.logs.waitLog(t, "post-wake wait over", 1)
+
+	startedAt := recv(t, h.probe.started, "the owed cycle at the wait's end")
+	assert.GreaterOrEqual(t, startedAt.Sub(lateWake), settle, "the late sleep report starts the wait over")
+	h.stop(t)
+	assert.Equal(t, int32(1), drops.Load(), "the late sleep drops the pooled connections")
+	assert.Equal(t, 1, h.logs.count("syncing after wake"))
+	assert.Equal(t, 1, h.logs.count(logFullWakeStarts))
+}
+
+// Sync Now during the post-wake wait is the owner's: it runs at the wait's
+// end even while the Mac is still in a dark wake.
+func TestRunLoop_TriggerDuringSettleRunsInDarkWake(t *testing.T) {
+	setWakeSettle(t, 200*time.Millisecond)
+	setDarkWakeRecheck(t, 10*time.Millisecond)
+	h := startLoop(t, loopOpts{darkWake: true})
+
+	h.logs.waitLog(t, logDarkWakeDefers, 1)
+	h.wake <- 10 * time.Minute
+	h.logs.waitLog(t, "sleep detected (slept ~10m0s), waiting", 1)
+	h.pressSyncNow(t, logQueuedSettling)
+	recv(t, h.probe.started, "the triggered cycle at the wait's end, in a dark wake")
+	h.stop(t)
+	assert.Zero(t, h.logs.count(logFullWakeStarts))
+}
+
+// A trigger queued behind a running cycle is the owner's: it runs when the
+// cycle ends even if the Mac went into a dark wake meanwhile.
+func TestRunLoop_QueuedTriggerRunsInDarkWake(t *testing.T) {
+	setDarkWakeRecheck(t, 10*time.Millisecond)
+	h := startLoop(t, loopOpts{blockFirst: true})
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.pressSyncNow(t, logQueuedFetching)
+	h.fullWake.Store(false)
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle, in a dark wake")
+	h.stop(t)
+	assert.Zero(t, h.logs.count(logDarkWakeDefers))
 }
 
 // Shutdown while a cycle is deferred starts nothing and returns cleanly.
