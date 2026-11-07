@@ -647,105 +647,62 @@ func TestCodexWatch_RepeatedMarkLogsOnce(t *testing.T) {
 }
 
 // A database that keeps failing never leaves a silent `working`: after
-// codexStoreGiveUpTicks failing ticks the row is marked `unreadable` when
-// that still lands, and the watch goes on.
+// codexStoreGiveUpTicks failing ticks the row as last read is marked
+// `unreadable` (one line), and the watch goes on: an attached app learns
+// `watched` only at launch or attach, so a stopped watch would leave the
+// run covered by nobody.
 func TestCodexWatch_FailingStoreMarksUnreadable(t *testing.T) {
 	f := newWatchFixture(t)
 	f.store.recordErrs = 1 << 20
 	f.write(wTurnStarted, wTurnFailed)
-	lost := false
-	f.w.lost = func() { lost = true }
 	for i := 0; i < codexStoreGiveUpTicks-1; i++ {
 		if f.tick(CodexWatchEvery) {
-			t.Fatal("the watch stopped early")
+			t.Fatal("the watch stopped on a failing database")
 		}
 	}
 	if issues, _ := f.store.snapshot(); len(issues) != 0 {
 		t.Fatalf("issues = %v; want none before the give-up", issues)
 	}
 	if f.tick(CodexWatchEvery) {
-		t.Fatal("the watch stopped though the mark landed")
+		t.Fatal("the watch stopped on a failing database")
 	}
 	if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
 		t.Fatalf("issues = %v; want unreadable", issues)
 	}
-	if lost {
-		t.Fatal("reported lost though the mark landed")
+	if n := strings.Count(f.logs.String(), "not watched (unreadable)"); n != 1 {
+		t.Fatalf("not-watched lines = %d; want 1:\n%s", n, f.logs.String())
 	}
 }
 
-// When even the mark fails (or the row was never read), the watch stops and
-// says it is lost, so the run reads not watched and the app's bridge
-// covers it.
-func TestCodexWatch_FailingStoreStopsAndReportsLost(t *testing.T) {
-	for _, c := range []struct {
-		name  string
-		setup func(f *watchFixture)
-	}{
-		{"row never read", func(f *watchFixture) { f.store.rowErrs = 1 << 20 }},
-		{"mark fails too", func(f *watchFixture) {
-			f.store.recordErrs, f.store.issueErrs = 1<<20, 1<<20
-			f.write(wTurnStarted, wTurnFailed)
-		}},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			f := newWatchFixture(t)
-			c.setup(f)
-			lost := 0
-			f.w.lost = func() { lost++ }
-			done := false
-			for i := 0; i < codexStoreGiveUpTicks && !done; i++ {
-				done = f.tick(CodexWatchEvery)
+// A failing mark is tried again after the next codexStoreGiveUpTicks
+// failing ticks; a row never read is never marked, and the watch goes on.
+func TestCodexWatch_FailingStoreRetriesTheMark(t *testing.T) {
+	t.Run("mark fails once", func(t *testing.T) {
+		f := newWatchFixture(t)
+		f.store.recordErrs, f.store.issueErrs = 1<<20, 1
+		f.write(wTurnStarted, wTurnFailed)
+		for i := 0; i < 2*codexStoreGiveUpTicks; i++ {
+			if f.tick(CodexWatchEvery) {
+				t.Fatal("the watch stopped on a failing database")
 			}
-			if !done || lost != 1 {
-				t.Fatalf("done = %v, lost = %d; want the watch stopped and lost once", done, lost)
-			}
-			if !strings.Contains(f.logs.String(), "the database keeps failing; not watched") {
-				t.Fatalf("no lost line:\n%s", f.logs.String())
-			}
-		})
-	}
-}
-
-// A run whose watch stops on a failing database lists as not watched from
-// then on: an attach tells the app's bridge to cover it.
-func TestCodexWatch_LostWatchListsUnwatched(t *testing.T) {
-	store := &fakeWatchStore{rowErrs: 1 << 20}
-	path, _ := startHost(t, Options{codexWatchEvery: 5 * time.Millisecond, CodexWatch: func(string) (CodexWatchStore, error) {
-		return store, nil
-	}})
-	c1 := dial(t, path)
-	c1.send(Launch, LaunchReq{Row: 1, Run: "r1", Executable: "/bin/sh", Args: []string{"-c", "sleep 30"},
-		Cwd: os.TempDir(), Cols: 80, Rows: 24, Watch: &WatchSpec{Agent: "codex", Database: "/work/watchtower.db"}})
-	var info SessionInfo
-	if err := json.Unmarshal(c1.expect(Launched), &info); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { reap(t, info.Pid) })
-	if !info.Watched {
-		t.Fatal("Launched does not say the run is watched")
-	}
-	_ = c1.nc.Close()
-	deadline := time.Now().Add(ioTimeout)
-	for {
-		store.mu.Lock()
-		closed := store.closed
-		store.mu.Unlock()
-		if closed {
-			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("the watch never stopped on the failing store")
+		if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
+			t.Fatalf("issues = %v; want unreadable on the second try", issues)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	c2 := dial(t, path)
-	c2.send(Attach, AttachReq{Row: 1, Run: "r1"})
-	var attached SessionInfo
-	if err := json.Unmarshal(c2.expect(Attached), &attached); err != nil {
-		t.Fatal(err)
-	}
-	if attached.Watched {
-		t.Fatal("Attached still says watched after the watch was lost")
-	}
+	})
+	t.Run("row never read", func(t *testing.T) {
+		f := newWatchFixture(t)
+		f.store.rowErrs = 1 << 20
+		for i := 0; i < 2*codexStoreGiveUpTicks; i++ {
+			if f.tick(CodexWatchEvery) {
+				t.Fatal("the watch stopped on a failing database")
+			}
+		}
+		if issues, _ := f.store.snapshot(); len(issues) != 0 {
+			t.Fatalf("issues = %v; want none over a row never read", issues)
+		}
+		if n := strings.Count(f.logs.String(), "reading the row"); n != 1 {
+			t.Fatalf("row-read lines = %d; want 1", n)
+		}
+	})
 }

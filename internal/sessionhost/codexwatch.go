@@ -38,9 +38,10 @@ const codexUnreadableTicks = 3
 const CodexUnreadableGiveUp = codexUnreadableTicks * CodexWatchEvery
 
 // codexStoreGiveUpTicks is how many ticks in a row whose database work
-// failed end the watch: it then tries to mark the row `unreadable`, and when
-// even that fails it stops and reports the run not watched, so the app's
-// bridge covers it instead of a `working` row nobody reads.
+// failed mark the row `unreadable`, so a database that keeps failing never
+// leaves a silent `working`. The watch goes on: an attached app learns
+// `watched` only from Launched/Attached, so a watch that stopped would leave
+// its run covered by nobody once the database recovers.
 const codexStoreGiveUpTicks = int(CodexMissingGiveUp / CodexWatchEvery)
 
 // CodexWatchStore is the database side of a watch: the row it reads each
@@ -67,9 +68,6 @@ type CodexWatch struct {
 	logf      func(format string, args ...any)
 	locate    func(codexHome, sessionID, storedPath string) (string, bool)
 	read      func(path string) (sessionfeed.CodexTurn, error)
-	// lost is called once when the watch stops on a database that keeps
-	// failing (codexStoreGiveUpTicks); nil = nothing to tell.
-	lost func()
 
 	// seen is the row as this tick read it: a give-up's verdict is about it.
 	seen db.CodexWatchRow
@@ -143,8 +141,7 @@ func (w *CodexWatch) run(ctx context.Context, every time.Duration, now func() ti
 func (w *CodexWatch) disarm() { w.arm = codexArm{} }
 
 // Tick is one step of §3.5's table at now; done is true once the row is
-// gone (or is no row of the watch's kind), or the database kept failing,
-// and the watch ends.
+// gone (or is no row of the watch's kind), and the watch ends.
 func (w *CodexWatch) Tick(now time.Time) (done bool) {
 	w.storeFailed = false
 	if w.step(now) {
@@ -155,30 +152,28 @@ func (w *CodexWatch) Tick(now time.Time) (done bool) {
 		return false
 	}
 	w.storeFails++
-	if w.storeFails < codexStoreGiveUpTicks {
-		return false
+	if w.storeFails >= codexStoreGiveUpTicks {
+		w.storeGiveUp(now)
 	}
-	return w.storeGiveUp(now)
+	return false
 }
 
 // storeGiveUp is codexStoreGiveUpTicks ticks in a row of failed database
-// work: the row is marked `unreadable` when the mark still lands (the
-// watch then goes on), else the watch stops and says it is lost.
-func (w *CodexWatch) storeGiveUp(now time.Time) (done bool) {
+// work: the row as last read is marked `unreadable` (one line the first
+// time); when even that mark fails, the next codexStoreGiveUpTicks failing
+// ticks try again. The watch goes on either way.
+func (w *CodexWatch) storeGiveUp(now time.Time) {
 	w.storeFails = 0
-	if w.seen.ID != 0 {
-		ok, err := w.store.SetIssue(w.seen, db.WatchIssueUnreadable, now)
-		if err == nil {
-			w.disarm()
-			w.logNotWatched(ok, db.WatchIssueUnreadable)
-			return false
-		}
+	if w.seen.ID == 0 {
+		return // never read the row: nothing to mark it over
 	}
-	w.logf("session-host: codex watch: session %d: the database keeps failing; not watched", w.row)
-	if w.lost != nil {
-		w.lost()
+	ok, err := w.store.SetIssue(w.seen, db.WatchIssueUnreadable, now)
+	if err != nil {
+		w.logOnce("marking the row not watched", err)
+		return
 	}
-	return true
+	w.disarm()
+	w.logNotWatched(ok, db.WatchIssueUnreadable)
 }
 
 // step is Tick's table; done ends the watch.
