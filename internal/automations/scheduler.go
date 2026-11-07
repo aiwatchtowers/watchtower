@@ -135,13 +135,15 @@ func (s *Scheduler) awake() bool {
 		if s.holding {
 			s.holding = false
 			s.logger.Printf("automations: full wake (caps 0x%02x), schedule resumed after ~%s",
-				caps, s.clock.Now().Sub(s.heldSince).Round(time.Second))
+				caps, s.clock.Now().Round(0).Sub(s.heldSince).Round(time.Second))
 		}
 		return true
 	}
 	if !s.holding {
 		s.holding = true
-		s.heldSince = s.clock.Now()
+		// Round(0) drops the monotonic reading, which stops while the Mac
+		// sleeps: the hold's length is wall-clock time.
+		s.heldSince = s.clock.Now().Round(0)
 		s.logger.Printf("automations: dark wake (Power Nap, caps 0x%02x), holding the schedule until full wake", caps)
 	}
 	return false

@@ -5,7 +5,6 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -47,9 +46,8 @@ func funcExprs(t *testing.T, file, name string) map[string]bool {
 // gate silently reads "always awake" — no test of the gated packages fails —
 // so this scans the sources.
 func TestPowerstate_DarkWakeGateWired(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join("..", "main.go"))
-	require.NoError(t, err)
-	assert.Contains(t, string(b), "powerstate.UseSystemReader()", "main.go must install the system reader")
+	mainCalls := funcExprs(t, filepath.Join("..", "main.go"), "main")
+	assert.True(t, mainCalls["powerstate.UseSystemReader()"], "main must call powerstate.UseSystemReader()")
 
 	sync := funcExprs(t, "sync.go", "runSyncDaemon")
 	assert.True(t, sync["d.SetFullWakeProbe(powerstate.Probe)"], "runSyncDaemon must call d.SetFullWakeProbe(powerstate.Probe)")

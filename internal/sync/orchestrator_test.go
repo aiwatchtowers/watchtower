@@ -1490,7 +1490,7 @@ func TestSyncChannelReadStateOnlyWindowedDigests(t *testing.T) {
 		wantLog string // "" = no skip line
 	}{
 		{"recent and old unread", true, []string{"C001"}, ""},
-		{"only old unread", false, nil, "channel read state: no unread digest within the window, skipping (1 older channels left out)"},
+		{"only old unread", false, nil, "channel read state: no unread digest within the window, skipping (older channels left out: 1)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got []string
