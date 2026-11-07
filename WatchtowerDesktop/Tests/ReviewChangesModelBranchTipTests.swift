@@ -234,4 +234,25 @@ extension ReviewChangesModelTests {
             XCTFail("anchored on the old base's text")
         } catch {}
     }
+
+    /// Codex round 3: a Refresh that finds the previous round's tree lost
+    /// (another place, board #1012) leaves the Since view as open() would.
+    func testRefreshWithALostPreviousTreeFallsBackToAllChanges() async throws {
+        let h = try harness()
+        let r6 = try await h.db.write { db -> Int64 in
+            try db.execute(sql: """
+                INSERT INTO review_rounds (project_id, session_id, folder_root, base_sha, tree_sha, status)
+                VALUES (?, ?, '/r', 'b', 't6', 'sent')
+                """, arguments: [h.projectID, h.sessionID])
+            return db.lastInsertedRowID
+        }
+        h.baseScript(id: 7, prev: r6)
+        let lost = startJSON(id: 7, prev: r6, tree: "u").replacingOccurrences(of: #""prev_tree_lost":false"#, with: #""prev_tree_lost":true"#)
+        h.cli.script("start", [startJSON(id: 7, prev: r6), lost])
+        await h.model.open()
+        XCTAssertEqual(h.model.view, .sinceLastRound)
+        await h.model.refresh()
+        XCTAssertEqual(h.model.view, .all)
+        XCTAssertEqual(h.cli.calls("diff").last?.contains("--since"), false)
+    }
 }
