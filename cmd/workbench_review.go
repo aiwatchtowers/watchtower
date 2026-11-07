@@ -106,6 +106,9 @@ type reviewEnvelope struct {
 	OverviewCached   bool                      `json:"overview_cached,omitempty"`
 	Lessons          *[]reviewLessonJSON       `json:"lessons,omitempty"`
 	Written          string                    `json:"written,omitempty"`
+	// PlaceMissing (start): the session's worktree no longer exists; the
+	// open round stayed on the folder it was opened on (board #1012).
+	PlaceMissing bool `json:"place_missing,omitempty"`
 }
 
 type reviewRevertJSON struct {
@@ -207,7 +210,16 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	moved := open != nil && (open.FolderRoot != src.Folder || open.Source != src.Source())
+	if open != nil && src.FolderMissing {
+		// The session's worktree is gone (#535 cleanup): the place is lost,
+		// not changed, so the round stays where it was and says so.
+		out, err := roundJSON(ctx, repo, database, open)
+		if err != nil {
+			return failReview(cmd, err)
+		}
+		return writeReview(cmd, reviewEnvelope{OK: true, Round: out, PlaceMissing: true})
+	}
+	moved := open != nil && !atPlace(open, src)
 	if open != nil && !moved && !reviewFlagRefresh {
 		return writeRound(ctx, cmd, repo, database, open, src)
 	}
@@ -223,10 +235,20 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		}
 		return writeRound(ctx, cmd, repo, database, created, src)
 	case moved || src.Tip != nil:
-		// A branch round's base moves with its branches, so its Refresh re-reads both.
+		// A move, or a branch round's Refresh: its base moves with its
+		// branches, so both are re-read. "Since round N" never diffs another
+		// place's tree: a move drops the link.
+		from := open.Source
+		if moved {
+			open.PrevRoundID = sql.NullInt64{}
+		}
 		open.FolderRoot, open.Source, open.BaseSHA, open.BaseLabel, open.TreeSHA = src.Folder, src.Source(), base.SHA, base.Label, tree
 		if err := database.RepointReviewRound(*open); err != nil {
 			return failReview(cmd, err)
+		}
+		if moved {
+			// Ids and sources only (FILES-01).
+			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d moved: %s → %s\n", open.ID, from, open.Source)
 		}
 	default:
 		if err := database.UpdateReviewRoundTree(open.ID, tree); err != nil {
@@ -237,8 +259,15 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	return writeRound(ctx, cmd, repo, database, open, src)
 }
 
-// createReviewRound opens a new round on the place's tree, linked to the
-// session's last sent round.
+// atPlace reports whether round r reviews src's place: the same folder and
+// the same source.
+func atPlace(r *db.ReviewRound, src tools.ReviewSource) bool {
+	return r.FolderRoot == src.Folder && r.Source == src.Source()
+}
+
+// createReviewRound opens a new round on the place's tree, in the mode of
+// the session's last sent round, linked to the last sent round of the same
+// place only (board #1012).
 func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base) (*db.ReviewRound, error) {
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
 		Source: src.Source(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
@@ -247,8 +276,14 @@ func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource,
 		return nil, fmt.Errorf("last sent review round: %w", err)
 	}
 	if last != nil {
-		r.PrevRoundID = sql.NullInt64{Int64: last.ID, Valid: true}
 		r.Mode = last.Mode
+	}
+	prev, err := database.LastSentReviewRoundAt(p.ID, reviewFlagSession, r.Source, r.FolderRoot)
+	if err != nil {
+		return nil, fmt.Errorf("last sent review round at this place: %w", err)
+	}
+	if prev != nil {
+		r.PrevRoundID = sql.NullInt64{Int64: prev.ID, Valid: true}
 	}
 	id, err := database.CreateReviewRound(r)
 	if err != nil {

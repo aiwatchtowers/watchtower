@@ -456,6 +456,56 @@ func TestReviewRounds_RepointMovesOnlyAnOpenRound(t *testing.T) {
 	}
 }
 
+// LastSentReviewRoundAt finds the newest sent round of one place only, and
+// RepointReviewRound writes the previous-round link it is given.
+func TestReviewRounds_LastSentAtOnePlaceAndRepointLink(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	sent := func(source, folder string) int64 {
+		t.Helper()
+		id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), Source: source, FolderRoot: folder,
+			BaseSHA: "b", TreeSHA: "t"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := d.SendReviewRound(pid, id); err != nil || !ok {
+			t.Fatalf("send = %v %v", ok, err)
+		}
+		return id
+	}
+	onMain := sent(ReviewSourceFolder, "/tmp/wb-review")
+	onBranch := sent(ReviewSourceBranch, "/tmp/wb-review")
+	for _, c := range []struct {
+		source, folder string
+		want           int64
+	}{
+		{ReviewSourceFolder, "/tmp/wb-review", onMain},
+		{ReviewSourceBranch, "/tmp/wb-review", onBranch},
+		{ReviewSourceFolder, "/tmp/wb-review-wt", 0},
+	} {
+		got, err := d.LastSentReviewRoundAt(pid, sid, c.source, c.folder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (got == nil && c.want != 0) || (got != nil && got.ID != c.want) {
+			t.Fatalf("LastSentReviewRoundAt(%s, %s) = %+v; want %d", c.source, c.folder, got, c.want)
+		}
+	}
+
+	id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/tmp/wb-review",
+		BaseSHA: "b", TreeSHA: "t", PrevRoundID: nullInt(onMain)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RepointReviewRound(ReviewRound{ID: id, FolderRoot: "/tmp/wb-review-wt", Source: ReviewSourceFolder,
+		BaseSHA: "b", TreeSHA: "t2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetReviewRound(pid, id); got == nil || got.PrevRoundID.Valid {
+		t.Fatalf("a move to another place keeps the link: %+v", got)
+	}
+}
+
 // TicketBranchChain lists the target's branch, then each ancestor's.
 func TestTicketBranchChain(t *testing.T) {
 	d := openTestDB(t)

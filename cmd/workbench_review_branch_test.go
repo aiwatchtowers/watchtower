@@ -195,6 +195,207 @@ func TestWorkbenchReview_OpenRoundFollowsTheSessionsPlace(t *testing.T) {
 	}
 }
 
+// B1: the owner's rule names a folder on the default branch. A session on
+// any other branch — Watchtower's own wt/<slug> worktree branch, or a branch
+// the owner checked out — keeps reviewing its folder, its own commits and
+// uncommitted edits included, even when the ticket names a task branch.
+func TestWorkbenchReview_FolderOnAnotherBranchKeepsTheFolder(t *testing.T) {
+	t.Run("wt worktree branch", func(t *testing.T) {
+		database, wb, s, repo := reviewFixture(t)
+		commitOnBranch(t, repo, "feature", "feature.txt")
+		ticketTarget(t, database, wb, s, 0, "feature", true)
+		wt := filepath.Join(t.TempDir(), "wt-slug")
+		reviewGit(t, repo, "worktree", "add", "-q", "-b", "wt/slug", wt, "main")
+		wt, err := filepath.EvalSymlinks(wt)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(wt, "own.txt"), []byte("own\n"), 0o644))
+		reviewGit(t, wt, "add", "own.txt")
+		reviewGit(t, wt, "commit", "-q", "-m", "own")
+		require.NoError(t, os.WriteFile(filepath.Join(wt, "wip.txt"), []byte("wip\n"), 0o644))
+		_, err = database.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = '2026-10-16T10:00:00Z' WHERE id = ?`, wt, s)
+		require.NoError(t, err)
+
+		r := startRound(t, wb, s)
+		assert.Equal(t, db.ReviewSourceFolder, r["source"])
+		assert.Equal(t, wt, r["folder_root"])
+		assert.Equal(t, []string{"own.txt", "wip.txt"}, roundFiles(t, wb, r))
+	})
+	t.Run("another branch in the folder", func(t *testing.T) {
+		database, wb, s, repo := reviewFixture(t)
+		commitOnBranch(t, repo, "feature", "feature.txt")
+		ticketTarget(t, database, wb, s, 0, "feature", true)
+		reviewGit(t, repo, "checkout", "-q", "-b", "mine")
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("mine\n"), 0o644))
+
+		r := startRound(t, wb, s)
+		assert.Equal(t, db.ReviewSourceFolder, r["source"])
+		assert.Equal(t, []string{"README.md"}, roundFiles(t, wb, r))
+	})
+}
+
+// A detached HEAD reads as "not on the task branch" too: the tip is reviewed.
+func TestWorkbenchReview_DetachedFolderReviewsTheTip(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	commitOnBranch(t, repo, "feature", "feature.txt")
+	ticketTarget(t, database, wb, s, 0, "feature", true)
+	reviewGit(t, repo, "checkout", "-q", "--detach")
+	r := startRound(t, wb, s)
+	assert.Equal(t, db.ReviewSourceBranch, r["source"])
+	assert.Equal(t, "feature", r["branch"])
+}
+
+// T-b: a plain start resumes an unmoved round as it is; --refresh re-reads it.
+func TestWorkbenchReview_PlainStartKeepsAnUnmovedRound(t *testing.T) {
+	t.Run("folder", func(t *testing.T) {
+		_, wb, s, repo := reviewFixture(t)
+		first := startRound(t, wb, s)
+		require.NoError(t, os.WriteFile(filepath.Join(repo, "new.txt"), []byte("new\n"), 0o644))
+		again := startRound(t, wb, s)
+		assert.Equal(t, first["tree_sha"], again["tree_sha"])
+		refreshed := startRound(t, wb, s, "--refresh")
+		assert.NotEqual(t, first["tree_sha"], refreshed["tree_sha"])
+		assert.Equal(t, []string{"new.txt"}, roundFiles(t, wb, refreshed))
+	})
+	t.Run("branch tip", func(t *testing.T) {
+		database, wb, s, repo := reviewFixture(t)
+		commitOnBranch(t, repo, "feature", "feature.txt")
+		ticketTarget(t, database, wb, s, 0, "feature", true)
+		first := startRound(t, wb, s)
+		commitOnBranch(t, repo, "feature", "more.txt")
+		again := startRound(t, wb, s)
+		assert.Equal(t, first["tree_sha"], again["tree_sha"])
+		assert.Equal(t, "feature", again["branch"])
+		refreshed := startRound(t, wb, s, "--refresh")
+		assert.Equal(t, reviewGit(t, repo, "rev-parse", "feature^{tree}"), refreshed["tree_sha"])
+	})
+}
+
+// m2 (F3): a folder on the task branch is measured against the branch above
+// it, as the tip is, so a switch between the two keeps the base.
+func TestWorkbenchReview_FolderOnTheTaskBranchUsesTheTipsBase(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	commitOnBranch(t, repo, "feature", "feature.txt")
+	reviewGit(t, repo, "branch", "feature-sub", "feature")
+	commitOnBranch(t, repo, "feature-sub", "sub.txt")
+	group := ticketTarget(t, database, wb, s, 0, "feature", false)
+	ticketTarget(t, database, wb, s, group, "feature-sub", true)
+
+	reviewGit(t, repo, "checkout", "-q", "feature-sub")
+	folder := startRound(t, wb, s)
+	assert.Equal(t, db.ReviewSourceFolder, folder["source"])
+	assert.Equal(t, "feature", folder["base_label"])
+	assert.Equal(t, []string{"sub.txt"}, roundFiles(t, wb, folder))
+
+	reviewGit(t, repo, "checkout", "-q", "main")
+	tip := startRound(t, wb, s)
+	assert.Equal(t, folder["id"], tip["id"])
+	assert.Equal(t, db.ReviewSourceBranch, tip["source"])
+	assert.Equal(t, folder["base_sha"], tip["base_sha"], "the base does not move with the place")
+	assert.Equal(t, folder["base_label"], tip["base_label"])
+}
+
+// sendRound sends round r as the owner's Desktop would.
+func sendRound(t *testing.T, database *db.DB, r map[string]any) {
+	t.Helper()
+	_, err := database.Exec(`UPDATE review_rounds SET status = 'sent', sent_at = '2026-10-16T10:00:00Z' WHERE id = ?`,
+		int64(r["id"].(float64)))
+	require.NoError(t, err)
+}
+
+// m3 (F4): a round links only to a sent round of its own place; a move to
+// another place drops the link, so "Since round N" never diffs unrelated trees.
+func TestWorkbenchReview_PreviousRoundOnlyFromTheSamePlace(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	commitOnBranch(t, repo, "feature", "feature.txt")
+	folderRound := startRound(t, wb, s)
+	sendRound(t, database, folderRound)
+
+	// Same place: the next round follows the sent one up.
+	second := startRound(t, wb, s)
+	assert.Equal(t, folderRound["id"], second["prev_round_id"])
+
+	// The ticket gets a branch: the open round moves to the tip and drops the link.
+	ticketTarget(t, database, wb, s, 0, "feature", true)
+	moved := startRound(t, wb, s)
+	assert.Equal(t, second["id"], moved["id"])
+	assert.Equal(t, db.ReviewSourceBranch, moved["source"])
+	assert.Equal(t, float64(0), moved["prev_round_id"])
+	var prev sql.NullInt64
+	require.NoError(t, database.QueryRow(`SELECT prev_round_id FROM review_rounds WHERE id = ?`, int64(moved["id"].(float64))).Scan(&prev))
+	assert.False(t, prev.Valid)
+
+	// A new round on the tip does not link to the folder round either.
+	sendRound(t, database, moved)
+	onTip := startRound(t, wb, s)
+	assert.Equal(t, moved["id"], onTip["prev_round_id"], "the tip's own sent round")
+	sendRound(t, database, onTip)
+	_, err := database.Exec(`UPDATE targets SET branch = '' WHERE id = (SELECT target_id FROM terminal_sessions WHERE id = ?)`, s)
+	require.NoError(t, err)
+	backOnFolder := startRound(t, wb, s)
+	assert.Equal(t, db.ReviewSourceFolder, backOnFolder["source"])
+	assert.Equal(t, folderRound["id"], backOnFolder["prev_round_id"], "the folder's last sent round, not the tip's")
+}
+
+// M2: a removed worktree (#535 cleanup) is not a move: the open round stays
+// where it was and the envelope says the place is gone. A new round for such
+// a session reads the workbench folder, as before.
+func TestWorkbenchReview_RemovedWorktreeKeepsTheOpenRound(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	reviewGit(t, repo, "worktree", "add", "-q", "-b", "wt/gone", wt, "main")
+	wt, err := filepath.EvalSymlinks(wt)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(wt, "wip.txt"), []byte("wip\n"), 0o644))
+	_, err = database.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = '2026-10-16T10:00:00Z' WHERE id = ?`, wt, s)
+	require.NoError(t, err)
+	first := startRound(t, wb, s)
+	require.Equal(t, wt, first["folder_root"])
+
+	reviewGit(t, repo, "worktree", "remove", "--force", wt)
+	for _, args := range [][]string{nil, {"--refresh"}} {
+		out := reviewJSON(t, wb, "start", append([]string{"--session", itoa(s)}, args...)...)
+		require.Equal(t, true, out["ok"], "%v", out)
+		assert.Equal(t, true, out["place_missing"])
+		r := out["round"].(map[string]any)
+		assert.Equal(t, first["id"], r["id"])
+		assert.Equal(t, wt, r["folder_root"], "the round stays where it was")
+		assert.Equal(t, first["tree_sha"], r["tree_sha"])
+	}
+
+	sendRound(t, database, first)
+	next := reviewJSON(t, wb, "start", "--session", itoa(s))
+	require.Equal(t, true, next["ok"], "%v", next)
+	assert.Nil(t, next["place_missing"])
+	assert.Equal(t, repo, next["round"].(map[string]any)["folder_root"], "a new round reads the workbench folder")
+}
+
+// M3: a git failure other than git's documented "no" fails the start; the
+// open round is not moved on a guess. An unreadable refs/heads makes
+// symbolic-ref HEAD exit 128 — before, that read as a detached HEAD and moved
+// the folder round to the origin branch's tip.
+func TestWorkbenchReview_GitFailureDoesNotMoveTheRound(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	commitOnBranch(t, repo, "feature", "feature.txt")
+	reviewGit(t, repo, "update-ref", "refs/remotes/origin/feature", reviewGit(t, repo, "rev-parse", "feature"))
+	reviewGit(t, repo, "checkout", "-q", "feature")
+	ticketTarget(t, database, wb, s, 0, "feature", true)
+	first := startRound(t, wb, s)
+	require.Equal(t, db.ReviewSourceFolder, first["source"])
+
+	heads := filepath.Join(repo, ".git", "refs", "heads")
+	require.NoError(t, os.Chmod(heads, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(heads, 0o755) })
+	out := reviewJSON(t, wb, "start", "--session", itoa(s))
+	require.NoError(t, os.Chmod(heads, 0o755))
+	assert.Equal(t, false, out["ok"], "%v", out)
+	assert.Contains(t, out["error"], "exit 128")
+
+	got, err := database.GetReviewRound(wb, int64(first["id"].(float64)))
+	require.NoError(t, err)
+	assert.Equal(t, db.ReviewSourceFolder, got.Source)
+	assert.Equal(t, first["tree_sha"], got.TreeSHA)
+}
+
 func TestWorkbenchReviewRevertHunk_RefusedOnABranchRound(t *testing.T) {
 	database, wb, s, repo := reviewFixture(t)
 	commitOnBranch(t, repo, "feature", "feature.txt")
@@ -206,10 +407,16 @@ func TestWorkbenchReviewRevertHunk_RefusedOnABranchRound(t *testing.T) {
 	require.Len(t, files, 1)
 	hunk := files[0].(map[string]any)["hunks"].([]any)[0].(map[string]any)["hunk_id"].(string)
 
+	// A copy of the branch's file in the folder on main: an undo that ran
+	// would take its line out.
+	copyPath := filepath.Join(repo, "feature.txt")
+	require.NoError(t, os.WriteFile(copyPath, []byte("feature.txt\n"), 0o644))
+
 	out := reviewJSON(t, wb, "revert-hunk", "--round", rid, "--hunk", hunk)
 	assert.Equal(t, false, out["ok"])
 	assert.Equal(t, errBranchRoundReadOnly.Error(), out["error"])
 	assert.Equal(t, 0, revertCount(t, database))
-	_, err := os.Stat(filepath.Join(repo, "feature.txt"))
-	assert.True(t, os.IsNotExist(err), "nothing written into the folder on main")
+	got, err := os.ReadFile(copyPath)
+	require.NoError(t, err)
+	assert.Equal(t, "feature.txt\n", string(got), "nothing written into the folder on main")
 }

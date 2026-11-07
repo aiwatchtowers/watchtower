@@ -83,6 +83,16 @@ func (db *DB) LastSentReviewRound(projectID, sessionID int64) (*ReviewRound, err
 		ORDER BY id DESC LIMIT 1`, projectID, sessionID)
 }
 
+// LastSentReviewRoundAt is the session's newest sent or delivered round at
+// one place (source and folder): the round a new one at that place follows
+// up. A round of another place never is — its tree is not this place's
+// history (board #1012).
+func (db *DB) LastSentReviewRoundAt(projectID, sessionID int64, source, folderRoot string) (*ReviewRound, error) {
+	return db.oneReviewRound(`SELECT `+reviewRoundCols+` FROM review_rounds
+		WHERE project_id = ? AND session_id = ? AND status IN ('sent','delivered') AND source = ? AND folder_root = ?
+		ORDER BY id DESC LIMIT 1`, projectID, sessionID, source, folderRoot)
+}
+
 // GetReviewRound reads round id of workbench projectID.
 func (db *DB) GetReviewRound(projectID, id int64) (*ReviewRound, error) {
 	r, err := scanReviewRound(db.QueryRow(`SELECT `+reviewRoundCols+` FROM review_rounds
@@ -132,17 +142,24 @@ const (
 	ReviewSourceBranch = "pr"
 )
 
-// RepointReviewRound moves an open round onto another place — folder,
-// source, base and tree — when the session's place moved under it (board
-// #1012). The round keeps its id, comments, Viewed marks and previous-round
-// link; the Desktop re-places the comments on the new tree as on a Refresh.
+// RepointReviewRound writes an open round's place — folder, source, base,
+// tree and previous-round link — when the session's place moved under it or
+// a branch round's Refresh re-read its base (board #1012). The round keeps
+// its id, comments and Viewed marks; the caller drops the previous-round
+// link on a move to another place, and the Desktop re-places the comments
+// on the new diff as on a Refresh.
 func (db *DB) RepointReviewRound(r ReviewRound) error {
-	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, base_sha = ?, base_label = ?, tree_sha = ?
-		WHERE id = ? AND status = 'open'`, r.FolderRoot, r.Source, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.ID)
+	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, base_sha = ?, base_label = ?, tree_sha = ?,
+		prev_round_id = ? WHERE id = ? AND status = 'open'`,
+		r.FolderRoot, r.Source, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.ID)
 	if err != nil {
 		return fmt.Errorf("moving review round %d: %w", r.ID, err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("moving review round %d: %w", r.ID, err)
+	}
+	if n != 1 {
 		return fmt.Errorf("review round %d: %w", r.ID, ErrReviewRoundNotOpen)
 	}
 	return nil

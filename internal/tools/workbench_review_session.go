@@ -25,34 +25,49 @@ func CheckSessionOnWorkbench(d *db.DB, p *db.Workbench, sessionID int64) error {
 // (its worktree when it has one, else the workbench folder); the diff
 // reviewer CLI and annotate_changes snapshot the same folder.
 func ReviewSessionFolder(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (string, error) {
+	folder, _, err := reviewSessionPlace(ctx, d, p, sessionID)
+	return folder, err
+}
+
+// reviewSessionPlace is ReviewSessionFolder plus whether the agent's folder
+// no longer exists (a worktree removed by the #535 cleanup): the folder is
+// then the workbench folder.
+func reviewSessionPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (folder string, missing bool, err error) {
 	if err := CheckSessionOnWorkbench(d, p, sessionID); err != nil {
-		return "", err
+		return "", false, err
 	}
 	cwd, err := d.TerminalAgentCwd(sessionID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	folder, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, cwd.Path)
+	resolved, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, cwd.Path)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	if folder.Root == "" {
-		return p.FolderPath, nil
+	missing = resolved.Scope == workbenchgit.ScopeMissing
+	if resolved.Root == "" {
+		return p.FolderPath, missing, nil
 	}
-	return folder.Root, nil
+	return resolved.Root, missing, nil
 }
 
 // ReviewSource is what a session's review round reads (board #1012, ask
 // #543: "the folder when it is on the task's branch, else the branch
-// itself").
+// itself" — the "else" scoped to the folder sitting on the default branch
+// or a detached HEAD, the situation the question described).
 type ReviewSource struct {
 	// Folder is the session's review folder (ReviewSessionFolder); git runs there.
 	Folder string
+	// FolderMissing: the agent's folder no longer exists (a removed
+	// worktree); Folder is the workbench folder. An open round is not moved
+	// there: the place is gone, not changed.
+	FolderMissing bool
 	// Tip, when set, is the task branch the round reviews at its committed
-	// tip, read-only: the folder is not checked out on it.
+	// tip, read-only: the folder is on the default branch or detached.
 	Tip *reviewdiff.BranchTip
-	// BaseBranch is the branch above the task branch the tip is measured
-	// against; "" = the default branch.
+	// BaseBranch is the branch above the task branch the round is measured
+	// against, for a tip and for a folder checked out on the task branch
+	// alike; "" = the default branch.
 	BaseBranch string
 }
 
@@ -64,8 +79,8 @@ func (s ReviewSource) Source() string {
 	return db.ReviewSourceFolder
 }
 
-// Read is the place's tree and base: the folder's snapshot against the
-// default branch, or the branch tip against its base branch.
+// Read is the place's tree and base: the folder's snapshot or the branch
+// tip, each against BaseBranch, else the default branch.
 func (s ReviewSource) Read(ctx context.Context, repo *reviewdiff.Repo) (tree string, base reviewdiff.Base, err error) {
 	if s.Tip != nil {
 		base, err = repo.BranchBase(ctx, *s.Tip, s.BaseBranch)
@@ -74,26 +89,29 @@ func (s ReviewSource) Read(ctx context.Context, repo *reviewdiff.Repo) (tree str
 	if tree, err = repo.Snapshot(ctx); err != nil {
 		return "", reviewdiff.Base{}, err
 	}
-	base, err = repo.Base(ctx)
+	base, err = repo.HeadBase(ctx, s.BaseBranch)
 	return tree, base, err
 }
 
-// ResolveReviewSource finds session sessionID's review place: its folder,
-// unless the session's target (terminal_sessions.target_id) or its nearest
-// ancestor carrying one names a task branch, the folder is checked out on
-// another branch (or detached), and that branch exists locally or on
-// origin — then the branch's tip. A task branch found nowhere falls back to
-// the folder.
+// ResolveReviewSource finds session sessionID's review place. The session's
+// target (terminal_sessions.target_id), or its nearest ancestor carrying
+// one, may name a task branch:
+//   - the folder is checked out on it → the folder, measured against the
+//     branch above it (as the tip would be);
+//   - the folder is on the default branch (as reviewdiff.Base finds it) or
+//     detached, and the branch exists locally or on origin → its tip;
+//   - any other branch (a Watchtower wt/<slug> worktree, the owner's own
+//     branch) or a task branch found nowhere → the folder, as before.
 func ResolveReviewSource(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (ReviewSource, *reviewdiff.Repo, error) {
-	folder, err := ReviewSessionFolder(ctx, d, p, sessionID)
+	folder, missing, err := reviewSessionPlace(ctx, d, p, sessionID)
 	if err != nil {
-		return ReviewSource{}, nil, err
+		return ReviewSource{}, nil, fmt.Errorf("resolving session %d's folder: %w", sessionID, err)
 	}
 	repo, err := reviewdiff.Open(folder, nil)
 	if err != nil {
-		return ReviewSource{}, nil, err
+		return ReviewSource{}, nil, fmt.Errorf("opening session %d's folder: %w", sessionID, err)
 	}
-	src := ReviewSource{Folder: folder}
+	src := ReviewSource{Folder: folder, FolderMissing: missing}
 	ticket, err := d.SessionTicket(sessionID)
 	if err != nil || ticket == 0 {
 		return src, repo, err
@@ -107,12 +125,28 @@ func ResolveReviewSource(ctx context.Context, d *db.DB, p *db.Workbench, session
 		return src, repo, nil
 	}
 	head, err := repo.HeadBranch(ctx)
-	if err != nil || head == branch {
-		return src, repo, err
+	if err != nil {
+		return ReviewSource{}, nil, fmt.Errorf("reading session %d's checked-out branch: %w", sessionID, err)
+	}
+	if head == branch {
+		src.BaseBranch = base
+		return src, repo, nil
+	}
+	if head != "" {
+		def, err := repo.DefaultBranch(ctx)
+		if err != nil {
+			return ReviewSource{}, nil, fmt.Errorf("reading the default branch: %w", err)
+		}
+		if head != def {
+			return src, repo, nil
+		}
 	}
 	tip, ok, err := repo.Branch(ctx, branch)
-	if err != nil || !ok {
-		return src, repo, err
+	if err != nil {
+		return ReviewSource{}, nil, fmt.Errorf("reading task branch %q: %w", branch, err)
+	}
+	if !ok {
+		return src, repo, nil
 	}
 	src.Tip, src.BaseBranch = &tip, base
 	return src, repo, nil
