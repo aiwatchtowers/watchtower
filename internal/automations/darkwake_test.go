@@ -18,12 +18,6 @@ import (
 
 const darkWakeLog = "dark wake (Power Nap), holding the schedule until full wake"
 
-// darkWakeDay is today's midnight in loc, so the tests carry no fixed date.
-func darkWakeDay(loc *time.Location) time.Time {
-	n := time.Now().In(loc)
-	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
-}
-
 // darkWakeRun starts s.Run over clock and returns a stop func.
 func darkWakeRun(t *testing.T, s *automations.Scheduler) (stop func()) {
 	t.Helper()
@@ -57,9 +51,8 @@ func TestScheduler_DarkWakeHoldsTheSchedule(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newSchedFixture(t, time.Time{})
-			day := darkWakeDay(f.loc)
-			nine := day.Add(9 * time.Hour)
-			f.clock.Set(day.Add(8 * time.Hour))
+			nine := f.at(14, 9, 0) // everything runs on the fake clock
+			f.clock.Set(f.at(14, 8, 0))
 			a := f.seed(t, "morning", "0 9 * * *", tc.missed)
 			lastBefore := f.get(t, a.ID).LastScheduledFor
 
@@ -105,10 +98,9 @@ func TestScheduler_DarkWakeHoldsTheSchedule(t *testing.T) {
 // wake is logged again.
 func TestScheduler_DarkWakeLogsOncePerDeferral(t *testing.T) {
 	f := newSchedFixture(t, time.Time{})
-	day := darkWakeDay(f.loc)
 	var awake atomic.Bool
 	logs := &syncBuffer{}
-	clock := &stepClock{now: day.Add(8*time.Hour + 30*time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
+	clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
 	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
 	s.SetLogger(log.New(logs, "", 0))
 	s.SetFullWakeProbe(awake.Load)
@@ -163,21 +155,25 @@ func TestExecutor_DarkWakeDoesNotResumeKeptRun(t *testing.T) {
 
 	w.restart()
 	awake.Store(false)
-	stop := runExecutor(t, w.exFixture)
-	defer stop()
-	waitLog(t, w.logs, "no run is claimed until full wake")
-	// The probe stays false until below, so no poll of this dark wake can
-	// resume the run, whenever it runs.
+	if !automations.ExecutorMarkInterrupted(context.Background(), w.e) {
+		t.Fatal("the restart sweep did not run")
+	}
 	kept, err := w.d.NextResumePendingAutomationRuns()
 	if err != nil || len(kept) != 1 || kept[0].ID != id {
-		t.Fatalf("runs kept for a resume in a dark wake = %+v, %v; want run %d", kept, err, id)
+		t.Fatalf("runs kept for a resume = %+v, %v; want run %d", kept, err, id)
 	}
-	if strings.Contains(w.logs.String(), "resumed after restart") {
-		t.Fatalf("run resumed in a dark wake:\n%s", w.logs.String())
+	w.step(t, 0) // a dark-wake poll starts nothing
+	w.step(t, 0)
+	if r := w.run(t, id); r.Status != db.RunWaiting {
+		t.Fatalf("run in a dark wake = %s; want still waiting", r.Status)
+	}
+	if kept, err := w.d.NextResumePendingAutomationRuns(); err != nil || len(kept) != 1 {
+		t.Fatalf("runs kept for a resume after the dark polls = %d, %v; want 1", len(kept), err)
 	}
 
 	awake.Store(true)
-	w.e.Wake()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
 	waitLog(t, w.logs, "resumed after restart")
 }
 
