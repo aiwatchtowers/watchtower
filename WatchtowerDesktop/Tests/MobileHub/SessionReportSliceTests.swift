@@ -45,11 +45,11 @@ final class SessionReportSliceTests: XCTestCase {
         Data(#"""
         {"session":{"id":\#(sessionID),"title":"\#(title)","target_id":415,"kind":"claude","created_at":"2026-01-01T08:59:00Z",
         "last_active_at":"2026-01-01T10:06:00Z","agent_state":"stop","agent_state_at":"2026-01-01T10:06:00Z",
-        "finished_at":"","finish_summary":""},"progress":{"done":1,"total":2},
+        "finished_at":"","finish_summary":""},"progress":{"done":1,"total":3,"merged":1},
         "on_you":[{"id":12,"kind":"question","title":"Which release?","target_id":415,"created_at":"2026-01-01T10:05:00Z"}],
         "now":[{"id":416,"text":"Header menu item","status":"in_progress","branch":"feature/acme-export","since":"2026-01-01T10:00:00Z"}],
         "next":[{"id":417,"text":"Undo Archive Now","status":"todo"}],
-        "phases":[{"target_id":415,"text":"Archive Closed Targets Now","done":1,"total":2,"started_at":"2026-01-01T09:00:00Z",
+        "phases":[{"target_id":415,"text":"Archive Closed Targets Now","done":1,"total":3,"merged":1,"started_at":"2026-01-01T09:00:00Z",
         "finished_at":"","items":[{"id":416,"text":"Header menu item","status":"in_progress"}]}],
         "prs":[{"ref":"pr:175","pr_number":175,"title":"Archive Closed Targets Now","state":"open","additions":120,"deletions":8,
         "merged_at":"","checked_at":"2026-01-01T10:00:00Z","targets":[415]}],"pr_note":""}
@@ -90,6 +90,33 @@ final class SessionReportSliceTests: XCTestCase {
         XCTAssertEqual(Set(item.keys), ["id", "text", "status"])
         XCTAssertNil(payload["phases_clipped"], "a report under the cap is not clipped")
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
+    }
+
+    /// Board #1017: the merged share reaches the phone in the progress and
+    /// in every phase; a CLI without it publishes 0, and a payload stored by
+    /// a build before #1017 still reads back.
+    func testTheMergedShareIsPublished() throws {
+        let payload = try SliceJSON.object(try SessionReportSlice.encode(try Self.report(31)))
+        let progress = try XCTUnwrap(payload["progress"] as? [String: Any])
+        assertWireShape(progress, matches: try XCTUnwrap(SliceJSON.kitFixture("workbench/session_report.json")["progress"] as? [String: Any]))
+        XCTAssertEqual(progress["merged"] as? Int, 1)
+        let phase = try XCTUnwrap((payload["phases"] as? [[String: Any]])?.first)
+        XCTAssertEqual(phase["merged"] as? Int, 1)
+
+        var old = try XCTUnwrap(String(data: Self.cliJSON(31), encoding: .utf8))
+        old = old.replacingOccurrences(of: #","merged":1"#, with: "")
+        let none = try SliceJSON.object(try SessionReportSlice.encode(try JSONDecoder().decode(SessionReport.self, from: Data(old.utf8))))
+        XCTAssertEqual((none["progress"] as? [String: Any])?["merged"] as? Int, 0)
+        XCTAssertEqual((none["phases"] as? [[String: Any]])?.first?["merged"] as? Int, 0)
+
+        let stored = Data(#"""
+        {"session":{"id":31,"title":"","kind":"","created_at":"","last_active_at":"","agent_state":"","agent_state_at":"",
+        "finished_at":"","finish_summary":""},"progress":{"done":1,"total":2},"on_you":[],"now":[],"next":[],
+        "phases":[{"target_id":415,"text":"P","done":1,"total":2,"started_at":"","finished_at":"","items":[]}],"prs":[],"pr_note":""}
+        """#.utf8)
+        let decoded = try SessionReportSlice.decode(stored)
+        XCTAssertNil(decoded.progress.merged)
+        XCTAssertNil(decoded.phases.first?.merged)
     }
 
     func testListAndTextCapsSetTheMoreCounts() throws {

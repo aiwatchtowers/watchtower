@@ -91,10 +91,11 @@ struct SessionDetailModel {
 
 /// The report card: progress segments, a short summary and the PRs.
 struct SessionReportSection: Equatable {
-    /// "2 / 7 targets".
+    /// "2 / 7 targets", "3 / 32 targets · 25 merged" with a merged share
+    /// (board #1017, worded as the Mac's report hero).
     let progressLabel: String
     let segments: [ProgressSegment]
-    /// "2 of 7 targets done, 1 in progress".
+    /// "2 of 7 targets done, 25 merged, 1 in progress".
     let accessibilityLabel: String
     /// The finish summary of a finished session; otherwise "Now: …" and
     /// "Next: …".
@@ -126,7 +127,8 @@ struct SessionReportSection: Equatable {
             (left, "to do", .secondary)
         ].filter { $0.amount > 0 }
 
-        progressLabel = "\(done) / \(total) targets"
+        let merged = report.progress.mergedText
+        progressLabel = "\(done) / \(total) targets" + (merged.map { " · \($0)" } ?? "")
         if total <= Self.maxSingleSegments {
             segments = runs.flatMap { run in
                 Array(repeating: (run.label, run.tone), count: run.amount)
@@ -138,7 +140,7 @@ struct SessionReportSection: Equatable {
                 ProgressSegment(id: index, label: "\(run.amount) \(run.label)", tone: run.tone, weight: run.amount)
             }
         }
-        accessibilityLabel = (["\(done) of \(total) targets done"]
+        accessibilityLabel = (["\(done) of \(total) targets done"] + [merged].compactMap { $0 }
             + runs.filter { !["done", "to do"].contains($0.label) }.map { "\($0.amount) \($0.label)" })
             .joined(separator: ", ")
 
