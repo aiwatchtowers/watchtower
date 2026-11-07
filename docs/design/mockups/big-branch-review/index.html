@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Big Branch Review</title>
+<!-- Mockups for docs/superpowers/specs/2026-11-07-big-branch-review-design.md (board #1025),
+     technical spec §5–§6. Drawn on top of today's Branch review layout
+     (WatchtowerDesktop/Sources/Views/Workbench/Review/): identity bar, toolbar, file/chapter column
+     beside the file header + diff + chapter foot, the chat panel on the right (PanelSplit).
+     Neutral sample data only. Values follow docs/design/desktop-style-guide.md tokens:
+     Spacing 2/4/6/8/10/12/16/20, Radius row 8 / control 6 / container 10, Fill card .06 hover .07 selected .12 (accent),
+     ChipTint .14 fill + .5pt stroke at .3, hairline .5pt between panes only, no row dividers.
+     Open with #dark for the dark appearance. -->
+<style>
+:root {
+  --bg: #ffffff; --window: #ececec; --text: rgba(0,0,0,.85); --secondary: rgba(0,0,0,.5); --tertiary: rgba(0,0,0,.26);
+  --primary-rgb: 0,0,0; --accent: #007aff; --accent-rgb: 0,122,255; --hair: rgba(0,0,0,.12);
+  --green-rgb: 52,199,89; --blue-rgb: 0,122,255; --orange-rgb: 255,149,0; --red-rgb: 255,59,48; --gray-rgb: 142,142,147;
+  --green-text: #1f8a3a; --orange-text: #b26200; --red-text: #d70015;
+  --diff-add: rgba(52,199,89,.13); --diff-del: rgba(255,59,48,.11);
+}
+:root.dark {
+  --bg: #1e1e1e; --window: #2a2a2a; --text: rgba(255,255,255,.85); --secondary: rgba(255,255,255,.55); --tertiary: rgba(255,255,255,.25);
+  --primary-rgb: 255,255,255; --accent: #0a84ff; --accent-rgb: 10,132,255; --hair: rgba(255,255,255,.14);
+  --green-rgb: 48,209,88; --blue-rgb: 10,132,255; --orange-rgb: 255,159,10; --red-rgb: 255,69,58; --gray-rgb: 152,152,157;
+  --green-text: #30d158; --orange-text: #ff9f0a; --red-text: #ff453a;
+  --diff-add: rgba(48,209,88,.14); --diff-del: rgba(255,69,58,.14);
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: var(--window); color: var(--text);
+  font: 13px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+h1.frame { font-size: 15px; font-weight: 600; margin: 28px 0 8px; color: var(--secondary); }
+h1.frame:first-child { margin-top: 0; }
+h1.frame code { font-size: 12px; font-weight: 500; }
+.win { width: 1320px; background: var(--bg); border-radius: 10px; overflow: hidden; position: relative;
+  box-shadow: 0 0 0 .5px var(--hair), 0 8px 30px rgba(0,0,0,.18); }
+.note { width: 1320px; color: var(--secondary); font-size: 12px; margin: 8px 0 0; }
+.mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11px; }
+.spacer { flex: 1; }
+/* workbench title row */
+.titlebar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: .5px solid var(--hair); }
+.lights { display: flex; gap: 8px; margin-right: 12px; }
+.lights i { width: 12px; height: 12px; border-radius: 50%; background: rgba(var(--gray-rgb),.5); display: block; }
+.wbname { font-weight: 600; margin-right: 8px; }
+.seg { display: flex; gap: 2px; padding: 2px; border-radius: 18px; background: rgba(var(--primary-rgb),.04); }
+.seg span { padding: 3px 10px; border-radius: 16px; color: var(--secondary); font-size: 12px; white-space: nowrap; }
+.seg span.on { background: rgba(var(--accent-rgb),.20); color: var(--accent); font-weight: 500; }
+.icon { color: var(--secondary); padding: 2px 6px; font-size: 13px; border-radius: 6px; }
+.icon.on { background: rgba(var(--accent-rgb),.20); color: var(--accent); }
+/* identity bar (ReviewIdentityBar) */
+.idbar { padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; border-bottom: .5px solid var(--hair); }
+.idbar .l { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.idbar .cap { font-weight: 600; font-size: 13px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.dot.green { background: rgb(var(--green-rgb)); } .dot.purple { background: #af52de; } .dot.gray { background: rgb(var(--gray-rgb)); }
+.sec { color: var(--secondary); } .ter { color: var(--tertiary); }
+/* toolbar (ReviewToolbar) */
+.toolbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: .5px solid var(--hair); }
+.progress { font-size: 11px; color: var(--secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.btn { display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
+.btn.secondary { background: rgba(var(--primary-rgb),.06); color: var(--text); }
+.btn.quiet { color: var(--accent); padding: 3px 4px; }
+.btn.primary { background: var(--accent); color: #fff; font-weight: 500; }
+.btn.disabled { opacity: .45; }
+.btn.small { padding: 2px 8px; font-size: 11px; }
+/* banners (ReviewBanner / WriteErrorBanner) */
+.banner { display: flex; align-items: flex-start; gap: 8px; padding: 6px 12px; font-size: 12px; border-bottom: .5px solid var(--hair); }
+.banner.info { background: rgba(var(--blue-rgb),.08); }
+.banner.warn { background: rgba(var(--orange-rgb),.10); }
+.banner.error { background: rgba(var(--red-rgb),.09); }
+.banner .ic { width: 14px; text-align: center; }
+.banner.info .ic { color: var(--accent); } .banner.warn .ic { color: var(--orange-text); } .banner.error .ic { color: var(--red-text); }
+/* body */
+.body { display: grid; min-height: 560px; }
+.col { border-right: .5px solid var(--hair); padding: 8px 6px; overflow: hidden; }
+.detail { display: flex; flex-direction: column; min-width: 0; }
+.panel { border-left: .5px solid var(--hair); display: flex; flex-direction: column; background: var(--bg); min-width: 0; }
+/* summary card at the top of the column (as Quick's Summary card) */
+.card { background: rgba(var(--primary-rgb),.06); border-radius: 8px; padding: 8px 10px; box-shadow: inset 0 0 0 .5px var(--hair); }
+.card + .card { margin-top: 8px; }
+.counter { display: flex; align-items: center; gap: 6px; padding: 8px 6px 2px; font-size: 11px; color: var(--secondary); font-variant-numeric: tabular-nums; }
+.counter b { color: var(--text); font-weight: 600; }
+/* SectionHeader */
+.section { display: flex; align-items: center; gap: 6px; padding: 10px 6px 4px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .6px; color: var(--secondary); }
+.count { text-transform: none; white-space: nowrap; font-weight: 500; padding: 0 6px; border-radius: 8px; background: rgba(var(--primary-rgb),.06); letter-spacing: 0; font-size: 11px; }
+.section .why { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.chev { font-size: 11px; width: 12px; display: inline-block; color: var(--secondary); }
+/* chapter rows (.kitRow) */
+.ch { display: grid; grid-template-columns: 16px 1fr auto; column-gap: 6px; padding: 5px 6px; border-radius: 8px; align-items: start; }
+.ch.sel { background: rgba(var(--accent-rgb),.12); }
+.ch.hover { background: rgba(var(--primary-rgb),.07); }
+.ch .ck { font-size: 12px; color: var(--secondary); line-height: 17px; }
+.ch .ck.done { color: var(--green-text); }
+.ch .t { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch.sel .t { font-weight: 600; }
+.ch .meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 2px; font-size: 11px; color: var(--secondary); }
+.ch .r { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+.lines { font-size: 10px; color: var(--secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.state { font-size: 11px; display: flex; align-items: center; gap: 4px; margin-top: 2px; }
+.state.ok { color: var(--secondary); } .state.ok .g { color: var(--green-text); }
+.state.run { color: var(--secondary); }
+.state.fail { color: var(--red-text); display: block; }
+.state.wait { color: var(--tertiary); }
+/* chips */
+.chip { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+.chip.green { background: rgba(var(--green-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--green-rgb),.3); color: var(--green-text); }
+.chip.blue { background: rgba(var(--blue-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--blue-rgb),.3); color: var(--accent); }
+.chip.orange { background: rgba(var(--orange-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--orange-rgb),.3); color: var(--orange-text); }
+.chip.red { background: rgba(var(--red-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--red-rgb),.3); color: var(--red-text); }
+.chip.gray { background: rgba(var(--gray-rgb),.14); box-shadow: inset 0 0 0 .5px rgba(var(--gray-rgb),.3); color: var(--secondary); }
+.tag { display: inline-block; padding: 0 6px; border-radius: 999px; font-size: 10px; box-shadow: inset 0 0 0 .5px rgba(var(--primary-rgb),.28); color: var(--secondary); white-space: nowrap; }
+.tag.mono { font-size: 10px; }
+.star { color: #ffcc00; font-size: 10px; }
+.spin { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid rgba(var(--primary-rgb),.15); border-top-color: var(--secondary); vertical-align: -1px; }
+/* file rows */
+.file { display: grid; grid-template-columns: 14px 1fr auto auto; column-gap: 6px; align-items: center; padding: 3px 6px 3px 26px; border-radius: 8px; font-size: 12px; }
+.file.flat { padding-left: 6px; }
+.file.sel { background: rgba(var(--accent-rgb),.12); }
+.file .g { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 10px; color: var(--secondary); }
+.file .p { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file .p .dir { color: var(--secondary); }
+.file .n { font-size: 10px; color: var(--secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.file .v { color: var(--green-text); font-size: 11px; }
+/* detail */
+.fhead { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: .5px solid var(--hair); font-size: 12px; }
+.diff { flex: 1; font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11px; line-height: 17px; padding: 6px 0; display: grid; grid-template-columns: 1fr 1fr; }
+.diff .side { border-right: .5px solid var(--hair); }
+.diff .side:last-child { border-right: 0; }
+.dl { display: grid; grid-template-columns: 34px 1fr; white-space: pre; overflow: hidden; }
+.dl .ln { color: var(--tertiary); text-align: right; padding-right: 8px; }
+.dl.add { background: var(--diff-add); } .dl.del { background: var(--diff-del); } .dl.gap { color: var(--tertiary); background: rgba(var(--primary-rgb),.03); }
+.foot { padding: 8px 12px; display: flex; flex-direction: column; gap: 6px; }
+.footline { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--secondary); }
+.risk { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; padding: 4px 6px; border-radius: 8px; font-size: 12px; }
+.risk .where { font-size: 11px; color: var(--secondary); }
+.h-cap { font-size: 11px; font-weight: 600; }
+/* chapter description card in the detail */
+.chcard { margin: 10px 12px 6px; }
+.chcard .row1 { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.chcard .title { font-weight: 600; font-size: 13px; }
+.chcard p { margin: 2px 0 8px; font-size: 12px; }
+.chcard ul { margin: 2px 0 4px; padding-left: 18px; font-size: 12px; }
+.chcard li { margin: 2px 0; }
+.disclosure { font-size: 11px; color: var(--secondary); }
+.disclosure .box { margin-top: 4px; padding: 6px 8px; border-radius: 6px; background: rgba(var(--primary-rgb),.04); }
+/* meaning (one readable column) */
+.meaning { padding: 20px; display: flex; justify-content: center; }
+.meaning .colw { width: 760px; display: flex; flex-direction: column; gap: 16px; }
+.cov { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; align-items: baseline; padding: 2px 0; font-size: 12px; }
+.cov .i.done { color: var(--green-text); } .cov .i.partial { color: var(--orange-text); } .cov .i.nf { color: var(--red-text); }
+.cov .where { font-size: 11px; }
+.link { color: var(--accent); }
+.sub-cap { font-size: 11px; color: var(--secondary); margin: 8px 0 2px; }
+/* reviewer panel */
+.ph { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: .5px solid var(--hair); }
+.feed { flex: 1; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+.owner { align-self: flex-end; max-width: 85%; background: rgba(var(--accent-rgb),.12); border-radius: 16px; padding: 6px 10px; }
+.answer p { margin: 0 0 6px; }
+.answer ol { margin: 0 0 6px; padding-left: 18px; } .answer li { margin: 0 0 4px; }
+.cite { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--accent); }
+.acts { display: flex; gap: 6px; align-items: center; }
+.err { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: 8px; background: rgba(var(--red-rgb),.08); font-size: 12px; }
+.composer { margin: 8px 10px 10px; padding: 7px 10px; border-radius: 10px; background: rgba(var(--primary-rgb),.06); display: flex; align-items: center; gap: 8px; color: var(--tertiary); font-size: 12px; }
+.composer .send { margin-left: auto; width: 20px; height: 20px; border-radius: 50%; background: rgba(var(--primary-rgb),.12); color: var(--bg); display: grid; place-items: center; font-size: 11px; }
+.mapline { font-size: 11px; color: var(--secondary); padding: 6px 12px 0; }
+</style>
+<script>if (location.hash === '#dark') document.documentElement.classList.add('dark');</script>
+</head>
+<body>
+
+<!-- ============================================================= 1 -->
+<h1 class="frame">1 · Big branch, overview running — items 1, 2, 3, 6 (Deep · Chapters; chapters and danger at once, AI texts arrive per chapter)</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span class="on">Session</span><span>Board</span><span>Files</span></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="idbar">
+    <div class="l"><span class="cap">Branch review</span><span class="ter" style="font-size:11px">Round 1 · open</span></div>
+    <div class="l"><span class="dot purple"></span><span class="sec">Claude</span><span>Provider registry</span><span style="color:#af52de;font-size:11px">Ready to check</span><span class="ter">· 12 min ago</span></div>
+    <div class="l sec"><span>⎇ feature/provider-registry</span><span class="ter">→</span><span class="mono">main @ 4c1e9a0</span><span class="ter">·</span><span>412 files · +21,480 −6,120</span></div>
+    <div class="l"><span class="sec">For</span><b>#214</b><span>Route each AI call through a provider registry</span><span class="link" style="font-size:11px">+2 more ▾</span></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span>Quick</span><span class="on">Deep</span></div>
+    <div class="seg"><span>1 Meaning</span><span class="on">2 Chapters</span><span>3 Wrap-up</span></div>
+    <span class="progress">1,240 / 15,360 lines · 2 / 13 chapters · 0:18 active</span>
+    <div class="spacer"></div>
+    <span class="icon">▤</span><span class="icon">↻</span><span class="icon">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="body" style="grid-template-columns: 320px 1fr;">
+    <div class="col">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px"><span class="spin"></span><b style="font-weight:500">Describing chapters — 8 of 13 done</b></div>
+        <div class="sec" style="font-size:11px;margin-top:3px">Summary waits for 5 chapters (3 describing, 2 queued). Chapters fill in as they finish.</div>
+      </div>
+      <div class="counter"><b>11 chapters</b> / <b>396 files</b> left<span class="spacer"></span><span class="link">Next: Fallback chain →</span></div>
+
+      <div class="section"><span class="chev">⌄</span>Breaking and significant <span class="count">5</span></div>
+      <div class="ch sel">
+        <span class="ck">○</span>
+        <div><div class="t">Provider capability table</div>
+          <div class="meta"><span class="tag mono">tn/g7</span><span>public API removed · migration edited</span></div>
+          <div class="state ok"><span class="g">✓</span>Described</div></div>
+        <div class="r"><span class="chip red">Breaking</span><span class="lines">1,840 lines</span></div>
+      </div>
+      <div class="file sel"><span class="g">M</span><span class="p"><span class="dir">internal/providers/</span>capabilities.go</span><span class="chip red">API removed</span><span class="n">+212 −148</span></div>
+      <div class="file"><span class="g">M</span><span class="p"><span class="dir">…/migrations/</span>00042_provider_caps.sql</span><span class="chip red">Migration edited</span><span class="n">+18 −6</span></div>
+      <div class="file"><span class="g">M</span><span class="p"><span class="dir">internal/providers/</span>registry.go</span><span></span><span class="n">+96 −40</span></div>
+      <div class="file"><span class="g">A</span><span class="p"><span class="dir">internal/providers/</span>capabilities_test.go</span><span></span><span class="n">+310</span></div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">Fallback chain on rate limit</div>
+          <div class="meta"><span class="tag mono">ACME-412</span><span>tests deleted</span></div>
+          <div class="state run"><span class="spin"></span>Describing…</div></div>
+        <div class="r"><span class="chip red">Breaking</span><span class="lines">2,310 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">Token store per provider</div>
+          <div class="meta"><span class="tag">#219</span><span>auth / tokens</span></div>
+          <div class="state fail">The overview did not finish in 3 min · <span class="link">Retry</span></div></div>
+        <div class="r"><span class="chip orange">Significant</span><span class="lines">640 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">CI and dependencies</div>
+          <div class="meta"><span class="tag mono">lane/build-bump</span><span>dependency · CI</span></div>
+          <div class="state run"><span class="spin"></span>Describing…</div></div>
+        <div class="r"><span class="chip orange">Significant</span><span class="lines">120 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck done">✓</span>
+        <div><div class="t">`ai models` command flags</div>
+          <div class="meta"><span class="tag">#221</span><span>CLI flags</span></div>
+          <div class="state ok"><span class="g">✓</span>Described</div></div>
+        <div class="r"><span class="chip orange">Significant</span><span class="lines">380 lines</span></div>
+      </div>
+
+      <div class="section"><span class="chev">⌄</span>Other changes <span class="count">7</span></div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">Usage meter per provider</div>
+          <div class="meta"><span class="tag mono">tn/g9</span><span class="tag">also tn/g7</span></div>
+          <div class="state ok"><span class="g">✓</span>Described</div></div>
+        <div class="r"><span class="lines">1,120 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck done">✓</span>
+        <div><div class="t">Settings → AI providers screen</div>
+          <div class="meta"><span class="tag">#223</span></div>
+          <div class="state run"><span class="spin"></span>Describing…</div></div>
+        <div class="r"><span class="lines">2,040 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">internal/digest</div>
+          <div class="meta"><span>package · no lane</span></div>
+          <div class="state wait">Queued</div></div>
+        <div class="r"><span class="lines">860 lines</span></div>
+      </div>
+      <div class="ch hover">
+        <span class="ck">○</span>
+        <div><div class="t">docs/guide</div>
+          <div class="meta"><span>package · no lane</span></div>
+          <div class="state wait">Queued</div></div>
+        <div class="r"><span class="lines">410 lines</span></div>
+      </div>
+      <div class="sec" style="font-size:11px;padding:2px 6px 0 28px">+ 3 more</div>
+
+      <div class="section"><span class="chev">›</span>Can skip <span class="count">214 files</span><span class="why">· 9,870 lines</span></div>
+    </div>
+
+    <div class="detail">
+      <div class="card chcard">
+        <div class="row1"><span class="title">Provider capability table</span><span class="chip red">Breaking</span><span class="tag mono">tn/g7</span><span class="sec" style="font-size:11px">#217 “Capability table for every provider”</span><span class="spacer"></span><span class="star">★</span><span class="sec" style="font-size:11px">core</span></div>
+        <div class="h-cap">What it does</div>
+        <p>Replaces the per-provider <span class="mono">switch</span> in <span class="mono">registry.go</span> with one capability table: each provider row says which tiers, tools and attachment kinds it supports. The registry now picks a model by asking the table instead of hard-coded names.</p>
+        <div class="h-cap">What can break</div>
+        <ul>
+          <li><span class="mono">Capabilities.SupportsTools</span> is removed; its two callers outside this chapter (<span class="link mono">internal/chat/turn.go</span>) were moved, a third in <span class="mono">internal/ideas</span> was not and only compiles because it reads a field with the same name.</li>
+          <li>Migration <span class="mono">00042</span> is edited after release: an install that already applied it keeps the old column default.</li>
+        </ul>
+        <div class="disclosure">Signals: public API removed (1), migration edited (1)</div>
+      </div>
+      <div class="fhead"><span class="mono" style="font-size:12px">internal/providers/capabilities.go</span><span class="chip red">API removed</span><span class="sec" style="font-size:11px">+212 −148</span><span class="spacer"></span><span class="btn quiet">Full file</span><span class="btn secondary small">Viewed</span></div>
+      <div class="diff">
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 18 unchanged lines</span></div>
+          <div class="dl"><span class="ln">19</span><span>// Capabilities of one provider.</span></div>
+          <div class="dl del"><span class="ln">20</span><span>func SupportsTools(p Provider) bool {</span></div>
+          <div class="dl del"><span class="ln">21</span><span>	switch p.Name {</span></div>
+          <div class="dl del"><span class="ln">22</span><span>	case "alpha", "beta":</span></div>
+          <div class="dl del"><span class="ln">23</span><span>		return true</span></div>
+          <div class="dl del"><span class="ln">24</span><span>	}</span></div>
+          <div class="dl del"><span class="ln">25</span><span>	return false</span></div>
+          <div class="dl del"><span class="ln">26</span><span>}</span></div>
+          <div class="dl"><span class="ln">27</span><span></span></div>
+        </div>
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 18 unchanged lines</span></div>
+          <div class="dl"><span class="ln">19</span><span>// Capabilities of one provider.</span></div>
+          <div class="dl add"><span class="ln">20</span><span>type Capability struct {</span></div>
+          <div class="dl add"><span class="ln">21</span><span>	Tiers       []Tier</span></div>
+          <div class="dl add"><span class="ln">22</span><span>	Tools       bool</span></div>
+          <div class="dl add"><span class="ln">23</span><span>	Attachments []Kind</span></div>
+          <div class="dl add"><span class="ln">24</span><span>}</span></div>
+          <div class="dl add"><span class="ln">25</span><span></span></div>
+          <div class="dl add"><span class="ln">26</span><span>var table = map[string]Capability{</span></div>
+          <div class="dl"><span class="ln">27</span><span></span></div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="footline"><span>Chapter 1 of 13 · 1 of 4 files viewed</span><span class="spacer"></span><span class="btn secondary small">Mark Chapter Viewed and Go On</span></div>
+        <div class="h-cap">What to look at in this chapter</div>
+        <div class="risk"><span class="chip red">High</span><span>A caller in another package still reads the removed field by name.</span><span class="where mono">internal/ideas/route.go</span></div>
+        <div class="risk"><span class="chip orange">Medium</span><span>The edited migration does not reach installs that already ran it.</span><span class="where mono">00042_provider_caps.sql</span></div>
+        <div style="display:flex"><span class="spacer"></span><span class="btn secondary small">Next: Wrap-up →</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">The danger level and signal hint come from the map (no AI) and show at once; the states fill in from the streamed overview. A chapter row's caption is its lane: a branch label (<span class="mono">tn/g7</span>), a Jira key or a board ticket (<span class="mono">#219</span>); a file touched by more than one lane shows the others as “also …”. Package chapters (no lane) say so. <b>Can skip</b> is folded and never sent to the model. The counter excludes Can skip; “Next” names the next not-viewed chapter in danger order.</p>
+
+<!-- ============================================================= 2a -->
+<h1 class="frame">2a · Big branch, done — item 4: summary checked against the goal (Deep · Meaning)</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span class="on">Session</span><span>Board</span><span>Files</span></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="idbar">
+    <div class="l"><span class="cap">Branch review</span><span class="ter" style="font-size:11px">Round 1 · open</span></div>
+    <div class="l"><span class="dot purple"></span><span class="sec">Claude</span><span>Provider registry</span><span style="color:#af52de;font-size:11px">Ready to check</span><span class="ter">· 31 min ago</span></div>
+    <div class="l sec"><span>⎇ feature/provider-registry</span><span class="ter">→</span><span class="mono">main @ 4c1e9a0</span><span class="ter">·</span><span>412 files · +21,480 −6,120</span></div>
+    <div class="l"><span class="sec">For</span><b>#214</b><span>Route each AI call through a provider registry</span><span class="link" style="font-size:11px">+2 more ▾</span></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span>Quick</span><span class="on">Deep</span></div>
+    <div class="seg"><span class="on">1 Meaning</span><span>2 Chapters</span><span>3 Wrap-up</span></div>
+    <span class="progress">1,240 / 15,360 lines · 2 / 13 chapters · 0:24 active</span>
+    <div class="spacer"></div>
+    <span class="icon">↻</span><span class="icon">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="meaning">
+    <div class="colw">
+      <div class="card" style="padding:12px">
+        <div style="font-size:12.5px">The branch moves every AI call behind one provider registry with a capability table, adds a fallback chain on rate limits and a per-provider usage meter, and gives Settings a provider screen. Most of the goal is there; the token store moved but its revoke path is untested, and one chapter could not be described.</div>
+        <div class="h-cap" style="margin-top:10px">Does it cover the goal?</div>
+        <div class="sub-cap">This session's ticket</div>
+        <div class="cov"><span class="i done">✓</span><div>#214 Route each AI call through a provider registry<div class="where"><span class="cite">internal/providers/registry.go</span> · <span class="cite">internal/chat/turn.go</span></div></div><span class="chip green">Done</span></div>
+        <div class="sub-cap">Lane tickets</div>
+        <div class="cov"><span class="i done">✓</span><div>#217 Capability table for every provider <span class="tag mono">tn/g7</span></div><span class="chip green">Done</span></div>
+        <div class="cov"><span class="i partial">◐</span><div>ACME-412 Fallback chain on rate limit <span class="tag mono">tn/g8</span><div class="where sec">Falls back on 429; the 529 “overloaded” answer is not handled.</div></div><span class="chip orange">Partial</span></div>
+        <div class="cov"><span class="i partial">◐</span><div>#219 Token store per provider<div class="where sec">Its work sits only in a chapter that was not described.</div></div><span class="chip orange">Partial</span></div>
+        <div class="cov"><span class="i nf">✕</span><div>#223 Settings → AI providers: test connection button</div><span class="chip red">Not found</span></div>
+        <div class="cov"><span class="i done">✓</span><div><span class="mono">lane/build-bump</span> <span class="sec" style="font-size:11px">· no ticket found, shown by its branch</span></div><span class="chip green">Done</span></div>
+        <div class="h-cap" style="margin-top:10px">Not covered</div>
+        <div class="cov"><span class="i" style="color:var(--secondary)">–</span><div>Token store per provider <span class="sec" style="font-size:11px">· 3 files · auth / tokens · not described</span></div><span class="btn quiet small">Open chapter</span></div>
+        <div class="h-cap" style="margin-top:10px">Outside the goal</div>
+        <div class="cov"><span class="i" style="color:var(--secondary)">·</span><div><span class="cite">internal/digest/batch.go</span> <span class="sec" style="font-size:11px">— batch size raised from 20 to 40</span></div><span></span></div>
+        <div class="cov"><span class="i" style="color:var(--secondary)">·</span><div><span class="cite">docs/guide/settings/ai.md</span> <span class="sec" style="font-size:11px">— rewritten section on model tiers</span></div><span></span></div>
+        <div class="sec" style="font-size:11px;margin-top:8px">15,360 changed lines in 13 chapters, plus 9,870 that can be skipped · about 3 h to read</div>
+      </div>
+      <div style="display:flex;align-items:center"><span style="font-weight:600">Design comments</span><span class="spacer"></span><span class="btn secondary small">Add design comment…</span></div>
+      <div class="sec" style="margin-top:-8px">None yet</div>
+      <div style="display:flex"><span class="spacer"></span><span class="btn secondary small">Next: Chapters →</span></div>
+    </div>
+  </div>
+</div>
+<p class="note">Coverage lists every intent item: the session's own first (the agent's finish check looks at these only), then one per lane ticket found on the board or in Jira; a lane with no ticket shows its branch name. A chapter that failed or was not reached is listed under <b>Not covered</b>; an item whose work sits only there is at most Partial.</p>
+
+<!-- ============================================================= 2b -->
+<h1 class="frame">2b · A chapter that keeps failing: “Not described — not covered by the summary”, and chapters the run did not reach (Deep · Chapters)</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span class="on">Session</span><span>Board</span><span>Files</span></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span>Quick</span><span class="on">Deep</span></div>
+    <div class="seg"><span>1 Meaning</span><span class="on">2 Chapters</span><span>3 Wrap-up</span></div>
+    <span class="progress">4,980 / 15,360 lines · 5 / 13 chapters · 1:02 active</span>
+    <div class="spacer"></div>
+    <span class="icon">▤</span><span class="icon">↻</span><span class="icon">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="body" style="grid-template-columns: 320px 1fr; min-height: 470px">
+    <div class="col">
+      <div class="card">
+        <div style="font-size:12px;font-weight:500">Summary ready</div>
+        <div class="sec" style="font-size:11px;margin-top:2px">1 chapter failed, 2 were not reached · they are listed as not covered.</div>
+        <div style="margin-top:6px"><span class="btn secondary small">Describe 2 remaining</span></div>
+      </div>
+      <div class="counter"><b>8 chapters</b> / <b>271 files</b> left</div>
+      <div class="section"><span class="chev">⌄</span>Breaking and significant <span class="count">5</span></div>
+      <div class="ch"><span class="ck done">✓</span><div><div class="t">Provider capability table</div><div class="meta"><span class="tag mono">tn/g7</span><span>public API removed</span></div></div><div class="r"><span class="chip red">Breaking</span><span class="lines">1,840 lines</span></div></div>
+      <div class="ch"><span class="ck done">✓</span><div><div class="t">Fallback chain on rate limit</div><div class="meta"><span class="tag mono">ACME-412</span><span>tests deleted</span></div></div><div class="r"><span class="chip red">Breaking</span><span class="lines">2,310 lines</span></div></div>
+      <div class="ch sel"><span class="ck">○</span><div><div class="t">Token store per provider</div><div class="meta"><span class="tag">#219</span><span>auth / tokens</span></div>
+        <div class="state fail">Not described — not covered by the summary · <span class="link">Retry</span></div></div><div class="r"><span class="chip orange">Significant</span><span class="lines">640 lines</span></div></div>
+      <div class="file sel"><span class="g">M</span><span class="p"><span class="dir">internal/auth/</span>token_store.go</span><span class="chip orange">Auth</span><span class="n">+244 −190</span></div>
+      <div class="file"><span class="g">A</span><span class="p"><span class="dir">internal/auth/</span>provider_tokens.go</span><span class="chip orange">Auth</span><span class="n">+150</span></div>
+      <div class="file"><span class="g">M</span><span class="p"><span class="dir">internal/auth/</span>token_store_test.go</span><span></span><span class="n">+40 −16</span></div>
+      <div class="ch"><span class="ck done">✓</span><div><div class="t">CI and dependencies</div><div class="meta"><span class="tag mono">lane/build-bump</span><span>dependency · CI</span></div></div><div class="r"><span class="chip orange">Significant</span><span class="lines">120 lines</span></div></div>
+      <div class="ch"><span class="ck done">✓</span><div><div class="t">`ai models` command flags</div><div class="meta"><span class="tag">#221</span><span>CLI flags</span></div></div><div class="r"><span class="chip orange">Significant</span><span class="lines">380 lines</span></div></div>
+      <div class="section"><span class="chev">⌄</span>Other changes <span class="count">8</span></div>
+      <div class="ch"><span class="ck">○</span><div><div class="t">internal/digest</div><div class="meta"><span>package · no lane</span></div><div class="state wait">Not described yet</div></div><div class="r"><span class="lines">860 lines</span></div></div>
+      <div class="ch"><span class="ck">○</span><div><div class="t">docs/guide</div><div class="meta"><span>package · no lane</span></div><div class="state wait">Not described yet</div></div><div class="r"><span class="lines">410 lines</span></div></div>
+      <div class="sec" style="font-size:11px;padding:2px 6px 0 28px">+ 6 more</div>
+      <div class="section"><span class="chev">›</span>Can skip <span class="count">214 files</span><span class="why">· 9,870 lines</span></div>
+    </div>
+    <div class="detail">
+      <div class="card chcard">
+        <div class="row1"><span class="title">Token store per provider</span><span class="chip orange">Significant</span><span class="tag">#219</span><span class="sec" style="font-size:11px">“Token store per provider”</span></div>
+        <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px">
+          <span style="color:var(--orange-text)">⚠</span>
+          <div style="flex:1">Not described — not covered by the summary. The AI provider failed on “Token store per provider” on every try (3).
+            <div class="disclosure" style="margin-top:4px">▸ Provider's message</div></div>
+          <span class="btn secondary small">Retry</span>
+        </div>
+        <div class="sec" style="font-size:11px;margin-top:8px">Signals without AI: auth / tokens (2 files). The summary saw this chapter's title, files and signals only. Read it yourself, or hand it to the author with a design comment.</div>
+      </div>
+      <div class="fhead"><span class="mono" style="font-size:12px">internal/auth/token_store.go</span><span class="chip orange">Auth</span><span class="sec" style="font-size:11px">+244 −190</span><span class="spacer"></span><span class="btn quiet">Full file</span><span class="btn secondary small">Viewed</span></div>
+      <div class="diff">
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 40 unchanged lines</span></div>
+          <div class="dl del"><span class="ln">41</span><span>func (s *Store) Token() (string, error) {</span></div>
+          <div class="dl del"><span class="ln">42</span><span>	return s.read(s.path)</span></div>
+          <div class="dl"><span class="ln">43</span><span>}</span></div>
+        </div>
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 40 unchanged lines</span></div>
+          <div class="dl add"><span class="ln">41</span><span>func (s *Store) Token(p string) (string, error) {</span></div>
+          <div class="dl add"><span class="ln">42</span><span>	return s.read(s.pathFor(p))</span></div>
+          <div class="dl"><span class="ln">43</span><span>}</span></div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="footline"><span>Chapter 3 of 13 · 0 of 3 files viewed</span><span class="spacer"></span><span class="btn secondary small">Mark Chapter Viewed and Go On</span></div>
+        <div class="h-cap">What to look at in this chapter</div>
+        <div class="sec" style="font-size:11px">The AI overview has no description of this chapter, so no risks to show.</div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">Retry redoes only this chapter, then the summary again. <b>Describe 2 remaining</b> appears when the run reached its ceiling before some chapters; it describes only those (described chapters are cached) and remakes the summary.</p>
+
+<!-- ============================================================= 2c -->
+<h1 class="frame">2c · The summary failed, the chapters stay — item 4 (Deep · Meaning)</h1>
+<div class="win">
+  <div class="toolbar">
+    <div class="seg"><span>Quick</span><span class="on">Deep</span></div>
+    <div class="seg"><span class="on">1 Meaning</span><span>2 Chapters</span><span>3 Wrap-up</span></div>
+    <span class="progress">0 / 15,360 lines · 0 / 13 chapters · 0:02 active</span>
+    <div class="spacer"></div>
+    <span class="icon">↻</span><span class="icon">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="meaning">
+    <div class="colw">
+      <div class="card" style="padding:12px">
+        <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px">
+          <span style="color:var(--orange-text)">⚠</span>
+          <div style="flex:1">The summary did not finish in 2 min. All 13 chapters are described — open Chapters to read them.
+            <div class="disclosure" style="margin-top:4px">▸ Provider's message</div></div>
+          <span class="btn secondary small">Retry</span>
+        </div>
+        <div class="sec" style="font-size:11px;margin-top:8px">Retry remakes only the summary from the described chapters. Until it exists the agent cannot finish its session.</div>
+      </div>
+      <div style="display:flex"><span class="spacer"></span><span class="btn secondary small">Next: Chapters →</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================= 3 -->
+<h1 class="frame">3 · Small PR, one chapter — item 5: no chapter list; summary, danger marks on files, the diff as today (Quick)</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span class="on">Session</span><span>Board</span><span>Files</span></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="idbar">
+    <div class="l"><span class="cap">Branch review</span><span class="ter" style="font-size:11px">Round 1 · open</span></div>
+    <div class="l"><span class="dot purple"></span><span class="sec">Claude</span><span>Retry budget for imports</span><span style="color:#af52de;font-size:11px">Ready to check</span><span class="ter">· 4 min ago</span></div>
+    <div class="l sec"><span>⎇ wt/import-retry</span><span class="ter">→</span><span class="mono">main @ 4c1e9a0</span><span class="ter">·</span><span>6 files · +184 −22</span></div>
+    <div class="l"><span class="sec">For</span><b>#230</b><span>Retry a failed import at most three times</span><span class="sec" style="font-size:11px">▾</span></div>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span class="on">Quick</span><span>Deep</span></div>
+    <div class="spacer"></div>
+    <span class="icon">▤</span><span class="icon">↻</span><span class="icon on">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="body" style="grid-template-columns: 300px 1fr 340px; min-height: 420px">
+    <div class="col">
+      <div class="card">
+        <div style="display:flex;gap:6px;align-items:baseline"><span class="chev">›</span><div>
+          <div style="font-size:12px;font-weight:500">Adds a three-try retry budget to imports, stored per job in a new column.</div>
+          <div style="font-size:11px;color:var(--orange-text);margin-top:2px">1 medium risk · new migration</div></div></div>
+      </div>
+      <div class="section">Changed files <span class="count">6</span><span class="why">· 1 viewed</span></div>
+      <div class="file flat sel"><span class="g">M</span><span class="p"><span class="dir">internal/imports/</span>runner.go</span><span></span><span class="n">+64 −12</span></div>
+      <div class="file flat"><span class="g">A</span><span class="p"><span class="dir">internal/db/migrations/</span>00051_import_tries.sql</span><span class="chip orange">Migration</span><span class="n">+9</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">internal/db/</span>schema.sql</span><span class="chip orange">Schema</span><span class="n">+1</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">internal/imports/</span>runner_test.go</span><span class="v">✓</span><span class="n">+88 −4</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">docs/guide/</span>imports.md</span><span></span><span class="n">+6 −2</span></div>
+      <div class="section"><span class="chev">›</span>Can skip <span class="count">1 file</span><span class="why">· 16 lines</span></div>
+    </div>
+    <div class="detail">
+      <div class="fhead"><span class="mono" style="font-size:12px">internal/imports/runner.go</span><span class="sec" style="font-size:11px">+64 −12</span><span class="spacer"></span><span class="btn quiet">Full file</span><span class="btn secondary small">Viewed</span></div>
+      <div class="diff">
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 72 unchanged lines</span></div>
+          <div class="dl del"><span class="ln">73</span><span>	if err != nil {</span></div>
+          <div class="dl del"><span class="ln">74</span><span>		return err</span></div>
+          <div class="dl"><span class="ln">75</span><span>	}</span></div>
+        </div>
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 72 unchanged lines</span></div>
+          <div class="dl add"><span class="ln">73</span><span>	if err != nil &amp;&amp; job.Tries &lt; maxTries {</span></div>
+          <div class="dl add"><span class="ln">74</span><span>		return r.requeue(ctx, job)</span></div>
+          <div class="dl"><span class="ln">75</span><span>	}</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ph"><div class="seg"><span>Reviewer</span><span class="on">Author</span></div><span class="spacer"></span><span class="sec" style="font-size:11px">Workchat</span></div>
+      <div class="feed">
+        <div class="sec" style="font-size:11px">The author's Workchat stays as it is today.</div>
+        <div class="owner">Why requeue instead of sleeping in place?</div>
+        <div class="answer"><p>A sleep would hold the worker slot; requeue lets other jobs run while this one waits.</p></div>
+      </div>
+      <div class="composer">Message the author…<span class="send">↑</span></div>
+    </div>
+  </div>
+</div>
+<p class="note">One non-noise chapter: no chapter list (Quick and Deep's Chapters both show the file column). The overview is one model call that returns the chapter text and the summary together. Files carry the map's danger marks (Breaking red, Significant orange); normal files have none.</p>
+
+<!-- ============================================================= 4a -->
+<h1 class="frame">4a · Past the diff cap — item 7: banner instead of a silent cut (Deep · Chapters)</h1>
+<div class="win">
+  <div class="toolbar">
+    <div class="seg"><span>Quick</span><span class="on">Deep</span></div>
+    <div class="seg"><span>1 Meaning</span><span class="on">2 Chapters</span><span>3 Wrap-up</span></div>
+    <span class="progress">0 / 50,000 lines · 0 / 21 chapters</span>
+    <div class="spacer"></div>
+    <span class="icon">▤</span><span class="icon">↻</span><span class="icon">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="banner warn"><span class="ic">⚠</span><span>This branch is past the reviewer's size limit (50,000 changed lines); the files after it are not shown.</span><span class="spacer"></span><span class="icon">✕</span></div>
+  <div class="body" style="grid-template-columns: 320px 1fr; min-height: 220px">
+    <div class="col">
+      <div class="counter"><b>21 chapters</b> / <b>1,102 files</b> left</div>
+      <div class="section"><span class="chev">⌄</span>Breaking and significant <span class="count">6</span></div>
+      <div class="ch sel"><span class="ck">○</span><div><div class="t">Storage engine swap</div><div class="meta"><span class="tag mono">lane/storage-v2</span><span>migration edited</span></div><div class="state run"><span class="spin"></span>Describing…</div></div><div class="r"><span class="chip red">Breaking</span><span class="lines">8,420 lines</span></div></div>
+      <div class="ch"><span class="ck">○</span><div><div class="t">Public client API</div><div class="meta"><span class="tag">#301</span><span>public API removed</span></div><div class="state run"><span class="spin"></span>Describing…</div></div><div class="r"><span class="chip red">Breaking</span><span class="lines">3,100 lines</span></div></div>
+    </div>
+    <div class="detail"><div style="flex:1;display:grid;place-items:center" class="sec">Pick a file</div></div>
+  </div>
+</div>
+
+<!-- ============================================================= 4b -->
+<h1 class="frame">4b · The map failed — “Chapters could not be built — Retry” over the plain file list and diff (as today)</h1>
+<div class="win">
+  <div class="toolbar">
+    <div class="seg"><span class="on">Quick</span><span>Deep</span></div>
+    <div class="spacer"></div>
+    <span class="icon">▤</span><span class="icon">↻</span><span class="icon">💬</span><span class="icon">⋯</span>
+    <span class="btn primary">Approve</span>
+  </div>
+  <div class="banner error"><span class="ic">⚠</span><span>Chapters could not be built. The files and the diff are shown without them.</span><span class="spacer"></span><span class="btn secondary small">Retry</span></div>
+  <div class="body" style="grid-template-columns: 300px 1fr; min-height: 260px">
+    <div class="col">
+      <div class="section">Changed files <span class="count">412</span></div>
+      <div class="file flat sel"><span class="g">M</span><span class="p"><span class="dir">cmd/</span>ai_models.go</span><span></span><span class="n">+44 −30</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">internal/auth/</span>token_store.go</span><span></span><span class="n">+244 −190</span></div>
+      <div class="file flat"><span class="g">A</span><span class="p"><span class="dir">internal/auth/</span>provider_tokens.go</span><span></span><span class="n">+150</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">internal/chat/</span>turn.go</span><span></span><span class="n">+38 −21</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">internal/db/migrations/</span>00042_provider_caps.sql</span><span></span><span class="n">+18 −6</span></div>
+      <div class="file flat"><span class="g">M</span><span class="p"><span class="dir">internal/providers/</span>capabilities.go</span><span></span><span class="n">+212 −148</span></div>
+      <div class="sec" style="font-size:11px;padding:4px 6px">⋯</div>
+    </div>
+    <div class="detail">
+      <div class="fhead"><span class="mono" style="font-size:12px">cmd/ai_models.go</span><span class="sec" style="font-size:11px">+44 −30</span><span class="spacer"></span><span class="btn quiet">Full file</span><span class="btn secondary small">Viewed</span></div>
+      <div class="diff">
+        <div class="side"><div class="dl gap"><span class="ln"></span><span>  ⋯ 12 unchanged lines</span></div><div class="dl del"><span class="ln">13</span><span>	cmd.Flags().String("tier", "", "")</span></div></div>
+        <div class="side"><div class="dl gap"><span class="ln"></span><span>  ⋯ 12 unchanged lines</span></div><div class="dl add"><span class="ln">13</span><span>	cmd.Flags().String("tier", "strong", "")</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">No overview is started without a map. Retry runs the map again (it makes no AI call). No danger marks and no sections: they come from the map.</p>
+
+<!-- ============================================================= 5 -->
+<h1 class="frame">5 · Phase 3 — the reviewer beside the diff (item 8): Reviewer | Author, a cross-chapter answer with Send to author, a failed turn with Retry</h1>
+<div class="win">
+  <div class="titlebar">
+    <div class="lights"><i></i><i></i><i></i></div>
+    <span class="wbname">acme-app</span>
+    <div class="seg"><span class="on">Session</span><span>Board</span><span>Files</span></div>
+    <div class="spacer"></div><span class="icon">⚡</span><span class="icon">▥</span><span class="icon">⋯</span>
+  </div>
+  <div class="toolbar">
+    <div class="seg"><span>Quick</span><span class="on">Deep</span></div>
+    <div class="seg"><span>1 Meaning</span><span class="on">2 Chapters</span><span>3 Wrap-up</span></div>
+    <span class="progress">4,980 / 15,360 lines · 5 / 13 chapters</span>
+    <div class="spacer"></div>
+    <span class="icon">▤</span><span class="icon">↻</span><span class="icon on">💬</span><span class="icon">⋯</span>
+    <span class="btn secondary">Request changes (1)</span>
+  </div>
+  <div class="body" style="grid-template-columns: 290px 1fr 400px; min-height: 640px">
+    <div class="col">
+      <div class="counter"><b>8 chapters</b> / <b>271 files</b> left</div>
+      <div class="section"><span class="chev">⌄</span>Breaking and significant <span class="count">5</span></div>
+      <div class="ch sel"><span class="ck">○</span><div><div class="t">Provider capability table</div><div class="meta"><span class="tag mono">tn/g7</span></div></div><div class="r"><span class="chip red">Breaking</span></div></div>
+      <div class="file sel"><span class="g">M</span><span class="p">capabilities.go</span><span></span><span class="n">+212 −148</span></div>
+      <div class="file"><span class="g">M</span><span class="p">registry.go</span><span></span><span class="n">+96 −40</span></div>
+      <div class="ch"><span class="ck done">✓</span><div><div class="t">Fallback chain on rate limit</div><div class="meta"><span class="tag mono">ACME-412</span></div></div><div class="r"><span class="chip red">Breaking</span></div></div>
+      <div class="ch"><span class="ck">○</span><div><div class="t">Token store per provider</div><div class="meta"><span class="tag">#219</span></div></div><div class="r"><span class="chip orange">Significant</span></div></div>
+      <div class="section"><span class="chev">⌄</span>Other changes <span class="count">8</span></div>
+      <div class="ch"><span class="ck">○</span><div><div class="t">Usage meter per provider</div><div class="meta"><span class="tag mono">tn/g9</span></div></div><div class="r"></div></div>
+      <div class="section"><span class="chev">›</span>Can skip <span class="count">214 files</span></div>
+    </div>
+    <div class="detail">
+      <div class="fhead"><span class="mono" style="font-size:12px">internal/providers/capabilities.go</span><span class="chip red">API removed</span><span class="spacer"></span><span class="btn secondary small">Viewed</span></div>
+      <div class="diff">
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 18 unchanged lines</span></div>
+          <div class="dl del"><span class="ln">20</span><span>func SupportsTools(p Provider) bool {</span></div>
+          <div class="dl del"><span class="ln">21</span><span>	switch p.Name {</span></div>
+          <div class="dl del"><span class="ln">22</span><span>	case "alpha", "beta":</span></div>
+        </div>
+        <div class="side">
+          <div class="dl gap"><span class="ln"></span><span>  ⋯ 18 unchanged lines</span></div>
+          <div class="dl add"><span class="ln">20</span><span>type Capability struct {</span></div>
+          <div class="dl add"><span class="ln">21</span><span>	Tiers       []Tier</span></div>
+          <div class="dl add"><span class="ln">22</span><span>	Tools       bool</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="ph">
+        <div class="seg"><span class="on">Reviewer</span><span>Author</span></div>
+        <span class="spacer"></span><span class="icon" title="New thread">⊕</span>
+      </div>
+      <div class="mapline">Read-only · reads <span class="mono">feature/provider-registry</span> in the session's worktree · sees the chapters, their danger and the summary · never talks to the author's session</div>
+      <div class="feed">
+        <div class="owner">What would adding another provider take?</div>
+        <div class="answer">
+          <p>Three places, one of them easy to miss:</p>
+          <ol>
+            <li>A row in the capability table — <span class="cite">internal/providers/capabilities.go:26-48</span>. Tiers, tools and attachments come from it now.</li>
+            <li>A client behind the <span class="mono">Provider</span> interface and its registration — <span class="cite">internal/providers/registry.go:61-74</span>.</li>
+            <li>The fallback chain is a fixed list, not read from the table — <span class="cite">internal/providers/fallback.go:18</span>. A new provider is never a fallback until it is added there too. <span class="sec">(Chapter “Fallback chain on rate limit”.)</span></li>
+          </ol>
+          <p class="sec" style="font-size:11px">The token store keys by provider name (<span class="cite">internal/auth/provider_tokens.go:22</span>), so it needs no change.</p>
+          <div class="acts"><span class="btn secondary small">Send to author</span><span class="btn quiet small">Copy</span></div>
+        </div>
+        <div class="sec" style="font-size:11px;display:flex;align-items:center;gap:6px"><span style="color:var(--green-text)">✓</span>Sent to the author as a design comment in round 1</div>
+        <div class="owner">What breaks if the table has no row for a provider?</div>
+        <div class="err"><span style="color:var(--red-text)">⚠</span><div style="flex:1">The reviewer did not answer in 3 min.<div class="disclosure" style="margin-top:2px">▸ Details</div></div><span class="btn secondary small">Retry</span></div>
+      </div>
+      <div class="composer">Ask the reviewer about this branch…<span class="send">↑</span></div>
+    </div>
+  </div>
+</div>
+<p class="note">The panel sits where today's agent chat panel sits (PanelSplit, same toolbar toggle); <b>Reviewer | Author</b> switches between the independent reviewer (one thread per branch) and the author's Workchat, unchanged. File:line citations open the file in the diff. <b>Send to author</b> adds the answer as one design comment to the open round — the only way anything reaches the author; with no open round it is disabled with “Start a round to send”.</p>
+
+</body>
+</html>
