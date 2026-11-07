@@ -116,6 +116,10 @@ type ParseOptions struct {
 	// offset 0: the stored session's model and working directory (ParseCodex
 	// only).
 	CodexModel, CodexCWD string
+	// CodexLineage seeds the same read with the rollout's lineage
+	// (codexLineage, read from its head by codexHead): the session_meta lines
+	// it comes from sit before the read's offset (ParseCodex only).
+	CodexLineage string
 }
 
 type ParseResult struct {

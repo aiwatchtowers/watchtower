@@ -91,20 +91,23 @@ var codexShellTools = map[string]bool{"exec_command": true, "shell": true, "shel
 // brief is a hook turn) and per interrupted turn (trigger interrupt), a tool
 // per function or custom tool call paired with its output. Keys are content
 // keys a forked or resumed rollout replays unchanged, so a replayed line
-// counts once (AGENTLOG-02): an api_call is keyed by its usage figures (the
-// response's and the session's running totals), never by the line's time, so
-// a repeated report of one response, or a replay re-stamped when written,
-// stores one row; tools by call id, paginated owner turns by item id. Only
-// the session's own session_meta sets its folder, branch and start; a
-// replayed parent's is ignored. A token_count whose info lacks a usage block
-// and a legacy user_message whose message is not a string are counted in
-// Unknown, never dropped silently.
+// counts once (AGENTLOG-02): an api_call is keyed by the rollout's lineage
+// (codexLineage; a read from a later offset takes it from o.CodexLineage)
+// and its usage figures (the response's and the session's running totals),
+// never by the line's time, so a repeated report of one response, or a replay
+// re-stamped when written, stores one row; tools by call id, paginated owner
+// turns by item id. Only the session's own session_meta sets its folder,
+// branch and start; a replayed parent's is ignored. A token_count whose info
+// lacks a usage block, a legacy user_message whose message is not a string
+// and a tool call or output with no call id are counted in Unknown, never
+// dropped silently.
 func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, error) {
 	if o.SessionUUID == "" {
 		return nil, errors.New("parsing a codex rollout: no session id")
 	}
 	p := &codexParser{o: o, res: &ParseResult{Sessions: map[string]*agentlogdb.AgentLogSession{}, Unknown: map[string]int{}},
-		seen: map[string]bool{}, model: o.CodexModel, cwd: o.CodexCWD, fromStart: startOffset == 0}
+		seen: map[string]bool{}, model: o.CodexModel, cwd: o.CodexCWD, fromStart: startOffset == 0,
+		lineage: codexLineage{id: o.CodexLineage, done: startOffset > 0}}
 	br := bufio.NewReaderSize(r, 64<<10)
 	off := startOffset
 	for {
@@ -113,7 +116,7 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 			// Unlike ParseClaude, a read error here fails the file: a codex
 			// rollout may be a zstd stream, whose decode errors surface here.
 			if err != nil && !errors.Is(err, io.EOF) {
-				return nil, fmt.Errorf("reading %s: %w", o.Path, err)
+				return nil, fmt.Errorf("reading the rollout: %w", err)
 			}
 			break
 		}
@@ -129,7 +132,7 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			return nil, fmt.Errorf("reading %s: %w", o.Path, err)
+			return nil, fmt.Errorf("reading the rollout: %w", err)
 		}
 		if o.MaxRows > 0 && len(p.res.Events)+len(p.res.ToolResults) >= o.MaxRows {
 			p.res.More = true
@@ -142,6 +145,7 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 type codexParser struct {
 	o         ParseOptions
 	res       *ParseResult
+	lineage   codexLineage
 	model     string
 	cwd       string          // the session's own working directory (its session_meta)
 	seen      map[string]bool // event keys added in this read
@@ -163,6 +167,7 @@ func (p *codexParser) handle(raw []byte, off int64) {
 		p.res.Unknown["<invalid>"]++
 		return
 	}
+	p.lineage.see(l.Type, pl.ID)
 	s := p.session(l.Timestamp)
 	switch l.Type {
 	case "session_meta":
@@ -252,6 +257,28 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 	}
 }
 
+// codexLineage is the id of the last session_meta before a rollout's first
+// content line (event_msg or response_item). A fork writes its own
+// session_meta, then replays its parent's rollout from the parent's first
+// line, so the parent and every fork of it share one lineage (the root
+// session's id) while unrelated sessions differ. It depends only on the
+// rollout's head, so a read from a later offset is given it (codexHead).
+type codexLineage struct {
+	id   string
+	done bool // a content line was seen: the lineage is fixed
+}
+
+func (c *codexLineage) see(typ, id string) {
+	switch typ {
+	case "session_meta":
+		if !c.done && id != "" {
+			c.id = id
+		}
+	case "event_msg", "response_item":
+		c.done = true
+	}
+}
+
 // codexBriefPrefix opens the brief Watchtower types into a new codex session
 // (cmd/workbench_brief.go; keep in step with sessionfeed's briefPrefix).
 const codexBriefPrefix = "Watchtower workbench #"
@@ -266,7 +293,9 @@ func codexTrigger(text string) string {
 
 // tokens stores one model response, keyed by its usage figures and the
 // session's running totals: a repeated report of the same response and a
-// fork's replay of it carry the same figures whatever their line time.
+// fork's replay of it carry the same figures whatever their line time. The
+// key leads with the rollout's lineage, so two unrelated sessions whose
+// responses carry the same figures never share a row.
 func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 	if pl.Info == nil {
 		return // a rate-limit-only count
@@ -278,7 +307,7 @@ func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 	u, t := pl.Info.Last, pl.Info.Total
 	in := max(u.Input-u.Cached, 0) // OpenAI's input_tokens include the cached part
 	usd, known := Cost(p.model, "", in, u.Output, u.Cached, 0, 0)
-	key := fmt.Sprintf("api_call:codex:%d.%d.%d.%d.%d/%d.%d.%d.%d.%d", u.Input, u.Cached, u.Output, u.Reasoning, u.Total,
+	key := fmt.Sprintf("api_call:codex:%s/%d.%d.%d.%d.%d/%d.%d.%d.%d.%d", p.lineage.id, u.Input, u.Cached, u.Output, u.Reasoning, u.Total,
 		t.Input, t.Cached, t.Output, t.Reasoning, t.Total)
 	p.add(l, off, agentlogdb.AgentLogEvent{Key: key,
 		Kind: "api_call", Name: p.model, InputTokens: in, OutputTokens: u.Output, CacheReadTokens: u.Cached,
@@ -289,12 +318,14 @@ func (p *codexParser) responseItem(l codexRolloutLine, pl codexPayload, off int6
 	switch pl.Type {
 	case "function_call", "custom_tool_call":
 		if pl.CallID == "" {
+			p.res.Unknown["<codex-no-call-id>"]++
 			return
 		}
 		name, target := codexTool(pl, p.o.Folder, p.cwd)
 		p.add(l, off, agentlogdb.AgentLogEvent{Key: "tool:codex:" + pl.CallID, Kind: "tool", Name: name, Target: target, Outcome: "pending"})
 	case "function_call_output", "custom_tool_call_output":
 		if pl.CallID == "" {
+			p.res.Unknown["<codex-no-call-id>"]++
 			return
 		}
 		text := resultText(pl.Output)
