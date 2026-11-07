@@ -179,10 +179,11 @@ extension ReviewChangesModelTests {
             try db.execute(sql: "UPDATE review_comments SET status='sent' WHERE id=?", arguments: [id])
         }
         h.baseScript(id: 7, prev: r6)
-        h.cli.script(["start": """
+        let start = """
             {"ok":true,"round":{"id":7,"status":"open","mode":"quick","source":"pr","branch":"feature/x","folder_root":"/r",
              "base_sha":"b","base_label":"main","tree_sha":"t7","prev_round_id":\(r6),"prev_tree_sha":"t6","prev_tree_lost":true}}
-            """, "file": fileJSON(old: "old line\n", new: "inserted\nold line\n")])
+            """
+        h.cli.script(["start": start, "file": fileJSON(old: "old line\n", new: "inserted\nold line\n")])
         await h.model.open()
         let carried = try await h.comments()
         XCTAssertEqual(carried.map(\.status), [.carried])
