@@ -382,7 +382,8 @@ struct ReviewChangesPaneView: View {
             notes: ReviewPresentation.noteZones(model.notes, path: path, placements: model.notePlacements),
             hunks: ReviewPresentation.hunks(
                 of: model.files.first { $0.path == path }, roundOpen: model.round?.status == "open",
-                canUndo: model.canUndo, busy: model.sending || model.undoing
+                canUndo: model.canUndo, busy: model.sending || model.undoing,
+                branchTip: model.round?.isBranchTip == true
             )
         )
     }

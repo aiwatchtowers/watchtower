@@ -618,7 +618,8 @@ func (r *SessionReportRunner) runSummaries(ctx context.Context, listed []windowe
 		default:
 			byID := make(map[int64]ReportSummary, len(rows))
 			for _, s := range rows {
-				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total, PRLine: s.PRLine}
+				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total,
+					Merged: s.Merged, MergedStale: s.MergedStale, PRLine: s.PRLine}
 			}
 			r.summaries.store(id, byID)
 			r.changed()

@@ -18,6 +18,25 @@ final class SessionRowTests: XCTestCase {
         XCTAssertEqual(row.metaItems.dropFirst().map(\.text), ["#415 · 1/2", "PR #175 open"])
     }
 
+    /// Board #1008: the merged share reads as on the Mac's row, "3/32 · 25
+    /// merged"; a share the Mac could not check says so; a payload from an
+    /// older Mac (no merged keys) keeps the plain count.
+    func testTheReportLineCarriesTheMergedShareLikeTheMac() throws {
+        let merged = SessionRowModel(try session([
+            "report_target_id": 415, "report_done": 3, "report_total": 32, "report_merged": 25,
+            "report_pr_line": "PR #175 open"
+        ]), now: Date())
+        XCTAssertEqual(merged.metaItems.dropFirst().map(\.text), ["#415 · 3/32 · 25 merged", "PR #175 open"])
+
+        let unchecked = SessionRowModel(try session([
+            "report_target_id": 415, "report_done": 3, "report_total": 32, "report_merged": 25, "report_merged_stale": true
+        ]), now: Date())
+        XCTAssertEqual(unchecked.metaItems.dropFirst().map(\.text), ["#415 · 3/32 · 25 merged (unchecked)"])
+
+        let olderMac = SessionRowModel(try session(["report_target_id": 415, "report_done": 3, "report_total": 32]), now: Date())
+        XCTAssertEqual(olderMac.metaItems.dropFirst().map(\.text), ["#415 · 3/32"])
+    }
+
     func testARecordWithoutAReportTargetHasNoReportLine() throws {
         let row = SessionRowModel(try session(["report_done": 1, "report_total": 2, "report_pr_line": "PR #175 open"]), now: Date())
         XCTAssertEqual(row.metaItems.map(\.text), [row.caption], "the caption alone")

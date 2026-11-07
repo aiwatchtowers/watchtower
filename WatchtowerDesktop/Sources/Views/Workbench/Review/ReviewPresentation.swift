@@ -8,17 +8,21 @@ enum ReviewPresentation {
     static let agentWorkingReason = "Undo is off while the agent is working"
     static let sentReason = "Round already sent"
     static let busyReason = "Undo is off while another action runs"
+    static let branchTipReason = "Undo is off on a branch review — it reads the branch's commits"
 
     /// Why Undo is off, or "" when it is on.
-    static func undoReason(roundOpen: Bool, canUndo: Bool, busy: Bool) -> String {
+    static func undoReason(roundOpen: Bool, canUndo: Bool, busy: Bool, branchTip: Bool = false) -> String {
         if canUndo { return "" }
         if !roundOpen { return sentReason }
+        if branchTip { return branchTipReason }
         return busy ? busyReason : agentWorkingReason
     }
 
     /// The selected file's hunks as the diff page's Undo zones.
-    static func hunks(of file: ReviewDiffFile?, roundOpen: Bool, canUndo: Bool, busy: Bool) -> [MonacoDiffView.Payload.Hunk] {
-        let reason = undoReason(roundOpen: roundOpen, canUndo: canUndo, busy: busy)
+    static func hunks(
+        of file: ReviewDiffFile?, roundOpen: Bool, canUndo: Bool, busy: Bool, branchTip: Bool = false
+    ) -> [MonacoDiffView.Payload.Hunk] {
+        let reason = undoReason(roundOpen: roundOpen, canUndo: canUndo, busy: busy, branchTip: branchTip)
         return (file?.hunks ?? []).map {
             .init(id: $0.hunkId, newStart: $0.newStart, canUndo: reason.isEmpty, reason: reason)
         }

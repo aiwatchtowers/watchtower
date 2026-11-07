@@ -107,14 +107,17 @@ final class TerminalSessionSliceTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: session, status: "answered", answer: "Yes")
             return (session, target)
         }
-        let summary = SessionReportSummary(sessionID: session, targetID: target, done: 1, total: 2, prLine: "PR #175 open")
+        let summary = SessionReportSummary(
+            sessionID: session, targetID: target, done: 1, total: 2, merged: 1, mergedStale: true, prLine: "PR #175 open"
+        )
         let payload = try XCTUnwrap(try payloads(slice(live: [session]) { _, id in id == session ? summary : nil })[session])
 
         assertWireShape(
             payload, matches: try SliceJSON.kitFixture("workbench/terminal_session.json"),
             optionalKeys: ["title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
                            "finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
-                           "report_total", "report_pr_line", "report_pr_line_clipped"]
+                           "report_total", "report_merged", "report_merged_stale", "report_pr_line",
+                           "report_pr_line_clipped"]
         )
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
         XCTAssertEqual(payload["agent"] as? String, "claude_code")
@@ -122,6 +125,28 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(payload["open_asks"] as? Int, 1)
         XCTAssertEqual(payload["closed_asks"] as? Int, 1)
         XCTAssertEqual(payload["live"] as? Bool, true)
+        XCTAssertEqual(payload["report_merged"] as? Int, 1)
+        XCTAssertEqual(payload["report_merged_stale"] as? Bool, true)
+    }
+
+    /// Board #1008: the merged share goes out with the summary — 0 when
+    /// nothing is merged — and the stale flag only when it is set; without a
+    /// summary neither key is published.
+    func testTheMergedShareFollowsTheSummary() throws {
+        let session = try dbPool.write { db in
+            try SliceSeed.insertSession(db, projectID: try TestDatabase.insertWorkbench(db))
+        }
+        let checked = SessionReportSummary(sessionID: session, done: 3, total: 32, merged: 25)
+        let merged = try XCTUnwrap(try payloads(slice { _, _ in checked })[session])
+        XCTAssertEqual(merged["report_merged"] as? Int, 25)
+        XCTAssertNil(merged["report_merged_stale"], "a checked share carries no stale flag")
+
+        let none = SessionReportSummary(sessionID: session, done: 3, total: 32)
+        XCTAssertEqual(try payloads(slice { _, _ in none })[session]?["report_merged"] as? Int, 0)
+
+        let noSummary = try XCTUnwrap(try payloads(slice())[session])
+        XCTAssertNil(noSummary["report_merged"])
+        XCTAssertNil(noSummary["report_merged_stale"])
     }
 
     // MARK: - Presentation parity
@@ -442,7 +467,8 @@ final class TerminalSessionSliceTests: XCTestCase {
             let project = try TestDatabase.insertWorkbench(db)
             return (project, try SliceSeed.insertSession(db, projectID: project))
         }
-        let json = #"[{"session_id":\#(session),"target_id":415,"done":1,"total":2,"pr_line":"PR #175 open","finished_at":""}]"#
+        let json = #"[{"session_id":\#(session),"target_id":415,"done":1,"total":2,"merged":1,"merged_stale":true,"#
+            + #""pr_line":"PR #175 open","finished_at":""}]"#
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let failing = OSAllocatedUnfairLock(initialState: false)
         let cliFetch = SessionReportSummaryRunner.cliFetch(runner)
@@ -468,6 +494,8 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(mapped["report_done"] as? Int, 1)
         XCTAssertEqual(mapped["report_total"] as? Int, 2)
         XCTAssertEqual(mapped["report_pr_line"] as? String, "PR #175 open")
+        XCTAssertEqual(mapped["report_merged"] as? Int, 1)
+        XCTAssertEqual(mapped["report_merged_stale"] as? Bool, true)
 
         failing.withLock { $0 = true }
         clock.advance(by: .seconds(60))

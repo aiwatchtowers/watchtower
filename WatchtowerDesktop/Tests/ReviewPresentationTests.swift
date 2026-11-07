@@ -52,6 +52,8 @@ final class ReviewPresentationTests: XCTestCase {
                        "Undo is off while the agent is working")
         XCTAssertEqual(ReviewPresentation.undoReason(roundOpen: true, canUndo: false, busy: true),
                        "Undo is off while another action runs")
+        XCTAssertEqual(ReviewPresentation.undoReason(roundOpen: true, canUndo: false, busy: false, branchTip: true),
+                       "Undo is off on a branch review — it reads the branch's commits")
     }
 
     func testHunkZonesCarryTheStateAndReason() throws {

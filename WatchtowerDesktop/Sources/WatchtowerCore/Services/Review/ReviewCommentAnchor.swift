@@ -31,7 +31,8 @@ package enum ReviewCommentAnchor {
         for c in comments {
             guard let path = c.path else { continue }
             guard let text = textFor(path),
-                  let placement = locate(quote: c.quote, prefix: c.quotePrefix, suffix: c.quoteSuffix, in: text) else {
+                  let placement = locate(quote: c.quote, prefix: c.quotePrefix, suffix: c.quoteSuffix, in: text,
+                                         nearLine: c.startLine) else {
                 plan.lost.insert(c.id)
                 continue
             }
@@ -40,10 +41,13 @@ package enum ReviewCommentAnchor {
         return plan
     }
 
-    /// The lines of text where the quote now sits, nil when it is gone.
-    package static func locate(quote: String, prefix: String, suffix: String, in text: String) -> Placement? {
+    /// The lines of text where the quote now sits, nil when it is gone. Of
+    /// equally good matches (identical blocks), the one nearest to `nearLine`
+    /// (where the comment last sat) wins.
+    package static func locate(quote: String, prefix: String, suffix: String, in text: String, nearLine: Int? = nil) -> Placement? {
         let anchor = CommentAnchor(quote: quote, prefix: prefix, suffix: suffix, heading: "")
-        guard let found = anchor.locate(in: text) else { return nil }
+        let near = nearLine.map { range(ofLines: $0...$0, in: text)?.lowerBound ?? text.endIndex }
+        guard let found = anchor.locate(in: text, near: near) else { return nil }
         let start = line(at: found.lowerBound, in: text)
         let lastChar = found.isEmpty ? found.lowerBound : text.index(before: found.upperBound)
         return Placement(startLine: start, endLine: line(at: lastChar, in: text))
