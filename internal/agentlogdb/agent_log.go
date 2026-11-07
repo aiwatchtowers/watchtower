@@ -224,13 +224,17 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				return err
 			}
 		}
-		owners, ownerArgs := batchOwners(b.Sessions)
+		owners, err := batchOwners(b.Sessions)
+		if err != nil {
+			return err
+		}
 		for _, r := range b.ToolResults {
 			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
 				lines_added = ?, lines_removed = ?, result_bytes = ?,
 				duration_ms = CAST(ROUND((julianday(?) - julianday(ts)) * 86400000) AS INTEGER)
-				WHERE key = ?`+owners, append([]any{r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS,
-				"tool:" + r.ToolUseID}, ownerArgs...)...); err != nil {
+				WHERE key = ? AND (? IS NULL OR session_uuid IN (SELECT value FROM json_each(?)))`,
+				r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS,
+				"tool:"+r.ToolUseID, owners, owners); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
 			// A result only a replayed copy carries (the owner's transcript
@@ -285,20 +289,24 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 
 var errCASLost = errors.New("agent log offset moved by another writer")
 
-// batchOwners is the condition (and its arguments) that limits a tool
-// result's full pairing to a row one of the batch's sessions owns: a fork's
+// batchOwners is the JSON array of the batch's session uuids that limits a
+// tool result's full pairing to a row one of those sessions owns: a fork's
 // replay of a call another session owns must not recompute that row's
 // duration from the copy's times (it may only fill a row still pending). No
-// sessions: no limit.
-func batchOwners(sessions []AgentLogSession) (string, []any) {
+// sessions: nil, which the query reads as no limit.
+func batchOwners(sessions []AgentLogSession) (any, error) {
 	if len(sessions) == 0 {
-		return "", nil
+		return nil, nil
 	}
-	args := make([]any, len(sessions))
+	uuids := make([]string, len(sessions))
 	for i, s := range sessions {
-		args[i] = s.SessionUUID
+		uuids[i] = s.SessionUUID
 	}
-	return " AND session_uuid IN (" + strings.TrimSuffix(strings.Repeat("?,", len(sessions)), ",") + ")", args
+	b, err := json.Marshal(uuids)
+	if err != nil {
+		return nil, fmt.Errorf("encoding batch owners: %w", err)
+	}
+	return string(b), nil
 }
 
 // excludedOwns is true in the events upsert when the incoming row's session
