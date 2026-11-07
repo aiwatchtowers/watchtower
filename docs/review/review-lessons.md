@@ -2707,6 +2707,15 @@ Entry format:
 - rule-gap (candidate, dim 6): *an offscreen web-view job kept alive in a static set needs a terminal path for every way a load can end: finish, fail, content-process termination and a timeout. Otherwise the button silently does nothing and the job leaks.*
 - outcome: TBD
 
+## 2026-11-06 — feature/985-session-row (group #985: #986 merged share in session progress, #987 session row target branch + lanes, #988 Working from the first tool start + per-hook lock budget; 54 files; panel: prosecutor (6) + 3 toolkit specialists, codex timed out; judge verified 0391d1026 by reading, no runs) — verdict: changes-needed
+
+- contested (held major, 2 lanes): when `--summary` gained a git-only merge refresh, the command picked up a new best-effort payload, but its failures go to stderr only. The JSON is a bare row array, so the Desktop has nothing to decode and nothing to show, and the Long help still promised `pr_note`, which only `--session` has. Every leaf had been reviewed on its own and passed; the gap showed only where the leaves meet: a read-only command turning into a refresh that writes. **When a cache-only CLI mode starts refreshing, check the envelope-symmetry rule again for that mode's JSON shape.** [8/9]
+- false-positive: code-reviewer's "mobile-companion.md may still say cache only" (grep finds nothing); test-analyzer's Go `mergeBase` vs Swift `effectiveBranch` dual-path note (ask #525 settled it, and they answer different questions on purpose).
+- miss: only silent-failure-hunter caught that `readInto` stamps a `BranchUnknown` from a failed git call without counting it in the note, and that the squash `guardNote` never reaches `Notes()`. The prosecutor found the envelope gap but did not see that the note it would carry was blind to the most likely failure. [9]
+- weak-dimension: 7. The summary-budget test runs on a non-git folder, so its "per read" clock and its "gh never runs" assertion pass without reaching git or gh. Codex was unavailable again, the second group run in a row.
+- rule-gap (candidate, dim 7): *a refresh/budget test over git runs on a real repository (or asserts that one was read); a fixture folder that is not a work tree short-circuits before the code under test.*
+- outcome: TBD
+
 ## 2026-11-07 — feature/codex-parity final pre-main (2dca31ab6: codex parity + LLM transport independence, 686 files; panel: prosecutor-go (8) + prosecutor-swift (12) + codex (1) + all three pr-review-toolkit specialists; judge verified by reading, no runs) — verdict: changes-needed
 
 - contested: the phone's `agent == .claudeCode` typing gate is documented as deliberate (an older Mac refuses Codex lines), but the reason it waits on ("A5 publishes the capability") has already landed. Held major. **A "not yet, waiting for task X" comment needs a check that X has not shipped. The right fix is for the Mac to publish the capability on the slice, not for the phone to guess from the kind.** [6]

@@ -453,8 +453,8 @@ type workbenchStatusJSON struct {
 	// needs a Repair even though mcp reads true.
 	CurrentMCP bool `json:"current_mcp"`
 	// StateHooks: every session state hook (UserPromptSubmit, Notification,
-	// PostToolUse, StopFailure, SubagentStop, SubagentStart) is installed;
-	// false with one missing.
+	// PostToolUse, StopFailure, SubagentStop, SubagentStart, PreToolUse,
+	// PostToolUseFailure) is installed; false with one missing.
 	StateHooks bool `json:"state_hooks"`
 	// AskGuard: the Stop command hook sending a plain-text request to
 	// ask_owner — false for a folder holding only the old marker prompt

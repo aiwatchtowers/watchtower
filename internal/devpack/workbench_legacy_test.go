@@ -135,16 +135,17 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 	t.Helper()
 	state := WorkbenchSessionStateHookCommand(legacyBin, 7)
 	want := map[string][]string{
-		"SessionStart":      {WorkbenchHookCommand(legacyBin, 7)},
-		"Stop":              {WorkbenchStopHookCommand(legacyBin, 7), WorkbenchAskGuardStopHookCommand(legacyBin, 7)},
-		"UserPromptSubmit":  {state},
-		"Notification":      {state},
-		"PostToolUse":       {state},
-		"StopFailure":       {state},
-		"SubagentStop":      {state},
-		"SubagentStart":     {state},
-		"PreToolUse":        {WorkbenchAskGuardHookCommand(legacyBin, 7)},
-		"PermissionRequest": {permissionWaitSpec.command(legacyBin, 7)},
+		"SessionStart":       {WorkbenchHookCommand(legacyBin, 7)},
+		"Stop":               {WorkbenchStopHookCommand(legacyBin, 7), WorkbenchAskGuardStopHookCommand(legacyBin, 7)},
+		"UserPromptSubmit":   {state},
+		"Notification":       {state},
+		"PostToolUse":        {state},
+		"StopFailure":        {state},
+		"SubagentStop":       {state},
+		"SubagentStart":      {state},
+		"PostToolUseFailure": {state},
+		"PreToolUse":         {WorkbenchAskGuardHookCommand(legacyBin, 7), state},
+		"PermissionRequest":  {permissionWaitSpec.command(legacyBin, 7)},
 	}
 	if got := ourCommands(t, folder); !reflect.DeepEqual(got, want) {
 		t.Fatalf("our hooks = %q, want %q", got, want)
@@ -165,10 +166,11 @@ func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstall
 		t.Fatalf("PROJ-04: the owner's \"permissions\" changed: %#v → %#v", before["permissions"], after["permissions"])
 	}
 	afterHooks, beforeHooks := after["hooks"].(map[string]any), before["hooks"].(map[string]any)
-	// The owner's PreToolUse group stays first and as it was; ours (the ask
-	// guard) is added after it.
+	// The owner's PreToolUse group stays first and as it was; ours (the
+	// ask guard's AskUserQuestion group, then the session state's "*"
+	// group) are added after it.
 	afterPre, beforePre := afterHooks["PreToolUse"].([]any), beforeHooks["PreToolUse"].([]any)
-	if len(afterPre) != 2 || !reflect.DeepEqual(afterPre[0], beforePre[0]) {
+	if len(afterPre) != 3 || !reflect.DeepEqual(afterPre[0], beforePre[0]) {
 		t.Fatalf("PROJ-04: the owner's PreToolUse hooks changed: %#v", afterPre)
 	}
 	settings := readTestFile(t, settingsFile(folder))

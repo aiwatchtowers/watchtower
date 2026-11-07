@@ -36,6 +36,9 @@ type Event struct {
 	// SubagentStart, whose transcript_path is the child's rollout.
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
+	// IsInterrupt is a PostToolUseFailure's: the owner interrupted the tool
+	// (Esc), so the failure says nothing about the agent working on.
+	IsInterrupt bool `json:"is_interrupt"`
 	// BackgroundTasks is a Claude Code Stop's or SubagentStop's snapshot of
 	// in-flight background tasks (board #411).
 	BackgroundTasks  BackgroundTasks `json:"background_tasks"`
@@ -60,6 +63,28 @@ func (ev Event) AgentTurnEvent() bool {
 // (prompt suggestions, /btw) have no type and say nothing about the work.
 func (ev Event) RecordsAgentTurn() bool {
 	return ev.AgentID != "" && ev.AgentType != ""
+}
+
+// ToolEvent says the event is one of a tool call's: PreToolUse, PostToolUse
+// or PostToolUseFailure.
+func (ev Event) ToolEvent() bool {
+	return ev.Event == "PreToolUse" || ev.Event == "PostToolUse" || ev.Event == "PostToolUseFailure"
+}
+
+// SubagentToolStart says the event is a PreToolUse fired inside a subagent
+// or teammate: it records nothing (board #988 adds the tool start for the
+// main thread only).
+func (ev Event) SubagentToolStart() bool {
+	return ev.Event == "PreToolUse" && ev.AgentID != ""
+}
+
+// InterruptedTool says the event is a PostToolUseFailure of a tool the owner
+// interrupted (Esc). No Stop follows an interrupt, so a main-thread one
+// records the turn's end itself — `waiting`, over `working` or `approval`,
+// under a tool result's turn order (board #988) — and a subagent's records
+// nothing.
+func (ev Event) InterruptedTool() bool {
+	return ev.Event == "PostToolUseFailure" && ev.IsInterrupt
 }
 
 // FailureText is a StopFailure's error type, or "" when the field is missing

@@ -130,6 +130,16 @@ final class WorkbenchSessionReportLineTests: XCTestCase {
         XCTAssertEqual(vm.reportProgress(sessionID: 7, projectID: 3), 0.75, "stale: the last value")
     }
 
+    /// Board #986: the mini bar's merged share is merged / total; 0 without
+    /// a merged share or a line.
+    func testTheMergedShareComesFromTheSummary() {
+        let merged = SessionReportSummary(sessionID: 7, targetID: 942, done: 3, total: 32, merged: 24)
+        XCTAssertEqual(WorkbenchesViewModel.reportMergedProgress(.init(value: [7: merged]), sessionID: 7), 0.75)
+        XCTAssertEqual(WorkbenchesViewModel.reportMergedProgress(.init(value: [7: Self.summary]), sessionID: 7), 0)
+        XCTAssertEqual(WorkbenchesViewModel.reportMergedProgress(nil, sessionID: 7), 0)
+        XCTAssertEqual(WorkbenchesViewModel.reportLine(.init(value: [7: merged]), sessionID: 7), "#942 · 3/32 · 24 merged")
+    }
+
     func testAppStateWiresTheCenterIntoTheViewModel() throws {
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }

@@ -183,14 +183,20 @@ func assertOneAskGuardCommand(t *testing.T, stop []any, bin string) {
 }
 
 // assertAskToolBlockGroup: a fresh install's PreToolUse event holds one
-// AskUserQuestion group running our synchronous block command.
+// AskUserQuestion group running our synchronous block command, after the
+// session state's "*" group (board #988).
 func assertAskToolBlockGroup(t *testing.T, pre []any, bin string) {
 	t.Helper()
 	cmd := WorkbenchAskGuardHookCommand(bin, 7)
-	if len(pre) != 1 || countCommand(pre, cmd) != 1 {
-		t.Fatalf("PreToolUse must hold one group running %q, got %#v", cmd, pre)
+	// Since board #988 the session state's "*" group sits beside it.
+	state := WorkbenchSessionStateHookCommand(bin, 7)
+	if len(pre) != 2 || countCommand(pre, cmd) != 1 || countCommand(pre, state) != 1 {
+		t.Fatalf("PreToolUse must hold one group running %q and the state group, got %#v", cmd, pre)
 	}
-	g := pre[0].(map[string]any)
+	g := pre[1].(map[string]any)
+	if countCommand([]any{g}, cmd) != 1 || len(g["hooks"].([]any)) != 1 {
+		t.Fatalf("the ask tool block sits alone in its own group: %#v", pre)
+	}
 	h := g["hooks"].([]any)[0].(map[string]any)
 	if g["matcher"] != "AskUserQuestion" || h["type"] != "command" || h["timeout"] != float64(5) || h["async"] != nil {
 		t.Fatalf("the PreToolUse group is %#v", g)
@@ -247,7 +253,10 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
 	// and the owner's key on our replaced prompt is carried onto it.
 	assertOurAskGuardEntryUpdatedInPlace(t, stop[3], o.Bin)
 	pre := eventGroups(t, after, "PreToolUse")
-	if len(pre) != 2 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) {
+	// Three since board #988 (ask #525): the owner's, the state hook's "*"
+	// group and the ask tool block's.
+	if len(pre) != 3 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) ||
+		countCommand(pre, WorkbenchSessionStateHookCommand(o.Bin, 7)) != 1 || countCommand(pre, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 {
 		t.Fatalf("PROJ-04: the owner's PreToolUse group must stay first and as it was, got %#v", pre)
 	}
 	assertOwnerNumberLiteralsKept(t, folder, `"x-owner": 1.50`, `"x-owner-stop": 4.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`)

@@ -18,6 +18,42 @@ final class SessionReportPresentationTests: XCTestCase {
         XCTAssertEqual(Presentation.progressFraction(.init(done: 0, total: 0)), 0)
     }
 
+    /// Board #986 (ask #525): the merged share follows done, apart from it;
+    /// with nothing merged every line reads as before.
+    func testMergedShare() {
+        XCTAssertEqual(Presentation.heroLine(.init(done: 3, total: 32, merged: 25)), "3 / 32 tasks · 25 merged")
+        XCTAssertEqual(Presentation.heroLine(.init(done: 3, total: 32)), "3 / 32 tasks")
+        XCTAssertEqual(Presentation.progressFraction(.init(done: 1, total: 4, merged: 2)), 0.25, "the bar's fill stays done")
+        XCTAssertEqual(Presentation.mergedFraction(merged: 2, total: 4), 0.5)
+        XCTAssertEqual(Presentation.mergedFraction(merged: 2, total: 0), 0)
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, targetID: 942, done: 3, total: 32, merged: 25,
+                                                     prLine: "PR #147 open")), "#942 · 3/32 · 25 merged · PR #147 open")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, targetID: 942, done: 0, total: 32)), "#942 · 0/32")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, merged: 2)), "", "nothing in scope: no count at all")
+        XCTAssertEqual(Presentation.phaseLine(.init(targetID: 1, text: "UI", done: 3, total: 8, merged: 5)).count,
+                       "3/8 · 5 merged")
+        XCTAssertEqual(Presentation.phaseLine(.init(targetID: 1, text: "UI", done: 3, total: 8)).count, "3/8")
+        XCTAssertEqual(Presentation.miniBarValue(done: 3.0 / 32, merged: 25.0 / 32), "9% done, 78% merged")
+        XCTAssertEqual(Presentation.miniBarValue(done: 0, merged: 1.5), "0% done, 100% merged", "clamped")
+    }
+
+    /// Review (envelope symmetry): a merged share the refresh could not
+    /// check says so on the row, next to the snapshot's own "stale".
+    func testMergedStaleCaption() {
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, targetID: 942, done: 3, total: 32, merged: 25,
+                                                     mergedStale: true, prLine: "PR #147 open")),
+                       "#942 · 3/32 · 25 merged (unchecked) · PR #147 open")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, done: 0, total: 4, mergedStale: true)),
+                       "0/4 · merged not checked")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, done: 1, total: 4, mergedStale: true), stale: true),
+                       "1/4 · merged not checked · stale")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, mergedStale: true)), "", "nothing in scope")
+        XCTAssertEqual(Presentation.rowCaption(.init(sessionID: 1, targetID: 942, done: 3, total: 32, merged: 25,
+                                                     mergedStale: true, prLine: "PR #147 open"), stale: true),
+                       "#942 · 3/32 · 25 merged (unchecked) · PR #147 open · stale",
+                       "the share's mark and the snapshot's stale read apart")
+    }
+
     func testRanFor() throws {
         XCTAssertEqual(Presentation.ranFor(try SessionReportTests.golden("session_report_314").session), "4d 8h",
                        "not finished: created to last activity")

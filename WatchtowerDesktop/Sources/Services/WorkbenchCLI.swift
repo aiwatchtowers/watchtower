@@ -358,7 +358,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     let stopHook: Bool
     /// The session-state hooks — the core four (`UserPromptSubmit`,
     /// `Notification`, `PostToolUse`, `StopFailure`, board #312),
-    /// `SubagentStop` (board #411) and `SubagentStart` (board #543): all six
+    /// `SubagentStop` (board #411), `SubagentStart` (board #543),
+    /// `PreToolUse` and `PostToolUseFailure` (board #988): all eight
     /// present. A workbench installed before any of them lacks them until a
     /// Repair.
     let stateHooks: Bool

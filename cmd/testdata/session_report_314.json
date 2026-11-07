@@ -13,7 +13,8 @@
   },
   "progress": {
     "done": 14,
-    "total": 15
+    "total": 15,
+    "merged": 0
   },
   "on_you": [],
   "now": [
@@ -32,6 +33,7 @@
       "text": "Phase A: data layer",
       "done": 7,
       "total": 7,
+      "merged": 0,
       "started_at": "2026-09-29T09:01:00Z",
       "finished_at": "2026-09-29T11:07:00Z",
       "items": [
@@ -77,6 +79,7 @@
       "text": "Phase B: report builder",
       "done": 5,
       "total": 5,
+      "merged": 0,
       "started_at": "2026-09-30T09:01:00Z",
       "finished_at": "2026-09-30T12:05:00Z",
       "items": [
@@ -112,6 +115,7 @@
       "text": "Phase C: desktop view",
       "done": 1,
       "total": 2,
+      "merged": 0,
       "started_at": "2026-10-01T09:00:00Z",
       "finished_at": "",
       "items": [

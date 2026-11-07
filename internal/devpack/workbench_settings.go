@@ -164,10 +164,18 @@ var (
 	}
 	// stateHookSpecs: every state hook an install writes and a removal takes
 	// out — the core four plus SubagentStop, which ends a subagent's or
-	// teammate's turn and lowers the background count (board #411), and
-	// SubagentStart, which opens one (board #543). The status needs all of
-	// them (HasStateHooks).
-	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"), stateHookSpec("SubagentStart"))
+	// teammate's turn and lowers the background count (board #411),
+	// SubagentStart, which opens one (board #543), and the tool start
+	// (PreToolUse, every tool: matcher "*") and failed tool
+	// (PostToolUseFailure), which keep a working agent Working (board #988,
+	// ask #525). The status needs all of them (HasStateHooks).
+	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"), stateHookSpec("SubagentStart"),
+		toolStartStateSpec, stateHookSpec("PostToolUseFailure"))
+	// toolStartStateSpec: the PreToolUse state hook, in its own group with
+	// matcher "*" so it fires for every tool — beside, never inside, the ask
+	// tool block's AskUserQuestion group (askToolBlockSpec). The matcher is
+	// the claude adapter's row.
+	toolStartStateSpec = stateHookSpec("PreToolUse")
 	// askGuardSpec: the Stop command hook of the ask guard (PROJ-13); it
 	// replaces the v1–v3 marker prompt hook (Part 4.8).
 	askGuardSpec = claudeHookSpec("Stop", "workbench ask-guard --workbench")

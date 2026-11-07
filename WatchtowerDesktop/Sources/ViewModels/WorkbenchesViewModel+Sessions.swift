@@ -155,6 +155,8 @@ extension WorkbenchesViewModel {
             }
             // The row menu's Session Target ▸ follows the board with the list.
             await loadSessionTargetRoots(projectID: projectID)
+            // The place line's target branch and lanes follow it too (#987).
+            await loadSessionWork(projectID: projectID)
             return true
         } catch {
             guard load > workbenchLoads[projectID, default: SessionLoads()].applied else { return true }

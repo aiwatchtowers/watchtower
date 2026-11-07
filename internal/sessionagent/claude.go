@@ -67,6 +67,17 @@ var claudeHookSpecs = []HookSpec{
 	claudeStateHook("StopFailure"),
 	claudeStateHook("SubagentStop"),
 	claudeStateHook("SubagentStart"),
+	// The tool start (PreToolUse, every tool: matcher "*", in its own group
+	// beside, never inside, the ask tool block's AskUserQuestion group) and
+	// the failed tool (PostToolUseFailure) keep a working agent Working
+	// (board #988, ask #525).
+	withMatcher(claudeStateHook("PreToolUse"), "*"),
+	claudeStateHook("PostToolUseFailure"),
+}
+
+func withMatcher(spec HookSpec, matcher string) HookSpec {
+	spec.Matcher = matcher
+	return spec
 }
 
 func (claudeAdapter) HookSpecs() []HookSpec { return append([]HookSpec(nil), claudeHookSpecs...) }
@@ -119,7 +130,8 @@ func (claudeAdapter) Watch() (Puller, bool) { return nil, false }
 func (claudeAdapter) Caps() Caps {
 	return Caps{
 		StateEvents: []string{"SessionStart", "UserPromptSubmit", "Notification", "PermissionRequest",
-			"PostToolUse", "StopFailure", "SubagentStart", "SubagentStop", "Stop"},
+			"PreToolUse", "PostToolUse", "PostToolUseFailure", "StopFailure", "SubagentStart",
+			"SubagentStop", "Stop"},
 		FailureSignal: SignalHook, InterruptSignal: SignalHook,
 		IdleSignal: true, PermissionWait: true, MidturnInput: true, PhoneInput: true, Elicitation: true,
 		RegistryProbe: true, SubagentFeed: true, Analytics: true, BackgroundTasks: true,

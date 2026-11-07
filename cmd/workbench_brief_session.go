@@ -21,9 +21,11 @@ import (
 // the same variable.
 const terminalSessionEnv = tools.TerminalSessionEnv
 
-// sessionRecordBusyTimeout bounds the wait for the write lock: a daemon
-// holding it fails the record as one line instead of eating the hook's
-// 10 s budget before the brief is printed.
+// sessionRecordBusyTimeout bounds one wait for the write lock of a
+// synchronous hook write — the Stop hook's, the SessionStart's run mark or
+// clear, a codex hook's: a daemon holding it fails the record as one line
+// instead of eating the hook's budget. The async state hooks and the
+// SessionStart's id move wait longer (stateHookLockWait, board #988).
 const sessionRecordBusyTimeout = time.Second
 
 // sessionStartInputWait bounds the wait for the hook input: Claude Code
@@ -170,13 +172,23 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 	if !w.moveID && !w.markRun && !w.clearState {
 		return nil
 	}
-	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
-		return err
-	}
 	if w.moveID {
-		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, sessionID); err != nil {
+		// The state hooks' longer wait with one retry (board #988, ask
+		// #525): a lost move leaves the row on the old conversation, and
+		// every later hook of the new one is dropped as foreign. Bounded by
+		// stateHookBudget: with the 1 s input wait and the mark's or
+		// clear's 1 s, at most ~6.5 s of waiting before the brief prints,
+		// inside the hook's 10 s timeout.
+		move := stateHookLockWait.until(lockNow().Add(stateHookBudget))
+		if err := move.write(database, func() error {
+			_, err := setTerminalClaudeSessionID(database, rowID, workbenchID, sessionID)
+			return err
+		}); err != nil {
 			return err
 		}
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
 	}
 	if w.markRun {
 		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow(), w.cwd); err != nil {
@@ -190,6 +202,9 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 	}
 	return nil
 }
+
+// setTerminalClaudeSessionID is the SessionStart's id move; a seam for tests.
+var setTerminalClaudeSessionID = (*db.DB).SetTerminalClaudeSessionID
 
 // sessionStartPlan is the id write a Codex SessionStart makes on its row
 // (spec 2026-10-12-codex-workbench-agent §5).
