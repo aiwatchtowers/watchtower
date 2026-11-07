@@ -25,3 +25,10 @@ func TestUseSystemReader_Installs(t *testing.T) {
 	mu.RUnlock()
 	assert.True(t, installed)
 }
+
+func TestReadError_NamesTheReason(t *testing.T) {
+	assert.Equal(t, errNoService, readError(codeNoService))
+	assert.Equal(t, errNoProperty, readError(codeNoProperty))
+	assert.Equal(t, errNotNumber, readError(codeNotNumber))
+	assert.EqualError(t, readError(99), "unknown read failure 99")
+}

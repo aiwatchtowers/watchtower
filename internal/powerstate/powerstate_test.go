@@ -2,6 +2,7 @@ package powerstate
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,7 +36,20 @@ func TestFullWake_NoReaderIsAwake(t *testing.T) {
 	assert.True(t, FullWake())
 }
 
+// captureLog swaps logf for a recorder and re-arms the once-per-process
+// read-error line for one test.
+func captureLog(t *testing.T) *[]string {
+	t.Helper()
+	var lines []string
+	prevLogf, prevLogged := logf, readErrLogged.Load()
+	logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+	readErrLogged.Store(false)
+	t.Cleanup(func() { logf = prevLogf; readErrLogged.Store(prevLogged) })
+	return &lines
+}
+
 func TestFullWake_ReadErrorIsAwake(t *testing.T) {
+	captureLog(t)
 	t.Cleanup(setReaderForTesting(func() (uint32, error) {
 		return capCPU, errors.New("read failed") // a dark-wake value, but an error
 	}))
@@ -65,6 +79,7 @@ func TestRead_ReturnsCapsAndVerdict(t *testing.T) {
 }
 
 func TestRead_ErrorFailsOpen(t *testing.T) {
+	captureLog(t)
 	boom := errors.New("read failed")
 	t.Cleanup(setReaderForTesting(func() (uint32, error) { return capCPU, boom }))
 	caps, full, err := Read()
@@ -79,4 +94,22 @@ func TestRead_NoReader(t *testing.T) {
 	assert.Zero(t, caps)
 	assert.True(t, full)
 	assert.NoError(t, err)
+}
+
+// The first read error is logged once with its reason; later errors and
+// successful reads log nothing, and the verdict stays fail-open throughout.
+func TestRead_LogsTheFirstErrorOnce(t *testing.T) {
+	lines := captureLog(t)
+	errs := []error{errors.New("no System Capabilities property"), nil, errors.New("not a 32-bit number"), errors.New("no IOPMrootDomain service")}
+	i := 0
+	t.Cleanup(setReaderForTesting(func() (uint32, error) {
+		err := errs[i]
+		i++
+		return 0x0f, err
+	}))
+	for range errs {
+		_, full, _ := Read()
+		assert.True(t, full)
+	}
+	assert.Equal(t, []string{"powerstate: cannot read System Capabilities (no System Capabilities property), dark-wake guard off"}, *lines)
 }

@@ -31,7 +31,9 @@
 package powerstate
 
 import (
+	"log"
 	"sync"
+	"sync/atomic"
 )
 
 // Capability bits in the public IOPM.h layout; reader_darwin.go checks at
@@ -43,6 +45,15 @@ const (
 )
 
 var (
+	// readErrLogged is set once the first read error has been logged:
+	// one line per process, however often the probe is asked.
+	readErrLogged atomic.Bool
+	// logf is the package logger (the standard logger, which the daemon
+	// routes to its log file); a seam for tests.
+	logf = log.Printf
+)
+
+var (
 	mu sync.RWMutex
 	// reader returns the system capability bits. nil until main calls
 	// UseSystemReader, so a test binary never reads the real state.
@@ -51,8 +62,9 @@ var (
 
 // Read returns the raw capability bits, the verdict and the read error. With
 // no reader installed it is (0, true, nil); on a read error it is
-// (0, true, err) — the verdict always fails open, so a caller may log err and
-// still act on full.
+// (0, true, err) — the verdict always fails open. The first read error of the
+// process is logged once ("powerstate: cannot read System Capabilities
+// (<reason>), dark-wake guard off"); later ones are not.
 func Read() (caps uint32, full bool, err error) {
 	mu.RLock()
 	r := reader
@@ -62,6 +74,9 @@ func Read() (caps uint32, full bool, err error) {
 	}
 	caps, err = r()
 	if err != nil {
+		if readErrLogged.CompareAndSwap(false, true) {
+			logf("powerstate: cannot read System Capabilities (%v), dark-wake guard off", err)
+		}
 		return 0, true, err
 	}
 	return caps, fullWakeFrom(caps), nil
