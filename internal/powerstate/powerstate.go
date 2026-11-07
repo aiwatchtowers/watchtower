@@ -31,7 +31,6 @@
 package powerstate
 
 import (
-	"errors"
 	"sync"
 )
 
@@ -42,10 +41,6 @@ const (
 	capCPU      uint32 = 0x01
 	capGraphics uint32 = 0x02
 )
-
-// errNoCPU marks a capability read without the CPU bit: a running process
-// always has the CPU, so such a value is not a real state.
-var errNoCPU = errors.New("powerstate: capabilities without the CPU bit")
 
 var (
 	mu sync.RWMutex

@@ -59,15 +59,12 @@ func UseSystemReader() {
 }
 
 // readSystem returns the current system capabilities. An unreadable
-// property, or a value without the CPU bit (0 included), is an error, so
-// FullWake fails open on it.
+// property is an error, so FullWake fails open on it; a value without the
+// CPU bit (0 included) is left to fullWakeFrom, which reads it as awake.
 func readSystem() (uint32, error) {
 	var caps C.uint32_t
 	if C.wtSystemCapabilities(&caps) == 0 {
 		return 0, errUnreadable
-	}
-	if uint32(caps)&capCPU == 0 {
-		return uint32(caps), errNoCPU
 	}
 	return uint32(caps), nil
 }
