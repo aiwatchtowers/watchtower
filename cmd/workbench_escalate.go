@@ -273,7 +273,8 @@ func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion
 // repeated here; for a recorded full request its whole text, a newline and
 // reasonLine. The full text stays in the summary for the readers that show
 // the summary as stored (the phone, the CLI); the drawer shows it once, on
-// the question card, and no bubble repeats it.
+// the question card, and no bubble repeats it. testdata/escalate/
+// summaries.json pins these shapes for the Desktop.
 func escalatedSummary(q db.ChatQuestion, reasonLine string) string {
 	switch {
 	case q.Level == asks.LevelFull:

@@ -137,4 +137,34 @@ final class OwnerAskSummaryPartsTests: XCTestCase {
         XCTAssertEqual(result.body, "")
         XCTAssertNil(result.reason)
     }
+
+    // MARK: Go's shapes (cmd/testdata/escalate/summaries.json, written by TestEscalateSummaryGolden)
+
+    private struct GoCase: Decodable {
+        let name, question, title, summary, body: String
+        let reasonLine: String
+
+        enum CodingKeys: String, CodingKey {
+            case name, question, title, summary, body
+            case reasonLine = "reason_line"
+        }
+    }
+
+    /// Every summary Go's escalation writes splits into the body and caption
+    /// the file declares.
+    func testEveryGoSummaryShapeSplits() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("cmd/testdata/escalate/summaries.json")
+        let cases = try JSONDecoder().decode([GoCase].self, from: Data(contentsOf: url))
+        XCTAssertFalse(cases.isEmpty)
+        for goCase in cases {
+            let result = parts(try ask(title: goCase.title, summary: goCase.summary, questions: [goCase.question]))
+            XCTAssertEqual(result.body, goCase.body, goCase.name)
+            XCTAssertEqual(result.reason, goCase.reasonLine, goCase.name)
+        }
+    }
 }
