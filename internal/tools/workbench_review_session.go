@@ -116,11 +116,20 @@ func ResolveReviewSource(ctx context.Context, d *db.DB, p *db.Workbench, session
 	if err != nil {
 		return ReviewSource{}, nil, fmt.Errorf("resolving session %d's folder: %w", sessionID, err)
 	}
+	src, repo, err := ReviewSourceIn(ctx, d, p, sessionID, folder)
+	src.FolderMissing = missing
+	return src, repo, err
+}
+
+// ReviewSourceIn is ResolveReviewSource with the session's folder given:
+// the caller keeps an open round in a folder that still exists when the
+// agent's last directory inside it is gone (a deleted subfolder).
+func ReviewSourceIn(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64, folder string) (ReviewSource, *reviewdiff.Repo, error) {
 	repo, err := reviewdiff.Open(folder, nil)
 	if err != nil {
 		return ReviewSource{}, nil, fmt.Errorf("opening session %d's folder: %w", sessionID, err)
 	}
-	src := ReviewSource{Folder: folder, FolderMissing: missing}
+	src := ReviewSource{Folder: folder}
 	ticket, err := d.SessionTicket(sessionID)
 	if err != nil || ticket == 0 {
 		return src, repo, err

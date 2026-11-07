@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -209,13 +210,21 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		return failReview(cmd, err)
 	}
 	if open != nil && src.FolderMissing {
-		// The session's worktree is gone (#535 cleanup): the place is lost,
-		// not changed, so the round stays where it was and says so.
-		out, err := roundJSON(ctx, repo, database, open)
-		if err != nil {
+		if !folderExists(open.FolderRoot) {
+			// The round's own folder is gone (a worktree removed by the #535
+			// cleanup): the place is lost, not changed, so the round stays
+			// where it was and says so.
+			out, err := roundJSON(ctx, repo, database, open)
+			if err != nil {
+				return failReview(cmd, err)
+			}
+			return writeReview(cmd, reviewEnvelope{OK: true, Round: out, PlaceMissing: true})
+		}
+		// Only the agent's last directory inside it is gone: the round's
+		// folder is still the place.
+		if src, repo, err = tools.ReviewSourceIn(ctx, database, p, reviewFlagSession, open.FolderRoot); err != nil {
 			return failReview(cmd, err)
 		}
-		return writeReview(cmd, reviewEnvelope{OK: true, Round: out, PlaceMissing: true})
 	}
 	moved := open != nil && !atPlace(open, src)
 	if open != nil && !moved && src.Tip == nil {
@@ -245,15 +254,18 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		// branches, so both are re-read. The previous-round link stays, so
 		// its unresolved comments still carry (REVIEW-03); "Since round N"
 		// reads it as lost when it is of another place (roundRange).
-		from := open.Source
+		from, placeMoved := open.Source, !atPlace(open, src)
 		open.FolderRoot, open.Source, open.Branch = src.Folder, src.Source(), src.Branch()
 		open.BaseSHA, open.BaseLabel, open.TreeSHA = base.SHA, base.Label, tree
 		if err := database.RepointReviewRound(*open); err != nil {
 			return failReview(cmd, err)
 		}
-		if moved {
-			// Ids and sources only (FILES-01).
+		// Ids and sources only (FILES-01).
+		switch {
+		case placeMoved:
 			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d moved: %s → %s\n", open.ID, from, open.Source)
+		case moved:
+			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d base changed (%s)\n", open.ID, open.Source)
 		}
 	default:
 		if err := database.UpdateReviewRoundTree(open.ID, tree); err != nil {
@@ -262,6 +274,12 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		open.TreeSHA = tree
 	}
 	return writeRound(ctx, cmd, repo, database, open)
+}
+
+// folderExists reports whether dir is an existing directory.
+func folderExists(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
 }
 
 // folderBaseMoved reports whether folder round r's base is measured against

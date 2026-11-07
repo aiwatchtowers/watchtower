@@ -488,3 +488,31 @@ func TestWorkbenchReview_FolderRefreshKeepsAnUnchangedBase(t *testing.T) {
 	assert.Equal(t, first["base_sha"], again["base_sha"], "the base commit stays while the base branch is the same")
 	assert.Equal(t, first["base_label"], again["base_label"])
 }
+
+// Codex round 5: the agent's last directory gone inside a worktree that
+// still exists is not a lost place: the round refreshes at its own folder.
+// (The worktree itself removed is TestWorkbenchReview_RemovedWorktreeKeepsTheOpenRound.)
+func TestWorkbenchReview_DeletedSubfolderKeepsRefreshing(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	reviewGit(t, repo, "worktree", "add", "-q", "-b", "wt/sub", wt, "main")
+	wt, err := filepath.EvalSymlinks(wt)
+	require.NoError(t, err)
+	sub := filepath.Join(wt, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	_, err = database.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = '2026-10-16T10:00:00Z' WHERE id = ?`, sub, s)
+	require.NoError(t, err)
+	first := startRound(t, wb, s)
+	require.Equal(t, wt, first["folder_root"])
+
+	require.NoError(t, os.RemoveAll(sub))
+	require.NoError(t, os.WriteFile(filepath.Join(wt, "new.txt"), []byte("new\n"), 0o644))
+	out := reviewJSON(t, wb, "start", "--session", itoa(s), "--refresh")
+	require.Equal(t, true, out["ok"], "%v", out)
+	assert.Nil(t, out["place_missing"])
+	r := out["round"].(map[string]any)
+	assert.Equal(t, first["id"], r["id"])
+	assert.Equal(t, wt, r["folder_root"])
+	assert.NotEqual(t, first["tree_sha"], r["tree_sha"])
+	assert.Equal(t, []string{"new.txt"}, roundFiles(t, wb, r))
+}
