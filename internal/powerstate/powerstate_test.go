@@ -1,0 +1,53 @@
+package powerstate
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestFullWakeFrom(t *testing.T) {
+	cases := []struct {
+		name string
+		caps uint32
+		want bool
+	}{
+		{"full wake: cpu graphics audio network", 0x0f, true},
+		{"full wake: cpu graphics", 0x03, true},
+		{"full wake with the AOT bit", 0x1f, true},
+		{"dark wake: cpu audio network", 0x0d, false},
+		{"dark wake: cpu network", 0x09, false},
+		{"dark wake: cpu only", 0x01, false},
+		{"no cpu bit: zero reads as awake", 0x00, true},
+		{"no cpu bit: graphics only reads as awake", 0x02, true},
+		{"no cpu bit: everything else reads as awake", 0x0e, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, fullWakeFrom(tc.caps))
+		})
+	}
+}
+
+func TestFullWake_NoReaderIsAwake(t *testing.T) {
+	t.Cleanup(setReaderForTesting(nil))
+	assert.True(t, FullWake())
+}
+
+func TestFullWake_ReadErrorIsAwake(t *testing.T) {
+	t.Cleanup(setReaderForTesting(func() (uint32, error) {
+		return capCPU, errors.New("read failed") // a dark-wake value, but an error
+	}))
+	assert.True(t, FullWake())
+}
+
+func TestFullWake_UsesReader(t *testing.T) {
+	t.Cleanup(setReaderForTesting(func() (uint32, error) { return 0x0d, nil }))
+	assert.False(t, FullWake())
+
+	inner := setReaderForTesting(func() (uint32, error) { return 0x0f, nil })
+	assert.True(t, FullWake())
+	inner()
+	assert.False(t, FullWake(), "restore puts the previous reader back")
+}
