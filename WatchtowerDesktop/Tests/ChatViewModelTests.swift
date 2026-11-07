@@ -1929,4 +1929,19 @@ extension ChatViewModelTests {
         vm.switchProvider(.ollama)
         XCTAssertEqual(vm.attachUnavailableReason, "Images and PDFs need a provider that reads them.")
     }
+
+    /// An automatic chat stays on its last provider only when that is the
+    /// preferred one's reserve (Go's stickiness rule); Ollama's history under
+    /// a Claude preference reads Claude's row.
+    func testAutomaticChatReadsHistoryOnlyForTheReserve() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db)
+            try db.execute(sql: "UPDATE chat_conversations SET actual_provider = 'ollama' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let vm = try makeViewModel()
+        vm.select(conversationID: id)
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertNil(vm.attachUnavailableReason, "Ollama is not Claude's reserve: Claude's row")
+    }
 }

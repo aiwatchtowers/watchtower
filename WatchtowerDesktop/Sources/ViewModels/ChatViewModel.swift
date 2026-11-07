@@ -110,16 +110,19 @@ final class ChatViewModel {
 
     /// The capability row of the provider this chat runs on: the session's
     /// own (its session_ready), else the catalog's for the provider the next
-    /// turn runs on: a pinned chat's choice, an automatic chat's last actual
-    /// provider (it stays there until the owner switches); nil while neither
-    /// is known.
+    /// turn runs on: a pinned chat's choice; an automatic chat's preferred
+    /// provider, or its last actual provider when that is the preferred
+    /// one's reserve (Go keeps a chat on the reserve until the owner
+    /// switches); nil while neither is known.
     var providerCapabilities: ProviderCapabilities? {
         let driver = pool.client(for: conversationID)?.driver
         if let capabilities = driver?.actualCapabilities { return capabilities }
         let catalog = AIModelCatalog.shared
         guard catalog.isLoaded else { return nil }
         let provider = automaticRouting ? preferredProvider : selectedProvider
-        let history = automaticRouting ? currentConversation?.actualProvider : nil
+        let history = currentConversation?.actualProvider.flatMap { actual in
+            automaticRouting && actual == catalog.reservePeer(of: provider.rawValue) ? actual : nil
+        }
         let id = driver?.actualProvider ?? history ?? provider.rawValue
         return catalog.capabilities(for: id)
     }
