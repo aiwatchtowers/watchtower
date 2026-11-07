@@ -2880,12 +2880,14 @@ CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_sessi
 
 -- Worktrees and branches a workbench session's agents worked in (00111):
 -- one row per new (session, root, branch), written by the session-state hook
--- (at most 64 per session) and read by `workbench cleanup`. Go only.
+-- (at most 64 per session; last_at moved once per run it is seen in) and read
+-- by `workbench cleanup` and the Desktop's lanes count. Go only writes it.
 CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,             -- worktree root (the dir holding .git), symlink-resolved, absolute
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
+    last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
     PRIMARY KEY (session_id, root, branch)
 );
 

@@ -3088,7 +3088,7 @@ CREATE TABLE terminal_session_worktrees (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 root TEXT NOT NULL,
 branch TEXT NOT NULL DEFAULT '',
-first_at TEXT NOT NULL,
+first_at TEXT NOT NULL, last_at TEXT,
 PRIMARY KEY (session_id, root, branch)
 )
 
@@ -6247,6 +6247,7 @@ GROUP BY up.ancestor
 1	root	TEXT	notnull=1	dflt=NULL	pk=2
 2	branch	TEXT	notnull=1	dflt=''	pk=3
 3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	last_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
