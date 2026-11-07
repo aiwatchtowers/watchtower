@@ -2052,3 +2052,46 @@ func TestProj11_LateHookOfThePreviousRunWritesNoCwd(t *testing.T) {
 		t.Fatalf("cwd = %q at %v, want /new at %v", s.Path, s.At, t0)
 	}
 }
+
+// Board #1019: an interrupt's `waiting` stores its turn end in the same
+// UPDATE, under the tool run's SeenTurnEnd guard and the time order, and
+// clears agent_tool_run; held back, it moves neither.
+func TestSetTerminalAgentState_InterruptStoresTheTurnEnd(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := d.SetTerminalTurnEnd(id, pid, agentStateUUID, 100); err != nil {
+		t.Fatal(err)
+	}
+	seen := sql.NullInt64{Int64: 100, Valid: true}
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "working", t0, "", nil, false,
+		AgentOrder{ToolRun: true, SeenTurnEnd: seen}); err != nil || !ok {
+		t.Fatalf("tool run: ok=%v err=%v", ok, err)
+	}
+	interrupt := func(at time.Time, seen sql.NullInt64) (bool, error) {
+		return d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", at, "", nil, false,
+			AgentOrder{Interrupt: true, SeenTurnEnd: seen, TurnEnd: sql.NullInt64{Int64: 250, Valid: true}})
+	}
+	for name, try := range map[string]func() (bool, error){
+		"stale turn end": func() (bool, error) { return interrupt(t0.Add(time.Second), sql.NullInt64{}) },
+		"older stamp":    func() (bool, error) { return interrupt(t0.Add(-time.Second), seen) },
+	} {
+		if ok, err := try(); err != nil || ok {
+			t.Fatalf("%s: ok=%v err=%v", name, ok, err)
+		}
+		if s, _ := d.GetTerminalSession(id); s.AgentState.String != "working" || s.TurnEnd.Int64 != 100 {
+			t.Fatalf("%s: state %q, turn end %v", name, s.AgentState.String, s.TurnEnd)
+		}
+	}
+	if ok, err := interrupt(t0.Add(time.Second), seen); err != nil || !ok {
+		t.Fatalf("interrupt: ok=%v err=%v", ok, err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AgentState.String != "waiting" || s.ToolRun || s.TurnEnd.Int64 != 250 {
+		t.Fatalf("state %q, tool run %v, turn end %v; want waiting, false, 250", s.AgentState.String, s.ToolRun, s.TurnEnd)
+	}
+}

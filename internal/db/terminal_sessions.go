@@ -400,6 +400,15 @@ type AgentOrder struct {
 	// since then ended the turn that ran the tool.
 	ToolRun     bool
 	SeenTurnEnd sql.NullInt64
+	// Interrupt marks the `waiting` of a main-thread tool the owner
+	// interrupted (board #1019; no Stop follows an interrupt). It lands under
+	// the same SeenTurnEnd guard as ToolRun but stores agent_tool_run = 0,
+	// and with TurnEnd valid the same UPDATE stores TurnEnd as agent_turn_end:
+	// the interrupted turn ends there the way a Stop's turn does
+	// (SetTerminalTurnEnd), so its later tool hooks write nothing. One
+	// statement, so the state and the turn end never disagree.
+	Interrupt bool
+	TurnEnd   sql.NullInt64
 	// NotOverApproval holds the write back over a stored `approval`: a
 	// main-thread tool start (PreToolUse) comes before the tool's
 	// permission dialog and says nothing about it being answered (board
@@ -474,6 +483,13 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	if order.ToolRun {
 		toolRun = 1
 	}
+	seenTurn, turnEnd := toolRun, 0
+	if order.Interrupt {
+		seenTurn = 1
+		if order.TurnEnd.Valid {
+			turnEnd = 1
+		}
+	}
 	if order.Stop {
 		stop = 1
 	}
@@ -502,6 +518,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		agent_error = CASE WHEN ? = 0 AND ? = 'waiting' AND agent_state = 'waiting' AND agent_failed_at IS NOT NULL
 		                   THEN agent_error ELSE ? END,
 		agent_tool_run = ?,
+		agent_turn_end = CASE WHEN ? = 1 THEN ? ELSE agent_turn_end END,
 		agent_background = CASE WHEN ? = 1 THEN agent_background ELSE ? END,
 		agent_background_at = CASE WHEN ? = 1 THEN agent_background_at ELSE ? END,
 		finished_at = CASE WHEN ? = 'working' AND (agent_state IS NOT 'working' OR ? = 1)
@@ -519,11 +536,11 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		  AND (? = 0 OR agent_turn_end IS ?)`,
 		state, stamp, stamp,
 		failed, state, stamp, stamp, failedAt, failed, state, agentError,
-		toolRun, keepBackground, background, keepBackground, backgroundAt,
+		toolRun, turnEnd, order.TurnEnd, keepBackground, background, keepBackground, backgroundAt,
 		state, fromPrompt,
 		order.Cwd, stamp, stamp, order.Cwd, order.Cwd, stamp, stamp, stamp,
 		id, workbenchID, sessionID, state, failed, agentError,
-		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, notOverApproval, toolRun, order.SeenTurnEnd)
+		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, notOverApproval, seenTurn, order.SeenTurnEnd)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}

@@ -580,35 +580,127 @@ func TestProj11_InterruptedTurnsLateToolHookNeverOverwritesWaiting(t *testing.T)
 	}
 }
 
-// Board #1019: the other order — the interrupted turn's tool result lands
-// first though its hook started after the interrupt's — the interrupt's
-// `waiting` still replaces that `working`, as the Stop's does. An interrupt
-// the transcript places in a turn already ended keeps writing nothing and
-// leaves the turn end alone.
-func TestProj11_InterruptReplacesItsTurnsToolRun(t *testing.T) {
-	database, pid, row := stopStateFixture(t, "open")
+// interruptFixture is a session whose turn after a Stop ran parallel calls
+// toolu_A and toolu_B, B started (working at second 3): the interrupt's
+// setting. It returns the transcript.
+func interruptFixture(t *testing.T) (database *db.DB, pid, row int64, at func(int), transcript string) {
+	t.Helper()
+	database, pid, row = stopStateFixture(t, "open")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	_, at := hookClock(t)
-	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+	_, at = hookClock(t)
+	transcript = writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
 	require.Equal(t, "waiting", hookStep(t, database, pid, row, at, 1, stopPayload(transcript)).AgentState.String)
-	recordToolEvent(t, pid, at, 2, statePayload("Notification", briefLaunchID, "permission_prompt"))
+	recordToolEvent(t, pid, at, 2, statePayload("UserPromptSubmit", briefLaunchID, ""))
 	appendTranscript(t, transcript, transcriptPrompt("again"), transcriptToolUse("toolu_A"),
 		transcriptToolUse("toolu_B"), transcriptToolResult("toolu_A"))
-	recordToolEvent(t, pid, at, 5, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+	recordToolEvent(t, pid, at, 3, toolEventPayload("PreToolUse", "toolu_B", transcript, ""))
 	require.Equal(t, "working", storedAgentState(t, database, row))
+	return database, pid, row, at, transcript
+}
 
+// Board #1019: the interrupt's `waiting` and its turn end land in one
+// guarded UPDATE, so a write that loses the lock once lands whole on the
+// retry; an interrupt the transcript places in a turn already ended writes
+// nothing and leaves the turn end alone.
+func TestProj11_InterruptStoresItsTurnEndWithTheState(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	orig := setTerminalAgentState
+	t.Cleanup(func() { setTerminalAgentState = orig })
+	calls := 0
+	setTerminalAgentState = func(d *db.DB, id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string,
+		failure *db.AgentFailure, prompt bool, order db.AgentOrder) (bool, error) {
+		calls++
+		if calls == 1 {
+			return false, busyError
+		}
+		return orig(d, id, workbenchID, sessionID, state, at, onlyFrom, failure, prompt, order)
+	}
 	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	assert.Equal(t, 2, calls, "one write, retried once")
 	s, err := database.GetTerminalSession(row)
 	require.NoError(t, err)
-	assert.Equal(t, "waiting", s.AgentState.String, "a tool run of the interrupted turn outlived the interrupt")
+	assert.Equal(t, "waiting", s.AgentState.String)
 	assert.False(t, s.ToolRun)
 	end, ok := transcriptSize(transcript)
 	require.True(t, ok)
 	assert.Equal(t, end, s.TurnEnd.Int64, "the interrupt did not record its turn end")
 
-	// The same interrupt again is now an ended turn's: nothing moves.
+	setTerminalAgentState = orig
 	before := rowSnapshot(t, database, row)
 	appendTranscript(t, transcript, transcriptPrompt("next"))
 	recordToolEvent(t, pid, at, 6, interrupted("toolu_B", transcript))
 	assert.Equal(t, before, rowSnapshot(t, database, row), "an ended turn's interrupt wrote")
+}
+
+// Board #1019: the interrupt keeps the time order of the stored state's
+// transition. One whose hook started before it — the next prompt's
+// `working` (here out of a permission prompt the Esc left), or a tool run's
+// `working` out of `approval` — writes nothing and moves no turn end, so the
+// next turn's tool calls are never placed in the interrupted one. A tool
+// run over `working` is no transition: the interrupt stamped after the
+// turn's first `working` still ends it.
+func TestProj11_LateInterruptMovesNothing(t *testing.T) {
+	t.Run("after the next prompt", func(t *testing.T) {
+		database, pid, row, at, transcript := interruptFixture(t)
+		recordToolEvent(t, pid, at, 4, statePayload("Notification", briefLaunchID, "permission_prompt"))
+		appendTranscript(t, transcript, transcriptPrompt("next"))
+		recordToolEvent(t, pid, at, 6, statePayload("UserPromptSubmit", briefLaunchID, ""))
+		before := rowSnapshot(t, database, row)
+		require.Equal(t, "working", before["agent_state"])
+		recordToolEvent(t, pid, at, 5, interrupted("toolu_B", transcript))
+		assert.Equal(t, before, rowSnapshot(t, database, row), "a late interrupt wrote")
+	})
+	t.Run("after a later tool run out of approval", func(t *testing.T) {
+		database, pid, row, at, transcript := interruptFixture(t)
+		recordToolEvent(t, pid, at, 4, statePayload("Notification", briefLaunchID, "permission_prompt"))
+		recordToolEvent(t, pid, at, 6, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+		before := rowSnapshot(t, database, row)
+		require.Equal(t, "working", before["agent_state"])
+		recordToolEvent(t, pid, at, 5, interrupted("toolu_B", transcript))
+		assert.Equal(t, before, rowSnapshot(t, database, row), "an interrupt stamped before the stored state wrote")
+	})
+	t.Run("after a later tool run over working", func(t *testing.T) {
+		database, pid, row, at, transcript := interruptFixture(t)
+		recordToolEvent(t, pid, at, 5, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+		recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+		assert.Equal(t, "waiting", storedAgentState(t, database, row), "the interrupt did not end its turn")
+	})
+}
+
+// Board #1019: an interrupt the transcript cannot place — no tool_use_id,
+// a call not in it, or no transcript — still records `waiting` by the time
+// order, moves no turn end, and says so on one stderr line with no content.
+func TestProj11_UnplacedInterruptKeepsTheTurnEnd(t *testing.T) {
+	for _, tc := range []struct{ name, id, path, line string }{
+		{"no call id", "", "", "interrupted call not placed in the transcript"},
+		{"call not in the transcript", "toolu_Z", "", "interrupted call not placed in the transcript"},
+		{"transcript unreadable", "toolu_B", "/nonexistent/transcript.jsonl", "transcript unreadable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row, at, transcript := interruptFixture(t)
+			stored, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			path := tc.path
+			if path == "" {
+				path = transcript
+			}
+			at(4)
+			out, errOut, err := runSessionState(t, pid, strings.NewReader(interrupted(tc.id, path)))
+			require.NoError(t, err)
+			require.Empty(t, out)
+			assert.Equal(t, "watchtower: interrupt: turn end not moved: "+tc.line+"\n", errOut)
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, "waiting", s.AgentState.String)
+			assert.Equal(t, stored.TurnEnd, s.TurnEnd, "an unplaced interrupt moved the turn end")
+		})
+	}
+}
+
+// Board #1019: an interrupt with no turn end moved has its own stderr label.
+func TestReportStateHookError_TurnEndNotMovedHasItsOwnLabel(t *testing.T) {
+	var out bytes.Buffer
+	reportStateHookError(&out, errors.Join(turnEndNotMoved{"transcript unreadable"}, errors.New("state busy")))
+	assert.Equal(t, "watchtower: interrupt: turn end not moved: transcript unreadable\n"+
+		"watchtower: session state not recorded: state busy\n", out.String())
 }
