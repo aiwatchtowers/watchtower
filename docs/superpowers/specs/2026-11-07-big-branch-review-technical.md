@@ -229,7 +229,8 @@ envelope:
 ```
 
 Without `--stream` the command behaves as today (one envelope). `--chapter K` redoes only K
-(ignores its part row) and the summary; `--cached-only` keeps its meaning (assembled
+(ignores its part row) and the summary; `--summary` redoes only the summary from the cached
+parts (refused with `missing_parts` when a part is missing); `--cached-only` keeps its meaning (assembled
 overview only).
 
 ### 3.6 Errors
