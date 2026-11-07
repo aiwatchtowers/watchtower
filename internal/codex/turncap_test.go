@@ -468,10 +468,14 @@ func TestCodexClient_RetryNoticeDoesNotHideTheCap(t *testing.T) {
 }
 
 // A clean exit cut off before turn.completed is the incomplete-run error on
-// both paths, never relabelled a budget failure by a rollout over the cap.
+// both paths, never relabelled a budget failure by the final cap check.
+// Only the final check can pass the cap here, so no live stop races it: the
+// rollout, written first, holds no response record (so during the run it
+// counts 0 turns, and no drift), and only at the end does the stream rule's
+// 2 turns count in its place.
 func TestCodexClient_IncompleteRunIsNotRelabelledBudget(t *testing.T) {
-	steps := []string{turnStarted, message("m", "partial"),
-		"R:" + rolloutRecord, "R:" + rolloutTokenCount(15), "R:" + rolloutRecord, "R:" + rolloutTokenCount(16)}
+	rateOnly := `{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}},"synthetic":true}`
+	steps := []string{"R:" + rateOnly, turnStarted, toolStart("a"), toolDone("a"), message("m", "partial")}
 	check := func(err error) {
 		t.Helper()
 		require.Error(t, err)
