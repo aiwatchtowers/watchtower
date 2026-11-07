@@ -137,6 +137,7 @@ type ParseResult struct {
 	More         bool     // stopped at MaxRows, not at the end of the input
 	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
 	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
+	CodexLineage string   // the rollout's lineage at the end of the parse (seed for the next slice; ParseCodex only)
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any

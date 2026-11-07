@@ -649,6 +649,7 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 			o.CodexModel = cmp.Or(s.Model, o.CodexModel)
 			o.CodexCWD = cmp.Or(s.HomeCWD, o.CodexCWD)
 		}
+		o.CodexLineage = pr.CodexLineage // the next slice starts past the head
 		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
 			return &codexFailure{op: "storing", session: tf.SessionUUID, err: err}

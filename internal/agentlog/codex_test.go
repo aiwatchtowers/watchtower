@@ -740,3 +740,22 @@ func TestAgentlog_CodexFailureNamesSessionNotPath(t *testing.T) {
 		assert.ErrorIs(t, r.FirstFailure, fs.ErrPermission)
 	})
 }
+
+// A repeated report that straddles two slices of one scan from offset 0 is
+// still one row: every slice keys by the lineage the first one found.
+func TestAgentlog02_CodexRepeatedReportAcrossSlices(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	s := cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "gpt-test") +
+		cxTokens(t, "01.000", 100, 0, 1, 0, 101) + cxTokens(t, "02.000", 100, 0, 2, 0, 203) +
+		cxTokens(t, "02.100", 100, 0, 2, 0, 203) // the repeat opens the second slice
+	f.writeRollout(cxParent, s)
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	calls, out := f.totals()
+	assert.Equal(t, int64(2), calls)
+	assert.Equal(t, int64(3), out)
+}
