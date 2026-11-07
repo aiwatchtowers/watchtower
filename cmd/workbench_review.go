@@ -218,6 +218,14 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		return writeReview(cmd, reviewEnvelope{OK: true, Round: out, PlaceMissing: true})
 	}
 	moved := open != nil && !atPlace(open, src)
+	if open != nil && !moved && src.Tip == nil {
+		// A folder round keeps its base on a Refresh, unless the branch it is
+		// measured against changed (the folder checked out the task branch,
+		// whose base is its parent's): that is a move of the base.
+		if moved, err = folderBaseMoved(ctx, repo, open, src); err != nil {
+			return failReview(cmd, err)
+		}
+	}
 	if open != nil && !moved && !reviewFlagRefresh {
 		return writeRound(ctx, cmd, repo, database, open)
 	}
@@ -254,6 +262,17 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		open.TreeSHA = tree
 	}
 	return writeRound(ctx, cmd, repo, database, open)
+}
+
+// folderBaseMoved reports whether folder round r's base is measured against
+// another branch now: the base src would read carries another label. The
+// base commit alone moving (main gained commits) is not a move.
+func folderBaseMoved(ctx context.Context, repo *reviewdiff.Repo, r *db.ReviewRound, src tools.ReviewSource) (bool, error) {
+	base, err := repo.HeadBase(ctx, src.BaseBranch)
+	if err != nil {
+		return false, err
+	}
+	return base.Label != r.BaseLabel, nil
 }
 
 // samePlace reports whether rounds a and b review the same place.

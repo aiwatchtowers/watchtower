@@ -447,3 +447,44 @@ func TestWorkbenchReview_RenamedTicketBranchMovesTheRound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "feature-v2", got.Branch)
 }
+
+// Codex round 4: a folder round's base branch changing in the same folder
+// (the folder leaves its own branch for the task branch, whose base is its
+// parent's) moves the base; main gaining commits does not.
+func TestWorkbenchReview_FolderBaseBranchChangeMovesTheBase(t *testing.T) {
+	for _, refresh := range []bool{false, true} {
+		t.Run(map[bool]string{false: "start", true: "refresh"}[refresh], func(t *testing.T) {
+			database, wb, s, repo := reviewFixture(t)
+			commitOnBranch(t, repo, "feature", "feature.txt")
+			reviewGit(t, repo, "branch", "feature-task", "feature")
+			commitOnBranch(t, repo, "feature-task", "task.txt")
+			group := ticketTarget(t, database, wb, s, 0, "feature", false)
+			ticketTarget(t, database, wb, s, group, "feature-task", true)
+			reviewGit(t, repo, "checkout", "-q", "-b", "mine")
+
+			first := startRound(t, wb, s)
+			require.Equal(t, db.ReviewSourceFolder, first["source"])
+			require.Equal(t, "main", first["base_label"])
+
+			reviewGit(t, repo, "checkout", "-q", "feature-task")
+			args := map[bool][]string{true: {"--refresh"}}[refresh]
+			again := startRound(t, wb, s, args...)
+			assert.Equal(t, first["id"], again["id"])
+			assert.Equal(t, db.ReviewSourceFolder, again["source"])
+			assert.Equal(t, "feature", again["base_label"])
+			assert.Equal(t, reviewGit(t, repo, "rev-parse", "feature"), again["base_sha"])
+			assert.Equal(t, []string{"task.txt"}, roundFiles(t, wb, again))
+		})
+	}
+}
+
+func TestWorkbenchReview_FolderRefreshKeepsAnUnchangedBase(t *testing.T) {
+	_, wb, s, repo := reviewFixture(t)
+	reviewGit(t, repo, "checkout", "-q", "-b", "mine")
+	first := startRound(t, wb, s)
+	require.Equal(t, "main", first["base_label"])
+	commitOnBranch(t, repo, "main", "later.txt")
+	again := startRound(t, wb, s, "--refresh")
+	assert.Equal(t, first["base_sha"], again["base_sha"], "the base commit stays while the base branch is the same")
+	assert.Equal(t, first["base_label"], again["base_label"])
+}
