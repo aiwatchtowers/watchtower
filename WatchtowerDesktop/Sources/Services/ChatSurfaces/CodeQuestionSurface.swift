@@ -131,11 +131,8 @@ enum CodeQuestionSurface {
                 return defaultModelChoice()
             }
         }
-        // Whether the catalog read had failed when the turn started: its
-        // run options then gave no folder, whatever a later read says.
-        let turnStart = TurnCatalogState()
         let runOptions = { @MainActor () -> ChatRunOptions in
-            turnStart.unread = AIModelCatalog.shared.unreadReason != nil
+            noteTurnStart(conversationID: conversationID, unread: AIModelCatalog.shared.unreadReason != nil)
             let choice = currentChoice()
             return ChatRunOptions(provider: choice.provider.rawValue,
                                   model: choice.model.isEmpty ? nil : choice.model,
@@ -156,7 +153,8 @@ enum CodeQuestionSurface {
                 var result = ChatPostTurnResult.identity(input)
                 // The model's notice is stored for good: written only when the
                 // row is known. A turn built after the catalog read failed says so.
-                if let notice = turnNotice(unreadAtStart: turnStart.unread, catalog: .shared, choice: currentChoice()),
+                let unread = unreadAtTurnStart.contains(conversationID)
+                if let notice = turnNotice(unreadAtStart: unread, catalog: .shared, choice: currentChoice()),
                    !hasNotice(notice, conversationID: conversationID, dbPool: dbPool) {
                     result.notices = [notice]
                 }
@@ -165,6 +163,15 @@ enum CodeQuestionSurface {
             emptyHint: "Ask about this code. The assistant reads the workbench folder and never changes it.",
             runOptions: runOptions
         )
+    }
+
+    /// Conversations whose running turn started after the catalog read
+    /// failed: its run options gave no folder, whatever a later read says.
+    /// Kept here, not in the spec, which the views rebuild while a turn runs.
+    private static var unreadAtTurnStart: Set<Int64> = []
+
+    private static func noteTurnStart(conversationID: Int64, unread: Bool) {
+        if unread { unreadAtTurnStart.insert(conversationID) } else { unreadAtTurnStart.remove(conversationID) }
     }
 
     /// The notice a finished turn carries: the catalog could not be read
@@ -257,10 +264,4 @@ enum CodeQuestionSurface {
         - Be concise.
         """
     }
-}
-
-/// What a code question's turn saw of the catalog when it started.
-@MainActor
-private final class TurnCatalogState {
-    var unread = false
 }

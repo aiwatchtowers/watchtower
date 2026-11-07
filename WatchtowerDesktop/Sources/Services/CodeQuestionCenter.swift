@@ -238,11 +238,11 @@ final class CodeQuestionCenter {
     @discardableResult
     func ask(_ text: String, workbenchID: Int64) async -> Bool {
         let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty else { return false }
-        // Before the session is read: a popover replaced during the wait is
-        // the one this question goes to only if it is still the shown one.
+        guard !question.isEmpty, let asking = sessions[workbenchID]?.id else { return false }
         await readCatalogIfUnread()
-        guard let session = sessions[workbenchID], !session.isStarting,
+        // The popover that asked must still be the one shown: a question is
+        // never sent with the context of a popover opened during the wait.
+        guard let session = sessions[workbenchID], session.id == asking, !session.isStarting,
               !isDeleting(session.conversationID) else { return false }
         if session.conversationID == nil {
             guard await startConversation(workbenchID: workbenchID) else { return false }
