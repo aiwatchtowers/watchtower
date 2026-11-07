@@ -426,3 +426,50 @@ func TestAgentLoop_ResultCheckRefusesResult(t *testing.T) {
 	last := (*reqs)[1].Messages[len((*reqs)[1].Messages)-1]
 	assert.Equal(t, `{"error":"ResultTooLarge: the result is too large"}`, last.Content)
 }
+
+// cancelOnRead cancels the run on its first read.
+type cancelOnRead struct {
+	*fakeReg
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnRead) CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error) {
+	r.cancel()
+	return r.fakeReg.CallRead(ctx, name, args, b)
+}
+
+// A stop lands between tool calls: the loop dispatches nothing more (a
+// registry tool need not honour a stopped context, and a write must never
+// run after Stop) and ends with the context's error.
+func TestAgentloop_StopBetweenToolCallsDispatchesNoMore(t *testing.T) {
+	two := toolCallResp("list_targets", `{}`)
+	two.Choices[0].Message.ToolCalls = append(two.Choices[0].Message.ToolCalls,
+		oaToolCall{ID: "c2", Type: "function", Function: oaFunction{Name: "list_targets", Arguments: `{}`}})
+	model, requests := recordingServer(t, two, finalResp("done"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := &cancelOnRead{fakeReg: listTargetsReg(), cancel: cancel}
+	_, _, err := clientWith(reg, model.URL).QuerySync(ctx, "", "go", "")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, []string{"list_targets"}, reg.reads, "the second call is never dispatched")
+	assert.Len(t, requests(), 1, "no model call after the stop")
+}
+
+// A stop that releases the blocked send of a tool's start event dispatches
+// nothing: the consumer stopped reading, the channel is full, and the stop
+// comes while the start waits to be sent.
+func TestAgentloop_StopReleasingAToolStartDispatchesNothing(t *testing.T) {
+	model, _ := recordingServer(t, toolCallResp("list_targets", `{}`), finalResp("done"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := listTargetsReg()
+	c := clientWith(reg, model.URL)
+	c.EmitToolEvents()
+	_, _, err := c.run(ctx, "", "go", func(ch ai.StreamChunk) {
+		if ch.Tool != nil && !ch.Tool.Done {
+			cancel() // the send this chunk waited on was released by the stop
+		}
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, reg.reads, "nothing is dispatched after the stop")
+}

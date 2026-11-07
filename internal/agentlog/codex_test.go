@@ -647,3 +647,115 @@ func TestAgentlog02_CodexResultOnlyInForkFillsPendingRow(t *testing.T) {
 		assert.Equal(t, "exit_code", class, "order %v", order)
 	}
 }
+
+// Two independent sessions whose responses carry identical usage figures
+// each keep their calls: the api_call key carries the rollout's lineage (the
+// last session_meta before the first content line), which a fork shares with
+// its parent and an unrelated session does not.
+func TestAgentlog02_CodexIdenticalFiguresAcrossSessions(t *testing.T) {
+	f := newFixture(t)
+	f.writeRollout(cxParent, cxSession(t, cxParent, f.folder))
+	f.writeRollout(cxOther, cxSession(t, cxOther, f.folder))
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	f.codexRow(f.wb, cxOther, f.folder, "")
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	calls, out := f.totals()
+	assert.Equal(t, int64(4), calls, "two calls per session, none collapsed")
+	assert.Equal(t, int64(260), out)
+}
+
+// The parent's later calls are read from a stored offset (no session_meta in
+// the read); the fork replays them from its offset 0. Both reads key them by
+// the same lineage, so they still count once.
+func TestAgentlog02_CodexForkReplayAfterResumedRead(t *testing.T) {
+	f := newFixture(t)
+	head := cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "gpt-test") +
+		cxUser(t, "01.000", "u-1", "SENTINEL-PROMPT") + cxTokens(t, "05.000", 1000, 600, 50, 20, 1050)
+	tail := cxTokens(t, "12.000", 1200, 900, 80, 30, 2330)
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	f.codexRow(f.wb, cxFork, f.folder, "")
+	p := f.writeRollout(cxParent, head)
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	require.NoError(t, os.WriteFile(p, []byte(head+tail), 0o600))
+	r = f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+
+	fork := cxMeta(t, "30.000", cxFork, f.folder) + head + tail + cxTokens(t, "35.000", 100, 0, 7, 0, 2437)
+	f.writeRollout(cxFork, fork)
+	r = f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	calls, out := f.totals()
+	assert.Equal(t, int64(3), calls)
+	assert.Equal(t, int64(137), out)
+}
+
+// A codex call with no call id is format drift: counted in Unknown, never
+// dropped silently.
+func TestParseCodex_EmptyCallIDCounted(t *testing.T) {
+	s := cxMeta(t, "00.000", cxParent, "/work") + cxExec(t, "01.000", "", "go test") + cxOut(t, "02.000", "", "ok")
+	pr := parseCodex(t, s, ParseOptions{Path: "/r.jsonl", SessionUUID: cxParent})
+	assert.Equal(t, 2, pr.Unknown["<codex-no-call-id>"])
+	assert.Empty(t, pr.Events)
+	assert.Empty(t, pr.ToolResults)
+}
+
+// FILES-01: a codex rollout's failure in the scan result names the session
+// and the error class, never the rollout's path.
+func TestAgentlog_CodexFailureNamesSessionNotPath(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode-000 file")
+	}
+	t.Run("ownership read", func(t *testing.T) {
+		f := newFixture(t)
+		p := f.writeRollout(cxParent, cxSession(t, cxParent, f.folder))
+		require.NoError(t, os.Chmod(p, 0))
+		f.codexRow(f.wb, cxParent, f.folder, "")
+		r := f.scan()
+		require.Equal(t, 1, r.FailedFiles)
+		msg := r.FirstFailure.Error()
+		assert.Contains(t, msg, cxParent)
+		assert.Contains(t, msg, "permission denied")
+		assert.NotContains(t, msg, f.codex)
+		assert.NotContains(t, msg, "rollout-")
+		assert.ErrorIs(t, r.FirstFailure, errRolloutUnreadable)
+		assert.ErrorIs(t, r.FirstFailure, fs.ErrPermission)
+	})
+	t.Run("incremental open", func(t *testing.T) {
+		f := newFixture(t)
+		s := cxSession(t, cxParent, f.folder)
+		p := f.writeRollout(cxParent, s)
+		f.codexRow(f.wb, cxParent, f.folder, "")
+		r := f.scan()
+		require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+		require.NoError(t, os.WriteFile(p, []byte(s+cxTokens(t, "40.000", 10, 0, 1, 0, 2341)), 0o600))
+		require.NoError(t, os.Chmod(p, 0))
+		r = f.scan()
+		require.Equal(t, 1, r.FailedFiles)
+		msg := r.FirstFailure.Error()
+		assert.Contains(t, msg, cxParent)
+		assert.NotContains(t, msg, f.codex)
+		assert.NotContains(t, msg, "rollout-")
+		assert.ErrorIs(t, r.FirstFailure, fs.ErrPermission)
+	})
+}
+
+// A repeated report that straddles two slices of one scan from offset 0 is
+// still one row: every slice keys by the lineage the first one found.
+func TestAgentlog02_CodexRepeatedReportAcrossSlices(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	s := cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "gpt-test") +
+		cxTokens(t, "01.000", 100, 0, 1, 0, 101) + cxTokens(t, "02.000", 100, 0, 2, 0, 203) +
+		cxTokens(t, "02.100", 100, 0, 2, 0, 203) // the repeat opens the second slice
+	f.writeRollout(cxParent, s)
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	calls, out := f.totals()
+	assert.Equal(t, int64(2), calls)
+	assert.Equal(t, int64(3), out)
+}

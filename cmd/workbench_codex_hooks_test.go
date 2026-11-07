@@ -412,7 +412,8 @@ func assertForeignNote(t *testing.T, errOut, stored string, row int64, name stri
 // ask #499): none without a failed last turn in the rollout — no rollout, a
 // turn that ended fine, a failure older than the stored state, a row not
 // working — and one, with codex_error_info as the error, with it; the next
-// prompt clears it as it clears Claude Code's.
+// prompt clears it as it clears Claude Code's. (An interrupted turn is a
+// plain `waiting` with no error: TestSessionProbe_CodexBridgeAbortedTurnIsWaiting.)
 func TestProj11_CodexRowGetsFailureOnlyFromItsRollout(t *testing.T) {
 	database, pid, row := codexRowFixture(t, codexTUISession)
 	home := codexHomeFixture(t)
@@ -433,10 +434,10 @@ func TestProj11_CodexRowGetsFailureOnlyFromItsRollout(t *testing.T) {
 
 	now := time.Now().UTC()
 	for name, lines := range map[string][]string{
-		"ended fine":   {codexTurnLine(now, "task_started", ""), codexTurnLine(now, "task_complete", "")},
-		"aborted":      {codexTurnLine(now, "task_started", ""), codexTurnLine(now, "turn_aborted", "")},
-		"running":      {codexTurnLine(now, "task_started", "")},
-		"older failed": {codexTurnLine(now.Add(-2*time.Minute), "task_complete", "usage_limit_exceeded")},
+		"ended fine":    {codexTurnLine(now, "task_started", ""), codexTurnLine(now, "task_complete", "")},
+		"running":       {codexTurnLine(now, "task_started", "")},
+		"older failed":  {codexTurnLine(now.Add(-2*time.Minute), "task_complete", "usage_limit_exceeded")},
+		"older aborted": {codexTurnLine(now.Add(-2*time.Minute), "turn_aborted", "")},
 	} {
 		writeCodexRollout(t, home, codexTUISession, lines...)
 		assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"], name)
@@ -508,8 +509,10 @@ func TestCodexPromptOverAFinishedWorkingRowClearsFinished(t *testing.T) {
 }
 
 // A failed turn whose time cannot be read cannot be ordered against the
-// stored state: nothing is written, one stderr line says why.
-func TestSessionProbe_CodexFailureWithoutATimeIsLoggedNotWritten(t *testing.T) {
+// stored state: no state is written, and the row is marked not watched
+// (`unreadable`, as the host's watch marks it), never left a silent
+// `working`; one stderr line with the class.
+func TestSessionProbe_CodexFailureWithoutATimeIsNotWatched(t *testing.T) {
 	database, pid, row := codexRowFixture(t, codexTUISession)
 	home := codexHomeFixture(t)
 	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
@@ -519,9 +522,15 @@ func TestSessionProbe_CodexFailureWithoutATimeIsLoggedNotWritten(t *testing.T) {
 
 	got, logged := runSessionProbeLogged(t, pid, row)
 
-	assert.Equal(t, probeNotStale, got["outcome"])
-	assert.Contains(t, logged, "the codex turn failed but its time is unreadable")
-	assert.Equal(t, before, rowSnapshot(t, database, row))
+	assert.Equal(t, probeNotWatched, got["outcome"])
+	assert.Contains(t, logged, "not watched (unreadable)")
+	after := rowSnapshot(t, database, row)
+	assert.Equal(t, db.WatchIssueUnreadable, after["agent_watch_issue"])
+	delete(after, "agent_watch_issue")
+	delete(after, "agent_watch_issue_at")
+	delete(before, "agent_watch_issue")
+	delete(before, "agent_watch_issue_at")
+	assert.Equal(t, before, after, "no state written")
 }
 
 // A probe of another session's rollout, or of a row with no session id yet,

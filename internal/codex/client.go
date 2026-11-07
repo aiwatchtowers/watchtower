@@ -507,8 +507,11 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	output := stdout.buf.Bytes()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
-	// A failed turn is the run's own failure even when codex exits 0.
-	if capErr := turns.done(turnFailed(output), err != nil); capErr != nil {
+	// A failed turn is the run's own failure even when codex exits 0, and a
+	// run cut off before turn.completed is incomplete, not over budget (as
+	// Query).
+	failed, completed := turnOutcome(output)
+	if capErr := turns.done(failed, err != nil || !completed); capErr != nil {
 		recordCodexCall(ctx, c.model, start, reported, ran, systemPrompt+userMessage, "", false)
 		return "", nil, capErr
 	}

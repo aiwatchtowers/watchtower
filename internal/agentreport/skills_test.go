@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentlog"
 	"watchtower/internal/agentlogdb"
 )
 
@@ -26,7 +27,7 @@ func spanned(n int, facts bool) []agentlogdb.AgentReportSession {
 	var out []agentlogdb.AgentReportSession
 	for i := range n {
 		start := t0.Add(time.Duration(i) * 48 * time.Hour)
-		out = append(out, agentlogdb.AgentReportSession{SessionUUID: fmt.Sprintf("s%d", i), Facts: facts,
+		out = append(out, agentlogdb.AgentReportSession{SessionUUID: fmt.Sprintf("s%d", i), Agent: agentlog.AgentClaude, Facts: facts,
 			StartedAt: start.Format(tsLayout), EndedAt: start.Add(time.Hour).Format(tsLayout)})
 	}
 	return out
@@ -121,7 +122,7 @@ func TestSkills_OldRowsNotMeasured(t *testing.T) {
 	s := evset{}
 	s.add("old", 0, skillEv("review", "proactive"))
 	s.add("new", 0, skillEv("notes", "slash"))
-	sessions := []agentlogdb.AgentReportSession{{SessionUUID: "new", Facts: true}, {SessionUUID: "old"}}
+	sessions := []agentlogdb.AgentReportSession{{SessionUUID: "new", Agent: agentlog.AgentClaude, Facts: true}, {SessionUUID: "old"}}
 	r := Skills(sessions, s, nil, []agentlogdb.AgentSkillListed{listed("new", "notes", 10)})
 	assert.Equal(t, 1, r.FactsSessions)
 	assert.Equal(t, 1, r.Used)

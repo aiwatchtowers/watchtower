@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -27,27 +28,36 @@ func validWatchIssue(issue string) bool {
 }
 
 // SetAgentWatchIssue marks terminal row seen.ID as not watched for issue,
-// stamped at: only over a codex row that reads `working`, is not finished
+// stamped at: only over a row of one of kinds (the rollout-watched agents,
+// sessionagent.RolloutWatchKinds: the db package names no agent) that
+// reads `working`, is not finished
 // and carries no failure (a failure the pull read wins), only while the row
 // still holds the session id, transcript path and state stamp the verdict
 // was read off (a hook that moved the row in between re-arms the watch, so
 // an old verdict never lands on the new snapshot), and only when the stored
 // issue differs, so a repeat is false and a caller logs one line per row and
 // issue.
-func (db *DB) SetAgentWatchIssue(seen CodexWatchRow, issue string, at time.Time) (bool, error) {
+func (db *DB) SetAgentWatchIssue(seen CodexWatchRow, issue string, at time.Time, kinds []string) (bool, error) {
 	id := seen.ID
 	if !validWatchIssue(issue) {
 		return false, fmt.Errorf("terminal session %d: unknown watch issue %q", id, issue)
+	}
+	if len(kinds) == 0 {
+		return false, nil
 	}
 	var stateAt any
 	if !seen.StateAt.IsZero() {
 		stateAt = AgentStateStamp(seen.StateAt)
 	}
+	args := []any{issue, AgentStateStamp(at), id}
+	for _, k := range kinds {
+		args = append(args, k)
+	}
+	args = append(args, issue, nullRunText(seen.SessionID), nullRunText(seen.TranscriptPath), stateAt)
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_watch_issue = ?, agent_watch_issue_at = ?
-		WHERE id = ? AND kind = 'codex' AND agent_state = 'working' AND finished_at IS NULL
+		WHERE id = ? AND kind IN (?`+strings.Repeat(", ?", len(kinds)-1)+`) AND agent_state = 'working' AND finished_at IS NULL
 		  AND agent_failed_at IS NULL AND agent_watch_issue IS NOT ?
-		  AND claude_session_id IS ? AND agent_transcript_path IS ? AND agent_state_at IS ?`,
-		issue, AgentStateStamp(at), id, issue, nullRunText(seen.SessionID), nullRunText(seen.TranscriptPath), stateAt)
+		  AND claude_session_id IS ? AND agent_transcript_path IS ? AND agent_state_at IS ?`, args...)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d watch issue: %w", id, err)
 	}

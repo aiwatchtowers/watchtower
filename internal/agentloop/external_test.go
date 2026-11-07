@@ -183,6 +183,8 @@ func TestAgentloop_PolicyDisallowedConnectionNotMounted(t *testing.T) {
 	require.NotEmpty(t, reqs)
 	assert.Empty(t, offered(reqs[0]), "a disallowed connection offers nothing")
 	assert.NotContains(t, reqs[0].Messages[0].Content, "EXTERNAL SERVER DATA", "no fence for a server not mounted")
+	assert.Contains(t, reqs[0].Messages[0].Content, "These Quick Connections are unavailable in this turn: acme.",
+		"the model is told, so it can tell the owner")
 	calls, _ := mcpSrv.seen()
 	assert.Empty(t, calls)
 }
@@ -198,6 +200,8 @@ func TestAgentloop_UnlistableConnectionMountsNothing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "fine", chunks[len(chunks)-1].Text)
 	assert.Empty(t, offered(requests()[0]))
+	assert.Contains(t, requests()[0].Messages[0].Content, "These Quick Connections are unavailable in this turn: gone.",
+		"the model is told, so it can tell the owner")
 }
 
 // A gated loop (an automation's agent()) is never given Quick Connections:

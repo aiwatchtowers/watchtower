@@ -16,6 +16,9 @@ import (
 // claude warm reader's limit).
 const MaxLine = 64 << 20
 
+// SkippedHeadBytes is how much of a skipped line's start OnSkip is given.
+const SkippedHeadBytes = 64
+
 // Reader reads lines from a child's stdout. It is not safe for concurrent
 // use.
 type Reader struct {
@@ -25,6 +28,8 @@ type Reader struct {
 	// returned; Next returns it from then on.
 	err                  error
 	skipped, undecodable int
+	// onSkip is called with the head of every line skipped (OnSkip).
+	onSkip func(head []byte)
 }
 
 // New reads r with the MaxLine limit.
@@ -63,6 +68,9 @@ func (r *Reader) readLine() (line []byte, oversized bool, err error) {
 		frag, err := r.r.ReadSlice('\n')
 		if !oversized {
 			if len(line)+len(frag) > r.limit {
+				if r.onSkip != nil {
+					r.onSkip(skippedHead(line, frag))
+				}
 				oversized, line = true, nil
 			} else {
 				line = append(line, frag...)
@@ -74,6 +82,18 @@ func (r *Reader) readLine() (line []byte, oversized bool, err error) {
 		return line, oversized, err
 	}
 }
+
+// skippedHead is the first SkippedHeadBytes of a line being skipped, whose
+// text so far is line followed by frag.
+func skippedHead(line, frag []byte) []byte {
+	head := append([]byte(nil), line[:min(len(line), SkippedHeadBytes)]...)
+	return append(head, frag[:min(len(frag), SkippedHeadBytes-len(head))]...)
+}
+
+// OnSkip has Next call f with the start of every line it skips (up to
+// SkippedHeadBytes), as the skip happens: enough for a caller to read the
+// line's type, never its content.
+func (r *Reader) OnSkip(f func(head []byte)) { r.onSkip = f }
 
 // Skipped is the number of lines skipped as over the limit.
 func (r *Reader) Skipped() int { return r.skipped }

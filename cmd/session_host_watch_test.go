@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -98,7 +99,7 @@ func TestProj11_HostPullEndsAnAbortedTurnAsWaiting(t *testing.T) {
 	database, pid, row := codexRowFixture(t, codexTUISession)
 	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
 	at := time.Now().UTC().Truncate(time.Millisecond)
-	pull := db.CodexWatchRow{ID: row, WorkbenchID: pid, SessionID: codexTUISession}
+	pull := db.CodexWatchRow{ID: row, WorkbenchID: pid, Kind: "codex", SessionID: codexTUISession}
 	require.NoError(t, recordCodexPull(database, pull, sessionfeed.CodexTurn{Aborted: true, At: at}))
 	s := codexRow(t, database, row)
 	assert.Equal(t, agentStateWaiting, s.AgentState.String)
@@ -265,4 +266,46 @@ func TestSessionProbe_CodexStaleCountReadsTheRollout(t *testing.T) {
 			assert.Equal(t, c.ended, got["ended"])
 		})
 	}
+}
+
+// The pull write resolves its reader from the row's kind: a kind whose turn
+// ends are not pulled is an error, never codex's reader in disguise.
+func TestProj11_PullRecordResolvesTheRowKind(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	turn := sessionfeed.CodexTurn{Aborted: true, At: time.Now().UTC()}
+	for _, kind := range []string{"claude", ""} {
+		pull := db.CodexWatchRow{ID: row, WorkbenchID: pid, Kind: kind, SessionID: codexTUISession}
+		require.Error(t, recordCodexPull(database, pull, turn), "kind %q", kind)
+	}
+	assert.Equal(t, agentStateWorking, codexRow(t, database, row).AgentState.String)
+}
+
+// The kinds a not-watched mark may land on are the agents whose turn ends
+// are pulled, and the db tests' list is that list.
+func TestProj11_WatchKindsArePulledKinds(t *testing.T) {
+	for _, k := range sessionagent.RolloutWatchKinds() {
+		_, pulls := sessionagent.PullerOf(k)
+		assert.True(t, pulls, k)
+	}
+	assert.Equal(t, []string{"codex"}, sessionagent.RolloutWatchKinds(), "db's testWatchKinds")
+}
+
+// The bridge mirrors the host's watch on an interrupted turn (spec §3.5):
+// a plain `waiting`, no error, no watch issue.
+func TestSessionProbe_CodexBridgeAbortedTurnIsWaiting(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	at := time.Now().UTC().Add(time.Second).Truncate(time.Millisecond)
+	writeCodexRollout(t, home, codexTUISession, codexTurnLine(at, "task_started", ""), codexTurnLine(at, "turn_aborted", ""))
+
+	runSessionProbe(t, pid, row)
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWaiting, s.AgentState.String)
+	assert.Equal(t, db.AgentStateStamp(at), db.AgentStateStamp(s.AgentStateAt))
+	assert.Nil(t, s.AgentFailure)
+	var issue sql.NullString
+	require.NoError(t, database.QueryRow(`SELECT agent_watch_issue FROM terminal_sessions WHERE id = ?`, row).Scan(&issue))
+	assert.False(t, issue.Valid)
 }

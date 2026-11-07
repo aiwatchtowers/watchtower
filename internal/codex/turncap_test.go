@@ -466,3 +466,29 @@ func TestCodexClient_RetryNoticeDoesNotHideTheCap(t *testing.T) {
 	assertBudget(t, err, 2)
 	assertGroupGone(t, pid())
 }
+
+// A clean exit cut off before turn.completed is the incomplete-run error on
+// both paths, never relabelled a budget failure by the final cap check.
+// Only the final check can pass the cap here, so no live stop races it: the
+// rollout, written first, holds no response record (so during the run it
+// counts 0 turns, and no drift), and only at the end does the stream rule's
+// 2 turns count in its place.
+func TestCodexClient_IncompleteRunIsNotRelabelledBudget(t *testing.T) {
+	rateOnly := `{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{}},"synthetic":true}`
+	steps := []string{"R:" + rateOnly, turnStarted, toolStart("a"), toolDone("a"), message("m", "partial")}
+	check := func(err error) {
+		t.Helper()
+		require.Error(t, err)
+		var f *providers.Failure
+		require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+		assert.NotEqual(t, providers.Budget, f.Category, err.Error())
+		assert.ErrorIs(t, err, errNoTurnCompleted)
+	}
+	c, _ := cappedClient(t, steps, 1, t.TempDir())
+	_, err := runQuery(t, c)
+	check(err)
+
+	c, _ = cappedClient(t, steps, 1, t.TempDir())
+	_, _, err = c.QuerySync(context.Background(), "sys", "hi", "")
+	check(err)
+}

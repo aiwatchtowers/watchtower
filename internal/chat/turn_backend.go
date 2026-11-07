@@ -88,7 +88,10 @@ func writeTurnImages(images []TurnImage) (paths []string, release func(), err er
 		holds = append(holds, hold)
 		if herr != nil {
 			// As for codex's prompt file: the sweep only takes files older
-			// than a turn runs, so the turn goes on.
+			// than a turn runs, so the turn goes on. HoldTempFile's error
+			// never names the file (TestHoldTempFile_UnshieldedStillRemoved),
+			// so it is logged whole: errnoOnly would drop its "opening" or
+			// "locking" step.
 			log.Printf("chat: a turn image not shielded from the stale-temp sweep: %v", herr)
 		}
 		paths = append(paths, p)

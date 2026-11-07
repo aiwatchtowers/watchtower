@@ -147,3 +147,18 @@ func TestStreamline_DrainUnblocksAWriterBeforeWait(t *testing.T) {
 		t.Fatal("the writer did not exit after Drain: Wait hangs")
 	}
 }
+
+// OnSkip is given the head of every skipped line (a caller tells a protocol
+// line it cannot lose from a huge tool result by its type), however the
+// line was split across reads.
+func TestStreamline_OnSkipGetsEachHead(t *testing.T) {
+	first := `{"type":"result","result":"` + strings.Repeat("x", 200<<10) + "\"}\n"
+	second := `{"type":"user"` + strings.Repeat("y", 200<<10) + "\n"
+	r := NewWithLimit(strings.NewReader("short\n"+first+second+"ok\n"), 1<<10)
+	var heads []string
+	r.OnSkip(func(head []byte) { heads = append(heads, string(head)) })
+	got, err := lines(t, r)
+	require.ErrorIs(t, err, io.EOF)
+	assert.Equal(t, []string{"short", "ok"}, got)
+	assert.Equal(t, []string{first[:SkippedHeadBytes], second[:SkippedHeadBytes]}, heads, "both skipped lines, in order")
+}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -123,7 +124,7 @@ func newWatchFixture(t *testing.T) *watchFixture {
 		now: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)}
 	f.store = &fakeWatchStore{row: db.CodexWatchRow{ID: 7, WorkbenchID: 1, Kind: "codex", State: "working",
 		StateAt: f.now.Add(-time.Minute), SessionID: wSessionID, TranscriptPath: f.path}}
-	f.w = NewCodexWatch(7, f.store, filepath.Join(dir, "codex-home"), func(format string, args ...any) {
+	f.w = NewCodexWatch(7, "codex", testPuller(t), f.store, filepath.Join(dir, "codex-home"), func(format string, args ...any) {
 		fmt.Fprintf(&f.logs, format+"\n", args...)
 	})
 	f.w.locate = func(home, sid, stored string) (string, bool) {
@@ -599,4 +600,109 @@ func TestCodexWatch_FailedGiveUpIsRetried(t *testing.T) {
 	if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
 		t.Fatalf("issues = %v; want unreadable written once on the retry", issues)
 	}
+}
+
+// testPuller is the codex adapter's pull reader, resolved the way the
+// server resolves a launch's (sessionagent.PullerOf by kind).
+func testPuller(t *testing.T) sessionagent.Puller {
+	t.Helper()
+	p, ok := sessionagent.PullerOf("codex")
+	if !ok {
+		t.Fatal("the codex adapter pulls nothing")
+	}
+	return p
+}
+
+// A watch follows the kind it was started for: a row of another kind ends
+// it, with nothing read or written.
+func TestCodexWatch_RowOfAnotherKindEndsTheWatch(t *testing.T) {
+	f := newWatchFixture(t)
+	f.write(wTurnStarted, wTurnFailed)
+	f.store.set(func(r *db.CodexWatchRow) { r.Kind = "claude" })
+	if !f.tick(CodexWatchEvery) {
+		t.Fatal("the watch went on over a row of another kind")
+	}
+	if issues, turns := f.store.snapshot(); len(issues)+len(turns) != 0 {
+		t.Fatalf("issues %v, turns %+v; want none", issues, turns)
+	}
+}
+
+// A hook clears the issue and re-arms the watch; a rollout still missing is
+// marked again on every give-up, but the not-watched line is logged once
+// per row and issue (spec §3.5).
+func TestCodexWatch_RepeatedMarkLogsOnce(t *testing.T) {
+	f := newWatchFixture(t)
+	for round := 0; round < 3; round++ {
+		for i := 0; i < 16; i++ {
+			f.tick(CodexWatchEvery)
+		}
+		f.store.set(func(r *db.CodexWatchRow) { r.WatchIssue = "" }) // the next hook event
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 3 {
+		t.Fatalf("issues = %v; want missing marked on each of 3 arms", issues)
+	}
+	if n := strings.Count(f.logs.String(), "not watched (missing)"); n != 1 {
+		t.Fatalf("not-watched lines = %d; want 1:\n%s", n, f.logs.String())
+	}
+}
+
+// A database that keeps failing never leaves a silent `working`: after
+// codexStoreGiveUpTicks failing ticks the row as last read is marked
+// `unreadable` (one line), and the watch goes on: an attached app learns
+// `watched` only at launch or attach, so a stopped watch would leave the
+// run covered by nobody.
+func TestCodexWatch_FailingStoreMarksUnreadable(t *testing.T) {
+	f := newWatchFixture(t)
+	f.store.recordErrs = 1 << 20
+	f.write(wTurnStarted, wTurnFailed)
+	for i := 0; i < codexStoreGiveUpTicks-1; i++ {
+		if f.tick(CodexWatchEvery) {
+			t.Fatal("the watch stopped on a failing database")
+		}
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 0 {
+		t.Fatalf("issues = %v; want none before the give-up", issues)
+	}
+	if f.tick(CodexWatchEvery) {
+		t.Fatal("the watch stopped on a failing database")
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
+		t.Fatalf("issues = %v; want unreadable", issues)
+	}
+	if n := strings.Count(f.logs.String(), "not watched (unreadable)"); n != 1 {
+		t.Fatalf("not-watched lines = %d; want 1:\n%s", n, f.logs.String())
+	}
+}
+
+// A failing mark is tried again after the next codexStoreGiveUpTicks
+// failing ticks; a row never read is never marked, and the watch goes on.
+func TestCodexWatch_FailingStoreRetriesTheMark(t *testing.T) {
+	t.Run("mark fails once", func(t *testing.T) {
+		f := newWatchFixture(t)
+		f.store.recordErrs, f.store.issueErrs = 1<<20, 1
+		f.write(wTurnStarted, wTurnFailed)
+		for i := 0; i < 2*codexStoreGiveUpTicks; i++ {
+			if f.tick(CodexWatchEvery) {
+				t.Fatal("the watch stopped on a failing database")
+			}
+		}
+		if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
+			t.Fatalf("issues = %v; want unreadable on the second try", issues)
+		}
+	})
+	t.Run("row never read", func(t *testing.T) {
+		f := newWatchFixture(t)
+		f.store.rowErrs = 1 << 20
+		for i := 0; i < 2*codexStoreGiveUpTicks; i++ {
+			if f.tick(CodexWatchEvery) {
+				t.Fatal("the watch stopped on a failing database")
+			}
+		}
+		if issues, _ := f.store.snapshot(); len(issues) != 0 {
+			t.Fatalf("issues = %v; want none over a row never read", issues)
+		}
+		if n := strings.Count(f.logs.String(), "reading the row"); n != 1 {
+			t.Fatalf("row-read lines = %d; want 1", n)
+		}
+	})
 }
