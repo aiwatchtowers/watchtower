@@ -1408,8 +1408,10 @@ final class ReviewChangesModel {
         }
     }
 
-    /// The number of lines in text (a final newline ends the last line).
+    /// The number of lines in text (a final newline ends the last line; an
+    /// empty text has none).
     private static func lineCount(_ text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
         let parts = text.split(separator: "\n", omittingEmptySubsequences: false).count
         return text.hasSuffix("\n") ? parts - 1 : parts
     }

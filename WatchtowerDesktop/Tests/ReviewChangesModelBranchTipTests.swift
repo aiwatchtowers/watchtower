@@ -315,4 +315,19 @@ extension ReviewChangesModelTests {
         XCTAssertEqual(reopened?.status, .draft)
         XCTAssertEqual(reopened?.startLine, 1, "placed on the new base's old side")
     }
+
+    /// Codex round 6: an empty file side has no lines, so a blank-line draft
+    /// on line 1 goes outdated when the file is emptied.
+    func testBlankLineDraftOnAnEmptiedFileIsOutdated() async throws {
+        let h = try harness()
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+        h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "b", tree: "u7")])
+        h.cli.script("file", [fileJSON(old: "x\n", new: "\na\n"), fileJSON(old: "x\n", new: "")])
+        await h.model.open()
+        await h.model.select("a.go")
+        try await h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "blank")
+        await h.model.refresh()
+        let row = try await h.comments().first { $0.body == "blank" }
+        XCTAssertEqual(row?.status, .outdated)
+    }
 }
