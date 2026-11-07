@@ -149,7 +149,7 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
 - Noise goes into a folded **Can skip** chapter and never into the model's budget; a branch
   past the diff cap gets a banner — target #1025's requirements 3 and 8 (the owner's
   target text), kept as written.
-- The numbers (3 parallel calls, 4 min per call, 2 min summary, 15 min ceiling, ≈2,500
+- The numbers (3 parallel calls, 4 min per call, 2 min summary, ≈2,500
   lines per call) — agent's call, replacing the target's "2 min" example: a smaller call
   finishes sooner, and 4 min leaves room on a slow provider.
 - The danger patterns' file is `.watchtower/review-map.md`, not `review.md` (which the
