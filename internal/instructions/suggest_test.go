@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/agentlog"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
 	"watchtower/internal/sessionfeed"
 )
@@ -46,7 +47,7 @@ func (g *fakeGen) Generate(ctx context.Context, system, user, sessionID string) 
 	if g.err != nil {
 		return "", nil, "", g.err
 	}
-	return g.out, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "", nil
+	return g.out, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "", nil
 }
 
 type minerFixture struct {
@@ -145,7 +146,7 @@ func TestMiner_WritesValidatedSuggestion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if written != 1 || usage == nil || usage.InputTokens != 10 {
+	if written != 1 || usage == nil || usage.InputTokens() != 10 {
 		t.Fatalf("written=%d usage=%+v", written, usage)
 	}
 	if gen.calls != 1 || gen.source != "instructions.suggest" || gen.sessionIDGiven != "" {

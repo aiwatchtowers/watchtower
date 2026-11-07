@@ -31,12 +31,16 @@ const (
 	sessionWaitNone   = "none"
 )
 
-// The statuses session() returns once the session ended.
+// The statuses session() returns once the session ended. sessionNotWatched
+// is no end of the session itself: the Mac cannot watch it (N6, ask #516),
+// so the wait ends at once with the reason and the session keeps running;
+// a recipe reads it as "outcome unknown", never as success.
 const (
-	sessionFinished = "finished"
-	sessionError    = "error"
-	sessionDeleted  = "deleted"
-	sessionStopped  = db.SessionStepStopped
+	sessionFinished   = "finished"
+	sessionError      = "error"
+	sessionDeleted    = "deleted"
+	sessionStopped    = db.SessionStepStopped
+	sessionNotWatched = "not_watched"
 )
 
 var sessionOptionKeys = []string{"prompt", "agent", "title", "wait"}
@@ -51,7 +55,10 @@ var sessionOptionKeys = []string{"prompt", "agent", "title", "wait"}
 // attached its session (`automations session-launched`) the wait's reason
 // becomes session, in the same wait. wait:"none" returns {session_id} then;
 // otherwise the run resumes when the session finished, failed, was deleted
-// or stopped and returns {session_id, status, summary, error?}. A launch the
+// or stopped and returns {session_id, status, summary, error?}, or at once
+// with {session_id, status: "not_watched", summary: "", reason} when the Mac
+// cannot watch it (N6, ask #516: the default, no option; the reason also
+// goes to the run log as one log step). A launch the
 // Desktop could not make throws NotAvailable with its reason (R-P5-4). A run
 // starts at most MaxSessionCalls sessions: every session's wait pauses the
 // minutes budget, so the count bounds them (board #562); the call past it is
@@ -66,13 +73,43 @@ func SessionModule(b Backends) Module {
 		if reqErr == nil {
 			reqErr = req.resolve(env, b)
 		}
-		return env.CallWithReplayKey(StepKindSession, req.agent, req.stepArgs(), key, func(step *Step) (any, error) {
+		out, err := env.CallWithReplayKey(StepKindSession, req.agent, req.stepArgs(), key, func(step *Step) (any, error) {
 			if reqErr != nil {
 				return nil, reqErr
 			}
 			return runSession(env, b, step, req)
 		})
+		if err == nil {
+			err = logNotWatched(env, out)
+		}
+		return out, err
 	}}}
+}
+
+// logNotWatched writes the run-log line of a not_watched end (N6): one log
+// step naming the session and the reason, within log()'s per-run cap (past
+// it the reason is still in the session step's journalled result). A
+// replayed run replays it like the script's own log lines, so its error (a
+// replay mismatch) is the call's.
+func logNotWatched(env *Env, out any) error {
+	raw, ok := out.(encodedResult)
+	if !ok || env.Journal.CountKind(StepKindLog) >= MaxLogCalls {
+		return nil
+	}
+	var end struct {
+		SessionID int64  `json:"session_id"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.Unmarshal(raw, &end); err != nil {
+		return fmt.Errorf("reading the session step's result: %w", err)
+	}
+	if end.Status != sessionNotWatched {
+		return nil
+	}
+	msg := fmt.Sprintf("session %d is not watched (%s): its outcome is unknown", end.SessionID, end.Reason)
+	_, err := env.Call(StepKindLog, "log", msg, func(*Step) (any, error) { return nil, nil })
+	return err
 }
 
 // sessionsStarted counts the run's session() steps that started a session
@@ -238,10 +275,10 @@ type sessionWait struct {
 }
 
 // ready is the Waiter's check. The ends are read in order: the session row
-// gone, finished (finish_session), failed (agent_failed_at), then the
-// Desktop's own report (session-ended: stopped, or launch_failed before a
-// launch). An idle turn without finish_session keeps the run waiting
-// (R-P5-3).
+// gone, finished (finish_session), failed (agent_failed_at), not watched
+// (agent_watch_issue on a working row, N6), then the Desktop's own report
+// (session-ended: stopped, or launch_failed before a launch). An idle turn
+// without finish_session keeps the run waiting (R-P5-3).
 func (w *sessionWait) ready(context.Context) (bool, error) {
 	s, err := w.db.GetAutomationSessionStep(w.stepID)
 	if err != nil {
@@ -261,30 +298,64 @@ func (w *sessionWait) ready(context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	switch {
-	case w.sessionID != 0 && s.SessionGone:
-		w.end(sessionDeleted, "", "")
-	case w.sessionID != 0 && s.Finished:
-		w.end(sessionFinished, s.FinishSummary, "")
-	case w.sessionID != 0 && s.Failed:
-		w.end(sessionError, "", s.AgentError)
-	case s.Status == StepError:
+	if w.sessionID != 0 {
+		if end, ok := attachedEnd(s); ok {
+			w.end(end)
+			return true, nil
+		}
+	}
+	switch s.Status {
+	case StepError:
 		msg := s.Error
 		if msg == "" {
 			msg = "the Desktop could not start the session"
 		}
 		w.launchErr = notAvailable(msg)
-	case s.Status == StepOK:
-		w.end(sessionStopped, "", "")
+	case StepOK:
+		w.end(sessionEnd{status: sessionStopped})
 	default:
 		return false, nil
 	}
 	return true, nil
 }
 
-func (w *sessionWait) end(status, summary, errText string) {
-	w.out = map[string]any{"session_id": w.sessionID, "status": status, "summary": summary}
-	if status == sessionError {
-		w.out["error"] = errText
+// sessionEnd is how a session() wait ended.
+type sessionEnd struct {
+	status, summary string
+	errText         string // sessionError only
+	reason          string // sessionNotWatched only
+}
+
+// attachedEnd is the end an attached session's row gives the wait, read in
+// order: gone, finished, failed, not watched; ok is false while it goes on.
+func attachedEnd(s db.AutomationSessionStep) (sessionEnd, bool) {
+	switch {
+	case s.SessionGone:
+		return sessionEnd{status: sessionDeleted}, true
+	case s.Finished:
+		return sessionEnd{status: sessionFinished, summary: s.FinishSummary}, true
+	case s.Failed:
+		return sessionEnd{status: sessionError, errText: s.AgentError}, true
+	case s.WatchIssue != "":
+		return sessionEnd{status: sessionNotWatched, reason: s.WatchIssue}, true
+	}
+	return sessionEnd{}, false
+}
+
+// SessionWaitEnd is attachedEnd for the contract suite: the status an
+// attached session's row s gives a session() wait and, for not_watched,
+// its reason; ended is false while the wait goes on.
+func SessionWaitEnd(s db.AutomationSessionStep) (status, reason string, ended bool) {
+	end, ok := attachedEnd(s)
+	return end.status, end.reason, ok
+}
+
+func (w *sessionWait) end(e sessionEnd) {
+	w.out = map[string]any{"session_id": w.sessionID, "status": e.status, "summary": e.summary}
+	switch e.status {
+	case sessionError:
+		w.out["error"] = e.errText
+	case sessionNotWatched:
+		w.out["reason"] = e.reason
 	}
 }

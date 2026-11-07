@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // reflectConfig enables the reflection surface on top of the semantic tier.
@@ -276,7 +277,7 @@ func TestReflectBudgetSkipsInPipeline(t *testing.T) {
 	cfg := reflectConfig()
 	cfg.Semantic.OutputBudget = 5 // tiny — blown by the extraction calls
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 10, OutputTokens: 500, TotalAPITokens: 20},
+		usage: digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 500, CacheRead: 10}},
 		reply: semanticReply,
 	}
 	p := NewPipeline(d, v, gen, cfg, t.Logf)

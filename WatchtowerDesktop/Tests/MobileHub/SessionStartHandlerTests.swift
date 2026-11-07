@@ -648,6 +648,9 @@ final class SessionStartHandlerTests: XCTestCase {
     func testExit127ReasonFollowsTheSessionsAgent() {
         XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.claude), .claudeNotFound)
         XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.codex), .codexNotFound)
+        for agent in AgentKind.allCases {
+            XCTAssertNotNil(ActionReason(rawValue: agent.session.notFoundReason), "\(agent) is a wire reason")
+        }
     }
 
     func testStopOnAnUnknownOrNonBoardSessionFailsNotFound() async throws {

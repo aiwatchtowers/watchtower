@@ -116,7 +116,7 @@ func TestMigrationCodex_KindCheckAcceptsCodexWithNullID(t *testing.T) {
 	s := storedSession(t, d, id)
 	assert.Equal(t, "codex", s.Kind)
 	assert.False(t, s.ClaudeSessionID.Valid)
-	assert.False(t, s.TranscriptPath.Valid)
+	assert.False(t, storedTranscriptPath(t, d, id).Valid)
 	// A codex row may also hold an id, and an unknown kind is still refused.
 	newAgentStateRow(t, d, pid, "codex", codexTestUUID)
 	_, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
@@ -228,8 +228,9 @@ func TestMigrationCodex_DownDropsCodexRowsAndColumn(t *testing.T) {
 }
 
 // The readers that open a database without migrating it read a claude row
-// of a 00108 database: GetTerminalSession needs agent_transcript_path only
-// for a codex row, which a 00108 database cannot hold.
+// of a 00108 database: GetTerminalSession never reads agent_transcript_path
+// (sessionagent.LoadSession reads it for a codex row, which a 00108
+// database cannot hold).
 func TestGetTerminalSessionNeedsNoTranscriptPathColumnForClaude(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)

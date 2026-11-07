@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -149,4 +150,60 @@ func TestAIModels_HumanOutput(t *testing.T) {
 	assert.Contains(t, out, "strong: opus")
 	assert.Contains(t, out, "Codex (codex)")
 	assert.Contains(t, out, "Ollama / Local (ollama)")
+}
+
+// `ai models --json` carries each provider's capability row under
+// "capabilities" (spec §3.3). The rows are written to the Desktop's
+// ai_models_capabilities.json, which ProviderCapabilitiesTests decodes:
+// the Go↔Swift dual path (run with -update after a table change).
+func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	srv := httptest.NewServer(http.NotFoundHandler())
+	defer srv.Close()
+	pointOllamaAt(t, srv.URL)
+
+	buf := &bytes.Buffer{}
+	aiModelsCmd.SetOut(buf)
+	oldJSON := aiModelsFlagJSON
+	aiModelsFlagJSON = true
+	defer func() { aiModelsFlagJSON = oldJSON }()
+	require.NoError(t, runAIModels(aiModelsCmd, nil))
+
+	var parsed struct {
+		Providers []struct {
+			ID           string          `json:"id"`
+			DisplayName  string          `json:"display_name"`
+			Kind         string          `json:"kind"`
+			Capabilities json.RawMessage `json:"capabilities"`
+		} `json:"providers"`
+	}
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &parsed), "output: %s", buf.String())
+	require.Len(t, parsed.Providers, 3)
+	type row struct {
+		ID           string          `json:"id"`
+		DisplayName  string          `json:"display_name"`
+		Kind         string          `json:"kind"`
+		Capabilities json.RawMessage `json:"capabilities"`
+	}
+	rows := make([]row, 0, len(parsed.Providers))
+	for _, p := range parsed.Providers {
+		require.NotEmpty(t, p.Capabilities, p.ID)
+		var keys map[string]any
+		require.NoError(t, json.Unmarshal(p.Capabilities, &keys))
+		assert.Len(t, keys, 15, "%s: every capability key", p.ID)
+		rows = append(rows, row(p))
+	}
+	got, err := json.MarshalIndent(map[string]any{"providers": rows}, "", "  ")
+	require.NoError(t, err)
+	got = append(got, '\n')
+
+	file := filepath.Join("..", "WatchtowerDesktop", "Tests", "Core", "Fixtures", "ai_models_capabilities.json")
+	if *updateSessionReportGolden {
+		require.NoError(t, os.WriteFile(file, got, 0o644))
+		return
+	}
+	want, err := os.ReadFile(file)
+	require.NoError(t, err, "run with -update to write the Desktop fixture")
+	assert.Equal(t, string(want), string(got), "the Desktop fixture is stale: run with -update")
 }

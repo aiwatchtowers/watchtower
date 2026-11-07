@@ -1,0 +1,2 @@
+# expect-usage fresh=1007 read=0 write=0 out=20
+{"id":"chatcmpl-fixture","object":"chat.completion","model":"fixture-model","choices":[{"index":0,"message":{"role":"assistant","content":"Three words exactly."},"finish_reason":"stop"}],"usage":{"prompt_tokens":1007,"completion_tokens":20,"total_tokens":1027},"synthetic":true}

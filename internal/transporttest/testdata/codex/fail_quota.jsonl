@@ -1,0 +1,5 @@
+# expect-reset
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":429,\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"OWNER-VISIBLE: You have hit your usage limit.\",\"resets_at\":4102444800}}"},"synthetic":true}
+#! exit 1

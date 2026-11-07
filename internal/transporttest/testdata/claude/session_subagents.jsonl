@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"SESSION","timestamp":"2026-11-05T12:00:00.000Z","uuid":"00000000-0000-4000-8000-0000000000d1","message":{"role":"user","content":"please add a flag"},"synthetic":true}
+{"type":"assistant","sessionId":"SESSION","timestamp":"2026-11-05T12:00:01.000Z","uuid":"00000000-0000-4000-8000-0000000000d2","message":{"id":"msg_fixture_1","role":"assistant","content":[{"type":"tool_use","id":"toolu_sub_1","name":"Agent","input":{"description":"look","prompt":"do it","subagent_type":"Explore"}}]},"synthetic":true}

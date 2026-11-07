@@ -87,7 +87,7 @@ func TestClaudeGeneratorRecordsUsage(t *testing.T) {
 	got, usage, _, err := gen.Generate(WithSource(context.Background(), "digest.channel"), "sys", "msg", "")
 	require.NoError(t, err)
 	assert.Equal(t, "the digest", got)
-	assert.Equal(t, 2, usage.InputTokens, "the caller's Usage is unchanged")
+	assert.Equal(t, 2, usage.InputTokens(), "the caller's Usage is unchanged")
 
 	calls := sink.recorded()
 	require.Len(t, calls, 1)

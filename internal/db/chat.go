@@ -252,7 +252,8 @@ func (db *DB) SetChatTitle(id int64, title, source string) (bool, error) {
 // ChatProjectSource is one pinned source of a chat project.
 type ChatProjectSource struct{ Kind, Ref, Label string }
 
-// ChatProjectFile is one file attached to a chat project.
+// ChatProjectFile is one stored chat file: a chat project's file, or one
+// sent with a message (ChatMessageAttachments).
 type ChatProjectFile struct {
 	ID               int64
 	Name, Mime, Path string
@@ -325,6 +326,38 @@ func (db *DB) ChatProjectSources(projectID int64) ([]ChatProjectSource, error) {
 			return nil, fmt.Errorf("scanning chat project source: %w", err)
 		}
 		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// ChatMessageAttachments returns the files sent with each of messageIDs, in
+// the order they were added (the replay re-reads earlier turns' text files:
+// a stateless provider sees none of them otherwise). The rows carry the same
+// fields as a project's files.
+func (db *DB) ChatMessageAttachments(messageIDs []int64) (map[int64][]ChatProjectFile, error) {
+	if len(messageIDs) == 0 {
+		return nil, nil
+	}
+	ph := make([]string, len(messageIDs))
+	args := make([]any, len(messageIDs))
+	for i, id := range messageIDs {
+		ph[i] = "?"
+		args[i] = id
+	}
+	rows, err := db.Query(`SELECT message_id, id, name, mime, path, size FROM chat_attachments
+		WHERE message_id IN (`+strings.Join(ph, ",")+`) ORDER BY message_id, id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading chat message attachments: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64][]ChatProjectFile{}
+	for rows.Next() {
+		var msgID int64
+		var f ChatProjectFile
+		if err := rows.Scan(&msgID, &f.ID, &f.Name, &f.Mime, &f.Path, &f.Size); err != nil {
+			return nil, fmt.Errorf("scanning chat message attachment: %w", err)
+		}
+		out[msgID] = append(out[msgID], f)
 	}
 	return out, rows.Err()
 }

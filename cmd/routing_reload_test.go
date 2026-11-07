@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/providers"
 
 	"github.com/stretchr/testify/require"
@@ -39,7 +40,7 @@ func (g *reloadGenerator) Generate(ctx context.Context, _, _, _ string) (string,
 			return "", nil, "", ctx.Err()
 		}
 	}
-	return g.provider, &digest.Usage{InputTokens: 2, OutputTokens: 1}, "", nil
+	return g.provider, &digest.Usage{Tokens: llmusage.Tokens{Input: 2, Output: 1}}, "", nil
 }
 func reloadConfig(provider string) *config.Config {
 	c := &config.Config{ActiveWorkspace: "test"}

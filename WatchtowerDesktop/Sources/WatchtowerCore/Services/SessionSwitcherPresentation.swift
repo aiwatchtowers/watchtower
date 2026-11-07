@@ -49,6 +49,10 @@ package enum SessionSwitcherPresentation {
         package let openQuestionAsks: Int
         /// Those of `openAsks` whose kind is `review` (#534), for every kind.
         package let openReviewAsks: Int
+        /// Why the Mac cannot watch a working session (`agent_watch_issue`:
+        /// `missing`, `permission`, `compressed`, `unreadable`; spec
+        /// 2026-11-05 §3.5); nil when watched and for every other kind.
+        package let watchIssue: String?
 
         /// `openQuestionAsks` nil = every open ask is a question: the
         /// reading before asks had kinds here, so a state built without them
@@ -61,7 +65,8 @@ package enum SessionSwitcherPresentation {
             oldestAskID: Int64? = nil,
             backgroundAgents: Int = 0,
             openQuestionAsks: Int? = nil,
-            openReviewAsks: Int = 0
+            openReviewAsks: Int = 0,
+            watchIssue: String? = nil
         ) {
             self.kind = kind
             self.live = live
@@ -71,6 +76,7 @@ package enum SessionSwitcherPresentation {
             self.backgroundAgents = backgroundAgents
             self.openQuestionAsks = openQuestionAsks ?? openAsks
             self.openReviewAsks = openReviewAsks
+            self.watchIssue = kind == .working ? watchIssue : nil
         }
 
         /// Asks are open and none is a question: each is a check or a

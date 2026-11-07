@@ -50,7 +50,6 @@ func ledgerClient(t *testing.T, script string) *Client {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	c := NewClient("sonnet", "", "")
 	c.claudeCmd = writeMockClaude(t, "echo $$ > '"+pidFile+"'\ncat >/dev/null\n"+script)
-	c.SetProcessGroup(true)
 	t.Cleanup(func() {
 		b, err := os.ReadFile(pidFile)
 		if err != nil {
@@ -92,8 +91,8 @@ func TestAIClientQuerySyncRecords(t *testing.T) {
 	text, usage, err := c.QuerySync(llmusage.WithPurpose(context.Background(), "ask"), "sys", "question", "")
 	require.NoError(t, err)
 	assert.Equal(t, "answer", text)
-	assert.Equal(t, 4, usage.InputTokens, "the caller's Usage is unchanged")
-	assert.InDelta(t, 0.5, usage.CostUSD, 1e-9)
+	assert.Equal(t, 4, usage.InputTokens(), "the caller's Usage is unchanged")
+	assert.InDelta(t, 0.5, usage.CostUSD(), 1e-9)
 
 	calls := sink.recorded()
 	require.Len(t, calls, 1)

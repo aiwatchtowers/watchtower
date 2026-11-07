@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/sync"
 )
 
@@ -40,7 +41,7 @@ func (g *recGen) Generate(_ context.Context, _, user, _ string) (string, *digest
 		return "", nil, "", errors.New("model unavailable")
 	}
 	return `{"summary":"s","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`,
-		&digest.Usage{Model: "m", InputTokens: 1, OutputTokens: 1}, "", nil
+		&digest.Usage{Model: "m", Tokens: llmusage.Tokens{Input: 1, Output: 1}}, "", nil
 }
 
 func (g *recGen) calls() int {

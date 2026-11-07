@@ -314,7 +314,7 @@ func TestInstallCodex_HookCodexDoesNotListIsAnError(t *testing.T) {
 	}
 	st, err := InstallCodex(context.Background(), codexOpts(folder), srv)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "did not list 2 of the 9 workbench hooks")
+	assert.Contains(t, err.Error(), "did not list 2 of the 10 workbench hooks")
 	assert.Equal(t, ptrFalse(), st.HooksTrusted)
 	assert.True(t, st.Skill)
 }
@@ -735,7 +735,7 @@ func TestStatusCodex_ReportsEveryTrustFailure(t *testing.T) {
 	st, err := StatusCodex(context.Background(), codexOpts(folder), codexResolves, srv)
 	require.NoError(t, err)
 	assert.Equal(t, ptrFalse(), st.HooksTrusted)
-	assert.Contains(t, st.TrustError, "did not list 2 of the 9 workbench hooks")
+	assert.Contains(t, st.TrustError, "did not list 2 of the 10 workbench hooks")
 
 	unresolved := func() (codex.AppServer, error) {
 		return nil, fmt.Errorf("%w: loading config: bad toml", ErrCodexUnresolved)
@@ -778,7 +778,8 @@ func TestInstallCodex_TrustWriteAndCloseErrors(t *testing.T) {
 }
 
 // Spec I4 against the real codex: a live capture (codex 0.159.2, a scratch
-// CODEX_HOME, 2026-10-12) of InstallCodex's config/batchWrite upsert at
+// CODEX_HOME, 2026-10-12; recaptured 2026-11-05 with the Interrupt hook,
+// board #959) of InstallCodex's config/batchWrite upsert at
 // keyPath hooks.state, run with Bin /Users/example/bin/watchtower, over a
 // config.toml holding a comment, unrelated keys and two foreign hooks.state
 // entries. codex merges: everything that was there stays byte for byte, and

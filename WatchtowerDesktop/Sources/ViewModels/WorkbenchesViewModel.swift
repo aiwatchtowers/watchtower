@@ -91,12 +91,13 @@ final class WorkbenchesViewModel {
     /// The organization policy (#608); AppState wires its center. An agent
     /// whose provider it forbids is neither offered nor started.
     @ObservationIgnored var managedPolicy: @MainActor () -> ManagedPolicy = { .none }
-    /// The Codex home a relaunch looks for rollouts in: the login shell's
+    /// The transcript home a relaunch of an agent that mints its own id looks
+    /// in (`SessionAgent.transcriptHome`): Codex's is the login shell's
     /// CODEX_HOME (spec 2026-10-12 §7), resolved off the main thread; nil when
     /// the login shell did not answer (asked again on the next relaunch) —
     /// the relaunch then resets nothing.
-    @ObservationIgnored var resolveCodexHome: () async -> URL? = {
-        await Constants.resolvedLoginEnvironment().map { CodexRollout.home(environment: $0) }
+    @ObservationIgnored var resolveAgentHome: (AgentKind) async -> URL? = { agent in
+        await Constants.resolvedLoginEnvironment().flatMap { agent.session.transcriptHome(environment: $0) }
     }
     /// Why installing or repairing a project's install failed. It explains
     /// the Repair button, so it stays until a status read finds nothing to
@@ -1020,14 +1021,13 @@ final class WorkbenchesViewModel {
         }
     }
 
-    /// The first-run session's agent: the default one, unless that is Codex
-    /// and its part is not in the folder (codex missing, or its setup failed)
-    /// — then Claude Code, whose install just succeeded.
+    /// The first-run session's agent: the default one, unless its part is
+    /// not in the folder (its CLI missing, or its setup failed: Codex's
+    /// `integrate codex`) — then Claude Code, whose install just succeeded.
     private func setupAgent(projectID: Int64) -> AgentKind {
         let agent = currentDefaultAgent()
-        guard agent == .codex else { return agent }
-        let codex = installStatus[projectID]?.codex
-        return codex?.found == true && codex?.skill == true ? .codex : .claude
+        let part = installStatus[projectID]?.agentParts[agent]
+        return part?.found == true && part?.skill == true ? agent : .claude
     }
 
     /// `integrate codex`: Setup's, Set up Codex's and Repair's Codex step.

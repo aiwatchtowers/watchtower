@@ -7,15 +7,18 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 	"sync"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 )
 
 // Wire reasons the handlers answer with (the Kit's ActionReason).
@@ -30,7 +33,45 @@ const (
 	reasonCannotType       = "cannot_type"
 	reasonOutcomeUnknown   = "outcome_unknown"
 	reasonWriteFailed      = "write_failed"
+	// reasonNotSupported: the host or the session's agent cannot do this
+	// for the phone (a recording on a host without the transcriber, a
+	// session kind whose capability row lacks it); the message says what
+	// to do.
+	reasonNotSupported = "not_supported"
 )
+
+// sessionCaps is the capability row of a session's agent; the handlers
+// decide by it, never by the kind (tests swap it).
+var sessionCaps = func(k agentkind.Kind) sessionagent.Caps { return sessionagent.CapsOf(string(k)) }
+
+// The not_supported messages, by what the phone asked; %s is the agent's
+// display name. An older phone without the reason shows the message.
+const (
+	notSupportedInputFormat      = "%s sessions can't take messages from the phone yet. Type it on the Mac."
+	notSupportedPermissionFormat = "%s sessions can't answer this permission from the phone yet. Answer it on the Mac."
+	notSupportedInterruptFormat  = "%s sessions can't be interrupted from the phone yet. Stop it on the Mac."
+)
+
+// PhoneRefusal is the not_supported message of a phone action of
+// actionKind on a board session of agent, refused by the agent's
+// capability row's phone half (Caps.Phone, which the terminal_session slice
+// publishes to the phone); refused is false when the row takes it. The
+// transport contract suite asserts each agent's answer through it.
+func PhoneRefusal(actionKind string, agent agentkind.Kind) (message string, refused bool) {
+	phone := sessionCaps(agent).Phone()
+	var format string
+	switch {
+	case (actionKind == "session_input" || actionKind == "session_finish_request") && !phone.Input:
+		format = notSupportedInputFormat
+	case actionKind == "permission_answer" && !phone.PermissionAnswer:
+		format = notSupportedPermissionFormat
+	case actionKind == "session_interrupt" && !phone.Interrupt:
+		format = notSupportedInterruptFormat
+	default:
+		return "", false
+	}
+	return fmt.Sprintf(format, agent.DisplayName()), true
+}
 
 // DefaultTimeout is every handler's own deadline (Swift HandlerTimeout's 30 s):
 // ample for a write waiting on the database lock or a delivery's pause.

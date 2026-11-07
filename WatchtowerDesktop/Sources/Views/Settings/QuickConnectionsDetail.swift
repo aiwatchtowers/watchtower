@@ -39,9 +39,14 @@ struct QuickConnectionsDetail: View {
         }
     }
 
+    /// The active provider's capability row; nil until the catalog is read.
+    private var providerCapabilities: ProviderCapabilities? {
+        appState.aiModelCatalog.isLoaded ? appState.aiModelCatalog.capabilities(for: providerID) : nil
+    }
+
     private var quickConnectionsSection: some View {
         Section("Quick Connections") {
-            if let notice = QuickConnectionsProviderNotice.caption(forProvider: providerID) {
+            if let notice = QuickConnectionsProviderNotice.caption(capabilities: providerCapabilities) {
                 Label(notice, systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AppKit
 import WatchtowerCore
 
@@ -28,6 +29,14 @@ struct ChatComposerField: View {
     var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var attachmentProgress = AttachmentProgress()
+    /// Why this provider takes no images or PDFs (its capability row, U1):
+    /// the paperclip stays and picks text files only, with this help; a
+    /// dropped or pasted image or PDF is not added and the reason shows as
+    /// a caption. nil = it takes them.
+    var attachUnavailableReason: String?
+    /// Why this provider takes images but no PDFs: a dropped, pasted or
+    /// picked PDF is not added and the reason shows. nil = it takes them.
+    var pdfUnavailableReason: String?
     /// Called with the full text and the caret (UTF-16 offset) on every edit
     /// or caret move — the @/ pickers' input. nil for a surface with no
     /// picker (the Discuss-chat default).
@@ -64,6 +73,8 @@ struct ChatComposerField: View {
             onPasteData: onPasteData,
             onRemoveAttachment: onRemoveAttachment,
             attachmentProgress: attachmentProgress,
+            attachUnavailableReason: attachUnavailableReason,
+            pdfUnavailableReason: pdfUnavailableReason,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
             hasPendingContent: hasPendingContent,
@@ -94,6 +105,13 @@ struct ChatComposerFieldContent: View {
     var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var attachmentProgress = AttachmentProgress()
+    /// Why this provider takes no images or PDFs (its capability row, U1):
+    /// the paperclip stays and picks text files only, with this help; a
+    /// dropped or pasted image or PDF is not added and the reason shows as
+    /// a caption. nil = it takes them.
+    var attachUnavailableReason: String?
+    /// As `ChatComposerField.pdfUnavailableReason`.
+    var pdfUnavailableReason: String?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
@@ -103,28 +121,37 @@ struct ChatComposerFieldContent: View {
     /// The text of a long paste the field offers to attach as a file
     /// instead; nil once acted on, or once the field no longer holds it.
     @State private var longPaste: LongPaste?
+    /// The U1 reason after a refused drop or paste; cleared on the next
+    /// accepted one.
+    @State private var refusedNotice: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if let refusedNotice {
+                Text(refusedNotice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.large)
+            }
             if let attachmentError {
                 Text(attachmentError)
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Spacing.large)
             }
             if attachmentProgress.sendWaits {
                 Text("Sending once the files are attached…")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Spacing.large)
             }
             if !attachments.isEmpty || !attachmentProgress.isEmpty {
                 AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment, progress: attachmentProgress)
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, Spacing.medium)
             }
             if let longPaste, onPasteData != nil {
                 LongPasteOffer(characterCount: longPaste.text.count, onAttach: attachLongPaste) { self.longPaste = nil }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Spacing.large)
             }
             row
         }
@@ -133,7 +160,9 @@ struct ChatComposerFieldContent: View {
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let onAttachFiles else { return false }
-            let files = urls.filter(\.isFileURL)
+            let dropped = urls.filter(\.isFileURL)
+            let files = dropped.filter { refusal($0) == nil }
+            refusedNotice = dropped.lazy.compactMap(refusal).first
             guard !files.isEmpty else { return false }
             onAttachFiles(files)
             return true
@@ -152,7 +181,7 @@ struct ChatComposerFieldContent: View {
                 }
                 .buttonStyle(.borderless)
                 .accessibilityLabel("Attach files")
-                .help("Attach images, PDFs or text files")
+                .help(attachHelp)
                 .padding(.bottom, 6)
             }
 
@@ -171,8 +200,8 @@ struct ChatComposerFieldContent: View {
                     maxHeight: maxHeight,
                     onEscape: onEscape,
                     onArrowUpWhenEmpty: onArrowUpWhenEmpty,
-                    onPasteData: onPasteData,
-                    onAttachFiles: onAttachFiles,
+                    onPasteData: pastableData,
+                    onAttachFiles: attachableFiles,
                     onLongTextPaste: offerLongPaste,
                     onCursorChange: onCursorChange,
                     onPickerKey: onPickerKey,
@@ -221,12 +250,91 @@ struct ChatComposerFieldContent: View {
         .padding(.vertical, 8)
     }
 
+    /// The paperclip's help: what the picker takes, and why not more.
+    private var attachHelp: String {
+        if let reason = attachUnavailableReason { return "Attach text files. " + reason }
+        if let reason = pdfUnavailableReason { return "Attach images or text files. " + reason }
+        return "Attach images, PDFs or text files"
+    }
+
+    private var refusesSome: Bool { attachUnavailableReason != nil || pdfUnavailableReason != nil }
+
+    private func refusal(_ url: URL) -> String? {
+        Self.refusal(of: Self.kind(url), attach: attachUnavailableReason, pdf: pdfUnavailableReason)
+    }
+
+    /// onAttachFiles without the files the provider refuses (U1: images and
+    /// PDFs; a PDF from an images-only provider): a pasted Finder file of
+    /// those kinds is not added, and the reason shows.
+    private var attachableFiles: (([URL]) -> Void)? {
+        guard let onAttachFiles, refusesSome else { return onAttachFiles }
+        return { urls in
+            let files = urls.filter { refusal($0) == nil }
+            refusedNotice = urls.lazy.compactMap(refusal).first
+            if !files.isEmpty { onAttachFiles(files) }
+        }
+    }
+
+    /// onPasteData refusing the pasted bytes the provider refuses, with the
+    /// reason.
+    private var pastableData: ((Data, String) async -> Bool)? {
+        guard let onPasteData, refusesSome else { return onPasteData }
+        return { data, name in
+            let byName = Self.kind(URL(fileURLWithPath: name))
+            let kind: BinaryKind? = if byName == .pdf || data.starts(with: [0x25, 0x50, 0x44, 0x46]) {
+                .pdf
+            } else if byName == .image || NSImage(data: data) != nil {
+                .image
+            } else {
+                nil
+            }
+            if let reason = Self.refusal(of: kind, attach: attachUnavailableReason, pdf: pdfUnavailableReason) {
+                refusedNotice = reason
+                return false
+            }
+            refusedNotice = nil
+            return await onPasteData(data, name)
+        }
+    }
+
+    enum BinaryKind { case image, pdf }
+
+    /// An image or a PDF, by the file's type; nil for anything else.
+    static func kind(_ url: URL) -> BinaryKind? {
+        guard let type = UTType(filenameExtension: url.pathExtension) else { return nil }
+        if type.conforms(to: .pdf) { return .pdf }
+        return type.conforms(to: .image) ? .image : nil
+    }
+
+    /// An image or a PDF, by the file's type.
+    static func isBinary(_ url: URL) -> Bool { kind(url) != nil }
+
+    /// Why an attachment of `kind` is refused: a provider with no binary
+    /// attachments refuses both kinds (U1), an images-only one refuses
+    /// PDFs; nil when it is taken.
+    static func refusal(of kind: BinaryKind?, attach: String?, pdf: String?) -> String? {
+        switch kind {
+        case .image: attach
+        case .pdf: attach ?? pdf
+        case nil: nil
+        }
+    }
+
     private func pickFiles(_ onAttachFiles: @escaping ([URL]) -> Void) {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        panel.message = "Attach images, PDFs or text files"
+        let textTypes: [UTType] = [.text, .json, .xml, .yaml, .commaSeparatedText, .sourceCode]
+        if attachUnavailableReason != nil {
+            panel.message = "Attach text files"
+            panel.allowedContentTypes = textTypes
+        } else if pdfUnavailableReason != nil {
+            panel.message = "Attach images or text files"
+            panel.allowedContentTypes = [.image] + textTypes
+        } else {
+            panel.message = "Attach images, PDFs or text files"
+        }
         panel.begin { response in
             guard response == .OK else { return }
             onAttachFiles(panel.urls)

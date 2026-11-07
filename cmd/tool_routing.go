@@ -22,7 +22,7 @@ type toolRouteProvider struct {
 	cfg             *config.Config
 	router          *providerrouting.Router
 	build           func(*config.Config) (ai.Provider, func(), error)
-	readFolder      string
+	readFolder      string // the leaves are built with it (newQueryClient); checked per selected provider
 	capable         func(string) (bool, error)
 	mu              sync.Mutex
 	nativeProviders map[string]toolNativeSession
@@ -40,7 +40,17 @@ func newToolRouteProvider(cfg *config.Config, build func(*config.Config) (ai.Pro
 	}
 	return &toolRouteProvider{cfg: cfg, build: build, router: &providerrouting.Router{Health: health, Diagnostic: func(err error) { log.Printf("AI tool routing: %v", err) }}}
 }
-func (p *toolRouteProvider) SetReadFolder(dir string) { p.readFolder = dir }
+
+// checkLeaf refuses a read-folder query on a selected provider with no
+// file tools as a capability error; the leaf itself was built with the
+// folder and the chat events (newQueryClient's options).
+func (p *toolRouteProvider) checkLeaf(selected string) error {
+	if p.readFolder != "" && !providers.ByID(selected).Caps.ReadsFolder() {
+		return providers.CapabilityError(selected, providers.ReviewReadonly,
+			errors.New("--read-folder: the selected provider has no file tools, so it cannot read the folder"))
+	}
+	return nil
+}
 func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 	preferred := p.cfg.AI.Provider
 	p.mu.Lock()
@@ -63,14 +73,20 @@ func (p *toolRouteProvider) request(sessionID string) providerrouting.Request {
 			_, m := providers.ResolveModelsFor(p.cfg, id)
 			return m
 		},
-		CheckCapability: func(id string, _ providers.InvocationProfile) (bool, error) {
+		CheckCapability: func(id string, profile providers.InvocationProfile) (bool, error) {
 			if p.capable != nil {
 				supported, err := p.capable(id)
 				if err != nil || !supported {
 					return supported, err
 				}
 			}
-			return id == "claude" || id == "codex", nil
+			// The routed leaves are CLI children (buildAIClient); the
+			// capability row decides the rest.
+			caps, known := providers.CapsFor(id)
+			if !known {
+				return false, fmt.Errorf("no capability row for provider %q", id)
+			}
+			return providers.RunsChild(id) && providers.Satisfies(caps, profile), nil
 		}}
 }
 func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(context.Context, ai.Provider, providerrouting.Attempt) (providerrouting.Result, error)) (providerrouting.Result, error) {
@@ -108,12 +124,8 @@ func (p *toolRouteProvider) run(ctx context.Context, sid string, call func(conte
 		return providerrouting.Result{}, err
 	}
 	defer cleanup()
-	if p.readFolder != "" {
-		c, ok := leaf.(readFolderConfigurable)
-		if !ok {
-			return providerrouting.Result{}, fmt.Errorf("selected provider cannot read folders")
-		}
-		c.SetReadFolder(p.readFolder)
+	if err := p.checkLeaf(selected); err != nil {
+		return providerrouting.Result{}, err
 	}
 	req.Preferred, req.Mode, req.Retry = selected, providerrouting.Pinned, providerrouting.Never
 	return p.router.Run(ctx, req, func(callCtx context.Context, attempt providerrouting.Attempt) (providerrouting.Result, error) {

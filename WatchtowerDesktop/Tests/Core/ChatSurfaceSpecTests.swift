@@ -23,4 +23,14 @@ final class ChatSurfaceSpecTests: XCTestCase {
         let result = ChatPostTurnResult.identity(ChatPostTurnInput(reply: "hi", turnID: "t", messageID: 1))
         XCTAssertEqual(result, ChatPostTurnResult(displayText: "hi"))
     }
+
+    func testFinalTextIsTheTextAfterTheLastStep() {
+        XCTAssertEqual(ChatPostTurnInput.textAfter("Look.\n", in: "Look.\nDone."), "Done.")
+        XCTAssertEqual(ChatPostTurnInput.textAfter("", in: "All."), "All.", "no tool step: the whole reply")
+        XCTAssertEqual(ChatPostTurnInput.textAfter("old", in: "replaced"), "replaced",
+                       "a reply that no longer starts with the prefix has no earlier segment")
+        // A chunk starting with a combining mark joins the prefix's last Character.
+        XCTAssertEqual(ChatPostTurnInput.textAfter("cafe", in: "cafe\u{301} ok"), "\u{301} ok")
+        XCTAssertEqual(ChatPostTurnInput(reply: "r", turnID: "t", messageID: 1).finalText, "r")
+    }
 }

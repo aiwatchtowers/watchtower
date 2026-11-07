@@ -230,13 +230,11 @@ extension WorkbenchesViewModel {
     /// mechanically and never gets an AI title. Codex is never offered here:
     /// its launch arguments come from a workbench (`launch-args`).
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
-        let title = switch kind {
-        case .claude, .codex: TerminalSessionNaming.provisional(now: now())
-        case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
-        }
+        let title = kind.isAgent ? TerminalSessionNaming.provisional(now: now())
+            : TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
         let row = await createAndStart(
             .init(projectID: nil, kind: kind, title: title, folderPath: folder.path,
-                  claudeSessionID: kind == .claude ? Self.newClaudeSessionID() : nil),
+                  claudeSessionID: kind.agent.flatMap(Self.newSessionID)),
             prompt: nil,
             ticket: beginSwitch(projectID: nil)
         )
@@ -259,7 +257,7 @@ extension WorkbenchesViewModel {
     ) async -> TerminalSession? {
         await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
-                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
+                  folderPath: project.folderPath, claudeSessionID: Self.newSessionID(for: agent)),
             prompt: prompt,
             placement: placement,
             ticket: ticket ?? beginSwitch(projectID: project.id),
@@ -379,7 +377,7 @@ extension WorkbenchesViewModel {
             ticket: placement == .background ? nil : beginSwitch(projectID: projectID)
         ) { project in
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: TerminalSessionNaming.provisional(now: self.now()),
-                  folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil)
+                  folderPath: project.folderPath, claudeSessionID: Self.newSessionID(for: agent))
         }
     }
 
@@ -394,7 +392,7 @@ extension WorkbenchesViewModel {
         // No ticket: a failure is the caller's, never put on the owner's page.
         try await startInWorkbench(r.projectID, prompt: r.prompt, placement: .background, ticket: nil) { project in
             .init(projectID: project.id, kind: TerminalSession.Kind(r.agent), title: r.title,
-                  folderPath: project.folderPath, claudeSessionID: r.agent == .claude ? Self.newClaudeSessionID() : nil,
+                  folderPath: project.folderPath, claudeSessionID: Self.newSessionID(for: r.agent),
                   automationRunID: r.runID)
         }
     }
@@ -483,7 +481,7 @@ extension WorkbenchesViewModel {
             .init(projectID: found.project.id, kind: TerminalSession.Kind(agent),
                   title: text.isEmpty ? "Target #\(targetID)" : text,
                   targetID: targetID, folderPath: found.project.folderPath,
-                  claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
+                  claudeSessionID: Self.newSessionID(for: agent)),
             prompt: planFirst ? "\(brief) \(TerminalLaunch.planFirstSuffix)" : brief,
             placement: placement,
             ticket: ticket,
@@ -631,16 +629,17 @@ extension WorkbenchesViewModel {
         clearSwitchError(projectID: session.projectID, ticket: ticket)
         // A running process would keep its old id: `start` skips a running row.
         await terminalCenter?.close(sessionID: session.id)
-        let uuid = Self.newClaudeSessionID()
+        let uuid = Self.newSessionID(for: agent)
         let row: TerminalSession
         do {
             row = try await dbPool.write { db in
                 guard let current = try TerminalSessionQueries.fetch(db, id: session.id) else {
                     throw TerminalSessionQueryError.notFound(session.id)
                 }
-                switch agent {
-                case .claude: try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
-                case .codex: try TerminalSessionQueries.resetAgentSession(db, id: session.id)
+                if let uuid {
+                    try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
+                } else {
+                    try TerminalSessionQueries.resetAgentSession(db, id: session.id)
                 }
                 try TerminalSessionQueries.touch(db, id: session.id)
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
@@ -775,6 +774,7 @@ extension WorkbenchesViewModel {
     /// the reattach did, marks the center's liveness settled.
     func startHostReattach() {
         terminalCenter?.sessionHostScope = SessionHostPaths.scope(databasePath: dbPool.path)
+        terminalCenter?.sessionHostDatabase = dbPool.path
         let connection = terminalCenter?.sessionHostConnection
         hostReattach = Task { [weak self, weak center = terminalCenter] in
             await connection?.value
@@ -829,8 +829,11 @@ extension WorkbenchesViewModel {
 
     // MARK: - Private
 
-    private static func newClaudeSessionID() -> String {
-        UUID().uuidString.lowercased()
+    /// A new session's id for `agent`: one the app chooses
+    /// (`AgentSessionCaps.appSessionID`, Claude Code's `--session-id`), or nil
+    /// for an agent that mints its own (its first SessionStart stores it).
+    private static func newSessionID(for agent: AgentKind) -> String? {
+        agent.session.caps.appSessionID ? UUID().uuidString.lowercased() : nil
     }
 
     func project(id: Int64) async -> Workbench? {
@@ -1184,33 +1187,35 @@ extension WorkbenchesViewModel {
         return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    /// The row `activate` launches and, for a Codex row, whether it resumes
-    /// (decided here once; the center does not look for the rollout again).
-    /// A Codex relaunch whose stored id has no rollout forgets the id and
-    /// rollout path BEFORE the launch (spec 2026-10-12 §5, §7), so the new
-    /// session's SessionStart stores its own id. nil — nothing launches, the
-    /// failure reported — when Codex's sessions folder could not be listed
-    /// (the id stays) or the reset did not go in.
+    /// The row `activate` launches and, for the row of an agent that mints
+    /// its own session id (`AgentSessionCaps.appSessionID` false: Codex),
+    /// whether it resumes (decided here once; the center does not look for
+    /// the transcript again). Such a relaunch whose stored id has no
+    /// transcript forgets the id and transcript path BEFORE the launch (spec
+    /// 2026-10-12 §5, §7), so the new session's SessionStart stores its own
+    /// id. nil — nothing launches, the failure reported — when the agent's
+    /// transcript folder could not be listed (the id stays) or the reset did
+    /// not go in.
     private func rowToLaunch(
         _ row: TerminalSession, fresh: Bool, center: TerminalCenter, ticket: Int?
     ) async -> (row: TerminalSession, codexResume: Bool?)? { // swiftlint:disable:this discouraged_optional_boolean
-        guard row.kind == .codex else { return (row, nil) }
+        guard let agent = row.kind.agent, !agent.session.caps.appSessionID else { return (row, nil) }
         guard !fresh, row.claudeSessionID != nil || row.transcriptPath != nil else { return (row, false) }
         // The stored rollout path needs no home. Past it, never reset an id
         // on a lookup in a home that is not the login shell's: an
         // unresolved environment is "unknown", not "no rollout".
-        let codexHome: URL
+        let agentHome: URL
         do {
-            if try center.codexResumes(row, codexHome: nil) { return (row, true) }
-            guard let home = await resolveCodexHome() else { throw CodexHomeUnresolved() }
-            codexHome = home
-            if try center.codexResumes(row, codexHome: home) { return (row, true) }
+            if try center.resumesStoredID(row, home: nil) { return (row, true) }
+            guard let home = await resolveAgentHome(agent) else { throw CodexHomeUnresolved() }
+            agentHome = home
+            if try center.resumesStoredID(row, home: home) { return (row, true) }
         } catch {
-            await failed(row, "Could not check Codex's saved sessions", error, ticket: ticket, background: ticket == nil)
+            await failed(row, "Could not check \(agent.displayName)'s saved sessions", error, ticket: ticket, background: ticket == nil)
             return nil
         }
-        NSLog("WorkbenchesViewModel: Codex session %lld starts anew: no rollout for id %@ (stored path %@) under %@",
-              row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", codexHome.path)
+        NSLog("WorkbenchesViewModel: %@ session %lld starts anew: no transcript for id %@ (stored path %@) under %@",
+              agent.displayName, row.id, row.claudeSessionID ?? "none", row.transcriptPath ?? "none", agentHome.path)
         do {
             let reset = try await dbPool.write { db in
                 try TerminalSessionQueries.resetAgentSession(db, id: row.id)
@@ -1218,7 +1223,7 @@ extension WorkbenchesViewModel {
             }
             return (reset, false)
         } catch {
-            await failed(row, "Could not reset the Codex session", error, ticket: ticket, background: ticket == nil)
+            await failed(row, "Could not reset the \(agent.displayName) session", error, ticket: ticket, background: ticket == nil)
             return nil
         }
     }

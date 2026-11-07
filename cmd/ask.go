@@ -132,7 +132,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 		inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
 		if usage != nil {
-			inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+			inTok, outTok, totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 		}
 		if runID > 0 {
 			_ = database.CompletePipelineRun(runID, 1, inTok, outTok, cost, totalAPI, nil, nil, errMsg)

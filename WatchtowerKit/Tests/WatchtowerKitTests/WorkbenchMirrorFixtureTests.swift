@@ -239,6 +239,53 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.reportDone, 1)
         XCTAssertEqual(session.reportTotal, 2)
         XCTAssertEqual(session.reportPRLine, "PR #175 open")
+        XCTAssertEqual(session.watchIssue, "compressed")
+        XCTAssertEqual(
+            session.watchHelp,
+            "This session's log is compressed, so Watchtower can't read it. Watching starts again with the next prompt."
+        )
+        XCTAssertEqual(
+            session.phone,
+            TerminalSessionState.PhoneCaps(input: true, inputWhileWorking: true, permissionAnswer: true, interrupt: true)
+        )
+    }
+
+    /// A record from a Mac older than the `phone` key still decodes, with
+    /// no key: the phone then keeps that Mac's rule.
+    func testTerminalSessionWithoutPhoneDecodes() throws {
+        var json = try object("terminal_session")
+        json.removeValue(forKey: "phone")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.phone)
+        XCTAssertEqual(session.id, 31)
+    }
+
+    /// The Kit's phone half of a capability row is the Mac's (U5): each
+    /// bundled row gives the Kit fixture `phone_caps.json`'s, the table Go's
+    /// `TestSessionAgent_PhoneCapsMatchKitFixture` and the Desktop hub's
+    /// `testSessionPublishesItsPhoneCaps` are pinned to.
+    func testPhoneCapsOfEachBundledRowMatchTheSharedFixture() throws {
+        let rows = try XCTUnwrap(try object("phone_caps")["agents"] as? [String: Any])
+        XCTAssertEqual(Set(rows.keys), Set(AgentSessionCapabilities.bundled.keys))
+        for (kind, row) in rows {
+            let want = try RelayCoder.makeDecoder().decode(
+                TerminalSessionState.PhoneCaps.self, from: try data(XCTUnwrap(row as? [String: Any]))
+            )
+            let caps = try XCTUnwrap(AgentSessionCapabilities.of(kind), kind)
+            XCTAssertEqual(TerminalSessionState.PhoneCaps(caps), want, kind)
+        }
+    }
+
+    /// A record from a Mac older than G5 has no `watch_issue`: it still
+    /// decodes, as watched.
+    func testTerminalSessionWithoutWatchIssueDecodes() throws {
+        var json = try object("terminal_session")
+        json.removeValue(forKey: "watch_issue")
+        json.removeValue(forKey: "watch_help")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.watchIssue)
+        XCTAssertNil(session.watchHelp)
+        XCTAssertEqual(session.id, 31)
     }
 
     /// `codex_cli` decodes as the known Codex agent; an agent this build does
@@ -265,8 +312,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(request.summaryClipped)
         XCTAssertEqual(request.createdAt, t0)
         XCTAssertEqual(
-            ActionReason.allCases.suffix(3).map(\.rawValue),
-            ["not_pending", "not_working", "answer_on_mac"]
+            ActionReason.allCases.suffix(4).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac", "not_supported"]
         )
     }
 

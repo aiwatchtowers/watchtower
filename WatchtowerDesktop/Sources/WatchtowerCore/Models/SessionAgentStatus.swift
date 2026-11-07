@@ -58,6 +58,15 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// column. Only a change of it is used: the sessions' places re-read
     /// their cwds then.
     package var agentCwdAt: String?
+    /// `terminal_sessions.kind` (`claude`, `codex`, a shell's kind); nil for
+    /// a row built without it. A working codex row's failed turn is read
+    /// from its rollout by the session probe (board #959).
+    package var kind: String?
+    /// Why the session host's rollout watch cannot read this working codex
+    /// row's rollout (migration 00173, Go writes): `missing`, `permission`,
+    /// `compressed` or `unreadable`; nil = watched, or a database without
+    /// the column.
+    package var agentWatchIssue: String?
 
     package init(
         id: Int64,
@@ -78,7 +87,9 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         agentBackgroundAt: String? = nil,
         chatQuestion: String? = nil,
         chatQuestionAt: String? = nil,
-        agentCwdAt: String? = nil
+        agentCwdAt: String? = nil,
+        kind: String? = nil,
+        agentWatchIssue: String? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -101,9 +112,14 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.chatQuestion = chatQuestion
         self.chatQuestionAt = chatQuestionAt
         self.agentCwdAt = agentCwdAt
+        self.kind = kind
+        self.agentWatchIssue = agentWatchIssue
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
+
+    /// The row's agent; nil for a shell or a row built without a kind.
+    package var agent: AgentKind? { kind.flatMap(AgentKind.init(rawValue:)) }
 
     package enum CodingKeys: String, CodingKey {
         case id, title
@@ -124,6 +140,8 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case chatQuestion = "chat_question"
         case chatQuestionAt = "chat_question_at"
         case agentCwdAt = "agent_cwd_at"
+        case kind
+        case agentWatchIssue = "agent_watch_issue"
     }
 }
 
@@ -211,7 +229,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
         return SessionSwitcherPresentation.State(
             kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
             oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil, backgroundAgents: agents ?? 0,
-            openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks
+            openQuestionAsks: row.openQuestionAsks, openReviewAsks: row.openReviewAsks,
+            watchIssue: row.agentWatchIssue
         )
     }
 

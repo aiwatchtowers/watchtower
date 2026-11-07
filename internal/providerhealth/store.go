@@ -98,7 +98,12 @@ func randomHex(n int) (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
-func validScope(scope Scope) bool { return scope.provider == "claude" || scope.provider == "codex" }
+
+// validScope: only a provider that reports a subscription quota has health.
+func validScope(scope Scope) bool {
+	c, ok := providers.CapsFor(scope.provider)
+	return ok && c.Quota
+}
 func scopeKey(d *diskState, scope Scope) string {
 	mac := hmac.New(sha256.New, []byte(d.Salt))
 	// JSON tuple is unambiguous even if identity/model contain separators.

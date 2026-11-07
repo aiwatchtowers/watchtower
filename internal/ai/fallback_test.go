@@ -15,7 +15,6 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
 exit 1
 `)
 	client := NewClient("m", "", bin)
-	client.SetProcessGroup(true)
 	check := func(err error) {
 		t.Helper()
 		var failure *providers.Failure

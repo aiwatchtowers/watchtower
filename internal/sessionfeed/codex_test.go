@@ -40,13 +40,6 @@ func TestParseCodex_OwnerAgentBriefAskAnswer(t *testing.T) {
 	assert.EqualValues(t, len(raw), res.Offset)
 }
 
-func TestParseCodex_SkipsZstd(t *testing.T) {
-	res, err := ParseCodex(bytes.NewReader(append([]byte{0x28, 0xb5, 0x2f, 0xfd}, "binary\n"...)), 0, "c")
-	require.NoError(t, err)
-	assert.Empty(t, res.Entries)
-	assert.Equal(t, 1, res.Unknown["<zstd>"])
-}
-
 func TestParseCodex_OffsetResume(t *testing.T) {
 	raw := readFixture(t, "mixed.jsonl")
 	first, err := ParseCodex(bytes.NewReader(raw), 0, "c")

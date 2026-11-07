@@ -27,8 +27,9 @@ package enum TerminalSessionQueries {
         package var title: String
         package var targetID: Int64?
         package var folderPath: String
-        /// The agent's own session id. Required (non-empty) for `.claude`;
-        /// nil for a shell, and for a new codex row (Codex mints its id).
+        /// The agent's own session id. Required (non-empty) when the app
+        /// chooses it (`AgentSessionCaps.appSessionID`); nil for a shell, and
+        /// for a new row of an agent that mints its own (Codex).
         package var claudeSessionID: String?
         /// Set when Watchtower created the session's worktree (00114).
         package var worktreeBranch: String?
@@ -59,10 +60,11 @@ package enum TerminalSessionQueries {
         }
     }
 
-    /// Throws `missingSessionID` for a `.claude` row without a session id
+    /// Throws `missingSessionID` for a row of an agent whose id the app
+    /// chooses (`AgentSessionCaps.appSessionID`: Claude Code) without one
     /// (the schema's CHECK would reject a NULL one; an empty one too, here).
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
-        if new.kind == .claude, new.claudeSessionID?.isEmpty ?? true {
+        if new.kind.agent?.session.caps.appSessionID == true, new.claudeSessionID?.isEmpty ?? true {
             throw TerminalSessionQueryError.missingSessionID
         }
         try db.execute(
@@ -190,14 +192,15 @@ package enum TerminalSessionQueries {
     package static func fetchAgentStates(_ db: Database, liveIDs: [Int64]) throws -> [SessionAgentStateRow] {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
+        let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
         let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
-                SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
+                SELECT s.id, s.project_id, s.kind, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
                        s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
-                       \(cwdAt) AS agent_cwd_at,
+                       \(cwdAt) AS agent_cwd_at, \(watchIssue) AS agent_watch_issue,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
                            AS oldest_open_ask_id,
@@ -247,7 +250,13 @@ package enum TerminalSessionQueries {
     /// Whether the database has migration 00110's cwd columns (GRDB caches
     /// the probe per connection).
     private static func hasAgentCwd(_ db: Database) throws -> Bool {
-        try db.columns(in: "terminal_sessions").contains { $0.name == "agent_cwd_at" }
+        try hasColumn(db, "agent_cwd_at")
+    }
+
+    /// Whether `terminal_sessions` has `column` (a database the daemon has
+    /// not migrated yet may lack it; GRDB caches the probe per connection).
+    private static func hasColumn(_ db: Database, _ column: String) throws -> Bool {
+        try db.columns(in: "terminal_sessions").contains { $0.name == column }
     }
 
     /// Session `id`'s stored cleanup outcome (board #535, migration 00111):

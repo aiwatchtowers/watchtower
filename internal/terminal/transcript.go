@@ -15,8 +15,6 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
-
-	"watchtower/internal/agentkind"
 )
 
 // ErrNoTranscript means the agent has not written a transcript for the
@@ -35,28 +33,27 @@ type Transcript interface {
 	OwnerText(capChars int) (string, error)
 }
 
-// OpenTranscript locates the transcript of an agent session. agentHome is
-// the agent's home directory (`~/.claude` for Claude Code, `$CODEX_HOME` or
-// `~/.codex` for Codex); storedPath is the path the session's SessionStart
-// hook reported (read for Codex only; "" when none). A transcript the agent
-// has not written yet is ErrNoTranscript.
-func OpenTranscript(kind agentkind.Kind, sessionID, storedPath, agentHome string) (Transcript, error) {
-	switch kind {
-	case agentkind.Claude:
-		path, err := FindTranscript(agentHome, sessionID)
-		if err != nil {
-			return nil, err
-		}
-		return claudeTranscript{path: path}, nil
-	case agentkind.Codex:
-		path, err := findCodexRollout(agentHome, sessionID, storedPath)
-		if err != nil {
-			return nil, err
-		}
-		return codexRollout{path: path}, nil
-	default:
-		return nil, fmt.Errorf("not an agent kind: %q", kind)
+// OpenClaudeTranscript locates Claude Code session sessionID's transcript
+// under claudeDir (`~/.claude`). A transcript the agent has not written yet
+// is ErrNoTranscript.
+func OpenClaudeTranscript(claudeDir, sessionID string) (Transcript, error) {
+	path, err := FindTranscript(claudeDir, sessionID)
+	if err != nil {
+		return nil, err
 	}
+	return claudeTranscript{path: path}, nil
+}
+
+// OpenCodexRollout locates Codex session sessionID's rollout under
+// codexHome (`$CODEX_HOME` or `~/.codex`); storedPath is the path the
+// session's SessionStart hook reported ("" when none). A rollout the agent
+// has not written yet is ErrNoTranscript.
+func OpenCodexRollout(codexHome, sessionID, storedPath string) (Transcript, error) {
+	path, err := findCodexRollout(codexHome, sessionID, storedPath)
+	if err != nil {
+		return nil, err
+	}
+	return codexRollout{path: path}, nil
 }
 
 // claudeTranscript is a Claude Code transcript (projects/*/<id>.jsonl).

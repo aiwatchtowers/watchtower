@@ -86,7 +86,7 @@ func checkLaunchArgsFlags() error {
 	if !ok {
 		return usageError("unknown --agent %q (want codex)", launchArgsFlagAgent)
 	}
-	if kind != agentkind.Codex {
+	if !launchHooks(kind) {
 		return usageError("launch-args supports --agent codex only; the Desktop builds the %s argv itself", kind.DisplayName())
 	}
 	return nil

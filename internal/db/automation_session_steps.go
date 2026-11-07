@@ -118,7 +118,16 @@ type AutomationSessionStep struct {
 	FinishSummary string
 	Failed        bool // agent_failed_at is set
 	AgentError    string
+	// WatchIssue is agent_watch_issue while the session reads working: the
+	// Mac cannot watch it (migration 00173, N6); "" = watched or not working.
+	WatchIssue string
 }
+
+// sessionEndColumns are the attached session's columns a session() wait
+// reads, aliased ts.
+const sessionEndColumns = `ts.finished_at IS NOT NULL, COALESCE(ts.finish_summary, ''),
+		ts.agent_failed_at IS NOT NULL, COALESCE(ts.agent_error, ''),
+		CASE WHEN ts.agent_state = 'working' THEN COALESCE(ts.agent_watch_issue, '') ELSE '' END`
 
 // GetAutomationSessionStep reads step stepID and its attached session;
 // ErrAutomationRunStepNotFound when the step is gone.
@@ -128,12 +137,12 @@ func (db *DB) GetAutomationSessionStep(stepID int64) (AutomationSessionStep, err
 		session sql.NullInt64
 		gone    bool
 	)
-	err := db.QueryRow(`SELECT st.status, st.error, st.session_id, ts.id IS NULL,
-		ts.finished_at IS NOT NULL, COALESCE(ts.finish_summary, ''),
-		ts.agent_failed_at IS NOT NULL, COALESCE(ts.agent_error, '')
+	var finished, failed sql.NullBool
+	var summary, agentErr, issue sql.NullString
+	err := db.QueryRow(`SELECT st.status, st.error, st.session_id, ts.id IS NULL, `+sessionEndColumns+`
 		FROM automation_run_steps st LEFT JOIN terminal_sessions ts ON ts.id = st.session_id
 		WHERE st.id = ?`, stepID).
-		Scan(&s.Status, &s.Error, &session, &gone, &s.Finished, &s.FinishSummary, &s.Failed, &s.AgentError)
+		Scan(&s.Status, &s.Error, &session, &gone, &finished, &summary, &failed, &agentErr, &issue)
 	if errors.Is(err, sql.ErrNoRows) {
 		return s, fmt.Errorf("automation run step %d: %w", stepID, ErrAutomationRunStepNotFound)
 	}
@@ -142,5 +151,23 @@ func (db *DB) GetAutomationSessionStep(stepID int64) (AutomationSessionStep, err
 	}
 	s.SessionID = session.Int64
 	s.SessionGone = session.Valid && gone
+	s.Finished, s.FinishSummary, s.Failed, s.AgentError, s.WatchIssue =
+		finished.Bool, summary.String, failed.Bool, agentErr.String, issue.String
+	return s, nil
+}
+
+// SessionEnds reads terminal session sessionID the way a session() wait
+// does once it is attached (the step's own status aside):
+// ErrTerminalSessionNotFound when the row is gone.
+func (db *DB) SessionEnds(sessionID int64) (AutomationSessionStep, error) {
+	s := AutomationSessionStep{SessionID: sessionID}
+	err := db.QueryRow(`SELECT `+sessionEndColumns+` FROM terminal_sessions ts WHERE ts.id = ?`, sessionID).
+		Scan(&s.Finished, &s.FinishSummary, &s.Failed, &s.AgentError, &s.WatchIssue)
+	if errors.Is(err, sql.ErrNoRows) {
+		return s, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return s, fmt.Errorf("reading terminal session %d for a session() wait: %w", sessionID, err)
+	}
 	return s, nil
 }

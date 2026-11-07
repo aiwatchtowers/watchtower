@@ -15,8 +15,8 @@ extension SystemSettings {
             }
             .help("The agent a new workbench session, Work on It and a start from the phone run. "
                 + "The New session and Work on It menus can still start the other one.")
-            // Cloud AI settings show both CLI paths; local AI does not.
-            if config.workbenchDefaultAgent == .codex, config.aiProvider == "ollama" {
+            // Cloud AI settings show both CLI paths; a local AI server does not.
+            if config.workbenchDefaultAgent == .codex, appState.aiModelCatalog.isLocalServer(config.aiProvider ?? "") {
                 LabeledContent(ProviderSettingsCopy.path("codex")) {
                     TextField(ProviderSettingsCopy.path("codex"), text: Binding(
                     get: { config.codexPath ?? "" }, set: { config.codexPath = $0.isEmpty ? nil : $0 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"watchtower/internal/agentfiles"
 	"watchtower/internal/agentlogdb"
 )
 
@@ -107,6 +108,18 @@ type ParseOptions struct {
 	// plus tool results to MaxRows (0 = read to the end); More then says the
 	// input may hold further complete lines.
 	MaxRows int
+	// SessionUUID is the codex session a rollout belongs to (ParseCodex
+	// only): the terminal session row's id, known before the read, so a read
+	// that starts past session_meta still knows its session.
+	SessionUUID string
+	// CodexModel and CodexCWD seed a codex read that does not start at
+	// offset 0: the stored session's model and working directory (ParseCodex
+	// only).
+	CodexModel, CodexCWD string
+	// CodexLineage seeds the same read with the rollout's lineage
+	// (codexLineage, read from its head by codexHead): the session_meta lines
+	// it comes from sit before the read's offset (ParseCodex only).
+	CodexLineage string
 }
 
 type ParseResult struct {
@@ -124,6 +137,7 @@ type ParseResult struct {
 	More         bool     // stopped at MaxRows, not at the end of the input
 	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
 	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
+	CodexLineage string   // the rollout's lineage at the end of the parse (seed for the next slice; ParseCodex only)
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any
@@ -184,33 +198,9 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	return p.res, nil
 }
 
-// NextLine returns one '\n'-terminated line without the newline, the bytes
-// consumed, and complete=false when the input ended before a newline. A line
-// longer than limit comes back as nil (consumed and complete).
+// NextLine returns one '\n'-terminated line (agentfiles.NextLine).
 func NextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
-	var buf []byte
-	var n int64
-	tooLong := false
-	for {
-		chunk, err := br.ReadSlice('\n')
-		n += int64(len(chunk))
-		if !tooLong {
-			buf = append(buf, chunk...)
-			if len(buf) > limit {
-				tooLong, buf = true, nil
-			}
-		}
-		if err == nil {
-			if tooLong {
-				return nil, n, true, nil
-			}
-			return buf[:len(buf)-1], n, true, nil
-		}
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return nil, n, false, err // EOF without newline: not consumed
-	}
+	return agentfiles.NextLine(br, limit)
 }
 
 type claudeParser struct {

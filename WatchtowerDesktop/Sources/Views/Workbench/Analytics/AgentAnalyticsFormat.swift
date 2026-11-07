@@ -14,6 +14,25 @@ enum AgentAnalyticsFormat {
 
     static func cost(_ usd: Double) -> String { String(format: "$%.2f", usd) }
 
+    /// A session's cost cell when its model has no price (U4).
+    static let noPrice = "no price"
+
+    /// The session's calls had no price and nothing was priced: tokens only.
+    static func hasNoPrice(_ session: AgentSessionRow) -> Bool {
+        session.costUSD == 0 && session.costEstimatedCalls > 0
+    }
+
+    /// A session's cost in a line of text: "$1.80" or "no price".
+    static func sessionCost(_ session: AgentSessionRow) -> String {
+        hasNoPrice(session) ? noPrice : cost(session.costUSD)
+    }
+
+    /// The session's agent as its tag reads: "Claude Code", "Codex", or the
+    /// raw value for an agent this app does not know.
+    static func agentName(_ session: AgentSessionRow) -> String {
+        session.agentKind?.displayName ?? session.agent
+    }
+
     static func percent(_ part: Double, of whole: Double) -> String {
         guard whole > 0 else { return "0%" }
         return "\(Int((part / whole * 100).rounded()))%"

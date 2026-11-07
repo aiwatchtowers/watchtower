@@ -56,6 +56,8 @@ struct ChatComposerView: View {
                 attachmentProgress: AttachmentProgress(importing: chatVM.composerAttachments.importing,
                                                        removing: chatVM.composerAttachments.removing,
                                                        sendWaits: chatVM.isWaitingForAttachments),
+                attachUnavailableReason: chatVM.attachUnavailableReason,
+                pdfUnavailableReason: chatVM.pdfUnavailableReason,
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
                     chatVM.composer.update(text: text, cursor: cursor)
@@ -84,6 +86,10 @@ struct ChatComposerView: View {
         if let presentation = chatVM.routingPresentation {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
+                // U3: what the provider lacks (images among them, U1).
+                if let missing = presentation.missingCapabilities {
+                    Text(missing).font(.caption).foregroundStyle(.secondary)
+                }
                 if let preview = presentation.preview {
                     ChatRoutingStatusView(preview: preview, actionEnabled: !chatVM.isBusy,
                                           onAction: routingAction(for: preview))
