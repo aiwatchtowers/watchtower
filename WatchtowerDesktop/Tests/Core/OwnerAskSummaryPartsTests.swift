@@ -40,8 +40,9 @@ final class OwnerAskSummaryPartsTests: XCTestCase {
         XCTAssertEqual(result.reason, away)
     }
 
+    /// Go clips the title to 120 runes on one line, with no ellipsis.
     func testOldShapeWithAClippedTitle() throws {
-        let clipped = String(Self.longQuestion.prefix(119)) + "…"
+        let clipped = String(Self.longQuestion.prefix(120)).trimmingCharacters(in: .whitespaces)
         let left = "Asked in the terminal; you left the session."
         let result = parts(try ask(title: clipped, summary: Self.longQuestion + "\n" + left))
 
@@ -50,7 +51,7 @@ final class OwnerAskSummaryPartsTests: XCTestCase {
     }
 
     func testNewShapeKeepsTheContextAsTheBody() throws {
-        let context = "I found two places that read the folder.\nBoth assume one root."
+        let context = "I found two places that read the folder; both assume one root. I recommend yes."
         let result = parts(try ask(summary: context + "\n\nAsked in the terminal; no answer for 12 min."))
 
         XCTAssertEqual(result.body, context)
@@ -129,6 +130,15 @@ final class OwnerAskSummaryPartsTests: XCTestCase {
 
         XCTAssertEqual(result.body, "")
         XCTAssertEqual(result.reason, reason)
+    }
+
+    /// A line that is only the title (a clipped question, not q1) goes too.
+    func testALineRepeatingOnlyTheTitleIsDropped() throws {
+        let title = String(Self.longQuestion.prefix(120)).trimmingCharacters(in: .whitespaces)
+        let summary = "Some context.\n" + title + "\n\nAsked in the terminal while you were away."
+        let result = parts(try ask(title: title, summary: summary))
+
+        XCTAssertEqual(result.body, "Some context.")
     }
 
     func testEmptySummary() throws {
