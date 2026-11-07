@@ -58,6 +58,25 @@ type mountedExternal struct {
 	servers []ai.ExternalMCPServer  // the servers with at least one tool offered
 	tools   map[string]externalTool // by offered name
 	defs    []oaTool                // in server, then listing, order
+	// unavailable names the servers this turn could not mount (the
+	// organization's policy, a failed or cached-failed listing), in loader
+	// order, so the model can tell the owner instead of acting as if the
+	// connection did not exist.
+	unavailable []string
+}
+
+// withUnavailableNote appends to systemPrompt the line naming the Quick
+// Connections this turn could not mount; systemPrompt unchanged for none.
+func (m mountedExternal) withUnavailableNote(systemPrompt string) string {
+	if len(m.unavailable) == 0 {
+		return systemPrompt
+	}
+	note := "These Quick Connections are unavailable in this turn: " + strings.Join(m.unavailable, ", ") +
+		". Their tools are missing; if the owner asks for one, say it is unavailable right now."
+	if systemPrompt == "" {
+		return note
+	}
+	return systemPrompt + "\n\n" + note
 }
 
 // externalListing is one server's cached tools/list: the tools, or the
@@ -89,7 +108,7 @@ func (c *Client) ExternalServersForTest() []ai.ExternalMCPServer {
 
 // mountExternal loads this turn's servers and the tools each offers. A
 // server the policy forbids, or one that cannot be listed, mounts nothing;
-// the turn runs without it.
+// the turn runs without it and the model is told (unavailable).
 func (c *Client) mountExternal(ctx context.Context) mountedExternal {
 	m := mountedExternal{tools: map[string]externalTool{}}
 	// A gated loop (an automation's agent()) has its tools decided by its
@@ -105,6 +124,7 @@ func (c *Client) mountExternal(ctx context.Context) mountedExternal {
 		}
 		if !policy.Current().ConnectionAllowed(s.Kind, s.URL, s.Command) {
 			log.Printf("runtime B: Quick Connection %d not mounted: not allowed by the organization's policy", s.ID)
+			m.unavailable = append(m.unavailable, s.Name)
 			continue
 		}
 		defs, err := c.externalDefs(ctx, s)
@@ -112,6 +132,7 @@ func (c *Client) mountExternal(ctx context.Context) mountedExternal {
 			if ctx.Err() == nil {
 				log.Printf("runtime B: Quick Connection %d not mounted: %v", s.ID, err)
 			}
+			m.unavailable = append(m.unavailable, s.Name)
 			continue
 		}
 		offered := false
