@@ -616,7 +616,7 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
-	if turn.stop {
+	if turn.stop && turn.tasks.present {
 		turns, err := database.TerminalAgentTurns(row.ID)
 		if err != nil {
 			return err
