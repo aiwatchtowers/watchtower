@@ -72,10 +72,11 @@ func (e *GitExitError) Error() string {
 	return fmt.Sprintf("git %s: exit %d: %s", e.Subcommand, e.Code, e.Stderr)
 }
 
-// exitedWith reports whether err is git having exited with code.
-func exitedWith(err error, code int) bool {
+// saidNo reports whether err is git's documented "no": exit 1 of
+// symbolic-ref --quiet, rev-parse --verify --quiet or merge-base.
+func saidNo(err error) bool {
 	var e *GitExitError
-	return errors.As(err, &e) && e.Code == code
+	return errors.As(err, &e) && e.Code == 1
 }
 
 // subcommand is the first argument that is not an option or a -c value.

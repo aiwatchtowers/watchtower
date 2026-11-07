@@ -83,7 +83,7 @@ func (r *Repo) mergeBase(ctx context.Context, a, b string) (string, bool, error)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", false, ctxErr
 	}
-	if exitedWith(err, 1) {
+	if saidNo(err) {
 		return "", false, nil
 	}
 	if err != nil {
@@ -103,7 +103,7 @@ func (r *Repo) defaultNames(ctx context.Context) ([]string, error) {
 	switch {
 	case err == nil:
 		names = append(names, strings.TrimPrefix(strings.TrimSpace(string(out)), "refs/remotes/origin/"))
-	case !exitedWith(err, 1): // 1: origin/HEAD is missing or not symbolic
+	case !saidNo(err): // 1: origin/HEAD is missing or not symbolic
 		return nil, err
 	}
 	return append(names, "main", "master"), nil

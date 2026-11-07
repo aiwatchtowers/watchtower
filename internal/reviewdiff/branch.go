@@ -23,7 +23,7 @@ func (r *Repo) HeadBranch(ctx context.Context) (string, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}
-	if exitedWith(err, 1) {
+	if saidNo(err) {
 		return "", nil
 	}
 	if err != nil {
@@ -75,7 +75,7 @@ func (r *Repo) revParse(ctx context.Context, spec string) (string, bool, error) 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", false, ctxErr
 	}
-	if exitedWith(err, 1) {
+	if saidNo(err) {
 		return "", false, nil
 	}
 	if err != nil {
