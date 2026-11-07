@@ -50,6 +50,16 @@ struct ConfigServiceTests {
         #expect(throws: (any Error).self) { try service.save() }
     }
 
+    @Test("Before the catalog is read a save of other settings keeps the file's enabled fallback")
+    func testUnreadCatalogSavesOtherSettings() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let service = ConfigService(configPath: path, catalog: AIModelCatalog())
+        service.aiWorkers = 3
+        try service.save()
+        let saved = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(saved.contains("enabled: true"))
+    }
+
     @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
     func reserveBuckets(provider: String) throws {
         let other = provider == "claude" ? "codex" : "claude"

@@ -431,7 +431,11 @@ final class ConfigService {
             if !reserve.isEmpty && reserve == selected {
                 throw ConfigUnreadableError(reason: "Reserve must be a different provider")
             }
-            if enabled {
+            // Only an edit to the pair is refused: a save of other settings
+            // keeps the file's fallback as Go last loaded it.
+            let pairEdited = aiFallbackEnabled != loadedFallbackEnabled || aiFallbackProvider != loadedFallbackProvider
+                || editableFields["_aiProvider"] != loadedFields["_aiProvider"]
+            if enabled && pairEdited {
                 throw ConfigUnreadableError(reason: "Provider details are still loading; turn the reserve on again once they load")
             }
             return
