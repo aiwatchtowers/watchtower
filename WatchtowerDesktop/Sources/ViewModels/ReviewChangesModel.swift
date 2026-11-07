@@ -254,15 +254,18 @@ final class ReviewChangesModel {
     struct LoadedSides: Equatable {
         let path: String
         let treeSHA: String
+        /// The round's `diffKey` (base and tree) they were read for: the old
+        /// side is the base's, so a base-only change makes them stale too.
+        let diffKey: String
         let view: View
         let old: ReviewFileSide
         let new: ReviewFileSide
     }
 
-    /// The sides of the selected file on the round's current tree and view;
-    /// nil while they load (another file, tree or view picked since).
+    /// The sides of the selected file on the round's current diff and view;
+    /// nil while they load (another file, tree, base or view picked since).
     var currentSides: LoadedSides? {
-        guard let sides, sides.path == selectedPath, sides.treeSHA == round?.treeSha, sides.view == view else { return nil }
+        guard let sides, sides.path == selectedPath, sides.diffKey == round?.diffKey, sides.view == view else { return nil }
         return sides
     }
 
@@ -1354,8 +1357,8 @@ final class ReviewChangesModel {
         let oldPath = files.first { $0.path == path }?.oldPath
         do {
             let loaded = try await fetchSides(path: path, oldPath: oldPath, round: info, since: since)
-            guard selectedPath == path, since == (view == .sinceLastRound), round?.treeSha == info.treeSha else { return }
-            sides = LoadedSides(path: path, treeSHA: info.treeSha, view: view, old: loaded.old, new: loaded.new)
+            guard selectedPath == path, since == (view == .sinceLastRound), round?.diffKey == info.diffKey else { return }
+            sides = LoadedSides(path: path, treeSHA: info.treeSha, diffKey: info.diffKey, view: view, old: loaded.old, new: loaded.new)
         } catch {
             guard selectedPath == path else { return }
             sides = nil
@@ -1399,7 +1402,6 @@ final class ReviewChangesModel {
                 && ($0.treeSHA != info.treeSha || (baseChanged && $0.side == "old"))
         }
     }
-
 
     /// The `commentsPlacedOn` key of a round.
     private static func placement(_ info: ReviewRoundInfo) -> String { "\(info.id):\(info.baseSha)" }

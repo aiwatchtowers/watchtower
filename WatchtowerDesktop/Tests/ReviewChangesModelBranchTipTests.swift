@@ -213,4 +213,25 @@ extension ReviewChangesModelTests {
         XCTAssertEqual(row?.status, .draft)
         XCTAssertEqual(row?.startLine, 2)
     }
+
+    /// Codex round 3: the loaded sides belong to the round's diff (base and
+    /// tree). A base change whose re-placement fails leaves the old base's
+    /// text unusable for a new old-side comment.
+    func testSidesOfAnEarlierBaseAreNotCurrent() async throws {
+        let h = try harness()
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["a.go"])])
+        h.cli.script("start", [roundJSON(base: "b", tree: "t7"), roundJSON(base: "c", tree: "t7")])
+        h.cli.script("file", [fileJSON(old: "x\ny\n", new: "n\n"), #"{"ok":false,"error":"boom"}"#])
+        await h.model.open()
+        await h.model.select("a.go")
+        XCTAssertNotNil(h.model.currentSides)
+        try await h.model.addComment(path: "a.go", side: "old", startLine: 1, endLine: 1, body: "on x")
+        await h.model.refresh()
+        XCTAssertEqual(h.model.lastError, "boom")
+        XCTAssertNil(h.model.currentSides, "read for base b, the round is on c")
+        do {
+            try await h.model.addComment(path: "a.go", side: "old", startLine: 2, endLine: 2, body: "on y")
+            XCTFail("anchored on the old base's text")
+        } catch {}
+    }
 }
