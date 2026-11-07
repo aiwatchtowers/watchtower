@@ -77,6 +77,19 @@ func TestBranchReads_OtherGitFailuresAreErrors(t *testing.T) {
 	if _, err := openFailing(t, dir, "merge-base").Base(ctx); err == nil {
 		t.Fatal("Base on a failing merge-base answered")
 	}
+	headFails := openFailing(t, dir, "HEAD^{commit}")
+	if _, err := headFails.Base(ctx); !errors.As(err, &exit) || exit.Code != 128 {
+		t.Fatalf("Base on a failing HEAD read = %v; want the git error, not the empty tree", err)
+	}
+	if _, err := headFails.HeadBase(ctx, "feature"); err == nil {
+		t.Fatal("HeadBase on a failing HEAD read answered")
+	}
+	// An unborn HEAD (git's exit 1) is still "no commit": the empty tree.
+	unborn := t.TempDir()
+	gitIn(t, unborn, "init", "-q", "-b", "main")
+	if base, err := openRepo(t, unborn).Base(ctx); err != nil || base.SHA != EmptyTree {
+		t.Fatalf("Base on an unborn HEAD = %+v, %v; want the empty tree", base, err)
+	}
 	if _, err := openFailing(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD").DefaultBranch(ctx); err == nil {
 		t.Fatal("DefaultBranch on a failing symbolic-ref answered")
 	}

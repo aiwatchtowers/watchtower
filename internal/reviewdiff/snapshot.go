@@ -92,13 +92,12 @@ func (r *Repo) copyOwnerIndex(ctx context.Context, dst string) bool {
 	return true
 }
 
-// hasHead: HEAD names a commit. A done context is an error, never "no commit".
+// hasHead: HEAD names a commit; false only on git's exit 1 (an unborn
+// HEAD). A done context or any other git failure is an error, never "no
+// commit".
 func (r *Repo) hasHead(ctx context.Context) (bool, error) {
-	_, err := r.git(ctx, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, ctxErr
-	}
-	return err == nil, nil
+	_, ok, err := r.revParse(ctx, "HEAD^{commit}")
+	return ok, err
 }
 
 // TreeExists reports whether sha names a tree in the repository (a pruned
