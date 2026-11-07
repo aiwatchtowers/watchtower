@@ -227,6 +227,10 @@ func (c *Client) run(ctx context.Context, systemPrompt, userMessage string, emit
 				return "", usage, err
 			}
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Args: json.RawMessage(call.Function.Arguments)})
+			if err := ctx.Err(); err != nil {
+				// The start's send may have been what the stop released.
+				return "", usage, err
+			}
 			result := c.dispatch(ctx, call, ext)
 			c.emitTool(emit, &ai.ToolEvent{ID: call.ID, Name: call.Function.Name, Done: true,
 				OK: !strings.HasPrefix(result, `{"error":`), Result: result})

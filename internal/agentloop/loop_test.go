@@ -454,3 +454,22 @@ func TestAgentloop_StopBetweenToolCallsDispatchesNoMore(t *testing.T) {
 	assert.Equal(t, []string{"list_targets"}, reg.reads, "the second call is never dispatched")
 	assert.Len(t, requests(), 1, "no model call after the stop")
 }
+
+// A stop that releases the blocked send of a tool's start event dispatches
+// nothing: the consumer stopped reading, the channel is full, and the stop
+// comes while the start waits to be sent.
+func TestAgentloop_StopReleasingAToolStartDispatchesNothing(t *testing.T) {
+	model, _ := recordingServer(t, toolCallResp("list_targets", `{}`), finalResp("done"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := listTargetsReg()
+	c := clientWith(reg, model.URL)
+	c.EmitToolEvents()
+	_, _, err := c.run(ctx, "", "go", func(ch ai.StreamChunk) {
+		if ch.Tool != nil && !ch.Tool.Done {
+			cancel() // the send this chunk waited on was released by the stop
+		}
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, reg.reads, "nothing is dispatched after the stop")
+}
