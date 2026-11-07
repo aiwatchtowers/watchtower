@@ -135,6 +135,25 @@ func TestScheduler_DarkWakeLogsOncePerDeferral(t *testing.T) {
 	}
 }
 
+// TestScheduler_NilProbeRestoresAlwaysAwake: SetFullWakeProbe(nil) after a
+// dark probe puts the default back, so the start tick runs (no hold).
+func TestScheduler_NilProbeRestoresAlwaysAwake(t *testing.T) {
+	f := newSchedFixture(t, time.Time{})
+	logs := &syncBuffer{}
+	clock := &stepClock{now: f.at(14, 8, 0).Add(30 * time.Second), calls: make(chan time.Duration, 4), fire: make(chan time.Time)}
+	s := zoned(automations.NewScheduler(f.d, f.ix, clock, nil), f.loc)
+	s.SetLogger(log.New(logs, "", 0))
+	var dark atomic.Bool // false: the probe reports a dark wake
+	s.SetFullWakeProbe(boolProbe(&dark))
+	s.SetFullWakeProbe(nil)
+	stop := darkWakeRun(t, s)
+	defer stop()
+	clock.waitAfter(t) // the start tick
+	if strings.Contains(logs.String(), "dark wake") {
+		t.Fatalf("a nil probe still held the schedule:\n%s", logs.String())
+	}
+}
+
 func sameTime(a, b *time.Time) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil

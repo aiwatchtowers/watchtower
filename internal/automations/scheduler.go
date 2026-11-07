@@ -79,12 +79,14 @@ func alwaysFullWake() (caps uint32, full bool) { return 0, true }
 // last_scheduled_for left as it is — so at full wake the usual rules decide
 // (AUTO-10: on time within ScheduleGrace → `schedule`, else `missed`).
 // caps are the raw system capability bits the hold's log lines carry
-// (powerstate.Probe). Tick, the test seam, never asks it. A nil probe keeps
-// the current one. Call it before Run.
+// (powerstate.Probe). Tick, the test seam, never asks it. nil restores the
+// default (always awake), as Daemon.SetFullWakeProbe does. Call it before
+// Run.
 func (s *Scheduler) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
-	if probe != nil {
-		s.fullWake = probe
+	if probe == nil {
+		probe = alwaysFullWake
 	}
+	s.fullWake = probe
 }
 
 // SetLogger sets where Run reports tick errors (the daemon's logger);
