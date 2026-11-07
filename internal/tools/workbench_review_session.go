@@ -79,6 +79,15 @@ func (s ReviewSource) Source() string {
 	return db.ReviewSourceFolder
 }
 
+// Branch is the review_rounds.branch value of the place: the tip's branch,
+// "" for a folder.
+func (s ReviewSource) Branch() string {
+	if s.Tip != nil {
+		return s.Tip.Name
+	}
+	return ""
+}
+
 // Read is the place's tree and base: the folder's snapshot or the branch
 // tip, each against BaseBranch, else the default branch.
 func (s ReviewSource) Read(ctx context.Context, repo *reviewdiff.Repo) (tree string, base reviewdiff.Base, err error) {

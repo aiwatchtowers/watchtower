@@ -432,8 +432,8 @@ func TestReviewRounds_RepointMovesOnlyAnOpenRound(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO review_comments (round_id, path, start_line, end_line, quote, body) VALUES (?, 'a.go', 1, 1, 'x', 'keep')`, id); err != nil {
 		t.Fatal(err)
 	}
-	moved := ReviewRound{ID: id, FolderRoot: "/tmp/wb-review-wt", Source: ReviewSourceBranch, BaseSHA: "b2",
-		BaseLabel: "origin/feature", TreeSHA: "t2"}
+	moved := ReviewRound{ID: id, FolderRoot: "/tmp/wb-review-wt", Source: ReviewSourceBranch, Branch: "feature/x",
+		BaseSHA: "b2", BaseLabel: "origin/feature", TreeSHA: "t2"}
 	if err := d.RepointReviewRound(moved); err != nil {
 		t.Fatal(err)
 	}
@@ -441,7 +441,7 @@ func TestReviewRounds_RepointMovesOnlyAnOpenRound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.FolderRoot != moved.FolderRoot || got.Source != ReviewSourceBranch || got.BaseSHA != "b2" ||
+	if got.FolderRoot != moved.FolderRoot || got.Source != ReviewSourceBranch || got.Branch != "feature/x" || got.BaseSHA != "b2" ||
 		got.BaseLabel != "origin/feature" || got.TreeSHA != "t2" || got.Status != "open" {
 		t.Fatalf("round = %+v", got)
 	}
@@ -461,10 +461,10 @@ func TestReviewRounds_RepointMovesOnlyAnOpenRound(t *testing.T) {
 func TestReviewRounds_LastSentAtOnePlaceAndRepointLink(t *testing.T) {
 	d := openTestDB(t)
 	pid, sid := seedReviewSession(t, d)
-	sent := func(source, folder string) int64 {
+	sent := func(source, folder, branch string) int64 {
 		t.Helper()
 		id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), Source: source, FolderRoot: folder,
-			BaseSHA: "b", TreeSHA: "t"})
+			Branch: branch, BaseSHA: "b", TreeSHA: "t"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -473,17 +473,18 @@ func TestReviewRounds_LastSentAtOnePlaceAndRepointLink(t *testing.T) {
 		}
 		return id
 	}
-	onMain := sent(ReviewSourceFolder, "/tmp/wb-review")
-	onBranch := sent(ReviewSourceBranch, "/tmp/wb-review")
+	onMain := sent(ReviewSourceFolder, "/tmp/wb-review", "")
+	onBranch := sent(ReviewSourceBranch, "/tmp/wb-review", "feature/x")
 	for _, c := range []struct {
-		source, folder string
-		want           int64
+		source, folder, branch string
+		want                   int64
 	}{
-		{ReviewSourceFolder, "/tmp/wb-review", onMain},
-		{ReviewSourceBranch, "/tmp/wb-review", onBranch},
-		{ReviewSourceFolder, "/tmp/wb-review-wt", 0},
+		{ReviewSourceFolder, "/tmp/wb-review", "", onMain},
+		{ReviewSourceBranch, "/tmp/wb-review", "feature/x", onBranch},
+		{ReviewSourceBranch, "/tmp/wb-review", "feature/y", 0},
+		{ReviewSourceFolder, "/tmp/wb-review-wt", "", 0},
 	} {
-		got, err := d.LastSentReviewRoundAt(pid, sid, c.source, c.folder)
+		got, err := d.LastSentReviewRoundAt(pid, sid, c.source, c.folder, c.branch)
 		if err != nil {
 			t.Fatal(err)
 		}

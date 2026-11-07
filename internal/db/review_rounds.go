@@ -30,6 +30,7 @@ type ReviewRound struct {
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
 	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00155)
+	Branch        string // the branch a ReviewSourceBranch round reviews; "" for a folder round (00173)
 }
 
 // A sent round's outcome (review_rounds.outcome, 00155); an open round's is "".
@@ -50,12 +51,12 @@ type ReviewComment struct {
 }
 
 const reviewRoundCols = `id, project_id, session_id, source, folder_root, base_sha, base_label, tree_sha,
-	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome`
+	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome, branch`
 
 func scanReviewRound(s interface{ Scan(...any) error }) (*ReviewRound, error) {
 	var r ReviewRound
 	err := s.Scan(&r.ID, &r.ProjectID, &r.SessionID, &r.Source, &r.FolderRoot, &r.BaseSHA, &r.BaseLabel,
-		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome)
+		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome, &r.Branch)
 	if err != nil {
 		return nil, err
 	}
@@ -84,13 +85,14 @@ func (db *DB) LastSentReviewRound(projectID, sessionID int64) (*ReviewRound, err
 }
 
 // LastSentReviewRoundAt is the session's newest sent or delivered round at
-// one place (source and folder): the round a new one at that place follows
+// one place (source, folder and reviewed branch): the round a new one at that place follows
 // up. A round of another place never is — its tree is not this place's
 // history (board #1012).
-func (db *DB) LastSentReviewRoundAt(projectID, sessionID int64, source, folderRoot string) (*ReviewRound, error) {
+func (db *DB) LastSentReviewRoundAt(projectID, sessionID int64, source, folderRoot, branch string) (*ReviewRound, error) {
 	return db.oneReviewRound(`SELECT `+reviewRoundCols+` FROM review_rounds
 		WHERE project_id = ? AND session_id = ? AND status IN ('sent','delivered') AND source = ? AND folder_root = ?
-		ORDER BY id DESC LIMIT 1`, projectID, sessionID, source, folderRoot)
+		  AND branch = ?
+		ORDER BY id DESC LIMIT 1`, projectID, sessionID, source, folderRoot, branch)
 }
 
 // GetReviewRound reads round id of workbench projectID.
@@ -113,8 +115,8 @@ func (db *DB) CreateReviewRound(r ReviewRound) (int64, error) {
 		r.Mode = "quick"
 	}
 	res, err := db.Exec(`INSERT INTO review_rounds (project_id, session_id, source, folder_root, base_sha,
-		base_label, tree_sha, prev_round_id, mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ProjectID, r.SessionID, r.Source, r.FolderRoot, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.Mode)
+		base_label, tree_sha, prev_round_id, mode, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ProjectID, r.SessionID, r.Source, r.FolderRoot, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.Mode, r.Branch)
 	if err != nil {
 		return 0, fmt.Errorf("creating review round: %w", err)
 	}
@@ -142,16 +144,16 @@ const (
 	ReviewSourceBranch = "pr"
 )
 
-// RepointReviewRound writes an open round's place — folder, source, base,
-// tree and previous-round link — when the session's place moved under it or
+// RepointReviewRound writes an open round's place — folder, source, branch,
+// base, tree and previous-round link — when the session's place moved under it or
 // a branch round's Refresh re-read its base (board #1012). The round keeps
 // its id, comments and Viewed marks; the caller drops the previous-round
 // link on a move to another place, and the Desktop re-places the comments
 // on the new diff as on a Refresh.
 func (db *DB) RepointReviewRound(r ReviewRound) error {
-	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, base_sha = ?, base_label = ?, tree_sha = ?,
-		prev_round_id = ? WHERE id = ? AND status = 'open'`,
-		r.FolderRoot, r.Source, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.ID)
+	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, branch = ?, base_sha = ?, base_label = ?,
+		tree_sha = ?, prev_round_id = ? WHERE id = ? AND status = 'open'`,
+		r.FolderRoot, r.Source, r.Branch, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.ID)
 	if err != nil {
 		return fmt.Errorf("moving review round %d: %w", r.ID, err)
 	}

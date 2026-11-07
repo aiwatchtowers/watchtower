@@ -423,3 +423,28 @@ func TestWorkbenchReviewRevertHunk_RefusedOnABranchRound(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "feature.txt\n", string(got), "nothing written into the folder on main")
 }
+
+// M1 (F2): the round stores the branch it reviews. A ticket whose branch is
+// renamed is another place: a plain start moves the open round to the new
+// tip, and its label is the branch the round now reads, never a new name
+// over the old tree.
+func TestWorkbenchReview_RenamedTicketBranchMovesTheRound(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	commitOnBranch(t, repo, "feature", "feature.txt")
+	reviewGit(t, repo, "branch", "feature-v2", "feature")
+	commitOnBranch(t, repo, "feature-v2", "v2.txt")
+	ticket := ticketTarget(t, database, wb, s, 0, "feature", true)
+	first := startRound(t, wb, s)
+	require.Equal(t, "feature", first["branch"])
+
+	_, err := database.Exec(`UPDATE targets SET branch = 'feature-v2' WHERE id = ?`, ticket)
+	require.NoError(t, err)
+	moved := startRound(t, wb, s)
+	assert.Equal(t, first["id"], moved["id"])
+	assert.Equal(t, "feature-v2", moved["branch"])
+	assert.Equal(t, reviewGit(t, repo, "rev-parse", "feature-v2^{tree}"), moved["tree_sha"])
+	assert.Equal(t, []string{"feature.txt", "v2.txt"}, roundFiles(t, wb, moved))
+	got, err := database.GetReviewRound(wb, int64(moved["id"].(float64)))
+	require.NoError(t, err)
+	assert.Equal(t, "feature-v2", got.Branch)
+}

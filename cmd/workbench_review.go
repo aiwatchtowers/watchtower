@@ -158,7 +158,7 @@ func failReview(cmd *cobra.Command, err error) error {
 }
 
 func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (*reviewRoundJSON, error) {
-	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, Source: r.Source, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
+	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, Source: r.Source, Branch: r.Branch, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
 		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA, Phase: r.Phase, ChapterKey: r.ChapterKey,
 		ActiveSeconds: r.ActiveSeconds}
 	if r.PrevRoundID.Valid {
@@ -175,16 +175,12 @@ func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *d
 	return out, nil
 }
 
-// writeRound answers the round's envelope; src names the branch a branch
-// round reviews.
-func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound,
-	src tools.ReviewSource) error {
+// writeRound answers the round's envelope, labelled with the branch the
+// round itself stores.
+func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) error {
 	out, err := roundJSON(ctx, repo, database, r)
 	if err != nil {
 		return failReview(cmd, err)
-	}
-	if src.Tip != nil {
-		out.Branch = src.Tip.Name
 	}
 	return writeReview(cmd, reviewEnvelope{OK: true, Round: out})
 }
@@ -221,7 +217,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	}
 	moved := open != nil && !atPlace(open, src)
 	if open != nil && !moved && !reviewFlagRefresh {
-		return writeRound(ctx, cmd, repo, database, open, src)
+		return writeRound(ctx, cmd, repo, database, open)
 	}
 	tree, base, err := src.Read(ctx, repo)
 	if err != nil {
@@ -233,7 +229,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return failReview(cmd, err)
 		}
-		return writeRound(ctx, cmd, repo, database, created, src)
+		return writeRound(ctx, cmd, repo, database, created)
 	case moved || src.Tip != nil:
 		// A move, or a branch round's Refresh: its base moves with its
 		// branches, so both are re-read. "Since round N" never diffs another
@@ -242,7 +238,8 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		if moved {
 			open.PrevRoundID = sql.NullInt64{}
 		}
-		open.FolderRoot, open.Source, open.BaseSHA, open.BaseLabel, open.TreeSHA = src.Folder, src.Source(), base.SHA, base.Label, tree
+		open.FolderRoot, open.Source, open.Branch = src.Folder, src.Source(), src.Branch()
+		open.BaseSHA, open.BaseLabel, open.TreeSHA = base.SHA, base.Label, tree
 		if err := database.RepointReviewRound(*open); err != nil {
 			return failReview(cmd, err)
 		}
@@ -256,13 +253,13 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		}
 		open.TreeSHA = tree
 	}
-	return writeRound(ctx, cmd, repo, database, open, src)
+	return writeRound(ctx, cmd, repo, database, open)
 }
 
-// atPlace reports whether round r reviews src's place: the same folder and
-// the same source.
+// atPlace reports whether round r reviews src's place: the same folder,
+// source and branch (a ticket whose branch was renamed is another place).
 func atPlace(r *db.ReviewRound, src tools.ReviewSource) bool {
-	return r.FolderRoot == src.Folder && r.Source == src.Source()
+	return r.FolderRoot == src.Folder && r.Source == src.Source() && r.Branch == src.Branch()
 }
 
 // createReviewRound opens a new round on the place's tree, in the mode of
@@ -270,7 +267,7 @@ func atPlace(r *db.ReviewRound, src tools.ReviewSource) bool {
 // place only (board #1012).
 func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base) (*db.ReviewRound, error) {
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
-		Source: src.Source(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
+		Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
 	last, err := database.LastSentReviewRound(p.ID, reviewFlagSession)
 	if err != nil {
 		return nil, fmt.Errorf("last sent review round: %w", err)
@@ -278,7 +275,7 @@ func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource,
 	if last != nil {
 		r.Mode = last.Mode
 	}
-	prev, err := database.LastSentReviewRoundAt(p.ID, reviewFlagSession, r.Source, r.FolderRoot)
+	prev, err := database.LastSentReviewRoundAt(p.ID, reviewFlagSession, r.Source, r.FolderRoot, r.Branch)
 	if err != nil {
 		return nil, fmt.Errorf("last sent review round at this place: %w", err)
 	}
