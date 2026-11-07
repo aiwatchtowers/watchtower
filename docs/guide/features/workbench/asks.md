@@ -58,6 +58,8 @@ One short question may stay in the terminal while you are in that session. If yo
 
 While a half-typed reply sits in Claude Code's input, the question waits, for at most 30 minutes from the question. If you answer in the terminal, nothing is filed.
 
+In the ask's panel the question appears once, on the card you answer. Any context the agent gave comes above it, and a small line says why it was filed, such as *Asked in the terminal while you were away.*
+
 ## Using it
 
 ### Find your asks
