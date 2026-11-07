@@ -91,6 +91,10 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
 - The reviewer is a separate read-only agent, one thread per branch, no live session, the
   branch map in every turn — ask #558 and conversation.
 - The reviewer is phase 3, after the overview — ask #559.
+- The reviewer may read the session's own worktree: `--read-folder` is widened to the
+  workbench's registered session worktrees — ask #560.
+- The goal check covers the session's ticket and every lane's ticket; the agent's finish
+  check stays on its own ticket — agent's call, see the technical spec §3.1.
 - No size thresholds: one path that packs chapters into call-sized batches, so a small PR is
   one call and a big branch many — conversation.
 

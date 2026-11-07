@@ -278,13 +278,10 @@ The agent's form (`--session`) runs the same packing.
   created_at)`, PK `(project_id, branch)`, Desktop writer (migration in phase 3). The branch
   is the round's branch name; a detached HEAD keys by `session:<id>`. Two sessions on the same
   branch share the thread (same code). A renamed branch starts a new thread.
-- **Open question for the owner (phase 3 only):** `ai query --read-folder` accepts only a
-  workbench's own folder (`cmd/ai.go` `resolveReadFolder`, spec 2026-10-02 §9.1). A session in
-  its own worktree needs it widened to the workbench's registered session worktrees
-  (`terminal_session_worktrees`) — a capability contract change.
-- Each turn's context block: the map (titles, levels, paths, signals — capped at 8 KB, the
-  open chapter first), the summary and coverage when present, the open chapter key. No diff
-  text; the agent reads files itself.
+- `ai query --read-folder` is widened (owner, ask #560): besides a workbench's own folder it
+  accepts a session worktree of that workbench recorded in `terminal_session_worktrees`
+  (exact real path, resolved symlinks; anything else refused as today). The capability
+  contract of spec 2026-10-02 §9.1 is amended in the same PR.
 - **Send to author** on an answer makes a design comment in the open round of the Branch
   review the owner is looking at (that session's round; the owner's own write; the round's
   existing delivery path). With no open round it is disabled with "Start a round to send". Nothing reaches the author's session otherwise.
