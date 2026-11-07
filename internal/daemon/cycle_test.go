@@ -160,9 +160,12 @@ type loopHarness struct {
 	wake    chan time.Duration
 	trigger chan struct{} // unbuffered: a send returns once the loop took it
 	mono    *fakeMono
-	logs    *lockedLog
-	cancel  context.CancelFunc
-	done    chan error
+	// fullWake is the daemon's full-wake probe: false = a Power Nap
+	// DarkWake (the dark wake gate).
+	fullWake *atomic.Bool
+	logs     *lockedLog
+	cancel   context.CancelFunc
+	done     chan error
 }
 
 // loopOpts configures startLoop. The zero value: sync_on_wake off, a
@@ -178,6 +181,7 @@ type loopOpts struct {
 	backfill   bool
 	fetchRange func(ctx context.Context) error
 	withDB     bool // a test DB and a workspace, no backfill row (implied by backfill)
+	darkWake   bool // the probe starts in a dark wake (it can be flipped later)
 }
 
 func startLoop(t *testing.T, o loopOpts) *loopHarness {
@@ -211,9 +215,13 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	d.triggerCh = trigger
 	mono := &fakeMono{}
 	d.loopMono = mono.now
+	fullWake := &atomic.Bool{}
+	fullWake.Store(!o.darkWake)
+	d.SetFullWakeProbe(fullWake.Load)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &loopHarness{d: d, probe: probe, wake: o.wake, trigger: trigger, mono: mono, logs: logs, cancel: cancel, done: make(chan error, 1)}
+	h := &loopHarness{d: d, probe: probe, wake: o.wake, trigger: trigger, mono: mono, fullWake: fullWake, logs: logs,
+		cancel: cancel, done: make(chan error, 1)}
 	go func() { h.done <- d.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
