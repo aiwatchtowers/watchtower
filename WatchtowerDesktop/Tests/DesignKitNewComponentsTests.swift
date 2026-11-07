@@ -93,6 +93,14 @@ final class DesignKitNewComponentsTests: XCTestCase {
     /// then draws its accent border, which the same field without focus
     /// does not draw.
     func testCallersFocusBindingReachesAKitField() async throws {
+        // The border check looks for a saturated line; a Graphite accent
+        // (System Settings → Appearance) draws it grey.
+        let accent = try XCTUnwrap(NSColor.controlAccentColor.usingColorSpace(.deviceRGB))
+        let spread = max(accent.redComponent, accent.greenComponent, accent.blueComponent)
+            - min(accent.redComponent, accent.greenComponent, accent.blueComponent)
+        if spread <= 0.3 {
+            throw XCTSkip("the system accent colour is not saturated (Graphite), so the border check cannot see it")
+        }
         let unfocused = try await renderKitField(requestFocus: false)
         XCTAssertFalse(unfocused.focused, "the field took focus nobody asked for")
         XCTAssertFalse(Self.hasAccentLine(unfocused.rep), "an accent border on the unfocused field")
