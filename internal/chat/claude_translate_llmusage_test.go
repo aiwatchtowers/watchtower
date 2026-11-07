@@ -203,3 +203,19 @@ func TestClaudeTranslatorRoutingContextIsPerTurn(t *testing.T) {
 	require.Equal(t, "1", calls[0].OperationID)
 	require.Equal(t, "2", calls[1].OperationID)
 }
+
+// A turn that fails before any message (an auth or quota refusal) still
+// records its row with the model the child's init named, not a blank label.
+func TestClaudeTranslatorFailedTurnTakesTheInitModel(t *testing.T) {
+	sink := collectLedger(t)
+	tr := NewClaudeTranslator(fixedTurn("t1"))
+	feedAll(t, tr,
+		`{"type":"system","subtype":"init","session_id":"s1","model":"claude-haiku-x"}`,
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"401","session_id":"s1",`+
+			`"usage":{"input_tokens":0,"output_tokens":0}}`)
+
+	calls := sink.recorded()
+	require.Len(t, calls, 1)
+	assert.Equal(t, "claude-haiku-x", calls[0].Model)
+	assert.False(t, calls[0].OK)
+}

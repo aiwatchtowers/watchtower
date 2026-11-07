@@ -148,8 +148,9 @@ func isToolItem(typ string) bool {
 // stopped). codex writes one event_msg token_count with usage info per
 // response — after the response's tool results — and, on newer versions,
 // one token_usage_record right after the response, before its tools run;
-// the count is the larger of the two, so the earlier marker stops a run as
-// soon as it is there.
+// once codex writes records they decide the count (the earlier marker
+// stops a run as soon as it is there), else the token counts do
+// (responses).
 type rolloutTurns struct {
 	home string
 	path string

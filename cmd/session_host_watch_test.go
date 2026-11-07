@@ -266,3 +266,48 @@ func TestSessionProbe_CodexStaleCountReadsTheRollout(t *testing.T) {
 		})
 	}
 }
+
+// A host binary never migrates the file it watches: a real database from
+// before migration 00173 (no watch columns) is refused, and the file is
+// left as it was, still without the columns and at the same goose version.
+// A missing file is refused without being created.
+func TestCodexWatch_PreWatchDatabaseIsRefusedAndNotMigrated(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	database, err := db.Open(path)
+	require.NoError(t, err)
+	for _, stmt := range []string{
+		`ALTER TABLE terminal_sessions DROP COLUMN agent_watch_issue_at`,
+		`ALTER TABLE terminal_sessions DROP COLUMN agent_watch_issue`,
+		`DELETE FROM goose_db_version WHERE version_id >= 173`,
+	} {
+		_, err := database.Exec(stmt)
+		require.NoError(t, err, stmt)
+	}
+	require.NoError(t, database.Close())
+	gooseVersion := func() int64 {
+		d, err := db.OpenExistingRW(path, time.Second)
+		require.NoError(t, err)
+		defer func() { _ = d.Close() }()
+		var v int64
+		require.NoError(t, d.QueryRow(`SELECT MAX(version_id) FROM goose_db_version`).Scan(&v))
+		has, err := d.HasColumns("terminal_sessions", "agent_watch_issue")
+		require.NoError(t, err)
+		assert.False(t, has, "the watch column came back")
+		return v
+	}
+	before := gooseVersion()
+	require.Less(t, before, int64(173))
+
+	store, err := openCodexWatchStore(path)
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Contains(t, err.Error(), "no watch columns")
+	assert.Equal(t, before, gooseVersion(), "the host migrated the file")
+
+	missing := filepath.Join(t.TempDir(), "absent.db")
+	_, err = openCodexWatchStore(missing)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), missing, "FILES-01: the error names no path")
+	_, statErr := os.Stat(missing)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the host created the missing file")
+}
