@@ -452,7 +452,7 @@ func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 	if in.AgentID != "" {
 		return hookTurn{}, true
 	}
-	return hookTurn{toolRun: true, notOverApproval: in.Event == "PreToolUse",
+	return hookTurn{toolRun: true, notOverApproval: in.Event == "PreToolUse", interrupt: in.interruptedTool(),
 		transcriptPath: in.TranscriptPath, toolUseID: in.ToolUseID}, false
 }
 
@@ -466,8 +466,12 @@ type hookTurn struct {
 	// notOverApproval holds a main-thread tool start back over "needs
 	// approval" (board #988, ask #525): only a tool that ran — PostToolUse
 	// or PostToolUseFailure — says the dialog was answered.
-	notOverApproval           bool
-	stop                      bool // the sync Stop hook
+	notOverApproval bool
+	stop            bool // the sync Stop hook
+	// interrupt marks a main-thread tool the owner interrupted (board
+	// #1019): recordAgentState makes it the turn's end the way the Stop is
+	// (interruptTurn), so a later async hook of that turn writes nothing.
+	interrupt                 bool
 	transcriptPath, toolUseID string
 	// tasks is the Stop's background_tasks: recordAgentState counts it into
 	// background against the row's agent turns (boards #411, #543).
@@ -606,6 +610,13 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
+	var turnEndErr error
+	if turn.interrupt {
+		var ended bool
+		if turn, ended, turnEndErr = interruptTurn(database, row, workbenchID, sessionID, turn); ended {
+			return recordCwdAlone(database, row.ID, workbenchID, sessionID, turn.cwd, at, turn.lock)
+		}
+	}
 	if turn.stop {
 		turns, err := database.TerminalAgentTurns(row.ID)
 		if err != nil {
@@ -622,7 +633,39 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	if prompt {
 		clearErr = clearChatQuestion(database, row, workbenchID, sessionID, at, turn.lock)
 	}
-	return errors.Join(stateErr, clearErr)
+	return errors.Join(turnEndErr, stateErr, clearErr)
+}
+
+// interruptTurn turns an interrupted main-thread tool's turn into the
+// Stop's (board #1019): no Stop follows an interrupt, and the tool hooks are
+// async, so a parallel call's PostToolUse or the interrupted call's own
+// PreToolUse can start after the interrupt's hook and would turn its
+// `waiting` back into `working` though the agent is idle. A call the
+// transcript places before the stored turn end belongs to a turn already
+// ended (ended true: no state, no turn end). Otherwise the transcript's size
+// becomes the row's turn end, as the Stop's does — every tool call of the
+// interrupted turn sits before it, and the owner's next prompt (which starts
+// a new turn and writes `working` by itself) after it — and the write goes on
+// as the Stop's, which replaces a tool run's `working` whatever its time.
+// An unreadable transcript keeps the last turn end (the time order decides,
+// as for a Stop); a failed turn-end write is returned, and the `waiting` is
+// still written.
+func interruptTurn(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID string,
+	turn hookTurn) (stopTurn hookTurn, ended bool, err error) {
+	if row.TurnEnd.Valid && toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64) == toolCallBeforeStop {
+		return turn, true, nil
+	}
+	stopTurn = hookTurn{stop: true, cwd: turn.cwd, lock: turn.lock}
+	if end, ok := transcriptSize(turn.transcriptPath); ok && (!row.TurnEnd.Valid || row.TurnEnd.Int64 != end) {
+		err := turn.lock.write(database, func() error {
+			_, err := setTerminalTurnEnd(database, row.ID, workbenchID, sessionID, end)
+			return err
+		})
+		if err != nil {
+			return stopTurn, false, fmt.Errorf("recording the interrupted turn's end: %w", err)
+		}
+	}
+	return stopTurn, false, nil
 }
 
 // recordAgentStateOver is recordAgentState's decision over the row it read:
