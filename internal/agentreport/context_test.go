@@ -13,7 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentlog"
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/sessionagent"
 )
 
 // call is an api_call whose context is ctx tokens (split over the four input
@@ -43,7 +45,7 @@ func ownerTurn() agentlogdb.AgentReportEvent {
 func factsOf(s evset) []agentlogdb.AgentReportSession {
 	var out []agentlogdb.AgentReportSession
 	for _, sid := range slices.Sorted(maps.Keys(s)) {
-		out = append(out, agentlogdb.AgentReportSession{SessionUUID: sid, Facts: true})
+		out = append(out, agentlogdb.AgentReportSession{SessionUUID: sid, Agent: agentlog.AgentClaude, Facts: true})
 	}
 	return out
 }
@@ -371,4 +373,16 @@ func contextRulesInput() HintInput {
 	in := eventsInput(s)
 	in.Context = Context(factsOf(s), s, parts, "")
 	return in
+}
+
+// TestContext_MeasuredFollowsCaps: whether a session's context is measured is
+// its agent's AnalyticsContext capability, not a name check; an agent the
+// registry does not know offers nothing.
+func TestContext_MeasuredFollowsCaps(t *testing.T) {
+	for _, a := range sessionagent.All() {
+		s := agentlogdb.AgentReportSession{SessionUUID: "s", Agent: string(a.Kind()), Facts: true}
+		assert.Equal(t, a.Caps().AnalyticsContext, contextMeasured(s), "agent %s", a.Kind())
+	}
+	assert.False(t, contextMeasured(agentlogdb.AgentReportSession{SessionUUID: "s", Agent: "future", Facts: true}))
+	assert.False(t, contextMeasured(agentlogdb.AgentReportSession{SessionUUID: "s", Agent: "claude"}), "no v2 facts")
 }

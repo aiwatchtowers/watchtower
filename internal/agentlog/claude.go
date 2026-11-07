@@ -116,6 +116,10 @@ type ParseOptions struct {
 	// offset 0: the stored session's model and working directory (ParseCodex
 	// only).
 	CodexModel, CodexCWD string
+	// CodexLineage seeds the same read with the rollout's lineage
+	// (codexLineage, read from its head by codexHead): the session_meta lines
+	// it comes from sit before the read's offset (ParseCodex only).
+	CodexLineage string
 }
 
 type ParseResult struct {
@@ -133,6 +137,7 @@ type ParseResult struct {
 	More         bool     // stopped at MaxRows, not at the end of the input
 	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
 	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
+	CodexLineage string   // the rollout's lineage at the end of the parse (seed for the next slice; ParseCodex only)
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any
