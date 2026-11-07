@@ -217,7 +217,7 @@ final class SessionDetailWiringTests: XCTestCase {
             "id", "workbenchID", "title", "titleClipped", "targetID", "agent", "createdAt", "lastActiveAt", "stateAt",
             "live", "stateKind", "stateCaption", "stateCaptionClipped", "stateTone", "stateGlyph", "isRing", "openAsks",
             "oldestAskID", "closedAsks", "finishSummary", "finishSummaryClipped", "agentError", "agentErrorClipped",
-            "reportTargetID", "reportDone", "reportTotal", "reportPRLine", "reportPRLineClipped"
+            "reportTargetID", "reportDone", "reportTotal", "reportPRLine", "reportPRLineClipped", "watchIssue"
         ])
     }
 
