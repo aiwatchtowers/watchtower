@@ -38,13 +38,13 @@ since: 0.25.0
 action: nav:projects
 -->
 
-**Review** on a session's strip, or **Review Branch** in its row menu, opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones), writing only git objects, and compares it with a base, the point where the branch left the default branch.
+**Review** on a session's strip, or **Review Branch** in its row menu, opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (untracked files too, not ignored ones), writing only git objects, and compares it with where the branch left the default branch. If the folder is not on the task's branch (its target's or a parent's), the round reads only that branch's commits (**branch tip, read-only**, no **Undo**).
 
-The pane has a file list (a folder tree), a diff, and a list of comments. In the tree a folder shows how many files are unviewed (or **all viewed**) and its open comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated, binary and very large files show folded or as a placeholder.
+The pane has a file list (a folder tree), a diff, and a list of comments. In the tree a folder shows how many files are unviewed (or **all viewed**) and its open comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated, binary and huge files show folded or as a placeholder.
 
 The diff hides unchanged stretches and keeps three lines of context. Click a hidden stretch to open it, or **Full file** next to the file name for the whole file; **Changes** goes back.
 
-A round moves through three states: you collect drafts, then you close it with one of two verdicts. **Request changes** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then puts one line into the session telling the agent to read round N with `get_review`.
+You collect drafts, then close the round with one of two verdicts. **Request changes** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then types one line into the session asking the agent to read round N.
 
 **Approve** closes the round with no changes requested and tells the agent to finish the branch as its methodology says. It needs no drafts (send or delete them first) and a session that still exists. A popover names what you may have missed: unviewed chapters and Wrap-up items marked **Partly** or **Not done**. If earlier comments are still open, **Resolve N and approve** closes them too. A closed round shows **Approved** with the time.
 
@@ -155,10 +155,10 @@ After a verdict, the toolbar offers **Start next round** (the same as **Refresh*
 ## Using it
 
 1. Press **Review** on the session's strip, or choose **Review Branch** in a session's row menu.
-2. Click a file. Read the diff. **Inline** switches to one column.
+2. Click a file to read its diff; **Inline** shows one column.
 3. To comment, select lines, right-click and choose **Comment**, type your note and press **Add**. Comments on the removed side are allowed in the **All changes** view.
 4. Tick **Viewed** on files you have read. ⌥⌘↑ and ⌥⌘↓ jump to the previous and next unviewed file.
-5. **Request changes (n)**, or **Approve** when there is nothing to fix. A banner tells you what happened to the line: "Line pasted — press Return in the terminal", "Will be sent when the agent's turn ends", or "Copied — paste it into the terminal".
+5. **Request changes (n)**, or **Approve** when there is nothing to fix. A banner says whether the line was pasted, waits for the agent's turn to end, or was copied for you to paste.
 
 A draft has **Delete**. A carried comment has **Edit** and **Resolve**; resolved comments are not carried again.
 
