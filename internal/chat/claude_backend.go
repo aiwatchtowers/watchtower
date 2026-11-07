@@ -587,7 +587,8 @@ var maxWarmLine = streamline.MaxLine
 
 // read translates the child's stdout into events on p.events. A line over
 // maxWarmLine is skipped and counted, as every other CLI reader does
-// (streamline): the turn goes on and ends with the result event.
+// (streamline): the turn goes on and ends with the result event, which
+// closes the tool calls whose result may have been that line.
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
 	defer r.Close()
@@ -602,6 +603,7 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			// Counts only, never content (FILES-01).
 			fmt.Fprintf(b.warn(), "chat: skipped %d claude output line(s) over %d bytes\n", n-skipped, maxWarmLine)
 			skipped = n
+			b.tr.MarkLineSkipped()
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
@@ -650,6 +652,9 @@ func (b *claudeBackend) feedLine(p *claudeProc, line []byte) bool {
 	}
 	for _, r := range f.results {
 		b.gate.onResult(r)
+	}
+	for _, id := range f.lost {
+		b.gate.lost(id)
 	}
 	for _, e := range f.events {
 		select {

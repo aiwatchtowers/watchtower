@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -127,6 +129,9 @@ type fedLine struct {
 	// the line has none).
 	init         bool
 	apiKeySource string
+	// lost are the tool_use ids a result line closed unread: their result
+	// was on a line the reader skipped (MarkLineSkipped).
+	lost []string
 }
 
 type pendingBlock struct {
@@ -172,6 +177,9 @@ type ClaudeTranslator struct {
 	// turn (text, tool call, more text) instead of gluing them together.
 	textTurn   string
 	newMessage bool
+	// lineSkipped records that the reader skipped a line of the running
+	// turn (over its cap): the result then closes the calls left open.
+	lineSkipped bool
 }
 
 // NewClaudeTranslator returns a translator stamping events with turnID().
@@ -186,6 +194,38 @@ func (t *ClaudeTranslator) MarkInterrupted() {
 	t.mu.Lock()
 	t.interrupted = true
 	t.mu.Unlock()
+}
+
+// MarkLineSkipped records that the reader skipped a line of the running
+// turn: it may have held a tool's result, so the turn's result line closes
+// every call still open (a failed step with a reason, CHAT-02) instead of
+// leaving it running.
+func (t *ClaudeTranslator) MarkLineSkipped() {
+	t.mu.Lock()
+	t.lineSkipped = true
+	t.mu.Unlock()
+}
+
+// lostResultSummary is the step summary of a call whose result was on a
+// skipped line.
+const lostResultSummary = "claude's report of this tool's result could not be read"
+
+// closeLost ends every call still open after a skipped line: a failed
+// tool_end each (in id order), and their ids for the gate.
+func (t *ClaudeTranslator) closeLost() ([]Event, []string) {
+	if !t.lineSkipped {
+		return nil, nil
+	}
+	t.lineSkipped = false
+	ids := slices.Sorted(maps.Keys(t.calls))
+	events := make([]Event, 0, len(ids))
+	for _, id := range ids {
+		delete(t.calls, id)
+		ok := false
+		events = append(events, Event{Type: EventToolEnd, TurnID: t.turnID(), ID: id, OK: &ok, Summary: lostResultSummary})
+	}
+	clear(t.hidden)
+	return events, ids
 }
 
 // SessionID is the most recent Claude session id seen on any line.
@@ -257,7 +297,8 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 		f.events, f.results = t.toolResults(m)
 	case "result":
 		c := t.usageCall(l)
-		f.events = t.result(l, c.Tokens)
+		f.events, f.lost = t.closeLost()
+		f.events = append(f.events, t.result(l, c.Tokens)...)
 		call = &c
 	case "system":
 		if l.Subtype == "init" {
