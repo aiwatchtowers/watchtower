@@ -256,3 +256,41 @@ func TestSameTree(t *testing.T) {
 		t.Fatalf("the empty tree base reads as the same tree (%v)", err)
 	}
 }
+
+// Uncommitted compares the work tree with HEAD, untracked files included
+// and ignored ones left out; an unborn HEAD compares with the empty tree.
+func TestUncommitted(t *testing.T) {
+	ctx := context.Background()
+	dir := newRepo(t)
+	r := openRepo(t, dir)
+	check := func(want bool, what string) {
+		t.Helper()
+		got, err := r.Uncommitted(ctx)
+		if err != nil || got != want {
+			t.Fatalf("%s: Uncommitted = %v (%v), want %v", what, got, err, want)
+		}
+	}
+	check(false, "clean")
+	writeFile(t, dir, ".gitignore", "*.log\n")
+	gitIn(t, dir, "add", ".gitignore")
+	gitIn(t, dir, "commit", "-q", "-m", "ignore")
+	writeFile(t, dir, "x.log", "noise\n")
+	check(false, "an ignored file")
+	writeFile(t, dir, "new.txt", "x\n")
+	check(true, "an untracked file")
+	gitIn(t, dir, "add", "new.txt")
+	gitIn(t, dir, "commit", "-q", "-m", "new")
+	writeFile(t, dir, "a.go", "package a\n")
+	check(true, "a tracked edit")
+
+	unborn := t.TempDir()
+	gitIn(t, unborn, "init", "-q", "-b", "main")
+	u := openRepo(t, unborn)
+	if got, err := u.Uncommitted(ctx); err != nil || got {
+		t.Fatalf("empty unborn folder: %v (%v)", got, err)
+	}
+	writeFile(t, unborn, "x.txt", "x\n")
+	if got, err := u.Uncommitted(ctx); err != nil || !got {
+		t.Fatalf("unborn folder with a file: %v (%v)", got, err)
+	}
+}

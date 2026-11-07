@@ -328,7 +328,9 @@ func TestAnnotateChanges_BranchTipSessionUsesTheTipTree(t *testing.T) {
 
 	// The folder's uncommitted b.go is not the branch's work.
 	_, err = proposeIn(t, reg, wb, "annotate_changes", `{"notes":[{"path":"b.go","start_line":1,"end_line":1,"note":"x"}],"reason":"r"}`)
-	assert.Contains(t, refusal(t, err), "b.go is not a text file of the current changes")
+	assert.Equal(t, "notes[0].path: b.go is not a text file of the current changes (task branch feature at its last commit)", refusal(t, err))
+	_, err = proposeIn(t, reg, wb, "annotate_changes", `{"notes":[{"path":"feature.go","start_line":3,"end_line":3,"note":"x"}],"reason":"r"}`)
+	assert.Equal(t, "notes[0]: feature.go has 2 lines; lines 3-3 do not fit (task branch feature at its last commit)", refusal(t, err))
 }
 
 // The overview's snapshot (finish gate and `review overview --session`) reads
@@ -343,6 +345,9 @@ func TestSnapshotReviewSession_BranchTipSession(t *testing.T) {
 	assert.Equal(t, git("rev-parse", "feature^{tree}"), snap.Tree)
 	assert.Equal(t, git("rev-parse", "main"), snap.Base)
 	assert.False(t, snap.Empty)
+	assert.Equal(t, "feature", snap.Branch)
+	assert.Equal(t, "main", snap.FolderHead)
+	assert.True(t, snap.FolderDirty, "the folder's uncommitted b.go is outside the tip")
 }
 
 func TestGetReview_ReportsTheRoundsSource(t *testing.T) {

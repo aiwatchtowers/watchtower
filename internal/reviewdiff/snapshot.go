@@ -119,3 +119,22 @@ func (r *Repo) SameTree(ctx context.Context, base, tree string) (bool, error) {
 	}
 	return strings.TrimSpace(string(out)) == tree, nil
 }
+
+// Uncommitted reports whether the work tree (tracked and untracked, not
+// ignored, as Snapshot reads it) differs from HEAD's tree; an unborn HEAD
+// compares with the empty tree. Only objects are written, as by Snapshot.
+func (r *Repo) Uncommitted(ctx context.Context) (bool, error) {
+	tree, err := r.Snapshot(ctx)
+	if err != nil {
+		return false, err
+	}
+	head, err := r.hasHead(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !head {
+		return tree != EmptyTree, nil
+	}
+	same, err := r.SameTree(ctx, "HEAD", tree)
+	return !same, err
+}
