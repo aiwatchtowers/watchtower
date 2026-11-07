@@ -267,11 +267,13 @@ func escalatedAsk(database *db.DB, tx *sql.Tx, a escalateArgs, q db.ChatQuestion
 }
 
 // escalatedSummary is the raised ask's summary, reasonLine always its last
-// line (the Desktop shows that line apart): for a chat question the recorded
-// context, a blank line and reasonLine, or reasonLine alone without a
-// context — the question is the title and q1, never repeated here; for a
-// recorded full request its whole text (the substance of the ask, only
-// clipped into the title), a newline and reasonLine.
+// line (the Desktop drawer shows that line apart, as a caption): for a chat
+// question the recorded context, a blank line and reasonLine, or reasonLine
+// alone without a context — the question is the title and q1, never
+// repeated here; for a recorded full request its whole text, a newline and
+// reasonLine. The full text stays in the summary for the readers that show
+// the summary as stored (the phone, the CLI); the drawer shows it once, on
+// the question card, and no bubble repeats it.
 func escalatedSummary(q db.ChatQuestion, reasonLine string) string {
 	switch {
 	case q.Level == asks.LevelFull:

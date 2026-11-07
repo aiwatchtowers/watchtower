@@ -115,6 +115,22 @@ final class OwnerAskSummaryPartsTests: XCTestCase {
         XCTAssertEqual(result.reason, "Asked in the terminal while you were away.")
     }
 
+    /// A recorded full request (Go: `q.Question + "\n" + reasonLine`, q1 the
+    /// same text): several paragraphs that together are the question are
+    /// shown once, on the card.
+    func testFullRequestOfSeveralParagraphsIsNotRepeated() throws {
+        let full = "Please decide three things before I go on.\n\n"
+            + "1. Keep the old endpoint for one release, or drop it now?\n"
+            + "2. Rename the flag everywhere?\n\n"
+            + "3. Ship it behind the setting, off by default?"
+        let title = "Please decide three things before I go on. 1. Keep the old endpoint for one release, or drop it now? 2. Rename the fla"
+        let reason = "Asked in the terminal; no answer for 12 min."
+        let result = parts(try ask(title: title, summary: full + "\n" + reason, questions: [full]))
+
+        XCTAssertEqual(result.body, "")
+        XCTAssertEqual(result.reason, reason)
+    }
+
     func testEmptySummary() throws {
         let result = parts(try ask(summary: ""))
 

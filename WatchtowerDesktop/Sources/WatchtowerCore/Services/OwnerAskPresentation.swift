@@ -182,7 +182,9 @@ package enum OwnerAskPresentation {
     /// header keeps the title (Go's one-line clip of the question, at most
     /// 120 runes, cut again by the header's line limit), and the bubble drops
     /// every paragraph — else every line — that is a question's text or the
-    /// title, whitespace aside. Every other ask's summary is shown as written.
+    /// title, whitespace aside — the whole rest first, as a full request's
+    /// several paragraphs are one question. Every other ask's summary is
+    /// shown as written.
     package static func summaryParts(for ask: OwnerAsk) -> SummaryParts {
         guard ask.origin == .chat else { return SummaryParts(body: ask.summary, reason: nil) }
         var lines = ask.summary.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
@@ -194,6 +196,9 @@ package enum OwnerAskPresentation {
         }
         let repeats = Set((ask.payload.questions.map(\.question) + [ask.title]).map(normalisedText).filter { !$0.isEmpty })
         let isRepeat = { (text: String) in repeats.contains(normalisedText(text)) }
+        // A recorded full request's whole text (Go's `escalatedSummary`): its
+        // paragraphs alone are no question, the text as one is.
+        if isRepeat(lines.joined(separator: "\n")) { return SummaryParts(body: "", reason: reason) }
         let paragraphs = lines.joined(separator: "\n").components(separatedBy: "\n\n").compactMap { paragraph -> String? in
             if isRepeat(paragraph) { return nil }
             let kept = paragraph.components(separatedBy: "\n").filter { !isRepeat($0) }
