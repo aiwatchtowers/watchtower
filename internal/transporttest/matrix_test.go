@@ -28,13 +28,13 @@ var update = flag.Bool("update", false, "rewrite testdata/matrix.golden from tod
 const goldenPath = "testdata/matrix.golden"
 
 // openGaps are the open parity gaps of the spec's §2.2. Closed: L2 (#957),
-// L12 (G1b), L1 (G1), L3-L4 and L13 (G2), L5 (G4 follow-up, ask #533),
-// L7-L10 (G3), S7-S8 (G6), S3-S5 and S10 (G7), S9 (G8's importer on the
-// session adapter, A5). L12 and L13 were found by this suite. A gap:<id>
-// cell must name one of them.
+// L12 (G1b), L1 (G1), L3-L4 and L13 (G2), L5 and L6 (G4 and its follow-up,
+// ask #533), L7-L10 (G3), S1-S2 (G5's rollout watch), S7-S8 (G6), S3-S5
+// and S10 (G7), S9 (G8's importer on the session adapter, A5). L12 and L13
+// were found by this suite. A gap:<id> cell must name one of them and have
+// a failure signature in gapSignatures.
 var openGaps = map[string]bool{
-	"L6": true, "L11": true,
-	"S1": true, "S2": true, "S6": true,
+	"L11": true, "S6": true,
 }
 
 // cellKey names a cell in the golden: "<adapter>/<level> <scenario>".
@@ -147,12 +147,9 @@ func TestTransportSuite(t *testing.T) {
 // this way, so a harness fault (a fake that rejected its input, a fixture
 // typo, a hook that did not run) never passes as the gap. A gap's task
 // flips its cells to pass; a fix that only changes the failure updates the
-// signature.
-var gapSignatures = map[string]*regexp.Regexp{
-	"L6": regexp.MustCompile(`need a provider that reads them`),
-	"S1": regexp.MustCompile(`no pull signal`),
-	"S2": regexp.MustCompile(`no pull signal`),
-}
+// signature. No open gap has a suite cell today: the task that records
+// one adds its signature here.
+var gapSignatures = map[string]*regexp.Regexp{}
 
 // runMatrixCell runs one cell as a subtest and checks it against the
 // golden. Session cells run in parallel (each has its own HOME); the LLM
@@ -176,6 +173,15 @@ func runMatrixCell(t *testing.T, ref cellRef, golden map[string]string, mu *sync
 			// The fake rejected its input (argv, stdin, a directive): a
 			// harness or adapter fault, never a pass and never a gap.
 			t.Errorf("%s: the fake rejected its input: %s (assertion: %v)", key, strings.Join(o.FakeErrors, "; "), err)
+			mu.Lock()
+			results[key] = "gap:?"
+			mu.Unlock()
+			return
+		}
+		if err := promptOnArgv(o); err != nil {
+			// CHAT-04 on every transport: a prompt on argv is a contract
+			// breach, never a pass and never a gap.
+			t.Errorf("%s: %v (CHAT-04)", key, err)
 			mu.Lock()
 			results[key] = "gap:?"
 			mu.Unlock()
@@ -214,6 +220,21 @@ func runMatrixCell(t *testing.T, ref cellRef, golden map[string]string, mu *sync
 			t.Errorf("%s is %s, golden says %s", key, got, want)
 		}
 	})
+}
+
+// promptOnArgv checks no child's argv carries the system prompt, the
+// owner's text or a replayed answer (CHAT-04: prompts go over stdin or an
+// inherited pipe, never argv, where any process can read them).
+func promptOnArgv(o *Outcome) error {
+	for _, l := range o.Launches {
+		joined := strings.Join(l.Argv, " ")
+		for _, p := range []string{sysPrompt, userPrompt, replayAnswer} {
+			if strings.Contains(joined, p) {
+				return fmt.Errorf("the argv of pid %d carries %q", l.PID, p)
+			}
+		}
+	}
+	return nil
 }
 
 // TestTransportSuite_EveryCellResolved checks the golden names every cell
@@ -328,12 +349,23 @@ func TestTransportSuite_Live(t *testing.T) {
 			o := &Outcome{}
 			o.Text, o.Usage, _, o.Err = tc.gen().Generate(ctx, sysPrompt, userPrompt, "")
 			o.Calls = ledger.take()
-			c := &Cell{S: plain, Level: LevelBatch, Supported: true, O: o}
+			c := &Cell{A: adapterNamed(t, tc.name), S: plain, Level: LevelBatch, Supported: true, O: o, liveModel: true}
 			if err := plain.Assert(c); err != nil {
 				t.Errorf("live %s: %v", tc.name, err)
 			}
 		})
 	}
+}
+
+func adapterNamed(t *testing.T, name string) *Adapter {
+	t.Helper()
+	for _, a := range adapters {
+		if a.Name == name {
+			return a
+		}
+	}
+	t.Fatalf("no adapter %q", name)
+	return nil
 }
 
 func scenarioNamed(t *testing.T, name string) *Scenario {

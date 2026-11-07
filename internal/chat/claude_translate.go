@@ -43,6 +43,8 @@ type claudeLine struct {
 	// APIKeySource is the init event's auth source: "none" under the
 	// claude.ai login (probe answer 9).
 	APIKeySource string `json:"apiKeySource"`
+	// Model is the init event's model.
+	Model string `json:"model"`
 }
 
 type claudeUsage struct {
@@ -171,6 +173,9 @@ type ClaudeTranslator struct {
 	childCost    float64
 	childOutputs map[string]int64
 	childSession string
+	// initModel is the model the child's last init named: the ledger label
+	// of a turn that failed before any message or model usage named one.
+	initModel string
 	// textTurn is the turn id that last emitted text; newMessage records that
 	// a new assistant message started since that text. Together they put a
 	// paragraph break between the text of separate assistant messages of one
@@ -303,6 +308,9 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 	case "system":
 		if l.Subtype == "init" {
 			f.init, f.apiKeySource = true, l.APIKeySource
+			if l.Model != "" {
+				t.initModel = l.Model
+			}
 			// A warm child repeats its init before every turn with the same
 			// session id; only a new session (a respawned child) starts
 			// the cumulative cost and model usage over.
@@ -321,8 +329,8 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 // modelUsage add up over its life while usage is the turn's own, so the
 // turn's cost is the growth of the total since the previous result; a total
 // that shrank belongs to a new child, whose whole total is this turn's. Its
-// model is the stream's, else the one whose output grew most. It starts the
-// next turn's clock.
+// model is the stream's, else the one whose output grew most, else the
+// init's. It starts the next turn's clock.
 func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	outs := llmusage.ModelOutputs(l.ModelUsage)
 	grown := make(map[string]int64, len(outs))
@@ -337,7 +345,7 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	}
 	model := t.model
 	if model == "" {
-		model = llmusage.ModelFromOutputs(grown, "")
+		model = llmusage.ModelFromOutputs(grown, t.initModel)
 	}
 	c := llmusage.Call{
 		Provider:   "claude",

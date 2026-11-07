@@ -48,6 +48,9 @@ type Fixture struct {
 	// Analytics writes a transcript run in the workbench folder and imports
 	// it into agent analytics (agentlog.Scan) after the script (S9).
 	Analytics bool
+	// ViaSession runs the chat level through chat.Session, as `ai session`
+	// does, so the cell sees the protocol's session_ready (spec §4.1).
+	ViaSession bool
 }
 
 // Drive is how a cell's run is driven.
@@ -69,6 +72,9 @@ type Cell struct {
 	Supported bool
 	O         *Outcome
 	fixture   string // the fixture text, for its "# expect-…" comments
+	// liveModel: the live job's real model, so the ledger's model label is
+	// only required to be there, not to be fakeModel.
+	liveModel bool
 }
 
 // llmLevels are the three LLM levels.
@@ -77,7 +83,7 @@ var llmLevels = []Level{LevelBatch, LevelStream, LevelChat}
 // scenarios is the suite's table: the LLM rows of spec §4.1, then the
 // Workbench session rows (sessionScenarios).
 var scenarios = append([]*Scenario{
-	{Name: "plain-answer", Levels: llmLevels, Fixture: Fixture{File: "plain_answer"}, Assert: assertPlainAnswer},
+	{Name: "plain-answer", Levels: llmLevels, Fixture: Fixture{File: "plain_answer", ViaSession: true}, Assert: assertPlainAnswer},
 	{Name: "two-messages", Levels: []Level{LevelStream, LevelChat}, Requires: []Cap{CapTools},
 		Fixture: Fixture{File: "two_messages"}, Assert: assertTwoMessages},
 	{Name: "tool-ok", Levels: []Level{LevelStream, LevelChat}, Requires: []Cap{CapTools},
@@ -295,16 +301,53 @@ func assertPlainAnswer(c *Cell) error {
 			return errors.New("no usage event")
 		}
 	}
+	if c.Level == LevelChat && c.S.Fixture.ViaSession {
+		if err := c.sessionReady(); err != nil {
+			return err
+		}
+	}
 	return oneCall(c, true)
 }
 
-// oneCall checks exactly one llm_calls row (LLMUSAGE-01) with ok.
+// sessionReady checks the chat starts with session_ready naming the
+// provider and model, with the provider's capability row (spec §4.1).
+func (c *Cell) sessionReady() error {
+	if len(c.O.Events) == 0 || c.O.Events[0].Type != chat.EventSessionReady {
+		return errors.New("the chat did not start with session_ready")
+	}
+	e := c.O.Events[0]
+	switch {
+	case e.Provider != c.A.Provider:
+		return fmt.Errorf("session_ready provider %q, want %q", e.Provider, c.A.Provider)
+	case e.Model != fakeModel:
+		return fmt.Errorf("session_ready model %q, want %q", e.Model, fakeModel)
+	case e.Capabilities == nil:
+		return errors.New("session_ready has no capabilities")
+	}
+	return nil
+}
+
+// oneCall checks exactly one llm_calls row (LLMUSAGE-01) with ok, labelled
+// with the transport's provider and the model it ran (N3: runtime B is
+// "ollama", never "http").
 func oneCall(c *Cell, ok bool) error {
 	if n := len(c.O.Calls); n != 1 {
 		return fmt.Errorf("%d llm_calls rows, want 1", n)
 	}
-	if c.O.Calls[0].OK != ok {
-		return fmt.Errorf("llm_calls ok=%v, want %v", c.O.Calls[0].OK, ok)
+	row := c.O.Calls[0]
+	if row.OK != ok {
+		return fmt.Errorf("llm_calls ok=%v, want %v", row.OK, ok)
+	}
+	if row.Provider != c.A.Provider {
+		return fmt.Errorf("llm_calls provider %q, want %q", row.Provider, c.A.Provider)
+	}
+	if c.liveModel {
+		if row.Model == "" {
+			return errors.New("llm_calls has no model")
+		}
+	} else if row.Model != fakeModel && (row.Model == "" || !strings.Contains(c.fixture, `"model":"`+row.Model+`"`)) {
+		// The model asked for, or the one the transport reports it ran.
+		return fmt.Errorf("llm_calls model %q, want %q or a model the fixture reports", row.Model, fakeModel)
 	}
 	return nil
 }
@@ -361,7 +404,12 @@ func assertTool(wantOK bool) func(c *Cell) error {
 
 func assertOversized(c *Cell) error {
 	if !c.Supported {
-		return nil // no child process: no stdout lines to cap
+		// No child process, so no stdout lines to cap: the transport ran
+		// none.
+		if n := len(c.O.Launches); n > 0 {
+			return fmt.Errorf("%d child process(es) started by a transport without one", n)
+		}
+		return nil
 	}
 	if err := c.completed(); err != nil {
 		return err
@@ -402,7 +450,7 @@ func assertFailure(want providers.ErrorCategory, wantCode string) func(c *Cell) 
 		if !strings.Contains(owner, want) {
 			return fmt.Errorf("the owner text %q was lost", want)
 		}
-		return nil
+		return oneCall(c, false)
 	}
 }
 
@@ -415,10 +463,18 @@ func assertNoCompletion(c *Cell) error {
 	if err != nil {
 		return fmt.Errorf("not a typed failure: %w", err)
 	}
-	if f.Category == providers.InvalidOutput || (!c.A.Caps.ChildProcess && c.Level == LevelStream && f.Category == providers.Transport) {
+	if f.Category != providers.InvalidOutput && (c.A.Caps.ChildProcess || c.Level != LevelStream || f.Category != providers.Transport) {
+		return fmt.Errorf("category %q, want %q", f.Category, providers.InvalidOutput)
+	}
+	if c.A.Caps.WarmSession && c.Level == LevelChat {
+		// The ledger's v1 limit: a warm chat's usage arrives with the
+		// result line, which this child never writes, so no row.
+		if n := len(c.O.Calls); n != 0 {
+			return fmt.Errorf("%d llm_calls rows, want none (no result line)", n)
+		}
 		return nil
 	}
-	return fmt.Errorf("category %q, want %q", f.Category, providers.InvalidOutput)
+	return oneCall(c, false)
 }
 
 func assertInterrupted(c *Cell) error {
@@ -468,6 +524,10 @@ func assertTimeout(c *Cell) error {
 	}
 	if c.A.Caps.ChildProcess && len(c.O.Launches) == 0 {
 		return errors.New("the fake never started")
+	}
+	// A killed call records at most one row, never ok (LLMUSAGE-01).
+	if len(c.O.Calls) > 1 || (len(c.O.Calls) == 1 && c.O.Calls[0].OK) {
+		return fmt.Errorf("a timed-out run left %d llm_calls row(s) %+v, want at most one, not ok", len(c.O.Calls), c.O.Calls)
 	}
 	return c.groupGone()
 }
@@ -554,9 +614,18 @@ func assertMultiTurn(c *Cell) error {
 	return nil
 }
 
+// noCapClaimed is the unsupported branch of a turn-cap scenario: the
+// transport has no cap, and the adapter put none in force.
+func (c *Cell) noCapClaimed() error {
+	if c.O.CapApplied {
+		return errors.New("a transport without a turn cap claimed one")
+	}
+	return nil
+}
+
 func assertTurnCapStops(c *Cell) error {
 	if !c.Supported {
-		return nil // no turn cap: nothing to assert beyond the cell itself
+		return c.noCapClaimed()
 	}
 	if !c.O.CapApplied {
 		return errors.New("no turn cap in force")
@@ -564,8 +633,15 @@ func assertTurnCapStops(c *Cell) error {
 	if strings.Contains(c.O.text(), markThird) {
 		return errors.New("a response past the cap ran")
 	}
-	if n := len(c.O.Requests); n > c.S.Fixture.MaxTurns {
-		return fmt.Errorf("%d model calls, cap %d", n, c.S.Fixture.MaxTurns)
+	// Exactly at N+1: every turn within the cap ran its tool step, so a
+	// cap that fires a turn early fails here.
+	if n := len(c.O.eventsOf(chat.EventToolStart)); n != c.S.Fixture.MaxTurns {
+		return fmt.Errorf("%d tool steps, want %d (one per turn within the cap)", n, c.S.Fixture.MaxTurns)
+	}
+	if !c.A.Caps.ChildProcess {
+		if n := len(c.O.Requests); n != c.S.Fixture.MaxTurns {
+			return fmt.Errorf("%d model calls, want exactly the cap %d", n, c.S.Fixture.MaxTurns)
+		}
 	}
 	if c.O.Err != nil {
 		f, err := c.O.failure()
@@ -583,7 +659,7 @@ func assertTurnCapStops(c *Cell) error {
 
 func assertTurnCapCompletes(c *Cell) error {
 	if !c.Supported {
-		return nil
+		return c.noCapClaimed()
 	}
 	if !c.O.CapApplied {
 		return errors.New("no turn cap in force")
@@ -681,5 +757,5 @@ func assertQuota(c *Cell) error {
 	if f.Category != providers.RateLimit || !f.ResetAt.IsZero() {
 		return fmt.Errorf("category %q (reset %v), want a rate limit with no reset", f.Category, f.ResetAt)
 	}
-	return nil
+	return oneCall(c, false)
 }

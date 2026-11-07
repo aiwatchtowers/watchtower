@@ -52,7 +52,7 @@ Sections, each call in exactly one: **Watchtower** (surface `watchtower`, built-
 ## v1 limits
 
 - A call lost on both the spool and the fallback leaves only the `watchtower.log` line and stderr; when the log append fails too (the disk is the usual cause of all three) only stderr. The screen cannot count these.
-- An interrupted chat turn loses its streamed tokens: usage arrives with the `result` line, which an interrupt never produces.
+- An interrupted chat turn loses its streamed tokens: usage arrives with the `result` line, which an interrupt never produces. The same holds for a warm Claude chat turn whose child exits without a `result` line: it records no row (the transport suite's `claude/chat no-completion` cell pins this).
 - Workbench session totals are estimates priced from agent-analytics tokens and cover only workbenches with analytics on; the screen names the ones left out.
 - The table reads run in one read-only snapshot and the spool is read live file first, then `.importing`, without a lock; a daemon import racing the read can only make a call appear in both, which the `call_id` de-duplication removes.
 - Retention is 90 days; the screen's longest period is 30.

@@ -847,7 +847,13 @@ var sessionScenarios = []*Scenario{
 	withFixture(sessionScenario("session-compressed-transcript", []Cap{CapCompressedTranscript}, "zstd", nil,
 		func(c *Cell, r *sessionResult) error {
 			if !c.Supported {
-				return nil // the agent never compresses its transcript
+				// The agent never compresses its transcript; one found
+				// compressed anyway is refused or read as nothing, never
+				// shown as garbage.
+				if r.FeedErr == nil && r.FeedEntries > 0 {
+					return fmt.Errorf("a compressed transcript the agent never writes gave %d feed entries", r.FeedEntries)
+				}
+				return nil
 			}
 			if err := transcriptReadable(r); err != nil {
 				return fmt.Errorf("compressed transcript: %w", err)
