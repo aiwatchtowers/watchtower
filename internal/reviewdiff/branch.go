@@ -15,16 +15,25 @@ type BranchTip struct {
 }
 
 // HeadBranch is the branch the folder has checked out; "" when HEAD is
-// detached or names no branch. A done context is an error.
+// detached (git's exit 1) or names no local branch. It reads the full ref,
+// so a tag of the same name never makes it "heads/<name>". A done context
+// or any other git failure is an error.
 func (r *Repo) HeadBranch(ctx context.Context) (string, error) {
-	out, err := r.git(ctx, nil, "symbolic-ref", "--quiet", "--short", "HEAD")
+	out, err := r.git(ctx, nil, "symbolic-ref", "--quiet", "HEAD")
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", ctxErr
 	}
-	if err != nil {
-		return "", nil //nolint:nilerr // a detached HEAD is "no branch", not a failure
+	if exitedWith(err, 1) {
+		return "", nil
 	}
-	return strings.TrimSpace(string(out)), nil
+	if err != nil {
+		return "", err
+	}
+	name, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "refs/heads/")
+	if !ok {
+		return "", nil
+	}
+	return name, nil
 }
 
 // Branch finds branch name as a local branch, else as origin's; ok false
@@ -53,40 +62,24 @@ func (r *Repo) Branch(ctx context.Context, name string) (BranchTip, bool, error)
 
 // BranchBase is tip's base: the merge-base with branch baseName (origin's,
 // else the local one) when it resolves, else with the default branch as
-// Base finds it. No merge-base anywhere → the empty tree, Label "".
+// Base finds it. No merge-base anywhere → the empty tree, Label
+// NoCommonBase; no base branch at all → the empty tree, Label "".
 func (r *Repo) BranchBase(ctx context.Context, tip BranchTip, baseName string) (Base, error) {
-	var refs []string
-	if baseName != "" && !strings.HasPrefix(baseName, "-") {
-		for _, ref := range []string{"refs/remotes/origin/" + baseName, "refs/heads/" + baseName} {
-			if _, ok, err := r.revParse(ctx, ref+"^{commit}"); err != nil {
-				return Base{}, err
-			} else if ok {
-				refs = append(refs, ref)
-			}
-		}
-	}
-	refs = append(refs, r.defaultRefs(ctx)...)
-	for _, ref := range refs {
-		out, err := r.git(ctx, nil, "merge-base", tip.Commit, ref)
-		if err == nil {
-			return Base{SHA: strings.TrimSpace(string(out)), Label: refLabel(ref)}, nil
-		}
-	}
-	if err := ctx.Err(); err != nil {
-		return Base{}, err
-	}
-	return Base{SHA: EmptyTree}, nil
+	return r.baseOf(ctx, tip.Commit, baseName)
 }
 
-// revParse resolves spec; ok false when it names nothing. A done context is
-// an error.
+// revParse resolves spec; ok false when it names nothing (git's exit 1). A
+// done context or any other git failure is an error.
 func (r *Repo) revParse(ctx context.Context, spec string) (string, bool, error) {
 	out, err := r.git(ctx, nil, "rev-parse", "--verify", "--quiet", spec)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return "", false, ctxErr
 	}
+	if exitedWith(err, 1) {
+		return "", false, nil
+	}
 	if err != nil {
-		return "", false, nil //nolint:nilerr // --verify --quiet fails only for a name that resolves to nothing
+		return "", false, err
 	}
 	return strings.TrimSpace(string(out)), true, nil
 }
