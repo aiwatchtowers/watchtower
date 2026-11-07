@@ -2706,3 +2706,14 @@ Entry format:
 - weak-dimension: 7. The new Coordinator callbacks (`onLoaded`/`onFailed`) and the printer's lifecycle (load that never finishes, content-process crash) have no tests. The only printer coverage is a source scan.
 - rule-gap (candidate, dim 6): *an offscreen web-view job kept alive in a static set needs a terminal path for every way a load can end: finish, fail, content-process termination and a timeout. Otherwise the button silently does nothing and the job leaks.*
 - outcome: TBD
+
+## 2026-11-07 — feature/codex-parity final pre-main (2dca31ab6: codex parity + LLM transport independence, 686 files; panel: prosecutor-go (8) + prosecutor-swift (12) + codex (1) + all three pr-review-toolkit specialists; judge verified by reading, no runs) — verdict: changes-needed
+
+- contested: the phone's `agent == .claudeCode` typing gate is documented as deliberate (an older Mac refuses Codex lines), but the reason it waits on ("A5 publishes the capability") has already landed. Held major. **A "not yet, waiting for task X" comment needs a check that X has not shipped. The right fix is for the Mac to publish the capability on the slice, not for the phone to guess from the kind.** [6]
+- contested: codex's api_call key collision (raised major). Downgraded to minor: it needs five identical token figures across two sessions. Any fix must keep the fork-replay dedupe, because a line timestamp is not stable across a replay. [6/8]
+- false-positive: none dismissed outright. The code-reviewer's below-threshold notes were dropped: Swift `resume` without an id is unreachable, and the interrupt-signal doc is unverified.
+- miss: only prosecutor-swift caught the regression where `--events v2` removed `reset`. Pre-tool action blocks now reach `TargetActionParser`, and the byte-identical dedupe lets a revised execute-mode block apply twice. **Changing a stream protocol (dropping a reset/replace event) needs every downstream parser of the accumulated text re-audited, not only the renderer.** [6/8]
+- miss: the test lane alone saw that the suite's LLM caps rows are hand-copied and not tied to production caps, even though the session rows are cross-checked. A golden that claims "turning a cell is a reviewed diff" needs its inputs read from production. [7]
+- weak-dimension: 1 (arch-style). LLMTRANSPORT-01's named-constant blind spot let three new codex pins through: the rollout watch, `contextMeasured`, and agentlog's parser choice. One of them sat next to the very Caps field added to replace it. A Go Caps field with no Go reader is mechanically greppable. [1]
+- rule-gap (candidate, dim 1): *a capability field added to an adapter's Caps must have a production reader in every language that declares it, in the same change. A Caps field read only by tests is a speculative export, and the kind check it was meant to replace is still live.*
+- outcome: TBD
