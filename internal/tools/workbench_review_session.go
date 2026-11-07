@@ -21,17 +21,10 @@ func CheckSessionOnWorkbench(d *db.DB, p *db.Workbench, sessionID int64) error {
 	return nil
 }
 
-// ReviewSessionFolder is the root of the folder the session's agent works in
-// (its worktree when it has one, else the workbench folder); the diff
-// reviewer CLI and annotate_changes snapshot the same folder.
-func ReviewSessionFolder(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (string, error) {
-	folder, _, err := reviewSessionPlace(ctx, d, p, sessionID)
-	return folder, err
-}
-
-// reviewSessionPlace is ReviewSessionFolder plus whether the agent's folder
-// no longer exists (a worktree removed by the #535 cleanup): the folder is
-// then the workbench folder.
+// reviewSessionPlace is the root of the folder the session's agent works in
+// (its worktree when it has one, else the workbench folder) plus whether the
+// agent's folder no longer exists (a worktree removed by the #535 cleanup):
+// the folder is then the workbench folder.
 func reviewSessionPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (folder string, missing bool, err error) {
 	if err := CheckSessionOnWorkbench(d, p, sessionID); err != nil {
 		return "", false, err
@@ -56,7 +49,7 @@ func reviewSessionPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 // itself" — the "else" scoped to the folder sitting on the default branch
 // or a detached HEAD, the situation the question described).
 type ReviewSource struct {
-	// Folder is the session's review folder (ReviewSessionFolder); git runs there.
+	// Folder is the session's review folder (reviewSessionPlace); git runs there.
 	Folder string
 	// FolderMissing: the agent's folder no longer exists (a removed
 	// worktree); Folder is the workbench folder. An open round is not moved

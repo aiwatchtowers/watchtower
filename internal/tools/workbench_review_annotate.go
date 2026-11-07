@@ -50,7 +50,8 @@ func NewAnnotateChanges(sessionEnv func() string) *Tool {
 		Name: "annotate_changes",
 		Description: "Before you hand work back: leave the owner notes in the diff reviewer — a note on each " +
 			"non-obvious change (why, not what) and, for a big change, chapters in reading order. Each call " +
-			"replaces your earlier notes for this session. Lines refer to the files as they are now. Applied immediately.",
+			"replaces your earlier notes for this session. Lines refer to the files the reviewer reads: your folder as it is now, " +
+			"or, while the folder sits on the default branch, your task branch's last commit. Applied immediately.",
 		InputSchema: mustSchema[annotateChangesArgs]("annotate_changes"),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
@@ -188,8 +189,8 @@ type annotationPlan struct {
 	rows             []db.ReviewNote
 }
 
-// prepareAnnotation resolves the calling session, snapshots its folder
-// and checks every note against that snapshot (the file is there, text, and
+// prepareAnnotation resolves the calling session, reads its review place
+// (snapshotSessionFolder) and checks every note against that snapshot (the file is there, text, and
 // the lines exist), returning the rows to store. Scope runs it before any
 // audit row; Execute runs it again and stores what it finds.
 func prepareAnnotation(ctx context.Context, d *db.DB, b Binding, a annotateChangesArgs, sessionEnv func() string) (annotationPlan, error) {
@@ -222,15 +223,17 @@ func prepareAnnotation(ctx context.Context, d *db.DB, b Binding, a annotateChang
 	return annotationPlan{project: p.ID, session: session.Int64, tree: tree, rows: rows}, nil
 }
 
-// snapshotSessionFolder opens the session's review folder and snapshots it.
+// snapshotSessionFolder reads the session's review place as a review round
+// does (ResolveReviewSource): the folder's snapshot, or the task branch's
+// tip on a branch-tip place (board #1013), so the notes are checked and
+// stamped against the tree the owner reviews.
 func snapshotSessionFolder(ctx context.Context, d *db.DB, p *db.Workbench, session int64) (*reviewdiff.Repo, string, error) {
-	folder, err := ReviewSessionFolder(ctx, d, p, session)
+	src, repo, err := ResolveReviewSource(ctx, d, p, session)
 	if err != nil {
 		return nil, "", err
 	}
-	repo, err := reviewdiff.Open(folder, nil)
-	if err != nil {
-		return nil, "", err
+	if src.Tip != nil {
+		return repo, src.Tip.Tree, nil
 	}
 	tree, err := repo.Snapshot(ctx)
 	if err != nil {
