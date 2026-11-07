@@ -40,6 +40,7 @@ import (
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
+	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -916,6 +917,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
 	d.SetDB(database)
+	// #880: no scheduled cycle starts in a Power Nap dark wake.
+	d.SetFullWakeProbe(powerstate.FullWake)
 	if al != nil {
 		defer al.Close()
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
