@@ -43,19 +43,19 @@ action: chat:How do I make an automation that runs every Monday?
 
 **Where answers come from.** The assistant searches everything Watchtower synced and indexed (Slack, mail, Jira with comments, calendar, transcripts and recaps, digests, decisions, ideas). That search follows the Knowledge search feature switch. Each answer folds its steps into "Worked for 12s · 4 steps", and a line below it opens the **Sources** panel, grouped by Slack channel, Jira project, Confluence space, mail, meetings and other.
 
-**The web.** On Claude and Codex the assistant can also search the public web for public knowledge such as documentation, products or news, and cites each page; the pages show under **Web** in the **Sources** panel. It never puts your private data into a search and never fetches a link you give it: Claude only searches, and Codex opens only pages already in its search index, so a very recent page can be missing. Ollama has no web search.
+**The web.** On Claude and Codex the assistant can search the public web (documentation, products, news) and lists each page under **Web** in **Sources**. Your private data never goes into a search, and a link you give is never fetched; Codex sees only pages in its search index, so a very recent one can be missing. Ollama has no web search.
 
 **Providers.** Choose **Preferred + reserve · Auto** or **Only** a provider. See [limits, pins and recovery](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits).
 
-**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, and a running reply is never cut off.
+**Warm sessions.** Up to three conversations keep a live assistant for ten idle minutes, so replies start fast; a fourth waits, and no running reply is cut off.
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
 **Other assistant chats.** The same chat, steps included, appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** and the setup assistant in Settings, without attachments, @-mentions or branches. Only the main chat, the target chat and the automation editor can act, through proposals; the others are draft-only. At most three replies across all of them run at once; a fourth shows **Queued**.
 
-**Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
+**Questions about Watchtower itself.** The assistant searches this guide (built in, so it matches your version), links the section it used, and says so when the guide has nothing. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
 
-Messages sent from the ⌘/ panel also tell the assistant which tab and item you are on; that note is never stored.
+Messages sent from the ⌘/ panel also tell the assistant your tab and item; that note is never stored.
 
 ## Using it
 <!-- learn
@@ -95,8 +95,8 @@ action: hotkey:search-chats
 2. Type and press Enter (Shift+Enter adds a line). **Stop** (Esc) keeps what was written and offers **Continue**. **Edit** your message or **Regenerate** a reply on hover; every version is kept.
 3. Type `@` to point at a person, Slack channel, Jira issue, target or track. Type `/` at the start to load one of your enabled skills.
 4. Attach files with the paperclip, drag and drop, or ⌘V: images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, text-like files up to 256 KB, 30 MB per message. Anything else is refused with the reason. Files are stored privately and deleted with their chat.
-5. ⌘V attaches files copied in Finder, a screenshot or a copied image or PDF; other images become PNGs, shrunk if over 5 MB. Copied text pastes as text. A paste of 10,000 characters or more, up to 256 KB, offers **Attach as File** (⌘Z puts the text back) or **Keep as Text**.
-6. **New chat** is ⌘N (the **+** in the panel header); ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title is written after the first reply, and one you set is never replaced.
+5. ⌘V attaches copied files, screenshots, images or PDFs; other images become PNGs, shrunk if over 5 MB. A text paste of 10,000 characters or more, up to 256 KB, offers **Attach as File** (⌘Z puts the text back) or **Keep as Text**.
+6. **New chat** is ⌘N (the **+** in the panel header); ⌘K searches the text of every message. Right-click a chat to rename, pin, move to a project, archive or delete. A title comes after the first reply; one you set is kept.
 
 ### The Chats panel
 <!-- learn
@@ -110,13 +110,13 @@ since: 0.26.0
 action: nav:chat
 -->
 
-Each chat has a dot and two lines: its title and the start of the last answer with its age (in **All chats**, a project chat's line starts with the project name). The dot is orange for a proposal waiting for your approval, a pulsing accent while the answer is written, a filled accent with a bold title for an unread answer, and a grey ring once read. A chat is read when you open it or its answer finishes while it is on screen.
+Each chat has a dot and two lines: its title and the start of the last answer with its age (in **All chats**, a project chat's line starts with the project name). The dot is orange for a proposal waiting for your approval, a pulsing accent while the answer is written, a filled accent with a bold title for an unread answer, and a grey ring once read. A chat is read once opened or when its answer finishes on screen.
 
 Chats are grouped as **PINNED**, **RECENT** (the last 7 days) and **▸ N older**, folded until you open it (remembered). The chat on screen stays visible under the header.
 
-The header reads **All chats ⌄**, or **‹ 📁 Project ⌄** inside a project, with **+** for a new chat. The menu has **Find project**, your recent projects ("2 new answers", "1 waiting for approval", "answering" or the age), **New Project…** and **‹ All Chats**. Picking a project opens its page unless the chat on screen is in it. Your level is remembered; **⌘[** goes back to All chats.
+The header reads **All chats ⌄**, or **‹ 📁 Project ⌄** inside a project, with **+** for a new chat; its menu switches projects (see [Chat projects](ai-chat-projects.md)). **⌘[** goes back to All chats.
 
-Hover a chat and press **✕** to delete it at once; **Undo** (⌘Z) stays for 5 seconds. A chat that is answering or waiting has no ✕, and **Delete…** in the right-click menu still asks first. Click the panel, then **↑/↓** move, **Return** opens, **⌘⌫** deletes and **⌘1–⌘9** open the first nine chats (they and ⌘[ need the panel shown).
+Hover a chat and press **✕** to delete it at once; **Undo** (⌘Z) stays for 5 seconds. An answering or waiting chat has no ✕; **Delete…** in the right-click menu asks first. Click the panel, then **↑/↓** move, **Return** opens, **⌘⌫** deletes and **⌘1–⌘9** open the first nine chats (they and ⌘[ need the panel shown).
 
 ### Asking from any tab
 <!-- learn
@@ -130,7 +130,7 @@ since: 0.24.0
 action: hotkey:help
 -->
 
-Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same chat as a panel over it. It continues the conversation the **Chats** tab has selected, so what you say there shows up here and the other way round. **New** starts a fresh conversation, and **Open in Chats** switches to the tab on this conversation.
+Press **⌘/** (**Help** → **Ask Watchtower…**) on any tab to open the same chat as a panel over it. It continues the conversation selected in the **Chats** tab; messages show in both places. **New** starts a fresh conversation, and **Open in Chats** switches to the tab on this conversation.
 
 **Esc** stops a running answer; a second **Esc** closes the panel. In the **Chats** tab, **⌘/** puts the cursor in the message box; in a Workbench **Files** editor it still toggles a comment.
 
