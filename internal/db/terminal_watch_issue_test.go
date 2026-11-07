@@ -29,6 +29,11 @@ func seedCodexWatchRow(t *testing.T, d *DB, kind, state string) (row, wb int64) 
 	return row, wb
 }
 
+// testWatchKinds is the production sessionagent.RolloutWatchKinds() (the
+// db package cannot import it; cmd's TestProj11_WatchKindsArePulledKinds
+// pins the two together).
+var testWatchKinds = []string{"codex"}
+
 // seenRow is row as the watch reads it before a give-up.
 func seenRow(t *testing.T, d *DB, row int64) CodexWatchRow {
 	t.Helper()
@@ -71,6 +76,19 @@ func TestMigration00173_AddsNullableColumns(t *testing.T) {
 	}
 }
 
+// The kinds a mark may land on are the caller's (the db package names no
+// agent): a row of a listed kind takes it, an empty list takes nothing.
+func TestProj11_WatchIssueKindsAreTheCallers(t *testing.T) {
+	d := openTestDB(t)
+	row, _ := seedCodexWatchRow(t, d, "claude", "working")
+	if ok, err := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", time.Now(), nil); err != nil || ok {
+		t.Fatalf("no kinds: %v, %v; want false", ok, err)
+	}
+	if ok, err := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", time.Now(), []string{"codex", "claude"}); err != nil || !ok {
+		t.Fatalf("a listed kind: %v, %v; want true", ok, err)
+	}
+}
+
 func TestProj11_WatchIssueOnlyOverWorkingCodexRow(t *testing.T) {
 	d := openTestDB(t)
 	at := time.Date(2026, 11, 5, 10, 0, 30, 0, time.UTC)
@@ -85,7 +103,7 @@ func TestProj11_WatchIssueOnlyOverWorkingCodexRow(t *testing.T) {
 		{"claude", "working", false},
 	} {
 		row, _ := seedCodexWatchRow(t, d, c.kind, c.state)
-		ok, err := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", at)
+		ok, err := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", at, testWatchKinds)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -105,18 +123,18 @@ func TestProj11_WatchIssueOnlyOverWorkingCodexRow(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-05T10:00:01.000Z' WHERE id = ?`, row); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", at); ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", at, testWatchKinds); ok {
 		t.Error("a finished row took a watch issue")
 	}
 
 	row, _ = seedCodexWatchRow(t, d, "codex", "working")
-	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "permission", at); !ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "permission", at, testWatchKinds); !ok {
 		t.Fatal("first issue not written")
 	}
-	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "permission", at.Add(time.Second)); ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "permission", at.Add(time.Second), testWatchKinds); ok {
 		t.Error("the same issue again wrote: one log line per row and issue needs a false repeat")
 	}
-	if _, err := d.SetAgentWatchIssue(seenRow(t, d, row), "bogus", at); err == nil {
+	if _, err := d.SetAgentWatchIssue(seenRow(t, d, row), "bogus", at, testWatchKinds); err == nil {
 		t.Error("an unknown issue class was accepted")
 	}
 }
@@ -127,7 +145,7 @@ func TestProj11_FailureWinsOverWatchIssue(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_failed_at = agent_state_at, agent_error = 'overloaded' WHERE id = ?`, row); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "unreadable", time.Now()); ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "unreadable", time.Now(), testWatchKinds); ok {
 		t.Fatal("a row carrying a failure took a watch issue")
 	}
 }
@@ -135,7 +153,7 @@ func TestProj11_FailureWinsOverWatchIssue(t *testing.T) {
 func TestClearAgentWatchIssue(t *testing.T) {
 	d := openTestDB(t)
 	row, _ := seedCodexWatchRow(t, d, "codex", "working")
-	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "compressed", time.Now()); !ok {
+	if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "compressed", time.Now(), testWatchKinds); !ok {
 		t.Fatal("not set")
 	}
 	ok, err := d.ClearAgentWatchIssue(row)
@@ -165,10 +183,10 @@ func TestProj11_WatchIssueRefusedOnAChangedSnapshot(t *testing.T) {
 		if _, err := d.Exec(`UPDATE terminal_sessions SET `+change+` WHERE id = ?`, row); err != nil {
 			t.Fatal(err)
 		}
-		if ok, err := d.SetAgentWatchIssue(seen, "missing", time.Now()); err != nil || ok {
+		if ok, err := d.SetAgentWatchIssue(seen, "missing", time.Now(), testWatchKinds); err != nil || ok {
 			t.Errorf("after %s: SetAgentWatchIssue = %v, %v; want false", change, ok, err)
 		}
-		if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", time.Now()); !ok {
+		if ok, _ := d.SetAgentWatchIssue(seenRow(t, d, row), "missing", time.Now(), testWatchKinds); !ok {
 			t.Errorf("after %s: the fresh snapshot's verdict was refused", change)
 		}
 	}

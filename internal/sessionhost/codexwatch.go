@@ -8,7 +8,6 @@ import (
 	"syscall"
 	"time"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
@@ -38,6 +37,12 @@ const codexUnreadableTicks = 3
 // codexUnreadableTicks, for the app's bridge, which keeps no ticks.
 const CodexUnreadableGiveUp = codexUnreadableTicks * CodexWatchEvery
 
+// codexStoreGiveUpTicks is how many ticks in a row whose database work
+// failed end the watch: it then tries to mark the row `unreadable`, and when
+// even that fails it stops and reports the run not watched, so the app's
+// bridge covers it instead of a `working` row nobody reads.
+const codexStoreGiveUpTicks = int(CodexMissingGiveUp / CodexWatchEvery)
+
 // CodexWatchStore is the database side of a watch: the row it reads each
 // tick and the two writes. RecordTurn writes a failed or aborted turn the
 // way the hooks do (recordAgentState, only over `working`, stamped with the
@@ -52,14 +57,19 @@ type CodexWatchStore interface {
 	Close() error
 }
 
-// CodexWatch is one hosted codex session's rollout watch.
+// CodexWatch is one hosted session's rollout watch, for an agent kind whose
+// turn ends are pulled (sessionagent.PullerOf).
 type CodexWatch struct {
 	row       int64
+	kind      string
 	store     CodexWatchStore
 	codexHome string
 	logf      func(format string, args ...any)
 	locate    func(codexHome, sessionID, storedPath string) (string, bool)
 	read      func(path string) (sessionfeed.CodexTurn, error)
+	// lost is called once when the watch stops on a database that keeps
+	// failing (codexStoreGiveUpTicks); nil = nothing to tell.
+	lost func()
 
 	// seen is the row as this tick read it: a give-up's verdict is about it.
 	seen db.CodexWatchRow
@@ -69,6 +79,14 @@ type CodexWatch struct {
 	// logged holds the database errors already logged, by what failed:
 	// one line each for the watch's life.
 	logged map[string]bool
+	// notWatched holds the issues already logged as a not-watched mark:
+	// a hook clears the issue and re-arms the watch, and a rollout still
+	// missing is marked again, but logged once per row and issue.
+	notWatched map[string]bool
+	// storeFailed says this tick's database work failed; storeFails counts
+	// such ticks in a row.
+	storeFailed bool
+	storeFails  int
 }
 
 // codexArm is one arm's state of a CodexWatch.
@@ -91,12 +109,12 @@ type fileStamp struct {
 	mod  time.Time
 }
 
-// NewCodexWatch is the watch of terminal session row over store, reading
-// rollouts under codexHome and logging through logf.
-func NewCodexWatch(row int64, store CodexWatchStore, codexHome string, logf func(string, ...any)) *CodexWatch {
-	p := codexPuller()
-	return &CodexWatch{row: row, store: store, codexHome: codexHome, logf: logf,
-		locate: p.Locate, read: p.LastTurn, logged: map[string]bool{}}
+// NewCodexWatch is the watch of terminal session row, whose agent kind
+// reads its turn ends through p (sessionagent.PullerOf(kind)), over store,
+// reading rollouts under codexHome and logging through logf.
+func NewCodexWatch(row int64, kind string, p sessionagent.Puller, store CodexWatchStore, codexHome string, logf func(string, ...any)) *CodexWatch {
+	return &CodexWatch{row: row, kind: kind, store: store, codexHome: codexHome, logf: logf,
+		locate: p.Locate, read: p.LastTurn, logged: map[string]bool{}, notWatched: map[string]bool{}}
 }
 
 // run ticks every interval until ctx ends or the row is gone, then closes
@@ -125,17 +143,55 @@ func (w *CodexWatch) run(ctx context.Context, every time.Duration, now func() ti
 func (w *CodexWatch) disarm() { w.arm = codexArm{} }
 
 // Tick is one step of §3.5's table at now; done is true once the row is
-// gone (or is no codex row), and the watch ends.
+// gone (or is no row of the watch's kind), or the database kept failing,
+// and the watch ends.
 func (w *CodexWatch) Tick(now time.Time) (done bool) {
+	w.storeFailed = false
+	if w.step(now) {
+		return true
+	}
+	if !w.storeFailed {
+		w.storeFails = 0
+		return false
+	}
+	w.storeFails++
+	if w.storeFails < codexStoreGiveUpTicks {
+		return false
+	}
+	return w.storeGiveUp(now)
+}
+
+// storeGiveUp is codexStoreGiveUpTicks ticks in a row of failed database
+// work: the row is marked `unreadable` when the mark still lands (the
+// watch then goes on), else the watch stops and says it is lost.
+func (w *CodexWatch) storeGiveUp(now time.Time) (done bool) {
+	w.storeFails = 0
+	if w.seen.ID != 0 {
+		ok, err := w.store.SetIssue(w.seen, db.WatchIssueUnreadable, now)
+		if err == nil {
+			w.disarm()
+			w.logNotWatched(ok, db.WatchIssueUnreadable)
+			return false
+		}
+	}
+	w.logf("session-host: codex watch: session %d: the database keeps failing; not watched", w.row)
+	if w.lost != nil {
+		w.lost()
+	}
+	return true
+}
+
+// step is Tick's table; done ends the watch.
+func (w *CodexWatch) step(now time.Time) (done bool) {
 	r, err := w.store.Row(w.row)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return true
 	}
 	if err != nil {
-		w.logOnce("reading the row", err)
+		w.storeError("reading the row", err)
 		return false
 	}
-	if !sessionagent.CapsOf(r.Kind).RolloutWatch() {
+	if r.Kind != w.kind {
 		return true
 	}
 	w.seen = r
@@ -228,7 +284,7 @@ func (w *CodexWatch) readTurn(r db.CodexWatchRow, stamp fileStamp, now time.Time
 		return
 	}
 	if err := w.store.RecordTurn(r, turn); err != nil {
-		w.logOnce("recording the turn", err)
+		w.storeError("recording the turn", err)
 		w.arm.clean = false // read again next tick: the write is retried
 		return
 	}
@@ -242,22 +298,37 @@ func (w *CodexWatch) unreadableTick(now time.Time) {
 	}
 }
 
-// giveUp marks the row not watched; one log line per row and issue, with
-// the row id and the class only (FILES-01). A stored verdict ends the arm:
+// giveUp marks the row not watched; one log line per row and issue for the
+// watch's life (re-arms included), with the row id and the class only
+// (FILES-01). A stored verdict ends the arm:
 // a hook may clear the issue before the next tick, and the next prompt then
 // starts a fresh arm, never this one's expired grace. A failed write leaves
 // the file to be read again next tick, so the verdict is retried.
 func (w *CodexWatch) giveUp(issue string, now time.Time) {
 	ok, err := w.store.SetIssue(w.seen, issue, now)
 	if err != nil {
-		w.logOnce("marking the row not watched", err)
+		w.storeError("marking the row not watched", err)
 		w.arm.clean = false
 		return
 	}
 	w.disarm()
-	if ok {
-		w.logf("session-host: codex watch: session %d not watched (%s)", w.row, issue)
+	w.logNotWatched(ok, issue)
+}
+
+// logNotWatched logs a stored not-watched mark once per issue.
+func (w *CodexWatch) logNotWatched(stored bool, issue string) {
+	if !stored || w.notWatched[issue] {
+		return
 	}
+	w.notWatched[issue] = true
+	w.logf("session-host: codex watch: session %d not watched (%s)", w.row, issue)
+}
+
+// storeError is a failed database call of this tick: logged once per what,
+// and counted toward codexStoreGiveUpTicks.
+func (w *CodexWatch) storeError(what string, err error) {
+	w.storeFailed = true
+	w.logOnce(what, err)
 }
 
 // logOnce logs an error once per what for the watch's life. The error is
@@ -279,16 +350,6 @@ func stampOf(st os.FileInfo) fileStamp {
 	return s
 }
 
-// codexPuller is the codex session adapter's pull signal reader
-// (sessionagent.Adapter.Watch): the rollout's last turn and its home.
-func codexPuller() sessionagent.Puller {
-	p, ok := sessionagent.MustFor(agentkind.Codex).Watch()
-	if !ok {
-		panic("sessionhost: the codex session adapter pulls nothing")
-	}
-	return p
-}
-
 // DBWatchStore is the CodexWatchStore over a workspace database: the row
 // read and the not-watched write are the db package's; RecordTurn is the
 // caller's (the hooks' write path lives in cmd), and Close closes DB.
@@ -307,7 +368,7 @@ func (s *DBWatchStore) RecordTurn(row db.CodexWatchRow, turn sessionfeed.CodexTu
 
 // SetIssue marks the row not watched (db.SetAgentWatchIssue).
 func (s *DBWatchStore) SetIssue(seen db.CodexWatchRow, issue string, at time.Time) (bool, error) {
-	return s.DB.SetAgentWatchIssue(seen, issue, at)
+	return s.DB.SetAgentWatchIssue(seen, issue, at, sessionagent.RolloutWatchKinds())
 }
 
 // Close closes the database.

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -123,7 +124,7 @@ func newWatchFixture(t *testing.T) *watchFixture {
 		now: time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)}
 	f.store = &fakeWatchStore{row: db.CodexWatchRow{ID: 7, WorkbenchID: 1, Kind: "codex", State: "working",
 		StateAt: f.now.Add(-time.Minute), SessionID: wSessionID, TranscriptPath: f.path}}
-	f.w = NewCodexWatch(7, f.store, filepath.Join(dir, "codex-home"), func(format string, args ...any) {
+	f.w = NewCodexWatch(7, "codex", testPuller(t), f.store, filepath.Join(dir, "codex-home"), func(format string, args ...any) {
 		fmt.Fprintf(&f.logs, format+"\n", args...)
 	})
 	f.w.locate = func(home, sid, stored string) (string, bool) {
@@ -598,5 +599,153 @@ func TestCodexWatch_FailedGiveUpIsRetried(t *testing.T) {
 	f.tick(CodexWatchEvery)
 	if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
 		t.Fatalf("issues = %v; want unreadable written once on the retry", issues)
+	}
+}
+
+// testPuller is the codex adapter's pull reader, resolved the way the
+// server resolves a launch's (sessionagent.PullerOf by kind).
+func testPuller(t *testing.T) sessionagent.Puller {
+	t.Helper()
+	p, ok := sessionagent.PullerOf("codex")
+	if !ok {
+		t.Fatal("the codex adapter pulls nothing")
+	}
+	return p
+}
+
+// A watch follows the kind it was started for: a row of another kind ends
+// it, with nothing read or written.
+func TestCodexWatch_RowOfAnotherKindEndsTheWatch(t *testing.T) {
+	f := newWatchFixture(t)
+	f.write(wTurnStarted, wTurnFailed)
+	f.store.set(func(r *db.CodexWatchRow) { r.Kind = "claude" })
+	if !f.tick(CodexWatchEvery) {
+		t.Fatal("the watch went on over a row of another kind")
+	}
+	if issues, turns := f.store.snapshot(); len(issues)+len(turns) != 0 {
+		t.Fatalf("issues %v, turns %+v; want none", issues, turns)
+	}
+}
+
+// A hook clears the issue and re-arms the watch; a rollout still missing is
+// marked again on every give-up, but the not-watched line is logged once
+// per row and issue (spec §3.5).
+func TestCodexWatch_RepeatedMarkLogsOnce(t *testing.T) {
+	f := newWatchFixture(t)
+	for round := 0; round < 3; round++ {
+		for i := 0; i < 16; i++ {
+			f.tick(CodexWatchEvery)
+		}
+		f.store.set(func(r *db.CodexWatchRow) { r.WatchIssue = "" }) // the next hook event
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 3 {
+		t.Fatalf("issues = %v; want missing marked on each of 3 arms", issues)
+	}
+	if n := strings.Count(f.logs.String(), "not watched (missing)"); n != 1 {
+		t.Fatalf("not-watched lines = %d; want 1:\n%s", n, f.logs.String())
+	}
+}
+
+// A database that keeps failing never leaves a silent `working`: after
+// codexStoreGiveUpTicks failing ticks the row is marked `unreadable` when
+// that still lands, and the watch goes on.
+func TestCodexWatch_FailingStoreMarksUnreadable(t *testing.T) {
+	f := newWatchFixture(t)
+	f.store.recordErrs = 1 << 20
+	f.write(wTurnStarted, wTurnFailed)
+	lost := false
+	f.w.lost = func() { lost = true }
+	for i := 0; i < codexStoreGiveUpTicks-1; i++ {
+		if f.tick(CodexWatchEvery) {
+			t.Fatal("the watch stopped early")
+		}
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 0 {
+		t.Fatalf("issues = %v; want none before the give-up", issues)
+	}
+	if f.tick(CodexWatchEvery) {
+		t.Fatal("the watch stopped though the mark landed")
+	}
+	if issues, _ := f.store.snapshot(); len(issues) != 1 || issues[0] != db.WatchIssueUnreadable {
+		t.Fatalf("issues = %v; want unreadable", issues)
+	}
+	if lost {
+		t.Fatal("reported lost though the mark landed")
+	}
+}
+
+// When even the mark fails (or the row was never read), the watch stops and
+// says it is lost, so the run reads not watched and the app's bridge
+// covers it.
+func TestCodexWatch_FailingStoreStopsAndReportsLost(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		setup func(f *watchFixture)
+	}{
+		{"row never read", func(f *watchFixture) { f.store.rowErrs = 1 << 20 }},
+		{"mark fails too", func(f *watchFixture) {
+			f.store.recordErrs, f.store.issueErrs = 1<<20, 1<<20
+			f.write(wTurnStarted, wTurnFailed)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newWatchFixture(t)
+			c.setup(f)
+			lost := 0
+			f.w.lost = func() { lost++ }
+			done := false
+			for i := 0; i < codexStoreGiveUpTicks && !done; i++ {
+				done = f.tick(CodexWatchEvery)
+			}
+			if !done || lost != 1 {
+				t.Fatalf("done = %v, lost = %d; want the watch stopped and lost once", done, lost)
+			}
+			if !strings.Contains(f.logs.String(), "the database keeps failing; not watched") {
+				t.Fatalf("no lost line:\n%s", f.logs.String())
+			}
+		})
+	}
+}
+
+// A run whose watch stops on a failing database lists as not watched from
+// then on: an attach tells the app's bridge to cover it.
+func TestCodexWatch_LostWatchListsUnwatched(t *testing.T) {
+	store := &fakeWatchStore{rowErrs: 1 << 20}
+	path, _ := startHost(t, Options{codexWatchEvery: 5 * time.Millisecond, CodexWatch: func(string) (CodexWatchStore, error) {
+		return store, nil
+	}})
+	c1 := dial(t, path)
+	c1.send(Launch, LaunchReq{Row: 1, Run: "r1", Executable: "/bin/sh", Args: []string{"-c", "sleep 30"},
+		Cwd: os.TempDir(), Cols: 80, Rows: 24, Watch: &WatchSpec{Agent: "codex", Database: "/work/watchtower.db"}})
+	var info SessionInfo
+	if err := json.Unmarshal(c1.expect(Launched), &info); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { reap(t, info.Pid) })
+	if !info.Watched {
+		t.Fatal("Launched does not say the run is watched")
+	}
+	_ = c1.nc.Close()
+	deadline := time.Now().Add(ioTimeout)
+	for {
+		store.mu.Lock()
+		closed := store.closed
+		store.mu.Unlock()
+		if closed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the watch never stopped on the failing store")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	c2 := dial(t, path)
+	c2.send(Attach, AttachReq{Row: 1, Run: "r1"})
+	var attached SessionInfo
+	if err := json.Unmarshal(c2.expect(Attached), &attached); err != nil {
+		t.Fatal(err)
+	}
+	if attached.Watched {
+		t.Fatal("Attached still says watched after the watch was lost")
 	}
 }

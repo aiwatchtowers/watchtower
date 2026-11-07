@@ -183,5 +183,29 @@ func MustFor(k Kind) Adapter {
 // Of is the adapter of the stored kind s (terminal_sessions.kind).
 func Of(s string) (Adapter, bool) { return For(Kind(s)) }
 
+// PullerOf is the pull signal reader of the stored kind s
+// (Adapter.Watch); false for an agent whose hooks report every turn end,
+// or no agent.
+func PullerOf(s string) (Puller, bool) {
+	a, ok := Of(s)
+	if !ok {
+		return nil, false
+	}
+	return a.Watch()
+}
+
+// RolloutWatchKinds is every stored kind whose turn ends are pulled from
+// its transcript (Caps.RolloutWatch): the rows a not-watched mark may land
+// on (db.SetAgentWatchIssue).
+func RolloutWatchKinds() []string {
+	var kinds []string
+	for _, a := range All() {
+		if a.Caps().RolloutWatch() {
+			kinds = append(kinds, string(a.Kind()))
+		}
+	}
+	return kinds
+}
+
 // All is every adapter, in agentkind order (Claude Code, Codex).
 func All() []Adapter { return []Adapter{claudeAdapter{}, codexAdapter{}} }
