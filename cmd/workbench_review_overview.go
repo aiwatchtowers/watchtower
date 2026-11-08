@@ -272,9 +272,9 @@ func answerReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJ
 			return writeReview(cmd, reviewEnvelope{OK: true})
 		}
 	}
-	// Task 8 (tech spec §3.7): every model-calling form takes the branch's
-	// run lock here, after the cache check and before the first call; the
-	// wait does not count into the run's ceiling, which starts in Run.
+	// Every model-calling form takes the branch's run lock here (tech spec
+	// §3.7), after the cache check and before the first call; the wait does
+	// not count into the run's ceiling, which starts in Run.
 	return runReviewOverview(ctx, cmd, job, emit)
 }
 
