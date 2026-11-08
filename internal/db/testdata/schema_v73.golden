@@ -3000,7 +3000,7 @@ attempt INTEGER NOT NULL DEFAULT 0,
 queued_at TEXT NOT NULL,
 started_at TEXT NOT NULL DEFAULT '',
 finished_at TEXT NOT NULL DEFAULT ''
-, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1)
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1, loop_rules INTEGER NOT NULL DEFAULT 0)
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -6201,6 +6201,7 @@ GROUP BY up.ancestor
 17	ledger	TEXT	notnull=1	dflt=''	pk=0
 18	loop_end	TEXT	notnull=1	dflt=''	pk=0
 19	findings	INTEGER	notnull=1	dflt=-1	pk=0
+20	loop_rules	INTEGER	notnull=1	dflt=0	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

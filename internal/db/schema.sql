@@ -2798,7 +2798,8 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     open_items  TEXT NOT NULL DEFAULT '',   -- JSON this round hands the author
     ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
     loop_end    TEXT NOT NULL DEFAULT '',
-    findings    INTEGER NOT NULL DEFAULT -1  -- findings counted in result at the first finish (00162); -1 = not counted
+    findings    INTEGER NOT NULL DEFAULT -1, -- findings counted in result at the first finish (00162); -1 = not counted
+    loop_rules  INTEGER NOT NULL DEFAULT 0   -- author loop rules (00174): 0 = cap of 3 (2026-10-26), 2 = runs while fixes hold, fuse 8
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.

@@ -94,11 +94,12 @@ func planAfterSpec(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, ses
 // in the author loop and every key one of its open items; without replies a
 // previous ask in the author loop advances the round, a previous review the
 // owner already has (loop 'owner') starts no hidden loop — the re-round is a
-// classic visible review —, anything else starts round 1. A round past
-// MaxLoopRounds starts no loop either. Replies on an ask that will not loop
-// are refused (in fileAsk, where loop is known; Scope passes loop=false and
-// checks only the previous ask). Called from Scope and again in fileAsk (the
-// loop may have been revealed in between).
+// classic visible review —, anything else starts round 1 under
+// LoopRulesOpen. An advanced round keeps the previous row's loop_rules; a
+// round past MaxRoundsFor(those rules) starts no loop either. Replies on an
+// ask that will not loop are refused (in fileAsk, where loop is known; Scope
+// passes loop=false and checks only the previous ask). Called from Scope and
+// again in fileAsk (the loop may have been revealed in between).
 func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.SpecLoopStart, error) {
 	var row *db.SpecReview
 	if prev != nil {
@@ -119,14 +120,15 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 	if !loop {
 		return nil, nil
 	}
-	start := &db.SpecLoopStart{Round: 1}
+	start := &db.SpecLoopStart{Round: 1, LoopRules: specreview.LoopRulesOpen}
 	switch {
 	case row != nil && ownerHas(row):
 		return nil, nil
 	case row != nil && row.Loop == "author":
-		start.Round = row.Round + 1
+		// A loop keeps the rules it started with.
+		start.Round, start.LoopRules = row.Round+1, row.LoopRules
 	}
-	if start.Round > specreview.MaxLoopRounds {
+	if start.Round > specreview.MaxRoundsFor(start.LoopRules) {
 		return nil, nil
 	}
 	if len(a.ReviewReplies) > 0 {
@@ -276,7 +278,7 @@ func NewGetSpecReview() *Tool {
 }
 
 func specReviewOf(row *db.SpecReview) (*specReviewView, error) {
-	v := &specReviewView{AskID: row.AskID, Round: row.Round, MaxRounds: specreview.MaxLoopRounds,
+	v := &specReviewView{AskID: row.AskID, Round: row.Round, MaxRounds: specreview.MaxRoundsFor(row.LoopRules),
 		Loop: row.Loop, Status: row.Status, Reason: row.Reason, Items: []specreview.AuthorItem{}}
 	switch {
 	case row.Loop == "author" && row.Status == "done":

@@ -223,6 +223,40 @@ func TestAskOwner_RoundPastCapStartsNoLoop(t *testing.T) {
 	assert.Equal(t, "", specRow(t, fx.d, id).Loop)
 }
 
+// A new loop runs under the open-ended rules; an advanced round keeps the
+// rules its loop started with.
+func TestAskOwner_LoopRulesStartOpenAndCarry(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	assert.Equal(t, specreview.LoopRulesOpen, specRow(t, fx.d, first).LoopRules)
+	finishRound(t, fx.d, first)
+
+	second := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", reRound(first, `[]`)))
+	r2 := specRow(t, fx.d, second)
+	assert.Equal(t, 2, r2.Round)
+	assert.Equal(t, specreview.LoopRulesOpen, r2.LoopRules)
+}
+
+// A loop that started under the old rules (loop_rules 0, a row from before
+// the open-ended loop) keeps them: round 3 is still its last round.
+func TestAskOwner_LegacyLoopKeepsCapOf3(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	finishRound(t, fx.d, first)
+	_, err := fx.d.Exec(`UPDATE spec_reviews SET loop_rules = 0, round = 2 WHERE ask_id = ?`, first)
+	require.NoError(t, err)
+
+	second := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", reRound(first, `[]`)))
+	r2 := specRow(t, fx.d, second)
+	assert.Equal(t, "author", r2.Loop)
+	assert.Equal(t, 3, r2.Round)
+	assert.Equal(t, 0, r2.LoopRules, "the old rules are kept")
+
+	finishRound(t, fx.d, second)
+	third := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", reRound(second, `[]`)))
+	assert.Equal(t, "", specRow(t, fx.d, third).Loop, "past the old cap of 3: a classic visible review")
+}
+
 // review_replies on an ask that will not loop (no session, no reviewer on the
 // surface, or not a spec/plan) are refused instead of dropped.
 func TestAskOwner_RepliesRefusedWhenAskWillNotLoop(t *testing.T) {

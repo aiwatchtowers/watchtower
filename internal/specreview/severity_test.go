@@ -57,11 +57,11 @@ func TestNextRound_CarriedItemKeepsSeverity(t *testing.T) {
 	it.Severity = "blocker"
 	r := loopResult()
 	r.BlindSpots = []BlindSpot{{Key: "bs:a", Text: "re-raised", Why: "w", Severity: "minor"}}
-	o := NextRound(2, []AuthorItem{it}, nil, nil, r)
+	o := NextRound(2, 0, []AuthorItem{it}, nil, nil, r)
 	require.NotEmpty(t, o.Open)
 	assert.Equal(t, "bs:a", o.Open[0].Key)
 	assert.Equal(t, "blocker", o.Open[0].Severity)
-	o = NextRound(2, []AuthorItem{it}, nil, nil, loopResult(Verdict{Key: "bs:a", Verdict: VerdictResolved}))
+	o = NextRound(2, 0, []AuthorItem{it}, nil, nil, loopResult(Verdict{Key: "bs:a", Verdict: VerdictResolved}))
 	require.Len(t, o.Ledger, 1)
 	assert.Equal(t, "blocker", o.Ledger[0].Severity)
 }

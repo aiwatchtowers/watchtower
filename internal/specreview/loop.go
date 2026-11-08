@@ -15,17 +15,43 @@ import (
 // AuthorItem and LedgerEntry is what spec_reviews.open_items / ledger hold and
 // what the Desktop and `spec-review show --json` decode.
 
-// MaxLoopRounds is the reviewer rounds per loop: round 1 on the first
-// version, rounds 2 and 3 on the author's fixes.
-const MaxLoopRounds = 3
+// Loop rules (spec_reviews.loop_rules): which rules a loop runs under. A loop
+// keeps the rules it started with, so a loop running when the open-ended
+// rules shipped finishes under the old cap.
+const (
+	// LoopRulesLegacy: the rules of 2026-10-26 — a fixed cap of
+	// LegacyMaxLoopRounds rounds, never stalled.
+	LoopRulesLegacy = 0
+	// LoopRulesOpen: the loop goes on while the author's fixes hold
+	// (spec 2026-11-08-spec-review-discuss-design §1), up to MaxLoopRounds.
+	LoopRulesOpen = 2
+)
+
+// LegacyMaxLoopRounds is the round cap of a loop under LoopRulesLegacy.
+const LegacyMaxLoopRounds = 3
+
+// MaxLoopRounds is the fuse of a loop under LoopRulesOpen: high enough never
+// to be the normal exit, low enough to bound the cost.
+const MaxLoopRounds = 8
+
+// MaxRoundsFor is the last round of a loop under rules.
+func MaxRoundsFor(rules int) int {
+	if rules >= LoopRulesOpen {
+		return MaxLoopRounds
+	}
+	return LegacyMaxLoopRounds
+}
 
 // AuthorTimeout is how long the author has to answer a delivered round.
 const AuthorTimeout = 30 * time.Minute
 
 // Loop end reasons (spec_reviews.loop_end).
 const (
-	EndSettled        = "settled"
-	EndCap            = "cap"
+	EndSettled = "settled"
+	EndCap     = "cap"
+	// EndStalled: from round 2 under LoopRulesOpen, a round confirmed none of
+	// the author's explicit fixes while items are still open.
+	EndStalled        = "stalled"
 	EndReviewerFailed = "reviewer_failed"
 	EndSessionGone    = "session_gone"
 	EndTimeout        = "timeout"
@@ -54,6 +80,10 @@ const (
 
 // noAnswerNote is an unsettled item's note when the author gave no reason.
 const noAnswerNote = "The author did not answer"
+
+// stalledNote is an unsettled item's note when the loop stalled and the
+// author gave no reason.
+const stalledNote = "The reviewer and the author stopped making progress"
 
 // ownerEarlyNote is an unsettled item's note when the owner pressed Show Now
 // before the author answered it.
@@ -134,7 +164,8 @@ func copyAnchor(a *Anchor) *Anchor {
 }
 
 // RoundOutcome is a round's result for the loop: the author's open items, the
-// ledger so far, and End ("" while the loop goes on, else settled or cap).
+// ledger so far, and End ("" while the loop goes on, else settled, cap or
+// stalled).
 type RoundOutcome struct {
 	Open   []AuthorItem
 	Ledger []LedgerEntry
@@ -142,15 +173,20 @@ type RoundOutcome struct {
 }
 
 // NextRound applies round's reviewer result r to the previous round's open
-// items and ledger, given the author's replies. Round 1 opens r's findings.
-// From round 2: a missing reply counts as fixed; resolved settles the item,
-// disputed after a disagree settles it as disputed, anything else (disputed
-// after fixed, open, no verdict) keeps it open with the reply. New findings
-// skip every key already known. Nothing open ends the loop as settled; at
-// MaxLoopRounds what is still open moves to the ledger as unsettled (cap).
-func NextRound(round int, prevOpen []AuthorItem, prevLedger []LedgerEntry, replies []Reply, r Result) RoundOutcome {
+// items and ledger, given the author's replies, under the loop's rules. Round
+// 1 opens r's findings. From round 2: a missing reply counts as fixed;
+// resolved settles the item, disputed after a disagree settles it as
+// disputed, anything else (disputed after fixed, open, no verdict) keeps it
+// open with the reply. New findings skip every key already known. Nothing
+// open ends the loop as settled; at MaxRoundsFor(rules) what is still open
+// moves to the ledger as unsettled (cap). Under LoopRulesOpen, from round 2
+// a round that resolved none of the author's explicit fixed replies ends the
+// loop as stalled, its open items unsettled (a disagree keeps its reason): a
+// missing reply settles its item but does not keep the loop going.
+func NextRound(round int, rules int, prevOpen []AuthorItem, prevLedger []LedgerEntry, replies []Reply, r Result) RoundOutcome {
 	ledger := append([]LedgerEntry{}, prevLedger...)
 	open := []AuthorItem{}
+	progress := false
 	if round <= 1 {
 		open = Findings(r, 1)
 	} else {
@@ -168,8 +204,8 @@ func NextRound(round int, prevOpen []AuthorItem, prevLedger []LedgerEntry, repli
 		}
 		for _, it := range prevOpen {
 			known[it.Key] = true
-			rp, ok := replyOf[it.Key]
-			if !ok {
+			rp, explicit := replyOf[it.Key]
+			if !explicit {
 				rp = Reply{Key: it.Key, Reply: ReplyFixed}
 			}
 			it.Reply = &rp
@@ -177,6 +213,9 @@ func NextRound(round int, prevOpen []AuthorItem, prevLedger []LedgerEntry, repli
 			switch {
 			case hasVerdict && v.Verdict == VerdictResolved,
 				hasVerdict && v.Verdict == VerdictDisputed && rp.Reply == ReplyDisagree:
+				if explicit && rp.Reply == ReplyFixed && v.Verdict == VerdictResolved {
+					progress = true
+				}
 				ledger = append(ledger, LedgerEntry{AuthorItem: it, Verdict: v.Verdict, VerdictNote: v.Note, Settled: round})
 			default:
 				open = append(open, it)
@@ -192,12 +231,21 @@ func NextRound(round int, prevOpen []AuthorItem, prevLedger []LedgerEntry, repli
 	switch {
 	case len(open) == 0:
 		return RoundOutcome{Open: open, Ledger: ledger, End: EndSettled}
-	case round >= MaxLoopRounds:
-		note := fmt.Sprintf("Not settled in %d rounds", MaxLoopRounds)
+	case round >= MaxRoundsFor(rules):
+		note := fmt.Sprintf("Not settled in %d rounds", MaxRoundsFor(rules))
 		for _, it := range open {
 			ledger = append(ledger, LedgerEntry{AuthorItem: it, Verdict: VerdictUnsettled, VerdictNote: note, Settled: round})
 		}
 		return RoundOutcome{Open: []AuthorItem{}, Ledger: ledger, End: EndCap}
+	case rules >= LoopRulesOpen && round >= 2 && !progress:
+		for _, it := range open {
+			note := stalledNote
+			if it.Reply != nil && it.Reply.Reply == ReplyDisagree {
+				note = it.Reply.Note
+			}
+			ledger = append(ledger, LedgerEntry{AuthorItem: it, Verdict: VerdictUnsettled, VerdictNote: note, Settled: round})
+		}
+		return RoundOutcome{Open: []AuthorItem{}, Ledger: ledger, End: EndStalled}
 	}
 	return RoundOutcome{Open: open, Ledger: ledger}
 }
