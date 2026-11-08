@@ -580,8 +580,16 @@ extension WorkbenchesViewModel {
         // (board #535). A Clean Up… apply does not stop a resume.
         guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
         // A kind this build has no adapter for is refused before anything
-        // runs (A7b): never a shell, never Claude Code in its place.
-        if session.kind.isUnsupported { throw TargetStartError.unsupportedAgent(session.kind.rawValue) }
+        // runs (A7b): never a shell, never Claude Code in its place. Its pane
+        // opens on the not-supported line. A run the session host holds for
+        // it (adopted once the reattach ends) is opened as it is.
+        if session.kind.isUnsupported {
+            await hostReattach?.value
+            if refusedAsUnsupported(session) {
+                placeInLayout(session, fresh: false, placement: placement, ticket: ticket)
+                throw TargetStartError.unsupportedAgent(session.kind.rawValue)
+            }
+        }
         // An agent the organization's policy forbids (#608) is not resumed;
         // a terminal still running shows as it is.
         if let refusal = agentPolicyRefusal(session) {
@@ -939,10 +947,12 @@ extension WorkbenchesViewModel {
     /// worktree stays on disk.
     private func place(_ row: TerminalSession, placing: SessionPlacing, ticket: Int?) async throws -> TerminalSession {
         let projectID = placing.project.id
+        // Only agent rows are placed; a worktree is always made for its agent.
+        guard let agent = row.kind.agent else { return row }
         return try await inPlacementTurn(projectID) {
             let place = await placementForNewSession(
                 project: placing.project, choice: placing.choice, targetID: row.targetID, targetText: placing.targetText,
-                agent: row.kind.agent, rowID: row.id
+                agent: agent, rowID: row.id
             )
             guard let branch = place.worktreeBranch else {
                 startNotice[projectID] = place.notice
@@ -1050,7 +1060,7 @@ extension WorkbenchesViewModel {
         let isLatest = ticket.map { isLatestSwitch($0, projectID: row.projectID) } ?? false
         let previous = terminalCenter?.focusOrder.last
         if ticket != nil { notYetTitledStreak[row.id] = nil } // the owner is back in it: ask again
-        let restorable = fresh ? true : await restoreWorktree(row)
+        let restorable = refusedAsUnsupported(row) ? false : (fresh ? true : await restoreWorktree(row))
         if restorable, let center = terminalCenter,
            let plan = await rowToLaunch(row, fresh: fresh, center: center, ticket: ticket) {
             let row = plan.row
@@ -1095,6 +1105,20 @@ extension WorkbenchesViewModel {
         if isLatest || updated != layout(projectID: projectID) { setLayout(updated, projectID: projectID) }
     }
 
+    /// Whether `row` is of a kind this build does not know and was refused:
+    /// shown `.unavailable` with the not-supported line, before any worktree
+    /// restore, git status, ledger read or launch — nothing per-kind runs
+    /// for it (A7b). A run the session host already holds for it (adopted
+    /// at launch, `.running`) is not refused: it stays as it is. `reopen`
+    /// asks first; `activate` again, for every launch path.
+    private func refusedAsUnsupported(_ row: TerminalSession) -> Bool {
+        guard let message = row.kind.unsupportedMessage else { return false }
+        guard let center = terminalCenter else { return true }
+        if center.states[row.id] == .running { return false }
+        center.refuseLaunch(row, reason: message)
+        return true
+    }
+
     /// A resume of a placed row whose worktree directory is gone (cleaned
     /// up, or deleted by hand) re-adds it from its branch at the same path,
     /// so the agent's transcript resolves by cwd (spec 2026-10-14 §7). False
@@ -1114,10 +1138,15 @@ extension WorkbenchesViewModel {
             return false
         }
         if exists { return await isStillHeld(row, projectID: projectID, branch: branch, top: top) }
+        // A worktree is restored only for the agent its session runs: the
+        // CLI's "no --agent" would install every agent's integration.
+        guard let agent = row.kind.agent else {
+            center.refuseLaunch(row, reason: row.kind.unsupportedMessage
+                ?? "The worktree \(top) could not be restored: the session runs no agent.")
+            return false
+        }
         do {
-            let result = try await cli.worktreeEnsure(
-                projectID: projectID, path: top, branch: branch, agent: row.kind.agent
-            )
+            let result = try await cli.worktreeEnsure(projectID: projectID, path: top, branch: branch, agent: agent)
             if result.created { return true }
             // An existing directory is a no-op (`created` false, nothing refused).
             if result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath) {

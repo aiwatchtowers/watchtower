@@ -168,6 +168,20 @@ final class TerminalCenterReattachTests: XCTestCase {
         XCTAssertTrue(center.hasLiveAgentSession(workbenchID: try XCTUnwrap(row.projectID), workTree: "/tmp/elsewhere"))
         let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
         await hosted.connecting?.value
+
+        // Opening the adopted row is not refused as unsupported: the held
+        // run stays on screen, nothing is launched in its place. The newer
+        // version's migration widened the `kind` CHECK, so the open's own
+        // update of the row (`touch`) passes: the check stays off on the writer.
+        try await pool.write { try $0.execute(sql: "PRAGMA ignore_check_constraints = ON") }
+        await vm.open(row)
+        XCTAssertNil(vm.sessionActionErrors[row.projectID], "opened, not refused")
+        let shown = vm.layout(projectID: try XCTUnwrap(row.projectID)).visiblePanes
+        XCTAssertTrue(shown.contains { WorkspaceLayout.sessionID(of: $0) == row.id }, "the held run is put on screen")
+        XCTAssertEqual(center.states[row.id], .running)
+        XCTAssertTrue(center.process(for: row.id) === hosted)
+        XCTAssertEqual(factoryCalls, 0)
+        XCTAssertEqual(launchesSent(), 0)
         hosted.detachFromHost()
     }
 

@@ -74,14 +74,17 @@ func worktreeTarget(ctx context.Context) (id int64, o workbenchgit.Options, refu
 	return id, o, refused, detail, nil
 }
 
-// worktreeAgent is --agent: "" (every integration) or an agent kind.
+// worktreeAgent is --agent: "" (every integration — a hand-run command; the
+// Desktop always names its session's agent) or an agent kind. Any other
+// value — a newer version's kind — is refused as not supported before
+// anything is made or installed, never treated as "".
 func worktreeAgent() (agentkind.Kind, error) {
 	if workbenchWorktreeFlagAgent == "" {
 		return "", nil
 	}
-	k, ok := agentkind.Parse(workbenchWorktreeFlagAgent)
-	if !ok {
-		return "", fmt.Errorf("--agent must be %s, got %q", agentkind.Choices("or"), workbenchWorktreeFlagAgent)
+	k, err := agentkind.ParseOrRefuse(workbenchWorktreeFlagAgent)
+	if err != nil {
+		return "", fmt.Errorf("--agent: %w", err)
 	}
 	return k, nil
 }
