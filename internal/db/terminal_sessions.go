@@ -406,7 +406,10 @@ type AgentOrder struct {
 	// and with TurnEnd valid the same UPDATE stores TurnEnd as agent_turn_end:
 	// the interrupted turn ends there the way a Stop's turn does
 	// (SetTerminalTurnEnd), so its later tool hooks write nothing. One
-	// statement, so the state and the turn end never disagree.
+	// statement, so the state and the turn end never disagree. A turn end
+	// that moves makes the write a change over a stored `waiting` too (a
+	// turn that opened without a UserPromptSubmit and was interrupted
+	// before any tool hook landed).
 	Interrupt bool
 	TurnEnd   sql.NullInt64
 	// NotOverApproval holds the write back over a stored `approval`: a
@@ -528,7 +531,8 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND (agent_state IS NOT ? OR (? = 1 AND (agent_failed_at IS NULL OR agent_error IS NOT ?))
 		       OR (? = 'working' AND ? = 1 AND finished_at IS NOT NULL)
-		       OR (? = 'waiting' AND agent_background IS NOT ?))
+		       OR (? = 'waiting' AND agent_background IS NOT ?)
+		       OR (? = 1 AND agent_turn_end IS NOT ?))
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`'
 		       OR (? = 1 AND agent_state = 'working' AND agent_tool_run = 1))
 		  AND (? = '' OR agent_state = ?)
@@ -540,7 +544,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		state, fromPrompt,
 		order.Cwd, stamp, stamp, order.Cwd, order.Cwd, stamp, stamp, stamp,
 		id, workbenchID, sessionID, state, failed, agentError,
-		state, fromPrompt, state, background, stamp, stop, onlyFrom, onlyFrom, notOverApproval, seenTurn, order.SeenTurnEnd)
+		state, fromPrompt, state, background, turnEnd, order.TurnEnd, stamp, stop, onlyFrom, onlyFrom, notOverApproval, seenTurn, order.SeenTurnEnd)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}

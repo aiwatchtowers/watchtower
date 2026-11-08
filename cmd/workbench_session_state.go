@@ -469,7 +469,7 @@ func (in hookEvent) toolRunTurn() (turn hookTurn, subagent bool) {
 // hook start times alone would let an ended turn's tool event turn the
 // stop's "waiting" back into "working". The zero value is every other event.
 type hookTurn struct {
-	toolRun bool // a main-thread tool event but an interrupted one
+	toolRun bool // a main-thread tool event other than an interrupted one
 	// notOverApproval holds a main-thread tool start back over "needs
 	// approval" (board #988, ask #525): only a tool that ran — PostToolUse
 	// or PostToolUseFailure — says the dialog was answered.
@@ -637,12 +637,14 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 
 // recordAgentStateOver is recordAgentState's decision over the row it read:
 // a repeat (at most a background report), a write the guards hold back, or
-// writeAgentState. A failed prompt clear never skips it.
+// writeAgentState. A failed prompt clear never skips it. An interrupt over a
+// stored `waiting` is no repeat while its turn end would move
+// (interruptMovesTurnEnd).
 func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
 	rowID := row.ID
 	switch {
-	case repeatsAgentState(row, state, failure, prompt, turn.background):
+	case repeatsAgentState(row, state, failure, prompt, turn.background) && !interruptMovesTurnEnd(row, turn):
 		var reportErr error
 		if turn.stop && turn.background.Valid {
 			reportErr = writeBackgroundReport(database, rowID, workbenchID, sessionID, at, nil, turn.lock)
@@ -707,6 +709,11 @@ func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64
 // turn end stored yet, anywhere in the transcript. Otherwise the turn end
 // stays and the time order alone decides, with a turnEndNotMoved saying why
 // (one stderr line, no content; none for an input with no transcript path).
+// The size is read when this async hook runs, not at the Esc: the next
+// prompt may already be in the transcript, and its turn's first calls placed
+// before the turn end. The time order bounds that: once the next prompt's
+// `working` is stored, the interrupt, stamped before it, writes nothing and
+// stores no turn end (TestProj11_LateInterruptMovesNothing).
 func interruptTurnEnd(row *db.TerminalSession, turn hookTurn, place toolCallPlace) (sql.NullInt64, error) {
 	size, ok := transcriptSize(turn.transcriptPath)
 	switch {
@@ -725,6 +732,29 @@ func interruptTurnEnd(row *db.TerminalSession, turn hookTurn, place toolCallPlac
 		return sql.NullInt64{}, turnEndNotMoved{"interrupted call not placed in the transcript"}
 	}
 	return sql.NullInt64{Int64: size, Valid: true}, nil
+}
+
+// interruptMovesTurnEnd: an interrupt whose turn end would differ from the
+// stored one (board #1019). Over a stored `waiting` — a turn that opened
+// without a UserPromptSubmit (a background notification) and was
+// interrupted before any of its tool hooks landed — the state repeats, but
+// the turn end must still be stored, or the interrupted turn's late tool
+// hooks turn the `waiting` into `working`. A call the transcript places
+// before the stored turn end, or an interrupt it cannot place, moves
+// nothing and stays a repeat (writeAgentState reports the unplaced one only
+// when it writes).
+func interruptMovesTurnEnd(row *db.TerminalSession, turn hookTurn) bool {
+	if !turn.interrupt {
+		return false
+	}
+	place := toolCallUnknown
+	if row.TurnEnd.Valid {
+		if place = toolCallTurn(turn.transcriptPath, turn.toolUseID, row.TurnEnd.Int64); place == toolCallBeforeStop {
+			return false
+		}
+	}
+	end, err := interruptTurnEnd(row, turn, place)
+	return err == nil && end.Valid && end != row.TurnEnd
 }
 
 // turnEndNotMoved is an interrupt whose `waiting` went without a turn end

@@ -2095,3 +2095,36 @@ func TestSetTerminalAgentState_InterruptStoresTheTurnEnd(t *testing.T) {
 		t.Fatalf("state %q, tool run %v, turn end %v; want waiting, false, 250", s.AgentState.String, s.ToolRun, s.TurnEnd)
 	}
 }
+
+// Board #1019: over a stored `waiting` (the turn opened without a
+// UserPromptSubmit, no tool hook landed yet) an interrupt whose turn end
+// moves still lands, storing it; one repeating the stored turn end does not.
+func TestSetTerminalAgentState_InterruptOverWaitingMovesTheTurnEnd(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, AgentOrder{}); err != nil || !ok {
+		t.Fatalf("waiting: ok=%v err=%v", ok, err)
+	}
+	interrupt := func(at time.Time, seen sql.NullInt64, end int64) (bool, error) {
+		return d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", at, "", nil, false,
+			AgentOrder{Interrupt: true, SeenTurnEnd: seen, TurnEnd: sql.NullInt64{Int64: end, Valid: true}})
+	}
+	if ok, err := interrupt(t0.Add(time.Second), sql.NullInt64{}, 300); err != nil || !ok {
+		t.Fatalf("first interrupt: ok=%v err=%v", ok, err)
+	}
+	if s, _ := d.GetTerminalSession(id); s.AgentState.String != "waiting" || s.TurnEnd.Int64 != 300 {
+		t.Fatalf("state %q, turn end %v; want waiting, 300", s.AgentState.String, s.TurnEnd)
+	}
+	seen := sql.NullInt64{Int64: 300, Valid: true}
+	if ok, err := interrupt(t0.Add(2*time.Second), seen, 300); err != nil || ok {
+		t.Fatalf("the same turn end is a repeat: ok=%v err=%v", ok, err)
+	}
+	if ok, err := interrupt(t0.Add(3*time.Second), seen, 420); err != nil || !ok {
+		t.Fatalf("a later turn end: ok=%v err=%v", ok, err)
+	}
+	if s, _ := d.GetTerminalSession(id); s.TurnEnd.Int64 != 420 {
+		t.Fatalf("turn end %v; want 420", s.TurnEnd)
+	}
+}
