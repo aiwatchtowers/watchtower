@@ -897,13 +897,22 @@ package final class ActionStripViewModel {
     }
 
     /// The failure an exit-0 `actions propose --json` answer carries: an
-    /// envelope `error`, `ok` false, or an answer that is not the envelope.
+    /// envelope `error`, `ok` false, or an answer without the proposal's
+    /// pinned `action.id` (`{}` included) — never taken for success.
     nonisolated static func proposeFailure(_ data: Data) -> String? {
+        let unexpected = "Unexpected answer from watchtower"
         guard let env = try? JSONDecoder().decode(AgentActionFeed.Envelope.self, from: data) else {
-            return "Unexpected answer from watchtower"
+            return unexpected
         }
         if let error = env.error, !error.isEmpty { return error }
-        return env.ok ? nil : "The reply was not proposed."
+        guard env.ok else { return "The reply was not proposed." }
+        return (try? JSONDecoder().decode(ProposedAction.self, from: data)) == nil ? unexpected : nil
+    }
+
+    /// The one key a proposal's answer must carry: its row's id.
+    private struct ProposedAction: Decodable {
+        struct Action: Decodable { let id: Int64 }
+        let action: Action
     }
 
     /// Done on an output card: writes `done_at` only, at the version drawn.

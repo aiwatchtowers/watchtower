@@ -229,6 +229,29 @@ final class InboxReplyTests: XCTestCase {
         XCTAssertEqual(vm.replyState(Int(id)), .composing(text: "On it", error: "Unexpected answer from watchtower"))
     }
 
+    /// Only an answer with the proposal's id (`action.id`) is a proposal:
+    /// `{}` or any other object is a failure, never success.
+    func testAnswerWithoutTheActionIDIsAFailure() async throws {
+        let id = try await slackItem()
+        let unexpected = "Unexpected answer from watchtower"
+        let answers: [(String, String?)] = [
+            ("{}", unexpected),
+            (#"{"foo":1}"#, unexpected),
+            (#"{"ok":true,"action":{}}"#, unexpected),
+            (#"{"ok":false,"error":"no channel"}"#, "no channel"),
+            (#"{"ok":false}"#, "The reply was not proposed."),
+            (#"{"ok":true,"action":{"id":7},"applied_ok":false,"error":""}"#, nil)
+        ]
+        for (answer, failure) in answers {
+            let vm = await strip(FakeCLIRunner(stdout: Data(answer.utf8)))
+            let handler = InboxRowActionHandler(vm: vm)
+            type("On it", on: id, handler)
+            await handler.press(.proposeReply, on: InboxRef(kind: .inboxItem, id: id))
+            XCTAssertEqual(vm.replyDrafts[Int(id)]?.error, failure, answer)
+            XCTAssertEqual(vm.replyDrafts[Int(id)] == nil, failure == nil, answer)
+        }
+    }
+
     func testPendingProposalShowsTheCaptionAndDisablesReply() async throws {
         let id = try await slackItem()
         try await pool.write { db in
