@@ -44,14 +44,16 @@ const (
 )
 
 var signalLevels = map[string]Level{
-	sigMigrationEdited: Breaking,
-	sigAPIRemoved:      Breaking,
-	sigTestDeleted:     Breaking,
-	sigMigrationAdded:  Significant,
-	sigDependency:      Significant,
-	sigCI:              Significant,
-	sigSecurityPath:    Significant,
-	sigFileDeleted:     Significant,
+	sigMigrationEdited:                      Breaking,
+	sigAPIRemoved:                           Breaking,
+	sigTestDeleted:                          Breaking,
+	sigMigrationAdded:                       Significant,
+	sigDependency:                           Significant,
+	sigCI:                                   Significant,
+	sigSecurityPath:                         Significant,
+	sigFileDeleted:                          Significant,
+	repoSignalPrefix + Breaking.String():    Breaking,
+	repoSignalPrefix + Significant.String(): Significant,
 }
 
 var dependencyFiles = []string{"go.mod", "package.json", "Package.swift", "composer.json", "Cargo.toml",
@@ -77,8 +79,11 @@ var (
 func Signals(f reviewdiff.File, p Patterns) []string {
 	var out []string
 	migration := inMigrations(f.Path) || (f.Status == "renamed" && inMigrations(f.OldPath))
+	// A file moved into migrations/ from elsewhere is a new migration; a
+	// rename within or out of migrations/ edits an applied one.
+	migrationAdded := migration && (f.Status == "added" || (f.Status == "renamed" && !inMigrations(f.OldPath)))
 	deleted := f.Status == "deleted"
-	if migration && f.Status != "added" {
+	if migration && !migrationAdded {
 		out = append(out, sigMigrationEdited)
 	}
 	if apiRemoved(f) {
@@ -88,7 +93,7 @@ func Signals(f reviewdiff.File, p Patterns) []string {
 	if testDeleted {
 		out = append(out, sigTestDeleted)
 	}
-	if migration && f.Status == "added" {
+	if migrationAdded {
 		out = append(out, sigMigrationAdded)
 	}
 	base := path.Base(f.Path)
@@ -114,16 +119,7 @@ func Signals(f reviewdiff.File, p Patterns) []string {
 func LevelOf(signals []string) Level {
 	level := Normal
 	for _, s := range signals {
-		l := signalLevels[s]
-		if rest, ok := strings.CutPrefix(s, repoSignalPrefix); ok {
-			switch rest {
-			case "breaking":
-				l = Breaking
-			case "significant":
-				l = Significant
-			}
-		}
-		level = max(level, l)
+		level = max(level, signalLevels[s])
 	}
 	return level
 }
