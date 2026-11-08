@@ -33,12 +33,12 @@ package enum SpecReviewThreadBlocks {
     /// valid was dropped (empty until final).
     package static func parse(
         _ text: String, final: Bool
-    ) -> (text: String, question: String?, finding: SpecReviewProposedFinding?, rejected: [String]) {
+    ) -> (text: String, question: String?, finding: SpecReviewProposedFinding?, rejected: [Rejection]) {
         guard text.contains(askAuthorFence) || text.contains(findingFence) else { return (text, nil, nil, []) }
         var removals: [Range<String.Index>] = []
         var question: String?
         var finding: SpecReviewProposedFinding?
-        var rejected: [String] = []
+        var rejected: [Rejection] = []
         var cursor = text.startIndex
         while let (open, fence) = nextFence(in: text, from: cursor) {
             cursor = open.upperBound
@@ -57,12 +57,16 @@ package enum SpecReviewThreadBlocks {
             case askAuthorFence:
                 switch checkQuestion(Data(body.utf8)) {
                 case .success(let decoded): question = decoded
-                case .failure(let problem): rejected.append("The assistant's question to the author could not be sent: \(problem.reason).")
+                case .failure(let problem):
+                    rejected.append(Rejection(code: problem.code,
+                                              notice: "The assistant's question to the author could not be sent: \(problem.reason)."))
                 }
             default:
                 switch checkFinding(Data(body.utf8)) {
                 case .success(let decoded): finding = decoded
-                case .failure(let problem): rejected.append("The assistant's proposed finding could not be shown: \(problem.reason).")
+                case .failure(let problem):
+                    rejected.append(Rejection(code: problem.code,
+                                              notice: "The assistant's proposed finding could not be shown: \(problem.reason)."))
                 }
             }
         }
@@ -83,9 +87,17 @@ package enum SpecReviewThreadBlocks {
         return (visible.trimmingCharacters(in: .whitespacesAndNewlines), question, finding, rejected)
     }
 
-    /// Why a block was not valid, in words for the owner.
+    /// Why a block was not valid: `code` is a fixed class for the log
+    /// (FILES-01: never the model's words), `reason` the owner's words.
     package struct Problem: Error, Equatable {
+        package let code: String
         package let reason: String
+    }
+
+    /// A dropped block: its class for the log, its notice for the thread.
+    package struct Rejection: Equatable, Sendable {
+        package let code: String
+        package let notice: String
     }
 
     /// The first of the two fences at or after `cursor` that starts a line.
@@ -128,12 +140,12 @@ package enum SpecReviewThreadBlocks {
 
     package static func checkQuestion(_ json: Data) -> Result<String, Problem> {
         guard let raw = try? JSONDecoder().decode(RawQuestion.self, from: json) else {
-            return .failure(Problem(reason: "its block is not valid JSON with a question"))
+            return .failure(Problem(code: "question_not_json", reason: "its block is not valid JSON with a question"))
         }
         let question = raw.question.trimmingCharacters(in: .whitespacesAndNewlines)
-        if question.isEmpty { return .failure(Problem(reason: "the question is empty")) }
+        if question.isEmpty { return .failure(Problem(code: "question_empty", reason: "the question is empty")) }
         if question.unicodeScalars.count > maxQuestionRunes {
-            return .failure(Problem(reason: "longer than \(maxQuestionRunes) characters"))
+            return .failure(Problem(code: "question_too_long", reason: "longer than \(maxQuestionRunes) characters"))
         }
         return .success(question)
     }
@@ -147,17 +159,19 @@ package enum SpecReviewThreadBlocks {
 
     package static func checkFinding(_ json: Data) -> Result<SpecReviewProposedFinding, Problem> {
         guard let finding = try? JSONDecoder().decode(SpecReviewProposedFinding.self, from: json) else {
-            return .failure(Problem(reason: "its block is not valid JSON"))
+            return .failure(Problem(code: "finding_not_json", reason: "its block is not valid JSON"))
         }
         let blank = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         if !findingKinds.contains(finding.kind) {
-            return .failure(Problem(reason: "its kind \"\(finding.kind)\" is not differs, missing, decided_alone or blind_spot"))
+            return .failure(Problem(
+                code: "finding_unknown_kind",
+                reason: "its kind \"\(finding.kind)\" is not differs, missing, decided_alone or blind_spot"))
         }
         if blank(finding.title) || blank(finding.text) {
-            return .failure(Problem(reason: "it has no title or no text"))
+            return .failure(Problem(code: "finding_no_title_or_text", reason: "it has no title or no text"))
         }
         if !["document", "thread"].contains(finding.quote.source) || blank(finding.quote.text) {
-            return .failure(Problem(reason: "its quote has no source (document or thread) or no words"))
+            return .failure(Problem(code: "finding_bad_quote", reason: "its quote has no source (document or thread) or no words"))
         }
         return .success(finding)
     }

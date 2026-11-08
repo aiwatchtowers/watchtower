@@ -85,7 +85,7 @@ final class SpecReviewThreadBlocksTests: XCTestCase {
         let text = "x\n\n```watchtower-ask-author\n{\"question\": \"\(long)\"}\n```"
         let parsed = SpecReviewThreadBlocks.parse(text, final: true)
         XCTAssertNil(parsed.question)
-        XCTAssertEqual(parsed.rejected, ["The assistant's question to the author could not be sent: longer than 1000 characters."])
+        XCTAssertEqual(parsed.rejected.map(\.notice), ["The assistant's question to the author could not be sent: longer than 1000 characters."])
     }
 
     /// Every invalid closed block says why, in reply order; a valid one and
@@ -119,15 +119,18 @@ final class SpecReviewThreadBlocksTests: XCTestCase {
         XCTAssertEqual(parsed.text, "It holds.")
         XCTAssertNil(parsed.question)
         XCTAssertEqual(parsed.finding?.kind, "missing")
-        XCTAssertEqual(parsed.rejected, [
+        XCTAssertEqual(parsed.rejected.map(\.notice), [
             "The assistant's question to the author could not be sent: the question is empty.",
             "The assistant's proposed finding could not be shown: its kind \"agreement\" is not differs, missing, "
                 + "decided_alone or blind_spot.",
             "The assistant's proposed finding could not be shown: its quote has no source (document or thread) or no words.",
             "The assistant's question to the author could not be sent: its block is not valid JSON with a question."
         ])
-        XCTAssertEqual(SpecReviewThreadBlocks.parse(text, final: false).rejected, [], "nothing is read while it streams")
-        XCTAssertEqual(SpecReviewThreadBlocks.parse("Plain.", final: true).rejected, [])
+        XCTAssertEqual(parsed.rejected.map(\.code),
+                       ["question_empty", "finding_unknown_kind", "finding_bad_quote", "question_not_json"],
+                       "the log gets a fixed class, never the model's words")
+        XCTAssertEqual(SpecReviewThreadBlocks.parse(text, final: false).rejected.isEmpty, true, "nothing is read while it streams")
+        XCTAssertEqual(SpecReviewThreadBlocks.parse("Plain.", final: true).rejected.isEmpty, true)
     }
 
     /// Go stores a thread finding's title and text trimmed and clipped to

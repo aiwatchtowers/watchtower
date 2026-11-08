@@ -156,10 +156,10 @@ enum SpecReviewThreadSurface {
                 }
                 // An invalid block is said, never dropped in silence: the
                 // agent believes it asked or proposed.
-                for reason in blocks.rejected {
-                    NSLog("SpecReviewThreadSurface: conversation %lld: %@", conversationID, reason)
+                for rejection in blocks.rejected {
+                    NSLog("SpecReviewThreadSurface: conversation %lld: block dropped (%@)", conversationID, rejection.code)
                 }
-                result.notices = blocks.rejected
+                result.notices = blocks.rejected.map(\.notice)
                 if let notice = context.turns.folderAccess.notice,
                    !hasNotice(notice, conversationID: conversationID, dbPool: dbPool) {
                     result.notices.append(notice)

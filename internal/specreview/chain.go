@@ -75,14 +75,17 @@ func readChain(d *db.DB, askID int64) (chainState, []string, error) {
 	var notes []string
 	info := map[string]ClosedItem{}
 	// learn keeps the latest kind and where-quote known for a key: the
-	// chain is read root first, so a later round's anchor wins.
+	// chain is read root first, so a later round's anchor wins. An
+	// agreement once known to differ never becomes closedKindAsAgreed: a
+	// dismissed differs/missing finding the reviewer later calls as agreed
+	// still closes its passage.
 	learn := func(key, kind string, where *Anchor) {
 		if key == "" {
 			return
 		}
 		it := info[key]
 		it.Key = key
-		if kind != "" {
+		if kind != "" && !(kind == closedKindAsAgreed && it.Kind == KindAgreement) {
 			it.Kind = kind
 		}
 		if where != nil {
