@@ -1,0 +1,15 @@
+{
+  "reply": "You said the mute should end at midnight; the document does not.\n\n```watchtower-finding\n{\"kind\": \"missing\", \"severity\": \"minor\", \"title\": \"Ends at midnight\", \"text\": \"The owner wants the mute to end at midnight.\", \"quote\": {\"source\": \"thread\", \"text\": \"end at midnight, not after 24 hours\"}, \"where\": null}\n```\n\n```watchtower-ask-author\n{\"question\": \"Was midnight considered and dropped?\"}\n```",
+  "question": "Was midnight considered and dropped?",
+  "finding": {
+    "kind": "missing",
+    "severity": "minor",
+    "title": "Ends at midnight",
+    "text": "The owner wants the mute to end at midnight.",
+    "quote": {
+      "source": "thread",
+      "text": "end at midnight, not after 24 hours"
+    },
+    "where": null
+  }
+}

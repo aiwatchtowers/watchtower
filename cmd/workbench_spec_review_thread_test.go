@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/sessionfeed"
 	"watchtower/internal/specreview"
 )
 
@@ -150,4 +153,197 @@ func TestSpecReviewQuestionCmd_CloseGone(t *testing.T) {
 	requireExit(t, err, 3, "the question is closed")
 	_, err = questionCmd(t, "", "--close", "999999", "--reason", "gone")
 	requireExit(t, err, 3, "the question is closed")
+}
+
+// addFindingCmd runs `spec-review add-finding` with stdin.
+func addFindingCmd(t *testing.T, stdin string, args ...string) (string, error) {
+	t.Helper()
+	workbenchSpecReviewAddFindingCmd.SetIn(strings.NewReader(stdin))
+	t.Cleanup(func() { workbenchSpecReviewAddFindingCmd.SetIn(nil) })
+	return runSpecReview(t, append([]string{"add-finding"}, args...)...)
+}
+
+// threadRow stores one chat row of the spec review thread contextID.
+func threadRow(t *testing.T, database *db.DB, contextID, role, text string) {
+	t.Helper()
+	var conv int64
+	err := database.QueryRow(`SELECT id FROM chat_conversations WHERE context_type = ? AND context_id = ?`,
+		db.SpecReviewThreadContextType, contextID).Scan(&conv)
+	if errors.Is(err, sql.ErrNoRows) {
+		res, err := database.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+			VALUES ('', ?, ?, 0, 0)`, db.SpecReviewThreadContextType, contextID)
+		require.NoError(t, err)
+		conv, err = res.LastInsertId()
+		require.NoError(t, err)
+	} else {
+		require.NoError(t, err)
+	}
+	_, err = database.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, ?, ?, 0)`, conv, role, text)
+	require.NoError(t, err)
+}
+
+const ownerQuoteBlock = `{"kind":"missing","severity":"major","title":"Midnight","text":"The owner wants the mute to end at midnight.",` +
+	`"quote":{"source":"thread","text":"end at midnight, not after a day"},"where":null}`
+
+func TestAddFindingCmd_WritesRow(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	ask, err := database.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	thread := specreview.ThreadContextID(ask.WorkbenchID, id, "ag:0123456789ab")
+	threadRow(t, database, thread, "user", "I want it to end at midnight, not after a day")
+
+	block := `{"kind":"decided_alone","severity":"blocker","title":"Behaviour","text":"Twenty-four hours was never agreed.",` +
+		`"quote":{"source":"document","text":"Muting lasts twenty-four hours."},` +
+		`"where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours."}}`
+	out, err := addFindingCmd(t, block, "--ask", itoa(id), "--thread", thread)
+	require.NoError(t, err)
+	var printed map[string]string
+	require.NoError(t, json.Unmarshal([]byte(out), &printed), out)
+	key := printed["key"]
+	assert.True(t, strings.HasPrefix(key, "tf:"), key)
+	assert.Len(t, printed, 1)
+
+	rows, err := database.ListSpecReviewThreadFindings(id)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, key, rows[0].ItemKey)
+	assert.Equal(t, thread, rows[0].Thread)
+	created, err := time.Parse(time.RFC3339, rows[0].CreatedAt)
+	require.NoError(t, err)
+	assert.Equal(t, time.UTC, created.Location())
+	var f specreview.ThreadFinding
+	require.NoError(t, json.Unmarshal([]byte(rows[0].Finding), &f))
+	assert.Equal(t, key, f.Key)
+	assert.Equal(t, thread, f.Thread)
+	assert.Equal(t, specreview.SpeakerAgent, f.Speaker)
+	assert.Equal(t, "ch:1", f.Chapter)
+
+	// The owner's own words in the thread: speaker owner.
+	out, err = addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(id), "--thread", thread)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), &printed), out)
+	rows, err = database.ListSpecReviewThreadFindings(id)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	for _, r := range rows {
+		if r.ItemKey == printed["key"] {
+			require.NoError(t, json.Unmarshal([]byte(r.Finding), &f))
+			assert.Equal(t, specreview.SpeakerOwner, f.Speaker)
+		}
+	}
+
+	// A second press of the same card adds nothing and prints the same key.
+	again, err := addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(id), "--thread", thread)
+	require.NoError(t, err)
+	assert.JSONEq(t, out, again)
+	rows, err = database.ListSpecReviewThreadFindings(id)
+	require.NoError(t, err)
+	assert.Len(t, rows, 2)
+}
+
+// TestAddFindingCmd_RefusesForeignThread: a thread of another workbench, or
+// one whose root is not the ask's chain root, is refused (Review Focus 5).
+func TestAddFindingCmd_RefusesForeignThread(t *testing.T) {
+	database, root, _ := specReviewAsk(t)
+	first, err := database.GetOwnerAskByID(root)
+	require.NoError(t, err)
+	next := mustInsertReRoundAsk(t, database, first)
+	other, err := database.CreateWorkbench("other", t.TempDir())
+	require.NoError(t, err)
+
+	for name, thread := range map[string]string{
+		"another workbench":      specreview.ThreadContextID(other, root, "ag:0123456789ab"),
+		"not the chain root":     specreview.ThreadContextID(first.WorkbenchID, next, "ag:0123456789ab"),
+		"another chain entirely": specreview.ThreadContextID(first.WorkbenchID, root+100, "ag:0123456789ab"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			threadRow(t, database, thread, "user", "I want it to end at midnight, not after a day")
+			_, err := addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(next), "--thread", thread)
+			requireExit(t, err, 3, "this thread is not part of ask "+itoa(next)+"'s review")
+		})
+	}
+	_, err = addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(next), "--thread", "not-a-thread")
+	requireExit(t, err, 2, "")
+
+	// The chain root's thread is accepted from a re-round's ask.
+	thread := specreview.ThreadContextID(first.WorkbenchID, root, "ag:0123456789ab")
+	threadRow(t, database, thread, "user", "I want it to end at midnight, not after a day")
+	_, err = addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(next), "--thread", thread)
+	require.NoError(t, err)
+	rows, err := database.ListSpecReviewThreadFindings(next)
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
+// TestAddFindingCmd_RefusesInventedQuote: the agent's own words, the owner's
+// words in another chain's thread and text found nowhere are all "not
+// added: quote not found", and nothing is written (Review Focus 5).
+func TestAddFindingCmd_RefusesInventedQuote(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	ask, err := database.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	thread := specreview.ThreadContextID(ask.WorkbenchID, id, "ag:0123456789ab")
+	threadRow(t, database, thread, "user", "why a day?")
+	threadRow(t, database, thread, "assistant", "I want it to end at midnight, not after a day")
+	// The same words from the owner, but in another chain's thread.
+	threadRow(t, database, specreview.ThreadContextID(ask.WorkbenchID, id+100, "ag:0123456789ab"),
+		"user", "I want it to end at midnight, not after a day")
+
+	for name, block := range map[string]string{
+		"agent's reply":    ownerQuoteBlock,
+		"nowhere":          strings.Replace(ownerQuoteBlock, "end at midnight, not after a day", "the owner never said this", 1),
+		"document claimed": strings.Replace(ownerQuoteBlock, `"source":"thread"`, `"source":"document"`, 1),
+		"bad where": `{"kind":"differs","title":"t","text":"x","quote":{"source":"document","text":"Muting lasts twenty-four hours."},` +
+			`"where":{"heading":"Behaviour","quote":"Muting lasts a week."}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := addFindingCmd(t, block, "--ask", itoa(id), "--thread", thread)
+			requireExit(t, err, 3, "not added: quote not found")
+		})
+	}
+	_, err = addFindingCmd(t, `{"kind":"as_agreed"`, "--ask", itoa(id), "--thread", thread)
+	requireExit(t, err, 3, "not added: ")
+	rows, err := database.ListSpecReviewThreadFindings(id)
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestThreadContextCmd_Blocks(t *testing.T) {
+	database, id := boundSpecReviewAsk(t)
+	ask, err := database.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	old := specReviewContextFeed
+	specReviewContextFeed = func(*db.DB) func(context.Context, int64) ([]sessionfeed.Entry, error) {
+		return func(context.Context, int64) ([]sessionfeed.Entry, error) {
+			return []sessionfeed.Entry{{ID: "e1", Kind: sessionfeed.KindOwner, Text: "Mute it for one calendar day"}}, nil
+		}
+	}
+	t.Cleanup(func() { specReviewContextFeed = old })
+	var qid int64
+	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
+		var err error
+		qid, _, err = database.InsertOwnerAsk(tx, db.OwnerAsk{WorkbenchID: ask.WorkbenchID, SessionID: ask.SessionID,
+			Kind: "question", Title: "Scope?", Payload: `{"questions":[{"id":"q1","question":"How long?","options":[{"label":"One day"},{"label":"A week"}]}]}`})
+		return err
+	}))
+	_, err = database.Exec(`UPDATE owner_asks SET status = 'answered', answer = ? WHERE id = ?`,
+		`{"answers":[{"id":"q1","labels":["One day"],"other":""}],"checklist":[],"comments":[],"note":"","verdict":""}`, qid)
+	require.NoError(t, err)
+	result := `{"summary":"s","brief":"","theses":[],"agreements":[],"decided_alone":[{"key":"da:0123456789ab","text":"Twenty-four hours",` +
+		`"note":"","chapter":"ch:1","where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours."}}],` +
+		`"blind_spots":[],"checks":[],"resolved":[],"chapters":[],"notes":[],"code_read":false,"dropped":0}`
+	_, err = database.Exec(`UPDATE spec_reviews SET status = 'done', result = ? WHERE ask_id = ?`, result, id)
+	require.NoError(t, err)
+
+	out, err := runSpecReview(t, "thread-context", "--ask", itoa(id), "--item", "da:0123456789ab")
+	require.NoError(t, err)
+	for _, block := range []string{"<<<document\n", "<<<item\n", "<<<result\n", "<<<ledger\n", "<<<replies\n", "<<<conversation\n", "<<<asks\n"} {
+		assert.Contains(t, out, block)
+	}
+	assert.Contains(t, out, "Muting lasts twenty-four hours.")
+	assert.Contains(t, out, "Mute it for one calendar day")
+	assert.Contains(t, out, "How long? → One day")
+
+	_, err = runSpecReview(t, "thread-context", "--ask", itoa(id), "--item", "ag:000000000000")
+	requireExit(t, err, 3, "no such item")
 }

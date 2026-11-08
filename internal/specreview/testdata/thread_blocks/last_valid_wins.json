@@ -1,0 +1,18 @@
+{
+  "reply": "Two proposals; the second replaces the first.\n\n```watchtower-finding\n{\"kind\": \"blind_spot\", \"severity\": \"major\", \"title\": \"Daylight saving\", \"text\": \"A mute set the night before a clock change ends an hour early or late.\", \"quote\": {\"source\": \"document\", \"text\": \"Muting lasts twenty-four hours.\"}, \"where\": {\"heading\": \"Behaviour\", \"quote\": \"Muting lasts twenty-four hours.\"}}\n```\n\n```watchtower-finding\n{\"kind\": \"differs\", \"severity\": \"blocker\", \"title\": \"Per user, not per channel\", \"text\": \"The owner agreed a per-user mute; the document stores it per channel.\", \"quote\": {\"source\": \"document\", \"text\": \"The mute is stored per channel.\"}, \"where\": {\"heading\": \"Storage\", \"quote\": \"The mute is stored per channel.\"}}\n```\n\n```watchtower-finding\n{not json\n```",
+  "question": null,
+  "finding": {
+    "kind": "differs",
+    "severity": "blocker",
+    "title": "Per user, not per channel",
+    "text": "The owner agreed a per-user mute; the document stores it per channel.",
+    "quote": {
+      "source": "document",
+      "text": "The mute is stored per channel."
+    },
+    "where": {
+      "heading": "Storage",
+      "quote": "The mute is stored per channel."
+    }
+  }
+}

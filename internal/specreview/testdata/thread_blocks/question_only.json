@@ -1,0 +1,5 @@
+{
+  "reply": "The finding holds if a day means a calendar day. Only the author knows which was meant.\n\n```watchtower-ask-author\n{\"question\": \"Does a day mean 24 hours or until midnight?\"}\n```",
+  "question": "Does a day mean 24 hours or until midnight?",
+  "finding": null
+}

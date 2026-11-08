@@ -83,10 +83,27 @@ func TestSpecReviewShow_JSONKeysPinned(t *testing.T) {
 	}
 	sort.Strings(keys)
 	assert.Equal(t, []string{"ask_id", "attempt", "dropped", "finished_at", "ledger", "loop", "loop_end", "marks", "model", "open_items", "provider",
-		"queued_at", "reason", "result", "round", "started_at", "status"}, keys)
+		"queued_at", "reason", "result", "round", "started_at", "status", "thread_findings"}, keys)
 	assert.Equal(t, "null", string(m["result"]), "no result yet")
+	assert.Equal(t, "[]", string(m["thread_findings"]), "none yet")
 	assert.JSONEq(t, `{"ag:0123456789ab":{"state":"comment","body":"why?","updated_at":"2026-10-25T10:00:00Z"},`+
 		`"ag:ba9876543210":{"state":"comment","body":"keep","about":"Threads stay unmuted","updated_at":"2026-10-25T10:00:00Z"}}`, string(m["marks"]))
+}
+
+func TestSpecReviewShowJSON_ThreadFindings(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	f1 := `{"key":"tf:0123456789ab","kind":"differs","title":"A","thread":"1:2:ag:x"}`
+	f2 := `{"key":"tf:ba9876543210","kind":"missing","title":"B","thread":"1:2:ag:y"}`
+	for key, js := range map[string]string{"tf:0123456789ab": f1, "tf:ba9876543210": f2} {
+		require.NoError(t, database.InsertSpecReviewThreadFinding(db.SpecReviewThreadFinding{
+			AskID: id, ItemKey: key, Thread: "1:2:ag:x", Finding: js, CreatedAt: "2026-11-08T10:00:00Z"}))
+	}
+
+	out, err := runSpecReview(t, "show", "--ask", itoa(id), "--json")
+	require.NoError(t, err)
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	assert.JSONEq(t, "["+f1+","+f2+"]", string(m["thread_findings"]), "the stored findings, by key")
 }
 
 func TestSpecReviewStart_RunningRefused(t *testing.T) {

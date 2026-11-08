@@ -20,11 +20,17 @@ func Normalize(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// contains reports whether needle occurs in hay after both are normalised.
-// A needle under minQuoteRunes runes is too weak to anchor anything.
-func contains(hay, needle string) bool {
-	return containsNorm(Normalize(hay), needle)
+// ContainsQuote reports whether quote occurs in hay after both are
+// normalised (whitespace runs collapsed): the one quote check of the spec
+// reviewer, used by Parse and by a thread's proposed finding alike. A quote
+// under minQuoteRunes runes is too weak to anchor anything; one over
+// maxQuoteRunes is refused, never clipped.
+func ContainsQuote(hay, quote string) bool {
+	return containsNorm(Normalize(hay), quote)
 }
+
+// contains is ContainsQuote.
+func contains(hay, needle string) bool { return ContainsQuote(hay, needle) }
 
 // containsNorm is contains for a hay that is already normalised.
 func containsNorm(normHay, needle string) bool {
@@ -61,6 +67,15 @@ type validator struct {
 	// guard is the drift guards of a loop round, nil outside a loop.
 	guard     *driftGuard
 	droppedBy map[string]int
+}
+
+// docValidator is a validator over doc's chapters, with no other sources.
+func docValidator(doc string, t DocType) *validator {
+	v := &validator{src: Sources{Doc: doc}, chapters: Chapters(doc, t), docNorm: Normalize(doc)}
+	for _, c := range v.chapters {
+		v.norm = append(v.norm, Normalize(doc[c.Start:c.End]))
+	}
+	return v
 }
 
 // normHeading is a heading as compared: leading # and case stripped.
@@ -223,10 +238,8 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 		return Result{}, errors.New("spec review reply: empty summary")
 	}
 
-	v := &validator{src: src, chapters: Chapters(src.Doc, t), docNorm: Normalize(src.Doc)}
-	for _, c := range v.chapters {
-		v.norm = append(v.norm, Normalize(src.Doc[c.Start:c.End]))
-	}
+	v := docValidator(src.Doc, t)
+	v.src = src
 	v.guard = newDriftGuard(src, v.chapters)
 	if src.Folder != "" {
 		if r, err := os.OpenRoot(src.Folder); err == nil {
