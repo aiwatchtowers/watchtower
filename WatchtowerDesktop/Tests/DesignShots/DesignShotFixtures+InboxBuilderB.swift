@@ -1,5 +1,4 @@
 import AppKit
-import GRDB
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
@@ -88,9 +87,6 @@ enum InboxBuilderBShotFixtures {
             },
             DesignShot(name: "inbox-b-folder-empty", size: NSSize(width: 420, height: 300)) {
                 listColumn(InboxFolderListContent(folderKind: .owner, folderTitle: "Release acme 2.0"))
-            },
-            DesignShot(name: "inbox-b-approvals-empty", size: NSSize(width: 420, height: 240)) {
-                approvalsPane(Approvals(cards: []))
             }
         ]
     }
@@ -103,147 +99,19 @@ enum InboxBuilderBShotFixtures {
 
     // MARK: - Needs approval
 
-    /// What Needs approval shows above its cards, and the cards.
-    private struct Approvals {
-        var banner: String?
-        var note: NeedsApprovalNoteContent?
-        var notice = false
-        var cards: [ApprovalCard]
-    }
-
-    private enum ApprovalCard {
-        case native(AgentAction)
-        case nativeReminder
-        case recipe([StandInRow])
-    }
-
+    /// Drawn from the wired Inbox since Task 12 (`InboxApprovalsShotFixtures`),
+    /// plus the Automations tab's built-in card under the same banner.
     private static var approvalShots: [DesignShot] {
-        let native: [ApprovalCard] = [.native(slackSend()), .native(jiraIssue())]
-        let restart = "The background sync did not restart: the daemon did not stop in time"
-        let states: [(String, Approvals)] = [
-            ("inbox-b-approvals-native", Approvals(cards: native)),
-            ("inbox-b-approvals-recipe", Approvals(cards: [.recipe([jiraRow(), reminderRow()])])),
-            ("inbox-b-approvals-mixed", Approvals(cards: [
-                .native(slackSend()), .recipe([jiraRow(), linearFailedRow(), reminderRow()])
-            ])),
-            ("inbox-b-approvals-notice", Approvals(notice: true, cards: [.recipe([jiraRow(), reminderRow()])])),
-            ("inbox-b-approvals-off", Approvals(note: NeedsApprovalNoteContent(state: .off), cards: native)),
-            ("inbox-b-approvals-stopped", Approvals(note: NeedsApprovalNoteContent(state: .stopped), cards: native)),
-            ("inbox-b-approvals-run-failed", Approvals(note: NeedsApprovalNoteContent(state: .lastRunFailed),
-                                                       cards: native)),
-            ("inbox-b-approvals-off-turn-on-failed", Approvals(note: NeedsApprovalNoteContent(
-                state: .off, failure: "Feature changes are being applied in Settings — try again"), cards: native)),
-            ("inbox-b-approvals-stopped-turn-on-failed", Approvals(note: NeedsApprovalNoteContent(
-                state: .stopped, failure: "watchtower exited with error: database is locked"), cards: native)),
-            ("inbox-b-approvals-restart-failed", Approvals(banner: restart, cards: native)),
-            ("inbox-b-approvals-failed-action", Approvals(cards: [.native(linearFailed())])),
-            ("inbox-b-approvals-reminder", Approvals(cards: [.nativeReminder]))
-        ]
-        return states.map { name, approvals in
-            DesignShot(name: name, size: NSSize(width: 760, height: 0)) { approvalsPane(approvals) }
-        } + [
+        InboxApprovalsShotFixtures.shots + [
             DesignShot(name: "inbox-b-builtin-restart-failed", size: NSSize(width: 760, height: 0)) {
                 AnyView(VStack(spacing: 0) {
-                    DaemonBannerView(banner: .failed(restart), onStart: {}, onOpenLogs: {}, onDismiss: {})
+                    DaemonBannerView(banner: .failed(InboxApprovalsShotFixtures.restartFailure),
+                                     onStart: {}, onOpenLogs: {}, onDismiss: {})
                     BuiltinShotFixtures.card(.shipped)
                 }
                 .detailBackground())
             }
         ]
-    }
-
-    /// The live `NeedsApprovalPane` (Task 12) over the fixture's cards.
-    private static func approvalsPane(_ approvals: Approvals) -> AnyView {
-        let count = approvals.cards.reduce(0) { total, card in
-            if case let .recipe(rows) = card { return total + rows.count }
-            return total + 1
-        } + (approvals.notice ? 1 : 0)
-        return AnyView(VStack(spacing: 0) {
-            if let banner = approvals.banner {
-                DaemonBannerView(banner: .failed(banner), onStart: {}, onOpenLogs: {}, onDismiss: {})
-            }
-            NeedsApprovalPane(count: count, note: approvals.note) {
-                if approvals.notice {
-                    nativeCard(.builtinNotice(BuiltinUpgradeNotice(
-                        builtinID: "morning-brief", error: "your customised prompt was kept; the move stopped at "
-                            + "the confirm step", updatedAt: now)))
-                }
-                ForEach(Array(approvals.cards.enumerated()), id: \.offset) { _, card in
-                    approvalCard(card)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground())
-    }
-
-    @ViewBuilder
-    private static func approvalCard(_ card: ApprovalCard) -> some View {
-        switch card {
-        case let .native(action):
-            nativeProposal(action)
-        case .nativeReminder:
-            nativeCard(.reminder(reminder))
-        case let .recipe(rows):
-            standInCard(title: nil, caption: nil, rows: rows)
-        }
-    }
-
-    /// Today's card for a proposal (the reading pane's `AgentActionCardView`).
-    private static func nativeProposal(_ action: AgentAction) -> some View {
-        var card = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
-        // Only the run-made proposal names its automation; a reaction's does not.
-        card.contextLabel = action.tool == "send_slack_message" ? "⚙ Release notes · run #4" : nil
-        card.onDismiss = {}
-        return card
-    }
-
-    /// Today's reading-pane card for a reminder or a built-in notice, on a
-    /// card fill.
-    private static func nativeCard(_ item: InboxListItem) -> some View {
-        InboxReadingPane(item: item, navScreens: [], now: now, onCommand: { _ in }, onRetryBuiltin: { _ in })
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-    }
-
-    private static let now = Date(timeIntervalSinceReferenceDate: 815_000_000)
-
-    private static var reminder: Reminder {
-        Reminder(row: Row([
-            "id": 7, "account_id": 1, "message_ref": "", "note": "Answer colleague A about the budget",
-            "remind_at": AutomationDates.format(now.addingTimeInterval(-600)), "status": "pending"
-        ]))
-    }
-
-    private static func slackSend() -> AgentAction {
-        action(id: 41, tool: "send_slack_message",
-               args: ##"{"text":"Release 2.0 is tagged; checklist in the thread.","target":{"account_id":1,"##
-                   + ##""workspace":"acme","channel_id":"C1","label":"#acme-release"}}"##,
-               status: "pending", reason: "Release notes run #4: tell the channel the tag is out")
-    }
-
-    private static func jiraIssue() -> AgentAction {
-        action(id: 42, tool: "create_jira_issue",
-               args: #"{"project_key":"ACME","issue_type":"Bug","summary":"Checklist link broken on the release page"}"#,
-               status: "pending", reason: "From your :ticket: reaction")
-    }
-
-    private static func linearFailed() -> AgentAction {
-        action(id: 43, tool: "create_linear_issue",
-               args: #"{"team":"ACME","title":"Rollback plan for 2.0"}"#,
-               status: "failed", reason: "From your :ticket: reaction", error: "the team was archived")
-    }
-
-    private static func action(
-        id: Int64, tool: String, args: String, status: String, reason: String, error: String = ""
-    ) -> AgentAction {
-        AgentAction(row: Row([
-            "id": id, "tool": tool, "args_json": args, "status": status, "surface": "automation",
-            "context_type": "automation_run", "context_id": "4", "reason": reason, "error": error,
-            "created_at": AutomationDates.format(now.addingTimeInterval(-1800))
-        ]))
     }
 
     // MARK: - Rows with a ref

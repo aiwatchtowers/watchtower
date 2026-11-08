@@ -82,7 +82,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.ideaCard = ideaCard
     }
 
-    /// This pane as one card of Needs approval's stack. An automation card
+    /// This pane as one card of Needs approval's stack: no scrolling column
+    /// of its own (the stack scrolls). An automation card
     /// there is the `needs-approval` recipe's look of an approval: its Done
     /// and Dismiss would close the artifact, not the approval, so they are
     /// left out until inbox builder B Task 13, whose ref hooks add Approve,
@@ -133,8 +134,15 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         }
     }
 
+    /// The card in the pane's scrolling column; in Needs approval's stack,
+    /// the card alone: the stack scrolls and pads its cards itself.
+    @ViewBuilder
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
-        InboxCardColumn(content: content)
+        if inApprovals {
+            content()
+        } else {
+            InboxCardColumn(content: content)
+        }
     }
 
     private var nothingSelected: some View {
