@@ -26,6 +26,10 @@ const (
 // "parse"); every parse failure wraps it.
 var ErrParse = errors.New("the AI answer could not be read")
 
+// ErrSummary marks a failure of the summary part alone of a full call: its
+// chapter descriptions came back with it.
+var ErrSummary = errors.New("the summary part failed")
+
 // ChapterDesc is the model's description of one map chapter.
 type ChapterDesc struct {
 	Key   string `json:"key"`
@@ -36,9 +40,11 @@ type ChapterDesc struct {
 // DescribeBatch makes one batch call. With full false it is a batch of a
 // multi-batch run: prompt review.chapters, descriptions only, intent
 // ignored. With full true it is the one full call of a single-batch run:
-// prompt review.overview, which also returns the summary of intent. notes
-// are the agent's notes; only line notes on the batch's files are sent. No
-// write transaction is open around the call.
+// prompt review.overview, which also returns the summary of intent; when
+// only its summary part is invalid, the descriptions come back with an
+// ErrSummary error and no summary. notes are the agent's notes; only line
+// notes on the batch's files are sent. No write transaction is open around
+// the call.
 func (p *Pipeline) DescribeBatch(ctx context.Context, b Batch, full bool, intent []IntentItem, notes []db.ReviewNote) (map[string]ChapterDesc, *Summary, error) {
 	if !full {
 		raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, chaptersSource), p.getPrompt(prompts.ReviewChapters), BuildChaptersUser(b, notes), "")
@@ -57,7 +63,7 @@ func (p *Pipeline) DescribeBatch(ctx context.Context, b Batch, full bool, intent
 	}
 	descs, sum, err := ParseOverview(raw, b, intent)
 	if err != nil {
-		return nil, nil, err
+		return descs, nil, err
 	}
 	return descs, &sum, nil
 }

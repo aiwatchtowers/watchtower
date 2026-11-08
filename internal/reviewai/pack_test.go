@@ -171,8 +171,12 @@ func TestPack_HaveSkipsDescribedChaptersOnlyWhenMultiBatch(t *testing.T) {
 func TestPack_NothingToShow(t *testing.T) {
 	d := reviewdiff.Diff{Files: []reviewdiff.File{{Path: "package-lock.json", Additions: 9, CollapsedReason: "lockfile"}}}
 	assert.Empty(t, Pack(reviewmap.Build(reviewmap.Input{Diff: d}), d, nil))
-	_, err := New(&countGen{}).Overview(context.Background(), Input{Diff: d})
-	assert.Error(t, err)
+	g := &countGen{}
+	_, err := New(g).Run(context.Background(), newMemStore(), reviewmap.Build(reviewmap.Input{Diff: d}), d, nil, nil, RunOptions{})
+	var re *RunError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, ClassTooLarge, re.Class)
+	assert.Zero(t, g.calls)
 }
 
 func TestOverview_BigBranchCallsPerBatchThenSummary(t *testing.T) {
@@ -189,7 +193,7 @@ func TestOverview_BigBranchCallsPerBatchThenSummary(t *testing.T) {
 		"review.chapters": `{"chapters":[` + strings.Join(parts, ",") + `]}`,
 		"review.summary":  `{"summary":"big","coverage":[],"out_of_scope":[],"not_covered":[]}`,
 	}}
-	o, err := New(g).Overview(context.Background(), Input{Diff: d, Notes: bigNotes(d)})
+	o, err := New(g).Run(context.Background(), newMemStore(), m, d, nil, bigNotes(d), RunOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, len(bs)+1, g.calls)
 	assert.Equal(t, "review.summary", g.sources[len(g.sources)-1])

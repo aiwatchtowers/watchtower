@@ -143,7 +143,8 @@ func TestOverview_SmallDiffIsOneCallWithSummary(t *testing.T) {
 	raw, err := os.ReadFile("testdata/overview_ok.json")
 	require.NoError(t, err)
 	g := &countGen{out: map[string]string{prompts.ReviewOverview: string(raw)}}
-	o, err := New(g).Overview(context.Background(), Input{Intent: okIntent(), Diff: okDiff()})
+	d := okDiff()
+	o, err := New(g).Run(context.Background(), newMemStore(), reviewmap.Build(reviewmap.Input{Diff: d}), d, okIntent(), nil, RunOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, g.calls)
 	assert.Equal(t, []string{prompts.ReviewOverview}, g.sources)
