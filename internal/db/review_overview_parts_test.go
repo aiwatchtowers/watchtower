@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -52,7 +53,7 @@ func TestReviewOverviewParts_ManyHashes(t *testing.T) {
 	now := time.Now().UTC()
 	hashes := make([]string, 0, 1200)
 	for i := range 1200 {
-		hashes = append(hashes, "h"+time.Duration(i).String())
+		hashes = append(hashes, "h"+strconv.Itoa(i))
 	}
 	for _, h := range []string{hashes[0], hashes[700], hashes[1199]} {
 		if err := d.PutReviewOverviewPart(ReviewOverviewPart{ProjectID: pid, Hash: h, JSON: "{}"}, now); err != nil {
@@ -114,5 +115,24 @@ func TestReviewOverviewParts_CascadeOnWorkbenchDelete(t *testing.T) {
 	var n int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM review_overview_parts`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("rows after delete = %d %v", n, err)
+	}
+}
+
+// An empty hash or JSON would read back as a false cache hit, so the put refuses it.
+func TestReviewOverviewParts_PutRefusesEmptyHashOrJSON(t *testing.T) {
+	d := openTestDB(t)
+	pid, _ := seedReviewSession(t, d)
+	now := time.Now().UTC()
+	for _, p := range []ReviewOverviewPart{
+		{ProjectID: pid, Hash: "", JSON: "{}"},
+		{ProjectID: pid, Hash: "h", JSON: ""},
+	} {
+		if err := d.PutReviewOverviewPart(p, now); err == nil {
+			t.Fatalf("put %+v: want error", p)
+		}
+	}
+	got, err := d.ReviewOverviewParts(pid, []string{"", "h"})
+	if err != nil || len(got) != 0 {
+		t.Fatalf("parts after refused puts = %+v %v", got, err)
 	}
 }

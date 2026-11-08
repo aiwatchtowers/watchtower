@@ -165,8 +165,12 @@ func scanReviewOverviewParts(rows *sql.Rows, projectID int64, out map[string]Rev
 
 // PutReviewOverviewPart caches one chapter description, replacing a row under
 // the same hash, and prunes the workbench's rows older than 30 days in the
-// same short transaction.
+// same short transaction. The row is stamped with now; p.CreatedAt is ignored.
+// An empty hash or JSON is refused: it would turn into a false cache hit.
 func (db *DB) PutReviewOverviewPart(p ReviewOverviewPart, now time.Time) error {
+	if p.Hash == "" || p.JSON == "" {
+		return errors.New("caching review overview part: empty hash or json")
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("caching review overview part: %w", err)
