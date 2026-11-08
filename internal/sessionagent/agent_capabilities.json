@@ -1,8 +1,8 @@
 {
-  "comment": "Workbench session capabilities per agent kind (spec 2026-11-05-llm-transport-independence §3.5). Go's sessionagent adapters are the source; this file is pinned to them by TestSessionAgent_CapsFixtureMatchesAdapters and copied to WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json (AgentSessionCapabilitiesTests). \"kinds\" is agentkind's registry in its order (kind, agent_label, product name).",
+  "comment": "Workbench session capabilities per agent kind (spec 2026-11-05-llm-transport-independence §3.5). Go's sessionagent adapters are the source; this file is pinned to them by TestSessionAgent_CapsFixtureMatchesAdapters and copied to WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json (AgentSessionCapabilitiesTests). \"kinds\" is agentkind's registry in its order (kind, agent_label, product name, the phone's wire agent).",
   "kinds": [
-    {"kind": "claude", "label": "claude-code", "display_name": "Claude Code"},
-    {"kind": "codex", "label": "codex-cli", "display_name": "Codex"}
+    {"kind": "claude", "label": "claude-code", "display_name": "Claude Code", "wire_agent": "claude_code"},
+    {"kind": "codex", "label": "codex-cli", "display_name": "Codex", "wire_agent": "codex_cli"}
   ],
   "agents": {
     "claude": {

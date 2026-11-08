@@ -105,18 +105,20 @@ func TestSessionAgent_CapsFixtureMatchesAdapters(t *testing.T) {
 		}
 	}
 	// "kinds" (added 2026-11-08, A7a, additive: no row key changed) is
-	// agentkind's registry in its order — kind, label (agent_label) and
-	// display_name — so Swift can read the list instead of spelling it.
+	// agentkind's registry in its order — kind, label (agent_label),
+	// display_name and wire_agent (Adapter.WireAgent, the phone's agent
+	// value) — so Swift can read the list instead of spelling it.
 	type kindRow struct {
 		Kind        string `json:"kind"`
 		Label       string `json:"label"`
 		DisplayName string `json:"display_name"`
+		WireAgent   string `json:"wire_agent"`
 	}
 	var kinds []kindRow
 	require.NoError(t, json.Unmarshal(top["kinds"], &kinds), "the fixture lists agentkind's registry under \"kinds\"")
 	var wantKinds []kindRow
 	for _, d := range agentkind.Registry() {
-		wantKinds = append(wantKinds, kindRow{string(d.Kind), d.Label, d.DisplayName})
+		wantKinds = append(wantKinds, kindRow{string(d.Kind), d.Label, d.DisplayName, MustFor(d.Kind).WireAgent()})
 	}
 	assert.Equal(t, wantKinds, kinds, "\"kinds\" is agentkind's registry, in its order")
 	// Every key of every row is a Caps field: a typo cannot hide.
