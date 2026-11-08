@@ -82,7 +82,7 @@ Which source each feature waits for:
 
 The brief, the plan and the Inbox's messages also need Watchtower to know who you are. Until a source supplies your identity they show no time at all; see [Sources and accounts](sources-and-accounts.md#why-watchtower-needs-to-know-who-you-are).
 
-The Inbox's empty **Day** filter offers **Change the hour**, which opens the **Morning brief** card in Automations, where **Time** sets the hour of both the brief and the plan. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
+The **Morning brief** card in Automations → **Built in** sets the hour of both the brief and the plan with **Time**. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
 
 ## After you connect a source
 
