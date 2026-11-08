@@ -435,6 +435,10 @@ var cliNoContentCommands = map[string]bool{
 	"workbench worktree ensure":        true,
 	"workbench worktree forget":        true,
 	"workspace init":                   true,
+
+	// Discuss thread writes: each prints an id or a key only.
+	"workbench spec-review add-finding": true,
+	"workbench spec-review question":    true,
 }
 
 func TestCLIAudit_EveryCommandIsDecided(t *testing.T) {
