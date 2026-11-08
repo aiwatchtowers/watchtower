@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"os/exec"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -347,4 +348,80 @@ func TestSpecReviewSweep_UnreadableFinishedAtIsLogged(t *testing.T) {
 	loop, _ := loopEnd(t, database, id)
 	assert.Equal(t, "author", loop)
 	assert.Contains(t, logs.String(), "unreadable finished_at")
+}
+
+// fileQuestion files an open question on ask id stamped created.
+func fileQuestion(t *testing.T, database *db.DB, id int64, item string, created time.Time) int64 {
+	t.Helper()
+	q, err := database.FileSpecReviewQuestion(id, "1:"+itoa64(id)+":"+item, item, "what was meant?", created)
+	require.NoError(t, err)
+	return q
+}
+
+func itoa64(v int64) string { return strconv.FormatInt(v, 10) }
+
+func questionState(t *testing.T, database *db.DB, id int64) *db.SpecReviewQuestion {
+	t.Helper()
+	q, err := database.GetSpecReviewQuestion(id)
+	require.NoError(t, err)
+	return q
+}
+
+func TestSpecReviewSweep_ExpiresQuestions(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t) // no launcher: the step runs without it
+	bound := specLoopAsk(t, database, true)
+	unbound := specLoopAsk(t, database, false)
+	now := time.Now()
+
+	stale := fileQuestion(t, database, bound, "ag:000000000001", now.Add(-31*time.Minute))
+	fresh := fileQuestion(t, database, bound, "ag:000000000002", now.Add(-5*time.Minute))
+	answered := fileQuestion(t, database, bound, "ag:000000000003", now.Add(-40*time.Minute))
+	require.NoError(t, database.AnswerSpecReviewQuestion(answered, "the hour, not the day", now.Add(-35*time.Minute)))
+	gone := fileQuestion(t, database, unbound, "ag:000000000004", now.Add(-time.Minute))
+
+	d.phaseSpecReviewSweep(context.Background())
+
+	q := questionState(t, database, stale)
+	assert.Equal(t, "expired", q.State)
+	closed, err := time.Parse(time.RFC3339, q.ClosedAt)
+	require.NoError(t, err, q.ClosedAt)
+	assert.Equal(t, time.UTC, closed.Location(), "closed_at is RFC 3339 UTC")
+	assert.Equal(t, "open", questionState(t, database, fresh).State, "inside the 30 minutes")
+	q = questionState(t, database, answered)
+	assert.Equal(t, "answered", q.State, "an answered row is untouched")
+	assert.Equal(t, "the hour, not the day", q.Answer)
+	assert.Equal(t, "gone", questionState(t, database, gone).State)
+}
+
+// A stopped (finished) session still has its row and can be resumed: its
+// question waits out the 30 minutes rather than closing as gone — the same
+// rule as the loop's session_gone (owner_asks.session_id cleared on delete).
+func TestSpecReviewSweep_StoppedSessionQuestionWaits(t *testing.T) {
+	d, database, _ := newBackfillDaemon(t)
+	id := specLoopAsk(t, database, true)
+	_, err := database.Exec(`UPDATE terminal_sessions SET finished_at = '2026-11-08T10:00:00.000Z'
+		WHERE id = (SELECT session_id FROM owner_asks WHERE id = ?)`, id)
+	require.NoError(t, err)
+	q := fileQuestion(t, database, id, "ag:000000000005", time.Now().Add(-5*time.Minute))
+
+	d.phaseSpecReviewSweep(context.Background())
+	assert.Equal(t, "open", questionState(t, database, q).State)
+
+	_, err = database.Exec(`DELETE FROM terminal_sessions WHERE id = (SELECT session_id FROM owner_asks WHERE id = ?)`, id)
+	require.NoError(t, err)
+	d.phaseSpecReviewSweep(context.Background())
+	assert.Equal(t, "gone", questionState(t, database, q).State, "a deleted session is gone")
+}
+
+func TestSpecReviewSweep_UnreadableQuestionTimeIsLogged(t *testing.T) {
+	d, database, logs := newBackfillDaemon(t)
+	id := specLoopAsk(t, database, true)
+	q := fileQuestion(t, database, id, "ag:000000000006", time.Now())
+	_, err := database.Exec(`UPDATE spec_review_questions SET created_at = 'not a time' WHERE id = ?`, q)
+	require.NoError(t, err)
+
+	d.sweepSpecReviewQuestions(time.Now())
+
+	assert.Equal(t, "open", questionState(t, database, q).State)
+	assert.Contains(t, logs.String(), "unreadable created_at")
 }

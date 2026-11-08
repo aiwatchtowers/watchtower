@@ -1,0 +1,6 @@
+[
+  {"workbench_id": 1, "root_ask_id": 1, "item_key": "ag:0123456789ab", "context_id": "1:1:ag:0123456789ab"},
+  {"workbench_id": 7, "root_ask_id": 42, "item_key": "th:decision:5f3a9c", "context_id": "7:42:th:decision:5f3a9c"},
+  {"workbench_id": 12, "root_ask_id": 9007199254740991, "item_key": "tf:a1b2c3d4e5f6", "context_id": "12:9007199254740991:tf:a1b2c3d4e5f6"},
+  {"workbench_id": 3, "root_ask_id": 5, "item_key": "plain", "context_id": "3:5:plain"}
+]
