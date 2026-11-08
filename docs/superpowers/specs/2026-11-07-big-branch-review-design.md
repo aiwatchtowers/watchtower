@@ -120,7 +120,7 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
   (`review_rounds.head_sha`). Both are database rows; no file, ref or index is written.
   Nothing else in REVIEW-01..05 changes.
 - **Read-folder capability rule** (spec 2026-10-02 §9.1): widened as in item 8 (ask #560).
-- **Migration 00173:** `review_overview_parts`, `review_rounds.head_sha`; phase 3 adds the
+- **Migration 00174:** `review_overview_parts`, `review_rounds.head_sha`; phase 3 adds the
   reviewer's thread table.
 - **Chapters move to Go entirely.** Swift's `ReviewChapters.mechanical` is removed — no
   second implementation. The existing chapter keys (`agent:<n>`, `dir:<dir>`, `collapsed`)
