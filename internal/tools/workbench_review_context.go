@@ -178,16 +178,16 @@ func LaneIntent(d *db.DB, p *db.Workbench, m reviewmap.Map) ([]reviewai.IntentIt
 	var out []reviewai.IntentItem
 	for _, ch := range lanes {
 		if ch.TargetID != 0 {
-			t, err := d.GetTargetByID(int(ch.TargetID))
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, fmt.Errorf("reading lane target %d: %w", ch.TargetID, err)
+			t, err := targetInWorkbench(d, p.ID, ch.TargetID)
+			if err != nil && !errors.Is(err, db.ErrNotInWorkbench) {
+				return nil, fmt.Errorf("reading a lane target: %w", err)
 			}
-			if err == nil && t != nil && t.WorkbenchID.Valid && t.WorkbenchID.Int64 == p.ID {
+			if err == nil {
 				out = append(out, reviewai.IntentItem{Text: t.Text, Intent: t.Intent, Source: reviewai.SourceLane})
 				continue
 			}
 		}
-		if is, ok := issues[ch.JiraKey]; ok && ch.JiraKey != "" {
+		if is, ok := issues[ch.JiraKey]; ok {
 			out = append(out, reviewai.IntentItem{Text: ch.JiraKey + " " + is.Summary,
 				Intent: clipRunes(strings.TrimSpace(is.DescriptionText), maxLaneDescriptionRunes), Source: reviewai.SourceLane})
 		}
