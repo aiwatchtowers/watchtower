@@ -35,8 +35,10 @@ package enum TerminalSessionPolicy {
     /// The button over a session that is not running: "Resume" when it has
     /// an agent session to resume (an agent whose id the app chooses always
     /// has one, `AgentSessionCaps.appSessionID`; one that mints its own only
-    /// once its first SessionStart stored it), else "Start".
-    package static func reopenLabel(_ s: TerminalSession) -> String {
+    /// once its first SessionStart stored it), else "Start"; nil for a kind
+    /// this build does not know, which offers no button (A7b).
+    package static func reopenLabel(_ s: TerminalSession) -> String? {
+        if s.kind.isUnsupported { return nil }
         guard let agent = s.kind.agent else { return "Start" }
         return agent.session.caps.appSessionID || s.claudeSessionID != nil ? "Resume" : "Start"
     }

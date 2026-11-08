@@ -236,9 +236,17 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// The terminal pane's line after the session ends. 127 is the shell's
     /// "command not found": `exec claude` found no `claude` on the login
     /// shell's PATH, which a bare exit code would not tell the owner. For
-    /// Codex it also names a `launch-args` that found no `codex`.
-    package static func exitMessage(code: Int32?, agent: AgentKind = .claude) -> String {
-        switch code {
+    /// Codex it also names a `launch-args` that found no `codex`. A shell
+    /// (`agent` nil) names no agent.
+    package static func exitMessage(code: Int32?, agent: AgentKind?) -> String {
+        guard let agent else {
+            switch code {
+            case 127?: return "The shell found no command to run (code 127)."
+            case let code?: return "The session exited (code \(code))."
+            case nil: return "The session exited."
+            }
+        }
+        return switch code {
         case 127?: agent.session.notFoundMessage
         case let code?: "\(agent.displayName) exited (code \(code))."
         case nil: "\(agent.displayName) exited."

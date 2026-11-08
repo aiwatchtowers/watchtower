@@ -166,7 +166,7 @@ package enum ChatConversationQueries {
 
     /// Explicit complete choice. Automatic also explicitly removes the model pin.
     package static func setRouting(_ db: Database, id: Int64, automatic: Bool, provider: String, model: String?) throws {
-        guard automatic || ["claude", "codex", "ollama"].contains(provider) else {
+        guard automatic || ManagedPolicy.knownProviders.contains(provider) else {
             throw DatabaseError(message: "Invalid chat provider")
         }
         try db.execute(sql: """

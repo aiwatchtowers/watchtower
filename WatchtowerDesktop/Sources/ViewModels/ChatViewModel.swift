@@ -30,12 +30,15 @@ enum AIProvider: String, CaseIterable, Identifiable {
         value.flatMap(Self.init(rawValue:)) ?? .claude
     }
 
-    var displayName: String {
-        switch self {
-        case .claude: "Claude"
-        case .codex: "Codex"
-        case .ollama: "Ollama"
-        }
+    /// The provider's name from the Go catalog (A7b).
+    @MainActor var displayName: String { AIModelCatalog.shared.displayName(rawValue) }
+
+    /// The providers the chat's menu offers: the catalog's, in its order
+    /// (`AIProviderRegistryTests` pins this enum to the catalog's ids); only
+    /// `current` before the first read, so no Swift list stands in for it.
+    @MainActor static func offered(by catalog: AIModelCatalog, current: Self) -> [Self] {
+        let listed = catalog.providerIDs.compactMap(Self.init(rawValue:))
+        return listed.isEmpty ? [current] : listed
     }
 }
 

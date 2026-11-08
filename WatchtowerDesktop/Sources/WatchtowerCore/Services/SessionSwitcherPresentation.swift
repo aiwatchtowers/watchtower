@@ -128,12 +128,18 @@ package enum SessionSwitcherPresentation {
         /// workbench session; a standalone terminal shows its plain caption.
         package var showsStateLabel: Bool { session.projectID != nil }
 
-        /// "Codex" on a Codex session (board #399); Claude Code rows and
-        /// shells carry no tag, so a Claude-only list looks as before.
+        /// "Codex" on a Codex session (board #399), the stored kind on a
+        /// kind this build does not know (A7b); Claude Code rows and shells
+        /// carry no tag, so a Claude-only list looks as before.
         package var agentTag: String? {
-            session.kind == .codex ? AgentKind.codex.displayName : nil
+            if session.kind.isUnsupported { return session.kind.rawValue }
+            return session.kind == .codex ? AgentKind.codex.displayName : nil
         }
     }
+
+    /// The caption of a row whose kind this build does not know (A7b): it
+    /// never starts, whatever its stored state says.
+    package static let unsupportedCaption = "Not supported by this version"
 
     /// The highest ⌘N the switchers bind.
     package static let maxShortcut = 9
@@ -196,6 +202,7 @@ package enum SessionSwitcherPresentation {
     /// A workbench session's §4b caption, with the age when not started; a
     /// standalone terminal's plain caption (nil while running).
     private static func caption(_ state: State, session: TerminalSession, now: Date) -> String? {
+        if session.kind.isUnsupported { return unsupportedCaption }
         guard session.projectID != nil else {
             return state.live ? nil : notStartedCaption(session, now: now)
         }

@@ -209,9 +209,16 @@ final class TerminalLaunchTests: XCTestCase {
     }
 
     func testExitMessageNamesAMissingClaudeForCommandNotFound() {
-        XCTAssertTrue(TerminalLaunch.exitMessage(code: 127).contains("not found on your login-shell PATH"))
-        XCTAssertEqual(TerminalLaunch.exitMessage(code: 1), "Claude Code exited (code 1).")
-        XCTAssertEqual(TerminalLaunch.exitMessage(code: nil), "Claude Code exited.")
+        XCTAssertTrue(TerminalLaunch.exitMessage(code: 127, agent: .claude).contains("not found on your login-shell PATH"))
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: 1, agent: .claude), "Claude Code exited (code 1).")
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: nil, agent: .claude), "Claude Code exited.")
+    }
+
+    /// A shell (no agent) never reads as Claude Code when it exits (A7b).
+    func testExitMessageOfAShellNamesNoAgent() {
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: 1, agent: nil), "The session exited (code 1).")
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: nil, agent: nil), "The session exited.")
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: 127, agent: nil), "The shell found no command to run (code 127).")
     }
 }
 

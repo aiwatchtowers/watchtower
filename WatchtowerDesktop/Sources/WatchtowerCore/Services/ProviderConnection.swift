@@ -214,7 +214,8 @@ package final class ProviderConnection {
         return (code == "invalid_output" ? testFailed : testFailure) + " " + error
     }
     package static let mismatchedResult = "The response didn't match the selected provider and model. Connection is not verified."
-    package static func name(_ id: String) -> String { id == "ollama" ? "Ollama / Local" : id == "codex" ? "Codex" : "Claude" }
+    /// Provider id as the owner reads it: the catalog's display name (A7b).
+    package static func name(_ id: String) -> String { AIModelCatalog.shared.displayName(id) }
     package func label(for provider: String) -> String {
         let current = selection?.provider == provider ? state : .notVerified
         return ProviderFallbackPreview(state: current).connectionLabel

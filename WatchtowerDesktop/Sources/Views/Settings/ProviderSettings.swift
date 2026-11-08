@@ -42,7 +42,8 @@ struct ProviderSettings: View {
             Picker(ProviderFallbackPreview.preferredLabel, selection: Binding(
                 get: { preferred }, set: { config.selectPreferredProvider($0) }
             )) {
-                ForEach(["claude", "codex", "ollama"].filter { policy.providerAllowed($0) || $0 == preferred }, id: \.self) { id in
+                ForEach(ProviderSettingsCopy.preferredChoices(catalogIDs: catalog.providerIDs, preferred: preferred,
+                                                              allowed: policy.providerAllowed), id: \.self) { id in
                     Text(ProviderSettingsCopy.provider(id, allowed: policy.providerAllowed(id))).tag(id)
                 }
             }

@@ -956,6 +956,12 @@ final class TerminalCenter {
         // Recorded before the guards, so an unavailable session is still
         // found — and cleaned up — by its project.
         rows[id] = session
+        if let unsupported = session.kind.unsupportedMessage {
+            // A kind this build has no adapter for runs nothing: never a
+            // shell, never Claude Code in its place (A7b).
+            states[id] = .unavailable(unsupported)
+            return nil
+        }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: session.folderPath, isDirectory: &isDirectory),
               isDirectory.boolValue else {

@@ -141,7 +141,7 @@ struct ChatModelPicker: View {
                 Button(ProviderFallbackPreview.automaticChoice, action: onSelectAutomatic)
             }
             Section("Provider") {
-                ForEach(AIProvider.allCases) { provider in
+                ForEach(AIProvider.offered(by: .shared, current: provider)) { provider in
                     Button(ProviderFallbackPreview.pinnedChoice(provider: provider.displayName)) { onSelectProvider(provider) }
                 }
             }

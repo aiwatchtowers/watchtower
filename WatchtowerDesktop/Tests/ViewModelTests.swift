@@ -377,15 +377,27 @@ final class PeopleViewModelTests: XCTestCase {
 
 // MARK: - AIProvider Tests
 
+/// A7b — the chat's provider enum is the Go catalog's ids, and its names
+/// and menu come from the catalog.
+@MainActor
 final class AIProviderTests: XCTestCase {
-    func testProviderDisplayNames() {
-        XCTAssertEqual(AIProvider.claude.displayName, "Claude")
-        XCTAssertEqual(AIProvider.codex.displayName, "Codex")
-        XCTAssertEqual(AIProvider.ollama.displayName, "Ollama")
+    func testTheEnumIsTheCatalogsIds() {
+        let go = Set(ProviderCatalogFixture.providers().map(\.id))
+        let swift = Set(AIProvider.allCases.map(\.rawValue))
+        XCTAssertTrue(go.subtracting(swift).isEmpty,
+                      "the Go catalog has provider(s) \(go.subtracting(swift).sorted()) that AIProvider lacks: add the case")
+        XCTAssertTrue(swift.subtracting(go).isEmpty,
+                      "AIProvider has \(swift.subtracting(go).sorted()) that the Go catalog does not list: remove the case")
     }
 
-    func testProviderAllCases() {
-        XCTAssertEqual(AIProvider.allCases.count, 3)
+    func testNamesAndMenuComeFromTheCatalog() {
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        XCTAssertEqual(AIProvider.offered(by: catalog, current: .codex).map(\.rawValue), catalog.providerIDs)
+        XCTAssertEqual(AIProvider.offered(by: AIModelCatalog(providers: []), current: .codex), [.codex],
+                       "before a read only the current provider, no Swift list")
+        for provider in catalog.providers {
+            XCTAssertEqual(AIProvider(rawValue: provider.id)?.displayName, provider.displayName, provider.id)
+        }
     }
 }
 

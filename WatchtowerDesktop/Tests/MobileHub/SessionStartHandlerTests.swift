@@ -279,7 +279,7 @@ final class SessionStartHandlerTests: XCTestCase {
 
         XCTAssertEqual(outcome.status, .failed)
         XCTAssertEqual(outcome.reason, .claudeNotFound)
-        XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127))
+        XCTAssertEqual(outcome.errorMessage, TerminalLaunch.exitMessage(code: 127, agent: .claude))
     }
 
     /// A Codex session whose `launch-args` finds no `codex` (exit 3) starts

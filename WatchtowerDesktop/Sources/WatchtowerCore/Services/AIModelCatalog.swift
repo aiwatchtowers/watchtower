@@ -97,6 +97,28 @@ package final class AIModelCatalog {
         providers.first { $0.id == id }
     }
 
+    /// The providers' ids in the catalog's order: the one list the provider
+    /// pickers and the chat's menu offer (A7b). Empty before the first read.
+    package var providerIDs: [String] { providers.map(\.id) }
+
+    /// Provider id's display name: its catalog row's, else
+    /// `fallbackDisplayName` (before the first read, or a failed one).
+    package func displayName(_ id: String) -> String {
+        provider(id)?.displayName ?? Self.fallbackDisplayName(id)
+    }
+
+    /// The display name shown before the catalog is read: a presentation
+    /// fallback only, pinned to the Go catalog's `display_name` by
+    /// `ProviderCatalogRegistryTests`; an id it does not know shows as itself.
+    nonisolated package static func fallbackDisplayName(_ id: String) -> String {
+        switch id {
+        case "claude": "Claude"
+        case "codex": "Codex"
+        case "ollama": "Ollama / Local"
+        default: id
+        }
+    }
+
     /// Provider id's capability row; `.none` (offers nothing) for an
     /// unknown id or before the catalog is read.
     package func capabilities(for id: String) -> ProviderCapabilities {

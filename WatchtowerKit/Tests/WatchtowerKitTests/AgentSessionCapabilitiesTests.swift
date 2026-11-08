@@ -45,6 +45,25 @@ final class AgentSessionCapabilitiesTests: XCTestCase {
         XCTAssertNil(AgentSessionCapabilities.of("shell"))
     }
 
+    /// A7b: the phone half lists exactly the capability rows' kinds, each
+    /// direction with what to do, so an agent kind Go adds fails here.
+    func testPhoneCapsListExactlyTheCapabilityKinds() throws {
+        let phoneCaps = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // WatchtowerKitTests
+            .deletingLastPathComponent() // Tests
+            .appendingPathComponent("Fixtures/workbench/phone_caps.json")
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: phoneCaps)) as? [String: Any]
+        let phone = Set(try XCTUnwrap(raw?["agents"] as? [String: Any], "phone_caps.json has no agents").keys)
+        let rows = Set(AgentSessionCapabilities.bundled.keys)
+        XCTAssertFalse(rows.isEmpty, "the bundled agent_capabilities.json has no rows")
+        XCTAssertTrue(rows.subtracting(phone).isEmpty,
+                      "agent kind(s) \(rows.subtracting(phone).sorted()) have a capability row but no phone_caps.json row: "
+                          + "regenerate it from Go (TestSessionAgent_PhoneCapsMatchKitFixture)")
+        XCTAssertTrue(phone.subtracting(rows).isEmpty,
+                      "phone_caps.json has kind(s) \(phone.subtracting(rows).sorted()) with no capability row: "
+                          + "copy internal/sessionagent/agent_capabilities.json into the Kit's Resources")
+    }
+
     /// Every key of every row is decoded: a key Go adds without the Kit fails.
     func testEveryFixtureKeyIsDecoded() throws {
         let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: Self.goFixture)) as? [String: Any]

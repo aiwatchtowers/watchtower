@@ -48,7 +48,7 @@ struct SessionDetailModel {
             TargetChip(id: id, label: targetRecord.map { "#\(id) \($0.text)" } ?? "#\(id)")
         }
         branch = Self.branch(target: targetRecord, workbench: snapshot.workbench(session.workbenchID))
-        agentLine = "\(Self.agentName(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
+        agentLine = "\(Self.agentLabel(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
         self.report = report.map { SessionReportSection($0, finishSummary: session.finishSummary) }
 
         let milestones = (timeline?.milestones ?? []).sorted { $0.at > $1.at }
@@ -68,6 +68,13 @@ struct SessionDetailModel {
         case .codexCLI: "Codex"
         default: agent.rawValue
         }
+    }
+
+    /// The session line's agent (A7b): its name, and for an agent this
+    /// build does not know (a newer Mac's) that it is not supported here.
+    static func agentLabel(_ agent: TerminalSessionState.Agent) -> String {
+        guard !TerminalSessionState.Agent.knownValues.contains(agent) else { return agentName(agent) }
+        return "\(agent.rawValue.isEmpty ? "Unknown agent" : agent.rawValue) (not supported by this version)"
     }
 
     private static func branch(target: WorkbenchTarget?, workbench: Workbench?) -> String? {

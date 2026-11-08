@@ -7,22 +7,68 @@ import GRDB
 /// only an AI-generated title (`watchtower terminal title`) and the hook
 /// columns, among them `agent_transcript_path` (00109).
 package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatable, Sendable {
-    package enum Kind: String, Codable, Sendable {
-        case claude, codex, shell
+    /// The row's `kind`. A value this build does not know (a newer Mac or
+    /// CLI wrote an agent kind this app has no adapter for) decodes as
+    /// `unsupported` instead of failing the whole fetch: the row says "not
+    /// supported by this version" and never starts, never as Claude Code
+    /// and never as a shell (A7b).
+    package enum Kind: RawRepresentable, Codable, Hashable, Sendable {
+        /// A coding agent this build runs (`AgentKind`: its adapter decides
+        /// everything kind-dependent).
+        case agent(AgentKind)
+        case shell
+        /// A kind this build does not know, with its stored value.
+        case unsupported(String)
 
-        /// The row kind that runs `agent`.
-        package init(_ agent: AgentKind) {
-            switch agent {
-            case .claude: self = .claude
-            case .codex: self = .codex
+        package static let claude = Self.agent(AgentKind.claude)
+        package static let codex = Self.agent(AgentKind.codex)
+
+        package init(rawValue: String) {
+            if rawValue == "shell" {
+                self = .shell
+            } else if let agent = AgentKind(rawValue: rawValue) {
+                self = .agent(agent)
+            } else {
+                self = .unsupported(rawValue)
             }
         }
 
-        /// The agent this session runs; nil for a shell.
-        package var agent: AgentKind? { AgentKind(rawValue: rawValue) }
+        package var rawValue: String {
+            switch self {
+            case let .agent(agent): agent.rawValue
+            case .shell: "shell"
+            case let .unsupported(raw): raw
+            }
+        }
+
+        /// The row kind that runs `agent`.
+        package init(_ agent: AgentKind) { self = .agent(agent) }
+
+        /// The agent this session runs; nil for a shell and for a kind this
+        /// build does not know (`isUnsupported`).
+        package var agent: AgentKind? {
+            if case let .agent(agent) = self { return agent }
+            return nil
+        }
 
         /// Whether this is a coding-agent session (Claude Code or Codex) rather than a shell.
         package var isAgent: Bool { agent != nil }
+
+        /// A kind this build does not know: the row is shown, never started.
+        package var isUnsupported: Bool { unsupportedMessage != nil }
+
+        /// What the row, the session pane and the Workchat say for a kind
+        /// this build does not know; nil for every known kind.
+        package var unsupportedMessage: String? {
+            guard case let .unsupported(raw) = self else { return nil }
+            return Self.unsupportedMessage(raw)
+        }
+
+        /// The not-supported line for a stored kind `raw`.
+        package static func unsupportedMessage(_ raw: String) -> String {
+            "This session runs \(raw.isEmpty ? "an agent" : "“\(raw)”"), which this version of Watchtower "
+                + "does not support. Update Watchtower to open it."
+        }
     }
     package enum TitleSource: String, Codable, Sendable { case auto, ai, user }
 
