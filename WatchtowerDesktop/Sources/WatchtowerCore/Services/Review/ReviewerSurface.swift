@@ -122,6 +122,9 @@ package enum ReviewerSurface {
             + " · never talks to the author's session"
     }
 
+    /// The usage ledger's purpose of a reviewer turn (`ai query --purpose`).
+    package static let purpose = "review.reviewer"
+
     package static let emptyHint =
         "Ask the reviewer about this branch: what breaks if…, what a change would take. It reads the code and never talks to the author's session."
     package static let noRoundHint = "The reviewer opens once the branch's round is ready."
@@ -137,7 +140,7 @@ package enum ReviewerSurface {
         map: @escaping @MainActor () -> ReviewerMapInput
     ) -> ChatSurfaceSpec {
         let runOptions = { @MainActor () -> ChatRunOptions in
-            ChatRunOptions(readFolder: reader() == .none ? nil : context.readFolder)
+            ChatRunOptions(readFolder: reader() == .none ? nil : context.readFolder, purpose: purpose)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType,

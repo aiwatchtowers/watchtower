@@ -72,7 +72,7 @@ final class ReviewerSurfaceTests: XCTestCase {
         XCTAssertNil(spec.toolAccess.toolMode(key: spec.key, turnID: "t"), "no Watchtower tools (AGENT-04)")
         XCTAssertEqual(spec.persistence, .database(conversationID: 11))
         XCTAssertEqual(spec.key, EmbeddedChatKey(contextType: "review_reviewer", contextID: "4:feature/registry", conversationID: 11))
-        XCTAssertEqual(spec.runOptions(), ChatRunOptions(readFolder: "/tmp/acme-wt"))
+        XCTAssertEqual(spec.runOptions(), ChatRunOptions(readFolder: "/tmp/acme-wt", purpose: "review.reviewer"))
         XCTAssertTrue(spec.ownerInstructions)
     }
 

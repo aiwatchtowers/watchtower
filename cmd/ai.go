@@ -65,7 +65,7 @@ var (
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
 // whose turns the usage ledger shows apart from the plain chat.
-var queryPurposes = map[string]bool{"spec_review.discuss": true}
+var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
@@ -151,11 +151,11 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagContextID, "context-id", "", "chat context id")
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
-		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
+		"run in this workbench folder, or its folder in a session worktree a session of it recorded, with the provider's own read-only file tools (claude, codex); exit 2 for any other folder")
 	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderAsk, "read-folder-ask", 0,
 		"run, like --read-folder, in the folder the reviewer of spec/plan review ask N read; exit 2 if it is no such ask")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
-		"record this query's LLM calls under this usage purpose (spec_review.discuss); exit 2 on any other value")
+		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer); exit 2 on any other value")
 }
 
 // queryContext tags ctx with the --purpose value for the LLM usage ledger.
