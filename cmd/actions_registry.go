@@ -224,6 +224,9 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		authoring.NewListAutomations(authoringDeps), authoring.NewGetAutomation(authoringDeps))
 	// Slack channel list (spec 2026-10-24 §7): main chat and editor chat only.
 	regTools = append(regTools, tools.NewListSlackChannels())
+	// The Inbox menu's folders (inbox builder B, Task 15): the editor chat
+	// only, so its folder suggestion reuses an existing folder.
+	regTools = append(regTools, tools.NewListInboxFolders())
 	// A claude.ai connector write held by the main chat's permission gate
 	// (#737): recorded and run only by that chat session, never listed on any
 	// surface (Tool.AppliedBySession).

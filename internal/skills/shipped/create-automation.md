@@ -824,6 +824,19 @@ if (res.exit_code !== 0) {
    call: a draft never calls a Quick Connection, so the dry run ends there
    (the steps before it are real; this is not a failure). Tell the owner the
    rest shows once the recipe is saved and dry-run from its card.
+7. When the owner asks for the automation's cards to go into an Inbox folder
+   ("put this into a Release folder"), read `list_inbox_folders` first, then
+   pass `folder: {title, parent_slug}` to `draft_automation`: an existing
+   folder's exact title and `parent_slug` to reuse it, or a new title with
+   the slug of the folder it goes in (leave `parent_slug` out for the top
+   level). Never propose a near-duplicate of a folder that exists. Pass the
+   same `folder` on every later `draft_automation` call: only the newest
+   draft's folder is shown. In the Automations panel the draft column's
+   Changed row then ends with "Folder: Release" or "New folder: Release, in
+   Inbox", and the owner's save makes the folder and moves the automation's
+   cards there; it is not part of the recipe and never changes what the save
+   confirms. In the main chat there is no folder step: tell the owner to use
+   **Move to Folder** on the card in the Inbox.
 
 ## Editing a built-in
 

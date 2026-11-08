@@ -266,7 +266,7 @@ func TestDelete_TitleClashRenameKeepsTheCap(t *testing.T) {
 	want := strings.Repeat("A", MaxTitleRunes-4) + " (2)"
 	assert.Equal(t, Renamed{ID: kid.ID, From: strings.ToUpper(long), To: want}, moved.Renamed[0])
 	assert.Equal(t, MaxTitleRunes, utf8.RuneCountInString(want))
-	_, err = cleanTitle(want)
+	_, err = CleanTitle(want)
 	assert.NoError(t, err, "the new title passes the title rules")
 }
 
@@ -875,7 +875,7 @@ func TestList_FreshTree(t *testing.T) {
 	require.Len(t, tree.Folders, 2)
 	assert.Equal(t, kindRoot, tree.Folders[0].Kind)
 	assert.Nil(t, tree.Folders[0].ParentID)
-	assert.Equal(t, kindApprovals, tree.Folders[1].Kind)
+	assert.Equal(t, KindApprovals, tree.Folders[1].Kind)
 	assert.Equal(t, []int64{}, tree.Folders[0].AutomationIDs, "never nil")
 }
 
