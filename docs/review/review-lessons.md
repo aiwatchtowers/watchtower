@@ -2780,3 +2780,12 @@ Entry format:
 - weak-dimension: 8 (docs), and only one lane looked at it.
 - rule-gap (candidate, dim 7): *a race fix replaces an `async let` timing test with a seam that suspends the first writer at the exact point the bug needs (here `duringStart`), and the PR records that the test fails on the old code.* This PR did both, and both are worth keeping as the pattern.
 - outcome: TBD
+
+## 2026-11-08 — feature/plans-final-integration-1478 (Plans with Codex; panel: prosecutor, Codex and three specialist lenses; judge verified 40462fce8 by reading) — verdict: changes-needed
+
+- contested: P1 remains minor: Swift accepts a positive-safe endpoint that contradicts the stored rate while Go rejects the same tuple. The canonical Go writer produces matching endpoints, so this is a storage-consistency edge, not a demonstrated ordinary forecast failure. The approved gate still requires parity; resolving it must preserve the separate prohibition on Swift calculating endpoints. [6/8]
+- false-positive: none dismissed. S1 is a concrete dual-failure path: retaining the refresh error drops a later database read error entirely, even though the contract requires storage on read failure. [9]
+- miss: only the silent-failure lens checked refresh failure combined with retained-read failure. Exit-priority coverage did not assert the public error code in that combination. [7/9]
+- weak-dimension: 7. Cross-language fixtures cover valid publications well, but equivalent structurally valid contradictory candidates need a parity case too.
+- rule-gap: a single-error envelope needs explicit precedence for two failing stages; test the error code, refresh outcome and exit code together.
+- outcome: TBD
