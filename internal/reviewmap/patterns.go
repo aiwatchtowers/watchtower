@@ -135,23 +135,27 @@ func matchAny(globs []string, filePath string) bool {
 	return false
 }
 
+// matchSegments matches glob segments against path segments, "**" taking any
+// number of them. It fills a table over (glob suffix, path suffix) pairs, so
+// a glob of many "**" costs len(glob) × len(segs) steps, not exponential.
 func matchSegments(glob, segs []string) bool {
-	for len(glob) > 0 {
-		if glob[0] == "**" {
-			for i := 0; i <= len(segs); i++ {
-				if matchSegments(glob[1:], segs[i:]) {
-					return true
-				}
-			}
-			return false
-		}
-		if len(segs) == 0 {
-			return false
-		}
-		if ok, _ := path.Match(glob[0], segs[0]); !ok {
-			return false
-		}
-		glob, segs = glob[1:], segs[1:]
+	// m[i][j]: glob[i:] matches segs[j:].
+	m := make([][]bool, len(glob)+1)
+	for i := range m {
+		m[i] = make([]bool, len(segs)+1)
 	}
-	return len(segs) == 0
+	m[len(glob)][len(segs)] = true
+	for i := len(glob) - 1; i >= 0; i-- {
+		for j := len(segs); j >= 0; j-- {
+			if glob[i] == "**" {
+				m[i][j] = m[i+1][j] || (j < len(segs) && m[i][j+1])
+				continue
+			}
+			if j < len(segs) {
+				ok, _ := path.Match(glob[i], segs[j])
+				m[i][j] = ok && m[i+1][j+1]
+			}
+		}
+	}
+	return m[0][0]
 }

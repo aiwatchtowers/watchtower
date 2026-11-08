@@ -84,6 +84,13 @@ func TestPatternsMatch(t *testing.T) {
 			t.Errorf("Match(%q) = (%v, %v, %v), want (%v, %v, %v)", c.path, level, skip, ok, c.level, c.skip, c.ok)
 		}
 	}
+	many := Patterns{Breaking: []string{strings.Repeat("**/", 30) + "z"}}
+	if _, _, ok := many.Match(strings.Repeat("a/", 40) + "y"); ok {
+		t.Error("a many-** glob must not match a path without its last segment")
+	}
+	if _, _, ok := many.Match(strings.Repeat("a/", 40) + "z"); !ok {
+		t.Error("a many-** glob must match a path ending in its last segment")
+	}
 	if _, _, ok := (Patterns{}).Match("a.go"); ok {
 		t.Error("empty patterns must match nothing")
 	}
