@@ -18,11 +18,11 @@ A thread belongs to its card, not to one ask. When the agent files the document 
 
 When only the agent can answer (what it meant, what it plans), the assistant asks it. The question is typed into the agent's session the way the reviewer's findings are: never in the middle of a turn, and never over text you typed there. The thread shows **Asked the author…**, then the agent's answer, and the assistant carries on from it.
 
-If the agent does not answer within 30 minutes, the thread says **The author did not answer** and the assistant goes on without it. A question still waiting when you quit the app is not typed again; it runs out the same way. A thread asks one question at a time. Answers that land while the Mac app is closed are picked up when you open the thread again.
+If the agent does not answer within 30 minutes, the thread says **The author did not answer** and the assistant goes on without it. A question still waiting when you quit the app is not typed again; it runs out the same way, and the thread says **The question may not have reached the author**. If the question was typed but not sent, or only copied, the thread tells you to press Return in the agent's session, or to paste it there. A thread asks one question at a time. Answers that land while the Mac app is closed are picked up when you open the thread again.
 
 ### When the conversation finds something new
 
-The assistant can propose a finding the review missed. It shows as a card in the thread, quoting the document or your own words in the thread. Nothing is added until you press **Add to review**. A finding whose quote cannot be found is refused with **not added: quote not found**. An added finding appears in its chapter with the **From discussion** chip and works like any other finding.
+The assistant can propose a finding the review missed. It shows as a card in the thread, quoting the document or your own words in the thread. Nothing is added until you press **Add to review**. A finding whose quote cannot be found is refused with **not added: quote not found**. If the assistant's question or finding is malformed, the thread says it could not be sent or shown, and why. An added finding appears in its chapter with the **From discussion** chip and works like any other finding.
 
 ## Using it
 
@@ -55,7 +55,7 @@ action: nav:projects
 1. Press **Discuss** on a finding or a point. The thread opens inside the card, ready to type.
 2. Ask your question. The answer quotes the document or the code.
 3. Decide with the card's buttons. **Fix** sends the finding to the agent. On a card with a thread, its comment field fills with the assistant's conclusion, which also appears in the thread; edit it or clear it. **Skip** or **Not useful** drops a finding the thread showed does not hold.
-4. Press **Save**, or just send your answer: text left in an open comment field goes with it, and an empty field sends the finding as it is. Closing the drawer before that keeps the **Fix** but drops the unsaved text.
+4. Press **Save**, or just send your answer: text left in an open comment field goes with it, and an empty field sends the finding as it is. Closing the drawer or opening another ask keeps the text until you quit the app. If a comment cannot be saved, nothing is sent and your text stays in the field.
 
 Press **Hide** to fold the thread. A folded card shows **thread · N**, and the thread is still there when you reopen the ask.
 
@@ -64,7 +64,7 @@ Press **Hide** to fold the thread. A folded card shows **thread · N**, and the 
 - **No Discuss button.** The ask is still hidden in the agent's loop, so there is nothing to open yet. Use **Show Now** under **Reviewer and author** to open the review early.
 - **"Couldn't draft a conclusion" under Fix.** The assistant did not answer within 30 seconds. **Fix** is already marked: type your own comment, or send the finding as it is.
 - **The author's session has ended: the question was not sent.** The agent's session is gone. The assistant answers without it.
-- **"From the previous run: you can read this thread, but it takes no new messages."** A re-run of the reviewer dropped that finding. The thread stays readable.
+- **"From the previous run: you can read this thread, but it takes no new messages."** A re-run of the reviewer dropped that finding. The thread stays readable, and **Wrap-up** lists it under **From the previous run** even if you never marked the finding.
 - **A reply waits.** Embedded assistants run three replies at a time across the app; yours starts when one ends.
 - **On the iPhone** there are no threads and no short version. Open the review on the Mac.
 
