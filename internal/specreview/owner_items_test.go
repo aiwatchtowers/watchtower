@@ -168,3 +168,28 @@ func TestSeedOf_UndecodableRowsGiveWhatTheyCan(t *testing.T) {
 	assert.Equal(t, "Name the threads", seed[0].Text)
 	assert.Equal(t, marginKey, seed[1].Key)
 }
+
+// A plain Fix (no comment text, no quote) on a finding seeds the finding as
+// it stands: its text and its own anchor. A comment with no words and no
+// finding behind it has nothing to check and is left out.
+func TestSeedOf_PlainFixKeepsTheFinding(t *testing.T) {
+	f := newFixture(t)
+	first, second := seededChain(t, f, asks.VerdictChanges, runDoc, 1)
+	js, err := json.Marshal(asks.Answer{Verdict: asks.VerdictChanges, Comments: []asks.Comment{
+		{ItemKey: seedKey},
+		{ItemKey: "ag:gone00000000"},
+		{Heading: "Behaviour"},
+	}})
+	require.NoError(t, err)
+	_, err = f.d.Exec(`UPDATE owner_asks SET answer = ? WHERE id = ?`, string(js), first)
+	require.NoError(t, err)
+	_, err = f.d.Exec(`DELETE FROM spec_review_thread_findings WHERE ask_id = ?`, first)
+	require.NoError(t, err)
+
+	seed := seedOf(t, f.d, second)
+	require.Len(t, seed, 1)
+	assert.Equal(t, AuthorItem{
+		Key: seedKey, Kind: KindBlindSpot, Text: "Muted threads",
+		Where: &Anchor{Heading: "Behaviour", Quote: seedQuote}, Round: 1, Severity: SeverityMinor,
+	}, seed[0])
+}

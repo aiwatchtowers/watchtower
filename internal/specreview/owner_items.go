@@ -42,7 +42,9 @@ func AnsweredChanges(ask *db.OwnerAsk) bool {
 // body and quote; kind, text and severity are those of the key's finding —
 // in the previous review's result, its ledger or open items, or the owner's
 // thread findings —, else KindOwnerComment with the comment as the text; the
-// owner's comment is the note; Where is the comment's heading and quote),
+// owner's comment is the note; Where is the comment's heading and quote, else
+// the finding's own anchor; a comment with no body and no finding behind it
+// is left out),
 // then every thread finding of the previous ask not already seeded and not
 // on the closed list. A key the owner marked ok or Not useful on the
 // previous ask is never seeded. Every item has Round 1. Only a database error
@@ -116,12 +118,18 @@ func SeedOf(d *db.DB, ask *db.OwnerAsk) ([]AuthorItem, error) {
 			continue
 		}
 		it, ok := findings[key]
-		if ok {
+		switch {
+		case ok:
+			// An empty body is a plain Fix: fix it as the finding says.
 			it.Note = body
-		} else {
+		case body == "":
+			continue // no finding and no words: nothing to check
+		default:
 			it = AuthorItem{Key: key, Kind: KindOwnerComment, Text: body}
 		}
-		it.Where, it.Round = nil, 1
+		it.Round = 1
+		// The comment's quote anchors the item; without one a finding
+		// keeps its own anchor.
 		if q := strings.TrimSpace(c.Quote); q != "" {
 			it.Where = &Anchor{Heading: c.Heading, Quote: c.Quote}
 		}
@@ -169,13 +177,13 @@ func findingsOf(prev *db.SpecReview, threads []db.SpecReviewThreadFinding) map[s
 	var r Result
 	if prev.Result != "" && json.Unmarshal([]byte(prev.Result), &r) == nil {
 		for _, a := range r.Agreements {
-			out[a.Key] = AuthorItem{Key: a.Key, Kind: KindAgreement, Text: a.Text, Severity: a.Severity}
+			out[a.Key] = AuthorItem{Key: a.Key, Kind: KindAgreement, Text: a.Text, Severity: a.Severity, Where: copyAnchor(a.Where)}
 		}
 		for _, x := range r.DecidedAlone {
-			out[x.Key] = AuthorItem{Key: x.Key, Kind: KindDecidedAlone, Text: x.Text, Severity: x.Severity}
+			out[x.Key] = AuthorItem{Key: x.Key, Kind: KindDecidedAlone, Text: x.Text, Severity: x.Severity, Where: copyAnchor(&x.Where)}
 		}
 		for _, b := range r.BlindSpots {
-			out[b.Key] = AuthorItem{Key: b.Key, Kind: KindBlindSpot, Text: b.Text, Severity: b.Severity}
+			out[b.Key] = AuthorItem{Key: b.Key, Kind: KindBlindSpot, Text: b.Text, Severity: b.Severity, Where: copyAnchor(b.Where)}
 		}
 		for _, c := range r.Checks {
 			out[c.Key] = AuthorItem{Key: c.Key, Kind: KindCheck, Text: c.Question, Severity: c.Severity}
@@ -186,10 +194,10 @@ func findingsOf(prev *db.SpecReview, threads []db.SpecReviewThreadFinding) map[s
 	_ = decodeList(prev.Ledger, &ledger)
 	_ = decodeList(prev.OpenItems, &open)
 	for _, e := range ledger {
-		out[e.Key] = AuthorItem{Key: e.Key, Kind: e.Kind, Text: e.Text, Severity: e.Severity}
+		out[e.Key] = AuthorItem{Key: e.Key, Kind: e.Kind, Text: e.Text, Severity: e.Severity, Where: copyAnchor(e.Where)}
 	}
 	for _, it := range open {
-		out[it.Key] = AuthorItem{Key: it.Key, Kind: it.Kind, Text: it.Text, Severity: it.Severity}
+		out[it.Key] = AuthorItem{Key: it.Key, Kind: it.Kind, Text: it.Text, Severity: it.Severity, Where: copyAnchor(it.Where)}
 	}
 	for _, tf := range threads {
 		var f threadFindingJSON
