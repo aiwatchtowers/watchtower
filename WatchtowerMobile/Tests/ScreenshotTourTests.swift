@@ -59,7 +59,8 @@ final class ScreenshotTourTests: XCTestCase {
         let dir = URL(fileURLWithPath: path, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let (root, _) = try makeDemoRoot()
-        let rows = try await captureParkedFeed(into: dir, linking: root.linking)
+        var rows = try await captureParkedFeed(into: dir, linking: root.linking)
+        rows += try await captureTerm(host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking))
         let written = try FileManager.default.contentsOfDirectory(atPath: path)
             .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
         XCTAssertEqual(written.count, 3 * rows.count)
@@ -759,6 +760,142 @@ final class ScreenshotTourTests: XCTestCase {
                 number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "NowView, parked demo, light/dark/narrow"
             ))
         }
+        return rows
+    }
+
+    /// S59–S61 (relay client Phase 5, Task 17): the left-behind phone's banner, the link ended at its term (the notice
+    /// over the app) and the term's warning on the banner, on Now's row for another Mac and on its Settings → Macs row;
+    /// each light, dark and narrow. Banners and Now's rows are handed to the view; the Macs rows come from links whose
+    /// term started two days ago (before the date) or thirty (past it), over centers holding nothing, a held purchase
+    /// or a refused row.
+    private func captureTerm(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let origin = try RelayOrigin("https://relay.example.com")
+        let before = now.addingTimeInterval(-2 * 86_400)
+        let past = now.addingTimeInterval(-30 * 86_400)
+        func link(_ name: String, _ cause: RelayRefusal?, since: Date, moved: Bool = false) -> LinkRecord {
+            var record = LinkRecord(
+                hubID: "term-\(name)", macName: name, scope: .private, ownerName: "", userRecordName: "", nonce: name,
+                dataShareURL: nil, relayShareURL: nil, deviceID: DemoSeed.device.deviceID, linkedAt: now,
+                transport: .relay, relayMacDeviceID: DemoSeed.Relay.workMac, hubTransports: ["relay"])
+            record.relayRefused = cause.map { RelayRefusedRecord(since: since, cause: $0) }
+            record.macMoved = moved ? 2 : nil
+            return record
+        }
+        func banner(
+            _ link: LinkRecord,
+            phase: RelayAccountCenter.Phase = .free(ended: true),
+            hold: RelayTermHold = .none,
+            unconfirmed: Bool = false,
+            updateRequired: Bool = false
+        ) throws -> RelayBannerModel {
+            try XCTUnwrap(RelayBannerModel.banner(
+                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed, updateRequired: updateRequired,
+                wasPaying: true, route: .hostedRelay(macDeviceID: DemoSeed.Relay.workMac), relayOnly: true, hubOnRelayAt: nil,
+                unansweredSince: nil, request: nil, pressRefusal: nil, lastUpdate: nil, macName: link.macName, now: now,
+                link: link, termHold: hold))
+        }
+        func row(_ link: LinkRecord, hold: RelayTermHold = .none) throws -> NowTermRow {
+            let line = try XCTUnwrap(RelayBannerModel.termLine(for: link, surface: .now, now: now, heldPurchase: hold))
+            return NowTermRow(id: link.hubID, title: link.macName, line: line)
+        }
+        let work = "Work Mac"
+        let home = "Home Mac"
+        // Work Mac's own banner with no term: the frames are about Home Mac's row under it.
+        let workEnded = try banner(link(work, nil, since: now))
+        var rows: [ScreenshotHost.IndexRow] = []
+        func nowShot(_ number: String, _ slug: String, _ view: NowView, _ reached: String) async throws {
+            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: 620)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "\(reached), light/dark/narrow"))
+        }
+        let paying = RelayAccountCenter.Phase.paying(grace: false, macs: [])
+        let nowFrames: [(String, String, NowView)] = [
+            ("S59", "banner-link-gone", NowView(banner: try banner(link(work, nil, since: before, moved: true), phase: paying))),
+            ("S59b", "banner-link-gone-before-date", NowView(banner: try banner(link(work, .slot, since: before), phase: paying))),
+            ("S59c", "banner-link-gone-past-date", NowView(banner: try banner(link(work, .slot, since: past), phase: paying, hold: .held))),
+            ("S59d", "banner-link-gone-moved-lapse", NowView(banner: try banner(link(work, .lapse, since: before, moved: true), hold: .held))),
+            ("S61a", "banner-needs-relay-before-date", NowView(banner: try banner(link(work, .lapse, since: before)))),
+            ("S61b", "banner-needs-relay-past-date", NowView(banner: try banner(link(work, .lapse, since: past)))),
+            ("S61c", "banner-needs-relay-held-free", NowView(banner: try banner(link(work, .lapse, since: before), hold: .held))),
+            ("S61c2", "banner-needs-relay-held-moved", NowView(banner: try banner(link(work, .lapse, since: before), phase: .moved, hold: .held))),
+            ("S61d", "now-row-before-date", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: before))])),
+            ("S61e", "now-row-past-date", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: past))])),
+            ("S61f", "now-row-refused-row", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: past), hold: .refusedRow)])),
+            ("S61g", "now-row-held", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: before), hold: .held)])),
+            ("S61l", "banner-transfer-limit-past-date", NowView(
+                banner: try banner(link(work, .lapse, since: past), hold: .refusedRow, unconfirmed: true))),
+            ("S61n", "banner-update-row-refused", NowView(
+                banner: try banner(link(work, .lapse, since: past), hold: .refusedRow, unconfirmed: true, updateRequired: true),
+                termRows: [try row(link(work, .lapse, since: past), hold: .refusedRow)]))
+        ]
+        for (number, slug, view) in nowFrames {
+            try await nowShot(number, slug, view, "NowView, handed the banner and rows")
+        }
+
+        let s60: [(String, String, LinkNotice)] = [
+            ("S60", "notice-link-ended", .relayEnded(macName: work, notSent: 0)),
+            ("S60b", "notice-link-ended-not-sent", .relayEnded(macName: work, notSent: 2)),
+            ("S60c", "notice-two-ended-first", .relayEnded(macName: work, notSent: 0)),
+            ("S60d", "notice-two-ended-second", .relayEnded(macName: home, notSent: 2))
+        ]
+        for (number, slug, notice) in s60 {
+            host.env.navigation.tab = .now
+            try await host.captureThree("\(number)-\(slug)", TabsWithNotice(notice: notice), narrowScroll: nil)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "TabsWithNotice", source: "App/AppRootView.swift", reached: "full app with the notice, light/dark/narrow"))
+        }
+
+        rows += try await captureTermMacs(
+            host: host, origin: origin, homeBefore: link(home, .lapse, since: before), homePast: link(home, .lapse, since: past))
+        return rows
+    }
+
+    /// S61h–S61k: the Settings → Macs row's term line, over centers holding nothing, a held purchase (a moved-away claim
+    /// with this phone's own purchase in StoreKit) or a refused row (a `transferLimit` answer).
+    private func captureTermMacs(
+        host: ScreenshotHost, origin: RelayOrigin, homeBefore: LinkRecord, homePast: LinkRecord
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let env = host.env
+        let saved = env.relayAccount
+        defer { env.relayAccount = saved }
+        let movedCard = try XCTUnwrap(RelayCardModel(availability: .available(origin), phase: .moved, unconfirmedPurchase: false))
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shot(_ number: String, _ slug: String, _ links: [LinkRecord], card: RelayCardModel?, center: RelayAccountCenter) async throws {
+            env.relayAccount = center
+            let view = NavigationStack { MacsView(card: card) }.environment(try macsLinking(links, now: now))
+            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: Self.toTheEnd)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "MacsView", source: "Features/Settings/MacsView.swift", reached: "bare stack, light/dark/narrow"))
+        }
+        let plain = RelayAccountCenter(
+            link: RelayAccountLink(hasIdentity: { false }, account: { nil }, events: { nil }), store: FakeSubscriptionStore(),
+            defaults: try makeDefaults()
+        ) { [] }
+        try await shot("S61h", "macs-row-before-date", [homeBefore], card: nil, center: plain)
+        try await shot("S61i", "macs-row-past-date", [homePast], card: nil, center: plain)
+
+        let refusedBed = AccountBed()
+        let refusedToken = try await refusedBed.register()
+        refusedBed.defaults.set(true, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        refusedBed.store.unfinishedResult = [refusedBed.row(token: refusedToken)]
+        refusedBed.fake.failNext("submitTransaction", with: .transferLimit)
+        let refused = refusedBed.makeCenter()
+        refused.start()
+        await refused.foreground()?.value
+        XCTAssertEqual(refused.termHold, .refusedRow)
+        try await shot("S61j", "macs-row-refused-row", [homePast], card: movedCard, center: refused)
+
+        let heldBed = AccountBed()
+        let heldToken = try await heldBed.register()
+        heldBed.defaults.set(false, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        heldBed.store.unfinishedResult = [heldBed.row(token: heldToken)]
+        let held = heldBed.makeCenter()
+        held.start()
+        await held.foreground()?.value
+        XCTAssertEqual(held.termHold, .held)
+        try await shot("S61k", "macs-row-held", [homeBefore], card: movedCard, center: held)
         return rows
     }
 

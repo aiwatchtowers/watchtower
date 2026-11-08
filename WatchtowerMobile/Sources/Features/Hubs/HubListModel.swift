@@ -28,6 +28,9 @@ struct HubListItem: Identifiable, Equatable {
     /// "iCloud", "Relay · switched by this iPhone, Today 10:42", "Switching…": only while the relay is available
     /// (`HubListModel.items(showsTransport:)`); nil otherwise, as the row was before Relay.
     var transportLine: String?
+    /// The term's line of a relay-only link the relay refuses (relay client Phase 5, Task 17, S61,
+    /// `RelayBannerModel.termLine(surface: .macs)`), in the secondary tone; nil for every other Mac.
+    var termLine: String?
 
     /// The online dot: green only while online (`MacStatusRow`'s rule).
     var dotTone: PhoneTone { online ? .green : .secondary }
@@ -76,6 +79,7 @@ enum HubListModel {
         unopened unopenedHubIDs: Set<String> = [],
         showsTransport: Bool = false,
         subscriptionEnded: Bool = false,
+        termHold: RelayTermHold = .none,
         activeHubID: String?,
         now: Date
     ) -> [HubListItem] {
@@ -103,7 +107,9 @@ enum HubListModel {
                 transportLine: showsTransport ? MacsModel.transportLine(
                     row.link, ownDeviceID: row.link.deviceID, inFlight: isSwitching(row.link),
                     subscriptionEnded: subscriptionEnded, now: now
-                ) : nil
+                ) : nil,
+                termLine: showsTransport && !removed
+                    ? RelayBannerModel.termLine(for: row.link, surface: .macs, now: now, heldPurchase: termHold) : nil
             )
         }
         let taken = Set(rows.map(\.sortOrder))

@@ -33,6 +33,13 @@ final class FakeLapseTarget: RelayLapseTarget {
         slotLosses += 1
     }
 
+    /// Every answered account read the center told this target of (relay client Phase 5, Task 17).
+    private(set) var answers: [(paying: Bool, macs: [String])] = []
+
+    func relayAccountAnswered(paying: Bool, macs: [String]) async {
+        answers.append((paying, macs))
+    }
+
     func releaseEnd() {
         parksEnd = false
         parked?.resume()

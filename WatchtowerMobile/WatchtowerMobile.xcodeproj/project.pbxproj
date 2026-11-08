@@ -28,10 +28,12 @@
 		0AFE1BA59E2563FDE53F7FB9 /* EventRecordingStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6958689BAB5EA3759F3BF525 /* EventRecordingStatus.swift */; };
 		0C39756A17F727F6090C782D /* PriorityMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2074A6BD5934DD6A23F717F4 /* PriorityMark.swift */; };
 		0C648FDCF07EA4907AAA801C /* SessionChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B86AC0DDCAB04B7FE9713D /* SessionChatView.swift */; };
+		0DC868BFC8C242C26852ED6B /* RelayTerm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CD63B2FDDD52110CBCDFD1B /* RelayTerm.swift */; };
 		0E146E046F62B4933A70AD59 /* PermissionAnswerWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF08EF4BD6F8B5CD6BA56C66 /* PermissionAnswerWiringTests.swift */; };
 		0FCD4C196C019DF856D1477A /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = 507F22E0F36461C091AD6154 /* WatchtowerKit */; };
 		101109CA3EF803BB9B5F5FFA /* RelaySlotsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A820B1A89DE510D37F5A947F /* RelaySlotsModel.swift */; };
 		10A018D8FB99EF76F60E04E2 /* PhoneKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20344BC6FD6EAD7CEF59003C /* PhoneKeychain.swift */; };
+		134400804866BD03F935B169 /* NowTermRowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9CB581C79BD5E0E20A530AF /* NowTermRowTests.swift */; };
 		134678525F19FCE89171B6C6 /* ScreenshotTourTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEDADC4689182E2C4442544B /* ScreenshotTourTests.swift */; };
 		1421716B85346C19D9174254 /* RelayBannerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3669465836FFBCB98FA1EBB /* RelayBannerModel.swift */; };
 		14896A8CB486651EC0A4E117 /* BatteryDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B22EFD3B72B5CE043AA1EE1 /* BatteryDiagnostics.swift */; };
@@ -100,6 +102,7 @@
 		45528F67625D48B250D6DC95 /* DesignSystemGallery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE39270EDDD7222835BC7B62 /* DesignSystemGallery.swift */; };
 		45583C3714F8D53FB5EE744C /* AskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBF496EC3CD5D473675267EB /* AskView.swift */; };
 		45925DBC049F5F22C5EE681B /* WatchtowerKit in Frameworks */ = {isa = PBXBuildFile; productRef = EB447CB107767855A2DBBA0F /* WatchtowerKit */; };
+		45EF4501145DF6382763B37F /* RelayBannerModelTests+Term.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEF971CEC4F36C3EB069E9A9 /* RelayBannerModelTests+Term.swift */; };
 		4615CD4539FDC30EFA94C5CA /* DemoSeed.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D6F6F3D895505750B9F5892 /* DemoSeed.swift */; };
 		464D3D47D6D5457910F08763 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4EF0E3D3509281E6EB30B918 /* Assets.xcassets */; };
 		46A5780712E8154F7DC024D1 /* RelayAccountCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9A200E0C0E91AC3826112E9 /* RelayAccountCenter.swift */; };
@@ -183,6 +186,7 @@
 		978E2301EEB5748A01430CCE /* Card.swift in Sources */ = {isa = PBXBuildFile; fileRef = 321E6860B503B814C29C52CE /* Card.swift */; };
 		97A451BD079C48489C7E920E /* AgendaModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CC7B3E7EA9A863558A8DE6 /* AgendaModel.swift */; };
 		98571E20370246D465BAB9A8 /* LinkRoutePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FF1DEE60B1E5462B1C74622 /* LinkRoutePolicy.swift */; };
+		9A2252F40810B3A8EC72FB69 /* RelayAccountCenterTermTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC976C018A8D10ED26DAEC7E /* RelayAccountCenterTermTests.swift */; };
 		9BE46824C76328CE009F8E27 /* WorkbenchListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BDF7C4C729D997505169333 /* WorkbenchListView.swift */; };
 		9C53524DCE6BE567C1061D3D /* Parts.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B85A2B36DAACBD5D32F41F6 /* Parts.swift */; };
 		9C610711EE9CC1868303C95B /* RecordingsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9493F3FE3EDF5AADD9EE4298 /* RecordingsListView.swift */; };
@@ -242,6 +246,7 @@
 		CC58E9B61684A610576DA392 /* DemoSeed+Workbench.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */; };
 		CD1CF9B9ABA758B79FE0F0C6 /* MultiHubEnvironmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE856C04E56DC5BC73E2622 /* MultiHubEnvironmentTests.swift */; };
 		CDC11FD078A2FB5E6866D0A2 /* PermissionCardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 235E649016A78F0B50BAC758 /* PermissionCardModel.swift */; };
+		CE27B9D95BCA2C594B3AA611 /* MacMovedWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFEAE5C2DA8B8D7B7FFDEA68 /* MacMovedWiringTests.swift */; };
 		CE73BE7359EBFEB63F294C2E /* WorkchatComposerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58EF604C900416B89A5531DD /* WorkchatComposerBar.swift */; };
 		CF6C7BA415D985CA24D412FB /* BoardModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02765BEEEAE841E5CB9B2D94 /* BoardModel.swift */; };
 		D08E3DC43E238FF3AF3A53D1 /* FakeHostedRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = DADFBFEF5483CA1DFCCD596B /* FakeHostedRelay.swift */; };
@@ -250,12 +255,14 @@
 		D368FFCAC7874A546D71829B /* CalendarFormat.swift in Sources */ = {isa = PBXBuildFile; fileRef = F34AF1BE929D7C30029A3618 /* CalendarFormat.swift */; };
 		D4907562792F98A11EA97943 /* CachingPhoneKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 305BFD36C58A1310CA0071B2 /* CachingPhoneKeyStore.swift */; };
 		D4F7DB9F9B82AF8D7EA7E806 /* NotificationToken.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DEDC3952A0D75EE5C3CD27D /* NotificationToken.swift */; };
+		D54638AFFFEBA462C1DB49D9 /* LinkingViewModelTests+Term.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9732F9188D05FEAEF669D6C /* LinkingViewModelTests+Term.swift */; };
 		D6854570BDEB1DDD7B0EF389 /* TransportRequestCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95542DB73942F56F675F128A /* TransportRequestCopyTests.swift */; };
 		D68714F514B300CCA34A008D /* Metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08D768F21290828AFDF991CD /* Metrics.swift */; };
 		D702907EE7D2F154351AF83B /* PhoneRecordingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */; };
 		D727E454FC516499DCFF3DC0 /* BoardWriteWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A726D48C0E150B13F9CC3511 /* BoardWriteWiringTests.swift */; };
 		D773F002639B0E0A3B028B8E /* HubListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EE3DBFF44464842CBDA8890 /* HubListModel.swift */; };
 		D802B596C5C4EB35BE77D0F9 /* DiagnosticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF9AC4698238F4AEA346AB8F /* DiagnosticsView.swift */; };
+		D8B76671A0D64C0DF3E11EB7 /* RelayTermWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A10ADFD3A851E5F01D4BE3 /* RelayTermWiringTests.swift */; };
 		D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */; };
 		DA434D692C1CA4EB4C68A2AD /* LinkRoutePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9EFFB06891AF9EDE0CC8C3F /* LinkRoutePolicyTests.swift */; };
 		DA922CBFE59AFD31CC34BEB6 /* RelayLinkingE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C93DE7B335A17B9E0366489C /* RelayLinkingE2ETests.swift */; };
@@ -395,6 +402,7 @@
 		3423ED435746DC6583E674BC /* FakeHostedRelay+Zones.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "FakeHostedRelay+Zones.swift"; sourceTree = "<group>"; };
 		34D1B5A60BD91F03BDAA61C4 /* PushLaunchSocketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushLaunchSocketTests.swift; sourceTree = "<group>"; };
 		359CFF7702DA1B4BDAC6D0D1 /* AskDraft.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskDraft.swift; sourceTree = "<group>"; };
+		36A10ADFD3A851E5F01D4BE3 /* RelayTermWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTermWiringTests.swift; sourceTree = "<group>"; };
 		39F534AB8FCE553B8BC57C4D /* HubRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubRegistry.swift; sourceTree = "<group>"; };
 		3B22EFD3B72B5CE043AA1EE1 /* BatteryDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BatteryDiagnostics.swift; sourceTree = "<group>"; };
 		3BDA9266AD378B28E6BD60E4 /* AlertSubscriptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertSubscriptionTests.swift; sourceTree = "<group>"; };
@@ -469,6 +477,7 @@
 		790EDA0792AA0F8934CF6925 /* TransportRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportRequest.swift; sourceTree = "<group>"; };
 		7BDF7C4C729D997505169333 /* WorkbenchListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchListView.swift; sourceTree = "<group>"; };
 		7C16FF4E0A505B91DDC1D96D /* MacsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacsModel.swift; sourceTree = "<group>"; };
+		7CD63B2FDDD52110CBCDFD1B /* RelayTerm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTerm.swift; sourceTree = "<group>"; };
 		7DBFBABAF7726F52DECC669E /* RelayAccountCenterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountCenterTests.swift; sourceTree = "<group>"; };
 		7DFB18941483AAB533E516E7 /* CalendarReplicaModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarReplicaModel.swift; sourceTree = "<group>"; };
 		7FEBD186F3494D8757690A20 /* HubRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubRegistryTests.swift; sourceTree = "<group>"; };
@@ -575,10 +584,12 @@
 		C93DE7B335A17B9E0366489C /* RelayLinkingE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayLinkingE2ETests.swift; sourceTree = "<group>"; };
 		CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrangeToneTests.swift; sourceTree = "<group>"; };
 		CC1D506E95E1AC75991E81EB /* DemoSeed+Workbench.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DemoSeed+Workbench.swift"; sourceTree = "<group>"; };
+		CC976C018A8D10ED26DAEC7E /* RelayAccountCenterTermTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayAccountCenterTermTests.swift; sourceTree = "<group>"; };
 		CE1581266064A628CA86BA7B /* NotifyService.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NotifyService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		CE2FB594649A1BFF585627DD /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
 		CE541D2ABBAAE2249FEE7A87 /* PhoneRecordingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneRecordingsModel.swift; sourceTree = "<group>"; };
 		CE8A630A5D409247C5E01A5C /* MacStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacStatusRow.swift; sourceTree = "<group>"; };
+		CEF971CEC4F36C3EB069E9A9 /* RelayBannerModelTests+Term.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RelayBannerModelTests+Term.swift"; sourceTree = "<group>"; };
 		CFBDE583D367BAA93581D5BA /* AppRoot+Tour.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppRoot+Tour.swift"; sourceTree = "<group>"; };
 		D43E39A6F539075FD5B91647 /* NotDeliveredModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotDeliveredModelTests.swift; sourceTree = "<group>"; };
 		D467487E4F392B60617E94FE /* CachingPhoneKeyStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CachingPhoneKeyStoreTests.swift; sourceTree = "<group>"; };
@@ -589,7 +600,9 @@
 		D9133A63555C03244B8E6D94 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
 		D964696C694A4E292DBBA533 /* WatchtowerMobileTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = WatchtowerMobileTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D96D0077F8ACB0F0D4E700EC /* SessionCadence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCadence.swift; sourceTree = "<group>"; };
+		D9732F9188D05FEAEF669D6C /* LinkingViewModelTests+Term.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "LinkingViewModelTests+Term.swift"; sourceTree = "<group>"; };
 		D9B86AC0DDCAB04B7FE9713D /* SessionChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionChatView.swift; sourceTree = "<group>"; };
+		D9CB581C79BD5E0E20A530AF /* NowTermRowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowTermRowTests.swift; sourceTree = "<group>"; };
 		DAD7E1A1B3D8C6356582CA3F /* SessionReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionReportView.swift; sourceTree = "<group>"; };
 		DADFBFEF5483CA1DFCCD596B /* FakeHostedRelay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FakeHostedRelay.swift; sourceTree = "<group>"; };
 		DD28369A2BBD9321119FC85E /* LatencyDiagnosticsModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LatencyDiagnosticsModelTests.swift; sourceTree = "<group>"; };
@@ -613,6 +626,7 @@
 		EDA82747FE5EB5BCDDB4E091 /* AppRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppRootView.swift; sourceTree = "<group>"; };
 		EE90B2DF231D47C2A8E03EA7 /* WorkbenchAutomationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkbenchAutomationsView.swift; sourceTree = "<group>"; };
 		EF9AC4698238F4AEA346AB8F /* DiagnosticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsView.swift; sourceTree = "<group>"; };
+		EFEAE5C2DA8B8D7B7FFDEA68 /* MacMovedWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacMovedWiringTests.swift; sourceTree = "<group>"; };
 		F1751079508437F093108AD4 /* HubSwitcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HubSwitcherTests.swift; sourceTree = "<group>"; };
 		F270954E959932DD49D7C63D /* BoardModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardModelTests.swift; sourceTree = "<group>"; };
 		F2D287A1BE3B31FA6D711C52 /* NowModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowModel.swift; sourceTree = "<group>"; };
@@ -685,6 +699,7 @@
 				A9A200E0C0E91AC3826112E9 /* RelayAccountCenter.swift */,
 				898B58250245EB8FEB3A6C40 /* RelayPushRegistrar.swift */,
 				A10DA8E631B66AD5BEE3D7E6 /* RelaySubscriptionStore.swift */,
+				7CD63B2FDDD52110CBCDFD1B /* RelayTerm.swift */,
 				BB51D5844D98DDBFB3E2B8C3 /* StoreKitRelayStore.swift */,
 			);
 			path = Relay;
@@ -752,7 +767,9 @@
 				DD28369A2BBD9321119FC85E /* LatencyDiagnosticsModelTests.swift */,
 				85545659232F9E5A155957E8 /* LinkingRotationTests.swift */,
 				B07F0B15A0983525BEC4E560 /* LinkingViewModelTests.swift */,
+				D9732F9188D05FEAEF669D6C /* LinkingViewModelTests+Term.swift */,
 				A9EFFB06891AF9EDE0CC8C3F /* LinkRoutePolicyTests.swift */,
+				EFEAE5C2DA8B8D7B7FFDEA68 /* MacMovedWiringTests.swift */,
 				8C16B55E71B360AC75DB5207 /* MacsModelTests.swift */,
 				BEB38A13D1FADDABACF8A959 /* MacTransportModelTests.swift */,
 				FEE107B34964A17A7CBF17B4 /* MacTransportWiringTests.swift */,
@@ -760,6 +777,7 @@
 				694B304F0EF2BBFFFC674C03 /* MultiHubRecordingTests.swift */,
 				D43E39A6F539075FD5B91647 /* NotDeliveredModelTests.swift */,
 				C8F3681AEDF7DA7A4369AB32 /* NotificationRouterTests.swift */,
+				D9CB581C79BD5E0E20A530AF /* NowTermRowTests.swift */,
 				DF8889CE92604290450CD690 /* NowWiringTests.swift */,
 				CADFAC4E1322FC569C826133 /* OrangeToneTests.swift */,
 				B7D8BB14D242560434FB94E9 /* OrderedActionsWiringTests.swift */,
@@ -772,10 +790,12 @@
 				89B26ECAC390C8F9F65FD0E6 /* RecordingsWiringTests.swift */,
 				8524749B2AB47915FC4DFB4A /* RecordingUploadWiringTests.swift */,
 				5CA5CC2832CBEF69C498C543 /* RelayAccountCenterSlotTests.swift */,
+				CC976C018A8D10ED26DAEC7E /* RelayAccountCenterTermTests.swift */,
 				7DBFBABAF7726F52DECC669E /* RelayAccountCenterTests.swift */,
 				856D4A46DFFF1D264D8C0AE6 /* RelayAccountClaimTests.swift */,
 				02B852FCD6E9355C7959F0B8 /* RelayAvailabilityTests.swift */,
 				4155D18D7CC6D321AF695AA4 /* RelayBannerModelTests.swift */,
+				CEF971CEC4F36C3EB069E9A9 /* RelayBannerModelTests+Term.swift */,
 				9FC40A2129FAD7E956AE98BE /* RelayCardModelTests.swift */,
 				AADFE51E10312348E5F30CA4 /* RelayConfigTests.swift */,
 				A6E4EA3D2A7BAFFCDB7ADE84 /* RelayKeychainDeviceTests.swift */,
@@ -784,6 +804,7 @@
 				45C275AB902025EEFD3B1037 /* RelayPushRegistrarTests.swift */,
 				93764DAE658A0C920D2178FA /* RelaySlotsModelTests.swift */,
 				5CDDFF7559C9B425982A1ECC /* RelaySubscriptionModelTests.swift */,
+				36A10ADFD3A851E5F01D4BE3 /* RelayTermWiringTests.swift */,
 				9BA7C71D71B98A098CE0C829 /* RelayUpgradeCopyTests.swift */,
 				95B98F90EB8CC76A6479FA03 /* RelayUpgradeWiringTests.swift */,
 				49728A0913682F844134761D /* ReplicaKindTrackingTests.swift */,
@@ -1455,6 +1476,7 @@
 				39244550D47D9CB961C9EA49 /* RelaySubscriptionModel.swift in Sources */,
 				AEDBBCFEBEBA3210837979F3 /* RelaySubscriptionStore.swift in Sources */,
 				17861974941F7BB7626FA301 /* RelaySubscriptionView.swift in Sources */,
+				0DC868BFC8C242C26852ED6B /* RelayTerm.swift in Sources */,
 				2F12EA186C4296538FCD54AC /* RelayUpgrade.swift in Sources */,
 				CB102EA39646DE7AE89A3FA4 /* ReplicaDecodeCache.swift in Sources */,
 				081C526028EE36A9E89987B0 /* ResilientObservation.swift in Sources */,
@@ -1543,7 +1565,9 @@
 				DA434D692C1CA4EB4C68A2AD /* LinkRoutePolicyTests.swift in Sources */,
 				06EE5CC835773038323C08F9 /* LinkingFakes.swift in Sources */,
 				1C66AD025E134647BF2F6B75 /* LinkingRotationTests.swift in Sources */,
+				D54638AFFFEBA462C1DB49D9 /* LinkingViewModelTests+Term.swift in Sources */,
 				BE065B6613140A83D5C37021 /* LinkingViewModelTests.swift in Sources */,
+				CE27B9D95BCA2C594B3AA611 /* MacMovedWiringTests.swift in Sources */,
 				60308F364D1CCC828D53294B /* MacTransportModelTests.swift in Sources */,
 				06438F2792E254B0CBC66561 /* MacTransportWiringTests.swift in Sources */,
 				3801F0A3B71A6F6A2F3A8C49 /* MacsModelTests.swift in Sources */,
@@ -1553,6 +1577,7 @@
 				7287155B4B8FB156FCB1DAAD /* MultiHubRecordingTests.swift in Sources */,
 				221A9036CE8F47D9F5E6B0D6 /* NotDeliveredModelTests.swift in Sources */,
 				E852CC60708EFC9EE91084C3 /* NotificationRouterTests.swift in Sources */,
+				134400804866BD03F935B169 /* NowTermRowTests.swift in Sources */,
 				1BA03E2FF0F8F0F44C9ED1AD /* NowWiringTests.swift in Sources */,
 				EAD45B07F24926527E101E76 /* OrangeToneTests.swift in Sources */,
 				9123C82A7C74BBD898B28393 /* OrderedActionsWiringTests.swift in Sources */,
@@ -1566,10 +1591,12 @@
 				2C469681A2CC35A1F668794C /* RecordingUploadWiringTests.swift in Sources */,
 				D9667686DADD39EE454EEBA3 /* RecordingsWiringTests.swift in Sources */,
 				94516DC3C1C359A8176B328C /* RelayAccountCenterSlotTests.swift in Sources */,
+				9A2252F40810B3A8EC72FB69 /* RelayAccountCenterTermTests.swift in Sources */,
 				E71B2EE05544775FA79A23B3 /* RelayAccountCenterTests.swift in Sources */,
 				F39B06B205F1956A21E3FD7D /* RelayAccountClaimTests.swift in Sources */,
 				BBFA0AEAFD6FEEE331DF0501 /* RelayAccountFakes.swift in Sources */,
 				EB6C1E544928D2257B444103 /* RelayAvailabilityTests.swift in Sources */,
+				45EF4501145DF6382763B37F /* RelayBannerModelTests+Term.swift in Sources */,
 				83F6C97B186026D626D2BDBF /* RelayBannerModelTests.swift in Sources */,
 				C54517C9A6E1196BFAD5EE21 /* RelayCardModelTests.swift in Sources */,
 				EB01A6AEB40A0DE003CF5A15 /* RelayConfigTests.swift in Sources */,
@@ -1581,6 +1608,7 @@
 				B878C59B26360A44499F022E /* RelaySlotsModelTests.swift in Sources */,
 				517133D8B559D38811A85FE0 /* RelayStandControl.swift in Sources */,
 				EBF8760486885428717A6A73 /* RelaySubscriptionModelTests.swift in Sources */,
+				D8B76671A0D64C0DF3E11EB7 /* RelayTermWiringTests.swift in Sources */,
 				26953B6DF8345802292BD5E2 /* RelayUpgradeCopyTests.swift in Sources */,
 				8765A16977897B4DC5DF91D2 /* RelayUpgradeWiringTests.swift in Sources */,
 				3F4CE8C40D6A23A14D2DD4C4 /* ReplicaKindTrackingTests.swift in Sources */,

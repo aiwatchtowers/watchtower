@@ -627,7 +627,12 @@ final class Bed {
                 hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID), route: route, link: row?.link, startsActive: startsActive,
                 uploadRetriesAllowed: false,
-                sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
+                // A fake microphone: the term waits for a running recording (relay client Phase 5, Task 17).
+                makeRecorder: { uploader in
+                    PhoneRecorderController(
+                        uploader: uploader, engine: FakeAudioEngine(), notificationCenter: NotificationCenter(), tickInterval: nil)
+                },
+                sleep: { try await sleeper.sleep($0) }
             )
         }
     }
@@ -1130,6 +1135,7 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
     func dropEphemeral(hubID: String) -> Bool { root.dropEphemeral(hubID: hubID) }
     func relayKeySourceGone(hubID: String) async { await root.relayKeySourceGone(hubID: hubID) }
+    func relayKeySourceBack(hubID: String) async { await root.relayKeySourceBack(hubID: hubID) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
 
     func relayUse(for link: LinkRecord) async -> RelayUse {

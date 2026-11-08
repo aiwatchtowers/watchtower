@@ -104,6 +104,8 @@ actor SimPhone {
     private(set) var droppedEphemeral = false
     /// The policy's `markRefused`: a relay-only link the relay refuses.
     private(set) var refused: RelayRefusal?
+    /// The policy's `markMoved`/`clearMoved`: a relay-only link whose Mac moved to iCloud.
+    private(set) var movedEpoch: UInt32?
     private var nextCtl = 0
     private var offline = false
     private var loseNext = false
@@ -442,6 +444,8 @@ actor SimPhone {
         case .withdrawUnechoed: await withdrawUnechoed()
         case .dropEphemeral: droppedEphemeral = true
         case let .markRefused(cause): refused = cause
+        case let .markMoved(epoch): movedEpoch = epoch
+        case .clearMoved: movedEpoch = nil
         default: break
         }
     }
@@ -529,7 +533,7 @@ actor SimPhone {
                 break // `sync` drains `follower.leftTransport` at the end of every pass
             case let .pollOtherMailbox(on):
                 await read(SimKind(on))
-            case .withdrawUnechoed, .dropEphemeral, .markRefused:
+            case .withdrawUnechoed, .dropEphemeral, .markRefused, .markMoved, .clearMoved:
                 await readerStatus(command)
             }
         }

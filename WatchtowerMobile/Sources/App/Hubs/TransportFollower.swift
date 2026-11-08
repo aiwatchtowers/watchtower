@@ -29,6 +29,9 @@ protocol TransportFollowerHost: AnyObject {
     /// The phone's relay key source is gone (a lapse, a lost slot, the hub's word that it runs without this phone):
     /// the feed's parked mark goes and the feed stops silently at a pending record (`HubSession.keySourceGone`).
     func relayKeySourceGone(hubID: String) async
+    /// The marks that took the key source away are gone (a marker toward the relay cleared `macMoved`): the feed reads
+    /// again unless another mark stands (`HubSession.keySourceBack`).
+    func relayKeySourceBack(hubID: String) async
     /// Saves `link` on its registry row in one write; false when it was not written.
     func persistRoute(_ link: LinkRecord) -> Bool
     /// Puts the hub's session on its row's route once the session's current fetch ended.
@@ -135,7 +138,7 @@ final class TransportFollower {
         let state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
             leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link),
-            hasOtherRoute: link.offersCloudKit)
+            hasOtherRoute: link.offersCloudKit, macMovedEpoch: link.macMoved)
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
@@ -177,13 +180,18 @@ final class TransportFollower {
         var withdraw = false
         var dropEphemeral = false
         var refused: RelayRefusal?
+        /// A relay-only link read its Mac's move to iCloud in this epoch (S59).
+        var moved: UInt32?
+        var clearsMoved = false
 
-        /// Relay client Phase 5's commands: withdraw, drop the keys, start the term.
+        /// Relay client Phase 5's commands: withdraw, drop the keys, start the term, mark or clear a move.
         mutating func takeReaderStatus(_ command: FollowerCommand) {
             switch command {
             case .withdrawUnechoed: withdraw = true
             case .dropEphemeral: dropEphemeral = true
             case .markRefused(let cause): refused = cause
+            case .markMoved(let epoch): moved = epoch
+            case .clearMoved: clearsMoved = true
             default: break
             }
         }
@@ -209,7 +217,7 @@ final class TransportFollower {
                 plan.decided = true
             case .markHandled: plan.handled = true
             case .ignore: plan.decided = true
-            case .withdrawUnechoed, .dropEphemeral, .markRefused: plan.takeReaderStatus(command)
+            case .withdrawUnechoed, .dropEphemeral, .markRefused, .markMoved, .clearMoved: plan.takeReaderStatus(command)
             }
         }
         return plan
@@ -260,6 +268,7 @@ final class TransportFollower {
         }
         if plan.answered, case .switched(.relay, _, _, _, _, _, _) = input, !upgradeAnswered(host: host) { return false }
         if let ask = plan.requestSwitch { await onRequestSwitch?(ask.target, ask.reason) }
+        if plan.clearsMoved { await host.relayKeySourceBack(hubID: hubID) }
         if case .marker = input { return true }
         return plan.handled || plan.decided
     }
@@ -335,7 +344,7 @@ final class TransportFollower {
     private static func endsKeySource(_ input: FollowerInput, _ plan: Plan) -> Bool {
         switch input {
         case .relayLapsed, .slotLost: true
-        default: plan.listUndelivered
+        default: plan.listUndelivered || plan.moved != nil
         }
     }
 
@@ -399,9 +408,14 @@ final class TransportFollower {
         let clearsHubOnRelay: Bool
         /// A relay-only link the relay refuses starts its term, once (`LinkRecord.relayRefused`).
         let refused: RelayRefusal?
+        /// A move to iCloud this relay-only link cannot follow (S59), or a marker that says the Mac is back.
+        let moved: UInt32?
+        let clearsMoved: Bool
 
         init(plan: Plan, moves: Bool) {
             refused = plan.refused
+            moved = plan.moved
+            clearsMoved = plan.clearsMoved
             let routeMoved = plan.move != nil
             setsHubOnRelay = plan.listUndelivered
             clearsRequest = moves || plan.answered || plan.listUndelivered
@@ -412,6 +426,8 @@ final class TransportFollower {
 
         func apply(to link: inout LinkRecord, at date: Date) {
             if let refused, link.relayRefused == nil { link.relayRefused = RelayRefusedRecord(since: date, cause: refused) }
+            if let moved, moved > (link.macMoved ?? 0) { link.macMoved = moved }
+            if clearsMoved { link.macMoved = nil }
             if clearsRequest { link.transportRequest = nil }
             if setsHubOnRelay {
                 link.hubOnRelayAt = date

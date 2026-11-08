@@ -156,6 +156,35 @@ struct NowParkedRow: Equatable {
 
 /// The name Now gives the hub on screen, in its Relay banner and its parked row alike: the link's Mac name, else
 /// the switcher's (`HubSession.hubName`), else empty (each line has its own wording for no name).
+/// Now's quiet row for a Mac whose relay-only link the relay refuses (relay client Phase 5, Task 17, S61): any other
+/// refused Mac, and the Mac on screen when its banner does not speak of the term itself ("Update Watchtower…", an
+/// unknown phase). Its name and the term's line in the secondary tone; the row opens Settings → Macs and has no button.
+struct NowTermRow: Equatable, Identifiable {
+    /// The hub id.
+    let id: String
+    let title: String
+    let line: String
+    let destination = NowRoute.macs
+    let tone = PhoneTone.secondary
+
+    var toneUse: ToneUse {
+        ToneUse(element: "term row \(id)", tone: tone, role: .info)
+    }
+
+    /// The rows in registry order: every linked Mac with a term line (`RelayBannerModel.termLine(surface: .now)`), the one
+    /// on screen only when `activeBanner` does not speak of the term.
+    static func rows(
+        links: [HubRow], activeHubID: String?, activeBanner: RelayBannerModel?, hold: RelayTermHold, now: Date
+    ) -> [Self] {
+        links.compactMap { row in
+            guard row.state == .linked else { return nil }
+            if row.hubID == activeHubID, activeBanner?.speaksOfTerm == true { return nil }
+            guard let line = RelayBannerModel.termLine(for: row.link, surface: .now, now: now, heldPurchase: hold) else { return nil }
+            return Self(id: row.hubID, title: row.link.macName, line: line)
+        }
+    }
+}
+
 enum NowHubName {
     static func of(links: [HubRow], hubID: String, hubName: String?) -> String {
         links.first { $0.hubID == hubID }?.link.macName ?? hubName ?? ""

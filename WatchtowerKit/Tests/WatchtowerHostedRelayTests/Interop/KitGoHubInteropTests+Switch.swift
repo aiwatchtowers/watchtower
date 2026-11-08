@@ -661,7 +661,8 @@ actor KitFollower {
             case .listUnechoedAsUndelivered: _ = try await outbox.listUnechoedAsUndelivered(reason: .hubOnRelay)
             case .markHandled, .ignore, .requestAnswered: handled = true
             // Losing reader status (Phase 5) is not part of the interop scenarios: no slot is lost there.
-            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch, .withdrawUnechoed, .dropEphemeral, .markRefused: break
+            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch, .withdrawUnechoed, .dropEphemeral, .markRefused,
+                 .markMoved, .clearMoved: break
             }
         }
         if move?.to == .relay || commands.contains(.requestAnswered) { relayRequested = false }
