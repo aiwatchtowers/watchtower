@@ -135,7 +135,7 @@ func tableCounts(t *testing.T, database *db.DB) map[string]int {
 }
 
 // TestReviewMap_GoldenKeysAndWritesNothing pins the map's JSON (the Desktop
-// decodes testdata/review-map.json) and checks the command writes no row.
+// decodes testdata/review-map.golden.json) and checks the command writes no row.
 func TestReviewMap_GoldenKeysAndWritesNothing(t *testing.T) {
 	database, wb, s, _, _ := mapFixture(t)
 	r := startRound(t, wb, s)
@@ -145,7 +145,7 @@ func TestReviewMap_GoldenKeysAndWritesNothing(t *testing.T) {
 	assert.Equal(t, before, tableCounts(t, database), "review map wrote a row")
 
 	assert.Equal(t, false, m["lanes_partial"])
-	golden := filepath.Join("testdata", "review-map.json")
+	golden := filepath.Join("testdata", "review-map.golden.json")
 	if *updateSessionReportGolden {
 		require.NoError(t, os.WriteFile(golden, []byte(out), 0o644))
 	}

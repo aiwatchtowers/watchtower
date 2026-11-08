@@ -111,7 +111,7 @@
 **Depends on:** Tasks 1, 4.
 
 **Files:**
-- Create: `cmd/workbench_review_map.go`, `cmd/workbench_review_map_test.go`, `cmd/testdata/review-map.json` (also copied to WatchtowerCore test fixtures in Task 11)
+- Create: `cmd/workbench_review_map.go`, `cmd/workbench_review_map_test.go`, `cmd/testdata/review-map.golden.json` (also copied to WatchtowerCore test fixtures in Task 11)
 - Modify: `cmd/workbench_review.go` (start/refresh/repoint store `head_sha`: `rev-parse HEAD` of the folder; a branch-tip round stores the tip commit), `internal/tools/workbench_review_session.go` (a `ReviewSource.Head(ctx, repo) (string, error)` read), `internal/reviewmap/titles_db.go` (`DBTitles` implementing `TitleSource` over `TargetsByBranches` + `GetJiraIssuesByKeysMap` + target ids)
 
 **Interfaces — Produces:**
