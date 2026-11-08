@@ -286,3 +286,18 @@ func ExampleBuild() {
 	// dir:internal/db/migrations breaking true
 	// dir: normal false
 }
+
+func TestBuild_CanSkipIsNormalWhateverItsFiles(t *testing.T) {
+	m := Build(Input{Diff: reviewdiff.Diff{Files: []reviewdiff.File{
+		{Path: "internal/x/testdata/old_test.go", Status: "deleted", Deletions: 30},
+		file("internal/x/a.go", 5),
+	}}})
+	assert.Equal(t, []string{"dir:internal/x", "collapsed"}, keys(m))
+	skip := chapter(t, m, "collapsed")
+	assert.Equal(t, Normal, skip.Level)
+	assert.False(t, skip.Core)
+	assert.Equal(t, map[string]int{"test_deleted": 1}, skip.SignalsSummary)
+	assert.Equal(t, "collapsed", m.Files[0].Chapter)
+	assert.Equal(t, Breaking, m.Files[0].Level)
+	assert.Equal(t, []string{"test_deleted"}, m.Files[0].Signals)
+}

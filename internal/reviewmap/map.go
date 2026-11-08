@@ -17,8 +17,8 @@ const (
 
 // Chapter is one chapter of the map. Key is "agent:<n>", "collapsed",
 // "lane:<lane>", "lane:<lane>/<dir>[#N]" or "dir:<dir>[#N]". Level is the
-// highest of its files'; Core is true for a breaking chapter and for an
-// agent chapter marked core. Lane, TargetID and JiraKey are set on a lane
+// highest of its files' ("collapsed" is always normal); Core is true for a
+// breaking chapter and for an agent chapter marked core. Lane, TargetID and JiraKey are set on a lane
 // chapter (the last two when the lane's ticket was found).
 type Chapter struct {
 	Key            string         `json:"key"`
@@ -84,9 +84,13 @@ func Build(in Input) Map {
 		c.SignalsSummary = map[string]int{}
 		for _, p := range c.Paths {
 			chapterOf[p] = c.Key
-			c.Level = max(c.Level, LevelOf(fileSignals[p]))
 			for _, s := range fileSignals[p] {
 				c.SignalsSummary[s]++
+			}
+			// "Can skip" stays normal and non-core whatever its files carry;
+			// they keep their own levels in Files.
+			if c.Key != collapsedKey {
+				c.Level = max(c.Level, LevelOf(fileSignals[p]))
 			}
 		}
 		c.Core = c.Core || c.Level == Breaking
