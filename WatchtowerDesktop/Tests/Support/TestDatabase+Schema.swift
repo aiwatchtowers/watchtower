@@ -1500,7 +1500,7 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL
-);
+, plot_json TEXT NOT NULL DEFAULT '{}', publication_proof TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS agent_log_files (
   path           TEXT PRIMARY KEY,
   agent          TEXT NOT NULL CHECK (agent IN ('claude')),
@@ -2374,6 +2374,32 @@ CREATE TABLE IF NOT EXISTS history_backfill_daily (
  day_from REAL NOT NULL,
  digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
  PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
+);
+CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    state                  TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+    reason                 TEXT NOT NULL DEFAULT '',
+    plan                   TEXT NOT NULL DEFAULT '',
+    fetched_at             TEXT,
+    last_error             TEXT NOT NULL DEFAULT '',
+    last_error_at          TEXT,
+    limits_json            TEXT NOT NULL DEFAULT '[]',
+    breakdown_json         TEXT NOT NULL DEFAULT '[]',
+    updated_at             TEXT NOT NULL,
+    plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
+    scope                  TEXT NOT NULL DEFAULT '',
+    identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+    ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+    CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+);
+CREATE TABLE IF NOT EXISTS codex_plan_usage_samples (
+    scope      TEXT NOT NULL CHECK (length(scope) = 64),
+    limit_key  TEXT NOT NULL,
+    taken_at   TEXT NOT NULL,
+    percent    REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+    resets_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (scope, limit_key, taken_at)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,

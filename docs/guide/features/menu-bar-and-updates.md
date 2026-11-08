@@ -20,7 +20,7 @@ Other lines appear only when they apply:
 
 - **Loading history: N of M days** while a new source's first month loads, or "Loading history paused" when an account needs reconnecting.
 - A model download with its progress, or why it failed, plus **Retry <model> Download**.
-- Your Claude plan limits (session and weekly). Clicking one opens Usage → Claude plan. The **Show in the menu bar** switch there also puts the percentages next to the icon.
+- Your Claude and Codex subscription limits, with each provider's status and refresh action. Clicking a quota opens **Usage → Plans**. **Show limits in the menu bar** there adds provider-labelled counters next to the icon; Codex uses its most restrictive current quota. See [Plans and subscription limits](plans.md).
 - A daemon or CLI install error, if one happened.
 
 ### Updates

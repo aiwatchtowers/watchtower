@@ -6,6 +6,13 @@ import Foundation
 package struct CodexSessionAgent: SessionAgent {
     package init() {}
 
+    package var subscriptionUsage: SubscriptionUsagePolicy {
+        SubscriptionUsagePolicy(title: "Codex", signInApplication: "Codex",
+                                statusTable: "codex_plan_usage_status", samplesTable: "codex_plan_usage_samples",
+                                storage: .identityScoped, defaultQuotaBucket: "codex", layout: .grouped, tint: "teal", icon: "terminal",
+                                suppliesSurfaceBreakdown: false, sendsNotifications: false)
+    }
+
     package var kind: AgentKind { .codex }
 
     /// Plan Task G7's spikes on codex 0.159.2: a line pasted mid-turn goes

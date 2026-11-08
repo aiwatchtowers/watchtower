@@ -1,16 +1,16 @@
 # Plan limits and high cost
 
-Claude runs out of quota sooner than expected, a warning says a limit will be hit, the chat says it is being rate-limited, or Watchtower's background AI uses more than you want.
+Claude or Codex runs out of subscription quota sooner than expected, a forecast says a limit will be hit, the chat is rate-limited, or Watchtower's background AI uses more than you want.
 
 ## What you see
 
-- A menu bar text `5h N% · 7d M%`, with a `⚠︎` prefix on a warning, and a notice that the 5-hour or weekly limit is projected to be hit.
-- On **Usage → Claude plan**: "Sign in to Claude Code to see your plan limits.", "Your Claude Code sign-in expired — open Claude Code to refresh it." or "Couldn't update: …".
+- Provider-labelled counters in the menu bar, with a `⚠︎` prefix on a fresh warning. The popup keeps source errors and retry actions visible.
+- On **Usage → Plans**: a source error, **Collecting data…**, or **Forecast needs an update**. Claude can also send its existing system notifications.
 - In the chat: "The provider is rate-limiting requests. Try again in a moment."
 
 ## Why
 
-Your Claude plan limit belongs to your Claude account, so Watchtower's background jobs, the chat, Workbench sessions and your own Claude use all count against the same 5-hour and weekly windows. Slack Digests and Tracks run every sync cycle and are the heaviest; a bot-heavy channel multiplies the work, and a freshly connected source adds a month of history. Watchtower reads the plan numbers every 5 minutes read-only, and never refreshes Claude Code's sign-in itself.
+Each subscription has its own account-wide allowances. Watchtower's background jobs, chats, Workbench sessions and your own use draw from the provider's windows; Claude and Codex percentages are never added together. Watchtower reads each source independently every five minutes, with a longer retry delay after errors, and never refreshes Claude Code's sign-in itself.
 
 If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits), scheduled Slack digest batches and people card batches keep their unfinished input window when both providers are waiting for quota. They try the missing work on a later regular sync cycle; already saved digests and cards stay saved. Other background jobs keep their own retry schedules.
 
@@ -25,10 +25,12 @@ If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-res
 7. **Rate limit in the chat:** wait a moment and press **Retry**.
 8. Notifications about limits are the **Claude plan limits** switch in **Settings → Features → Notifications**.
 
+For Codex source errors, open the installed Codex tool, sign in with your ChatGPT subscription, update it if needed, then press **Retry** on its card. An API key alone has no subscription quota to read. If only the forecast is missing, follow [Plans and subscription limits](../features/plans.md): it may need fifteen minutes of history, a fresh snapshot or account confirmation.
+
 ## How to check
 
 **Usage → Watchtower** shows fewer calls and tokens for the jobs you switched off on the next day, and the 5-hour percentage grows slower. History backfill runs on at its own pace; the plan limit never pauses it.
 
 ## If it did not help
 
-Codex and API-key accounts have no plan numbers. The model tiers and what costs what are on [AI providers, models and cost](../concepts/ai-providers-and-cost.md). A failing provider is [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
+Subscription limits and API call costs are separate measurements. The model tiers and what costs what are on [AI providers, models and cost](../concepts/ai-providers-and-cost.md). A failing provider is [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).

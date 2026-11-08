@@ -24,7 +24,7 @@ struct DesignShot {
 /// rendered over a transparent, white-looking page.
 enum DesignShotCatalog {
     @MainActor static var all: [DesignShot] {
-        [
+        PlansShotFixtures.shots + [
             DesignShot(name: "workbench-header", size: NSSize(width: 760, height: 44)) {
                 AnyView(DesignShotFixtures.workbenchHeader().padding(8).shotFrame().detailBackground())
             },

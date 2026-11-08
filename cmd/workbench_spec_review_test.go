@@ -40,7 +40,7 @@ func (a *fakeSpecReviewAgent) Review(_ context.Context, folder, _, _ string) (st
 func useSpecReviewAgent(t *testing.T, a *fakeSpecReviewAgent) {
 	t.Helper()
 	old := specReviewAgentFactory
-	specReviewAgentFactory = func(*config.Config) specreview.Agent { return a }
+	specReviewAgentFactory = func(*config.Config, string) specreview.Agent { return a }
 	t.Cleanup(func() { specReviewAgentFactory = old })
 }
 

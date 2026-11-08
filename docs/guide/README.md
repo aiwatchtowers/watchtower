@@ -15,7 +15,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Sources and accounts](concepts/sources-and-accounts.md) — what each connected source gives, several accounts of one kind, what removing one does, and why Watchtower needs to know who you are
 - [History backfill](concepts/history-backfill.md) — how the first month of a new source loads in the background, and what it skips
 - [Turning features on and off](concepts/features-on-and-off.md) — the switches, what feeds what, and how to read an empty tab's status line
-- [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
+- [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and where usage is recorded
 - [Privacy](concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
 - [Revoked access deletes an account's data](concepts/revoked-access.md) — when a revoked or long-unreached account's synced data is deleted, what is kept, and how to stop it
 - [Managed by your organization](concepts/managed-by-your-organization.md) — what a locked control means, what your company can decide, and that your data stays
@@ -32,7 +32,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps
 - [A Workbench session or ask is stuck](troubleshooting/workbench-session-or-ask-stuck.md) — an answer that did not reach the agent, a session with no state
 - [The iPhone is not syncing](troubleshooting/iphone-not-syncing.md) — "Mac offline", pairing across builds, codes and iCloud
-- [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — Claude plan warnings, rate limits and how to spend fewer tokens
+- [Plan limits and high cost](troubleshooting/plan-limits-or-high-cost.md) — subscription warnings, rate limits and how to spend fewer tokens
 - [An automation run stopped at a limit](troubleshooting/automation-run-limits.md) — what the per-run call, output and session limits mean and what to do when a run cannot finish
 - [Known issues](troubleshooting/known-issues.md) — where the app does something other than its screen says, with workarounds
 
@@ -55,6 +55,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 ## Insights
 
+- [Plans and subscription limits](features/plans.md) — separate Claude and Codex limits, history, forecasts and menu bar actions
 - [Digests](features/digests.md) — per-channel, daily, mail, Jira and meeting summaries in one feed, with a journal of decisions
 - [People](features/people.md) — a card per colleague with style, role and tips, plus a team summary
 - [Statistics](features/statistics.md) — channel and user activity, and the mute switch that decides what the AI reads

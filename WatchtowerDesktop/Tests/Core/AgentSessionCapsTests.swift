@@ -62,4 +62,32 @@ final class AgentSessionCapsTests: XCTestCase {
                                    elicitation: false, analyticsContext: true)
         XCTAssertNil(AgentSessionCaps.contextNotMeasuredCaption { _ in all })
     }
+    func testSubscriptionCapabilitiesMatchPublishedContracts() {
+        let legacy = ClaudeSessionAgent().subscriptionUsage
+        XCTAssertEqual(legacy.title, "Claude")
+        XCTAssertEqual(legacy.signInApplication, "Claude Code")
+        XCTAssertEqual(legacy.statusTable, "plan_usage_status")
+        XCTAssertEqual(legacy.samplesTable, "plan_usage_samples")
+        XCTAssertEqual(legacy.layout, .compact)
+        XCTAssertFalse(legacy.scopedIdentity)
+        XCTAssertTrue(legacy.retainsSavedLimits)
+        XCTAssertTrue(legacy.legacyDurations)
+        XCTAssertTrue(legacy.suppliesSurfaceBreakdown)
+        XCTAssertTrue(legacy.sendsNotifications)
+        XCTAssertEqual(PlanUsageProvider.claude.subscription.statusTable, legacy.statusTable)
+
+        let scoped = CodexSessionAgent().subscriptionUsage
+        XCTAssertEqual(scoped.title, "Codex")
+        XCTAssertEqual(scoped.signInApplication, "Codex")
+        XCTAssertEqual(scoped.statusTable, "codex_plan_usage_status")
+        XCTAssertEqual(scoped.samplesTable, "codex_plan_usage_samples")
+        XCTAssertEqual(scoped.layout, .grouped)
+        XCTAssertTrue(scoped.scopedIdentity)
+        XCTAssertFalse(scoped.retainsSavedLimits)
+        XCTAssertFalse(scoped.legacyDurations)
+        XCTAssertFalse(scoped.suppliesSurfaceBreakdown)
+        XCTAssertFalse(scoped.sendsNotifications)
+        XCTAssertEqual(PlanUsageProvider.codex.subscription.statusTable, scoped.statusTable)
+    }
+
 }

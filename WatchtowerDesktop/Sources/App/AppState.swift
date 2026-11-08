@@ -871,16 +871,6 @@ final class AppState {
         Task { await featureManager.load() }
     }
 
-    /// Every successful Feature Manager load pushes the disabled set into
-    /// the visibility store and marks it loaded; a failed one changes nothing.
-    func wireFeatureVisibility() {
-        featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
-            featureVisibility.disabledFeatureIDs = ids
-            featureVisibility.isLoaded = true
-            self?.syncAutomationSessionCenter()
-        }
-    }
-
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
     /// migrations, the daemon, and OAuth logins all run from the store,
     /// never from the (rebuild-overwritten) bundle binary.
@@ -1866,10 +1856,11 @@ final class AppState {
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.
-    private func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
+    func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?, notifier: (any PlanUsageNotifying)? = NotificationService.shared) {
         planUsageCenter?.stop()
-        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: NotificationService.shared)
+        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: notifier)
         planUsageCenter = center
+        syncPlanUsageFeatureState()
         center.start()
     }
 

@@ -1190,6 +1190,36 @@ verdict_value REAL,
 verdict_at TEXT NOT NULL DEFAULT ''
 )
 
+table	codex_plan_usage_samples
+CREATE TABLE codex_plan_usage_samples (
+scope TEXT NOT NULL CHECK (length(scope) = 64),
+limit_key TEXT NOT NULL,
+taken_at TEXT NOT NULL,
+percent REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+resets_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (scope, limit_key, taken_at)
+)
+
+table	codex_plan_usage_status
+CREATE TABLE codex_plan_usage_status (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+state TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+reason TEXT NOT NULL DEFAULT '',
+plan TEXT NOT NULL DEFAULT '',
+fetched_at TEXT,
+last_error TEXT NOT NULL DEFAULT '',
+last_error_at TEXT,
+limits_json TEXT NOT NULL DEFAULT '[]',
+breakdown_json TEXT NOT NULL DEFAULT '[]',
+updated_at TEXT NOT NULL,
+plot_json TEXT NOT NULL DEFAULT '{}',
+publication_proof TEXT NOT NULL DEFAULT '',
+scope TEXT NOT NULL DEFAULT '',
+identity_known INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+)
+
 table	custom_emojis
 CREATE TABLE custom_emojis (
 name TEXT PRIMARY KEY, -- Emoji shortcode (without colons)
@@ -2640,7 +2670,7 @@ last_error_at TEXT,
 limits_json TEXT NOT NULL DEFAULT '[]',
 breakdown_json TEXT NOT NULL DEFAULT '[]',
 updated_at TEXT NOT NULL
-)
+, plot_json TEXT NOT NULL DEFAULT '{}', publication_proof TEXT NOT NULL DEFAULT '')
 
 table	project_comments
 CREATE TABLE "project_comments" (
@@ -4604,6 +4634,30 @@ GROUP BY up.ancestor
 20	verdict_value	REAL	notnull=0	dflt=NULL	pk=0
 21	verdict_at	TEXT	notnull=1	dflt=''	pk=0
 
+## codex_plan_usage_samples
+0	scope	TEXT	notnull=1	dflt=NULL	pk=1
+1	limit_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	taken_at	TEXT	notnull=1	dflt=NULL	pk=3
+3	percent	REAL	notnull=1	dflt=NULL	pk=0
+4	resets_at	TEXT	notnull=1	dflt=''	pk=0
+
+## codex_plan_usage_status
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	state	TEXT	notnull=1	dflt=NULL	pk=0
+2	reason	TEXT	notnull=1	dflt=''	pk=0
+3	plan	TEXT	notnull=1	dflt=''	pk=0
+4	fetched_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	last_error	TEXT	notnull=1	dflt=''	pk=0
+6	last_error_at	TEXT	notnull=0	dflt=NULL	pk=0
+7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
+8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
+9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
+12	scope	TEXT	notnull=1	dflt=''	pk=0
+13	identity_known	INTEGER	notnull=1	dflt=0	pk=0
+14	ordinary_usage_allowed	INTEGER	notnull=0	dflt=NULL	pk=0
+
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1
 1	url	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5861,6 +5915,8 @@ GROUP BY up.ancestor
 7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
 8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
 9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
 
 ## project_comments
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

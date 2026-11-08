@@ -46,6 +46,8 @@ type Adapter interface {
 	// Conversations lists the session's conversations in ledger order whose
 	// transcripts exist: the sessionfeed parser's input.
 	Conversations(ctx context.Context, d *db.DB, rowID int64, folder, storedPath string, dirs sessionfeed.Dirs) ([]sessionfeed.Conversation, error)
+	// SessionModel returns the most recent actual model from this session's main transcript.
+	SessionModel(context.Context, *db.DB, *db.TerminalSession, Homes) (string, error)
 	// Probe is the verdict on a session whose background count went stale:
 	// one of the Probe* outcomes, with the raw status it was read from.
 	Probe(row Row, procs claudesession.ProcInfo, now time.Time) (outcome, raw string, err error)

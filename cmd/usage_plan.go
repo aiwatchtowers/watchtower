@@ -64,7 +64,11 @@ func runUsagePlan(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 	var pollErr error
 	if flagUsagePlanNow {
-		_, pollErr = newPlanUsagePoller(database, log.New(io.Discard, "", 0)).PollOnce(cmd.Context())
+		cfg, loadErr := workspaceConfigFromFlags()
+		if loadErr != nil {
+			return fmt.Errorf("loading config: %w", loadErr)
+		}
+		pollErr = newPlanProviders(database, cfg, log.New(io.Discard, "", 0))[0].Refresh(cmd.Context())
 	}
 	st, err := database.GetPlanUsageStatus()
 	if err != nil {

@@ -1009,8 +1009,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	if automationsOK {
 		wireAutomations(d, cfg, database, gen, logger)
 	}
-	// Claude plan limits: the usage poller (no AI).
-	wirePlanUsage(d, database, logger)
+	// Subscription limits: independent Claude and Codex readers (no AI).
+	wirePlanUsage(d, database, cfg, logger)
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)

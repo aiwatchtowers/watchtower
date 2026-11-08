@@ -236,10 +236,12 @@ echo $$ > "$WT_TEST_PID_FILE"
 file=""
 for a in "$@"; do case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac; done
 cat > /dev/null
+echo '{"type":"thread.started","thread_id":"t"}'
+sleep 0.1
 first=$(cat "$file"); second=$(cat "$file")
 reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'; exit 0; }
 case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
-echo '{"type":"thread.started","thread_id":"t"}'
+echo '{"type":"turn.started"}'
 sleep 0.5
 case "$(cat "$file" 2>/dev/null)" in *` + marker + `*) reply present ;; esac
 reply gone
