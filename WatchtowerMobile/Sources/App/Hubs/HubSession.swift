@@ -404,9 +404,10 @@ final class HubSession {
     /// A return to the foreground owes the relay feed a resume (it may have parked): taken by the next fetch, right
     /// before the feed reads, so no fetch of the return can run ahead of it.
     @ObservationIgnored private var feedResumeOwed = false
-    /// The route the hub's registry row holds now (set by `AppRoot.wire`): a follow writes it before the session is
-    /// rebuilt on it, so a session leaving the relay offers no more meanwhile. nil: the session's own route.
-    @ObservationIgnored var routeOnRow: (@MainActor () -> HubRoute?)?
+    /// The hub's registry row's link now (set by `AppRoot.wire`): a follow writes its route before the session is
+    /// rebuilt on it, so a session leaving the relay offers no more meanwhile; its `leftTransport` holds a fetched
+    /// merge's reseal back until the left mailbox is drained. nil: the session's own route, nothing left.
+    @ObservationIgnored var linkOnRow: (@MainActor () -> LinkRecord?)?
     /// The uploader's pass after a raise (`keysMerged`): stale recordings re-armed and sent. Not awaited (tests wait).
     @ObservationIgnored private(set) var uploadKick: Task<Void, Never>?
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
@@ -1330,11 +1331,15 @@ final class HubSession {
     /// nothing written) or the session has no keys. Throws as the merge does, with nothing written. `now` stamps the
     /// epoch the keybox supersedes (the link flow's clock). `reseal` picks the own rows moved: every row below the
     /// newest (a fetched keybox), or only those of an epoch the merge drops (a switch's, which keeps sim rule 13's same
-    /// bytes for the rest).
+    /// bytes for the rest). While the row has a transport left to drain, a fetched merge moves only the rows of an
+    /// epoch it drops too: a row resealed before the drain would make its old copy there read as rolled back, and the
+    /// drain would skip it (a dropped epoch's old copy no longer opens anyway).
     func mergeKeybox(_ keys: KeyboxKeys, now at: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge? {
         guard let keyStore else { return nil }
         if resealsAcrossEpochs {
-            return try await outbox.mergeKeybox(keys, into: keyStore, hubID: hubID, now: at, reseal: reseal)
+            let draining = linkOnRow?()?.leftTransport != nil
+            return try await outbox.mergeKeybox(
+                keys, into: keyStore, hubID: hubID, now: at, reseal: draining ? .droppedEpochs : reseal)
         }
         guard let hub = UUID(uuidString: hubID), let device = try keyStore.deviceID() else { return nil }
         let identity = try keyStore.identity()
@@ -1350,6 +1355,7 @@ final class HubSession {
     /// The uploader's pass after a raise: rows sealed in an older epoch are re-armed (Task 9, a link that reseals
     /// only), then every waiting recording goes out.
     private func kickUploads() {
+        guard !stopped else { return }
         let previous = uploadKick
         uploadKick = Task { [uploader, recorder] in
             await previous?.value
@@ -1358,6 +1364,8 @@ final class HubSession {
             } catch {
                 Self.logger.warning("recordings not re-armed after a raise: \(error.localizedDescription, privacy: .public)")
             }
+            // A shutdown cancels the pass: the re-armed rows go out from the next session.
+            guard !Task.isCancelled else { return }
             await recorder.uploadPending()
         }
     }
@@ -1372,14 +1380,14 @@ final class HubSession {
     private func acknowledgeNewestEpoch(offerAgain: Bool = false) {
         guard !stopped, linkedDevice != nil else { return }
         let previous = epochAckWork
-        let offers = offersOnItsRoute
         epochAckWork = Task { [weak self, outbox, secure] in
             await previous?.value
             do {
                 if offerAgain { try await outbox.offerAgain() }
                 let epoch = try secure.currentEpoch()
                 let nextKX: Data?
-                if offers {
+                // Read when the task runs, not when it was made: a follow to iCloud may have cleared the keys meanwhile.
+                if self?.offersOnItsRoute == true {
                     guard let offer = try await self?.relayOffer() else { return }
                     nextKX = offer
                 } else {
@@ -1396,7 +1404,7 @@ final class HubSession {
     /// iCloud persists the row before the keybox merge, whose raise acknowledges on the session still running).
     private var offersOnItsRoute: Bool {
         guard let route, Self.transportKind(of: route) == .relay else { return false }
-        guard let onRow = routeOnRow?() else { return true }
+        guard let onRow = linkOnRow?()?.route else { return true }
         return Self.transportKind(of: onRow) == .relay
     }
 
@@ -1834,6 +1842,9 @@ final class HubSession {
         // The last outbox pass ends before the transport stops and the caller closes the replica: the session's
         // own pass, then whatever else sits on the outbox's chain (an enqueue's flush, a resend, a withdrawal).
         await outboxWork?.value
+        // A raise's upload pass must not go on over the transport about to stop (a switch's merge starts one).
+        uploadKick?.cancel()
+        await uploadKick?.value
         await Self.drain(outbox, cap: outboxDrainCap)
         // A start not yet run must not want its socket after the stop.
         await relayStart?.value

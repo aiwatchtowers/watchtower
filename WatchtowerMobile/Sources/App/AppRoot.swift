@@ -430,7 +430,7 @@ final class AppRoot {
     /// final review Phone I-1).
     private func wire(_ session: HubSession) {
         let hubID = session.hubID
-        session.routeOnRow = { [weak self] in self?.followerLink(hubID: hubID)?.route }
+        session.linkOnRow = { [weak self] in self?.followerLink(hubID: hubID) }
         session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
         session.onFetched = { [weak self, weak session] in
             self?.checkLink(hubID: hubID)

@@ -217,28 +217,87 @@ final class EphemeralRotationWiringTests: XCTestCase {
         XCTAssertEqual(cloudAcks.compactMap(\.nextKX), [], "none on iCloud")
     }
 
-    /// Sim rule 13: a switch moves unechoed actions with the same bytes (its keybox merge drops no epoch here, so
-    /// it moves no row); the next fetched merge then reseals them into the newest epoch.
+    /// Sim rule 13: a switch moves unechoed actions with the same bytes (its keybox merge drops no epoch here, so it
+    /// moves no row). The link holds a stored pair, so the fetched merges after the move run through the outbox: while
+    /// the relay mailbox waits for its drain they move nothing either, the drain deletes every old copy, and the first
+    /// fetched merge after it reseals the rows into the newest epoch.
     func testASwitchKeepsTheBytesAndALaterFetchedMergeReseals() async throws {
         let bed = try await Bed.make(self, on: .relay)
         let first = try await bed.orderedSession()
+        let offered = try XCTUnwrap(try offer(bed))
+        await merge(bed, keybox(epoch: 2, relayKX: relayKX(naming: offered)))
+        try await settle(first)
+        XCTAssertNotNil(try bed.keys.hubLink(hubID)?.epochs.last?.relayKeys, "a stored pair for epoch 2")
         let envelopes = try await bed.sendTwoActions(first)
 
-        try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
+        try await bed.writeSwitch(target: .cloudKit, epoch: 3, on: .relay)
         let second = try await bed.fetchAndFollow(first)
         XCTAssertTrue(second.resealsAcrossEpochs, "a link that moved routes")
+        XCTAssertEqual(try bed.row()?.link.leftTransport, .relay)
         let onCloud = try await bed.cloudMailbox()
         for envelope in envelopes {
             XCTAssertTrue(onCloud.contains { $0.payload == envelope }, "the same bytes on CloudKit")
         }
-        XCTAssertEqual(try ownEnvelopes(second), envelopes, "the rows keep their bytes")
 
-        await merge(bed, keybox(epoch: 3))
+        // A fetched merge before the drain (the link holds a pair, so no short cut) leaves the rows alone.
+        await merge(bed, keybox(epoch: 3, previous: false))
+        XCTAssertEqual(try ownEnvelopes(second), envelopes, "the rows keep their bytes until the drain")
+
+        await try XCTUnwrap(second.sideReader).tick()
+        let left = try await bed.relayMailbox()
+        XCTAssertTrue(left.isEmpty, "no copy left on the relay: \(left.count)")
+        XCTAssertNil(try bed.row()?.link.leftTransport)
+
+        await merge(bed, keybox(epoch: 4, previous: false))
         let after = try ownEnvelopes(second)
         XCTAssertEqual(after.count, 2)
         for envelope in after {
-            XCTAssertEqual(try Envelope.parse(envelope).header.epoch, 3, "moved by the fetched merge")
+            XCTAssertEqual(try Envelope.parse(envelope).header.epoch, 4, "moved by the fetched merge after the drain")
         }
+    }
+
+    /// An ack made while the row is on the relay, run after a follow to iCloud persisted the row and cleared the keys,
+    /// draws no offer and carries no `next_kx`.
+    func testAnAckMadeOnTheRelayThatRunsAfterTheClearCarriesNoOffer() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let session = try await bed.orderedSession()
+        XCTAssertNotNil(try offer(bed))
+        let before = try await bed.relayMailbox().count
+        // The outbox chain is held, so the ack's task waits at `offerAgain`.
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        let held = await session.outbox.onChain {
+            for await _ in gate { break }
+        }
+
+        await session.keysMerged(newestEpochRaised: false, droppedNewestPair: true)
+        var link = try XCTUnwrap(try bed.row()?.link)
+        link.setCloudKit(left: .relay)
+        XCTAssertTrue(bed.root.persistRoute(link))
+        XCTAssertTrue(bed.root.clearEphemeral(hubID: hubID))
+        open.yield()
+        open.finish()
+        _ = try await held.value
+        try await settle(session)
+
+        XCTAssertNil(try offer(bed), "no offer drawn after the clear")
+        XCTAssertNil(try bed.keys.hubLink(hubID)?.currentKX)
+        let after = try await bed.relayMailbox().count
+        XCTAssertEqual(after, before, "no ack with next_kx")
+    }
+
+    /// A shutdown cancels the raise's upload pass and waits for it.
+    func testAShutdownEndsTheUploadKick() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let session = try await bed.orderedSession()
+
+        await merge(bed, keybox(epoch: 2))
+        let kick = try XCTUnwrap(session.uploadKick)
+        await session.shutDown()
+
+        XCTAssertTrue(kick.isCancelled)
+        let raisedAgain = session.uploadKick
+        await session.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
+        XCTAssertEqual(session.uploadKick, raisedAgain, "no pass after the shutdown")
     }
 
     // MARK: - The uploader
@@ -341,17 +400,19 @@ final class EphemeralRotationWiringTests: XCTestCase {
         try bed.keys.hubLink(hubID)?.offeredKX?.publicKey
     }
 
-    /// This phone's keybox of `epoch` (the previous epoch's keys with it), optionally answering an offer.
-    private func keybox(epoch: UInt32, relayKX: KeyboxRelayKX? = nil) -> Keybox {
+    /// This phone's keybox of `epoch` (with the previous epoch's keys unless `previous` is false), optionally
+    /// answering an offer.
+    private func keybox(epoch: UInt32, previous carriesPrevious: Bool = true, relayKX: KeyboxRelayKX? = nil) -> Keybox {
         let grant = DeviceGrant(
             deviceID: TestE2E.deviceID.uuidString, hubID: hubID, name: "Colleague A's iPhone", scope: .private,
             linked: true, typingAllowed: true, startSessionsAllowed: true, orderedActions: 1)
         let current = TestPhone.keyboxKeys(epoch: epoch)
         let previous = TestPhone.keyboxKeys(epoch: epoch - 1)
+        let withPrevious = carriesPrevious && epoch > 1
         return Keybox(grant: grant, keys: KeyboxKeys(
             epoch: epoch, dataKey: current.dataKey, alertKey: current.alertKey, metaKey: current.metaKey,
-            previousEpoch: epoch > 1 ? epoch - 1 : nil, previousDataKey: epoch > 1 ? previous.dataKey : nil,
-            previousAlertKey: epoch > 1 ? previous.alertKey : nil, relayKX: relayKX))
+            previousEpoch: withPrevious ? epoch - 1 : nil, previousDataKey: withPrevious ? previous.dataKey : nil,
+            previousAlertKey: withPrevious ? previous.alertKey : nil, relayKX: relayKX))
     }
 
     /// A hub answer naming `offer`, with a freshly drawn hub ephemeral key.
