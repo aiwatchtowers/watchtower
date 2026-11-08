@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -101,7 +102,8 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 // 2026-10-24-finish-whole-ticket, gate 2): the overview of the session's
 // folder as it stands, with no round opened. It is cached under the key the
 // Desktop's round on the same tree reads, and the one finish_session checks;
-// an empty diff answers ok with no overview.
+// an empty diff answers ok with no overview. On a branch-tip place a folder
+// with uncommitted changes is an error naming them.
 func runSessionReviewOverview(cmd *cobra.Command) error {
 	aiCtx, aiCancel := reviewAIContext(cmd)
 	defer aiCancel()
@@ -114,6 +116,9 @@ func runSessionReviewOverview(cmd *cobra.Command) error {
 	snap, err := tools.SnapshotReviewSession(ctx, database, p, reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
+	}
+	if snap.FolderDirty { // the finish gate refuses it too: the reviewer never reads those changes
+		return failReview(cmd, errors.New(snap.DirtyFolderRefusal()))
 	}
 	if snap.Empty {
 		return writeReview(cmd, reviewEnvelope{OK: true})

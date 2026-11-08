@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -50,7 +51,8 @@ func NewAnnotateChanges(sessionEnv func() string) *Tool {
 		Name: "annotate_changes",
 		Description: "Before you hand work back: leave the owner notes in the diff reviewer — a note on each " +
 			"non-obvious change (why, not what) and, for a big change, chapters in reading order. Each call " +
-			"replaces your earlier notes for this session. Lines refer to the files as they are now. Applied immediately.",
+			"replaces your earlier notes for this session. Lines refer to the files the reviewer reads: your folder as it is now, " +
+			"or, while the folder sits on the default branch, your task branch's last commit. Applied immediately.",
 		InputSchema: mustSchema[annotateChangesArgs]("annotate_changes"),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
@@ -188,8 +190,8 @@ type annotationPlan struct {
 	rows             []db.ReviewNote
 }
 
-// prepareAnnotation resolves the calling session, snapshots its folder
-// and checks every note against that snapshot (the file is there, text, and
+// prepareAnnotation resolves the calling session, reads its review place
+// (snapshotSessionFolder) and checks every note against that snapshot (the file is there, text, and
 // the lines exist), returning the rows to store. Scope runs it before any
 // audit row; Execute runs it again and stores what it finds.
 func prepareAnnotation(ctx context.Context, d *db.DB, b Binding, a annotateChangesArgs, sessionEnv func() string) (annotationPlan, error) {
@@ -208,13 +210,13 @@ func prepareAnnotation(ctx context.Context, d *db.DB, b Binding, a annotateChang
 	if !session.Valid {
 		return annotationPlan{}, errNoAnnotateSession
 	}
-	repo, tree, err := snapshotSessionFolder(ctx, d, p, session.Int64)
+	repo, tree, branch, err := snapshotSessionFolder(ctx, d, p, session.Int64)
 	if err != nil {
 		return annotationPlan{}, err
 	}
 	rows, err := annotationNoteRows(ctx, repo, tree, a.Notes)
 	if err != nil {
-		return annotationPlan{}, err
+		return annotationPlan{}, namingTheTip(err, branch)
 	}
 	for _, c := range a.Chapters {
 		rows = append(rows, db.ReviewNote{Kind: "chapter", Text: c.Title, Paths: c.Paths, Core: c.Core, Why: c.Why, TreeSHA: tree})
@@ -222,21 +224,33 @@ func prepareAnnotation(ctx context.Context, d *db.DB, b Binding, a annotateChang
 	return annotationPlan{project: p.ID, session: session.Int64, tree: tree, rows: rows}, nil
 }
 
-// snapshotSessionFolder opens the session's review folder and snapshots it.
-func snapshotSessionFolder(ctx context.Context, d *db.DB, p *db.Workbench, session int64) (*reviewdiff.Repo, string, error) {
-	folder, err := ReviewSessionFolder(ctx, d, p, session)
+// snapshotSessionFolder reads the session's review place as a review round
+// does (ResolveReviewSource): the folder's snapshot, or the task branch's
+// tip on a branch-tip place (board #1013), so the notes are checked and
+// stamped against the tree the owner reviews. branch is the tip's branch,
+// "" for a folder snapshot.
+func snapshotSessionFolder(ctx context.Context, d *db.DB, p *db.Workbench, session int64) (repo *reviewdiff.Repo, tree, branch string, err error) {
+	src, repo, err := ResolveReviewSource(ctx, d, p, session)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
-	repo, err := reviewdiff.Open(folder, nil)
-	if err != nil {
-		return nil, "", err
+	if src.Tip != nil {
+		return repo, src.Tip.Tree, src.Tip.Name, nil
 	}
-	tree, err := repo.Snapshot(ctx)
-	if err != nil {
-		return nil, "", err
+	if tree, err = repo.Snapshot(ctx); err != nil {
+		return nil, "", "", err
 	}
-	return repo, tree, nil
+	return repo, tree, "", nil
+}
+
+// namingTheTip names the tree a note refusal was checked against on a
+// branch-tip place, so the agent does not retry against its folder.
+func namingTheTip(err error, branch string) error {
+	var v *ValidationError
+	if branch == "" || !errors.As(err, &v) {
+		return err
+	}
+	return &ValidationError{Msg: fmt.Sprintf("%s (task branch %s at its last commit)", v.Msg, branch), Err: v.Err}
 }
 
 // annotationNoteRows checks each note against the snapshot tree (the file is

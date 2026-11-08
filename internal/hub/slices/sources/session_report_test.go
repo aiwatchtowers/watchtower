@@ -22,11 +22,11 @@ import (
 
 const reportCLIJSON = `{"session":{"id":%d,"title":"Archive closed targets","target_id":415,"kind":"claude","created_at":"2026-01-01T08:59:00Z",
 "last_active_at":"2026-01-01T10:06:00Z","agent_state":"stop","agent_state_at":"2026-01-01T10:06:00Z",
-"finished_at":"","finish_summary":""},"progress":{"done":1,"total":2},
+"finished_at":"","finish_summary":""},"progress":{"done":1,"total":3,"merged":1},
 "on_you":[{"id":12,"kind":"question","title":"Which release?","target_id":415,"created_at":"2026-01-01T10:05:00Z"}],
 "now":[{"id":416,"text":"Header menu item","status":"in_progress","branch":"feature/acme-export","since":"2026-01-01T10:00:00Z"}],
 "next":[{"id":417,"text":"Undo Archive Now","status":"todo"}],
-"phases":[{"target_id":415,"text":"Archive Closed Targets Now","done":1,"total":2,"started_at":"2026-01-01T09:00:00Z",
+"phases":[{"target_id":415,"text":"Archive Closed Targets Now","done":1,"total":3,"merged":1,"started_at":"2026-01-01T09:00:00Z",
 "finished_at":"","items":[{"id":416,"text":"Header menu item","status":"in_progress"}]}],
 "prs":[{"ref":"pr:175","pr_number":175,"title":"Archive Closed Targets Now","state":"open","additions":120,"deletions":8,
 "merged_at":"","checked_at":"2026-01-01T10:00:00Z","targets":[415]}],"pr_note":""}`
@@ -193,6 +193,25 @@ func TestSessionReportPayloadMatchesTheKitFixture(t *testing.T) {
 		if keys[k] {
 			t.Errorf("carries %s", k)
 		}
+	}
+}
+
+// Board #1017: the merged share reaches the phone in the progress and in
+// every phase; a CLI without it publishes 0.
+func TestSessionReportCarriesTheMergedShare(t *testing.T) {
+	p := reportPayloadOf(t, cliReport(t, 31))
+	progress := p["progress"].(map[string]any)
+	phase := p["phases"].([]any)[0].(map[string]any)
+	if progress["merged"] != json.Number("1") || phase["merged"] != json.Number("1") {
+		t.Fatalf("merged: progress %v, phase %v", progress["merged"], phase["merged"])
+	}
+	rep := cliReport(t, 31)
+	rep.Progress.Merged, rep.Phases[0].Merged = 0, 0
+	p = reportPayloadOf(t, rep)
+	progress = p["progress"].(map[string]any)
+	phase = p["phases"].([]any)[0].(map[string]any)
+	if progress["merged"] != json.Number("0") || phase["merged"] != json.Number("0") {
+		t.Fatalf("nothing merged: progress %v, phase %v", progress["merged"], phase["merged"])
 	}
 }
 

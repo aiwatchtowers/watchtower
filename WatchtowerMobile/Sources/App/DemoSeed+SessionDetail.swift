@@ -70,7 +70,7 @@ extension DemoSeed {
         let ago: (TimeInterval) -> Int = { JSON.stamp(now.addingTimeInterval(-$0)) }
         let reports: [(Int64, [String: Any])] = [
             (10, report(10, title: "Session report", [
-                "progress": ["done": 1, "total": 3],
+                "progress": ["done": 1, "total": 3, "merged": 1],
                 "now": [["id": 430, "text": "Session report", "status": "in_progress", "branch": ""]],
                 "next": [["id": 432, "text": "Report on the phone", "status": "todo"]]
             ])),

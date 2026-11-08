@@ -1091,7 +1091,7 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer the session's agent and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566; amended 2026-10-14 for the worktree ledger of the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-11-06 for the tool start and the failed tool as working signals and the longer lock wait, owner approved in ask #525, board #988)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566; amended 2026-10-14 for the worktree ledger of the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-11-06 for the tool start and the failed tool as working signals and the longer lock wait, owner approved in ask #525, board #988; amended 2026-11-07 for the interrupt's turn end (board #1019) and the ledger's last sighting (board #1018), owner approved in ask #576)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
@@ -1261,8 +1261,18 @@ cleanup must find), and a codex row records too. The pair comes from the
 symlink-resolved `cwd` (or its nearest existing ancestor), a walk up for
 `.git` (`internal/gitdir`; an unreadable `.git` stops the walk) and a read
 of the worktree's `HEAD` file — `""` for a detached HEAD or an unreadable
-one, still recorded. A known pair or a full session is seen by one
-read-only read and writes nothing (no write lock); a new pair is written by
+one, still recorded. A known pair already seen in the current run (its
+`last_at`, else `first_at`, at or after the run mark) or a full session is
+seen by one read-only read and writes nothing (no write lock); a known pair
+last seen before a readable run mark gets one `UPDATE` of its `last_at` to
+the event's time (board #1018, migration `00174`; `first_at` never changes),
+in its own transaction after the state write. `last_at` only moves
+forward; concurrent hooks of one run that both find the pair stale may both
+write it (the later stamp wins), so the move costs at most a few writes per
+pair per run, never a wrong value; a pair whose run mark is unreadable is
+not touched (it counts in the run it was first seen in). A failed move is
+one stderr line `watchtower: session worktree sighting not moved: …` after
+the state write and never fails or changes it; a new pair is written by
 `INSERT OR IGNORE` in its own transaction after the event's state write has
 committed, never inside it. No `cwd`, an unresolvable one, one outside any
 repository or a conversation that is not the row's records nothing. The
@@ -1299,6 +1309,34 @@ the sync Stop hook, the run mark and Codex's synchronous hooks keep their one
 lock can leave it out (reported on stderr); the session/worktree pair's next
 event tries it again (`HasSessionWorktree` is read first). Codex is unchanged (no
 `PostToolUseFailure` event there, and its hooks are synchronous).
+
+Since 2026-11-07 (board #1019, **owner approved in ask #576**, which
+superseded ask #572) the interrupted main-thread tool's `waiting` also ends
+the turn: the same guarded `UPDATE` (`db.AgentOrder.Interrupt`/`TurnEnd`,
+under the tool run's `agent_turn_end IS <seen>` guard and the time order,
+`agent_tool_run = 0`) stores the interrupted turn's end as `agent_turn_end`,
+read from the transcript, never its size when the hook runs: after the
+interrupted call's `tool_use` (searched from the stored turn end, or the
+start with none), the start of the first user message without a tool result
+that Claude Code did not write inside the turn (`isMeta`, a compaction
+summary and a message of only `<system-reminder>` blocks are skipped) —
+the interrupt marker or the owner's next prompt —, else the end of the last
+whole line. A later async tool hook of the interrupted turn is placed
+before it and writes nothing over the `waiting`; the next turn's calls are
+placed after it even when already in the transcript. The turn end moves
+only when the transcript places the interrupted call after the stored turn
+end (or, with none stored, finds it at all); a call placed before is an
+ended turn's and writes nothing; an unplaced one records `waiting` by the
+time order alone with one stderr line `watchtower: interrupt: turn end not
+moved: <reason>` (none for an input with no transcript path). Over a stored
+`waiting` an interrupt whose turn end would move is not a repeat: it stores
+the turn end (a moved turn end is a change, also in the guarded `UPDATE`).
+The Stop reads the row's agent turns only when its input lists background
+tasks. Accepted limits: an interrupt whose hook starts after the next
+prompt's repeated `working` writes `waiting` while the new turn runs, until
+that turn's next tool hook records `working`; a user message of any other
+kind inside the interrupted turn ends it early; an interrupt stamped before
+a later transition into `working` writes nothing.
 
 Since 2026-10-12 (board #399, Codex): a `codex` row gets the same guarantees
 from codex's own hooks, passed as launch flags (`workbench <verb> --agent
@@ -1369,6 +1407,8 @@ it again once it was cleared; only Go writes it.
 - Board #535, the worktree ledger (2026-10-14, ask #193) — in `cmd/workbench_session_ledger_test.go`: `TestProj11_LedgerRecordsANewWorktreeOnce` (two events in one worktree → one row; a new branch → a second row), `TestProj11_LedgerFailureNeverCostsTheStateWrite` (the ledger table dropped: the state is written, exit 0, one stderr line), `TestProj11_SubagentCwdIsRecordedButNeverMovesTheSessionPlace` (a subagent event in a worktree: a ledger row, the session's place unchanged — `TestProj11_SubagentCwdIsNeverRecorded` keeps pinning the place half); supporting in the same file: `TestSessionStateLedger_Resolver`, `TestSessionStateLedger_ResolvesSymlinks`, `TestSessionStateLedger_ResolvesASymlinkIntoASubdirectory`, `TestSessionStateLedger_OutsideARepositoryRecordsNothing`, `TestSessionStateLedger_NoCwdRecordsNothing`, `TestSessionStateLedger_ForeignConversationRecordsNothing`, `TestSessionStateLedger_StopsAtTheCap`, `TestSessionStateLedger_AFullSessionTakesNoWriteLock`, `TestSessionStateLedger_UsesTheFixture`, `TestCodexSessionStateLedger_RecordsTheCwd`; `internal/db/terminal_session_worktrees_test.go` (`TestRecordSessionWorktree_InsertsOnceAndIgnoresRepeats`, `TestRecordSessionWorktree_StopsAt64`, `TestHasSessionWorktree_UsesAReadOnlyTx`); every existing PROJ-11 guard above unchanged
 
 - Board #988, working from the tool start (2026-11-06, ask #525) — in `cmd/workbench_session_state_tooluse_test.go`: `TestProj11_PreToolUseOutOfWaitingIsWorking` (out of the Stop's `waiting`, the run mark and nothing stored; `agent_tool_run` set), `TestProj11_PreToolUseNeverOverwritesApproval` (a `PreToolUse` stamped after the permission prompt leaves the row byte-identical; the guarded `UPDATE` refuses too), `TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted` (main thread and subagent: a failed tool ends `approval`, an interrupted one records `waiting` on the main thread and leaves the row byte-identical in a subagent), `TestSessionState_InterruptedToolRecordsWaiting` (`working` → `waiting`; an ended turn's interrupted call writes nothing), `TestProj11_EndedTurnsPreToolUseNeverOverwritesTheStop` (both events: the ended turn's call after the Stop writes nothing, a later turn's call records `working`, one landing first is replaced by the Stop and the stored time never goes back), `TestProj11_PostToolUseFailureIsWorking` (over `working` keeps `finished_at`; out of `waiting` records `working` and clears it); `internal/db/session_report_test.go::TestProj11_ToolStartNeverOverwritesApproval`; supporting: `cmd/workbench_session_state_tooluse_test.go` (`TestSessionState_InjectedMessageTurnIsWorking` — a teammate-message turn after the Stop and an idle notice, with and without the tool start —, `TestSessionState_SubagentToolStartOrFailureNeverMovesTheState`, `TestSessionState_SubagentToolFailureIsAHeartbeat`, `TestHookLockWaitStopsAtTheBudget`, `TestSessionState_PromptStateWriteGoesFirstWithinTheBudget`, `TestHookLockWaitRetriesABusyWriteOnce`, `TestSessionState_BusyStateWriteIsRetried`, `TestApplySessionStart_BusyIDMoveIsRetried`), `cmd/workbench_session_state_test.go::TestSessionState_AgentStateFor`, `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStopAndStart`, `TestHasStateHooksNeedsAllEightCoreNeedsFour` — was `TestHasStateHooksNeedsAllSixCoreNeedsFour`, its cases kept —, `TestInstallWorkbenchInstallsTheStateHooks`); every existing PROJ-11 guard above unchanged
+- Board #1019, the interrupt ends the turn (2026-11-07, ask #576) — in `cmd/workbench_session_state_tooluse_test.go`: `TestProj11_InterruptedTurnsLateToolHookNeverOverwritesWaiting`, `TestProj11_InterruptStoresItsTurnEndWithTheState`, `TestProj11_LateInterruptMovesNothing`, `TestProj11_UnplacedInterruptKeepsTheTurnEnd`, `TestProj11_InterruptOverWaitingStoresTheTurnEnd`, `TestProj11_InterruptInTheFirstTurnStoresATurnEnd`, `TestProj11_ToolAfterAnInterruptWithNoStopRecords`, `TestProj11_InterruptWithNoTranscriptPathIsSilent`, `TestProj11_LateInterruptAfterARepeatedPromptKeepsTheNextTurn`, `TestProj11_InterruptTurnEndIsTheCallsPlaceNotTheSize`, `TestProj11_StopWithoutBackgroundTasksNeverReadsTheTurns`; supporting: `cmd/workbench_turn_order_test.go::TestInterruptedTurnEnd`, `cmd/workbench_session_state_tooluse_test.go::TestReportStateHookError_TurnEndNotMovedHasItsOwnLabel`, `internal/db/terminal_sessions_test.go` (`TestSetTerminalAgentState_InterruptStoresTheTurnEnd`, `TestSetTerminalAgentState_InterruptOverWaitingMovesTheTurnEnd`); every existing PROJ-11 guard above unchanged
+- Board #1018, the ledger's last sighting (2026-11-07, ask #576) — `TestProj11_LedgerRecordsANewWorktreeOnce` unchanged (still holds within a run); supporting: `cmd/workbench_session_ledger_test.go` (`TestSessionStateLedger_ALaterRunTouchesAReusedWorktreeOnce`, `TestSessionStateLedger_AFullSessionTouchesAHeldPair`, `TestSessionStateLedger_TouchFailureHasItsOwnLabel`), `internal/db/terminal_session_worktrees_test.go` (`TestSessionWorktree_StaleAgainstTheRunMarkAndTouch`, `TestSessionWorktree_UpgradedRowWithNoLastAt`), `WatchtowerDesktop/Tests/Core/SessionTargetBranchTests.swift::testWorkLinksCountALaneAReusedRunSawAgain`
 
 **Locked since:** 2026-10-03
 
@@ -1704,7 +1744,7 @@ Watchtower is broken" with v4 (business D1, ask #148).
 
 ## PROJ-14 — a session report shows only that session's work, and only the session itself says it finished
 
-**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-24 for the finish gates, owner approved spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md` in ask #550, board #947; amended 2026-11-06 for the merged progress share, owner approved in ask #525, board #986)
+**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-24 for the finish gates, owner approved spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md` in ask #550, board #947; amended 2026-11-06 for the merged progress share, owner approved in ask #525, board #986; amended 2026-11-07 for the finish gate reading the review place, owner approved in ask #576, board #1013)
 
 **Observable:** A `terminal_session_targets` link row comes only from that
 session's own workbench tools: `update_target`, `create_targets`,
@@ -1739,14 +1779,27 @@ no row or audit row (`Scope` runs again at apply, where a refusal caused by a
 change in between lands as a `failed` audit row, as for any tool) —
 while (1) the ticket has an open leaf (`todo`/`in_progress`/`in_review`;
 `blocked`, `done` and `dismissed` leaves do not count), listed in the
-refusal, or (2) the session's folder (`ReviewSessionFolder`) differs from its
-base and the AI overview cache (`review_overviews`) holds no overview for that
-exact tree, base and intent hash, or that overview lacks a `done` coverage
-entry for any intent item (a missing entry counts as not done). A folder
-outside git, or no git, an empty diff, and the workbench folder of a session
-that worked in a worktree of its own (launch folder or a recorded
-`terminal_session_worktrees` root elsewhere) and has left it skip (2); any
-other git failure refuses. `handover_ask_id` passes both: an ask of this workbench
+refusal, or (2) the session's review place differs from its base — since
+board #1013 the place a review round reads (`SnapshotReviewSession` through
+`ResolveReviewSource`/`ReviewSource.Read`: the folder's snapshot, or the task
+branch's committed tip against its base branch) — and the AI overview
+cache (`review_overviews`) holds no overview for that exact tree, base and
+intent hash, or that overview lacks a `done` coverage entry for any intent
+item (a missing entry counts as not done). On a branch-tip place (2) also
+refuses while the folder has changes against its HEAD (untracked files
+included; `ReviewSnapshot.FolderDirty`), even with an empty tip — the
+reviewer reads the tip and would never see them — with the refusal `the
+folder on <head> has uncommitted changes the reviewer does not read (it
+reads task branch <b> at its last commit) — commit them on <b> or move the
+folder onto it, then try again`; `workbench review overview --session`
+answers the same text as its error and makes no overview, and a git failure
+reading the folder refuses. A folder outside git, or no git, an empty diff,
+and the workbench folder of a session that worked in a worktree of its own
+(launch folder or a recorded `terminal_session_worktrees` root elsewhere)
+and has left it skip (2) — the last only for a folder snapshot, never on a
+branch-tip place; any other git failure refuses. Since board #1013
+`annotate_changes` checks and stamps its notes against the same place and
+names the tip in its refusals. `handover_ask_id` passes both: an ask of this workbench
 filed by this session (`owner_asks.session_id`), not withdrawn, about the
 ticket or a target under it (any target when there is no ticket); a refusal
 names what is wrong with it. The gates never call the model or write the
@@ -1796,6 +1849,7 @@ owner's and the agent's backs.
 - supporting: `internal/tools/workbench_finish_test.go` (`TestSessionLinks_EachWriteToolLinksItsTargets`, `TestSessionLinks_ReadToolsLinkNothing`, `TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns`)
 - Merged share (2026-11-06, board #986, ask #525): `internal/sessionreport/merged_test.go::TestProj14_MergedLeafCountsAsMerged`, `::TestProj14_SharedBranchNeverCountsMerged`, `::TestProj14_MergedSurvivesBranchCleanup`, `::TestProj14_MergedSurvivesCleanupOfAPushedBranch`, `::TestProj14_MergeRefreshWritesOnlyThePRCache`; supporting: `internal/workbenchcheck/base_test.go::TestOpenRepositoryAgainst_*`, `cmd/workbench_session_report_test.go::TestWorkbenchSessionReport_SummaryRefreshesTheMergedShare`, `::TestWorkbenchSessionReport_SummaryRefreshNoteGoesToStderr` (`merged_stale`), `internal/sessionreport/summary_refresh_test.go::TestRefreshedSummaries_MergedStale`, `WatchtowerDesktop/Tests/Core/SessionReportPresentationTests.swift::testMergedStaleCaption`; `TestWorkbenchSessionReport_SummaryNeverRunsGH` unchanged
 - Finish gates (2026-10-24, board #947): `internal/tools/workbench_finish_gate_test.go::TestProj14_FinishRefusesOpenLeaves`, `::TestProj14_FinishTicketFromTargetIDWhenNotLaunched`, `::TestProj14_HandoverAskPassesBothGates`, `::TestProj14_HandoverAskRefusals`, `::TestProj14_FinishCheckOffSkipsGates`, `::TestProj14_FinishRefusesWithoutOverview`, `::TestProj14_ANoteAfterTheOverviewAsksForItAgain`, `::TestProj14_FinishRefusesUncoveredItems`, `::TestProj14_AllItemsDonePasses`, `::TestProj14_LeftItsWorktreeSkipsTheOverview`, `::TestProj14_GitFailureRefuses`, `::TestProj14_OpenLeavesRefusalListsAtMostTwenty`, `::TestProj14_EmptyDiffSkipsTheOverview`; supporting: `internal/reviewdiff/snapshot_test.go::TestSameTree`, `cmd/workbench_review_overview_test.go::TestReviewOverview_SessionForm*`
+- Review place (2026-11-07, board #1013, ask #576): `internal/tools/workbench_finish_gate_test.go::TestProj14_BranchTipWithADirtyFolderRefuses`, `::TestProj14_BranchTipWithACleanFolder`; supporting: `internal/tools/workbench_review_agent_test.go` (`TestSnapshotReviewSession_BranchTipSession`, `TestAnnotateChanges_BranchTipSessionUsesTheTipTree`), `internal/reviewdiff/snapshot_test.go::TestUncommitted`, `cmd/workbench_review_branch_test.go` (`TestReviewOverview_SessionFormReadsTheBranchTip`, `TestReviewOverview_SessionFormOnAStackedBranch`); every existing `TestProj14_*` unchanged
 
 **Locked since:** 2026-10-03
 
@@ -2642,6 +2696,9 @@ owner never saw.
 
 ## Changelog
 
+- 2026-11-07 (board #1019, **owner approved in ask #576**, superseding ask #572): **PROJ-11 amended** — an interrupted main-thread tool's `waiting` also stores the interrupted turn's end (`agent_turn_end`), read from the transcript (the first user message without a tool result after the interrupted call that Claude Code did not write inside the turn), in the same guarded `UPDATE`; a late async tool hook of that turn writes nothing over the `waiting`, the next turn's calls still record `working`; over a stored `waiting` a moved turn end is a change, not a repeat; an unplaced call keeps the time order with one stderr line `watchtower: interrupt: turn end not moved: <reason>`; the Stop reads the agent turns only with background tasks. Accepted limits in the contract text. Strengthening, no guard relaxed; new guards listed under PROJ-11 ("Board #1019").
+- 2026-11-07 (board #1018, **owner approved in ask #576**): **PROJ-11 amended** — the worktree ledger gains `terminal_session_worktrees.last_at` (migration `00174`): a known pair whose last sighting (`last_at`, else `first_at`) predates a readable run mark is touched in the run (`HasSessionWorktree` returns `stale`, `TouchSessionWorktree` moves only `last_at`, forward only; concurrent hooks of one run may both write it, the later stamp wins), so the Desktop's "N lanes" counts a lane worktree a later run reuses. A pair already seen in the run still costs one read-only read and no write; a full session touches a pair it already holds; a new pair is inserted with `last_at = first_at`; `first_at` never changes and the cleanup reads only it; a failed move is the stderr line `watchtower: session worktree sighting not moved: …`. Guards unchanged (`TestProj11_LedgerRecordsANewWorktreeOnce` still holds within a run); supporting tests listed under PROJ-11 ("Board #1018"). No guard relaxed.
+- 2026-11-07 (board #1013, **owner approved in ask #576**): **PROJ-14 amended** — gate 2 and `review overview --session` read the session's review place as a round does (the folder's snapshot, or the task branch's committed tip against its base branch); on a tip place a folder with uncommitted changes refuses (fails closed, a git failure reading it refuses too) and the left-its-worktree skip does not apply; `annotate_changes` checks and stamps notes against the tip and names it in its refusals. Strengthening, no guard relaxed; new guards listed under PROJ-14 ("Review place").
 - 2026-11-07 (**owner approved in ask #562**: the raised chat ask's dedupe): **PROJ-13 amended, meaning unchanged** — the Stop classifier is v5 (`internal/devpack/askguard_classifier.md`, golden `askguard_classifier_v5.golden`): a chat request also returns `context` (1–3 sentences from the message the owner needs to answer — why the agent asks, what each answer changes, what it recommends; ≤ 600 runes, one line, a cut one ending with "…", a value that is no JSON string read as none without costing the verdict, dropped when it repeats the question, cleared for any other request), and a closed yes/no question returns its two answers as `options` in the message's language ("never invent options" stays for every other question). The context is stored in `terminal_sessions.chat_question` (`context`, omitted when empty; no migration). The raised ask's summary is the context, a blank line and the reason's line, or the reason's line alone — no longer the question again (the question stays the title and q1); a recorded full request keeps its text plus the reason's line. Every v4 clause `TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` checks is in v5 word for word; the golden test is renamed `TestAskGuardClassifier_IsTheV5Golden`; new `cmd` tests `TestAskGuardContextNormalisation`, `TestStopGuardRecordsTheQuestionsContext`, `TestEscalateSummaryIsTheContextThenTheReason`; `TestEscalateFilesAQuickAskWithTheSameOptions` now asserts the reason-only summary. No guard was relaxed.
 - 2026-11-06 (board #988, **owner approved in ask #525**: "a working agent is always Working"): **PROJ-11 amended** — a main-thread `PreToolUse` is a working signal (only out of `waiting`, the run mark or an empty row, never over `approval`, under `PostToolUse`'s transcript turn order, so the Stop still wins); a `PostToolUseFailure` is a `PostToolUse` (it may end `approval` — this rule: owner approved in ask #527), except an interrupted tool (`is_interrupt`), which records `waiting` on the main thread (no Stop follows an interrupt) and nothing in a subagent; the async state hooks and the `SessionStart` id move wait 2 s for the write lock with one retry on a busy lock; the v1 limit (c) "`PostToolUseFailure` is not hooked" is closed. **PROJ-04 / PROJ-02 amended** — the install writes and the removal takes out two more state entries, `PreToolUse` in its own `"*"` group (beside the ask tool block's `AskUserQuestion` group) and `PostToolUseFailure`; `integrate status` reports `state_hooks` only with all eight, so an existing folder is offered Repair (its Stop state and run mark keep working: `HasCoreStateHooks` is unchanged). Guard changes, none weakened: `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` expects three `PreToolUse` groups (the owner's first and unchanged, plus one each of ours) where it expected two, and `TestProj04_StateHooksKeepOwnerHooksAndKeys` also requires an emptied `PostToolUseFailure` to be dropped; `TestProj04_MalformedStateEventLeavesTheFileByteIdentical` runs over `PostToolUseFailure` and `PreToolUse` too. New guards listed under PROJ-11. Codex hooks unchanged (synchronous, no `PostToolUseFailure`).
 - 2026-11-06 (board #986): **PROJ-14 amended** — **owner approved in ask #525:** the session progress gains a merged share (a not-done leaf whose branch git finds in its base, apart from done), cached in `workbench_pr_states` under `into:<base>:<branch>` refs (no migration), and `session-report --summary` runs a git-only refresh of those verdicts (≤ 3 s, never gh). **Controller decision (not part of ask #525):** the base is the branch of the leaf's nearest branch-carrying ancestor, and a leaf on that ancestor's branch or with no branch has no base. Additive JSON key `merged` on progress, phases and summary rows, and — part of this amendment's failure reporting, board #985 review — `merged_stale` on summary rows (a merged share the `--summary` refresh could not check; the row caption shows it). Strengthening, no guard relaxed: `TestWorkbenchSessionReport_SummaryNeverRunsGH` and every `TestProj14_*` unchanged; new guards listed under PROJ-14. PROJ-07 and PROJ-11 unchanged.

@@ -762,9 +762,15 @@ type reportSession struct {
 	FinishSummary string `json:"finish_summary"`
 }
 
+// reportCount is the report's progress. Merged (board #986, published
+// since #1017) counts tasks not done whose branch is merged into their
+// parent's. This hub always sends the key (0 when none); the phone's
+// decoder treats it as optional and reads a missing key — an older Mac's
+// slice — as 0.
 type reportCount struct {
-	Done  int `json:"done"`
-	Total int `json:"total"`
+	Done   int `json:"done"`
+	Total  int `json:"total"`
+	Merged int `json:"merged"`
 }
 
 type reportAsk struct {
@@ -794,6 +800,7 @@ type reportPhase struct {
 	Text       string       `json:"text"`
 	Done       int          `json:"done"`
 	Total      int          `json:"total"`
+	Merged     int          `json:"merged"` // as reportCount.Merged
 	StartedAt  string       `json:"started_at"`
 	FinishedAt string       `json:"finished_at"`
 	Items      []reportItem `json:"items"`
@@ -849,7 +856,7 @@ func cappedReport(rep sessionreport.Report) reportPayload {
 			CreatedAt: s.CreatedAt, LastActiveAt: s.LastActiveAt, AgentState: s.AgentState,
 			AgentStateAt: s.AgentStateAt, FinishedAt: s.FinishedAt, FinishSummary: reportText(s.FinishSummary),
 		},
-		Progress: reportCount{Done: rep.Progress.Done, Total: rep.Progress.Total},
+		Progress: reportCount{Done: rep.Progress.Done, Total: rep.Progress.Total, Merged: rep.Progress.Merged},
 		OnYou:    make([]reportAsk, len(onYou)), OnYouMore: onYouMore,
 		Now: make([]reportNow, len(now)), NowMore: nowMore,
 		Next: reportItems(next), NextMore: nextMore,
@@ -866,7 +873,7 @@ func cappedReport(rep sessionreport.Report) reportPayload {
 	for i, ph := range phases {
 		items, more := clipList(ph.Items, maxReportPhaseItems)
 		p.Phases[i] = reportPhase{
-			TargetID: ph.TargetID, Text: reportText(ph.Text), Done: ph.Done, Total: ph.Total,
+			TargetID: ph.TargetID, Text: reportText(ph.Text), Done: ph.Done, Total: ph.Total, Merged: ph.Merged,
 			StartedAt: ph.StartedAt, FinishedAt: ph.FinishedAt, Items: reportItems(items), ItemsMore: more,
 		}
 	}

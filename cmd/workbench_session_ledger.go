@@ -18,11 +18,14 @@ import (
 // root and branch the event's cwd resolves to (terminal_session_worktrees,
 // board #535; spec 2026-10-12-session-cleanup §3.2) — for any agent of the
 // session, the main one, a subagent or a teammate. Nothing for a cwd that is
-// missing, invalid or outside a repository; a pair the session already holds,
-// or a session already full, costs one read and no write. It runs after the
-// event's state write, in its own transaction, so it never changes that
-// write: a failure is one stderr line, and nothing reaches stdout (PROJ-11).
-// The "session full" line is printed at most once per run (one hook process).
+// missing, invalid or outside a repository; a pair the session already holds
+// and has seen in this run, or a session already full, costs one read and no
+// write (a pair last seen in an earlier run has its last sighting moved to
+// this run, board #1018; concurrent hooks may both write it).
+// It runs after the event's state write, in its own transaction, so it never
+// changes that write: a failure is one stderr line, and nothing reaches
+// stdout (PROJ-11). The "session full" line is printed at most once per run
+// (one hook process).
 // Its write waits for the lock as the event's state write did (lock: the
 // async hook's budget, board #988).
 func recordSessionLedger(database *db.DB, stderr io.Writer, rowID, workbenchID int64, sessionID, cwd string, at time.Time,
@@ -42,10 +45,21 @@ func recordSessionLedger(database *db.DB, stderr io.Writer, rowID, workbenchID i
 	if errors.Is(err, errSessionLedgerFull) && sessionLedgerFullReported.Swap(true) {
 		return
 	}
-	if err != nil {
+	var touch sightingNotMoved
+	switch {
+	case errors.As(err, &touch):
+		fmt.Fprintf(stderr, "watchtower: session worktree sighting not moved: %v\n", touch.err)
+	case err != nil:
 		fmt.Fprintf(stderr, "watchtower: session worktree not recorded: %v\n", err)
 	}
 }
+
+// sightingNotMoved is a failed move of a recorded pair's last sighting
+// (board #1018): the pair is recorded, so it has its own stderr label.
+type sightingNotMoved struct{ err error }
+
+func (e sightingNotMoved) Error() string { return "sighting not moved: " + e.err.Error() }
+func (e sightingNotMoved) Unwrap() error { return e.err }
 
 // errSessionLedgerFull is a new pair past db.MaxSessionWorktrees.
 var errSessionLedgerFull = fmt.Errorf("the session already records %d worktrees", db.MaxSessionWorktrees)
@@ -55,34 +69,46 @@ var errSessionLedgerFull = fmt.Errorf("the session already records %d worktrees"
 var sessionLedgerFullReported atomic.Bool
 
 // writeSessionLedger is recordSessionLedger's database part: one read
-// first, so the common cases — a pair already recorded, or a full session —
-// never take the write lock; then the row's guards (the hook's conversation,
-// workbench and kind); then the insert.
+// first, so the common cases — a pair already seen in this run, or a full
+// session — never take the write lock; then the row's guards (the hook's
+// conversation, workbench and kind); then the insert, or for a pair last
+// seen before the session's run mark the move of its last sighting to this
+// event (board #1018: a lane worktree a later run reuses is this run's).
 func writeSessionLedger(database *db.DB, rowID, workbenchID int64, sessionID, root, branch string, at time.Time,
 	lock hookLockWait) error {
 	ctx := context.Background()
-	has, full, err := database.HasSessionWorktree(ctx, rowID, root, branch)
-	if err != nil || has {
+	has, stale, full, err := database.HasSessionWorktree(ctx, rowID, root, branch)
+	if err != nil || (has && !stale) {
 		return err
 	}
-	if full {
+	if !has && full {
 		return errSessionLedgerFull
 	}
 	row, err := hookSessionRow(database, rowID, workbenchID, sessionID)
 	if row == nil || err != nil {
 		return err
 	}
+	stamp := db.AgentStateStamp(at)
+	if has {
+		if err := lock.write(database, func() error {
+			_, err := database.TouchSessionWorktree(ctx, rowID, root, branch, stamp)
+			return err
+		}); err != nil {
+			return sightingNotMoved{err}
+		}
+		return nil
+	}
 	var recorded bool
 	err = lock.write(database, func() error {
 		var err error
-		recorded, err = database.RecordSessionWorktree(ctx, nil, rowID, root, branch, db.AgentStateStamp(at))
+		recorded, err = database.RecordSessionWorktree(ctx, nil, rowID, root, branch, stamp)
 		return err
 	})
 	if err != nil || recorded {
 		return err
 	}
 	// Not recorded: a racing hook inserted the pair, or filled the session.
-	has, _, err = database.HasSessionWorktree(ctx, rowID, root, branch)
+	has, _, _, err = database.HasSessionWorktree(ctx, rowID, root, branch)
 	if err != nil || has {
 		return err
 	}
