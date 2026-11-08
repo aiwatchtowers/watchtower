@@ -2,6 +2,7 @@ package reviewmap
 
 import (
 	"cmp"
+	"maps"
 	"slices"
 
 	"watchtower/internal/db"
@@ -47,11 +48,23 @@ type FileInfo struct {
 	Also    []string `json:"also,omitempty"`
 }
 
+// LaneInfo is one lane the attribution found, whether or not a chapter of
+// its own came of it (its files may all have gone to the agent's chapters
+// or to noise): its name, its title (the name when none was found) and its
+// ticket when found.
+type LaneInfo struct {
+	Name     string `json:"name"`
+	Title    string `json:"title"`
+	TargetID int64  `json:"target_id,omitempty"`
+	JiraKey  string `json:"jira_key,omitempty"`
+}
+
 // Map is the instant, AI-free map of a review (tech spec §2.6): chapters
-// in reading order, every diff file in diff order.
+// in reading order, every diff file in diff order, every lane by name.
 type Map struct {
 	Chapters      []Chapter  `json:"chapters"`
 	Files         []FileInfo `json:"files"`
+	Lanes         []LaneInfo `json:"lanes"`
 	LanesPartial  bool       `json:"lanes_partial"`
 	DiffTruncated bool       `json:"diff_truncated"`
 	Notes         []string   `json:"notes"`
@@ -109,9 +122,15 @@ func Build(in Input) Map {
 			Also:    in.Attribution.Also[f.Path],
 		})
 	}
+	lanes := make([]LaneInfo, 0, len(in.Attribution.Lanes))
+	for _, name := range slices.Sorted(maps.Keys(in.Attribution.Lanes)) {
+		l := in.Attribution.Lanes[name]
+		lanes = append(lanes, LaneInfo{Name: name, Title: cmp.Or(l.Title, name), TargetID: l.TargetID, JiraKey: l.JiraKey})
+	}
 	return Map{
 		Chapters:      chapters,
 		Files:         files,
+		Lanes:         lanes,
 		LanesPartial:  in.Attribution.Partial,
 		DiffTruncated: in.Diff.Truncated,
 		Notes:         nonNil(in.Patterns.Notes),

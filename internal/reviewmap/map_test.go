@@ -267,8 +267,11 @@ func TestMap_JSONKeys(t *testing.T) {
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(raw, &got))
-	assert.ElementsMatch(t, []string{"chapters", "files", "lanes_partial", "diff_truncated", "notes"}, mapKeys(got))
+	assert.ElementsMatch(t, []string{"chapters", "files", "lanes", "lanes_partial", "diff_truncated", "notes"}, mapKeys(got))
 	assert.Equal(t, []any{}, got["notes"])
+	lanes := got["lanes"].([]any)
+	require.Len(t, lanes, 1)
+	assert.ElementsMatch(t, []string{"name", "title", "target_id", "jira_key"}, mapKeys(lanes[0].(map[string]any)))
 
 	chapters := got["chapters"].([]any)
 	require.Len(t, chapters, 2)
@@ -325,4 +328,29 @@ func ExampleBuild() {
 	// Output:
 	// dir:internal/db/migrations breaking true
 	// dir: normal false
+}
+
+// Every lane the attribution found is in Lanes, by name, also one whose
+// files all went to the agent's chapters (no lane chapter of its own); an
+// empty attribution gives an empty list, never null.
+func TestMap_LanesOutsideChapters(t *testing.T) {
+	m := Build(Input{
+		Diff:          reviewdiff.Diff{Files: []reviewdiff.File{file("pay/pay.go", 3), file("login/auth.go", 2)}},
+		AgentChapters: []db.ReviewNote{{Kind: "chapter", Text: "Payments", Paths: []string{"pay/pay.go"}}},
+		Attribution: Attribution{
+			FileLane: map[string]string{"pay/pay.go": "task-b", "login/auth.go": "ABC-1-login"},
+			Lanes: map[string]Lane{
+				"task-b":      {Name: "task-b", Title: "Payments lane", TargetID: 7},
+				"ABC-1-login": {Name: "ABC-1-login", JiraKey: "ABC-1"},
+			},
+		},
+	})
+	for _, ch := range m.Chapters {
+		assert.NotEqual(t, "task-b", ch.Lane, "task-b's only file went to the agent's chapter")
+	}
+	assert.Equal(t, []LaneInfo{
+		{Name: "ABC-1-login", Title: "ABC-1-login", JiraKey: "ABC-1"},
+		{Name: "task-b", Title: "Payments lane", TargetID: 7},
+	}, m.Lanes)
+	assert.Equal(t, []LaneInfo{}, Build(Input{}).Lanes)
 }

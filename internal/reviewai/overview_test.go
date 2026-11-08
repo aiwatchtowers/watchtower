@@ -143,7 +143,8 @@ func TestOverview_SmallDiffIsOneCallWithSummary(t *testing.T) {
 	raw, err := os.ReadFile("testdata/overview_ok.json")
 	require.NoError(t, err)
 	g := &countGen{out: map[string]string{prompts.ReviewOverview: string(raw)}}
-	o, err := New(g).Overview(context.Background(), Input{Intent: okIntent(), Diff: okDiff()})
+	d := okDiff()
+	o, err := New(g).Run(context.Background(), newMemStore(), reviewmap.Build(reviewmap.Input{Diff: d}), d, okIntent(), nil, RunOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, 1, g.calls)
 	assert.Equal(t, []string{prompts.ReviewOverview}, g.sources)
@@ -212,14 +213,16 @@ func TestIntentHash_SessionOnlyUnchanged(t *testing.T) {
 	assert.Equal(t, sha(`{"Items":null,"Notes":[]}`), IntentHash(nil, nil))
 }
 
-func TestIntentHash_CoversLaneItems(t *testing.T) {
+// Lane items never enter the cache key: an edited or new lane ticket keeps
+// the overview (the finish gate reads it without the map).
+func TestIntentHash_IgnoresLaneItems(t *testing.T) {
 	session := []IntentItem{{Text: "a"}}
 	withLane := append(session[:1:1], IntentItem{Text: "PROJ-1 ticket", Source: SourceLane})
-	assert.NotEqual(t, IntentHash(session, nil), IntentHash(withLane, nil))
-	other := append(session[:1:1], IntentItem{Text: "PROJ-2 ticket", Source: SourceLane})
-	assert.NotEqual(t, IntentHash(withLane, nil), IntentHash(other, nil))
-	// A lane item is not a session item with the same text.
-	assert.NotEqual(t, IntentHash([]IntentItem{{Text: "x"}}, nil), IntentHash([]IntentItem{{Text: "x", Source: SourceLane}}, nil))
+	assert.Equal(t, IntentHash(session, nil), IntentHash(withLane, nil))
+	edited := append(session[:1:1], IntentItem{Text: "PROJ-1 ticket, renamed", Source: SourceLane})
+	assert.Equal(t, IntentHash(withLane, nil), IntentHash(edited, nil))
+	assert.Equal(t, IntentHash(nil, nil), IntentHash([]IntentItem{{Text: "x", Source: SourceLane}}, nil),
+		"a round with no session hashes as before")
 }
 
 type recGen struct {

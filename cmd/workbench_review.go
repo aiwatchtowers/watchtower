@@ -106,9 +106,16 @@ type reviewEnvelope struct {
 	Revert           *reviewRevertJSON         `json:"revert,omitempty"`
 	Overview         json.RawMessage           `json:"overview,omitempty"`
 	OverviewCached   bool                      `json:"overview_cached,omitempty"`
-	Lessons          *[]reviewLessonJSON       `json:"lessons,omitempty"`
-	Written          string                    `json:"written,omitempty"`
-	Map              *reviewmap.Map            `json:"map,omitempty"`
+	// Incomplete (overview): the chapters the overview could not see, with
+	// every overview answered (tech spec §3.4).
+	Incomplete *[]string `json:"incomplete,omitempty"`
+	// ErrorClass and Detail (overview): the failure's class (tech spec
+	// §3.6) and the provider's own text, which Error never repeats.
+	ErrorClass string              `json:"error_class,omitempty"`
+	Detail     string              `json:"detail,omitempty"`
+	Lessons    *[]reviewLessonJSON `json:"lessons,omitempty"`
+	Written    string              `json:"written,omitempty"`
+	Map        *reviewmap.Map      `json:"map,omitempty"`
 	// PlaceMissing (start): the session's worktree no longer exists; the
 	// open round stayed on the folder it was opened on (board #1012).
 	PlaceMissing bool `json:"place_missing,omitempty"`
@@ -145,6 +152,9 @@ func reviewTarget() (*db.DB, *db.Workbench, error) {
 }
 
 func writeReview(cmd *cobra.Command, env reviewEnvelope) error {
+	if reviewFlagJSON && reviewFlagStream {
+		return writeStreamEnvelope(cmd.OutOrStdout(), env)
+	}
 	if reviewFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), env)
 	}

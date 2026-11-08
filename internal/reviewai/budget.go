@@ -13,14 +13,16 @@ func Parallel(batches int) int { return max(min(batches, maxParallel), 0) }
 
 // RunCeiling is the most a run over batches may take: its waves times the
 // slowest batch's budget, plus the summary, capped at MaxRunBudget.
-func RunCeiling(batches []Batch) time.Duration {
+func RunCeiling(batches []Batch) time.Duration { return runCeiling(batches, CallBudget, SummaryBudget) }
+
+func runCeiling(batches []Batch, call func(lines int) time.Duration, summary time.Duration) time.Duration {
 	var slowest time.Duration
 	for _, b := range batches {
-		slowest = max(slowest, CallBudget(b.Lines))
+		slowest = max(slowest, call(b.Lines))
 	}
 	waves := 0
 	if p := Parallel(len(batches)); p > 0 {
 		waves = (len(batches) + p - 1) / p
 	}
-	return min(time.Duration(waves)*slowest+SummaryBudget, MaxRunBudget)
+	return min(time.Duration(waves)*slowest+summary, MaxRunBudget)
 }

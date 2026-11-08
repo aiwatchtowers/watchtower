@@ -168,7 +168,9 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 
 // checkOverviewGate is gate 2: with a diff, the cached overview of the
 // session's folder as it stands, with a done coverage entry for every intent
-// item. A folder outside git has no diff to check, nor has the workbench
+// item of the session. The overview is found by the session's items alone
+// (reviewai.IntentHash leaves lane items out), so the gate builds no map and
+// the overview's lane coverage never gates (tech spec §4). A folder outside git has no diff to check, nor has the workbench
 // folder once the session left a worktree of its own (leftItsWorktree); any
 // other git failure refuses.
 func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
