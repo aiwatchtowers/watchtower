@@ -35,10 +35,12 @@ extension HostedRelayTransport {
         } catch {
             zonesToPull.removeAll()
             pullTask = nil
+            traffic.logPass(to: Self.logger)
             if buffered { engineFetchedHandler?() }
             throw error
         }
         pullTask = nil
+        traffic.logPass(to: Self.logger)
         if buffered { engineFetchedHandler?() }
     }
 
@@ -96,6 +98,7 @@ extension HostedRelayTransport {
                 (resync, fromZero, since) = (true, true, 0)
                 continue
             }
+            recordPageTraffic(page)
             if page.more, page.newSeq <= since {
                 Self.logger.error("relay pull: a page that does not move, \(Self.kind(zone), privacy: .public)")
                 throw HostedRelayError.undecodable(status: 200)
@@ -175,6 +178,13 @@ extension HostedRelayTransport {
         return CloudRecord(
             recordName: record.name, zone: zone, kind: WireKind.envelope, modifiedAt: at, payload: record.envelope,
             assetFileURL: asset, origin: RecordOrigin(author: nil, serverAt: at), recordSeq: record.recordSeq)
+    }
+
+    /// Counts a `changes` page that came back (the debug meter; nothing in Release).
+    private func recordPageTraffic(_ page: Relay_V1_ChangesResult) {
+        #if DEBUG
+        traffic.recordPage(bytes: (try? page.serializedData().count) ?? 0)
+        #endif
     }
 
     /// Re-reads `zone` after a refused write (R6, R8); a failure is only logged.
