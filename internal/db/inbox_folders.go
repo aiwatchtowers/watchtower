@@ -8,7 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// InboxFolder is one row of inbox_folders (00175): the root (kind 'root',
+// InboxFolder is one row of inbox_folders (00176): the root (kind 'root',
 // ParentID nil), Needs approval (kind 'approvals') or an owner folder. The
 // folder tables hold the Inbox menu's arrangement only, never an item
 // (STRIP-02). Only Go writes them (the CLI through WithInboxFolderRevision,

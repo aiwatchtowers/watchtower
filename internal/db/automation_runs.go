@@ -1337,13 +1337,13 @@ type AutomationOutput struct {
 	PressedAt     *time.Time
 	// BlocksJSON is the canonical block document ('' = none, the body is
 	// markdown); OutputKey a living artifact's key ('' = feed); ContentHash
-	// the card's content hash ('' on rows from before 00173). WrittenAt is
+	// the card's content hash ('' on rows from before 00175). WrittenAt is
 	// the last write, ChangedAt the last write that changed ContentHash (the
 	// Inbox order); both read as CreatedAt when a writer left them NULL. On a
 	// commit the run's finish time is used for both, whatever they hold.
 	BlocksJSON, OutputKey, ContentHash string
 	WrittenAt, ChangedAt               time.Time
-	// FolderID is the recipe's explicit Inbox folder (00175); nil = the card
+	// FolderID is the recipe's explicit Inbox folder (00176); nil = the card
 	// follows its automation's route, else the root (inbox_artifact_folders).
 	// A commit writes it on insert and on a living upsert (the last run's
 	// choice wins).
@@ -1397,7 +1397,7 @@ type InboxAgentAction struct {
 // ListAutomationOutputs returns up to limit outputs of kind (” = every
 // kind), most recently changed first (a same-hash living rewrite does not
 // move a card); limit ≤ 0 returns all of them. changed_at is set on every
-// commit and backfilled by 00173, so it is ordered on directly (the
+// commit and backfilled by 00175, so it is ordered on directly (the
 // (kind, changed_at) index applies).
 func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput, error) {
 	q := `SELECT ` + automationOutputCols + `

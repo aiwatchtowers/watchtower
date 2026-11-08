@@ -3113,12 +3113,12 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     pressed_action INTEGER,                                  -- CLI-written by `automations reply`: the index of the pressed Reply action
     pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- CLI-written: the reply run the press queued
     pressed_at    TEXT,                                      -- CLI-written: when; a card is pressed at most once
-    blocks_json   TEXT NOT NULL DEFAULT '',                  -- the card's canonical block document; '' = none (markdown body) (00173)
-    output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00173)
-    content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00173
+    blocks_json   TEXT NOT NULL DEFAULT '',                  -- the card's canonical block document; '' = none (markdown body) (00175)
+    output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00175)
+    content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00175
     written_at    TEXT,                                      -- the last run that wrote this row (backfilled to created_at)
     changed_at    TEXT,                                      -- the last write that changed content_hash (backfilled to created_at); the Inbox order
-    folder_id     INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL -- CLI/daemon-written: the recipe's explicit Inbox folder; NULL = follow the route (00175)
+    folder_id     INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL -- CLI/daemon-written: the recipe's explicit Inbox folder; NULL = follow the route (00176)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
@@ -3126,7 +3126,7 @@ CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 
--- The Inbox menu's folders (00175). The folder tables hold the menu's
+-- The Inbox menu's folders (00176). The folder tables hold the menu's
 -- arrangement only, never an item (STRIP-02). Only Go writes them: the CLI
 -- (each write one BEGIN IMMEDIATE transaction that compares and bumps
 -- inbox_folder_state.revision), the built-in indexer's route seed and a

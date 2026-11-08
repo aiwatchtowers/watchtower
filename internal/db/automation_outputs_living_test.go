@@ -280,7 +280,7 @@ func TestListAutomationOutputs_OrderedByChangedAt(t *testing.T) {
 	assert.Equal(t, []string{"new living", "feed"}, titles())
 }
 
-func TestMigration00173_BackfillsWrittenAndChangedAt(t *testing.T) {
+func TestMigration00175_BackfillsWrittenAndChangedAt(t *testing.T) {
 	d := openTestDB(t)
 	require.NoError(t, gooseDownTo(d.DB, "migrations", 172))
 	a := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "h1")
@@ -307,7 +307,7 @@ func TestMigration00173_BackfillsWrittenAndChangedAt(t *testing.T) {
 	assert.Equal(t, 2, countWhere(t, d, `SELECT COUNT(*) FROM automation_outputs WHERE changed_at = created_at`))
 }
 
-// A row inserted without the 00173 columns (an older writer, a test fixture)
+// A row inserted without the 00175 columns (an older writer, a test fixture)
 // reads with written_at = changed_at = created_at.
 func TestAutomationOutput_NullTimesReadAsCreatedAt(t *testing.T) {
 	d := openTestDB(t)
