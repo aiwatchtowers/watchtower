@@ -108,3 +108,39 @@ extension ChatRoutingPresentationTests {
         }
     }
 }
+
+extension ChatRoutingPresentationTests {
+    @MainActor
+    func testQuotaReserveNoticeFollowsActualCapabilitiesAfterReopenAndRecovery() throws {
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        for pair in ProviderFallbackPreview.Pair.fixturePairs {
+            for state in ["quota_wait", "available"] {
+                let health = try ChatRoutingStatus.parse(Data("""
+                    {"preferred_provider":"\(pair.preferred.id)","enabled":true,"revision":"r",
+                     "providers":[{"provider":"\(pair.preferred.id)","state":"\(state)"}]}
+                    """.utf8))
+                let caps = catalog.capabilities(for: pair.reserve.id)
+                let view = ChatRoutingPresentation(pair: pair, automatic: true, actualProvider: pair.reserve.id,
+                                                   actualModel: "persisted-model", reason: "quota_exhausted", health: health,
+                                                   busy: false, capabilities: caps)
+                if caps.claudeAITools {
+                    XCTAssertNil(view.nativeToolsNotice)
+                } else {
+                    XCTAssertEqual(view.nativeToolsNotice,
+                                   "claude.ai tools are unavailable with \(pair.reserve.name). This chat continues without them.")
+                }
+                XCTAssertEqual(view.preview?.state, state == "available" ? .recovered : .fallback)
+                XCTAssertEqual(view.actualProvider, pair.reserve.id)
+                for reason in [nil, "preferred", "explicit_pin", "required_capability_missing"] as [String?] {
+                    let unrelated = ChatRoutingPresentation(pair: pair, automatic: true, actualProvider: pair.reserve.id,
+                                                            actualModel: nil, reason: reason, health: health, busy: false,
+                                                            capabilities: caps)
+                    XCTAssertNil(unrelated.nativeToolsNotice)
+                }
+                let unknown = ChatRoutingPresentation(pair: pair, automatic: true, actualProvider: pair.reserve.id,
+                                                      actualModel: nil, reason: "quota_exhausted", health: health, busy: false)
+                XCTAssertNil(unknown.nativeToolsNotice, "unknown capability is not permission to assert a capability difference")
+            }
+        }
+    }
+}

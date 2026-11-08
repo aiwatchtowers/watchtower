@@ -117,6 +117,14 @@ package struct ChatRoutingPresentation {
         guard !missing.isEmpty else { return nil }
         return "No " + missing.joined(separator: " or ") + " with this provider."
     }
+    /// The saved quota route and actual capability row remain authoritative
+    /// after reopen. Automatic native offerings are not transferred to reserve.
+    package var nativeToolsNotice: String? {
+        guard automatic, reason == "quota_exhausted", let pair,
+              actualProvider == pair.reserve.id, let capabilities, !capabilities.claudeAITools else { return nil }
+        return "claude.ai tools are unavailable with \(actualDisplayName ?? pair.reserve.name). This chat continues without them."
+    }
+
     package var preview: ProviderFallbackPreview? {
         guard let pair else { return nil }
         let state: ProviderFallbackPreview.State

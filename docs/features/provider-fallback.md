@@ -22,6 +22,16 @@ selection through CLI/bounded/pooled production factories. Existing process,
 durable receipt, SDK replay, chat persistence and concurrent Save suites retain
 their more specific lifecycle guarantees; this feature adds no generic queue.
 
+## Decisions
+
+- Owner ask #971, answered 2026-11-08: **«Автоматически без claude.ai»**.
+  A main automatic chat may select the reserve before a new turn without the
+  automatically offered native claude.ai tools, with a visible notice. This does
+  not transfer native tools/session IDs or bypass explicit pins, required
+  attachments, Quick Connections, organization policy or started-turn replay
+  boundaries. The approved change replaces the earlier conservative automatic
+  native-mode requirement; no new sign-in or model probe is involved.
+
 ## Safe routing core (Task 4)
 
 `internal/providerrouting.Router` accepts a request with configured preferred,
@@ -241,10 +251,15 @@ providers the old backend is closed and reaped; native session IDs never cross.
 Off/pinned sessions retain their legacy warm lifecycle.
 
 The selected provider builds its own strong model, prompt, MCP setup and
-claude.ai mode. An unavailable required claude.ai mode, image/PDF (including
-project files), or Codex-incompatible Quick Connection prevents reserve startup;
-there is no text-only downgrade. This is conservative: a main chat with its
-claude.ai tool mode enabled requires that mode. Preflight performs no paid probe.
+claude.ai mode. Required attachments/project files and Quick Connections still
+use the canonical capability table and prevent an incompatible reserve from
+starting. Under ask #971, automatically offered native claude.ai tools are
+optional when an automatic main chat selects reserve on known quota: its actual
+provider's prompt/tool setup omits them and the chat visibly says so. Preflight
+performs no paid probe. The command protocol has no explicit native-tool
+requirement field; it does not guess requirements from owner text. Explicit
+native session IDs remain bound to their actual provider, and unknown IDs fail
+closed in the existing tool router.
 Tool-bearing query, embedded chats, REPL and Jira analyzer factories use the same
 known-health selection and single-call outcome recording. Native-thread IDs returned by a routed streaming client bind subsequent calls
 to that actual provider/model. An unknown incoming native ID fails closed with
@@ -279,8 +294,13 @@ provider/model. An empty automatic ready event claims no started provider.
 `ChatTurnDriver` records selected actual metadata in the existing conversation
 and message columns without resetting text or steps; the embedded v1 stream has
 additive `routing` and typed error fields for the same actual-message contract.
-The current native claude.ai required-capability guard is unchanged: a reserve
-that cannot supply required tools or attachments is refused before startup.
+A quota-selected reserve without native claude.ai capability carries a visible
+model-owned notice in the production routing component. Existing persisted
+actual provider/model and quota reason retain the notice after reopen and while
+sticky, including when preferred can be tried again. The notice follows the
+actual catalog/session capability row; unknown rows do not fabricate a
+capability difference. Reverse routes to a provider retaining native tools show
+no omission notice. Required attachments, pins and policy remain preflight gates.
 
 Healthy reserve sessions remain sticky. **Use preferred** between turns clears
 sticky metadata and retires the idle host; the existing pool waits for its exit
@@ -469,9 +489,10 @@ the explicitly supported digest/people/ideas/history source steps defer durable
 input. Off/no-config/Ollama and explicit provider/model pins keep their legacy
 routes; old chats stay pinned. Organization policy, code-question boundaries,
 media capability checks, Stop with pending actions and the separate spec reviewer
-and hosted Workbench terminal paths remain intact. Required native claude.ai
-capabilities still prevent an incompatible reserve from starting; there is no
-silent tool or attachment downgrade. Slack home-team mismatch remains account
+and hosted Workbench terminal paths remain intact. Automatically offered native
+claude.ai tools may be omitted only at the approved preflight selection with a
+visible capability notice. Existing explicit native IDs, attachment and tool
+requirements are not bypassed; no started turn or proposal is replayed. Slack home-team mismatch remains account
 revocation, not provider quota. Manually scoped backfill and day-rollup jobs keep
 their independent receipt semantics.
 
@@ -496,3 +517,18 @@ rules remain in force.
 | Installation health / lease JSON | Eligible routed daemon and CLI callers share the same flocked store and exact scopes. One lease claimant wins. Metadata reads never clear quota; manual checks only write their rate gate. | `TestProcessesCompeteForOneLease`, `TestProcessDeathReleasesStableLock`, `TestRoutingIntegrationStrictLeavesDeferredRestartAndRealRecovery`: process death releases the lock; bounded lease expiry permits later pending work; no child starts for a competing blocked caller. |
 | Safe-source receipts / watermarks | Existing daemon pipelines and full-history CLI paths use transactional exact-claim receipts. Existing reset/account writers keep independent scopes and monotonic live floors. Manual scoped backfill deliberately does not write these receipts. | `TestBackfillDeferredDeclinedPrefixSurvivesRestart`, `TestBackfillDailyDeferredDoesNotReplaySavedDayOnNewData` and the composed strict-leaf integration preserve committed input after a mid-step failure/reconstruction; quota leaves unfinished input available. |
 | Chat actual / pin metadata | Go session routing and the Desktop turn store write the existing conversation/message fields; explicit manual choice clears sticky actual metadata between turns. Observed actual never overwrites global preference or the pool's wanted configuration. | `TestAISessionRoutingPersistsStickyAcrossRestartAndManualPin`, `testHistoricalPinsRemainUntilCombinedAutomaticChoiceAndStartedQuotaNeverResends`, `testFreshCommandDTOOffersManualChoiceWithoutInventingCompletedWork`: restart/partial quota preserve actual and pin intent; a read or clock change cannot replay a turn or claim completed background work. |
+
+
+### Native-offering preflight and failure evidence
+
+`TestAISessionAutomaticNativeOfferingMayFallBackBeforeTurn` uses only a fake
+OAuth environment, fake sandbox and owned CLI processes. Ordinary automatic
+text selects reserve on recorded quota and persists the actual quota route
+through DB reopen; a new owner turn remains sticky. PDF requirements, explicit
+pins, fallback off and policy keep their existing gate/route. Native identifiers
+remain covered by `TestToolRoutingReturnedNativeIDStaysWithActualProviderAndModel`
+(unknown ID fails before a build). `TestRoutingBackendPreflightAndNeverReplayStartedQuota`
+retains the one-child boundary when a tool-bearing turn has already started.
+No new writer is added: existing session/Desktop actual metadata and current
+catalog/session capability DTOs own the persistent notice; there is no notice
+acknowledgement, auth poller or additional model call.

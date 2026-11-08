@@ -89,7 +89,7 @@ extension ProviderFallbackShotFixtures {
         var result: [DesignShot] = []
         for pair in ProviderFallbackPreview.Pair.fixturePairs {
             for narrow in [false, true] {
-                for state in [ProviderFallbackPreview.State.recovered, .stopped, .pinned] {
+                for state in [ProviderFallbackPreview.State.fallback, .recovered, .stopped, .pinned] {
                     let name = "provider-chat-\(state.rawValue)-\(pair.preferred.id)\(narrow ? "-narrow" : "")"
                     result.append(DesignShot(name: name, size: NSSize(width: narrow ? 360 : 640, height: 0)) {
                         AnyView(RuntimeProviderChatShot(pair: pair, state: state))
@@ -108,14 +108,17 @@ private struct RuntimeProviderChatShot: View {
     private static func ignoreAutomatic() {}
 
     private var model: ChatRoutingPresentation {
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        let actual = state == .pinned ? pair.preferred.id : pair.reserve.id
         let health = try? ChatRoutingStatus.parse(Data("""
             {"preferred_provider":"\(pair.preferred.id)","enabled":true,"revision":"fixture",
-             "providers":[{"provider":"\(pair.preferred.id)","state":"available"}]}
+             "providers":[{"provider":"\(pair.preferred.id)","state":"\(state == .fallback ? "quota_wait" : "available")"}]}
             """.utf8))
         return ChatRoutingPresentation(pair: pair, automatic: state != .pinned,
                                        actualProvider: state == .pinned ? pair.preferred.id : pair.reserve.id,
                                        actualModel: state == .pinned ? "sample-pinned-model" : "sample-model",
-                                       reason: actualReason, health: health, busy: false)
+                                       reason: actualReason, health: health, busy: false,
+                                       capabilities: catalog.capabilities(for: actual))
     }
 
     private var preview: ProviderFallbackPreview? {
@@ -130,7 +133,8 @@ private struct RuntimeProviderChatShot: View {
             if state == .stopped {
                 stoppedRow
             } else if let preview {
-                ChatRoutingStatusView(preview: preview, onAction: state == .pinned ? nil : Self.ignoreAutomatic)
+                ChatRoutingStatusView(preview: preview, nativeToolsNotice: model.nativeToolsNotice,
+                                      onAction: state == .pinned ? nil : Self.ignoreAutomatic)
             }
             ChatModelPicker(provider: AIProvider(rawValue: pair.preferred.id) ?? .claude,
                             model: state == .pinned ? "sample-pinned-model" : "", suggestions: [],

@@ -175,5 +175,10 @@ live database's migrations is unsupported.
 
 This routing implementation was tested with fake providers and local fixtures;
 no paid or live-account acceptance check was performed. It does not automatically
-repeat custom recipes or started tool turns. A chat requiring native claude.ai
-tools remains blocked from switching to a provider that cannot supply them.
+repeat custom recipes or started tool turns. An automatic main chat can continue
+with Codex when Claude is out of quota, without Claude-native claude.ai tools.
+The chat shows **claude.ai tools are unavailable with Codex**; those tools have
+not moved to Codex. This notice stays while the chat uses that reserve, including
+after reopening it. Required attachments, explicit provider/model choices and
+organization policy still apply. To use native tools again, switch back to a
+provider that supplies them between turns.

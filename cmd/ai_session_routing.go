@@ -72,9 +72,9 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 		fmt.Fprintf(cmd.ErrOrStderr(), "AI chat routing: %v\n", healthErr)
 	}
 	router := &providerrouting.Router{Health: health, Diagnostic: func(err error) { fmt.Fprintf(cmd.ErrOrStderr(), "AI chat routing: %v\n", err) }}
-	// This is a requirement, not a prompt decision for the reserve. It must
-	// never silently disappear merely because a different backend is selected.
-	requiredClaudeAI := resolveClaudeAI(cfg, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
+	// Automatically offered native tools are optional on quota preflight
+	// (owner ask971). The selected transport builds its own tools; required
+	// attachments, connections and policy remain independent gates below.
 	sticky, stickyReason := conv.ActualProvider, conv.RoutingReason
 	return chat.NewRoutingBackend(chat.RoutingOptions{
 		Router: router, Mode: mode, Preferred: configuredPreferred,
@@ -111,8 +111,6 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				switch {
 				case !known:
 					return false, fmt.Errorf("no capability row for provider %q", p)
-				case requiredClaudeAI.mode.On && !caps.ClaudeAITools:
-					return false, nil
 				case !chat.AttachesProjectFiles(caps) && len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0:
 					return false, nil
 				}
