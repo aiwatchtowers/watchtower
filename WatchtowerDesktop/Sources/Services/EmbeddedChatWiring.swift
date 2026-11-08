@@ -74,15 +74,22 @@ final class EmbeddedChatEngineFactory {
         let engine = EmbeddedChatEngine(spec: spec, store: store, aiService: WatchtowerAIService(), gate: gate,
                                         draftMirror: spec.persistence == .memory ? nil : draftMirror,
                                         provider: Constants.aiProviderID())
-        // A workbench code question never leaves its Questions tab (spec
-        // 2026-10-02 §9.4): a knowledge prefix typed there saves nothing.
-        // Remember still applies, as in every chat with the owner's instructions.
-        let savesKnowledge = spec.key.contextType != CodeQuestionList.contextType
+        let savesKnowledge = savesKnowledge(contextType: spec.key.contextType)
         engine.onOwnerMessageStored = { [weak remember] text, conversationID, messageID in
             remember?.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID,
                                          savesKnowledge: savesKnowledge)
         }
         return engine
+    }
+
+    /// Whether a knowledge prefix (`решили:`, `факт:`) typed in a chat of
+    /// this context saves a decision or fact. A workbench code question
+    /// never leaves its Questions tab (spec 2026-10-02 §9.4) and a spec
+    /// review Discuss thread stays out of the ideas registry (spec
+    /// 2026-11-08 §3), like the Go filters: there it saves nothing. Remember
+    /// still applies, as in every chat with the owner's instructions.
+    static func savesKnowledge(contextType: String) -> Bool {
+        contextType != CodeQuestionList.contextType && contextType != SpecReviewThreadKey.contextType
     }
 
     @MainActor

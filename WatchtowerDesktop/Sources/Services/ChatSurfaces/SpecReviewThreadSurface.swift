@@ -154,9 +154,15 @@ enum SpecReviewThreadSurface {
                 if blocks.question != nil || blocks.finding != nil {
                     context.onReply(blocks.question, blocks.finding)
                 }
+                // An invalid block is said, never dropped in silence: the
+                // agent believes it asked or proposed.
+                for reason in blocks.rejected {
+                    NSLog("SpecReviewThreadSurface: conversation %lld: %@", conversationID, reason)
+                }
+                result.notices = blocks.rejected
                 if let notice = context.turns.folderAccess.notice,
                    !hasNotice(notice, conversationID: conversationID, dbPool: dbPool) {
-                    result.notices = [notice]
+                    result.notices.append(notice)
                 }
                 return result
             },

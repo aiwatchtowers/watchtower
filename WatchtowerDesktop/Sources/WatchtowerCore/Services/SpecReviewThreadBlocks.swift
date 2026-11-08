@@ -14,7 +14,8 @@ import Foundation
 /// wins (a broken later block never replaces an earlier valid one), and an
 /// unclosed block is hidden while the reply streams. Unlike a question card,
 /// every closed block of these two fences — valid or not — leaves the shown
-/// text: the thread shows a block as its card, or as nothing.
+/// text: the thread shows a valid block as its card, and an invalid one as
+/// a notice saying why (`rejected`), never as nothing.
 package enum SpecReviewThreadBlocks {
     package static let askAuthorFence = "```watchtower-ask-author"
     package static let findingFence = "```watchtower-finding"
@@ -28,13 +29,16 @@ package enum SpecReviewThreadBlocks {
 
     /// `final`: the reply is complete. Until then no block is read and an
     /// unclosed one is hidden; once final, an unclosed block stays visible.
+    /// `rejected` holds, in reply order, why each closed block that is not
+    /// valid was dropped (empty until final).
     package static func parse(
         _ text: String, final: Bool
-    ) -> (text: String, question: String?, finding: SpecReviewProposedFinding?) {
-        guard text.contains(askAuthorFence) || text.contains(findingFence) else { return (text, nil, nil) }
+    ) -> (text: String, question: String?, finding: SpecReviewProposedFinding?, rejected: [String]) {
+        guard text.contains(askAuthorFence) || text.contains(findingFence) else { return (text, nil, nil, []) }
         var removals: [Range<String.Index>] = []
         var question: String?
         var finding: SpecReviewProposedFinding?
+        var rejected: [String] = []
         var cursor = text.startIndex
         while let (open, fence) = nextFence(in: text, from: cursor) {
             cursor = open.upperBound
@@ -51,16 +55,23 @@ package enum SpecReviewThreadBlocks {
             removals.append(open.lowerBound..<close.upperBound)
             switch fence {
             case askAuthorFence:
-                if let decoded = decodeQuestion(Data(body.utf8)) { question = decoded }
+                switch checkQuestion(Data(body.utf8)) {
+                case .success(let decoded): question = decoded
+                case .failure(let problem): rejected.append("The assistant's question to the author could not be sent: \(problem.reason).")
+                }
             default:
-                if let decoded = decodeFinding(Data(body.utf8)) { finding = decoded }
+                switch checkFinding(Data(body.utf8)) {
+                case .success(let decoded): finding = decoded
+                case .failure(let problem): rejected.append("The assistant's proposed finding could not be shown: \(problem.reason).")
+                }
             }
         }
         if !final {
             question = nil
             finding = nil
+            rejected = []
         }
-        guard !removals.isEmpty else { return (text, question, finding) }
+        guard !removals.isEmpty else { return (text, question, finding, rejected) }
         // Rebuilt from slices of the original, so every range stays valid.
         var visible = ""
         var kept = text.startIndex
@@ -69,7 +80,12 @@ package enum SpecReviewThreadBlocks {
             kept = range.upperBound
         }
         visible += text[kept...]
-        return (visible.trimmingCharacters(in: .whitespacesAndNewlines), question, finding)
+        return (visible.trimmingCharacters(in: .whitespacesAndNewlines), question, finding, rejected)
+    }
+
+    /// Why a block was not valid, in words for the owner.
+    package struct Problem: Error, Equatable {
+        package let reason: String
     }
 
     /// The first of the two fences at or after `cursor` that starts a line.
@@ -107,20 +123,42 @@ package enum SpecReviewThreadBlocks {
 
     /// `{"question": "…"}`: a question that is not blank and fits Go's cap.
     package static func decodeQuestion(_ json: Data) -> String? {
-        guard let raw = try? JSONDecoder().decode(RawQuestion.self, from: json) else { return nil }
+        try? checkQuestion(json).get()
+    }
+
+    package static func checkQuestion(_ json: Data) -> Result<String, Problem> {
+        guard let raw = try? JSONDecoder().decode(RawQuestion.self, from: json) else {
+            return .failure(Problem(reason: "its block is not valid JSON with a question"))
+        }
         let question = raw.question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, question.unicodeScalars.count <= maxQuestionRunes else { return nil }
-        return question
+        if question.isEmpty { return .failure(Problem(reason: "the question is empty")) }
+        if question.unicodeScalars.count > maxQuestionRunes {
+            return .failure(Problem(reason: "longer than \(maxQuestionRunes) characters"))
+        }
+        return .success(question)
     }
 
     /// A proposed finding with a known kind, a title and a text, and a quote
     /// from the document or the thread. Go checks the quotes themselves
     /// when the owner presses **Add to review**.
     package static func decodeFinding(_ json: Data) -> SpecReviewProposedFinding? {
-        guard let finding = try? JSONDecoder().decode(SpecReviewProposedFinding.self, from: json) else { return nil }
+        try? checkFinding(json).get()
+    }
+
+    package static func checkFinding(_ json: Data) -> Result<SpecReviewProposedFinding, Problem> {
+        guard let finding = try? JSONDecoder().decode(SpecReviewProposedFinding.self, from: json) else {
+            return .failure(Problem(reason: "its block is not valid JSON"))
+        }
         let blank = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard findingKinds.contains(finding.kind), !blank(finding.title), !blank(finding.text),
-              ["document", "thread"].contains(finding.quote.source), !blank(finding.quote.text) else { return nil }
-        return finding
+        if !findingKinds.contains(finding.kind) {
+            return .failure(Problem(reason: "its kind \"\(finding.kind)\" is not differs, missing, decided_alone or blind_spot"))
+        }
+        if blank(finding.title) || blank(finding.text) {
+            return .failure(Problem(reason: "it has no title or no text"))
+        }
+        if !["document", "thread"].contains(finding.quote.source) || blank(finding.quote.text) {
+            return .failure(Problem(reason: "its quote has no source (document or thread) or no words"))
+        }
+        return .success(finding)
     }
 }

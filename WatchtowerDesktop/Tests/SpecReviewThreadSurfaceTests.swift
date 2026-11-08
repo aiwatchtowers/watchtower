@@ -199,4 +199,20 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertNil(handed.first?.1)
         XCTAssertEqual(engine.messages.last?.message.text, reply)
     }
+
+    /// A block the agent got wrong is said in the thread, not dropped in
+    /// silence: nothing is handed over, the reason is a stored notice.
+    func testInvalidBlockIsANotice() async throws {
+        let conv = try await conversation()
+        var handed = 0
+        let spec = SpecReviewThreadSurface.spec(context: context { _, _ in handed += 1 },
+                                                conversationID: conv, dbPool: dbManager.dbPool)
+        let ai = ScriptedAIService()
+        let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
+        let long = String(repeating: "a", count: SpecReviewThreadBlocks.maxQuestionRunes + 1)
+        await turn(engine, ai, "Which day?", reply: "Only the author knows.\n\n```watchtower-ask-author\n{\"question\": \"\(long)\"}\n```")
+        XCTAssertEqual(handed, 0)
+        let notices = engine.messages.filter { $0.message.role == "system" }.map(\.message.text)
+        XCTAssertEqual(notices, ["The assistant's question to the author could not be sent: longer than 1000 characters."])
+    }
 }

@@ -749,6 +749,8 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
     case specReviewRunning
     /// The command printed bytes that are not UTF-8 text.
     case unreadableOutput(command: String)
+    /// The command printed something other than the one id it prints.
+    case unexpectedOutput(command: String)
     /// Go refused with exit 3; its words, as the owner sees them (such as
     /// "not added: quote not found" or "the question is closed").
     case refused(String)
@@ -757,6 +759,7 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
         switch self {
         case .specReviewRunning: "The reviewer is already running"
         case let .unreadableOutput(command): "`watchtower \(command)` printed text that is not UTF-8"
+        case let .unexpectedOutput(command): "`watchtower \(command)` did not print an id"
         case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
         case let .refused(message): message
         }
@@ -1228,9 +1231,11 @@ struct WorkbenchCLI {
             try await runner.run(args: ["workbench", "spec-review", "question", "--ask=\(askID)", "--item=\(itemKey)"],
                                  stdin: Data(question.utf8))
         }
-        let text = String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard let id = Int64(text) else {
+        guard let text = String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
             throw WorkbenchCLIError.unreadableOutput(command: "workbench spec-review question")
+        }
+        guard let id = Int64(text) else {
+            throw WorkbenchCLIError.unexpectedOutput(command: "workbench spec-review question")
         }
         return id
     }
