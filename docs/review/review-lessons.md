@@ -2799,3 +2799,15 @@ Entry format:
 - weak-dimension: 7. Cross-language fixtures cover valid publications well, but equivalent structurally valid contradictory candidates need a parity case too.
 - rule-gap: a single-error envelope needs explicit precedence for two failing stages; test the error code, refresh outcome and exit code together.
 - outcome: TBD
+
+## 2026-11-08 — feature/spec-review-discuss (01cc90116: Discuss threads, author questions, thread findings, summary/theses, drift guards, open loop rules; migrations 00177/00178; 168 files; panel: prosecutor (9) + codex (7) + all three pr-review-toolkit specialists; judge verified by reading, no runs — Desktop target does not build) — verdict: changes-needed
+
+- contested: re-delivery of an open question after an app restart (codex + silent-failure, 2 lanes) against the earlier v1-limit ruling. Held the ruling as minor. Delivery state can't be known after a quit, and a double paste into the author's live terminal is worse than a 30-min wait. Only the "did not answer" wording overclaims. **A v1 limit that trades a duplicate side effect for a delay is fine; its user-facing line must not assert what the app cannot know.** [6/9]
+- contested: F3 owner-item attribution was raised as major and downgraded to minor. The item still shows in Fixed/Disputed; only the "Your item" label is missing for Fix-on-finding seeds. [6]
+- false-positive: none dismissed outright. Dropped the pre-existing `try?` in a moved file and the coach-reader leak, which was already ruled and documented.
+- miss: only the test lane saw the Desktop knowledge-prefix path (`EmbeddedChatWiring.savesKnowledge` keyed on `!= code_question`) writing ideas from a new chat context type. Every Go-side filter was guarded and tested. **A new embedded-chat context type that must stay out of knowledge has to be checked against every Desktop-side writer keyed on a context-type deny list, not only the Go readers.** [8/9]
+- miss: only code-reviewer caught that `add-finding` (an owner-press verb) is not refused under an agent marker, and only codex caught that `saveFixDraft` clears before the write. Both are direct hits on existing rules (AGENT-07 house rule, Swift error handling). [9]
+- weak-dimension: 9. Three Desktop-side silent paths (invalid blocks stripped, draft cleared before the write, refusal to a let-go engine) and one CLI gate came from three different lanes, and no single lane saw them together.
+- rule-gap (candidate, dim 9): *a CLI verb whose only intended caller is a Desktop button that records an owner decision or adds content attributed to the owner calls `refuseUnderAgent` in the same change, and the AGENT-07 list names it.*
+- rule-gap (candidate, dim 5/8): *a feature-wide "stays out of X" promise for a new chat context type is checked with a grep for every `contextType !=`/`== CodeQuestionList.contextType` site on both sides.*
+- outcome: TBD
