@@ -1,19 +1,8 @@
 import SwiftUI
 import WatchtowerCore
 
-/// A press on a row's native actions.
-enum InboxRowPress: Equatable {
-    case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent
-    case stopWatching, makeTask, goToTarget, deleteTrack
-    case approve, reject, edit, retry, dismiss, notNow(until: String), activate, drop
-    case snoozeHour
-    /// **Retry** under a failed press: repeats it.
-    case retryFailedPress
-    case replyChanged(String), proposeReply, cancelReply
-}
-
-/// The trailing buttons of a row with a `ref` (plan Task 1: no wiring; Task
-/// 13 hands them to A's `ArtifactRefHooks.nativeActions`).
+/// The trailing buttons of a row with a `ref`, drawn through A's
+/// `ArtifactRefHooks.nativeActions` (`InboxRefHooks`).
 struct InboxRowActionsView: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
@@ -41,10 +30,10 @@ struct InboxRowActionsView: View {
             }
             if canReply {
                 Button("Reply…") { onPress(.reply) }
-                    .disabled(content.reply != nil)
+                    .disabled(content.reply != nil || content.isOff(.reply))
             }
-            Button("Done") { onPress(.done) }
-            Button("Hide") { onPress(.hide) }
+            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
+            Button("Hide") { onPress(.hide) }.disabled(content.isOff(.hide))
             Menu("Snooze") {
                 ForEach(InboxMessagePane.snoozeChoices, id: \.duration) { choice in
                     Button(choice.label) { onPress(.snooze(duration: choice.duration)) }
@@ -52,6 +41,7 @@ struct InboxRowActionsView: View {
             }
             .menuStyle(.button)
             .fixedSize()
+            .disabled(content.isOff(.snooze(duration: "")))
             if !content.isBusy {
                 more {
                     Button("Discuss in Chat") { onPress(.discussInChat) }
@@ -61,12 +51,12 @@ struct InboxRowActionsView: View {
                 }
             }
         case let .track(custom, linkedTargetID):
-            Button("Done") { onPress(.done) }
+            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
             if !content.isBusy {
                 more {
-                    Button("Stop watching") { onPress(.stopWatching) }
+                    Button("Stop watching") { onPress(.stopWatching) }.disabled(content.isOff(.stopWatching))
                     if !custom {
-                        Button("Make a Task") { onPress(.makeTask) }
+                        Button("Make a Task") { onPress(.makeTask) }.disabled(content.isOff(.makeTask))
                     }
                     if custom, linkedTargetID != nil {
                         Button("Go to Target") { onPress(.goToTarget) }
@@ -80,19 +70,35 @@ struct InboxRowActionsView: View {
             ForEach(InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict),
                     id: \.self) { button in
                 ideaButton(button)
+                    .disabled(content.isOff(button.press))
             }
         case .reminder:
-            Button("Done") { onPress(.done) }
-            Button("Snooze 1h") { onPress(.snoozeHour) }
-        case let .action(failed):
-            if failed {
-                Button("Retry") { onPress(.retry) }
-                Button("Dismiss") { onPress(.dismiss) }
-            } else {
-                Button("Approve") { onPress(.approve) }
-                Button("Reject") { onPress(.reject) }
-                Button("Edit…") { onPress(.edit) }
+            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
+            Button("Snooze 1h") { onPress(.snoozeHour) }.disabled(content.isOff(.snoozeHour))
+        case let .action(_, buttons):
+            // The proposal's own summary sits under the row's line, full width (`InboxRowActionsFooter`).
+            ForEach(buttons, id: \.self) { button in
+                actionButton(button)
+                    .disabled(content.isOff(button.press))
             }
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(_ button: InboxRowActionsContent.ActionButton) -> some View {
+        switch button {
+        case .approve: Button("Approve") { onPress(.approve) }
+        case .reject: Button("Reject") { onPress(.reject) }
+        case .edit:
+            Button("Edit…") { onPress(.edit) }
+                .help("Open the full proposal")
+        case .openDraft:
+            Button("Open Draft") { onPress(.openDraft) }
+                .help("Read the whole recipe in the editor and save it there")
+        case .retry: Button("Retry") { onPress(.retry) }
+        case .dismiss:
+            Button("Dismiss") { onPress(.dismiss) }
+                .help(ConnectorCallProposal.dismissNote)
         }
     }
 
@@ -126,9 +132,10 @@ struct InboxRowActionsView: View {
     }
 }
 
-/// What sits under a row with a `ref`: a failed press's error with
-/// **Retry**, the Reply composer (or its refusal), or "Reply waiting for
-/// approval". Nothing for an idle row.
+/// What sits under a row with a `ref`: a proposal's own summary, the
+/// missing-CLI line on a row with a press that needs the CLI, a failed
+/// press's error with **Retry**, the Reply composer (or its refusal), or
+/// "Reply waiting for approval". Nothing for an idle row without these.
 struct InboxRowActionsFooter: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
@@ -139,6 +146,23 @@ struct InboxRowActionsFooter: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
+            if let summary = content.actionSummary {
+                // Next to Approve whatever the look's row says (A's contract item 3), with the row's full width.
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(summary)
+                    .accessibilityIdentifier("inboxRow.actionSummary")
+            }
+            if content.showsCLIMissingLine {
+                Text(InboxRowActionsContent.cliMissingMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("inboxRow.cliMissing")
+            }
             if case let .failed(message) = content.state {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Text(message)
@@ -146,8 +170,11 @@ struct InboxRowActionsFooter: View {
                         .foregroundStyle(Tone.error)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                    Button("Retry") { onPress(.retryFailedPress) }
-                        .buttonStyle(.kitSecondary)
+                    if content.footerOffersRetry {
+                        Button("Retry") { onPress(.retryFailedPress) }
+                            .buttonStyle(.kitSecondary)
+                            .disabled(content.isOff(.retryFailedPress))
+                    }
                 }
             }
             switch content.reply {
@@ -175,7 +202,8 @@ struct InboxRowActionsFooter: View {
                 Button("Propose Reply") { onPress(.proposeReply) }
                     .buttonStyle(.kitSecondary)
                     .keyboardShortcut(composing ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.isBusy)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.isBusy
+                              || content.isOff(.proposeReply))
                 Button("Cancel") { onPress(.cancelReply) }
                     .buttonStyle(.kitQuiet)
             }

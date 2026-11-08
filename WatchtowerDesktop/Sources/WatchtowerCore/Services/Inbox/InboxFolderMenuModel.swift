@@ -74,7 +74,11 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
             artifacts = artifacts.mapValues { $0.filter { $0.automationID != approvalsID } }
         }
         let refs = InboxFolderCounts.refs(of: artifacts)
-        let refState = try InboxRefState.read(db, refs: Array(refs.values.joined()), nowUTC: nowUTC)
+        // Needs approval's cards are read too: their `action`/`reminder`
+        // rows draw only while the record is open (the row hooks' `isOpen`).
+        let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
+        let refState = try InboxRefState.read(
+            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
         let legacy = try ActionStripViewModel.legacyCounts(
             db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
         let counts = InboxFolderCounts.counts(
@@ -169,6 +173,10 @@ package final class InboxFolderMenuModel {
     /// has been read yet (revision 0: nothing to compare-and-set against —
     /// before the first read, or a database without the folder tables).
     package var isReadOnly: Bool { cliMissing || isBusy || tree.revision < 1 }
+
+    /// No `watchtower` binary at the last read: the menu's and the rows'
+    /// writes are off (plan "Failure paths").
+    package var isCLIMissing: Bool { cliMissing }
 
     /// The folder the Inbox shows (the root when none is selected).
     package var selectedFolderID: Int64 { selection ?? tree.root.id }
