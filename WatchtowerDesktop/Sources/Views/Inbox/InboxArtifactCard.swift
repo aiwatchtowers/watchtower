@@ -107,8 +107,6 @@ struct InboxArtifactCard: View {
 
     private func environment(reply: InboxReplyState) -> ArtifactEnvironment {
         let byIndex = Dictionary(layout.pressable.map { ($0.index, $0) }) { first, _ in first }
-        // Labeled: with several closures a trailing one would be ambiguous.
-        // swiftlint:disable trailing_closure
         return ArtifactEnvironment(
             markdown: Self.markdown,
             avatar: { Self.avatar(people[$0]) },
@@ -137,7 +135,6 @@ struct InboxArtifactCard: View {
                 return !InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
             }
         )
-        // swiftlint:enable trailing_closure
     }
 
     /// A person the local `users` table knows: the initials of their Slack
