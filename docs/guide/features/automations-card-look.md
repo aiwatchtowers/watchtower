@@ -49,7 +49,7 @@ action: nav:automations
 2. In the draft column, pick **Look** in the step picker (**What it collects · Look · When it runs**).
 3. Tell the assistant in **Chat** what you want: "a count of open threads on top, then the threads, oldest first, red after a day". After each change it dry-runs the draft, and **Look** draws the result.
 4. Press **Dry run** to draw it yourself, for example after an edit in **Script**. It reads your data and writes nothing; its tokens are your spend.
-5. With several cards, pick one from the **Card 1 of 4** menu.
+5. With several cards, pick one from the **Card 1 of 4 — <title>** menu.
 6. Press **Save Look**. It is the same save as on the other steps: it confirms everything the column lists.
 
 Buttons in the preview are drawn but don't work (**Buttons work in the Inbox**); links open.

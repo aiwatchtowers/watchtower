@@ -75,7 +75,7 @@ The button shows where its proposal is:
 
 | Button | Means |
 |---|---|
-| The label with a checklist icon | Not pressed yet, or the last proposal was rejected or its task deleted. |
+| The label with a checklist icon | Not pressed yet, or the last proposal was rejected or dismissed, or its task deleted. |
 | **Waiting for approval** | A click opens the approval card; it never proposes twice. |
 | **Creating task…** | You approved it and the task is being made. |
 | **Task created** | A click opens the task. |
