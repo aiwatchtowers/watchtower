@@ -471,6 +471,26 @@ func TestAttribute_NestedLaneKeepsTheCallersExclusions(t *testing.T) {
 	}
 }
 
+func TestAttribute_OctopusMergeIsPartial(t *testing.T) {
+	r := newLaneRepo(t)
+	for _, b := range []string{"feature/x", "feature/y"} {
+		r.checkout("main")
+		r.checkout("-b", b)
+		r.commit(b, strings.TrimPrefix(b, "feature/")+".go")
+	}
+	r.checkout("main")
+	r.checkout("-b", "feature/top")
+	r.git("merge", "-q", "--no-ff", "-m", "Merge branches 'feature/x' and 'feature/y'", "feature/x", "feature/y")
+	a, err := Attribute(context.Background(), r.open(), r.rev("main"), r.rev("HEAD"), "feature/top", r.rev("main"),
+		newFakeTitles(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Partial {
+		t.Errorf("octopus merge: Partial = false, FileLane = %v", a.FileLane)
+	}
+}
+
 func TestCommitTag(t *testing.T) {
 	titles := newFakeTitles().t
 	for _, c := range []struct{ subject, branch, want string }{

@@ -3,6 +3,7 @@ package reviewmap
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"slices"
 	"strconv"
@@ -63,7 +64,8 @@ type TitleSource interface {
 // lane that touched it later); Also lists its other lanes, sorted. A file
 // with no lane (uncommitted, only in untagged direct commits of the
 // branch, or past the walk bounds) is in neither map. Partial is true when
-// the walk could not finish: no head commit, the bounds or the budget.
+// the walk could not finish: no head commit, the bounds, the budget or an
+// octopus merge (only its first merged parent is walked).
 type Attribution struct {
 	FileLane map[string]string
 	Also     map[string][]string
@@ -270,10 +272,18 @@ func (w *walker) readSegment(ctx context.Context, lane *walkLane, tip string, ex
 		}
 		seg.merges[i], _ = parseMerge(c.Subject)
 		lane.integration = true
+		if len(c.Parents) > 2 {
+			w.partial = true // an octopus: only its first merged parent is walked
+		}
 	}
 	if direct > 0 {
 		if seg.files, err = w.repo.CommitFiles(ctx, tip, exclude, direct); err != nil {
 			return segment{}, "", err
+		}
+		for _, c := range commits {
+			if _, ok := seg.files[c.SHA]; !ok && len(c.Parents) < 2 {
+				return segment{}, "", fmt.Errorf("lanes: commit %s missing from the file listing", c.SHA)
+			}
 		}
 	}
 	return seg, next, nil

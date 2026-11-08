@@ -164,3 +164,22 @@ func TestHistory_DoneContextIsAnError(t *testing.T) {
 		t.Error("is-ancestor on a done context")
 	}
 }
+
+func TestCommitFiles_RootCommitDespiteShowRootOff(t *testing.T) {
+	dir, ids := historyRepo(t)
+	gitIn(t, dir, "config", "log.showRoot", "false")
+	r := openRepo(t, dir)
+	got, err := r.CommitFiles(context.Background(), ids["init"], nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[ids["init"]]) == 0 {
+		t.Fatalf("root commit files = %q, want its paths", got)
+	}
+}
+
+func TestParseCommitFiles_MalformedHeaderIsAnError(t *testing.T) {
+	if _, err := parseCommitFiles([]byte(commitMark + "not-a-sha\x00\na.go\x00")); err == nil {
+		t.Fatal("a malformed header parsed")
+	}
+}

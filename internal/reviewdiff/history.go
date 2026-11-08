@@ -75,7 +75,8 @@ func parseWalk(out []byte) ([]Commit, error) {
 
 // CommitFiles maps each non-merge commit of tip's first-parent history,
 // minus exclude's, to the paths it changes (`log --first-parent --no-merges
-// --no-renames --name-only -z`, one call for the whole walk). Paths come
+// --no-renames --root --name-only -z`, one call for the whole walk; --root
+// so a user's log.showRoot=false never empties the root commit). Paths come
 // NUL-separated, so spaces, quotes and non-ASCII letters arrive as they
 // are. limit > 0 caps the number of commits. A commit that changes no file
 // maps to nil.
@@ -84,7 +85,7 @@ func (r *Repo) CommitFiles(ctx context.Context, tip string, exclude []string, li
 	if err != nil {
 		return nil, err
 	}
-	args := []string{"log", "--first-parent", "--no-merges", "--no-renames", "--name-only", "-z",
+	args := []string{"log", "--first-parent", "--no-merges", "--no-renames", "--root", "--name-only", "-z",
 		"--format=" + commitMark + "%H"}
 	if limit > 0 {
 		args = append(args, "--max-count="+strconv.Itoa(limit))
@@ -107,7 +108,10 @@ func parseCommitFiles(out []byte) (map[string][]string, error) {
 	first := false
 	for tok := range bytes.SplitSeq(out, []byte{0}) {
 		s := string(tok)
-		if sha, ok := strings.CutPrefix(s, commitMark); ok && isHex(sha) {
+		if sha, ok := strings.CutPrefix(s, commitMark); ok {
+			if !isHex(sha) {
+				return nil, fmt.Errorf("log: a malformed commit header")
+			}
 			current, first = sha, true
 			files[current] = nil
 			continue
