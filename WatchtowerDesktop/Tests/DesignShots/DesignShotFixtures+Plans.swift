@@ -70,7 +70,7 @@ enum PlansShotFixtures {
                                                       PlanUsageBreakdownRow(key: "chats", label: "Chats", percent: 14),
                                                       PlanUsageBreakdownRow(key: "cowork", label: "Cowork", percent: 4)] : [],
                                provider: provider,
-                               identityKnown: identityKnown, plot: plot, history: samples)
+                               identityKnown: identityKnown, plot: plot, history: samples, publicationIntegrity: .verified)
     }
 
     static func model(_ state: State = .filled) -> PlansScreenPresentation {

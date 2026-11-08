@@ -50,7 +50,8 @@ final class PlansUsageTests: XCTestCase {
         return PlanUsageStatus(state: state, reason: "", plan: "plus", fetchedAt: fetched, lastError: "",
                                limits: limits, breakdown: [], provider: provider, identityKnown: known,
                                ordinaryUsageAllowed: ordinary,
-                               plot: endpoints ? PlanUsagePlot(fetchedAt: fetched, limits: lines) : nil, history: history)
+                               plot: endpoints ? PlanUsagePlot(fetchedAt: fetched, limits: lines) : nil, history: history,
+                               publicationIntegrity: .verified)
     }
 
     func testOrderedFreshnessAndIdentityGates() throws {
@@ -215,7 +216,8 @@ final class PlansUsageTests: XCTestCase {
         let plot = try PlanUsagePlot.decode(text, fetchedAt: fetched, limits: [value])
         let status = PlanUsageStatus(state: "ok", reason: "", plan: "", fetchedAt: fetched, lastError: "",
                                      limits: [value], breakdown: [], plot: plot,
-                                     history: [value.key: [PlanUsageSample(takenAt: fetched, percent: 40, resetsAt: value.resetsAt)]])
+                                     history: [value.key: [PlanUsageSample(takenAt: fetched, percent: 40, resetsAt: value.resetsAt)]],
+                                     publicationIntegrity: .verified)
         XCTAssertEqual(try status.forecast(for: value, now: fetched).line, wire.line)
         let cases = try XCTUnwrap(JSONSerialization.jsonObject(with: sharedFixture("aggregate_v1.json")) as? [String: Any])
         for value in cases.values {

@@ -138,7 +138,7 @@ extension PlanUsageStatus {
         guard !currentHistory(for: limit).isEmpty else { return "collecting" }
         if let hit = raw.hitAt, hit <= now { return "prediction_expired" }
         guard let candidate else { return "endpoints_unavailable" }
-        return projectionMatches(limit, candidate: candidate, now: now) ? nil : "invalid_projection"
+        return publicationIntegrity == .verified && projectionMatches(limit, candidate: candidate, now: now) ? nil : "invalid_projection"
     }
 
     private func projectionMatches(_ limit: PlanUsageLimit, candidate: PlanUsageLine, now: Date) -> Bool {
