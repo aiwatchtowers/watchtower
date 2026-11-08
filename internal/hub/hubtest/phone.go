@@ -146,7 +146,16 @@ type Phone struct {
 	// wt/relay/v2/ keys of each epoch a keybox named relay_kx for.
 	current, offered *ecdh.PrivateKey
 	pairs            map[uint32]map[secure.Direction][]byte
+	// pairPubs is each held pair's publics (hub_pub, device_pub); cleared
+	// the epochs a static keybox dropped a pair of (or marked static on a
+	// link with ephemeral state), with the dropped publics (nil when none
+	// was held): the Kit's relayKeysCleared.
+	pairPubs map[uint32]relayPubs
+	cleared  map[uint32]relayPubs
 }
+
+// relayPubs is one epoch's ephemeral publics, hub's and device's.
+type relayPubs struct{ hub, device []byte }
 
 // New makes a phone with fresh keys.
 func New(cfg Config) (*Phone, error) {

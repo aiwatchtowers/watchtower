@@ -783,13 +783,13 @@ func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves
 		return false, fmt.Errorf("slices: saving %s: %d outcomes for %d records", k, len(outs), len(saves))
 	}
 	var (
-		done   []pushed
-		assets []string
+		done     []pushed
+		accepted []secure.Record
 	)
 	for i, o := range outs {
 		if o.Saved {
 			done = append(done, pending[i])
-			assets = append(assets, saves[i].Record.AssetPath())
+			accepted = append(accepted, saves[i].Record)
 			continue
 		}
 		rep.Skipped = append(rep.Skipped, pending[i].name)
@@ -799,7 +799,7 @@ func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves
 		}
 		p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
 	}
-	p.countSaved(k, assets)
+	p.countSaved(k, accepted)
 	if done, err = p.saveSignals(ctx, done, rep); err != nil {
 		return true, err
 	}

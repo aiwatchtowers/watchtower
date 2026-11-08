@@ -255,16 +255,22 @@ func (w *rotWorld) republished() []string {
 }
 
 // wantRepublished checks the republish lines logged so far: each is numbers
-// only, and their outcomes and counts are want ("complete 4 B" with B the
-// asset bytes as a number).
+// only, its envelope bytes at least the 256-byte padded floor per record,
+// and their outcomes and counts are want ("complete 4 B" with B the asset
+// bytes as a number).
 func (w *rotWorld) wantRepublished(t *testing.T, want ...string) {
 	t.Helper()
-	strict := regexp.MustCompile(`^hub: rotation republish: (complete|interrupted), (\d+) records, (\d+) asset bytes, \d+ s$`)
+	strict := regexp.MustCompile(`^hub: rotation republish: (complete|resumed|interrupted), (\d+) records, (\d+) asset bytes, (\d+) envelope bytes, \d+ s$`)
 	var got []string
 	for _, l := range w.republished() {
 		m := strict.FindStringSubmatch(l)
 		if m == nil {
 			t.Fatalf("republish line not numbers only: %q", l)
+		}
+		n, _ := strconv.Atoi(m[2])
+		env, _ := strconv.Atoi(m[4])
+		if env < 256*n {
+			t.Fatalf("republish line %q: %d envelope bytes for %d records", l, env, n)
 		}
 		got = append(got, m[1]+" "+m[2]+" "+m[3])
 	}
@@ -370,6 +376,26 @@ func TestRuntime_RestartAfterRotationRepublishesOnce(t *testing.T) {
 		t.Fatalf("a second restart republished %d", rep.Saved)
 	}
 	w.wantRepublished(t, w.full("complete", w.records))
+}
+
+// A hub restarted part way through a republish counts only the rest: its
+// line says resumed, never complete, so a measuring run does not take a
+// partial upload for the whole one.
+func TestRuntime_RestartMidRepublishSaysResumed(t *testing.T) {
+	w := newRotWorld(t)
+	w.link(true)
+	w.cycle()
+	w.rotate()
+	w.advance(time.Second)
+	if rep, err := w.pub.Cycle(context.Background(), []hubslices.Kind{"workbench"}); err != nil || rep.Saved != 1 {
+		t.Fatalf("workbench-only cycle = %+v, %v", rep, err)
+	}
+	w.restart()
+	w.restartPublisher()
+	if rep := w.cycle(); rep.Saved != w.records-1 {
+		t.Fatalf("the restarted hub republished %d, want %d", rep.Saved, w.records-1)
+	}
+	w.wantRepublished(t, w.full("resumed", w.records-1))
 }
 
 // TestRotationWhileRelayDownPublishesOnReturn (F4): the relay is unreachable
@@ -653,11 +679,15 @@ func newProj21World(t *testing.T) *proj21World {
 	return w
 }
 
-func (w *proj21World) permRequest() int64 {
+func (w *proj21World) permRequest() int64 { return w.permRequestClipped(false) }
+
+// permRequestClipped is a pending Bash request; a clipped summary is one the
+// phone may only deny (AllowBlock).
+func (w *proj21World) permRequestClipped(clipped bool) int64 {
 	w.t.Helper()
 	res, err := w.db.Exec(`INSERT INTO permission_requests
 		(terminal_session_id, workbench_id, tool_name, summary, summary_clipped, status, created_at)
-		VALUES (?, ?, 'Bash', 'make test', 0, 'pending', ?)`, w.sid, w.wb, db.AgentStateStamp(w.clock().Add(-5*time.Second)))
+		VALUES (?, ?, 'Bash', 'make test', ?, 'pending', ?)`, w.sid, w.wb, clipped, db.AgentStateStamp(w.clock().Add(-5*time.Second)))
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -757,7 +787,9 @@ func TestPermissionAnswerAcrossARotationAppliedOnce(t *testing.T) {
 		t.Fatalf("row %s, echoes %+v / %+v", status, w.ph.Echoes[lost], w.ph.Echoes[seq])
 	}
 
-	// The resealed copy written again: a repeat, nothing decided again.
+	// The resealed copy written again: the processor's seq dedup answers it
+	// as a repeat before any handler runs (the compare-and-set is pinned by
+	// the stale answer below and by the answer_on_mac test).
 	if err := w.ph.WriteCopy(seq); err != nil {
 		t.Fatal(err)
 	}
@@ -777,6 +809,74 @@ func TestPermissionAnswerAcrossARotationAppliedOnce(t *testing.T) {
 	}
 	if e := w.ph.Echoes[stale]; e.Status != wire.StatusFailed || echoReason(e) != "not_pending" {
 		t.Fatalf("stale answer echo %+v, want failed not_pending", e)
+	}
+}
+
+// TestPermissionAnswerAcrossARotationLosesToTheMac (F30, PROJ-21): the
+// prompt is answered on the Mac while the phone's allow, sealed before the
+// rotation, waits behind a lost action. Resealed and applied after the
+// rotation, it loses the compare-and-set: not_pending "Answered on the
+// Mac", and the Mac's decision stands.
+func TestPermissionAnswerAcrossARotationLosesToTheMac(t *testing.T) {
+	w := newProj21World(t)
+	w.advance(week - time.Minute)
+	rid := w.permRequest()
+	if _, err := w.ph.Queue(w.ph.NewAction("test_noop")); err != nil { // never reaches the relay
+		t.Fatal(err)
+	}
+	seq := w.answer(rid)
+	if err := w.ph.Send(seq); err != nil {
+		t.Fatal(err)
+	}
+	w.advance(time.Minute)
+	w.rotateIfDue(true)
+	w.cycle()
+	w.takeKeybox(w.ph)
+	w.pass() // held behind the gap
+	if _, err := w.db.Exec(`UPDATE permission_requests SET status = 'answered_on_mac', decided_at = 'mac', decided_by = 'Mac'
+		WHERE id = ?`, rid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ph.Sync(); err != nil { // resend_from: resealed in epoch 2
+		t.Fatal(err)
+	}
+	w.pass()
+	if _, err := w.ph.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if e := w.ph.Echoes[seq]; e.Status != wire.StatusFailed || echoReason(e) != "not_pending" ||
+		e.ErrorMessage == nil || *e.ErrorMessage != "Answered on the Mac" {
+		t.Fatalf("answer echo %+v, want failed not_pending, answered on the Mac", e)
+	}
+	if st, at := w.row(rid); st != "answered_on_mac" || at != "mac" {
+		t.Fatalf("row %s at %s, want the Mac's decision kept", st, at)
+	}
+}
+
+// An allow the phone may not give (a clipped request), sealed before the
+// rotation and read after it: answer_on_mac, the row left pending for the
+// Mac (PROJ-21's AllowBlock holds across the rotation).
+func TestPermissionAllowAcrossARotationIsAnswerOnMac(t *testing.T) {
+	w := newProj21World(t)
+	w.advance(week - time.Minute)
+	rid := w.permRequestClipped(true)
+	seq := w.answer(rid)
+	if err := w.ph.Send(seq); err != nil {
+		t.Fatal(err)
+	}
+	w.advance(time.Minute)
+	w.rotateIfDue(true)
+	w.cycle()
+	w.takeKeybox(w.ph)
+	w.pass()
+	if _, err := w.ph.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if e := w.ph.Echoes[seq]; e.Status != wire.StatusFailed || echoReason(e) != "answer_on_mac" {
+		t.Fatalf("allow echo %+v, want failed answer_on_mac", e)
+	}
+	if st, at := w.row(rid); st != "pending" || at != "" {
+		t.Fatalf("row %s at %q, want pending", st, at)
 	}
 }
 

@@ -4,6 +4,8 @@ import (
 	"log"
 	"os"
 	"time"
+
+	"watchtower/internal/hub/secure"
 )
 
 // The republish a rotation starts (relay client Phase 5, "Measuring the
@@ -13,23 +15,29 @@ import (
 // when the wiped kinds are all published, or when the next wipe cuts it
 // short:
 //
-//	hub: rotation republish: complete|interrupted, N records, B asset bytes, D s
+//	hub: rotation republish: complete|resumed|interrupted, N records, B asset bytes, E envelope bytes, D s
 //
 // N is the records of the wiped kinds the transport accepted, B the sizes of
-// their sealed asset files, D the whole seconds since the publisher saw the
-// wipe. Numbers only: no record name, wire name, hub or phone id. The line
-// is an instrument, not the measurement.
+// their sealed asset files, E the sizes of their sealed envelopes (B + E is
+// the hub's upload; B alone is a lower bound of it), D the whole seconds
+// since the publisher saw the wipe. Numbers only: no record name, wire name,
+// hub or phone id. The line is an instrument, not the measurement.
 //
 // A wipe is seen as a new epoch at a kind's publish (each rotation wipes in
 // its own transaction), or, at a hub's first publish, as rows whose hash is
-// empty: a hub restarted after a rotation, before its republish ended,
-// counts the rest of it. Kept in memory under cycleMu: a restart forgets the
-// counts so far, and the restarted hub logs only what it uploads itself.
+// empty. Kept in memory under cycleMu, so a restart forgets the counts so
+// far: a republish found on the first publish with some rows already hashed
+// again (a hub restarted part way through) counts only the rest and ends
+// "resumed", never "complete". One with every row still wiped (the hub
+// stopped before its publisher ran, or an offline rotation) is whole, and
+// ends "complete".
 type republish struct {
-	pending    map[Kind]bool // wiped kinds not yet published to the end
-	records    int
-	assetBytes int64
-	since      time.Time // monotonic
+	pending       map[Kind]bool // wiped kinds not yet published to the end
+	resumed       bool          // part of it was published before a restart
+	records       int
+	assetBytes    int64
+	envelopeBytes int64
+	since         time.Time // monotonic
 }
 
 // trackEpoch is told the epoch a kind's publish read. On the publisher's
@@ -39,12 +47,14 @@ func (p *Publisher) trackEpoch(epoch uint32) {
 	if p.repEpoch == epoch {
 		return
 	}
+	first := p.repEpoch == 0
 	if p.rep != nil {
 		p.rep.log("interrupted", p.mono())
 		p.rep = nil
 	}
 	p.repEpoch = epoch
 	pending := map[Kind]bool{}
+	hashed := false
 	for _, k := range p.sourceKinds() {
 		known, err := p.c.Store.SliceHashes(string(k))
 		if err != nil {
@@ -55,28 +65,29 @@ func (p *Publisher) trackEpoch(epoch uint32) {
 		for _, r := range known {
 			if r.Hash == "" {
 				pending[k] = true
-				break
+			} else {
+				hashed = true
 			}
 		}
 	}
 	if len(pending) > 0 {
-		p.rep = &republish{pending: pending, since: p.mono()}
+		p.rep = &republish{pending: pending, resumed: first && hashed, since: p.mono()}
 	}
 }
 
-// countSaved adds the records of kind k the transport accepted (assets: the
-// sealed asset file of each, "" for none) while k is one the republish waits
-// for.
-func (p *Publisher) countSaved(k Kind, assets []string) {
+// countSaved adds the records of kind k the transport accepted while k is
+// one the republish waits for.
+func (p *Publisher) countSaved(k Kind, accepted []secure.Record) {
 	if p.rep == nil || !p.rep.pending[k] {
 		return
 	}
-	p.rep.records += len(assets)
-	for _, path := range assets {
-		if path == "" {
+	p.rep.records += len(accepted)
+	for _, rec := range accepted {
+		p.rep.envelopeBytes += int64(len(rec.Envelope()))
+		if rec.AssetPath() == "" {
 			continue
 		}
-		if fi, err := os.Stat(path); err == nil {
+		if fi, err := os.Stat(rec.AssetPath()); err == nil {
 			p.rep.assetBytes += fi.Size()
 		}
 	}
@@ -90,12 +101,17 @@ func (p *Publisher) kindPublished(k Kind) {
 	}
 	delete(p.rep.pending, k)
 	if len(p.rep.pending) == 0 {
-		p.rep.log("complete", p.mono())
+		outcome := "complete"
+		if p.rep.resumed {
+			outcome = "resumed"
+		}
+		p.rep.log(outcome, p.mono())
 		p.rep = nil
 	}
 }
 
 func (r *republish) log(outcome string, now time.Time) {
 	secs := int64(max(0, now.Sub(r.since)).Round(time.Second) / time.Second)
-	log.Printf("hub: rotation republish: %s, %d records, %d asset bytes, %d s", outcome, r.records, r.assetBytes, secs)
+	log.Printf("hub: rotation republish: %s, %d records, %d asset bytes, %d envelope bytes, %d s",
+		outcome, r.records, r.assetBytes, r.envelopeBytes, secs)
 }
