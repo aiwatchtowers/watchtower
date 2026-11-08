@@ -248,7 +248,8 @@ func (r *run) plan(units []unit, single bool) ([]unit, error) {
 	}
 	rows, err := r.store.ReviewOverviewParts(r.opt.ProjectID, hashes)
 	if err != nil {
-		return nil, err
+		log.Printf("reviewai: overview parts not read (%d chapters)", len(units))
+		return nil, fmt.Errorf("reading the overview's chapter parts: %w", err)
 	}
 	cached := map[string]ChapterDesc{}
 	for _, u := range units {
@@ -319,6 +320,7 @@ func (r *run) describe(batches []Batch, full bool) {
 // callBatch makes batch i's call and records its chapters.
 func (r *run) callBatch(ctx context.Context, i, n int, b Batch, full bool) {
 	if ctx.Err() != nil {
+		log.Printf("reviewai: overview batch %d of %d not started (%d chapters)", i+1, n, len(b.Chapters))
 		for _, ch := range b.Chapters {
 			r.opt.Emit(Event{Event: "chapter", Key: ch.Key, State: StateNotStarted})
 		}
