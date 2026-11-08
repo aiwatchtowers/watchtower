@@ -469,7 +469,10 @@ func TestHubContractFixture_EpochAckOffer(t *testing.T) {
 // TestEpochAckOfferUnknownToOlderHubDecodes pins that a control decoder
 // without next_kx (an older hub's wire.Control) and today's decoder both
 // read an epoch_ack carrying fields they do not know: the offer costs an older
-// hub nothing.
+// hub nothing. json.Unmarshal into wire.Control is the hub's real decode path
+// for a phone control (internal/hub/actions decodes, used by readControl and
+// the standby reader); a stricter decoder there (DisallowUnknownFields) would
+// drop every Phase 5 epoch_ack and must not be added.
 func TestEpochAckOfferUnknownToOlderHubDecodes(t *testing.T) {
 	payload := []byte(`{"device_id":"BBBBBBBB-0000-4000-8000-000000000002","epoch":3,` +
 		`"future_field":{"x":1},"hub_id":"AAAAAAAA-0000-4000-8000-000000000001",` +

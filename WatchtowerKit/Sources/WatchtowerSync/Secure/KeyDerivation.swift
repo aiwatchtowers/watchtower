@@ -77,8 +77,15 @@ public enum KeyDerivation {
         _ own: Curve25519.KeyAgreement.PrivateKey, _ peer: Curve25519.KeyAgreement.PublicKey
     ) throws -> Data {
         let shared = try own.sharedSecretFromKeyAgreement(with: peer).withUnsafeBytes { Data($0) }
-        guard shared.contains(where: { $0 != 0 }) else { throw E2EError.allZeroSharedSecret }
+        try refuseAllZero(shared)
         return shared
+    }
+
+    /// Throws `allZeroSharedSecret` for an all-zero secret. Constant-time: an OR-fold over every byte, with no
+    /// early exit on secret bytes (Go's `crypto/ecdh` makes the same check the same way).
+    static func refuseAllZero(_ secret: Data) throws {
+        let folded = secret.reduce(UInt8(0)) { $0 | $1 }
+        guard folded != 0 else { throw E2EError.allZeroSharedSecret }
     }
 
     /// base32(HMAC-SHA256(K_meta, "wt/name/v1" ‖ zone u8 ‖ kind_len u8 ‖ kind ‖ id utf8)[0..<16]),

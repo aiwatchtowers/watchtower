@@ -95,10 +95,17 @@ final class E2EKeyDerivationTests: XCTestCase {
         XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, devEph: .init()))
     }
 
-    /// u = 0 is a low-order point: X25519 with it is all zero, on the ephemeral half or the static half.
+    /// A low-order peer key (u = 0, u = 1) makes X25519 all zero, on the ephemeral half or the static half: the
+    /// derivation throws. CryptoKit refuses such an agreement itself, before `refuseAllZero` runs, so this pins
+    /// CryptoKit's refusal; `testRefuseAllZeroFoldsEveryByte` covers the Kit's own check.
     func testEphemeralRelayKeyRefusesAnAllZeroSharedSecret() throws {
         let k = try E2EFixtureKeys()
-        let zero = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(count: 32))
+        var one = Data(count: 32)
+        one[0] = 1
+        let lowOrder = [
+            try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(count: 32)),
+            try Curve25519.KeyAgreement.PublicKey(rawRepresentation: one)
+        ]
         func derive(
             peerEphemeral: Curve25519.KeyAgreement.PublicKey,
             peerStatic: Curve25519.KeyAgreement.PublicKey,
@@ -110,12 +117,31 @@ final class E2EKeyDerivationTests: XCTestCase {
                 deviceEphemeralPublic: peerEphemeral.rawRepresentation,
                 linkNonce: k.linkNonce, hubID: k.hubID, deviceID: k.deviceID, epoch: 1, direction: .phoneToHub)
         }
-        XCTAssertThrowsError(try derive(peerEphemeral: zero, peerStatic: k.devKX.publicKey))
-        XCTAssertThrowsError(try derive(peerEphemeral: k.devEph.publicKey, peerStatic: zero))
+        for point in lowOrder {
+            XCTAssertThrowsError(try k.hubEph.sharedSecretFromKeyAgreement(with: point)) {
+                XCTAssertTrue($0 is CryptoKitError, "CryptoKit refuses the low-order point: \($0)")
+            }
+            XCTAssertThrowsError(try derive(peerEphemeral: point, peerStatic: k.devKX.publicKey))
+            XCTAssertThrowsError(try derive(peerEphemeral: k.devEph.publicKey, peerStatic: point))
+        }
         // The transcript's ephemeral publics are 32 bytes each.
         XCTAssertThrowsError(try derive(
             peerEphemeral: k.devEph.publicKey, peerStatic: k.devKX.publicKey,
-            hubEphemeralPublic: k.hubEph.publicKey.rawRepresentation.prefix(31)))
+            hubEphemeralPublic: k.hubEph.publicKey.rawRepresentation.prefix(31))) {
+            XCTAssertEqual($0 as? E2EError, .badEphemeralPublicKey)
+        }
+    }
+
+    /// The constant-time fold refuses only the all-zero secret: one non-zero byte anywhere passes.
+    func testRefuseAllZeroFoldsEveryByte() throws {
+        XCTAssertThrowsError(try KeyDerivation.refuseAllZero(Data(count: 32))) {
+            XCTAssertEqual($0 as? E2EError, .allZeroSharedSecret)
+        }
+        for index in [0, 15, 31] {
+            var secret = Data(count: 32)
+            secret[index] = 0x01
+            XCTAssertNoThrow(try KeyDerivation.refuseAllZero(secret), "byte \(index)")
+        }
     }
 
     func testRecordNameIs26Base32CharactersAndBindsZoneKindAndID() {
