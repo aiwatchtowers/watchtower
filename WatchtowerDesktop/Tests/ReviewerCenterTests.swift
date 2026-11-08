@@ -24,7 +24,8 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
         toolMode: ChatToolMode?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath, model: model,
-               provider: provider, toolMode: toolMode, readFolder: nil, ownerInstructions: false)
+               provider: provider, toolMode: toolMode, readFolder: nil, ownerInstructions: false,
+               purpose: nil, readFolderAskID: nil)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -37,7 +38,9 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        ownerInstructions: Bool
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         lock.withLock {
             _folders.append(readFolder)
