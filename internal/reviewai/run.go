@@ -11,6 +11,7 @@ import (
 	"log"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,9 +47,13 @@ const CancelledText = "The overview was stopped."
 
 // Owner texts of the failures without a chapter title.
 const (
-	tooLargeText     = "No chapter has a diff the AI can read: its files are binary or past the diff's size limit."
+	tooLargeText     = "No chapter has a diff the AI can read: its files lie past the diff's size limit."
 	missingPartsText = "Some chapters have no description yet; run the overview to describe them first."
 	summaryTitle     = "the summary"
+	overviewTitle    = "the overview" // the one full call: every chapter at once
+	// skippableSummary is the assembled summary of a diff of only "Can
+	// skip" files: nothing to describe, no call.
+	skippableSummary = "Only files that can be skipped changed."
 )
 
 // RunError is a failed chapter, summary or run: its class, the owner's
@@ -159,12 +164,17 @@ type run struct {
 	notes  []db.ReviewNote
 	root   context.Context // the caller's: done = cancelled
 	hashes map[string]string
+	// ceiling is how long the chapter calls have, all together (the run's
+	// ceiling less the summary's budget): what a timeout names when the
+	// ceiling, not the call's own budget, cut a call.
+	ceiling time.Duration
 
 	mu       sync.Mutex
 	descs    map[string]ChapterDesc // described: cached, ok and not shown
 	failures map[string]*RunError   // key → its failure
 	sum      *Summary               // from the one full call
 	sumErr   *RunError
+	fullErr  *RunError // the one full call's failure, named "the overview"
 }
 
 // Run makes the AI overview of map m over diff d (tech spec §3.1–§3.3):
@@ -201,6 +211,9 @@ func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d 
 	}
 	units, single := planUnits(m, d)
 	if len(units) == 0 {
+		if onlySkippable(m) {
+			return r.assembleSkippable(), nil
+		}
 		return Overview{}, &RunError{Class: ClassTooLarge, Text: tooLargeText}
 	}
 	todo, err := r.plan(units, single)
@@ -219,6 +232,9 @@ func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d 
 		return Overview{}, &RunError{Class: ClassCancelled, Text: CancelledText}
 	}
 	if r.described() == 0 {
+		if r.fullErr != nil { // one call for every chapter: its failure is the overview's
+			return Overview{}, r.fullErr
+		}
 		return Overview{}, r.firstFailure()
 	}
 	sum, rerr := r.summary(ctx, batches, full)
@@ -338,7 +354,8 @@ func (r *run) describe(batches []Batch, full bool) {
 		return
 	}
 	summary := r.p.summaryLimit()
-	ctx, cancel := context.WithTimeout(r.root, runCeiling(batches, r.p.budgetFor, summary)-summary)
+	r.ceiling = runCeiling(batches, r.p.budgetFor, summary) - summary
+	ctx, cancel := context.WithTimeout(r.root, r.ceiling)
 	defer cancel()
 	next := make(chan int)
 	var wg sync.WaitGroup
@@ -372,6 +389,9 @@ func (r *run) callBatch(ctx context.Context, i, n int, b Batch, full bool) {
 	class := ""
 	if err != nil {
 		class = r.classify(callCtx, err)
+		if class == ClassTimeout {
+			budget = timeoutBudget(ctx, budget, r.ceiling)
+		}
 		fmt.Fprintf(r.opt.Stderr, "review overview: batch %d of %d: %s\n", i+1, n, logredact.Full(err))
 		log.Printf("reviewai: overview batch %d of %d: %s (%d chapters, %d described)", i+1, n, class, len(b.Chapters), len(descs))
 	}
@@ -396,7 +416,20 @@ func (r *run) callBatch(ctx context.Context, i, n int, b Batch, full bool) {
 		} else {
 			r.sumErr = failure(class, summaryTitle, budget, err)
 		}
+		if err != nil {
+			r.fullErr = failure(class, overviewTitle, budget, err)
+		}
 	}
+}
+
+// timeoutBudget is the budget a timed-out call names: the run's ceiling
+// when its context (ceilingCtx) is done — the ceiling cut the call — else
+// the call's own.
+func timeoutBudget(ceilingCtx context.Context, call, ceiling time.Duration) time.Duration {
+	if ceilingCtx.Err() != nil {
+		return ceiling
+	}
+	return call
 }
 
 // keep writes desc as chapter key's part row and records it.
@@ -444,15 +477,17 @@ func (r *run) classify(callCtx context.Context, err error) string {
 func failure(class, title string, budget time.Duration, cause error) *RunError {
 	e := &RunError{Class: class, Detail: logredact.Full(cause)}
 	named := "“" + title + "”"
-	if title == summaryTitle {
+	if title == summaryTitle || title == overviewTitle {
 		named = title
 	}
-	switch class {
-	case ClassTimeout:
+	switch {
+	case class == ClassTimeout && title == overviewTitle:
+		e.Text = fmt.Sprintf("The overview did not finish in %d min.", int(math.Ceil(budget.Minutes())))
+	case class == ClassTimeout:
 		e.Text = fmt.Sprintf("The overview of %s did not finish in %d min.", named, int(math.Ceil(budget.Minutes())))
-	case ClassParse:
+	case class == ClassParse:
 		e.Text = fmt.Sprintf("The AI answer for %s could not be read.", named)
-	case ClassCancelled:
+	case class == ClassCancelled:
 		e.Text = CancelledText
 	default:
 		e.Class = ClassProvider
@@ -515,6 +550,28 @@ func (r *run) summary(ctx context.Context, batches []Batch, full bool) (Summary,
 		return Summary{}, failure(class, summaryTitle, budget, err)
 	}
 	return sum, nil
+}
+
+// onlySkippable: the map's only chapter is "collapsed" — every changed
+// file can be skipped.
+func onlySkippable(m reviewmap.Map) bool {
+	return len(m.Chapters) > 0 && !slices.ContainsFunc(m.Chapters, func(ch reviewmap.Chapter) bool { return ch.Key != collapsedKey })
+}
+
+// assembleSkippable assembles, without a call, the overview of a diff of
+// only "Can skip" files: a fixed summary and every intent item not_found
+// (nothing describes it). The finish gate passes an overview whose every
+// chapter is "collapsed" (tech spec §4), so a lock-file-only change never
+// leaves it refusing.
+func (r *run) assembleSkippable() Overview {
+	cov := make([]Coverage, 0, len(r.intent))
+	for i, it := range r.intent {
+		cov = append(cov, Coverage{Index: i + 1, Item: clipRunes(strings.TrimSpace(it.Text), maxOverviewFields),
+			Status: "not_found", Where: []string{}, Source: it.source()})
+	}
+	sum := Summary{Summary: skippableSummary, Coverage: cov, OutOfScope: []string{}}
+	r.opt.Emit(Event{Event: "summary", State: StateOK, Summary: &sum})
+	return r.assemble(sum)
 }
 
 // assemble builds the overview from the summary and the map's chapters and
