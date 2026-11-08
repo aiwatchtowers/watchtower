@@ -7,6 +7,8 @@ When a branch merges many lanes or touches hundreds of files, Branch review spli
 You start on the risky part within seconds instead of waiting for one long AI call. One chapter that keeps failing never leaves you without the rest, or without a summary.
 
 ## How it works
+
+### Chapters at once, danger first
 <!-- learn
 id: big-branch-review-chapters
 title: Read a big branch danger first
@@ -17,8 +19,6 @@ kind: feature
 since: next
 action: nav:projects
 -->
-
-### Chapters at once, danger first
 
 Opening Branch review builds the chapters without AI: by the lanes and tickets merged into the branch, split by package inside a large lane, by package when there are no lanes. Each file and chapter gets a danger level from what it touches: migrations, removed public API, deleted tests, dependencies and CI, auth and tokens.
 
