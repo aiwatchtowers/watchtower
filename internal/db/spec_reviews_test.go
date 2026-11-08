@@ -247,6 +247,33 @@ func TestQueueSpecReview_LoopStart(t *testing.T) {
 	assert.Empty(t, got.LoopEnd)
 }
 
+func TestQueueSpecReview_StoresLoopRules(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: 1, LoopRules: 2})
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.LoopRules)
+
+	// A nil loop keeps the stored rules; a loop start overwrites them.
+	queueSpecLoop(t, d, askID, now.Add(time.Minute), nil)
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.LoopRules)
+	queueSpecLoop(t, d, askID, now.Add(2*time.Minute), &SpecLoopStart{Round: 2})
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, got.LoopRules)
+
+	// A plain review row (no loop) reads the default 0.
+	plain := newReviewAsk(t, d)
+	queueSpecLoop(t, d, plain, now, nil)
+	got, err = d.GetSpecReview(plain)
+	require.NoError(t, err)
+	assert.Equal(t, 0, got.LoopRules)
+}
+
 func TestQueueSpecReview_NilKeepsLoop(t *testing.T) {
 	d := openTestDB(t)
 	askID := newReviewAsk(t, d)

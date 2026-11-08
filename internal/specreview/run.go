@@ -166,7 +166,7 @@ func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out
 	if err != nil {
 		return err
 	}
-	o := NextRound(row.Round, prevOpen, prevLedger, replies, res)
+	o := NextRound(row.Round, row.LoopRules, prevOpen, prevLedger, replies, res)
 	if out.OpenItems, err = encodeList(o.Open); err != nil {
 		return err
 	}

@@ -31,12 +31,17 @@ type SpecReview struct {
 	// Author loop (00160). The JSON columns are written by the loop code.
 	Loop, Replies, OpenItems, Ledger, LoopEnd string
 	Round                                     int
+	// LoopRules is the rules the author loop runs under (00174):
+	// 0 = the rules of 2026-10-26, 2 = specreview.LoopRulesOpen.
+	LoopRules int
 }
 
 // SpecLoopStart starts (or advances) an author loop when queueing a review.
 type SpecLoopStart struct {
 	Round   int
 	Replies string
+	// LoopRules is stored in spec_reviews.loop_rules.
+	LoopRules int
 }
 
 // SpecLoopRow is one open author-loop review for the sweep.
@@ -64,13 +69,13 @@ func specReviewTime(t time.Time) string { return t.UTC().Format(automationTimeLa
 func ParseSpecReviewTime(s string) (time.Time, error) { return time.Parse(automationTimeLayout, s) }
 
 const specReviewCols = `ask_id, status, reason, result, provider, model, doc_sha, dropped, pid, attempt,
-	queued_at, started_at, finished_at, loop, round, replies, open_items, ledger, loop_end, findings`
+	queued_at, started_at, finished_at, loop, round, replies, open_items, ledger, loop_end, findings, loop_rules`
 
 func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 	var r SpecReview
 	if err := row.Scan(&r.AskID, &r.Status, &r.Reason, &r.Result, &r.Provider, &r.Model, &r.DocSHA,
 		&r.Dropped, &r.PID, &r.Attempt, &r.QueuedAt, &r.StartedAt, &r.FinishedAt,
-		&r.Loop, &r.Round, &r.Replies, &r.OpenItems, &r.Ledger, &r.LoopEnd, &r.Findings); err != nil {
+		&r.Loop, &r.Round, &r.Replies, &r.OpenItems, &r.Ledger, &r.LoopEnd, &r.Findings, &r.LoopRules); err != nil {
 		return nil, fmt.Errorf("scanning spec review: %w", err)
 	}
 	return &r, nil
@@ -79,7 +84,7 @@ func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 // QueueSpecReview upserts the ask's review to queued inside the caller's
 // transaction: result, reason and pid are cleared, marks are kept and attempt
 // grows by one. A nil loop keeps every loop column; a non-nil loop sets
-// loop='author', round and replies and clears open_items, ledger and loop_end.
+// loop='author', round, replies and loop_rules and clears open_items, ledger and loop_end.
 func (db *DB) QueueSpecReview(tx *sql.Tx, askID int64, now time.Time, loop *SpecLoopStart) error {
 	const base = `INSERT INTO spec_reviews (ask_id, status, attempt, queued_at%s)
 		VALUES (?, 'queued', 1, ?%s)
@@ -90,9 +95,9 @@ func (db *DB) QueueSpecReview(tx *sql.Tx, askID int64, now time.Time, loop *Spec
 	if loop == nil {
 		_, err = tx.Exec(fmt.Sprintf(base, "", "", ""), askID, specReviewTime(now))
 	} else {
-		_, err = tx.Exec(fmt.Sprintf(base, ", loop, round, replies", ", 'author', ?, ?",
-			", loop = 'author', round = excluded.round, replies = excluded.replies, open_items = '', ledger = '', loop_end = ''"),
-			askID, specReviewTime(now), loop.Round, loop.Replies)
+		_, err = tx.Exec(fmt.Sprintf(base, ", loop, round, replies, loop_rules", ", 'author', ?, ?, ?",
+			", loop = 'author', round = excluded.round, replies = excluded.replies, loop_rules = excluded.loop_rules, open_items = '', ledger = '', loop_end = ''"),
+			askID, specReviewTime(now), loop.Round, loop.Replies, loop.LoopRules)
 	}
 	if err != nil {
 		return fmt.Errorf("queueing spec review: %w", err)
