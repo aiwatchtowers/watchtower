@@ -372,6 +372,10 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         second.finish()
         await h.settle()
         XCTAssertEqual(h.model.chapterStates["dir:pkg/sub"], .notStarted)
+        XCTAssertEqual(h.model.summaryState, .cached, "the last summary stands; no summary-only Retry Go would refuse")
+        let progress = ReviewMapPresentation.progress(keys: h.model.describableKeys, states: h.model.chapterStates,
+                                                      summary: h.model.summaryState, waiting: nil)
+        XCTAssertEqual(progress?.remaining, 1, "Describe 1 remaining is offered")
         h.model.describeRemaining()
         let third = try await process(h, 2)
         XCTAssertEqual(third.args.last, "--chapter=dir:pkg/sub")

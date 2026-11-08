@@ -1476,12 +1476,21 @@ final class ReviewChangesModel {
     /// The run's chapters and summary it did not answer: failed with `text`,
     /// or not started when there is none. A chapter of a map that arrived
     /// with the run (Go rebuilt it: a stale key) and no state yet is not
-    /// started, so Describe N remaining offers it.
+    /// started, so Describe N remaining offers it. A summary the run did not
+    /// answer while a chapter is still undescribed is not failed — its own
+    /// Retry (`--summary`) would be refused by Go (`missing_parts`): it stays
+    /// the last overview's (cached), else not started, so the chapters' Retry
+    /// and Describe N remaining lead.
     private func settleFailed(_ finished: OverviewRun, text: String?, detail: String?) {
         let end: ChapterRunState = text.map { .failed(text: $0, detail: detail) } ?? .notStarted
         for (key, state) in chapterStates where Self.unsettled(state) { chapterStates[key] = end }
         for key in describableKeys where chapterStates[key] == nil { chapterStates[key] = .notStarted }
-        if Self.unsettled(summaryState) { summaryState = end }
+        guard Self.unsettled(summaryState) else { return }
+        if everyChapterDescribed {
+            summaryState = end
+        } else {
+            summaryState = lastReadyOverview?.summary.isEmpty == false ? .cached : .notStarted
+        }
     }
 
     /// No overview yet, the summary failed or is being redone after a
