@@ -352,12 +352,13 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 			Key: "ck:0123456789ab", Chapter: "ch:1", Lens: "promises", Question: "Does every promise have a task?",
 			Answer: "concern", Note: "Expiry has none.", Severity: "major",
 		}},
-		Resolved: []Resolved{{CommentQuote: "name the retention period", Status: "resolved", Note: "Now stated."}},
-		Verdicts: []Verdict{{Key: "bs:0123456789ab", Verdict: "disputed", Note: "The threads are still not named."}},
-		Chapters: []Chapter{{Key: "ch:0", Heading: "Intro", Start: 0, End: 40}, {Key: "ch:1", Heading: "Behaviour", Start: 40, End: 200}},
-		Notes:    []string{"The conversation was trimmed to the last 50 entries."},
-		CodeRead: true,
-		Dropped:  2,
+		Resolved:  []Resolved{{CommentQuote: "name the retention period", Status: "resolved", Note: "Now stated."}},
+		Verdicts:  []Verdict{{Key: "bs:0123456789ab", Verdict: "disputed", Note: "The threads are still not named."}},
+		Chapters:  []Chapter{{Key: "ch:0", Heading: "Intro", Start: 0, End: 40}, {Key: "ch:1", Heading: "Behaviour", Start: 40, End: 200}},
+		Notes:     []string{"The conversation was trimmed to the last 50 entries."},
+		CodeRead:  true,
+		Dropped:   2,
+		DroppedBy: map[string]int{DropUnchangedText: 1, DropMinorLate: 1},
 	}
 	got, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {

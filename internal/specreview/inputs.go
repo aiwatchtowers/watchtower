@@ -67,6 +67,17 @@ type inputs struct {
 	// block.
 	answered     []db.OwnerAsk
 	answeredRead bool
+	// refAt is when each conversation entry was said, each ask answered
+	// and each comment written, by ref; a ref with no known time is absent.
+	refAt map[string]time.Time
+}
+
+// stamp records when ref's source was written (an RFC 3339 time from the
+// database); a time that does not parse is left out.
+func (in *inputs) stamp(ref, at string) {
+	if t, err := time.Parse(time.RFC3339, at); err == nil {
+		in.refAt[ref] = t
+	}
 }
 
 // answeredAsks is the workbench's answered and delivered asks (no
@@ -125,7 +136,7 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 		Doc: ask.DocSnapshot, Folder: folder,
 		Conversation: map[string]string{}, Asks: map[string]string{}, Comments: map[string]string{},
 		OwnerWords: map[string][]string{},
-	}}
+	}, refAt: map[string]time.Time{}}
 	t := DocType(ask.DocType)
 
 	var root *os.Root
@@ -160,6 +171,9 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 		in.planSpec(root, ask.DocSnapshot, target)
 	}
 	if err := in.previous(d.DB, ask); err != nil {
+		return Sources{}, "", nil, err
+	}
+	if err := in.setLoopRound(d.DB, ask); err != nil {
 		return Sources{}, "", nil, err
 	}
 	if err := in.closed(d.DB, ask); err != nil {
@@ -275,6 +289,9 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 	}
 	for i := first; i < len(items); i++ {
 		in.src.Conversation[refs[i]] = texts[i]
+		if at := byRef[refs[i]].At; !at.IsZero() {
+			in.refAt[refs[i]] = at
+		}
 		if e := byRef[refs[i]]; e.Kind == sessionfeed.KindOwner {
 			in.src.OwnerWords[refs[i]] = []string{texts[i]}
 		} else if e.Kind == sessionfeed.KindAskAnswer {
@@ -336,6 +353,7 @@ func (in *inputs) asks(d *db.DB, ask *db.OwnerAsk) error {
 		ref := "ask:" + strconv.FormatInt(a.ID, 10)
 		in.src.Asks[ref] = text
 		in.src.OwnerWords[ref] = ownerAnswerWords(answer)
+		in.stamp(ref, a.AnsweredAt)
 		fmt.Fprintf(&b, "[%s] %s %q answered %s\n%s", ref, a.Kind, oneLineText(a.Title), a.AnsweredAt, indentLines(text, blockIndent))
 	}
 	if b.Len() > 0 {
@@ -442,6 +460,7 @@ func (in *inputs) comments(d *db.DB, ask *db.OwnerAsk) error {
 	for _, c := range list {
 		ref := "comment:" + strconv.FormatInt(c.ID, 10)
 		in.src.Comments[ref] = c.Body
+		in.stamp(ref, c.CreatedAt)
 		if c.Author == "owner" {
 			in.src.OwnerWords[ref] = []string{c.Body}
 		}
@@ -496,7 +515,9 @@ func firstPath(s string) string {
 
 // previous renders a re-round's previous document, the previous findings
 // (an author loop's round 2+: the open items with the author's replies) and
-// the owner's comments on it (PrevComments, what resolved[] may quote).
+// the owner's comments on it (PrevComments, what resolved[] may quote). It
+// sets the drift guards' baseline: PrevDoc, and NewRefs, the sources written
+// after the previous ask was filed.
 func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	if !ask.PreviousAskID.Valid {
 		return nil
@@ -515,6 +536,15 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 		in.note("the previous round's document was trimmed to %d characters", maxPrevDocRunes)
 	}
 	in.add("previous_round ask:"+strconv.FormatInt(prev.ID, 10), doc)
+	in.src.PrevDoc = doc
+	if since, err := time.Parse(time.RFC3339, prev.CreatedAt); err == nil {
+		in.src.NewRefs = map[string]bool{}
+		for ref, at := range in.refAt {
+			if at.After(since) {
+				in.src.NewRefs[ref] = true
+			}
+		}
+	}
 	loop, err := loopRound(d, ask.ID)
 	if err != nil {
 		return err
@@ -565,6 +595,23 @@ func (in *inputs) closed(d *db.DB, ask *db.OwnerAsk) error {
 	}
 	if b.Len() > 0 {
 		in.add("closed_items", b.String())
+	}
+	return nil
+}
+
+// setLoopRound sets LoopRound: the round of the ask's review row when that row
+// is in an author loop under LoopRulesOpen, else 0 (a loop under the legacy
+// rules keeps the Parse it started with: no drift guards).
+func (in *inputs) setLoopRound(d *db.DB, ask *db.OwnerAsk) error {
+	row, err := d.GetSpecReview(ask.ID)
+	if errors.Is(err, db.ErrSpecReviewNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if row.Loop == "author" && row.LoopRules >= LoopRulesOpen {
+		in.src.LoopRound = row.Round
 	}
 	return nil
 }

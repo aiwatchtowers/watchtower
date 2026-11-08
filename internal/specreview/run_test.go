@@ -402,9 +402,10 @@ func loopRound2(t *testing.T, f *fixture, prevLedger []LedgerEntry) (first, seco
 }
 
 // loopReply2 resolves the fixed blind spot, disputes the disagreed decision,
-// disputes the "fixed" check (it stays open) and raises one new blind spot.
+// disputes the "fixed" check (it stays open) and raises one new blind spot,
+// a blocker with no anchor: the only kind the round-2 drift guard lets in.
 const loopReply2 = `{"summary":"Round two.","agreements":[],"decided_alone":[],"checks":[],"resolved":[],
-  "blind_spots":[{"text":"Expiry after a restart","why":"the timer is in memory","where":null}],
+  "blind_spots":[{"text":"Expiry after a restart","why":"the timer is in memory","where":null,"severity":"blocker"}],
   "verdicts":[
     {"key":"bs:aaaaaaaaaaaa","verdict":"resolved","note":"named now"},
     {"key":"da:bbbbbbbbbbbb","verdict":"disputed","note":"still nobody agreed it"},
