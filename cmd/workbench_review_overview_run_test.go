@@ -395,3 +395,19 @@ func TestWorkbenchReviewOverview_SessionFormKeysTheFinishGate(t *testing.T) {
 	again := reviewJSON(t, wb, "overview", "--session", itoa(s), "--cached-only")
 	assert.Equal(t, true, again["overview_cached"], again)
 }
+
+// The envelope stops the ticks before it is written: it is the stream's
+// last line (tech spec §3.5).
+func TestWorkbenchReviewOverview_EnvelopeStopsTheTicks(t *testing.T) {
+	old := reviewStreamTicker
+	stopped := false
+	reviewStreamTicker = func(time.Duration) (<-chan time.Time, func()) {
+		return make(chan time.Time), func() { stopped = true }
+	}
+	t.Cleanup(func() { reviewStreamTicker = old; activeOverviewStream = nil })
+	var out strings.Builder
+	activeOverviewStream = startOverviewStream(&out)
+	require.NoError(t, writeStreamEnvelope(&out, reviewEnvelope{OK: true}))
+	assert.True(t, stopped, "the ticker still ran when the envelope was written")
+	assert.Equal(t, "{\"ok\":true}\n", out.String())
+}

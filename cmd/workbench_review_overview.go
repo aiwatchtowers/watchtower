@@ -367,7 +367,8 @@ func (s *overviewStream) write(p []byte) {
 }
 
 // activeOverviewStream is the running command's stream: writeReview writes
-// the envelope through it, so no tick lands inside the envelope's line.
+// the envelope through it after stopping the ticks, so no tick lands inside
+// or after the envelope's line.
 var activeOverviewStream *overviewStream
 
 // writeStreamEnvelope writes env as the stream's last line: one compact
@@ -379,6 +380,7 @@ func writeStreamEnvelope(w io.Writer, env reviewEnvelope) error {
 	}
 	b = append(b, '\n')
 	if s := activeOverviewStream; s != nil {
+		s.stop() // no tick after the last line
 		s.write(b)
 		return nil
 	}
