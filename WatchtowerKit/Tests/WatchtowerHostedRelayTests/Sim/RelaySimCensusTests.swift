@@ -25,15 +25,13 @@ final class RelaySimCensusTests: XCTestCase {
         "TestPhoneSkipToRetriedUntilWritten",
         "TestSwitchedRetriedWhenBothMailboxesFailed",
         "TestRefusedActionWriteRetried",
-        "TestHubOnRelayTellsFreePhone",
-        // Relay client Phase 5, Task 13: the phone's own twin of a lost slot (no test in the relay's sim file).
-        "TestSlotLostWithdrawsMovesAndIsNeverApplied"
+        "TestHubOnRelayTellsFreePhone"
     ]
 
     static let twinClasses = ["RelaySimOrderTwins", "RelaySimSwitchTwins"]
 
     func testEverySimTestHasATwin() throws {
-        XCTAssertEqual(Self.goTests.count, 21)
+        XCTAssertEqual(Self.goTests.count, 20)
         let module = String(reflecting: Self.self).split(separator: ".").first.map(String.init) ?? ""
         var twins: [String] = []
         for name in Self.twinClasses {

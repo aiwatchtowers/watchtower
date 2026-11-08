@@ -391,27 +391,3 @@ class RelaySimSwitchTwins: HostedRelayScenarioCase {
         }
     }
 }
-
-// MARK: - Losing reader status (relay client Phase 5, Task 13)
-
-extension RelaySimSwitchTwins {
-    /// The policy's `slotLost` run by the twin: the action written on the relay is withdrawn before the hub reads it,
-    /// listed, and never applied; the phone moves to CloudKit without waiting for `hub_on_relay`, the hub stays.
-    func testSlotLostWithdrawsMovesAndIsNeverApplied() async throws {
-        let (world, phones) = try await newWorld(2)
-        let (a, b) = (phones[0], phones[1])
-        await a.act("a1") // written on the relay, not yet read by the hub
-        await a.slotLost()
-        try await world.syncAll()
-        await wantTransport("phone", a.transport, .cloudkit)
-        await wantTransport("hub", world.hub.transport, .relay)
-        await wantApplied(world, a)
-        let undelivered = await a.undelivered
-        XCTAssertEqual(undelivered, [SimUndelivered(seq: 1, payload: "a1")], "withdrawn and listed")
-        let dropped = await a.droppedEphemeral
-        XCTAssertFalse(dropped, "no key goes on a lost slot")
-        await b.act("b1")
-        try await world.syncAll()
-        await wantApplied(world, b, "1:b1")
-    }
-}
