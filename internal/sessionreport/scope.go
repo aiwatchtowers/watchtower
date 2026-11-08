@@ -37,6 +37,9 @@ func (e *boardEntry) counted() bool { return e.target.Status != "dismissed" }
 type board struct {
 	byID  map[int64]*boardEntry
 	order []int64
+	// walks counts leavesUnder calls; tests read it to pin how often a
+	// report walks a subtree (board #1016).
+	walks int
 }
 
 func loadBoard(d *db.DB, workbenchID int64) (*board, error) {
@@ -77,6 +80,7 @@ func (b *board) walk(id int64, fn func(*boardEntry)) {
 // leavesUnder is the counted leaves of target id's whole subtree (id itself
 // when it is a leaf), in board order.
 func (b *board) leavesUnder(id int64) []*boardEntry {
+	b.walks++
 	var out []*boardEntry
 	b.walk(id, func(e *boardEntry) {
 		if e.leaf() && e.counted() {

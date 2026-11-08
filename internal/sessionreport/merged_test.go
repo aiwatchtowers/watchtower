@@ -386,9 +386,9 @@ func TestRefresh_MergedBranchWithNewWorkReadsOpen(t *testing.T) {
 }
 
 // Board #1016: a group of 1000 sibling leaves is walked once, not once per
-// leaf, and every key is checked in a set — the refs come back in board
-// order, one per not-done leaf, in well under the seconds the per-leaf walk
-// with a list scan took.
+// leaf (counted, so the memo is pinned without a clock), and every key is
+// checked in a set — the refs come back in board order, one per not-done
+// leaf, in well under the seconds the per-leaf walk with a list scan took.
 func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
 	d := db.OpenTestDB(t)
 	runSQL(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
@@ -412,10 +412,12 @@ func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
 		strings.Join(rows, ", "))
 	_, sc, err := loadScope(context.Background(), d, 1, 1)
 	require.NoError(t, err)
+	before := sc.b.walks
 	start := time.Now()
 	got := sc.mergeRefs()
 	elapsed := time.Since(start)
 	assert.Equal(t, want, got)
+	assert.Equal(t, 1, sc.b.walks-before, "the shared parent is walked once, not once per leaf")
 	assert.Less(t, elapsed, time.Second, "1000 siblings took %v", elapsed)
 }
 
