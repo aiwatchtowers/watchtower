@@ -2869,6 +2869,15 @@ at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 UNIQUE (round_id, hunk_id)
 )
 
+table	review_reviewer_threads
+CREATE TABLE review_reviewer_threads (
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+branch TEXT NOT NULL CHECK (branch != ''),
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (project_id, branch)
+)
+
 table	review_rounds
 CREATE TABLE review_rounds (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3696,6 +3705,12 @@ INSERT INTO media_items (kind, parent_kind, parent_key, target_image_id, locator
 media_type, size_bytes, scope, from_owner, content_at)
 VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
 NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END
+
+trigger	review_reviewer_threads_ad
+CREATE TRIGGER review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
+BEGIN
+DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
 END
 
 trigger	targets_board_column_check_ai
@@ -6051,6 +6066,12 @@ GROUP BY up.ancestor
 4	header	TEXT	notnull=1	dflt=NULL	pk=0
 5	patch	TEXT	notnull=1	dflt=NULL	pk=0
 6	at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_reviewer_threads
+0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	branch	TEXT	notnull=1	dflt=NULL	pk=2
+2	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## review_rounds
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

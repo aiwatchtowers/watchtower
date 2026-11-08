@@ -90,6 +90,7 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 - [Worktrees and cleanup](worktrees-and-cleanup.md): own worktree per session, cleaning up after a session.
 - [Reviewing a spec or plan](spec-review.md): the independent reviewer for specs and plans.
 - [Branch review](diff-review.md): guided review of a session's changes.
+- [Branch reviewer](branch-reviewer.md): an independent, read-only reviewer to question about a branch.
 - [Methodology](methodology.md): the workflow file and **Agent Settings…**.
 - [Your instructions](instructions.md): standing directions every agent follows, and suggestions from what you repeat.
 - [Codex](codex.md): using Codex as the agent.

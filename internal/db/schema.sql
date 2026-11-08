@@ -3290,6 +3290,22 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   decided_at         TEXT
 );
 
+-- The independent reviewer's thread per branch of a workbench (00175, Desktop writer).
+-- branch = the round's branch, else the folder's checked-out branch; a detached HEAD
+-- keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
+-- 'review_reviewer', deleted with its thread row.
+CREATE TABLE IF NOT EXISTS review_reviewer_threads (
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  branch          TEXT NOT NULL CHECK (branch != ''),
+  conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, branch)
+);
+CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
+BEGIN
+  DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
+END;
+
 -- Permission prompts a Claude Code PermissionRequest hook waits on, answered from the phone
 -- or the Mac (00130). summary is what the owner approves (clipped to 2000 chars); no tool_input.
 CREATE TABLE IF NOT EXISTS permission_requests (

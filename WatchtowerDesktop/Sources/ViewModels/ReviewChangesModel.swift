@@ -887,11 +887,22 @@ final class ReviewChangesModel {
         }
     }
 
+    /// Adds a design comment to the open round. The write refuses a round
+    /// sent since it was loaded (`roundClosed`); once the comment is written
+    /// a failed reload is shown in `lastError` and not thrown, so a caller
+    /// never retries — and duplicates — a comment that is already there.
     func addDesignComment(body: String, lens: String = "") async throws {
         try await run {
             let info = try openRound()
-            try await write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
-            try reloadComments()
+            try await writeInOpenRound { db in
+                try ReviewQueries.requireOpenRound(db, roundID: info.id)
+                _ = try Self.addDesign(db, info: info, body: body, lens: lens)
+            }
+            do {
+                try reloadComments()
+            } catch {
+                lastError = Self.message(error)
+            }
         }
     }
 

@@ -330,6 +330,16 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
             },
+            // The reviewer beside the diff (#1025, mockup frame 5).
+            DesignShot(name: "branch-review-reviewer", size: NSSize(width: 1280, height: 800)) {
+                ReviewerShotFixtures.reviewer()
+            },
+            DesignShot(name: "branch-review-reviewer-author", size: NSSize(width: 1280, height: 800)) {
+                ReviewerShotFixtures.author()
+            },
+            DesignShot(name: "branch-review-reviewer-no-round", size: NSSize(width: 1280, height: 800)) {
+                ReviewerShotFixtures.noRound()
+            },
             // Spec review in the review ask drawer (spec 2026-10-25 §7).
             DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
                 SpecReviewShotFixtures.screen(.meaning)
@@ -470,6 +480,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        ReviewerShotFixtures.cleanUp()
         SpecReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
         OneInboxShotFixtures.cleanUp()

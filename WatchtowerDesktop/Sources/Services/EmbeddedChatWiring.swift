@@ -75,9 +75,11 @@ final class EmbeddedChatEngineFactory {
                                         draftMirror: spec.persistence == .memory ? nil : draftMirror,
                                         provider: Constants.aiProviderID())
         // A workbench code question never leaves its Questions tab (spec
-        // 2026-10-02 §9.4): a knowledge prefix typed there saves nothing.
-        // Remember still applies, as in every chat with the owner's instructions.
-        let savesKnowledge = spec.key.contextType != CodeQuestionList.contextType
+        // 2026-10-02 §9.4), nor does Branch review's reviewer thread, which
+        // quotes the folder's code the same way (board #1025): a knowledge
+        // prefix typed there saves nothing. Remember still applies, as in
+        // every chat with the owner's instructions.
+        let savesKnowledge = ![CodeQuestionList.contextType, ReviewerSurface.contextType].contains(spec.key.contextType)
         engine.onOwnerMessageStored = { [weak remember] text, conversationID, messageID in
             remember?.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID,
                                          savesKnowledge: savesKnowledge)
