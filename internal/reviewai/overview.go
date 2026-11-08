@@ -91,7 +91,7 @@ func IntentHash(items []IntentItem, notes []db.ReviewNote) string {
 		Why                string
 	}
 	var session, lanes []item
-	if items != nil {
+	if items != nil { // nil stays "null", as before: cached hashes still match
 		session = make([]item, 0, len(items))
 	}
 	for _, it := range items {
