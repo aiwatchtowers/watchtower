@@ -116,3 +116,25 @@ func readPointer(path string) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// CommonDir is the common git dir of the repository gitDir belongs to: the
+// path gitDir's "commondir" file names (a relative path is taken from
+// gitDir) — a linked work tree's — else gitDir itself, a main work tree's. A
+// "commondir" file that cannot be read or names nothing is an error.
+func CommonDir(gitDir string) (string, error) {
+	b, err := readPointer(filepath.Join(gitDir, "commondir"))
+	if errors.Is(err, os.ErrNotExist) {
+		return gitDir, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	common := strings.TrimSpace(string(b))
+	if common == "" {
+		return "", fmt.Errorf("%s names no common dir", filepath.Join(gitDir, "commondir"))
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitDir, common)
+	}
+	return filepath.Clean(common), nil
+}

@@ -101,3 +101,26 @@ func TestHeadBranch(t *testing.T) {
 	}
 	assert.Empty(t, HeadBranch(tempDir(t)), "no HEAD file")
 }
+
+func TestCommonDir(t *testing.T) {
+	main := filepath.Join(tempDir(t), "acme", ".git")
+	require.NoError(t, os.MkdirAll(main, 0o755))
+	admin := filepath.Join(main, "worktrees", "wt")
+	writeFile(t, filepath.Join(admin, "commondir"), "../..\n")
+	absAdmin := filepath.Join(main, "worktrees", "abs")
+	writeFile(t, filepath.Join(absAdmin, "commondir"), main+"\n")
+	empty := filepath.Join(main, "worktrees", "empty")
+	writeFile(t, filepath.Join(empty, "commondir"), "\n")
+
+	got, err := CommonDir(main)
+	require.NoError(t, err)
+	assert.Equal(t, main, got, "a main work tree's git dir is its own common dir")
+	got, err = CommonDir(admin)
+	require.NoError(t, err)
+	assert.Equal(t, main, got, "a relative commondir is taken from the git dir")
+	got, err = CommonDir(absAdmin)
+	require.NoError(t, err)
+	assert.Equal(t, main, got)
+	_, err = CommonDir(empty)
+	assert.Error(t, err, "an empty commondir fails closed")
+}

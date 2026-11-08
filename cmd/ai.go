@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/gitdir"
 	"watchtower/internal/instructions"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
@@ -582,8 +583,10 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 type readFolderConfigurable interface{ SetReadFolder(dir string) }
 
 // resolveReadFolder resolves --read-folder to the folder of a workbench in
-// the database at dbPath: absolute, symlinks resolved, an existing directory
-// bound to a workbench (a subfolder is not). "" without the flag. Any
+// the database at dbPath, or to one of its registered session worktrees
+// (owner, ask #560): absolute, symlinks resolved, an existing directory
+// bound to a workbench or recorded as a session worktree root (a subfolder
+// of either is not). "" without the flag. Any
 // refusal is a usage error (exit 2), as is combining it with --tools: a
 // read-folder run mounts no write tool.
 func resolveReadFolder(dbPath string) (string, error) {
@@ -610,13 +613,70 @@ func resolveReadFolder(dbPath string) (string, error) {
 	}
 	defer func() { _ = database.Close() }()
 	wb, err := database.WorkbenchByFolder(resolved)
-	if err != nil {
-		if errors.Is(err, db.ErrWorkbenchNotFound) {
-			return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
-		}
+	if err == nil {
+		return wb.FolderPath, nil
+	}
+	if !errors.Is(err, db.ErrWorkbenchNotFound) {
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
-	return wb.FolderPath, nil
+	ok, err := isRegisteredSessionWorktree(database, resolved)
+	if err != nil {
+		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
+	}
+	if !ok {
+		return "", usageError("--read-folder %s: not a workbench folder or one of its session worktrees", aiFlagReadFolder)
+	}
+	return resolved, nil
+}
+
+// isRegisteredSessionWorktree reports whether dir (absolute, symlinks
+// resolved) is, exactly, a worktree root a session of some workbench
+// recorded in terminal_session_worktrees and a work tree of that
+// workbench folder's own repository (the same common git dir). A root a
+// session recorded in another repository — its agent cd'd there — is not
+// the workbench's. Owner, ask #560; spec 2026-10-02 §9.1 amendment.
+func isRegisteredSessionWorktree(database *db.DB, dir string) (bool, error) {
+	workbenches, err := database.ListWorkbenches()
+	if err != nil {
+		return false, err
+	}
+	ctx := context.Background()
+	for _, wb := range workbenches {
+		roots, err := database.WorkbenchSessionWorktrees(ctx, wb.ID)
+		if err != nil {
+			return false, err
+		}
+		if _, ok := roots[dir]; ok && sameRepository(dir, wb.FolderPath) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sameRepository reports whether root — a work tree root holding its own
+// ".git" — and the work tree holding folder share one common git dir. Any
+// unreadable or missing git entry is false (fail closed).
+func sameRepository(root, folder string) bool {
+	rootGit, found, err := gitdir.GitDirAt(root)
+	if err != nil || !found {
+		return false
+	}
+	_, folderGit, found, err := gitdir.FindWorkTree(folder)
+	if err != nil || !found {
+		return false
+	}
+	a, errA := realCommonDir(rootGit)
+	b, errB := realCommonDir(folderGit)
+	return errA == nil && errB == nil && a == b
+}
+
+// realCommonDir is gitDir's common git dir with symlinks resolved.
+func realCommonDir(gitDir string) (string, error) {
+	common, err := gitdir.CommonDir(gitDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(common)
 }
 
 // mcpConfigurable is implemented by the CLI-backed providers (claude, codex)
