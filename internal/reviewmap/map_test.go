@@ -335,7 +335,7 @@ func ExampleBuild() {
 // empty attribution gives an empty list, never null.
 func TestMap_LanesOutsideChapters(t *testing.T) {
 	m := Build(Input{
-		Diff: reviewdiff.Diff{Files: []reviewdiff.File{file("pay/pay.go", 3), file("login/auth.go", 2)}},
+		Diff:          reviewdiff.Diff{Files: []reviewdiff.File{file("pay/pay.go", 3), file("login/auth.go", 2)}},
 		AgentChapters: []db.ReviewNote{{Kind: "chapter", Text: "Payments", Paths: []string{"pay/pay.go"}}},
 		Attribution: Attribution{
 			FileLane: map[string]string{"pay/pay.go": "task-b", "login/auth.go": "ABC-1-login"},
