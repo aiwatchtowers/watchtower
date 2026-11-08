@@ -63,9 +63,17 @@ public final class PhoneKeyProvider: SecureKeyProvider, @unchecked Sendable {
 
     public func relayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
         guard deviceID == self.deviceID else { throw SecureTransportError.wrongRole }
-        let link = try link()
-        if let pair = try link.storedRelayKeys(epoch: epoch) { return SymmetricKey(data: pair.key(direction)) }
         let cacheKey = "\(direction.rawValue)/\(epoch)"
+        let link: HubLinkKeys
+        do {
+            link = try self.link()
+        } catch KeyStoreError.locked {
+            // While locked, a static key derived earlier still opens (a background wake on a locked phone). The rule
+            // is read from the Keychain whenever it can be, so a cached static key never shadows a stored pair.
+            if let cached = lock.withLock({ relayKeys[cacheKey] }) { return cached }
+            throw KeyStoreError.locked
+        }
+        if let pair = try link.storedRelayKeys(epoch: epoch) { return SymmetricKey(data: pair.key(direction)) }
         if let cached = lock.withLock({ relayKeys[cacheKey] }) { return cached }
         let identity = try store.identity()
         let key = try KeyDerivation.relayKey(

@@ -45,24 +45,42 @@ public struct EpochKeys: Codable, Equatable, Sendable {
     /// This epoch's `wt/relay/v2/` relay keys, derived from the keybox's `relay_kx` (relay client Phase 5); nil
     /// means the static `wt/relay/v1/` keys. Kept and dropped with the epoch; absent in an item from an older build.
     public var relayKeys: EpochRelayKeys?
+    /// When a static keybox first covered this epoch on a link with ephemeral state (the hub keys an epoch at
+    /// rotation and never again after a clear): no pair is ever derived for it after that, so an older keyed keybox
+    /// read late cannot bring a cleared pair back. Kept and dropped with the epoch, so at most `maxEpochs` marks.
+    /// nil (absent) otherwise.
+    public var relayKeysClearedAt: Date?
 
-    public init(epoch: UInt32, dataKey: Data, alertKey: Data, supersededAt: Date? = nil, relayKeys: EpochRelayKeys? = nil) {
+    public init(
+        epoch: UInt32,
+        dataKey: Data,
+        alertKey: Data,
+        supersededAt: Date? = nil,
+        relayKeys: EpochRelayKeys? = nil,
+        relayKeysClearedAt: Date? = nil
+    ) {
         self.epoch = epoch
         self.dataKey = dataKey
         self.alertKey = alertKey
         self.supersededAt = supersededAt
         self.relayKeys = relayKeys
+        self.relayKeysClearedAt = relayKeysClearedAt
     }
 }
 
-/// One epoch's stored ephemeral relay keys, one per direction, 32 bytes each.
+/// One epoch's stored ephemeral relay keys, one per direction, 32 bytes each, with the two non-secret publics of
+/// the keybox's `relay_kx` they were derived from: a keybox naming another pair for the same epoch is refused.
 public struct EpochRelayKeys: Codable, Equatable, Sendable {
     public let p2h: Data
     public let h2p: Data
+    public let hubPub: Data
+    public let devicePub: Data
 
-    public init(p2h: Data, h2p: Data) {
+    public init(p2h: Data, h2p: Data, hubPub: Data, devicePub: Data) {
         self.p2h = p2h
         self.h2p = h2p
+        self.hubPub = hubPub
+        self.devicePub = devicePub
     }
 
     public func key(_ direction: RelayDirection) -> Data {
@@ -200,7 +218,8 @@ public protocol PhoneKeyStore: Sendable {
     func saveHubLink(_ keys: HubLinkKeys) throws
     /// Reads `hubID`'s link, applies `change` and saves the result as `saveHubLink` does, all under the store's
     /// lock, so concurrent writers lose nothing. Returns the stored link; nil, with `change` never called and
-    /// nothing written, when there is no link (an unlink is never undone). `change` must not call the store.
+    /// nothing written, when there is no link (an unlink is never undone). `change` may read the identity on the
+    /// same thread (the Keychain store's lock is recursive) but must not write to the store.
     func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys?
     func removeHubLink(_ hubID: String) throws
     /// afterFirstUnlock copy of the hub's public signing key: the replica verifies signatures while locked.

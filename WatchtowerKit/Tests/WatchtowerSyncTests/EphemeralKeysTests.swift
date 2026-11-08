@@ -68,7 +68,8 @@ final class EphemeralKeysTests: XCTestCase {
                 linkNonce: TestE2E.linkNonce, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, epoch: epoch,
                 direction: direction))
         }
-        return EpochRelayKeys(p2h: try key(.phoneToHub), h2p: try key(.hubToPhone))
+        return EpochRelayKeys(
+            p2h: try key(.phoneToHub), h2p: try key(.hubToPhone), hubPub: hubEph.publicKey.rawRepresentation, devicePub: devicePub)
     }
 
     private func staticKey(_ direction: RelayDirection, epoch: UInt32) throws -> Data {
@@ -79,11 +80,14 @@ final class EphemeralKeysTests: XCTestCase {
     }
 
     private func pair(_ seed: UInt8) -> EpochRelayKeys {
-        EpochRelayKeys(p2h: Data(repeating: seed, count: 32), h2p: Data(repeating: seed &+ 1, count: 32))
+        EpochRelayKeys(
+            p2h: Data(repeating: seed, count: 32), h2p: Data(repeating: seed &+ 1, count: 32),
+            hubPub: Data(repeating: seed &+ 2, count: 32), devicePub: Data(repeating: seed &+ 3, count: 32))
     }
 
-    private func encoded(_ keys: HubLinkKeys) throws -> String {
-        try XCTUnwrap(String(bytes: try JSONEncoder().encode(keys), encoding: .utf8))
+    /// The item as the Keychain would hold it, decoded back: what is erased is checked field by field.
+    private func roundTripped(_ keys: HubLinkKeys) throws -> HubLinkKeys {
+        try JSONDecoder().decode(HubLinkKeys.self, from: try JSONEncoder().encode(keys))
     }
 
     private func provider(_ keys: HubLinkKeys) throws -> (PhoneKeyProvider, InMemoryPhoneKeyStore) {
@@ -112,8 +116,10 @@ final class EphemeralKeysTests: XCTestCase {
         XCTAssertEqual(merged.currentKX, offered, "the offer the keybox named is promoted")
         XCTAssertNil(merged.offeredKX)
         XCTAssertFalse(result.droppedNewestPair)
-        let item = try encoded(merged)
-        XCTAssertFalse(item.contains(current.privateKey.base64EncodedString()), "the older private key is erased")
+        let item = try roundTripped(merged)
+        XCTAssertNotEqual(item.currentKX, current)
+        XCTAssertFalse(
+            [item.currentKX, item.offeredKX].contains { $0?.privateKey == current.privateKey }, "the older private key is erased")
     }
 
     func testMergeDerivesThePreviousEpochTooWhenMissing() throws {
@@ -235,6 +241,81 @@ final class EphemeralKeysTests: XCTestCase {
         XCTAssertEqual(read.epochs.last?.relayKeys, try hubPair(hubEph, offered.publicKey, epoch: 2))
     }
 
+    /// F17, a restored hub sidecar: the keybox names another pair for an epoch that already holds one. Refused,
+    /// the link kept, never mixed (new data keys beside the old pair).
+    func testAKeyboxNamingAnotherPairForAHeldEpochIsRefused() throws {
+        let current = EphemeralKey.generate()
+        let hubEph = Curve25519.KeyAgreement.PrivateKey()
+        let held = try hubPair(hubEph, current.publicKey, epoch: 5)
+        let before = link(epochs: [epoch(5, pair: held)], current: current)
+        // The same pair again is a no-op.
+        XCTAssertEqual(try merge(before, box(5, relayKX: kx(hubEph, current.publicKey))).keys, before)
+        // Another hub ephemeral, even to a key the phone still holds, is refused.
+        XCTAssertThrowsError(try merge(before, box(5, relayKX: kx(.init(), current.publicKey)))) {
+            XCTAssertEqual($0 as? KeyboxKeysError, .unknownEphemeral)
+        }
+        let store = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
+        try store.saveHubLink(before)
+        let restored = box(5, relayKX: kx(.init(), EphemeralKey.generate().publicKey))
+        XCTAssertThrowsError(try store.updateHubLink(hubID) { keys in try self.merge(keys, restored).keys })
+        XCTAssertEqual(try store.hubLink(hubID), before, "link kept, nothing wiped")
+    }
+
+    /// After the hub cleared this phone, an older keyed keybox read late never brings the pair back, and the offer
+    /// does not flap.
+    func testAnOldKeyedKeyboxAfterAStaticOneDoesNotFlipFlop() throws {
+        let offered = EphemeralKey.generate()
+        let hubEph = Curve25519.KeyAgreement.PrivateKey()
+        let keyed = box(2, relayKX: kx(hubEph, offered.publicKey), previous: 1)
+        let cleared = box(2, previous: 1)
+        let first = try merge(link(epochs: [epoch(1)], offered: offered), keyed)
+        XCTAssertNotNil(first.keys.epochs.last?.relayKeys)
+        let dropped = try merge(first.keys, cleared)
+        XCTAssertTrue(dropped.droppedNewestPair)
+        let stale = try merge(dropped.keys, keyed)
+        XCTAssertNil(stale.keys.epochs.last?.relayKeys, "a cleared epoch stays static")
+        XCTAssertFalse(stale.droppedNewestPair)
+        let again = try merge(stale.keys, cleared)
+        XCTAssertFalse(again.droppedNewestPair, "the offer goes out again once, not on every read")
+        XCTAssertEqual(again.keys, stale.keys)
+    }
+
+    /// The same, when the static keybox is read first: the epoch is marked on a link with ephemeral state.
+    func testAStaticKeyboxReadFirstMarksTheEpoch() throws {
+        let offered = EphemeralKey.generate()
+        let staticFirst = try merge(link(epochs: [epoch(1)], offered: offered), box(2, previous: 1))
+        let keyed = try merge(staticFirst.keys, box(2, relayKX: kx(.init(), offered.publicKey), previous: 1))
+        XCTAssertNil(keyed.keys.epochs.last?.relayKeys)
+        // A link with no ephemeral state gets no marks: its item encodes as before.
+        let plain = try merge(link(epochs: [epoch(1)]), box(2, previous: 1))
+        XCTAssertTrue(plain.keys.epochs.allSatisfy { $0.relayKeysClearedAt == nil })
+    }
+
+    func testALowOrderHubEphemeralLeavesTheEpochUnmerged() throws {
+        let offered = EphemeralKey.generate()
+        let before = link(epochs: [epoch(1)], offered: offered)
+        let store = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
+        try store.saveHubLink(before)
+        let lowOrder = KeyboxRelayKX(hubPub: b64(Data(count: 32)), devicePub: b64(offered.publicKey))
+        XCTAssertThrowsError(try store.updateHubLink(hubID) { keys in try self.merge(keys, self.box(2, relayKX: lowOrder)).keys }) {
+            // CryptoKit refuses a low-order point itself; the all-zero fold is the backstop. Either way it throws.
+            XCTAssertTrue($0 is CryptoKitError || ($0 as? E2EError) == .allZeroSharedSecret, "\($0)")
+        }
+        XCTAssertEqual(try store.hubLink(hubID), before, "neither derived nor static: refused")
+    }
+
+    func testTheUpdateClosureMayReadTheIdentity() throws {
+        let store = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
+        let offered = EphemeralKey.generate()
+        try store.saveHubLink(link(epochs: [epoch(1)], offered: offered))
+        let stored = try store.updateHubLink(hubID) { keys in
+            try keys.merging(
+                self.box(2, relayKX: self.kx(.init(), offered.publicKey)), identity: try store.identity(),
+                hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, now: self.now).keys
+        }
+        XCTAssertEqual(stored?.currentKX, offered)
+    }
+
     // MARK: - Offer, clear, drop
 
     func testWithOfferDrawsOnceAndIsANoOpWhenOneExists() throws {
@@ -328,6 +409,19 @@ final class EphemeralKeysTests: XCTestCase {
             return copy
         }
         XCTAssertEqual(raw(try phone.relayKey(.hubToPhone, deviceID: TestE2E.deviceID, epoch: 1)), pair(7).h2p)
+    }
+
+    func testAWarmProviderOpensStaticRelayKeysWhileLocked() throws {
+        let (phone, store) = try provider(link(epochs: [epoch(1)]))
+        let warm = try phone.relayKey(.hubToPhone, deviceID: TestE2E.deviceID, epoch: 1)
+        store.isLocked = true
+        XCTAssertEqual(raw(try phone.relayKey(.hubToPhone, deviceID: TestE2E.deviceID, epoch: 1)), raw(warm))
+        // Nothing cached for this one: the lock surfaces as `.locked`, never as an absent key.
+        XCTAssertThrowsError(try phone.relayKey(.phoneToHub, deviceID: TestE2E.deviceID, epoch: 1)) {
+            XCTAssertEqual($0 as? KeyStoreError, .locked)
+        }
+        store.isLocked = false
+        XCTAssertEqual(raw(try phone.relayKey(.hubToPhone, deviceID: TestE2E.deviceID, epoch: 1)), try staticKey(.hubToPhone, epoch: 1))
     }
 
     // MARK: - Keybox recipients
