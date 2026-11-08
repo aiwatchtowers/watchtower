@@ -18,8 +18,8 @@ Also, the buttons on a card do not depend on what the card is: an **As agreed** 
 - D2 (ask #571, "all fine, go"): the guards against drift are: a new finding only on changed text (or a blocker, as today); from round 3 a new finding must be major or blocker; a finding that was closed (fixed, skipped by the owner, lost in a dispute) never comes back; every finding quotes its source; and an emergency ceiling as a fuse, shown to the owner when it trips.
 - D3 (asks #566, #568): a finding card gets a thread — **Discuss** — with an agent that has the reviewer's context and reads the code; the owner asked "who helps more?", and the answer agreed is a third agent, not the one-shot reviewer and not the author.
 - D4 (conversation): that thread agent can ask the author in the session itself to clarify, without the owner relaying.
-- D5 (conversation): the card's buttons depend on its kind; **As agreed** has nothing to fix — it gets **Discuss** and **Not useful** only.
-- D6 (conversation): new findings can come up while the owner talks with the agent in a thread; the agent can add them as new items.
+- D5 (conversation): the card's buttons depend on its kind; **As agreed** has nothing to fix — it gets **Discuss** and **Not useful** only. The per-kind table of §2 (including **Comment** folding into **Discuss**) was shown in the conversation and answered "fits".
+- D6 (conversation): new findings can come up while the owner talks with the agent in a thread; the agents can add them as new items. *(My call on top: the agent proposes, and the item is added by the owner's one press, so a thread cannot fill the list on its own — §3.)*
 - D7 (ask #579): a short summary is the first screen of the review: 3–5 lines of what is built and why, then 5–10 theses, each tied to its section of the document and open to **Discuss** with the same agent; it lives inside the review, not as a separate document.
 - D8 (asks #582, #586): after the owner answers with changes, the author's next round goes through the hidden reviewer ↔ author loop again, and the owner sees the document after it, with only what is disputed.
 
@@ -60,12 +60,12 @@ The per-round `AuthorTimeout` (30 min) and every other exit (`reviewer_failed`, 
 
 **Guards against drift** (all in Go, on top of the prompt; a prompt rule alone is not enough):
 
-1. *Changed text only:* from round 2 a new finding must have its where-quote inside text changed since the previous round's document snapshot, or be a blocker. Today this is a prompt rule only (`review.spec`); this spec moves it into `Parse`: diff the previous round's `DocSnapshot` against this one and drop a non-blocker new finding whose where-quote lies wholly in unchanged text (counted as "on unchanged text"). A new finding with no where-quote (a missing agreement, a blind spot) is held to the blocker rule from round 2 *(my call)*.
+1. *Changed text only:* from round 2 a new finding must have its where-quote inside text changed since the previous round's document snapshot, or be a blocker. Today this is a prompt rule only (`review.spec`); this spec moves it into `Parse`: diff the previous round's `DocSnapshot` against this one and drop a non-blocker new finding whose where-quote lies wholly in unchanged text (counted as "on unchanged text"). A new finding with no where-quote (a missing agreement, a blind spot) passes from round 2 only when it quotes a source that is new since the previous round (an owner answer, a thread line, a new ask) or is a blocker *(my call: an old source that produced no finding before is not news)*.
 2. *Rising floor:* from round 3 a new finding below `major` — including one with no severity *(my call: empty counts as minor)* — is dropped by `Parse` and counted in `dropped` with the reason "minor finding after round 2". Carried items keep the severity they were raised with.
 3. *Closed stays closed:* the loop keeps a closed list — keys resolved after `fixed`, keys the owner skipped (§2), keys the owner settled for the author in a dispute, and keys dismissed in a thread. The reviewer's prompt carries it as "already decided, do not raise", and `Parse` drops a new finding whose key is on the list, or whose where-quote and kind match a closed item's (a reworded repeat), counted as "already decided".
 4. *Quotes* (exists, SPECREVIEW-03): a finding whose quote is not in its source is dropped.
 
-Rounds for the rising floor are counted along the whole review chain of one document (the asks linked by `previous_ask_id`), so a new loop after the owner's answer does not reset the floor; the closed list is carried along the chain too. The fuse counts the rounds of one loop *(my calls)*.
+The rising floor and the fuse count the rounds of one loop: a new loop after the owner's answer (below) starts again at round 1, so text the author rewrites for the owner can draw minor findings in its first two rounds. What carries along the whole review chain of one document (the asks linked by `previous_ask_id`) is the closed list and the changed-text baseline (the previous round's snapshot) *(my calls)*.
 
 **A new loop after the owner's answer (D8).** Today, once the owner has the review (`loop = 'owner'`), the author's re-round is a classic visible review. Instead, when the owner answers **Request changes** (`changes`), the author's next round (`previous_ask_id` = the answered ask) starts a new hidden loop:
 
@@ -105,25 +105,27 @@ The same conditions as today decide whether a loop can start at all (a spec or p
 
 The author answers with a new workbench MCP tool, `answer_review_question` (`question_id`, `answer` ≤ 2000 runes), on the workbench surface only. It writes the answer row; it is refused for a question that is not open or not of this session. If the session is gone or the author does not answer within 30 minutes *(my call, the same as `AuthorTimeout`)*, the thread gets a line "The author did not answer" and the agent continues without it. At most one open question per thread at a time *(my call: keeps the terminal quiet)*.
 
-Questions are stored in a new table (ask, item key, question, answer, state `open|answered|expired|gone`, times) written by Go for the tool and by the Desktop for the question — the builder decides which side writes which row, with the database contracts of `CLAUDE.md`. The delivered line and the tool are added to the skill pack (the author must know the tool) and to DEV-06's tool list.
+Questions are stored in a new table (ask, item key, question, answer, state `open|answered|expired|gone`, times) with **Go as its only writer** *(my call)*: the Desktop files a question through a CLI verb (`watchtower workbench spec-review question --ask N --item K` with the text on stdin; prints the id), the tool writes the answer, the daemon sweep writes `expired`/`gone`. Every state change is a conditional update from `open` (`WHERE state = 'open'`), so an answer and an expiry cannot both land; the loser gets "the question is closed". The Desktop only reads the table (poll while a thread has an open question). The delivered line and the tool are added to the skill pack (the author must know the tool) and to DEV-06's tool list.
 
-**Proposing a new finding.** When the conversation surfaces something the review missed, the agent may end a reply with a second structured block: kind (`differs` / `missing` / `decided_alone` / `blind_spot`), severity, a one-line title, the text, and a quote — from the document or from the owner's own words in this thread — plus the where-quote in the document when it has one. The Desktop validates the quotes the same way `Parse` does (whitespace-normalised substring of its source; the owner's thread words count as `owner` speaker) and drops the block with a visible "not added: quote not found" otherwise. A valid block shows as a card in the thread with **Add to review**; nothing is added without that press. An added finding:
+**Proposing a new finding.** When the conversation surfaces something the review missed, the agent may end a reply with a second structured block: kind (`differs` / `missing` / `decided_alone` / `blind_spot`), severity, a one-line title, the text, and a quote — from the document or from the owner's own words in this thread — plus the where-quote in the document when it has one. The block shows as a card in the thread with **Add to review**; nothing is added without that press. The press calls a Go CLI verb (`watchtower workbench spec-review add-finding --ask N --thread …` with the block on stdin) that validates the quotes with `Parse`'s own code (whitespace-normalised substring of the document snapshot or of the owner's rows of that thread, read from the database; the owner's thread words are `owner` speaker) and writes the row, or refuses with "not added: quote not found", shown on the card. One implementation of quote checking, in Go *(my call)*. An added finding:
 
 - appears in its chapter (or Other) with the chip **From discussion**, with the usual buttons;
-- is stored by the Desktop in a new table beside `spec_review_marks` (ask, key with a distinct prefix, the finding JSON, the thread it came from) so a reviewer re-run cannot erase it;
+- is stored by Go (the verb above) in a new table beside `spec_review_marks` (ask, key with a distinct prefix, the finding JSON, the thread it came from) so a reviewer re-run cannot erase it; Go is its only writer, the Desktop reads it;
 - goes to the author like any reviewer finding: in the owner's answer when marked Fix, and into the next round's open items when the loop runs again (Go reads the table when it builds the next round).
 
 **Ending a thread.** The thread does not need an ending; the card's buttons do the deciding:
 
-- **Fix** on a card with a thread offers the comment field pre-filled with the agent's conclusion *(my call: the agent is asked for a one-paragraph conclusion as a hidden turn when Fix is pressed; the owner edits or clears it)*; the comment goes out as today's comment mark.
+- **Fix** on a card with a thread offers the comment field pre-filled with the agent's conclusion *(my call: the agent is asked for a one-paragraph conclusion as a hidden turn when Fix is pressed; the owner edits or clears it)*; the comment goes out as today's comment mark. The Fix mark is written at once and the comment field opens empty; the conclusion fills it when it arrives, unless the owner has typed meanwhile. If that turn fails or waits behind the 3-turn gate for more than 30 s, the field stays as it is with a small "Couldn't draft a conclusion" line; nothing blocks Fix.
 - **Skip** on a card with a thread asks for nothing extra; the key goes on the closed list.
 - When the agent concludes the finding does not hold, it says so; the owner presses **Skip** or **Not useful**. The agent never sets a mark itself.
 
-**Thread across rounds.** A thread is keyed by the item key along the review chain (§1), not by one ask: a re-round's card with the same key shows the earlier thread and continues it *(my call)*. Threads are deleted with the last ask of the chain.
+**Thread across rounds.** A thread is keyed by the item key along the review chain (§1), not by one ask: a re-round's card with the same key shows the earlier thread and continues it *(my call)*. A thread is deleted when no ask of its chain is left (asks are deleted with their workbench).
 
 **Who runs what.** The daemon's spec-review sweep expires open author questions (30 min → `expired`, session gone → `gone`), so it happens with the Desktop closed. The agent's follow-up turn on an answer needs the Desktop: a running Desktop starts it when the answer lands; otherwise it starts when the thread is next opened *(my call)*.
 
-**Limits.** Thread turns count against the embedded-chat gate (3 at once). Each turn is recorded in the LLM usage ledger under a new purpose, `spec_review.discuss`. A thread is available once the owner sees the review (visible ask); during a hidden loop there is nothing to open. A thread on an orphaned finding (gone after a re-run) stays readable under "from the previous run" but takes no new turns.
+**Failures.** A thread turn that fails shows the embedded chat's error card with Retry (as every embedded chat); a turn waiting for the gate shows as queued. A question to the author that cannot be delivered (no session) is `gone` at once and the thread says so.
+
+**Limits.** Thread turns count against the embedded-chat gate (3 at once). Each turn is recorded in the LLM usage ledger under a new purpose, `spec_review.discuss`. A thread is available once the owner sees the review (a visible ask, including one opened early with **Show Now**); during a hidden loop the owner sees no findings, so there is nothing to open. A thread on an orphaned finding (gone after a re-run) stays readable under "from the previous run" but takes no new turns.
 
 ### 4. The summary — the first screen
 
@@ -140,7 +142,8 @@ Unchanged: the phone's one-line status. The line's "round R of 3" wording, if an
 ## Compatibility
 
 - Rows and asks created before this ships keep their behaviour (a loop already running finishes under the old cap of 3) *(my call: no backfill, as with the author loop)*.
-- An older Desktop reading a newer result ignores `brief`/`theses` and the new mark state (it already skips unknown states).
+- An older Desktop reading a newer result ignores `brief`/`theses`, and threads' findings in the new table (it does not read it). It does not know `loop_end = stalled`: it shows the review as ended early, without an end line — acceptable for the release window.
+- The new Desktop gains an end line for `stalled` ("The reviewer and the author stopped making progress: these are still open") and the `cap` line drops its hard-coded "3 rounds" for the real count. The phone's line carries counts only and needs no change.
 - New tables and columns follow `CLAUDE.md`'s migration rules (schema.sql, `TestAllTablesExist`, the Swift test schema).
 
 ## Contract changes the builder must take to the owner
@@ -151,8 +154,8 @@ Unchanged: the phone's one-line status. The line's "round R of 3" wording, if an
 
 ## Left to the builder
 
-- Exact layout of the thread inside a card, the folded-card line and the summary; build from the design kit and the style guide, with `make desktop-shots` before review.
+- Exact layout of the thread inside a card, the folded-card line, the proposed-finding card and the summary; build from the design kit and the style guide. No mockups were made in the brainstorm, so the plan's first Desktop task is **screens first**: every new state (summary, open thread, question to the author pending/answered/expired, proposed finding valid/refused, the `stalled` and `cap` lines, the per-kind buttons) rendered on fixtures with `make desktop-shots` and sent to the owner as a review ask before the logic is wired *(my call)*.
 - The fenced block names and JSON shapes for "ask the author" and "propose a finding", and their prompt text (shared fixture between Go and Swift if Go reads them).
-- How the Desktop stores the thread (existing `chat_messages` via the database store, or its own key scheme) as long as it survives restarts and is deleted with the ask.
+- How the Desktop stores the thread (existing `chat_messages` via the database store, or its own key scheme) as long as it survives restarts and follows the deletion rule of §3.
 - Prompt wording for the reviewer's rising floor, closed list and summary.
 - Exact tuning of the fuse (around 8).
