@@ -31,7 +31,7 @@ struct ReviewOverviewView<Extra: View>: View {
                 if style == .compact { extra() }
             }
         case .loading:
-            if style == .full, !ReviewRunCard.describableKeys(model).isEmpty {
+            if style == .full, !model.describableKeys.isEmpty {
                 // The streamed run: how far it is, chapter by chapter (board #1025).
                 ReviewRunCard(model: model, framed: false)
             } else {
@@ -45,7 +45,7 @@ struct ReviewOverviewView<Extra: View>: View {
         case let .ready(overview):
             if case let .failed(text, detail) = model.summaryState {
                 // The summary failed, the chapters stay (mockup frame 2c): its own Retry.
-                ReviewFailureNotice(text: text, lines: summaryFailedLines, detail: detail) { model.retrySummary() }
+                ReviewFailureNotice(text: text, lines: [model.summaryFailedLine, ReviewMapPresentation.summaryRetryNote], detail: detail) { model.retrySummary() }
                 if style == .compact { extra() }
             } else {
                 switch style {
@@ -88,13 +88,6 @@ struct ReviewOverviewView<Extra: View>: View {
                 extra()
             }
         }
-    }
-
-    private var summaryFailedLines: [String] {
-        let keys = ReviewRunCard.describableKeys(model)
-        let described = keys.filter { model.chapterStates[$0] == .ok || model.chapterStates[$0] == .cached }.count
-        return [ReviewMapPresentation.summaryFailedLine(described: described, total: keys.count),
-                ReviewMapPresentation.summaryRetryNote]
     }
 
     private func full(_ overview: ReviewOverview) -> some View {

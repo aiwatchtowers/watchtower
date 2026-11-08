@@ -78,7 +78,7 @@ struct ReviewRunCard: View {
             ReviewFailureNotice(text: text, detail: detail) { model.retryOverview() }
                 .modifier(RunCardFrame(framed: framed))
         } else if case let .failed(text, detail) = model.summaryState {
-            ReviewFailureNotice(text: text, lines: [summaryLine], detail: detail) { model.retrySummary() }
+            ReviewFailureNotice(text: text, lines: [model.summaryFailedLine], detail: detail) { model.retrySummary() }
                 .modifier(RunCardFrame(framed: framed))
         } else if let progress {
             VStack(alignment: .leading, spacing: Spacing.small) {
@@ -102,22 +102,9 @@ struct ReviewRunCard: View {
         }
     }
 
-    private var keys: [String] { Self.describableKeys(model) }
-
     private var progress: ReviewMapPresentation.Progress? {
-        ReviewMapPresentation.progress(keys: keys, states: model.chapterStates, summary: model.summaryState,
-                                       waiting: model.waitingText)
-    }
-
-    private var summaryLine: String {
-        let described = keys.filter { model.chapterStates[$0] == .ok || model.chapterStates[$0] == .cached }.count
-        return ReviewMapPresentation.summaryFailedLine(described: described, total: keys.count)
-    }
-
-    /// The map's chapters the overview describes (Can skip excluded).
-    static func describableKeys(_ model: ReviewChangesModel) -> [String] {
-        guard case .ready(let map) = model.map else { return [] }
-        return map.chapters.filter { !$0.isCollapsed }.map(\.key)
+        ReviewMapPresentation.progress(keys: model.describableKeys, states: model.chapterStates,
+                                       summary: model.summaryState, waiting: model.waitingText)
     }
 }
 

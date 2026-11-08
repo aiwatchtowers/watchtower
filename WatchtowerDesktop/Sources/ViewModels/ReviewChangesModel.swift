@@ -1068,9 +1068,16 @@ final class ReviewChangesModel {
     }
 
     /// Chapters the overview describes: every chapter but "Can skip".
-    private var describableKeys: [String] {
+    var describableKeys: [String] {
         guard case .ready(let ready) = map else { return [] }
         return ready.chapters.filter { !$0.isCollapsed }.map(\.key)
+    }
+
+    /// The summary's failure line (mockup frame 2c): how many chapters it can be remade from.
+    var summaryFailedLine: String {
+        let keys = describableKeys
+        let described = keys.filter { chapterStates[$0] == .ok || chapterStates[$0] == .cached }.count
+        return ReviewMapPresentation.summaryFailedLine(described: described, total: keys.count)
     }
 
     /// Drops the overview, its states and the run (a new round, an empty diff).
