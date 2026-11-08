@@ -318,10 +318,12 @@ final class TerminalCenter {
     }
 
     /// The live agent sessions (`claude` or `codex`) — the ones whose
-    /// workbench hooks report a state.
+    /// workbench hooks report a state, and a live run of a kind this build
+    /// does not know (a newer version's, adopted from the host: it may be an
+    /// agent, so placement and the branch guard count it, A7b).
     var liveAgentIDs: Set<Int64> {
         let live = liveIDs
-        return Set(rows.values.filter { $0.kind.isAgent && live.contains($0.id) }.map(\.id))
+        return Set(rows.values.filter { $0.kind.mayRunAgent && live.contains($0.id) }.map(\.id))
     }
 
     /// The live agent rows of `projectID`, as they were started.
@@ -375,7 +377,9 @@ final class TerminalCenter {
         }
         let live = liveIDs
         return rows.values.contains { row in
-            guard row.kind.isAgent, live.contains(row.id) else { return false }
+            // A kind this build does not know may be an agent: a newer
+            // version's run adopted from the host counts (A7b).
+            guard row.kind.mayRunAgent, live.contains(row.id) else { return false }
             guard row.projectID == workbenchID else { return inWorkTree(row.folderPath) }
             return Self.placeMayBeIn(place(row.id), mainFolder: row.folderPath, root: root, inWorkTree: inWorkTree)
         }

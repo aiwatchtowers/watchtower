@@ -139,6 +139,38 @@ final class TerminalCenterReattachTests: XCTestCase {
         hosted.detachFromHost()
     }
 
+    /// A7b: a run a newer version left in the shared host for a kind this
+    /// build does not know is adopted (never stopped) and counts as a live
+    /// agent for the branch switch's guard (PROJ-10): it may be an agent.
+    func testAnAdoptedRunOfAnUnknownKindCountsAsALiveAgent() async throws {
+        let folder = FileManager.default.temporaryDirectory.path
+        let row = try await pool.write { db -> TerminalSession in
+            let projectID = try TestDatabase.insertWorkbench(db, name: "acme", folder: folder)
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            try db.execute(
+                sql: """
+                INSERT INTO terminal_sessions (project_id, kind, title, title_source, folder_path, created_at, last_active_at)
+                VALUES (?, 'gemini', 'Newer', 'auto', ?, '2026-11-08T10:00:00Z', '2026-11-08T10:00:00Z')
+                """,
+                arguments: [projectID, folder]
+            )
+            try db.execute(sql: "PRAGMA ignore_check_constraints = OFF")
+            return try XCTUnwrap(TerminalSessionQueries.fetchForWorkbench(db, projectID: projectID).first)
+        }
+        XCTAssertEqual(row.kind, .unsupported("gemini"))
+        control.listed = [SessionHostSessionInfo(row: row.id, run: "run-g", pid: 5151, startedAtMs: 1_760_000_000_000,
+                                                 exited: false, code: nil)]
+
+        await vm.reattachHostedSessions()
+
+        XCTAssertEqual(center.states[row.id], .running, "the run is the newer version's work: never stopped")
+        XCTAssertTrue(signals.isEmpty)
+        XCTAssertTrue(center.hasLiveAgentSession(workbenchID: try XCTUnwrap(row.projectID), workTree: "/tmp/elsewhere"))
+        let hosted = try XCTUnwrap(center.process(for: row.id) as? HostedTerminalSession)
+        await hosted.connecting?.value
+        hosted.detachFromHost()
+    }
+
     /// The launch order: the reattach waits for the host connection begun
     /// before it, and an `activate` meanwhile waits for the reattach.
     func testStartHostReattachWaitsForTheConnection() async throws {

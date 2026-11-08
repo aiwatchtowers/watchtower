@@ -57,6 +57,13 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
         /// A kind this build does not know: the row is shown, never started.
         package var isUnsupported: Bool { unsupportedMessage != nil }
 
+        /// A live run of this kind may be a coding agent: an agent kind, or
+        /// a kind this build does not know (a newer version's run adopted
+        /// from the session host). The safety checks that hold off while an
+        /// agent works (the branch switch's guard, session placement) count
+        /// it; everything that runs or reads an agent asks `agent`.
+        package var mayRunAgent: Bool { isAgent || isUnsupported }
+
         /// What the row, the session pane and the Workchat say for a kind
         /// this build does not know; nil for every known kind.
         package var unsupportedMessage: String? {
