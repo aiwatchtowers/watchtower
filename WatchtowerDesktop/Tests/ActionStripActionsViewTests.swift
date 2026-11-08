@@ -99,8 +99,12 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertFalse(vm.actionRows.isEmpty, "fixture must produce a non-empty strip")
         let sut = view(vm, rows: await dictionaryRows(pool), feature: .off)
 
-        XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self), "no inline sheet among real cards")
-        XCTAssertThrowsError(try sut.inspect().find(button: "Enable Reaction Commands"))
+        // The negative finds walk only the list and reading pane (the split's
+        // second column): the folder menu holds no cheat sheet, and walking
+        // it on every miss made this test take minutes.
+        let inbox = try sut.inspect().hSplitView().vStack(1)
+        XCTAssertThrowsError(try inbox.find(ReactionCheatSheetView.self), "no inline sheet among real cards")
+        XCTAssertThrowsError(try inbox.find(button: "Enable Reaction Commands"))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
     }
 
