@@ -519,6 +519,21 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["inbox", "approvals", "changed", "--ref", "reminder:\(id)"]])
     }
 
+    /// The fire runs after the press settles: the CLI process never holds the row busy.
+    func testReminderFireDoesNotHoldTheRowBusy() async throws {
+        let id = try insertReminder()
+        let runner = FakeCLIRunner()
+        let vm = await strip(runner)
+        let busyDuringFire = LockedFlag()
+        runner.onRun = { [weak vm] _ in
+            let busy = await MainActor.run { vm?.isWriting(.reminder(id)) ?? true }
+            busyDuringFire.set(busy)
+        }
+        await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertEqual(busyDuringFire.value, false)
+    }
+
     func testReminderFireNotRunAfterFailure() async throws {
         let id = try insertReminder()
         try failUpdates(on: "reminders")
@@ -555,4 +570,12 @@ private actor Gate {
         waiters.forEach { $0.resume() }
         waiters = []
     }
+}
+
+/// A flag `FakeCLIRunner.onRun` sets off the main actor.
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Bool?
+    var value: Bool? { lock.withLock { stored } }
+    func set(_ flag: Bool) { lock.withLock { stored = flag } }
 }
