@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -244,28 +247,163 @@ func (job *overviewJob) load(ctx context.Context, session int64) error {
 }
 
 // answerReviewOverview answers the assembled overview cached for the job's
-// tree, base and intent, or — unless --cached-only — runs the model. A
-// --chapter or --summary run always runs; --continue answers a cached
-// overview that is complete.
+// tree, base and intent, or — unless --cached-only — runs the model under
+// the branch's run lock (tech spec §3.7). A streamed run that waited for
+// another run's lock looks at the cache again: that run may have made the
+// very overview.
 func answerReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJob, emit func(reviewai.Event)) error {
-	if len(reviewFlagChapters) == 0 && !reviewFlagSummary {
-		hash := reviewai.IntentHash(job.in.Intent, job.in.Notes)
-		js, ok, err := job.database.ReviewOverviewJSON(job.p.ID, job.pl.Tree, job.pl.Base, hash)
-		if err != nil {
-			return failReview(cmd, err)
+	if done, err := answerCachedOverview(cmd, job); done {
+		return err
+	}
+	cfg, err := loadReviewAIConfig()
+	if err != nil {
+		return failReview(cmd, fmt.Errorf("AI overview unavailable: %w", err))
+	}
+	pipe := reviewai.New(reviewAIGeneratorFactory(cfg))
+	pipe.SetPromptStore(prompts.New(job.database, nil))
+	lock := &overviewLock{job: job, pipe: pipe, emit: emit, shown: map[string]bool{}}
+	release, err := lock.acquire(ctx, cfg.WorkspaceDir())
+	var busy *reviewai.BusyError
+	switch {
+	case errors.As(err, &busy):
+		re := busy.RunError()
+		env := reviewEnvelope{Error: re.Text, ErrorClass: re.Class}
+		if busy.Waited { // the streamed form: an envelope like any failed run
+			return writeReview(cmd, env)
 		}
-		incomplete, readable := cachedIncomplete(js)
-		switch {
-		case ok && (!reviewFlagContinue || (readable && len(incomplete) == 0)):
-			return writeReview(cmd, reviewEnvelope{OK: true, Overview: json.RawMessage(js), OverviewCached: true, Incomplete: &incomplete})
-		case !ok && reviewFlagCachedOnly:
-			return writeReview(cmd, reviewEnvelope{OK: true})
+		if werr := writeReview(cmd, env); werr != nil {
+			return werr
+		}
+		return &exitCodeError{code: 1, err: busy}
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		return writeReview(cmd, reviewEnvelope{Error: reviewai.CancelledText, ErrorClass: reviewai.ClassCancelled})
+	case err != nil:
+		return failReview(cmd, err)
+	}
+	defer release()
+	if lock.waited {
+		if done, err := answerCachedOverview(cmd, job); done {
+			return err
 		}
 	}
-	// Every model-calling form takes the branch's run lock here (tech spec
-	// §3.7), after the cache check and before the first call; the wait does
-	// not count into the run's ceiling, which starts in Run.
-	return runReviewOverview(ctx, cmd, job, emit)
+	// The run's ceiling starts in Run, after the wait.
+	return runReviewOverview(ctx, cmd, cfg, pipe, job, lock.runEmit())
+}
+
+// answerCachedOverview answers the cached assembled overview (done true),
+// or a --cached-only miss. A --chapter or --summary run always runs;
+// --continue answers a cached overview that is complete.
+func answerCachedOverview(cmd *cobra.Command, job overviewJob) (done bool, err error) {
+	if len(reviewFlagChapters) > 0 || reviewFlagSummary {
+		return false, nil
+	}
+	hash := reviewai.IntentHash(job.in.Intent, job.in.Notes)
+	js, ok, err := job.database.ReviewOverviewJSON(job.p.ID, job.pl.Tree, job.pl.Base, hash)
+	if err != nil {
+		return true, failReview(cmd, err)
+	}
+	incomplete, readable := cachedIncomplete(js)
+	switch {
+	case ok && (!reviewFlagContinue || (readable && len(incomplete) == 0)):
+		return true, writeReview(cmd, reviewEnvelope{OK: true, Overview: json.RawMessage(js), OverviewCached: true, Incomplete: &incomplete})
+	case !ok && reviewFlagCachedOnly:
+		return true, writeReview(cmd, reviewEnvelope{OK: true})
+	}
+	return false, nil
+}
+
+// reviewLockWait is the streamed form's wait for another run's lock (zero:
+// reviewai.LockWaitCap, a part re-read every reviewai.LockWaitEvery); tests
+// shorten it.
+var reviewLockWait reviewai.LockWait
+
+// reviewWaitingEvery is how often a waiting stream repeats its waiting
+// line (tech spec §3.7); tests shorten it.
+var reviewWaitingEvery = time.Minute
+
+// overviewLock takes the run lock of a job's folder. Only the streamed form
+// waits: it prints a waiting line at once and every reviewWaitingEvery, and
+// a cached chapter line for each part the holder writes meanwhile (shown).
+type overviewLock struct {
+	job    overviewJob
+	pipe   *reviewai.Pipeline
+	emit   func(reviewai.Event)
+	waited bool
+	shown  map[string]bool
+	said   time.Time // the last waiting line
+	warned bool      // a part read failed and was logged
+}
+
+func (l *overviewLock) acquire(ctx context.Context, workspaceDir string) (func(), error) {
+	path := reviewai.LockPath(workspaceDir, l.job.p.ID, realFolderPath(l.job.pl.Folder))
+	if !reviewFlagStream {
+		return reviewai.AcquireRun(ctx, path, overviewCaller(), nil)
+	}
+	wait := reviewLockWait
+	wait.OnWait = l.onWait
+	return reviewai.AcquireRun(ctx, path, overviewCaller(), &wait)
+}
+
+// onWait is one beat of the wait: the waiting line when due, then the
+// parts that appeared since the last beat.
+func (l *overviewLock) onWait(h reviewai.Holder) {
+	now := time.Now()
+	if !l.waited || now.Sub(l.said) >= reviewWaitingEvery {
+		l.emit(reviewai.Event{Event: "waiting", By: h.By})
+		l.said = now
+	}
+	l.waited = true
+	cached, err := l.pipe.CachedChapters(l.job.database, l.job.p.ID, l.job.m, l.job.diff, l.job.in.Notes)
+	if err != nil { // the run itself reads the parts again once it holds the lock
+		if !l.warned {
+			l.warned = true
+			log.Printf("review overview: waiting run could not read the cached parts (project %d)", l.job.p.ID)
+		}
+		return
+	}
+	for _, ch := range l.job.m.Chapters {
+		if d, ok := cached[ch.Key]; ok && !l.shown[ch.Key] {
+			l.shown[ch.Key] = true
+			l.emit(reviewai.ChapterEvent(reviewai.StateCached, d))
+		}
+	}
+}
+
+// runEmit is the run's emit: a cached line the wait already printed is not
+// printed twice.
+func (l *overviewLock) runEmit() func(reviewai.Event) {
+	if len(l.shown) == 0 {
+		return l.emit
+	}
+	return func(e reviewai.Event) {
+		if e.Event == "chapter" && e.State == reviewai.StateCached && l.shown[e.Key] {
+			return
+		}
+		l.emit(e)
+	}
+}
+
+// overviewCaller is who runs the overview, written into the run lock:
+// --caller, else agent under an AI agent (AGENT-07's markers), else cli.
+func overviewCaller() string {
+	if reviewFlagCaller != "" {
+		return reviewFlagCaller
+	}
+	for _, name := range agentEnvMarkers {
+		if os.Getenv(name) != "" {
+			return "agent"
+		}
+	}
+	return "cli"
+}
+
+// realFolderPath is folder with its symlinks resolved; as given when it
+// does not resolve.
+func realFolderPath(folder string) string {
+	if resolved, err := filepath.EvalSymlinks(folder); err == nil {
+		return resolved
+	}
+	return filepath.Clean(folder)
 }
 
 // cachedIncomplete is a cached overview's incomplete list; an overview
@@ -287,13 +425,8 @@ func cachedIncomplete(js string) (incomplete []string, readable bool) {
 // runReviewOverview runs the model (reviewai.Run writes the parts and the
 // assembled overview) and answers the overview, or the run's error class,
 // owner text and the provider's detail.
-func runReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJob, emit func(reviewai.Event)) error {
-	cfg, err := loadReviewAIConfig()
-	if err != nil {
-		return failReview(cmd, fmt.Errorf("AI overview unavailable: %w", err))
-	}
-	pipe := reviewai.New(reviewAIGeneratorFactory(cfg))
-	pipe.SetPromptStore(prompts.New(job.database, nil))
+func runReviewOverview(ctx context.Context, cmd *cobra.Command, cfg *config.Config, pipe *reviewai.Pipeline, job overviewJob,
+	emit func(reviewai.Event)) error {
 	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	ov, err := pipe.Run(ctx, job.database, job.m, job.diff, job.in.Intent, job.in.Notes, reviewai.RunOptions{
 		ProjectID: job.p.ID, Tree: job.pl.Tree, Base: job.pl.Base, Model: strong,

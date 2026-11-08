@@ -12,6 +12,9 @@ import (
 // Without it, every db.Open(":memory:") call runs the full goose migration
 // suite which under -race exceeds Go's 10-minute test timeout on CI.
 func TestMain(m *testing.M) {
+	if path := os.Getenv(runLockHolderEnv); path != "" {
+		holdRunLockForever(path, os.Getenv(runLockByEnv)) // a lock holder process: never returns
+	}
 	if err := db.InitTestTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
