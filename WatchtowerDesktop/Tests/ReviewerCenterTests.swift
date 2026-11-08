@@ -154,8 +154,8 @@ final class ReviewerCenterTests: XCTestCase {
 
         let place = SessionPlace.worktree(name: "registry", root: worktree,
                                           status: WorkbenchGitStatus(branch: "feature/registry"))
-        let context = try XCTUnwrap(ReviewerCenter.context(projectID: h.projectID, sessionID: sessionID,
-                                                           round: h.model.round, place: place, mainStatus: nil))
+        let context = try XCTUnwrap(ReviewerSurface.context(projectID: h.projectID, sessionID: sessionID,
+                                                            round: h.model.round, place: place, mainStatus: nil))
         XCTAssertEqual(context.branch, "feature/registry")
         XCTAssertEqual(context.readFolder, worktree.path)
         XCTAssertTrue(context.inWorktree)
@@ -183,7 +183,7 @@ final class ReviewerCenterTests: XCTestCase {
         h.cli.script(["start": roundJSON(folder: "/tmp/acme"), "context": #"{"ok":true,"items":[]}"#,
                       "diff": diffJSON(["a.go"])])
         await h.model.open()
-        let context = try XCTUnwrap(ReviewerCenter.context(
+        let context = try XCTUnwrap(ReviewerSurface.context(
             projectID: h.projectID, sessionID: h.sessionID, round: h.model.round, place: .main,
             mainStatus: WorkbenchGitStatus(branch: "feature/a")))
         let ai = ScriptedAIService()
@@ -214,7 +214,7 @@ final class ReviewerCenterTests: XCTestCase {
         XCTAssertEqual(after, expected, "nothing but the comment is written")
         let rowsAfter = try await h.db.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_messages") }
         XCTAssertEqual(rowsAfter, conversationRows)
-        XCTAssertEqual(center.sent[answer.id], 7)
+        XCTAssertTrue(center.wasSent(messageID: answer.id, roundID: 7))
         XCTAssertEqual(ReviewerCenter.sentLine(roundID: 7), "Sent to the author as a design comment in round 7")
         XCTAssertTrue(h.sink.lines.isEmpty, "nothing reaches the author's session")
     }
@@ -228,9 +228,41 @@ final class ReviewerCenterTests: XCTestCase {
         let center = Self.center(h, ai: ScriptedAIService())
         await center.send(messageID: 1, text: "An answer", to: h.model)
         XCTAssertEqual(center.sendErrors[1], "Start a round to send")
-        XCTAssertNil(center.sent[1])
+        XCTAssertTrue(center.sent.isEmpty)
         let comments = try await h.comments()
         XCTAssertTrue(comments.isEmpty)
+    }
+
+    /// A round sent by another writer after the pane loaded it takes no
+    /// comment: the send fails, says so, and nothing is marked as sent.
+    func testSendIntoARoundSentMeanwhileWritesNothing() async throws {
+        let h = try harness()
+        h.cli.script(["start": roundJSON(folder: "/tmp/acme"), "context": #"{"ok":true,"items":[]}"#,
+                      "diff": diffJSON(["a.go"])])
+        await h.model.open()
+        XCTAssertTrue(h.model.canSendToAuthor)
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = 7") }
+        let center = Self.center(h, ai: ScriptedAIService())
+        await center.send(messageID: 1, text: "An answer", to: h.model)
+        XCTAssertEqual(center.sendErrors[1], "This round was already sent, so it cannot change.")
+        XCTAssertTrue(center.sent.isEmpty)
+        XCTAssertFalse(h.model.canSendToAuthor, "the pane learns the round is closed")
+        let comments = try await h.comments()
+        XCTAssertTrue(comments.isEmpty)
+    }
+
+    /// A sent answer is marked for the round it went to only: another
+    /// session's round of the branch can still take it.
+    func testSentIsKeptPerRound() async throws {
+        let h = try harness()
+        h.cli.script(["start": roundJSON(folder: "/tmp/acme"), "context": #"{"ok":true,"items":[]}"#,
+                      "diff": diffJSON(["a.go"])])
+        await h.model.open()
+        let center = Self.center(h, ai: ScriptedAIService())
+        await center.send(messageID: 1, text: "An answer", to: h.model)
+        XCTAssertTrue(center.wasSent(messageID: 1, roundID: 7))
+        XCTAssertFalse(center.wasSent(messageID: 1, roundID: 8))
+        XCTAssertFalse(center.wasSent(messageID: 1, roundID: nil))
     }
 
     // MARK: - Failed turn
@@ -242,7 +274,7 @@ final class ReviewerCenterTests: XCTestCase {
         h.cli.script(["start": roundJSON(folder: "/tmp/acme"), "context": #"{"ok":true,"items":[]}"#,
                       "diff": diffJSON(["a.go"])])
         await h.model.open()
-        let context = try XCTUnwrap(ReviewerCenter.context(
+        let context = try XCTUnwrap(ReviewerSurface.context(
             projectID: h.projectID, sessionID: h.sessionID, round: h.model.round, place: .main,
             mainStatus: WorkbenchGitStatus(branch: "feature/a")))
         let ai = ScriptedAIService()
@@ -266,13 +298,13 @@ final class ReviewerCenterTests: XCTestCase {
 
     func testContextNeedsARoundAndAKnownBranch() async throws {
         let h = try harness()
-        XCTAssertNil(ReviewerCenter.context(projectID: 1, sessionID: 2, round: nil, place: .main,
-                                            mainStatus: WorkbenchGitStatus(branch: "main")))
+        XCTAssertNil(ReviewerSurface.context(projectID: 1, sessionID: 2, round: nil, place: .main,
+                                             mainStatus: WorkbenchGitStatus(branch: "main")))
         h.cli.script(["start": roundJSON(folder: "/tmp/acme"), "context": #"{"ok":true,"items":[]}"#,
                       "diff": diffJSON(["a.go"])])
         await h.model.open()
-        XCTAssertNil(ReviewerCenter.context(projectID: 1, sessionID: 2, round: h.model.round, place: .main, mainStatus: nil))
-        let detached = try XCTUnwrap(ReviewerCenter.context(
+        XCTAssertNil(ReviewerSurface.context(projectID: 1, sessionID: 2, round: h.model.round, place: .main, mainStatus: nil))
+        let detached = try XCTUnwrap(ReviewerSurface.context(
             projectID: 1, sessionID: 2, round: h.model.round, place: .main,
             mainStatus: WorkbenchGitStatus(detached: true, head: "abc1234")))
         XCTAssertEqual(detached.branch, "session:2")

@@ -98,12 +98,30 @@ final class ReviewerSurfaceTests: XCTestCase {
     }
 
     func testMapLine() {
-        XCTAssertEqual(ReviewerSurface.mapLine(context),
+        XCTAssertEqual(ReviewerSurface.mapLine(context, reader: .claudeTools),
                        "Read-only · reads feature/registry in the session's worktree · sees the chapters, their danger"
                        + " and the summary · never talks to the author's session")
         let folder = ReviewerSurface.Context(projectID: 4, branch: "session:9", branchLabel: "", readFolder: "/tmp/acme",
                                              inWorktree: false)
-        XCTAssertTrue(ReviewerSurface.mapLine(folder).hasPrefix("Read-only · reads this branch in the workbench folder"))
+        XCTAssertTrue(ReviewerSurface.mapLine(folder, reader: .codexSandbox)
+            .hasPrefix("Read-only · reads this branch in the workbench folder"))
+        XCTAssertTrue(ReviewerSurface.mapLine(context, reader: .none)
+            .hasPrefix("Read-only · answers from the branch map only — this AI provider cannot read files"))
+    }
+
+    /// A branch-tip round's folder is on another branch: the line and the
+    /// prompt say so instead of claiming the branch is read.
+    func testBranchTipRoundSaysTheFolderIsNotTheBranch() {
+        let tip = ReviewerSurface.Context(projectID: 4, branch: "feature/x", branchLabel: "feature/x", readFolder: "/tmp/acme",
+                                          inWorktree: false, branchTip: true)
+        XCTAssertTrue(ReviewerSurface.mapLine(tip, reader: .claudeTools)
+            .hasPrefix("Read-only · reads the workbench folder, which is not on feature/x"))
+        let codex = ReviewerSurface.systemPrompt(context: tip, reader: .codexSandbox)
+        XCTAssertTrue(codex.contains("checked out on another branch, not on \"feature/x\""))
+        XCTAssertTrue(codex.contains("git show feature/x:<path>"))
+        XCTAssertTrue(ReviewerSurface.systemPrompt(context: tip, reader: .claudeTools).contains("checked out on another branch"))
+        XCTAssertFalse(ReviewerSurface.systemPrompt(context: tip, reader: .none).contains("checked out on another branch"))
+        XCTAssertFalse(ReviewerSurface.systemPrompt(context: context, reader: .codexSandbox).contains("checked out on another branch"))
     }
 
     // MARK: - Brief

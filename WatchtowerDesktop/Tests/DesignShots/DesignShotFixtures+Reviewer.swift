@@ -80,7 +80,7 @@ enum ReviewerShotFixtures {
         let center = ReviewerCenter(embeddedChats: chats, dbPool: fixture.pool) { .claudeTools }
         vm.reviewer = center
 
-        let context = try XCTUnwrap(ReviewerCenter.context(
+        let context = try XCTUnwrap(ReviewerSurface.context(
             projectID: fixture.projectID, sessionID: fixture.session.id, round: fixture.model.round,
             place: identity.place, mainStatus: nil))
         let id = ReviewerCenter.ThreadID(projectID: context.projectID, branch: context.branch)

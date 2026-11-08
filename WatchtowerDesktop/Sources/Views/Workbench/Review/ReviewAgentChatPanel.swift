@@ -16,9 +16,6 @@ struct ReviewAgentChat {
     var widthKey: String { "review.chatPanel.\(projectID).width" }
     var sideKey: String { "review.chatPanel.\(projectID).side" }
 
-    /// The branch's reviewer (board #1025); nil without the app's center (a test VM).
-    var reviewer: ReviewerCenter? { vm.reviewer }
-
     /// The session's Workchat; nil without session control or once the session is gone.
     var workchat: WorkchatModel? {
         guard vm.session(sessionID, projectID: projectID) != nil else { return nil }
@@ -76,7 +73,7 @@ struct ReviewAgentChatPanel: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let reviewer = chat.reviewer {
+            if let reviewer = chat.vm.reviewer {
                 HStack(spacing: Spacing.cozy) {
                     KitSegmentedPicker(title: "Chat", selection: $side, segments: [
                         KitSegment(value: ReviewChatSide.reviewer, title: "Reviewer"),
@@ -88,7 +85,7 @@ struct ReviewAgentChatPanel: View {
                 .padding(.vertical, Spacing.small)
                 Divider()
                 if side == .reviewer {
-                    ReviewerPanel(center: reviewer, model: model, context: ReviewerCenter.context(
+                    ReviewerPanel(center: reviewer, model: model, context: ReviewerSurface.context(
                         projectID: chat.projectID, sessionID: chat.sessionID, round: model.round,
                         place: identity.place, mainStatus: identity.mainStatus
                     ))

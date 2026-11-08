@@ -15,7 +15,7 @@ struct ReviewerPanel: View {
         if let context {
             let id = ReviewerCenter.ThreadID(projectID: context.projectID, branch: context.branch)
             VStack(spacing: 0) {
-                Text(ReviewerSurface.mapLine(context))
+                Text(ReviewerSurface.mapLine(context, reader: center.currentReader()))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -26,6 +26,13 @@ struct ReviewerPanel: View {
                 thread(id: id, context: context)
             }
             .task(id: id) { await center.open(id) }
+        } else if model.round == nil, model.load != .loading {
+            Text(ReviewerSurface.noRoundHint)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(Spacing.medium)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -75,7 +82,7 @@ struct ReviewerAnswerActions: View {
 
     var body: some View {
         if Self.offers(item, isLive: isLive) {
-            if let roundID = center.sent[item.id] {
+            if let roundID = model.round?.id, center.wasSent(messageID: item.id, roundID: roundID) {
                 Label(ReviewerCenter.sentLine(roundID: roundID), systemImage: "checkmark")
                     .font(.caption)
                     .foregroundStyle(.secondary)

@@ -27,8 +27,6 @@ package enum ReviewerSurface {
     /// sandbox, Ollama not at all (its turn then runs without the folder).
     package enum Reader: Equatable, Sendable {
         case claudeTools, codexSandbox, none
-
-        package var readsFiles: Bool { self != .none }
     }
 
     /// Where the reviewer works: the thread's workbench and branch key, the
@@ -42,14 +40,47 @@ package enum ReviewerSurface {
         package let readFolder: String
         /// The folder is the session's own worktree, not the workbench folder.
         package let inWorktree: Bool
+        /// A branch-tip round (#1012): the branch is read from refs and the
+        /// folder is checked out on another branch, so its files are not the branch's.
+        package let branchTip: Bool
 
-        package init(projectID: Int64, branch: String, branchLabel: String, readFolder: String, inWorktree: Bool) {
+        package init(
+            projectID: Int64,
+            branch: String,
+            branchLabel: String,
+            readFolder: String,
+            inWorktree: Bool,
+            branchTip: Bool = false
+        ) {
             self.projectID = projectID
             self.branch = branch
             self.branchLabel = branchLabel
             self.readFolder = readFolder
             self.inWorktree = inWorktree
+            self.branchTip = branchTip
         }
+    }
+
+    /// The key prefix of a thread that has no branch (a detached HEAD).
+    private static let sessionKeyPrefix = "session:"
+
+    /// Where the reviewer of a session's round works; nil until the thread
+    /// key is known (no round yet, or the folder's branch not read yet).
+    package static func context(
+        projectID: Int64,
+        sessionID: Int64,
+        round: ReviewRoundInfo?,
+        place: SessionPlace,
+        mainStatus: WorkbenchGitStatus?
+    ) -> Context? {
+        guard let round, !round.folderRoot.isEmpty else { return nil }
+        let status = ReviewIdentityPresentation.status(place: place, mainStatus: mainStatus)
+        guard let branch = threadBranch(round: round, folderStatus: status, sessionID: sessionID) else { return nil }
+        var inWorktree = false
+        if case .worktree = place { inWorktree = true }
+        return Context(projectID: projectID, branch: branch,
+                       branchLabel: branch.hasPrefix(sessionKeyPrefix) ? "" : branch,
+                       readFolder: round.folderRoot, inWorktree: inWorktree, branchTip: round.isBranchTip)
     }
 
     /// The thread key: the round's branch (#1012) when it has one, else the
@@ -58,20 +89,30 @@ package enum ReviewerSurface {
     package static func threadBranch(round: ReviewRoundInfo?, folderStatus: WorkbenchGitStatus?, sessionID: Int64) -> String? {
         if let branch = round?.branch, !branch.isEmpty { return branch }
         guard let status = folderStatus else { return nil }
-        if status.detached || status.branch.isEmpty { return "session:\(sessionID)" }
+        if status.detached || status.branch.isEmpty { return "\(sessionKeyPrefix)\(sessionID)" }
         return status.branch
     }
 
-    /// The line under the panel's switch (mockup frame 5).
-    package static func mapLine(_ context: Context) -> String {
+    /// The line under the panel's switch (mockup frame 5): what the reviewer
+    /// can actually read with the configured provider.
+    package static func mapLine(_ context: Context, reader: Reader) -> String {
         let branch = context.branchLabel.isEmpty ? "this branch" : context.branchLabel
         let place = context.inWorktree ? "the session's worktree" : "the workbench folder"
-        return "Read-only · reads \(branch) in \(place) · sees the chapters, their danger and the summary"
+        let reads: String
+        if reader == .none {
+            reads = "answers from the branch map only — this AI provider cannot read files"
+        } else if context.branchTip {
+            reads = "reads \(place), which is not on \(branch)"
+        } else {
+            reads = "reads \(branch) in \(place)"
+        }
+        return "Read-only · \(reads) · sees the chapters, their danger and the summary"
             + " · never talks to the author's session"
     }
 
     package static let emptyHint =
         "Ask the reviewer about this branch: what breaks if…, what a change would take. It reads the code and never talks to the author's session."
+    package static let noRoundHint = "The reviewer opens once the branch's round is ready."
     package static let placeholder = "Ask the reviewer about this branch…"
 
     /// `map` is read when each turn starts, so the turn sees the chapter
@@ -84,7 +125,7 @@ package enum ReviewerSurface {
         map: @escaping @MainActor () -> ReviewerMapInput
     ) -> ChatSurfaceSpec {
         let runOptions = { @MainActor () -> ChatRunOptions in
-            ChatRunOptions(readFolder: reader().readsFiles ? context.readFolder : nil)
+            ChatRunOptions(readFolder: reader() == .none ? nil : context.readFolder)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType,
@@ -131,6 +172,15 @@ package enum ReviewerSurface {
         }
     }
 
+    /// A branch-tip round's folder is on another branch: its files are not the branch's.
+    package static func branchTipNote(context: Context, reader: Reader) -> String {
+        guard context.branchTip, reader != .none else { return "" }
+        let read = reader == .codexSandbox
+            ? "Read the branch's own files with `git show \(context.branchLabel):<path>` and its changes with `git log` / `git diff` on it."
+            : "Say so when an answer rests on a file the branch changes."
+        return "\n\nThe folder is checked out on another branch, not on \"\(context.branchLabel)\": its files are not the branch's. \(read)"
+    }
+
     package static func systemPrompt(context: Context, reader: Reader) -> String {
         let branch = context.branchLabel.isEmpty ? "a detached HEAD" : "\"\(context.branchLabel)\""
         return """
@@ -140,7 +190,7 @@ package enum ReviewerSurface {
         risk hides across chapters.
 
         === READING THE CODE ===
-        \(readingInstructions(reader))
+        \(readingInstructions(reader))\(branchTipNote(context: context, reader: reader))
 
         === THE BRANCH MAP ===
         Each owner message comes with a compact map of the branch: its chapters in reading order, the most \
