@@ -3,6 +3,7 @@ package sessionreport
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,9 +110,9 @@ func mergeRefsOf(t *testing.T, d *db.DB, sessionID int64) []string {
 
 func TestSessionRefs_EndWithTheMergeVerdicts(t *testing.T) {
 	d := mergedFixture(t)
-	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f",
+	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/f", "into:feature/x:wt/c",
 		"into:feature/x-ui:wt/g"}
-	assert.ElementsMatch(t, want, mergeRefsOf(t, d, 1))
+	assert.Equal(t, want, mergeRefsOf(t, d, 1), "board order of first appearance")
 	refs, err := SessionRefs(context.Background(), d, 1, 1)
 	require.NoError(t, err)
 	assert.Equal(t, mergeRefsOf(t, d, 1), refs[len(refs)-len(want):], "the PR and branch refs, then the verdicts")
@@ -382,4 +383,55 @@ func TestRefresh_MergedBranchWithNewWorkReadsOpen(t *testing.T) {
 	res := Refresh(context.Background(), d, id, []string{ref}, RefreshOptions{Now: func() time.Time { return later }})
 	assert.Empty(t, res.Note)
 	assert.Equal(t, "open", states(t, d, id)[ref].State, "unmerged work on the branch again")
+}
+
+// Board #1016: a group of 1000 sibling leaves is walked once, not once per
+// leaf (counted, so the memo is pinned without a clock), and every key is
+// checked in a set — the refs come back in board order, one per not-done
+// leaf, in well under the seconds the per-leaf walk with a list scan took.
+func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
+	d := db.OpenTestDB(t)
+	runSQL(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', '/tmp/acme');
+		INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
+		(100, 'Epic', '2026-09-28', '2026-10-05', NULL, 'in_progress', 1, 'feature/x'),
+		(110, 'Group', '2026-09-28', '2026-10-05', 100, 'in_progress', 1, '');
+		INSERT INTO terminal_sessions (id, project_id, kind, title, target_id, folder_path, claude_session_id) VALUES
+		(1, 1, 'claude', 'S1', 100, '/tmp/acme', 'u1')`)
+	const n = 1000
+	var want, rows []string
+	for i := range n {
+		status := "todo"
+		if i%10 == 0 {
+			status = "done"
+		} else {
+			want = append(want, fmt.Sprintf("into:feature/x:wt/%d", i))
+		}
+		rows = append(rows, fmt.Sprintf("(%d, 'l', '2026-09-28', '2026-10-05', 110, '%s', 1, 'wt/%d')", 1000+i, status, i))
+	}
+	runSQL(t, d, `INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES `+
+		strings.Join(rows, ", "))
+	_, sc, err := loadScope(context.Background(), d, 1, 1)
+	require.NoError(t, err)
+	before := sc.b.walks
+	start := time.Now()
+	got := sc.mergeRefs()
+	elapsed := time.Since(start)
+	assert.Equal(t, want, got)
+	assert.Equal(t, 1, sc.b.walks-before, "the shared parent is walked once, not once per leaf")
+	assert.Less(t, elapsed, time.Second, "1000 siblings took %v", elapsed)
+}
+
+// Board #1016: a key two leaves resolve to — a second leaf on the same
+// branch, and a progress leaf its parent's walk also reaches — is listed
+// once, at its first appearance.
+func TestMergeRefs_ASharedKeyIsListedOnce(t *testing.T) {
+	d := mergedFixture(t)
+	runSQL(t, d, `INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
+		(117, 'b2', '2026-09-28', '2026-10-05', 110, 'todo', 1, 'wt/b')`)
+	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/f", "into:feature/x:wt/c",
+		"into:feature/x-ui:wt/g"}
+	assert.Equal(t, want, mergeRefsOf(t, d, 1))
+	_, sc, err := loadScope(context.Background(), d, 1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, want, sc.countedMergeRefs(), "every leaf here is a progress leaf")
 }
