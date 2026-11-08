@@ -190,7 +190,7 @@ per-chapter lens list (`ReviewChapters.lenses(for:)` has no caller) — it is de
 | One batch call | `90 s + 60 s × ceil(lines / 1000)` of the batch's shown diff lines |
 | Summary call | 2 min |
 | One run | `waves × max(call budget) + summary`, `waves = ceil(batches / parallel)`, capped at 45 min |
-| Desktop wait | no total timeout on the streamed form; fails when no line arrives for 5 min |
+| Desktop wait | no total timeout on the streamed form; the run prints `{"event":"tick"}` every 30 s while it lives, and the Desktop fails it when no line arrives for 5 min (a stuck process, never a slow call) |
 
 Chapters not reached before the run's ceiling get `state: "not_started"`; `--continue`
 describes only chapters without a part row.
@@ -236,6 +236,7 @@ envelope:
 ```
 {"event":"map", "map":{…}}                                  (first, before any model call)
 {"event":"waiting","by":"desktop|agent|cli"}               (another run holds the lock, §3.7)
+{"event":"tick"}                                            (every 30 s while the run lives)
 {"event":"chapter","key":K,"state":"cached|ok|failed","what":…,"risks":[…],"error":{class,text}?}
 {"event":"summary","state":"ok|failed", …}
 {"ok":true,"overview":{…},"incomplete":[…]}                 (last)

@@ -16,7 +16,7 @@
 - REVIEW-01 amendment exactly as spec "Contracts and storage that change": new rows in `review_overview_parts` and `review_rounds.head_sha` only; `review map` writes nothing; REVIEW-02..05 unchanged. REVIEW-05: every new git call through `reviewdiff.Repo`'s runner, listed in the guard test.
 - Migration **00174** (`review_overview_parts`, `review_rounds.head_sha`); phase 3's thread table is **00175**. 00173 is #1012's `review_rounds.branch`.
 - Chapter keys: `agent:<n>`, `collapsed`, `dir:<dir>[#N]` byte-identical to today's Swift; new `lane:<lane>`, `lane:<lane>/<dir>[#N]`; no `ai:` keys.
-- Numbers: `MaxBatchLines = 2500`, `MaxOverviewFileLines = 300`, lane split 400 lines, call budget `90 s + 60 s × ceil(lines/1000)`, parallel `min(batches, 4)`, summary 2 min, run ceiling `waves × max(call) + summary` capped at 45 min, `LockWaitCap = 50 min`, map budget 20 s, walk bounds 2,000 commits / 200 lanes, Desktop map timeout 60 s, Desktop stream silence 5 min, part pruning 30 days, review-map.md ≤ 65,536 bytes.
+- Numbers: `MaxBatchLines = 2500`, `MaxOverviewFileLines = 300`, lane split 400 lines, call budget `90 s + 60 s × ceil(lines/1000)`, parallel `min(batches, 4)`, summary 2 min, run ceiling `waves × max(call) + summary` capped at 45 min, `LockWaitCap = 50 min`, map budget 20 s, walk bounds 2,000 commits / 200 lanes, Desktop map timeout 60 s (the map's own budget is 20 s), stream heartbeat `tick` every 30 s and Desktop stream silence 5 min (so only a stuck process trips it, never a slow call; tech spec §3.2/§3.5), part pruning 30 days, review-map.md ≤ 65,536 bytes.
 - Error classes `timeout|provider|parse|cancelled|too_large|busy`; owner texts verbatim from §3.6/§3.7; logs carry class, index and counts only (FILES-01).
 - Prompts through the `add-ai-prompt` skill: `review.overview` v3, `review.chapters` v1, `review.summary` v1, both providers; ledger purposes of the same names.
 - Desktop screens match `docs/design/mockups/big-branch-review/` and use the design kit's shared empty/loading/error states; `make desktop-shots` before review.
@@ -94,7 +94,7 @@
 
 **Files:**
 - Create: `internal/reviewmap/{chapters.go,map.go}` + tests; shared fixture `internal/reviewmap/testdata/chapters_golden.json`
-- Create: `WatchtowerDesktop/Tests/Core/ReviewChaptersGoldenTests.swift` (decodes the same fixture, asserts today's Swift `mechanical`/`resolve` produce exactly its keys, titles and order — must pass **before** Task 12 deletes the Swift code)
+- Create: `WatchtowerDesktop/Tests/Core/ReviewChaptersGoldenTests.swift` (decodes the same fixture, asserts today's Swift `mechanical`/`resolve` produce exactly its keys, titles and order — must pass **before** Task 11 deletes the Swift code)
 
 **Interfaces — Produces:**
 - `type Chapter struct { Key, Title string; Level Level; Core bool; Paths []string; ChangedLines int; Lane string; TargetID int64; JiraKey string; SignalsSummary map[string]int }`
@@ -118,7 +118,7 @@
 - `func BuildReviewMap(ctx context.Context, d *db.DB, p *db.Workbench, repo *reviewdiff.Repo, round *db.ReviewRound /*or nil*/, sessionID int64) (reviewmap.Map, reviewdiff.Diff, error)` in `cmd` (shared by map and overview commands).
 - CLI: `watchtower workbench review map (--round R | --session S) --workbench W --json` → `{"ok":true,"map":{…}}`; writes nothing.
 
-- [ ] Tests: pinned JSON keys (golden `review-map.json`); a round with `head_sha = ''` → `lanes_partial: true`, `dir:` chapters; a branch-tip round → lanes from the tip; `diff_truncated` set past 50k; map writes no row (row counts before/after); start, refresh and repoint store `head_sha`.
+- [ ] Tests: pinned JSON keys (golden `review-map.json`); a round with `head_sha = ''` → `lanes_partial: true`, `dir:` chapters; a branch-tip round → lanes from the tip; `diff_truncated` set past 50k; map writes no row (row counts before/after); start, refresh and repoint store `head_sha`; `DBTitles` resolves a lane's Jira title with the Jira client unset / an HTTP transport that fails the test on any request (local database only).
 - [ ] Implement; `go test ./cmd -run 'ReviewMap|WorkbenchReview_'` and `go test ./internal/tools ./internal/reviewmap` → PASS. Commit.
 
 ### Task 6: reviewai — packing, budgets, prompts, parsing
@@ -146,16 +146,17 @@
 
 **Files:**
 - Create: `internal/reviewai/run.go` (+ test) — the orchestrator, no cobra
-- Modify: `cmd/workbench_review_overview.go` (flags `--stream`, `--chapter` repeatable, `--summary`, `--continue`, `--caller desktop|agent|cli`; `--cached-only` unchanged; the 5-min `reviewAIBudget` replaced by `RunCeiling`), `cmd/workbench_review_overview_test.go`, `cmd/testdata/review-overview-stream.jsonl`
+- Modify: `internal/tools/workbench_review_context.go` (`LaneIntent`), `cmd/workbench_review_overview.go` (flags `--stream`, `--chapter` repeatable, `--summary`, `--continue`, `--caller desktop|agent|cli`; `--cached-only` unchanged; the 5-min `reviewAIBudget` replaced by `RunCeiling`), `cmd/workbench_review_overview_test.go`, `cmd/testdata/review-overview-stream.jsonl`
 
 **Interfaces — Produces:**
 - `func PartHash(ch reviewmap.Chapter, files []reviewdiff.File, notes []db.ReviewNote, promptID string, promptVersion int) string` (§3.3).
 - `type Event struct { Event, Key, State string; … }` — JSON lines per §3.5 (`map`, `waiting`, `chapter`, `summary`, final envelope).
 - `type RunOptions struct { Chapters []string; SummaryOnly, Continue bool; Emit func(Event); Now func() time.Time }`
 - `func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d reviewdiff.Diff, intent []IntentItem, notes []db.ReviewNote, opt RunOptions) (Overview, error)` with `PartStore` = the Task 1 methods.
+- `func LaneIntent(d *db.DB, p *db.Workbench, m reviewmap.Map) ([]reviewai.IntentItem, error)` in `internal/tools/workbench_review_context.go` — one item per distinct lane with a board target (title + intent) or a synced Jira issue (summary + clipped description), `Source: "lane"`, after the session's items (`Source: "session"`); `ReviewOverviewInput` and the round form both append it.
 - `Overview` gains `Incomplete []string` (always present) and chapters `{key,title,level,paths,core,what}`; `risk` = union.
 
-- [ ] Tests: one batch failing (stub error) and one hanging past its budget → others `ok`, `incomplete` lists both, summary made with them under `not_covered`, assembled row written; zero described → no summary, no `review_overviews` row; `--chapter K1 --chapter K2` redoes only those then the summary; `--summary` with a missing part → `missing_parts`; `--continue` describes only part-less chapters; cache: Refresh after editing one file calls only its chapter; parts survive a new `DB` handle; stream golden; FILES-01 canary (`internal/logcanary`) over a failing run — no title, path or provider text in the log; error texts verbatim (§3.6, `<N> min` rounded up); SIGTERM mid-run (`cancelled`) keeps finished parts (Review Focus 5).
+- [ ] Tests: a map with two lane tickets (a board target and a Jira issue) → the summary input and the coverage carry both lane items with `source: "lane"` after the session's items, and `IntentHash` changes when a lane ticket is added; a round with no session gets lane items only; one batch failing (stub error) and one hanging past its budget → others `ok`, `incomplete` lists both, summary made with them under `not_covered`, assembled row written; zero described → no summary, no `review_overviews` row; `--chapter K1 --chapter K2` redoes only those then the summary; `--summary` with a missing part → `missing_parts`; `--continue` describes only part-less chapters; cache: Refresh after editing one file calls only its chapter; parts survive a new `DB` handle; stream golden; FILES-01 canary (`internal/logcanary`) over a failing run — no title, path or provider text in the log; error texts verbatim (§3.6, `<N> min` rounded up); SIGTERM mid-run (`cancelled`) keeps finished parts (Review Focus 5); `tick` printed every 30 s during a slow stub call (fake clock).
 - [ ] Implement; `go test ./internal/reviewai` and `go test ./cmd -run ReviewOverview` → PASS. Commit.
 
 ### Task 8: one run at a time
@@ -204,7 +205,7 @@
 **Interfaces — Produces:**
 - `struct ReviewMap: Decodable` (§2.6 keys), `enum ReviewDangerLevel: String { case breaking, significant, normal }`.
 - `enum ReviewStreamEvent { case map(ReviewMap), waiting(by: String), chapter(key: String, state: ChapterRunState, what: String?, risks: [ReviewRisk], error: ReviewRunError?), summary(ok: Bool, error: ReviewRunError?), final(ReviewEnvelope) }`; `struct ReviewOverviewStreamDecoder { mutating func feed(_ data: Data) -> [ReviewStreamEvent] }` (line-buffered; a partial last line held, Review Focus 5).
-- `enum ChapterRunState { case pending, running, queued, waiting, ok, cached, failed(String), notStarted }`.
+- `enum ChapterRunState { case pending, running, queued, waiting, ok, cached, failed(text: String, detail: String?), notStarted }`.
 - `enum ReviewChapterList { static func sections(_ map: ReviewMap) -> [Section]; static func counter(map:, isViewed:) -> (chapters: Int, files: Int); static func next(map:, isViewed:) -> String?; static func showsList(_ map: ReviewMap) -> Bool }` (single non-noise chapter → false).
 
 - [ ] Tests: fixtures decode; sections Breaking-and-significant / Other / Can skip; counter excludes `collapsed`; next in danger order; one-chapter map hides the list; decoder across split reads and a truncated last line.
@@ -221,7 +222,7 @@
 
 **Interfaces — Produces:** on the model: `map: MapState` (`.loading | .ready(ReviewMap) | .failed`), `chapterStates: [String: ChapterRunState]`, `summaryState`, `waitingFor: String?`, `retry(chapter:)`, `retrySummary()`, `describeRemaining()`, `retryMap()`.
 
-- [ ] Tests (fake CLI): map on open and Refresh; map failure / 60 s silence → `.failed`, file list still shown, `retryMap` rebuilds; stream fills states; Retry during a run → `queued`, one follow-up `--chapter` run with all queued keys; Refresh during own run terminates it and keeps cached; Refresh while `waiting` restarts the waiter, never signals another pid; `busy` → card text with Retry; 5-min stream silence → failed; state survives navigating away and back (`reviewModels`); saved `ai:` chapter key → first chapter.
+- [ ] Tests (fake CLI): map on open and Refresh; map failure / 60 s silence → `.failed`, file list still shown, `retryMap` rebuilds; stream fills states; Retry during a run → `queued`, one follow-up `--chapter` run with all queued keys; Refresh during own run terminates it and keeps cached; Refresh while `waiting` restarts the waiter, never signals another pid; `busy` → card text with Retry; 5-min stream silence → failed; state survives navigating away and back (`reviewModels`); saved `ai:` chapter key → first chapter; a failed chapter keeps the owner sentence and the provider's `detail` apart (`failed(text, detail)`).
 - [ ] `make test-swift FILTER='ReviewChangesModel|ReviewChapters'` → PASS. Commit.
 
 ### Task 12: Branch review views
@@ -232,6 +233,7 @@
 - Modify: `WatchtowerDesktop/Sources/Views/Workbench/Review/` (chapter list, `ReviewOverviewView.swift`, toolbar counter, file header badges), design shots catalog + fixtures for every mockup frame (1, 1b, 2a–2c, 3, 4a, 4b)
 - Modify: `docs/guide/features/workbench/diff-review.md`
 
+- [ ] View test: a failed chapter shows the one-sentence text, and the provider's `detail` only after the disclosure is opened (folded by default); the same for a failed summary.
 - [ ] Shots: `make desktop-shots DESKTOP_SHOTS=<scratch>` for each frame, compared with `docs/design/mockups/big-branch-review/` (light and dark); shared empty/loading/error components only.
 - [ ] `make test-swift FILTER='DesignShot|ReviewPresentation'`, `make lint-diff` → PASS. Commit.
 
@@ -245,7 +247,7 @@
 
 **Depends on:** none (may run in parallel with phase 1).
 
-**Files:** `cmd/ai.go` (`resolveReadFolder`) + test; spec 2026-10-02 §9.1 amendment note; `docs/features/embedded-chat.md`.
+**Files:** `cmd/ai.go` (`resolveReadFolder`) + test; spec 2026-10-02 §9.1 amendment note; `docs/features/embedded-chat.md`; `docs/inventory/chat.md` (changelog entry: read-folder widened to the workbench's registered session worktrees, owner ask #560 — no guard relaxed).
 
 - [ ] Tests: the workbench folder accepted; a worktree in `terminal_session_worktrees` of that workbench accepted (real path, symlink resolved); another workbench's worktree, a sibling dir and a symlink into a worktree refused as today.
 - [ ] `go test ./cmd -run ReadFolder` → PASS. Commit.
@@ -256,9 +258,11 @@
 
 **Files:**
 - Create: `internal/db/migrations/00175_review_reviewer_threads.sql` (+ mirrors, Desktop writer), `WatchtowerDesktop/Sources/WatchtowerCore/Services/Review/ReviewerSurface.swift`, `ReviewerMapBrief.swift` (the compact per-turn map: chapters, danger, summary, open chapter)
-- Modify: the review chat panel (`ReviewAgentChatPanel`) → **Reviewer | Author** segmented switch; Send to author → design comment in the open round (disabled "Start a round to send")
+- Modify: the review chat panel (`ReviewAgentChatPanel`) → **Reviewer | Author** segmented switch; design shots catalog + fixtures for frame 5; Send to author → design comment in the open round (disabled "Start a round to send")
 - Test: `ReviewerSurfaceTests`, `ReviewerThreadQueriesTests`
 
+- [ ] End-to-end test (fake provider that reads files through the tool call it is given): a session in its own registered worktree, a question that needs files of two chapters → the turn runs with `--read-folder` = that worktree, the answer cites both files, nothing is written to the round.
+- [ ] Shots: `make desktop-shots` of mockup frame 5 (Reviewer side with an answer, Sent line, failed turn with Retry, Author side) in light and dark, compared with `docs/design/mockups/big-branch-review/`.
 - [ ] Tests: thread key = round `branch` else folder branch, detached → `session:<id>`; two sessions on one branch share it; the brief stays under its cap on a 700-file map; Send writes exactly one design comment and nothing else; disabled without an open round; failed turn shows Retry; `toolAccess` `.draftOnly`.
 - [ ] `make test-swift FILTER='Reviewer'`, `go test ./internal/db` → PASS. Commit.
 
