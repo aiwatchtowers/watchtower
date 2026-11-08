@@ -29,12 +29,6 @@ import (
 // a var for tests.
 var finishGateBudget = 30 * time.Second
 
-// LaneIntentFunc gives the lane items (LaneIntent) of the map of a
-// session's folder at snapshot snap, so the finish gate reads the overview
-// cached under the intent the overview command made it for. The map is
-// built in cmd, which passes it to WorkbenchTools; nil gives no lane items.
-type LaneIntentFunc func(ctx context.Context, d *db.DB, p *db.Workbench, session int64, snap ReviewSnapshot) ([]reviewai.IntentItem, error)
-
 // maxListedLeaves caps the open leaves a refusal lists.
 const maxListedLeaves = 20
 
@@ -80,7 +74,7 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 
 // checkFinishGates runs both gates for session on workbench p; a refusal is
 // a *ValidationError naming what is open and the next step.
-func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session int64, a finishSessionArgs, lanes LaneIntentFunc) error {
+func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session int64, a finishSessionArgs) error {
 	if !workbenchmethod.ResolveSession(d, p.ID, session).FinishOn() {
 		return nil // the owner turned the finish check off; a read failure resolves to on
 	}
@@ -104,7 +98,7 @@ func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session in
 	if handover {
 		return nil // the owner reads what is left in the ask
 	}
-	return checkOverviewGate(ctx, d, p, session, lanes)
+	return checkOverviewGate(ctx, d, p, session)
 }
 
 // finishTicket is the session's launch target, else the call's target_id
@@ -174,10 +168,12 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 
 // checkOverviewGate is gate 2: with a diff, the cached overview of the
 // session's folder as it stands, with a done coverage entry for every intent
-// item. A folder outside git has no diff to check, nor has the workbench
+// item of the session. The overview is found by the session's items alone
+// (reviewai.IntentHash leaves lane items out), so the gate builds no map and
+// the overview's lane coverage never gates (tech spec §4). A folder outside git has no diff to check, nor has the workbench
 // folder once the session left a worktree of its own (leftItsWorktree); any
 // other git failure refuses.
-func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64, laneIntent LaneIntentFunc) error {
+func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
 	gitCtx, cancel := context.WithTimeout(ctx, finishGateBudget)
 	defer cancel()
 	snap, err := SnapshotReviewSession(gitCtx, d, p, session)
@@ -196,13 +192,6 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	in, err := ReviewOverviewInput(gitCtx, d, p, session)
 	if err != nil {
 		return fmt.Errorf("finish check: reading the session's intent: %w", err)
-	}
-	if laneIntent != nil {
-		lanes, err := laneIntent(gitCtx, d, p, session, snap)
-		if err != nil {
-			return fmt.Errorf("finish check: reading the branch's lanes: %w", err)
-		}
-		in.Intent = WithLaneIntent(in.Intent, lanes)
 	}
 	js, ok, err := d.ReviewOverviewJSON(p.ID, snap.Tree, snap.Base, reviewai.IntentHash(in.Intent, in.Notes))
 	if err != nil {
@@ -234,10 +223,10 @@ func missingOverviewRefusal(workbenchID, session int64) string {
 		"file one ask_owner that says so and pass it as handover_ask_id"
 }
 
-// uncoveredItems lists every session intent item without a done coverage
-// entry: a partial or not_found one with its status, an item the overview
-// left out as missing. A pass needs an affirmative done for each item,
-// never only the absence of a bad one. Lane items never gate.
+// uncoveredItems lists every intent item without a done coverage entry: a
+// partial or not_found one with its status, an item the overview left out as
+// missing. A pass needs an affirmative done for each item, never only the
+// absence of a bad one.
 func uncoveredItems(intent []reviewai.IntentItem, coverage []reviewai.Coverage) []string {
 	byIndex := map[int]reviewai.Coverage{}
 	for _, c := range coverage {
@@ -245,9 +234,6 @@ func uncoveredItems(intent []reviewai.IntentItem, coverage []reviewai.Coverage) 
 	}
 	var open []string
 	for i, it := range intent {
-		if it.Source == reviewai.SourceLane {
-			continue // the owner's view only (tech spec §4)
-		}
 		c, ok := byIndex[i+1]
 		switch {
 		case !ok:

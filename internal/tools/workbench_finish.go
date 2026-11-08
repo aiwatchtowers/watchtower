@@ -81,9 +81,8 @@ type finishSessionArgs struct {
 var errNoTerminalSession = &ValidationError{Msg: "finish_session needs a Watchtower terminal session"}
 
 // NewFinishSession marks this terminal session finished with the agent's
-// summary. sessionEnv returns the terminal session env (TerminalSessionEnv);
-// lanes gives the lane items the overview gate's cache key includes.
-func NewFinishSession(sessionEnv func() string, lanes LaneIntentFunc) *Tool {
+// summary. sessionEnv returns the terminal session env (TerminalSessionEnv).
+func NewFinishSession(sessionEnv func() string) *Tool {
 	return &Tool{
 		Name: "finish_session",
 		Description: "Mark this terminal session finished once the work it was started for is done or handed to the " +
@@ -116,7 +115,7 @@ func NewFinishSession(sessionEnv func() string, lanes LaneIntentFunc) *Tool {
 			if err != nil {
 				return err
 			}
-			return checkFinishGates(ctx, d, p, session, a, lanes)
+			return checkFinishGates(ctx, d, p, session, a)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a finishSessionArgs

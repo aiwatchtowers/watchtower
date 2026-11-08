@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -65,21 +64,12 @@ func TestWithLaneIntent_AfterTheSessionsItemsWithoutRepeats(t *testing.T) {
 	assert.Equal(t, lanes, WithLaneIntent(nil, lanes), "a round with no session has lane items only")
 }
 
-// The gate reads the overview cached under the session's and the lanes'
-// items, and a lane item that is not done never refuses.
-func TestProj14_LaneItemsKeyTheOverviewButNeverGate(t *testing.T) {
-	fx, wb, session, _ := repoSession(t)
+// The gate finds the overview by the session's items alone: the overview
+// made with one lane ticket still passes once that ticket's title changed,
+// and a lane item that is not done never refuses.
+func TestProj14_LaneTicketEditedStillFindsTheOverview(t *testing.T) {
+	fx, wb, session, reg := repoSession(t)
 	linkIntent(t, fx.d, wb, session, 1)
-	lane := reviewai.IntentItem{Text: "ABC-1 Login", Source: reviewai.SourceLane}
-	reg := laneRegistry(t, fx.d, strconv.FormatInt(session, 10), nil,
-		func(context.Context, *db.DB, *db.Workbench, int64, ReviewSnapshot) ([]reviewai.IntentItem, error) {
-			return []reviewai.IntentItem{lane}, nil
-		})
-
-	cacheOverview(t, fx.d, wb, session, "done") // under the session's items alone
-	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
-	assert.Contains(t, refusal(t, err), "your changes have no AI overview yet")
-
 	ctx := context.Background()
 	p, err := fx.d.GetWorkbench(wb)
 	require.NoError(t, err)
@@ -87,12 +77,15 @@ func TestProj14_LaneItemsKeyTheOverviewButNeverGate(t *testing.T) {
 	require.NoError(t, err)
 	in, err := ReviewOverviewInput(ctx, fx.d, p, session)
 	require.NoError(t, err)
-	intent := WithLaneIntent(in.Intent, []reviewai.IntentItem{lane})
+	made := WithLaneIntent(in.Intent, []reviewai.IntentItem{{Text: "ABC-1 Login", Source: reviewai.SourceLane}})
 	js, err := json.Marshal(reviewai.Overview{Coverage: []reviewai.Coverage{
 		{Index: 1, Item: "goal 1", Status: "done", Source: reviewai.SourceSession},
 		{Index: 2, Item: "ABC-1 Login", Status: "not_found", Source: reviewai.SourceLane},
 	}})
 	require.NoError(t, err)
-	require.NoError(t, fx.d.PutReviewOverview(wb, snap.Tree, snap.Base, reviewai.IntentHash(intent, in.Notes), string(js), "m"))
+	require.NoError(t, fx.d.PutReviewOverview(wb, snap.Tree, snap.Base, reviewai.IntentHash(made, in.Notes), string(js), "m"))
+
+	renamed := WithLaneIntent(in.Intent, []reviewai.IntentItem{{Text: "ABC-1 Login with a passkey", Source: reviewai.SourceLane}})
+	assert.Equal(t, reviewai.IntentHash(made, in.Notes), reviewai.IntentHash(renamed, in.Notes))
 	mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
 }

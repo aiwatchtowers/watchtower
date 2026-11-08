@@ -80,11 +80,13 @@ type Overview struct {
 	Incomplete []string   `json:"incomplete"`
 }
 
-// IntentHash identifies the intent the overview was made for: the session's
-// items, the lane items and the agent's notes (a new note re-runs the
-// overview). Row ids and tree ids stay out; the cache key carries the tree.
-// With no lane items the bytes hashed are the same as before lane items
-// existed, so overviews cached for session-only intent stay valid.
+// IntentHash identifies the intent the overview is cached under: the
+// session's items and the agent's notes (a new note re-runs the overview).
+// Lane items are left out: they reach the model and the assembled overview,
+// but a lane ticket edited at its source never invalidates the overview
+// (the finish gate reads it without building the map). The bytes hashed are
+// the ones hashed before lane items existed, so cached overviews stay valid.
+// Row ids and tree ids stay out; the cache key carries the tree.
 func IntentHash(items []IntentItem, notes []db.ReviewNote) string {
 	type item struct{ Text, Intent, Task string }
 	type note struct {
@@ -97,14 +99,9 @@ func IntentHash(items []IntentItem, notes []db.ReviewNote) string {
 		Core               bool
 		Why                string
 	}
-	var session, lanes []item
-	if items != nil { // nil stays "null", as before: cached hashes still match
-		session = make([]item, 0, len(items))
-	}
+	var session []item // none stays "null", as before
 	for _, it := range items {
-		if it.source() == SourceLane {
-			lanes = append(lanes, item{it.Text, it.Intent, it.Task})
-		} else {
+		if it.source() == SourceSession {
 			session = append(session, item{it.Text, it.Intent, it.Task})
 		}
 	}
@@ -115,8 +112,7 @@ func IntentHash(items []IntentItem, notes []db.ReviewNote) string {
 	b, _ := json.Marshal(struct {
 		Items []item
 		Notes []note
-		Lanes []item `json:",omitempty"`
-	}{session, ns, lanes})
+	}{session, ns})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }

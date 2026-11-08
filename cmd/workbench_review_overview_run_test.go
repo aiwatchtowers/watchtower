@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	"watchtower/internal/reviewai"
 	"watchtower/internal/tools"
 )
 
@@ -273,15 +274,14 @@ func TestWorkbenchReviewOverview_LaneIntentItems(t *testing.T) {
 	}
 	assert.Equal(t, []string{"session", "lane", "lane"}, sources)
 
-	// The board lane loses its ticket, then gets it back: each is a new
-	// intent, asked again.
+	// The board lane loses its ticket: lane items are not in the cache key,
+	// so the overview stays.
 	_, err := database.Exec(`UPDATE targets SET branch = 'elsewhere' WHERE id = ?`, boardTarget)
 	require.NoError(t, err)
-	assert.NotEqual(t, true, reviewJSON(t, wb, "overview", "--round", round)["overview_cached"])
+	assert.Equal(t, true, reviewJSON(t, wb, "overview", "--round", round)["overview_cached"])
+	assert.Equal(t, 1, g.calls)
 	_, err = database.Exec(`UPDATE targets SET branch = 'task-b' WHERE id = ?`, boardTarget)
 	require.NoError(t, err)
-	assert.Equal(t, true, reviewJSON(t, wb, "overview", "--round", round)["overview_cached"])
-	assert.Equal(t, 2, g.calls)
 
 	_, err = database.Exec(`UPDATE review_rounds SET session_id = NULL WHERE id = ?`, round)
 	require.NoError(t, err)
@@ -378,20 +378,29 @@ func TestWorkbenchReviewOverview_StreamTicks(t *testing.T) {
 	assert.Equal(t, []string{"map", "tick", "tick", "chapter", "summary", ""}, events)
 }
 
-// The finish gate reads the overview the session form made, lane items and
-// all.
+// The finish gate finds the overview the session form made, lane items and
+// all, by the session's items alone — also after a lane ticket's title
+// changed at its source.
 func TestWorkbenchReviewOverview_SessionFormKeysTheFinishGate(t *testing.T) {
-	database, wb, s, _, _ := mapFixture(t)
-	useReviewGenerator(t, &keyReviewGen{})
+	database, wb, s, _, boardTarget := mapFixture(t)
+	g := &keyReviewGen{}
+	useReviewGenerator(t, g)
 	out := reviewJSON(t, wb, "overview", "--session", itoa(s))
 	require.Equal(t, true, out["ok"], out)
+	require.Equal(t, 2, strings.Count(g.users[0], "From: the ticket of a lane"), "the lane items reach the model")
+
+	_, err := database.Exec(`UPDATE targets SET text = 'Payments lane, renamed' WHERE id = ?`, boardTarget)
+	require.NoError(t, err)
 	p, err := database.GetWorkbench(wb)
 	require.NoError(t, err)
-	snap, err := tools.SnapshotReviewSession(context.Background(), database, p, s)
+	ctx := context.Background()
+	snap, err := tools.SnapshotReviewSession(ctx, database, p, s)
 	require.NoError(t, err)
-	lanes, err := sessionLaneIntent(context.Background(), database, p, s, snap)
+	in, err := tools.ReviewOverviewInput(ctx, database, p, s)
 	require.NoError(t, err)
-	assert.Len(t, lanes, 2)
+	_, ok, err := database.ReviewOverviewJSON(wb, snap.Tree, snap.Base, reviewai.IntentHash(in.Intent, in.Notes))
+	require.NoError(t, err)
+	assert.True(t, ok, "the gate's lookup: snapshot + the session's items")
 	again := reviewJSON(t, wb, "overview", "--session", itoa(s), "--cached-only")
 	assert.Equal(t, true, again["overview_cached"], again)
 }

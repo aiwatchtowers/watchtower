@@ -238,21 +238,6 @@ func (job *overviewJob) load(ctx context.Context, session int64) error {
 	return nil
 }
 
-// sessionLaneIntent is finish_session's tools.LaneIntentFunc: the lane items
-// of the map of the session's folder at the gate's snapshot, the map the
-// session form describes.
-func sessionLaneIntent(ctx context.Context, d *db.DB, p *db.Workbench, session int64, snap tools.ReviewSnapshot) ([]reviewai.IntentItem, error) {
-	pl, err := snapshotReviewPlace(ctx, snap, session)
-	if err != nil {
-		return nil, err
-	}
-	m, _, err := BuildReviewMap(ctx, d, p, pl)
-	if err != nil {
-		return nil, err
-	}
-	return tools.LaneIntent(d, p, m)
-}
-
 // answerReviewOverview answers the assembled overview cached for the job's
 // tree, base and intent, or — unless --cached-only — runs the model. A
 // --chapter or --summary run always runs; --continue answers a cached
