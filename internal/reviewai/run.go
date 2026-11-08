@@ -45,7 +45,8 @@ const (
 // CancelledText is the owner's text of a cancelled run.
 const CancelledText = "The overview was stopped."
 
-// Owner texts of the failures without a chapter title.
+// Owner texts and titles of what is not one chapter: run-level failures,
+// the summary, the one full call, the Can-skip-only summary.
 const (
 	tooLargeText     = "No chapter has a diff the AI can read: its files lie past the diff's size limit."
 	missingPartsText = "Some chapters have no description yet; run the overview to describe them first."
@@ -552,7 +553,7 @@ func (r *run) summary(ctx context.Context, batches []Batch, full bool) (Summary,
 	return sum, nil
 }
 
-// onlySkippable: the map's only chapter is "collapsed" — every changed
+// onlySkippable: every chapter of the map is "collapsed" — every changed
 // file can be skipped.
 func onlySkippable(m reviewmap.Map) bool {
 	return len(m.Chapters) > 0 && !slices.ContainsFunc(m.Chapters, func(ch reviewmap.Chapter) bool { return ch.Key != collapsedKey })

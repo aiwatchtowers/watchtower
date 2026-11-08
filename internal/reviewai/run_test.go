@@ -547,6 +547,25 @@ func TestRun_FullCallFailureNamesTheOverview(t *testing.T) {
 	assert.Empty(t, store.overviews)
 }
 
+// A full call whose reply leaves every chapter out is a parse error of the
+// call, so it names the
+// overview too, not the first chapter.
+func TestRun_FullCallLeavingEveryChapterOutNamesTheOverview(t *testing.T) {
+	d := okDiff()
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	keys := batchKeysOf(Pack(m, d, nil))
+	require.Len(t, keys, 1)
+	skip := map[string]bool{}
+	for _, k := range keys[0] {
+		skip[k] = true
+	}
+	_, err := New(&keyGen{skip: skip}).Run(context.Background(), newMemStore(), m, d, okIntent(), nil, RunOptions{})
+	var re *RunError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, ClassParse, re.Class)
+	assert.Equal(t, "The AI answer for the overview could not be read.", re.Text)
+}
+
 // Carry-over (Task 9): a call the run's ceiling cut names the ceiling's
 // minutes, not its own budget's.
 func TestTimeoutBudget_NamesWhatCutTheCall(t *testing.T) {
