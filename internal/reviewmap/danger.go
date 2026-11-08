@@ -210,16 +210,28 @@ func apiRemoved(f reviewdiff.File) bool {
 }
 
 // declName is the name decl captures on line ("" for no declaration): the
-// first non-empty group.
+// first non-empty group. A Swift operator name ending in "<" right before a
+// word ("func ==<T>(…)") drops that "<": it opens the generic clause, as in
+// "func == <T>(…)".
 func declName(decl *regexp.Regexp, line string) string {
-	m := decl.FindStringSubmatch(line)
+	m := decl.FindStringSubmatchIndex(line)
 	if m == nil {
 		return ""
 	}
-	for _, g := range m[1:] {
-		if g != "" {
-			return g
+	for i := 2; i < len(m); i += 2 {
+		start, end := m[i], m[i+1]
+		if start < 0 || start == end {
+			continue
 		}
+		name := line[start:end]
+		if len(name) > 1 && name[len(name)-1] == '<' && end < len(line) && isWordByte(line[end]) {
+			name = name[:len(name)-1]
+		}
+		return name
 	}
 	return ""
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || '0' <= b && b <= '9' || 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z'
 }
