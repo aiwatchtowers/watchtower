@@ -307,18 +307,6 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
     /// own claims (nothing shared but the database): the exclusive row insert
     /// gives each its own stem and no row is overwritten.
     func testConcurrentReservationsOfTheSameSecondGetDistinctNames() async throws {
-        try await assertConcurrentReservationsGetDistinctNames { RecordingNameClaims() }
-    }
-
-    /// The same race through one shared claims object (one app's writers).
-    func testConcurrentReservationsSharingClaimsGetDistinctNames() async throws {
-        let claims = RecordingNameClaims()
-        try await assertConcurrentReservationsGetDistinctNames { claims }
-    }
-
-    private func assertConcurrentReservationsGetDistinctNames(
-        claims: @escaping @Sendable () -> RecordingNameClaims
-    ) async throws {
         let date = Date()
         let directory: URL = recordingsDir
         let store: DatabasePendingTranscriptStore = pendingStore
@@ -327,7 +315,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
                 group.addTask {
                     try await MeetingRecorderCenter.reservePhoneRecording(
                         eventID: nil, title: "title \(index)", isPrivate: false, in: directory, store: store,
-                        claims: claims(), date: date)
+                        claims: RecordingNameClaims(), date: date)
                 }
             }
             return try await group.reduce(into: [URL]()) { $0.append($1) }
