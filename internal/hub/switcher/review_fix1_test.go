@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"testing"
 
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -116,4 +117,35 @@ func TestAFreePhonesOldRelayKeysGoWithTheSwitchsHubOnRelay(t *testing.T) {
 		t.Fatal("the free phone was not told hub_on_relay")
 	}
 	w.wantCleared(a)
+}
+
+// M1, across a restart: the unfinished departure is kept in hub_meta, and the
+// first poll after the restart finishes it, whatever the list says then.
+func TestAFailedReaderLostIsFinishedAfterARestart(t *testing.T) {
+	w, a, b := relayPair(t)
+	restore := w.failing("relay_lapsed_at")
+	w.leave(a)
+	w.pollAfterInterval()
+	w.pollAfterInterval()
+	if offer, rows := w.kx(a); offer || rows != 0 || w.lapsedNow(a) {
+		t.Fatal("the departure did not fail after its first clear")
+	}
+	restore()
+	w.rebuild(nil) // a restart: nothing in memory survives
+	w.mu.Lock()
+	w.emptyList = true // the list says nothing about the phone now
+	w.mu.Unlock()
+	w.pollAfterInterval()
+	if !w.lapsedNow(a) {
+		t.Fatal("the restart forgot the unfinished departure")
+	}
+	if v, _, _ := w.st.Meta(state.MetaReaderLostOwed); v != "" {
+		t.Fatalf("the finished departure stays in hub_meta: %q", v)
+	}
+	w.wantCleared(a)
+	w.onCloudKit(a)
+	w.settle(a, b)
+	if n := count(a, wire.ControlHubOnRelay); n != 1 {
+		t.Fatalf("%d hub_on_relay, want 1", n)
+	}
 }

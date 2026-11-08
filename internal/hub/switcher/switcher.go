@@ -223,6 +223,7 @@ func New(c Config) (*Switcher, error) {
 		}
 	}
 	s.loadPending()
+	s.loadOwed()
 	return s, nil
 }
 

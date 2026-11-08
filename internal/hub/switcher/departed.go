@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -47,6 +49,8 @@ type departures struct {
 	// owed is the phones a ReaderLost started for and did not finish (its
 	// first clear committed, the lapsed mark or hub_on_relay did not): with no
 	// ephemeral state left, only this set brings them back at the next poll.
+	// Kept in hub_meta (MetaReaderLostOwed), so a restart finishes them too;
+	// reset never drops it.
 	owed map[string]bool
 }
 
@@ -63,12 +67,13 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 		return
 	}
 	if s.activeKind() != transport.KindRelay || s.Pending() {
-		s.dp = departures{}
+		s.dp = departures{owed: s.dp.owed}
 		return
 	}
+	s.finishOwed()
 	fp, quiet := s.linkedPhones()
 	if fp == "" || !quiet {
-		s.dp = departures{last: now}
+		s.dp = departures{last: now, owed: s.dp.owed}
 		return
 	}
 	pctx, cancel := context.WithTimeout(ctx, s.oldSide())
@@ -82,7 +87,7 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 		return // unknown: nothing moves, nothing clears, the count holds
 	}
 	if after, _ := s.linkedPhones(); after != fp || s.dp.fp != fp {
-		s.dp = departures{last: now, fp: after}
+		s.dp = departures{last: now, fp: after, owed: s.dp.owed}
 		if after != fp {
 			return
 		}
@@ -101,14 +106,10 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 	if s.dp.missed == nil {
 		s.dp.missed = map[string]time.Time{}
 	}
-	if s.dp.owed == nil {
-		s.dp.owed = map[string]bool{}
-	}
 	for _, d := range devices {
 		id := canonical(d.ID)
 		if s.dp.owed[id] {
-			s.finishReaderLost(d, id)
-			continue
+			continue // finishOwed's
 		}
 		if d.RelayDeviceID == "" || listed[d.RelayDeviceID] {
 			delete(s.dp.missed, id)
@@ -129,26 +130,66 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 		delete(s.dp.missed, id)
 		if err := s.ReaderLost(d.ID); err != nil {
 			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
-			s.dp.owed[id] = true
+			s.setOwed(id, true)
 		}
 	}
 }
 
-// finishReaderLost retries a ReaderLost that failed after its first clear
-// (dp held): the mark, hub_on_relay and the last clear, whatever the list
-// says now. A phone marked lapsed meanwhile, or no longer linked, is done.
-func (s *Switcher) finishReaderLost(d state.Device, id string) {
-	if d.RelayLapsedAt == nil {
-		if err := s.owe(d.ID, true); err != nil {
-			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
-			return
+// finishOwed retries every ReaderLost that failed after its first clear
+// (dpMu held), before the poll's account read: the mark, hub_on_relay and
+// the last clear, whatever the list says now. A phone marked lapsed
+// meanwhile has only the clear left; one no longer linked is done.
+func (s *Switcher) finishOwed() {
+	for id := range s.dp.owed {
+		d, linked, err := s.c.Store.Device(id)
+		if err != nil {
+			continue
 		}
+		if linked && d.RelayLapsedAt == nil {
+			if err := s.owe(d.ID, true); err != nil {
+				log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
+				continue
+			}
+		}
+		if err := s.clearKeys(id); err != nil {
+			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
+			continue
+		}
+		s.setOwed(id, false)
 	}
-	if err := s.clearKeys(id); err != nil {
-		log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
+}
+
+// setOwed adds or removes id in the owed set and writes the set to hub_meta
+// (dpMu held). A failed write keeps memory as it is: the poll runs again.
+func (s *Switcher) setOwed(id string, owed bool) {
+	if s.dp.owed == nil {
+		s.dp.owed = map[string]bool{}
+	}
+	if owed {
+		s.dp.owed[id] = true
+	} else {
+		delete(s.dp.owed, id)
+	}
+	ids := slices.Sorted(maps.Keys(s.dp.owed))
+	if err := s.c.Store.SetMeta(state.MetaReaderLostOwed, strings.Join(ids, ",")); err != nil {
+		log.Printf("hub: the unfinished departures are not saved (%s)", errClass(err))
+	}
+}
+
+// loadOwed restores the unfinished departures at a restart.
+func (s *Switcher) loadOwed() {
+	v, ok, err := s.c.Store.Meta(state.MetaReaderLostOwed)
+	if err != nil || !ok || v == "" {
 		return
 	}
-	delete(s.dp.owed, id)
+	s.dpMu.Lock()
+	defer s.dpMu.Unlock()
+	s.dp.owed = map[string]bool{}
+	for _, id := range strings.Split(v, ",") {
+		if id != "" {
+			s.dp.owed[id] = true
+		}
+	}
 }
 
 // linkedPhones is G2's guard without its route rule: the linked phones with
