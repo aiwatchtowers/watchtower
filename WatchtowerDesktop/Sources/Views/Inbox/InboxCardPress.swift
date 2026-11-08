@@ -9,6 +9,8 @@ enum InboxCardPress: Equatable {
     case command(InboxCardCommand)
     /// Open the workbench picker; the pick sends this task.
     case pick(task: String)
+    /// Nothing to do (a target button, pressed through `target(…)`).
+    case nothing
 
     /// The press of `action` on `card`. A Reply carries the action's index
     /// in the card's flattened action list and the content hash the card
@@ -34,6 +36,9 @@ enum InboxCardPress: Equatable {
         case .reply:
             guard reply == .ready else { return .command(.openAutomation(card)) }
             return .command(.reply(outputID: card.id, action: action.index, contentHash: card.contentHash))
+        case .target:
+            // A target button's click depends on its state: `target(…)`.
+            return .nothing
         }
     }
 
@@ -48,6 +53,10 @@ enum InboxCardPress: Equatable {
             return !InboxCardLinkPolicy.permits(url, navScreens: navScreens)
         case .chat, .agent:
             return false
+        case .target:
+            // Its state draws what can be clicked (creating is disabled);
+            // only a propose under way holds it here.
+            return false
         case .reply:
             switch reply {
             case .sent, .removed: return true
@@ -59,8 +68,7 @@ enum InboxCardPress: Equatable {
 
 extension InboxCardAction {
     /// A block or card action decoded by the Kit, at its flattened `index`.
-    /// Nil for what the Inbox does not press yet — a `target` button (the
-    /// approval-card flow) — or an `open` without a URL scheme.
+    /// Nil for an `open` without a URL scheme.
     init?(_ action: ArtifactAction, index: Int) {
         let kind: Kind
         switch action.payload {
@@ -78,9 +86,39 @@ extension InboxCardAction {
             })
         case let .reply(value, _):
             kind = .reply(value: value)
-        case .target:
-            return nil
+        case .target(let target):
+            kind = .target(Target(title: target.title, intent: target.intent, parent: target.parent,
+                                  hash: action.hash))
         }
         self.init(index: index, label: action.label, kind: kind, primary: action.primary)
+    }
+}
+
+// MARK: - The target button (Inbox builder A)
+
+extension InboxCardPress {
+    /// What a click of a target button does in `state`: propose (idle,
+    /// propose error), open the approval card (waiting), Try again on the
+    /// same row (stuck, failed), open the task (created); nothing while it
+    /// is being created.
+    static func target(
+        _ target: InboxCardAction.Target,
+        index: Int,
+        card: AutomationOutputCard,
+        facts: InboxTargetButtonFacts,
+        state: ArtifactTargetButtonState
+    ) -> InboxCardCommand? {
+        switch state {
+        case .idle, .proposeError:
+            return .proposeTarget(InboxTargetPress(card: card, index: index, target: target))
+        case .waiting:
+            return facts.proposal.map { .openProposal($0.id) }
+        case .stuck, .failed:
+            return facts.proposal.map { .tryAgainTarget($0.id) }
+        case .created:
+            return facts.proposal?.targetID.map(InboxCardCommand.openTarget)
+        case .creating:
+            return nil
+        }
     }
 }

@@ -55,6 +55,8 @@ struct InboxArtifactCard: View {
     let onDone: () -> Void
     let onDismiss: () -> Void
     let workbenches: [Workbench]
+    /// The target buttons' state, from the Inbox center.
+    var targets = InboxTargetButtonSource()
 
     /// An agent press waiting for the owner's workbench.
     @State private var pickingTask: String?
@@ -106,15 +108,25 @@ struct InboxArtifactCard: View {
             avatar: { Self.avatar(people[$0]) },
             onAction: { index in
                 guard let action = byIndex[index] else { return }
+                if case .target(let target) = action.kind {
+                    if let command = targets.command(target, index: index, card: card) { onCommand(command) }
+                    return
+                }
                 switch InboxCardPress.resolve(action, card: card, reply: reply, workbenches: workbenches) {
                 case .command(let command): onCommand(command)
                 case .pick(let task): pickingTask = task
+                case .nothing: break
                 }
             },
+            targetButtonState: { index in
+                guard case .target(let target)? = byIndex[index]?.kind else { return .idle }
+                return targets.button(target, index: index, card: card).state
+            },
             isActionEnabled: { index in
-                // A `target` button has no press here yet (it maps to no
-                // `InboxCardAction`): drawn disabled, never a dead click.
                 guard let action = byIndex[index] else { return false }
+                if case .target(let target) = action.kind {
+                    return !targets.isProposing(targets.button(target, index: index, card: card).context)
+                }
                 return !InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
             }
         )

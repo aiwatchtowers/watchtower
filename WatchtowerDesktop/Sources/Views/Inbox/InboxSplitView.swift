@@ -203,6 +203,11 @@ struct InboxSplitView<EmptyList: View>: View {
             onRetryBuiltin: onRetryBuiltin,
             workbenches: workbenches,
             artifactPeople: vm.feed.artifactPeople,
+            targets: InboxTargetButtonSource(
+                facts: { vm.targetFacts(contextID: $0) },
+                isProposing: { vm.proposingTargets.contains($0) },
+                now: now
+            ),
             dayCard: { card in
                 if let pane = dayPane?(card) {
                     around(pane, card)

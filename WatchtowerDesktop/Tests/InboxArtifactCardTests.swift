@@ -76,22 +76,36 @@ final class InboxArtifactCardTests: XCTestCase {
         XCTAssertEqual(InboxArtifactCard.replyCaption(.sent(runID: 9)), "Sent — run #9")
     }
 
-    /// A target button is the approval-card flow's; the Inbox does not map it
-    /// to a press here, and it keeps its flattened slot.
-    func testTargetActionKeepsItsSlotButIsNotPressedHere() {
+    /// A target button is pressed in the Inbox (Inbox builder A, plan Task
+    /// 15) at its flattened slot, carrying the drawn action's hash.
+    func testTargetActionIsPressableAtItsSlot() throws {
         let target = #"{"label":"Make a task","kind":"target","target":{"title":"Follow up"}}"#
         let shown = card(blocks: #"{"v":1,"blocks":[{"type":"actions","actions":[\#(target),\#(chat)]}]}"#)
-        XCTAssertEqual(InboxCardLayout.of(shown).pressable.map(\.index), [1])
+        let pressable = InboxCardLayout.of(shown).pressable
+        XCTAssertEqual(pressable.map(\.index), [0, 1])
+        guard case .target(let drawn) = pressable[0].kind else { return XCTFail("a target press") }
+        XCTAssertEqual(drawn.title, "Follow up")
+        XCTAssertEqual(drawn.hash.count, 16)
     }
 
-    /// In the Inbox the target button is drawn disabled until it is wired,
-    /// while a chat button beside it stays pressable.
-    func testTargetButtonIsDrawnDisabledInTheInbox() throws {
+    /// An idle target button is pressable and its click proposes; a press
+    /// under way holds it, while a chat button beside it stays pressable.
+    func testTargetButtonPressProposes() throws {
         let target = #"{"label":"Make a task","kind":"target","target":{"title":"Follow up"}}"#
         let shown = card(blocks: #"{"v":1,"blocks":[{"type":"actions","actions":[\#(target),\#(chat)]}]}"#)
-        let sut = InboxReadingPane(item: .output(shown), navScreens: []) { _ in }
-        XCTAssertTrue(try sut.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self).isDisabled())
+        var commands: [InboxCardCommand] = []
+        let sut = InboxReadingPane(item: .output(shown), navScreens: []) { commands.append($0) }
+        let button = try sut.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self)
+        XCTAssertFalse(button.isDisabled())
+        try button.tap()
+        guard case .proposeTarget(let press)? = commands.first else { return XCTFail("\(commands)") }
+        XCTAssertTrue(press.contextID.hasPrefix("5:0:"))
         XCTAssertFalse(try sut.inspect().find(button: "Draft").isDisabled())
+
+        let source = InboxTargetButtonSource { _ in InboxTargetButtonFacts() } isProposing: { _ in true }
+        let ignore: (InboxCardCommand) -> Void = { _ in }
+        let busy = InboxReadingPane(item: .output(shown), navScreens: [], onCommand: ignore, targets: source)
+        XCTAssertTrue(try busy.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self).isDisabled())
     }
 
     // MARK: - People

@@ -111,4 +111,51 @@ package enum AgentActionQueries {
             """, arguments: [terminalSince, terminalSince, terminalSince])
     }
 
+    /// The newest proposal of each Inbox target button (`context_type =
+    /// 'automation_output'`, `context_id = '<output>:<index>:<hash>'`) whose
+    /// output is one of `outputIDs` or whose context is one of `contextIDs`,
+    /// keyed by context id. Newest = highest id: a context's rows are
+    /// written one at a time (one open row per context, Go AGENT-05).
+    package static func newestButtonProposals(
+        _ db: Database, outputIDs: [Int64], contextIDs: [String]
+    ) throws -> [String: AgentAction] {
+        var terms: [String] = []
+        var arguments = StatementArguments()
+        if !outputIDs.isEmpty {
+            terms.append("CAST(substr(a.context_id, 1, instr(a.context_id, ':') - 1) AS INTEGER) IN "
+                + placeholders(outputIDs.count))
+            arguments += StatementArguments(outputIDs)
+        }
+        if !contextIDs.isEmpty {
+            terms.append("a.context_id IN " + placeholders(contextIDs.count))
+            arguments += StatementArguments(contextIDs)
+        }
+        guard !terms.isEmpty else { return [:] }
+        let rows = try AgentAction.fetchAll(db, sql: """
+            SELECT a.* FROM agent_actions a
+            WHERE a.context_type = '\(buttonContextType)' AND (\(terms.joined(separator: " OR ")))
+              AND a.id = (SELECT MAX(b.id) FROM agent_actions b
+                          WHERE b.context_type = a.context_type AND b.context_id = a.context_id)
+            """, arguments: arguments)
+        return Dictionary(rows.map { ($0.contextID, $0) }) { first, _ in first }
+    }
+
+    /// Of `actionIDs`, the rows whose task still exists: `create_target`
+    /// writes its task with `source_type = 'chat'`, `source_id =
+    /// 'action:<row id>'` (Go `CreateTargetForAction`).
+    package static func actionsWithTask(_ db: Database, actionIDs: [Int64]) throws -> Set<Int64> {
+        guard !actionIDs.isEmpty else { return [] }
+        let sources = try String.fetchAll(db, sql: """
+            SELECT source_id FROM targets
+            WHERE source_type = 'chat' AND source_id IN \(placeholders(actionIDs.count))
+            """, arguments: StatementArguments(actionIDs.map { "action:\($0)" }))
+        return Set(sources.compactMap { Int64($0.dropFirst("action:".count)) })
+    }
+
+    /// The context type of an Inbox target button's proposal.
+    package static let buttonContextType = "automation_output"
+
+    private static func placeholders(_ count: Int) -> String {
+        "(" + Array(repeating: "?", count: count).joined(separator: ",") + ")"
+    }
 }

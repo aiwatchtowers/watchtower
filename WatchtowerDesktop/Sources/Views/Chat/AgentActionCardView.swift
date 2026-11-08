@@ -58,6 +58,10 @@ struct AgentActionCardView: View {
     /// `onRetry`, which the host makes `actions apply` on an approved row
     /// and `actions apply --force` on an executing one — the same row.
     var targetButtonState: ArtifactTargetButtonState?
+    /// False on an older proposal of an Inbox target button whose newest row
+    /// is another one: Try again is offered only on the newest row (the CLI
+    /// refuses the older one with exit 3).
+    var offersRetry = true
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -533,7 +537,7 @@ struct AgentActionCardView: View {
                             .buttonStyle(.borderedProminent)
                     }
                     Button("Reject", action: onReject)
-                } else if action.canRetry {
+                } else if action.canRetry, offersRetry {
                     Button("Retry", action: onRetry)
                 } else if let onDismiss, ConnectorCallProposal.awaitsDismissal(action) {
                     Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)

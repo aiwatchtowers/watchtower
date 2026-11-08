@@ -20,6 +20,8 @@ struct InboxCardButtons: View {
     var workbenches: [Workbench] = []
     /// False: only the common row (the card's actions are drawn with its blocks).
     var drawsOwnActions = true
+    /// The target buttons' state, from the Inbox center.
+    var targets = InboxTargetButtonSource()
 
     /// An agent press waiting for the owner's workbench: the action's index
     /// (the button it is anchored to) and its task.
@@ -31,7 +33,7 @@ struct InboxCardButtons: View {
     @State private var picking: AgentPick?
 
     var body: some View {
-        let actions = drawsOwnActions ? InboxCardAction.decode(card.actionsJSON) : []
+        let actions = drawsOwnActions ? InboxCardAction.ownActions(card) : []
         let reply = InboxCardAction.replyState(card)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             if !actions.isEmpty {
@@ -57,6 +59,24 @@ struct InboxCardButtons: View {
 
     @ViewBuilder
     private func ownButton(_ action: InboxCardAction, reply: InboxReplyState) -> some View {
+        if case .target(let target) = action.kind {
+            targetButton(action, target: target)
+        } else {
+            plainButton(action, reply: reply)
+        }
+    }
+
+    /// A target button: DesignKit's view over the state its proposal gives.
+    private func targetButton(_ action: InboxCardAction, target: InboxCardAction.Target) -> some View {
+        let button = targets.button(target, index: action.index, card: card)
+        return ArtifactTargetButton(label: action.label, state: button.state, mode: .inbox) {
+            if let command = targets.command(target, index: action.index, card: card) { onCommand(command) }
+        }
+        .disabled(targets.isProposing(button.context))
+    }
+
+    @ViewBuilder
+    private func plainButton(_ action: InboxCardAction, reply: InboxReplyState) -> some View {
         let button = Button(Self.label(action, card: card, reply: reply)) { press(action, reply: reply) }
             .disabled(isDisabled(action, reply: reply))
             .help(help(action))
@@ -74,6 +94,7 @@ struct InboxCardButtons: View {
         switch InboxCardPress.resolve(action, card: card, reply: reply, workbenches: workbenches) {
         case .command(let command): onCommand(command)
         case .pick(let task): picking = AgentPick(anchor: action.index, task: task)
+        case .nothing: break
         }
     }
 
@@ -107,6 +128,7 @@ struct InboxCardButtons: View {
         case .chat: "Opens Chats with this card"
         case let .agent(task, ref): InboxCardTexts.agentActionHelp(task, workbench: workbenchName(for: ref))
         case .reply: "Sends this choice to the automation"
+        case .target: "Proposes a task; you approve it"
         }
     }
 
@@ -146,6 +168,18 @@ extension InboxCardButtons {
         guard let pick = picking else { return }
         picking = nil
         onCommand(.agent(InboxCardSubject(card), task: pick.task, workbench: .id(workbenchID)))
+    }
+}
+
+extension InboxCardAction {
+    /// A card's own buttons in stored order, through the Kit's decoder (it
+    /// alone hashes a target action); a column the Kit cannot read falls
+    /// back to Core's tolerant decoder, which drops target actions.
+    static func ownActions(_ card: AutomationOutputCard) -> [InboxCardAction] {
+        guard case let .actions(actions) = ArtifactDocument.decodeActions(card.actionsJSON) else {
+            return decode(card.actionsJSON)
+        }
+        return actions.enumerated().compactMap { Self($0.element, index: $0.offset) }
     }
 }
 
