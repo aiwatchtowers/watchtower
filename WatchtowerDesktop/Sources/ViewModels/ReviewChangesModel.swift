@@ -1300,13 +1300,16 @@ final class ReviewChangesModel {
     private func apply(_ event: ReviewStreamEvent) -> RunOutcome? {
         switch event {
         case .map(let ready):
+            // A run on an earlier snapshot (an Undo lets it finish) never replaces this diff's map.
             if round?.diffKey == run?.diffKey {
                 map = .ready(ready)
                 refreshChapters()
             }
         case .mapFailed:
-            map = .failed
-            refreshChapters()
+            if round?.diffKey == run?.diffKey {
+                map = .failed
+                refreshChapters()
+            }
         case .waiting(let caller):
             waitingFor = caller
             run?.waiting = true
