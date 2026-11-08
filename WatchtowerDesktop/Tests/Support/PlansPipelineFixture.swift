@@ -24,13 +24,13 @@ package struct PlansPipelineFixture {
               let ordinary = row["ordinary_usage_allowed"] as? Bool,
               let now = PlanUsageDates.preciseParse(try text(bundle, "now"))
         else { throw FixtureError.invalidBundle }
-        let limits = try encoded(row, "limits")
-        let plot = try encoded(row, "plot_json")
+        let limits = try text(row, "limits_json")
+        let plot = try text(row, "plot_json_raw")
         try db.execute(sql: """
             INSERT INTO codex_plan_usage_status
               (id,state,reason,plan,fetched_at,updated_at,last_error,limits_json,breakdown_json,
-               plot_json,scope,identity_known,ordinary_usage_allowed)
-            VALUES (1,?,?,?,?,?,?,?,'[]',?,?,?,?)
+               plot_json,scope,identity_known,ordinary_usage_allowed,publication_proof)
+            VALUES (1,?,?,?,?,?,?,?,'[]',?,?,?,?,?)
             """, arguments: [
                 try text(row, "state"),
                 try text(row, "reason"),
@@ -42,7 +42,8 @@ package struct PlansPipelineFixture {
                 plot,
                 try text(bundle, "scope"),
                 known,
-                ordinary
+                ordinary,
+                try text(row, "publication_proof")
             ])
         for sample in samples {
             guard let percent = sample["percent"] as? Double else { throw FixtureError.invalidBundle }
@@ -69,10 +70,4 @@ package struct PlansPipelineFixture {
         return value
     }
 
-    private static func encoded(_ object: [String: Any], _ key: String) throws -> String {
-        guard let value = object[key],
-              let result = String(data: try JSONSerialization.data(withJSONObject: value), encoding: .utf8)
-        else { throw FixtureError.invalidBundle }
-        return result
-    }
 }

@@ -26,7 +26,9 @@ package enum PlanUsageQueries {
               limits.allSatisfy({ !$0.key.isEmpty && $0.percent.isFinite && (0...100).contains($0.percent) &&
                   ["idle", "collecting", "safe", "will_hit", "hit"].contains($0.projection.state) })
         else { throw PlanUsageStorageError.invalidSnapshot }
-        let plot = try PlanUsagePlot.decode(row["plot_json"], fetchedAt: fetched, limits: limits)
+        let plotText: String = row["plot_json"]
+        let plot = try PlanUsagePlot.decode(plotText, fetchedAt: fetched, limits: limits)
+        let integrity = PlanUsagePublicationIntegrity.verify(limits: encoded, plot: plotText, proof: row["publication_proof"])
         let breakdownText: String = row["breakdown_json"]
         let breakdown = try decoder.decode([PlanUsageBreakdownRow].self, from: Data(breakdownText.utf8))
         guard breakdown.allSatisfy({ $0.percent.isFinite && (0...100).contains($0.percent) }) else {
@@ -59,7 +61,7 @@ package enum PlanUsageQueries {
         return PlanUsageStatus(state: state, reason: row["reason"], plan: row["plan"], fetchedAt: fetched,
                                lastError: row["last_error"], limits: limits, breakdown: breakdown,
                                provider: provider, updatedAt: updated, identityKnown: known,
-                               ordinaryUsageAllowed: ordinary, plot: plot, history: history)
+                               ordinaryUsageAllowed: ordinary, plot: plot, history: history, publicationIntegrity: integrity)
     }
 
     private static func date(_ text: String?) throws -> Date? {

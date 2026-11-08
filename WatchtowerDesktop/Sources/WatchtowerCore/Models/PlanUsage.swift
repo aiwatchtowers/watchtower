@@ -79,6 +79,7 @@ package struct PlanUsageStatus: Equatable, Sendable {
     package let ordinaryUsageAllowed: Bool?
     package let plot: PlanUsagePlot?
     package let history: [String: [PlanUsageSample]]
+    package let publicationIntegrity: PlanUsagePublicationIntegrity
 
     package init(
         state: String,
@@ -95,7 +96,8 @@ package struct PlanUsageStatus: Equatable, Sendable {
         // swiftlint:disable:next discouraged_optional_boolean
         ordinaryUsageAllowed: Bool? = nil,
         plot: PlanUsagePlot? = nil,
-        history: [String: [PlanUsageSample]] = [:]
+        history: [String: [PlanUsageSample]] = [:],
+        publicationIntegrity: PlanUsagePublicationIntegrity = .unverified
     ) {
         self.state = state
         self.reason = reason
@@ -110,6 +112,7 @@ package struct PlanUsageStatus: Equatable, Sendable {
         self.ordinaryUsageAllowed = ordinaryUsageAllowed
         self.plot = plot
         self.history = history
+        self.publicationIntegrity = publicationIntegrity
     }
 }
 
