@@ -62,6 +62,10 @@ extension WorkbenchesViewModel {
         /// The launch found no binary for the session's agent (`launch-args`
         /// exit 3): nothing started.
         case agentNotFound(AgentKind)
+        /// The session runs an agent kind this version does not know (a
+        /// newer Mac or CLI wrote it): it is never started (A7b; Go's
+        /// session_start refuses it `not_supported`).
+        case unsupportedAgent(String)
         /// Delete and Clean Up closed the session's terminal and is removing
         /// its worktree (board #535): it does not resume. Callers drop it
         /// silently, as `inProgress`; the phone is told why.
@@ -575,6 +579,9 @@ extension WorkbenchesViewModel {
         // Clean Up closed — its worktree being removed — is refused
         // (board #535). A Clean Up… apply does not stop a resume.
         guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
+        // A kind this build has no adapter for is refused before anything
+        // runs (A7b): never a shell, never Claude Code in its place.
+        if session.kind.isUnsupported { throw TargetStartError.unsupportedAgent(session.kind.rawValue) }
         // An agent the organization's policy forbids (#608) is not resumed;
         // a terminal still running shows as it is.
         if let refusal = agentPolicyRefusal(session) {
@@ -1314,6 +1321,7 @@ extension WorkbenchesViewModel.TargetStartError: LocalizedError {
         case .inProgress: "A start for this target is still running."
         case let .failed(message): message
         case let .agentNotFound(agent): AgentChoicePresentation.notInstalledHint(agent)
+        case let .unsupportedAgent(raw): TerminalSession.Kind.unsupportedMessage(raw)
         case .cleaningUp: "The session is being cleaned up."
         }
     }

@@ -645,6 +645,41 @@ final class SessionStartHandlerTests: XCTestCase {
     }
 
     /// Exit 127 names the agent that was not found.
+    /// A7a/A7b twin of Go's session_start: the target's session runs an
+    /// agent kind this version does not know (a newer Mac wrote it). It is
+    /// refused `not_supported` with Go's message, never started as Claude
+    /// Code or as a shell.
+    func testOpenExistingOnAnUnknownKindIsRefusedNotSupported() async throws {
+        let p = try await workbench()
+        let t = try await target(p)
+        let acme = acme
+        try await pool.write { db in
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            try db.execute(
+                sql: """
+                INSERT INTO terminal_sessions (project_id, kind, title, title_source, target_id, folder_path, created_at, last_active_at)
+                VALUES (?, 'gemini', 'Newer', 'auto', ?, ?, '2026-11-08T10:00:00Z', '2026-11-08T10:00:00Z')
+                """,
+                arguments: [p, t, acme]
+            )
+            try db.execute(sql: "PRAGMA ignore_check_constraints = OFF")
+        }
+        let vm = makeVM()
+        await vm.reload()
+
+        let outcome = try await makeHandlers(vm).handle(start(t, startParams(p, mode: "open_existing")))
+
+        XCTAssertEqual(outcome.status, .failed)
+        XCTAssertEqual(outcome.reason, .notSupported)
+        XCTAssertEqual(outcome.errorMessage, #"agent kind "gemini" is not supported by this version (claude or codex)"#)
+        XCTAssertTrue(launches.isEmpty, "no shell and no Claude Code in its place")
+    }
+
+    func testTheRefusalNamesEveryKindLikeGo() {
+        XCTAssertEqual(AgentKind.unsupportedRefusal("x"),
+                       #"agent kind "x" is not supported by this version (claude or codex)"#)
+    }
+
     func testExit127ReasonFollowsTheSessionsAgent() {
         XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.claude), .claudeNotFound)
         XCTAssertEqual(SessionStartStopHandlers.notFoundReason(.codex), .codexNotFound)
