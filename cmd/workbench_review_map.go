@@ -23,6 +23,11 @@ var reviewMapBudget = 20 * time.Second
 // the chapters are the package grouping.
 const lanesUnreadNote = "Lanes: the branch's history could not be read; chapters group files by package."
 
+// laneTitlesUnreadNote is the map's note when the lane titles (board
+// targets, Jira summaries) could not be read: lanes carry branch names and
+// tags are not checked.
+const laneTitlesUnreadNote = "Lanes: ticket titles could not be read; lanes are named by branch."
+
 var workbenchReviewMapCmd = &cobra.Command{
 	Use:   "map",
 	Short: "The review's instant map: chapters in reading order, danger signals, lanes (no AI, writes nothing)",
@@ -88,10 +93,10 @@ func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 
 // BuildReviewMap reads the place's diff, the session's agent chapters, the
 // workbench's .watchtower/review-map.md and the lanes (within
-// reviewMapBudget), and builds the map (tech spec §2). It writes nothing.
-// A done ctx or a failing diff is an error; a lane walk that runs out of
-// budget or cannot read the history gives the package grouping and
-// lanes_partial.
+// reviewMapBudget, the default-branch read included), and builds the map
+// (tech spec §2). It writes nothing. A done ctx or a failing diff is an
+// error; a lane walk that runs out of budget or cannot read the history
+// gives the package grouping and lanes_partial.
 func BuildReviewMap(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPlace) (reviewmap.Map, reviewdiff.Diff, error) {
 	deadline := time.Now().Add(reviewMapBudget)
 	diff, err := pl.Repo.Diff(ctx, pl.Base, pl.Tree)
@@ -100,47 +105,75 @@ func BuildReviewMap(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPla
 	}
 	in := reviewmap.Input{Diff: diff, Patterns: reviewmap.LoadPatterns(p.FolderPath)}
 	if pl.SessionID != 0 {
+		// Every chapter note of the session, whatever its tree_sha: the
+		// Desktop's agent chapters (ReviewChangesModel) are the same set, so
+		// the agent:<n> keys agree.
 		if in.AgentChapters, err = d.ReviewNotes(p.ID, pl.SessionID); err != nil {
 			return reviewmap.Map{}, reviewdiff.Diff{}, err
 		}
 	}
-	var unread bool
-	if in.Attribution, unread, err = reviewLanes(ctx, d, p, pl, time.Until(deadline)); err != nil {
+	var notes []string
+	if in.Attribution, notes, err = reviewLanes(ctx, d, p, pl, deadline); err != nil {
 		return reviewmap.Map{}, reviewdiff.Diff{}, err
 	}
 	m := reviewmap.Build(in)
-	if unread {
-		m.Notes = append(m.Notes, lanesUnreadNote)
-	}
+	m.Notes = append(m.Notes, notes...)
 	return m, diff, nil
 }
 
-// reviewLanes attributes the place's committed files to lanes. unread is
-// true when git could not walk the history (the attribution is then partial
-// and empty); only a done ctx is an error.
-func reviewLanes(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPlace, budget time.Duration) (reviewmap.Attribution, bool, error) {
-	a, err := attributeLanes(ctx, d, p, pl, budget)
-	if err == nil {
-		return a, false, nil
-	}
-	if ctx.Err() != nil {
-		return reviewmap.Attribution{}, false, ctx.Err()
-	}
-	// No error text (FILES-01): git's message may carry a path.
-	stderrLogf("review map: lane walk failed; package chapters")
-	return reviewmap.Attribution{Partial: true}, true, nil
+// mapTitles is the map's title source: DBTitles, remembering whether it
+// failed (the attribution then folds the failure into lanes_partial).
+type mapTitles struct {
+	reviewmap.DBTitles
+	failed bool
 }
 
-func attributeLanes(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPlace, budget time.Duration) (reviewmap.Attribution, error) {
+func (t *mapTitles) Titles(branches, jiraKeys []string, boardRefs []int64) (reviewmap.LaneTitles, error) {
+	out, err := t.DBTitles.Titles(branches, jiraKeys, boardRefs)
+	if err != nil {
+		t.failed = true
+	}
+	return out, err
+}
+
+// reviewLanes attributes the place's committed files to lanes, with the
+// notes to add to the map. A history git could not walk gives an empty
+// partial attribution and lanesUnreadNote; unreadable lane titles give
+// laneTitlesUnreadNote. Only a done ctx is an error.
+func reviewLanes(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPlace, deadline time.Time) (reviewmap.Attribution, []string, error) {
+	titles := &mapTitles{DBTitles: reviewmap.DBTitles{DB: d, ProjectID: p.ID}}
+	a, err := attributeLanes(ctx, pl, titles, deadline)
+	if err == nil {
+		if !titles.failed {
+			return a, nil, nil
+		}
+		// No error text (FILES-01): a database message may carry a name.
+		stderrLogf("review map: lane titles unreadable (workbench %d, session %d); lanes named by branch", p.ID, pl.SessionID)
+		return a, []string{laneTitlesUnreadNote}, nil
+	}
+	if ctx.Err() != nil {
+		return reviewmap.Attribution{}, nil, ctx.Err()
+	}
+	// No error text (FILES-01): git's message may carry a path.
+	stderrLogf("review map: lane walk failed (workbench %d, session %d); package chapters", p.ID, pl.SessionID)
+	return reviewmap.Attribution{Partial: true}, []string{lanesUnreadNote}, nil
+}
+
+// attributeLanes reads the default branch and walks the lanes, both before
+// deadline: a default-branch read past it is an error (package chapters),
+// a walk past it is partial.
+func attributeLanes(ctx context.Context, pl reviewPlace, titles reviewmap.TitleSource, deadline time.Time) (reviewmap.Attribution, error) {
 	var defaultTip string
 	if pl.Head != "" {
-		var err error
-		if defaultTip, err = pl.Repo.DefaultTip(ctx); err != nil {
+		tipCtx, cancel := context.WithDeadline(ctx, deadline)
+		tip, err := pl.Repo.DefaultTip(tipCtx)
+		cancel()
+		if err != nil {
 			return reviewmap.Attribution{}, err
 		}
+		defaultTip = tip
 	}
-	titles := reviewmap.DBTitles{DB: d, ProjectID: p.ID}
-	return reviewmap.Attribute(ctx, pl.Repo, pl.Base, pl.Head, pl.HeadBranch, defaultTip, titles, budget)
+	return reviewmap.Attribute(ctx, pl.Repo, pl.Base, pl.Head, pl.HeadBranch, defaultTip, titles, time.Until(deadline))
 }
 
 func runWorkbenchReviewMap(cmd *cobra.Command, _ []string) error {

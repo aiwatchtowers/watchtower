@@ -231,6 +231,22 @@ func TestReviewMap_UnreadableHeadIsPartialWithANote(t *testing.T) {
 	assert.Contains(t, m["notes"], lanesUnreadNote)
 }
 
+// TestReviewMap_UnreadableTitlesArePartialWithANote: a title source that
+// fails (here a missing jira_issues table) keeps the lanes, named by
+// branch, and says why the map is partial.
+func TestReviewMap_UnreadableTitlesArePartialWithANote(t *testing.T) {
+	database, wb, s, _, _ := mapFixture(t)
+	r := startRound(t, wb, s)
+	_, err := database.Exec(`DROP TABLE jira_issues`)
+	require.NoError(t, err)
+
+	m, _ := reviewMap(t, wb, "--round", itoa(int64(r["id"].(float64))))
+	assert.Equal(t, true, m["lanes_partial"])
+	assert.Contains(t, m["notes"], laneTitlesUnreadNote)
+	assert.NotContains(t, m["notes"], lanesUnreadNote)
+	assert.Contains(t, chapterKeys(m), "lane:task-b")
+}
+
 func TestReviewMap_BranchTipRoundTakesLanesFromTheTip(t *testing.T) {
 	database, wb, s, repo := reviewFixture(t)
 	laneBranch(t, repo, "lane-x", []string{"x/x.go"})
@@ -284,7 +300,7 @@ func TestWorkbenchReview_StartRefreshAndRepointStoreHead(t *testing.T) {
 	reviewGit(t, repo, "commit", "-q", "-m", "later")
 	ref := startRound(t, wb, s, "--refresh")
 	require.Equal(t, r["id"], ref["id"])
-	assert.Equal(t, reviewGit(t, repo, "rev-parse", "HEAD"), roundHead(t, database, r["id"]), "refresh keeps the old head")
+	assert.Equal(t, reviewGit(t, repo, "rev-parse", "HEAD"), roundHead(t, database, r["id"]), "refresh stores the new head")
 
 	commitOnBranch(t, repo, "feature", "feature.txt")
 	ticketTarget(t, database, wb, s, 0, "feature", true)
