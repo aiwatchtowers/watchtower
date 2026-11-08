@@ -91,8 +91,9 @@ final class AutomationSaveFolderTests: XCTestCase {
 
     private var routeCalls: [[String]] { runner.invocations.filter { $0.first == "inbox" && $0[2] == "route" } }
 
-    private var newRelease: InboxNewArtifactRoute {
-        InboxNewArtifactRoute(newFolder: "Release", parentID: nil, parentTitle: "Inbox")
+    /// A folder the route makes (none of that title in the tree yet).
+    private var newLaunch: InboxNewArtifactRoute {
+        InboxNewArtifactRoute(newFolder: "Launch", parentID: nil, parentTitle: "Inbox")
     }
 
     // MARK: - Columns (the shot fixtures' shapes)
@@ -308,7 +309,7 @@ final class AutomationSaveFolderTests: XCTestCase {
 
     func testDiscardedDraftForgetsItsPressRoute() async {
         vm.showEditor(.newDraft(contextID: "draft-d", scope: .personal, startText: nil))
-        vm.setPressRoute(newRelease, forDraft: "draft-d")
+        vm.setPressRoute(newLaunch, forDraft: "draft-d")
         await vm.discardDraft(contextID: "draft-d")
         await vm.draftSaved(contextID: "draft-d", conversationID: 77, automationID: automation)
         XCTAssertTrue(routeCalls.isEmpty)
@@ -343,9 +344,9 @@ final class AutomationSaveFolderTests: XCTestCase {
         let plan = try await checkedEdit(center)
         let landed = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
         XCTAssertEqual(landed, 7)
-        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: newRelease)
+        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: newLaunch)
         XCTAssertEqual(routeCalls, [[
-            "inbox", "folders", "route", "7", "--new-title", "Release", "--expect-revision", "7", "--json"
+            "inbox", "folders", "route", "7", "--new-title", "Launch", "--expect-revision", "7", "--json"
         ]])
         XCTAssertNil(vm.routeFailures[7])
     }
@@ -356,7 +357,7 @@ final class AutomationSaveFolderTests: XCTestCase {
         let plan = try await checkedEdit(center)
         let landed = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
         guard case .failed = center.saving[7] else { return XCTFail("the save was not refused") }
-        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: newRelease)
+        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: newLaunch)
         XCTAssertTrue(routeCalls.isEmpty, "a refused save never makes the folder")
     }
 
@@ -372,14 +373,14 @@ final class AutomationSaveFolderTests: XCTestCase {
         var plan = try await checkedEdit(center)
         let first = await center.commit(7, plan: plan, turnOn: true)
         guard case .failed = center.saving[7] else { return XCTFail("the turn-on did not fail") }
-        await vm.routeEditorSave(key: 7, landed: first, draftContextID: nil, editor: center, route: newRelease)
+        await vm.routeEditorSave(key: 7, landed: first, draftContextID: nil, editor: center, route: newLaunch)
         XCTAssertEqual(routeCalls.count, 1, "the save landed: its route goes")
 
         runner.on("save") { _ in throw Self.failure("Error: not saved: the recipe changed on disk") }
         plan = try await checkedEdit(center)
         let second = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
         XCTAssertNil(second)
-        await vm.routeEditorSave(key: 7, landed: second, draftContextID: nil, editor: center, route: newRelease)
+        await vm.routeEditorSave(key: 7, landed: second, draftContextID: nil, editor: center, route: newLaunch)
         XCTAssertEqual(routeCalls.count, 1, "a refused save never routes, whatever an earlier save left")
     }
 
@@ -433,30 +434,50 @@ final class AutomationSaveFolderTests: XCTestCase {
 
     func testRouteConflictShowsTryAgainRecipeStaysSaved() async {
         runner.on("route") { _ in throw Self.failure("the Inbox menu changed — reload it and try again (revision 8, you had 7)") }
-        vm.setPressRoute(newRelease, forDraft: "draft-e")
+        vm.setPressRoute(newLaunch, forDraft: "draft-e")
         await vm.draftSaved(contextID: "draft-e", conversationID: 77, automationID: automation)
         XCTAssertEqual(vm.routeFailures[automation]?.reason, InboxFolderMenuModel.routeMenuChanged)
-        XCTAssertEqual(vm.routeFailures[automation]?.route, newRelease)
+        XCTAssertEqual(vm.routeFailures[automation]?.route, newLaunch)
         XCTAssertTrue(vm.items.contains { $0.id == automation }, "the recipe stays saved")
         XCTAssertFalse(runner.invocations.contains { $0.count > 1 && $0[1] == "save" }, "nothing is saved again")
     }
 
     func testTryAgainRereadsTheRevisionFirst() async throws {
         runner.on("route") { _ in throw Self.failure("the Inbox menu changed — reload it and try again (revision 8, you had 7)") }
-        vm.setPressRoute(newRelease, forDraft: "draft-f")
+        vm.setPressRoute(newLaunch, forDraft: "draft-f")
         await vm.draftSaved(contextID: "draft-f", conversationID: 77, automationID: automation)
         try await pool.write { db in try db.execute(sql: "UPDATE inbox_folder_state SET revision = 12 WHERE id = 1") }
         runner.on("route") { _ in Data(Self.routeJSON(revision: 13).utf8) }
         await vm.retryRoute(automation)
         XCTAssertNil(vm.routeFailures[automation])
         XCTAssertEqual(routeCalls.last, [
-            "inbox", "folders", "route", String(automation), "--new-title", "Release", "--expect-revision", "12", "--json"
+            "inbox", "folders", "route", String(automation), "--new-title", "Launch", "--expect-revision", "12", "--json"
         ], "the menu is read again before the second call")
+    }
+
+    /// The folder the line named was made meanwhile (say, from the Inbox
+    /// menu): Try Again reuses it from the re-read tree instead of asking
+    /// for a duplicate.
+    func testTryAgainReusesAFolderMadeMeanwhile() async throws {
+        runner.on("route") { _ in throw Self.failure("the Inbox menu changed — reload it and try again (revision 8, you had 7)") }
+        vm.setPressRoute(newLaunch, forDraft: "draft-j")
+        await vm.draftSaved(contextID: "draft-j", conversationID: 77, automationID: automation)
+        let root = root
+        let launch = try await pool.write { db in
+            try db.execute(sql: "UPDATE inbox_folder_state SET revision = 12 WHERE id = 1")
+            return try InboxFolderFixtures.folder(db, parent: root, slug: "launch", title: "launch", position: 3)
+        }
+        runner.on("route") { _ in Data(Self.routeJSON(revision: 13).utf8) }
+        await vm.retryRoute(automation)
+        XCTAssertNil(vm.routeFailures[automation])
+        XCTAssertEqual(routeCalls.last, [
+            "inbox", "folders", "route", String(automation), "--folder", String(launch), "--expect-revision", "12", "--json"
+        ])
     }
 
     func testTryAgainFailureUpdatesLine() async {
         runner.on("route") { _ in throw Self.failure("a folder named \"Release\" already exists here") }
-        vm.setPressRoute(newRelease, forDraft: "draft-g")
+        vm.setPressRoute(newLaunch, forDraft: "draft-g")
         await vm.draftSaved(contextID: "draft-g", conversationID: 77, automationID: automation)
         XCTAssertEqual(vm.routeFailures[automation]?.reason, "a folder named \"Release\" already exists here")
         runner.on("route") { _ in throw Self.failure("folders nest at most 3 deep") }
@@ -471,7 +492,7 @@ final class AutomationSaveFolderTests: XCTestCase {
         let menu = InboxFolderMenuModel(dbPool: pool) { nil }
         await menu.reload()
         vm.routeSavedAutomation = { id, destination, _ in await menu.route(id, to: destination) }
-        vm.setPressRoute(newRelease, forDraft: "draft-h")
+        vm.setPressRoute(newLaunch, forDraft: "draft-h")
         await vm.draftSaved(contextID: "draft-h", conversationID: 77, automationID: automation)
         XCTAssertEqual(vm.routeFailures[automation]?.reason, "The watchtower CLI isn't available")
     }

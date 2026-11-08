@@ -442,9 +442,13 @@ package final class InboxFolderMenuModel {
     /// read revision, never retried. Nil when it landed (the tree re-read);
     /// else the reason, for the caller to show on its own line — the menu
     /// shows only what concerns the menu (a lost race's note, the missing CLI).
+    /// A new folder whose title the tree as read already has in that parent
+    /// (ignoring case; made meanwhile, or named against an older tree) is
+    /// that folder: **Try Again** after a re-read never asks for a duplicate.
     package func route(_ automationID: Int64, to destination: InboxFoldersCLI.RouteDestination) async -> String? {
         guard !isBusy else { return Self.routeBusy }
         guard tree.revision >= 1 else { return Self.routeNotRead }
+        let destination = Self.reusingExisting(destination, in: tree)
         var reason: String?
         await write(row: nil, onFailure: { error in
             reason = error == .menuChanged ? Self.routeMenuChanged : (error.errorDescription ?? "")
@@ -459,6 +463,17 @@ package final class InboxFolderMenuModel {
     /// the menu's own refusals.
     package func showRefusal(_ message: String, on folderID: Int64) {
         refusal = InboxFolderMenuRefusal(folderID: folderID, message: message)
+    }
+
+    nonisolated static func reusingExisting(
+        _ destination: InboxFoldersCLI.RouteDestination, in tree: InboxFolderTree
+    ) -> InboxFoldersCLI.RouteDestination {
+        guard case let .newFolder(title, _, parent) = destination else { return destination }
+        let parentID = parent ?? tree.root.id
+        let existing = tree.folders.first {
+            $0.kind == .owner && $0.parentID == parentID && $0.title.caseInsensitiveCompare(title) == .orderedSame
+        }
+        return existing.map { .folder($0.id) } ?? destination
     }
 
     /// That row's press landed since: its old reason goes (another row's stays).
