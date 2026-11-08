@@ -683,8 +683,13 @@ const chatQuestionStateTolerance = 30 * time.Second
 // through as terminal text (terminal_sessions.chat_question, JSON). Options
 // holds 0 or 2-4 entries, already normalised by the guard.
 type ChatQuestion struct {
-	Question string               `json:"question"`
-	Options  []ChatQuestionOption `json:"options"`
+	Question string `json:"question"`
+	// Context is what the agent's message gives the owner to answer the
+	// question (classifier v5): why it asks, what each answer changes, what
+	// it recommends. The escalation puts it in the raised ask's summary. ""
+	// (omitted) when the message gave nothing beyond the question.
+	Context string               `json:"context,omitempty"`
+	Options []ChatQuestionOption `json:"options"`
 	// Level is "full" for a full request the soft ask guard recorded with
 	// the message's own text (spec 2026-10-15 §7.1): the escalation raises it
 	// as a Full ask whatever its shape. "" (omitted) for a chat question.

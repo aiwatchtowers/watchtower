@@ -363,6 +363,11 @@ enum DesignShotCatalog {
             DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
                 SpecReviewShotFixtures.strips()
             },
+            // A question raised from the terminal: the reason as a caption,
+            // the question once, on its card.
+            DesignShot(name: "ask-raised-from-chat", size: NSSize(width: 560, height: 520)) {
+                AnyView(RaisedAskShotFixtures.drawerTop().shotFrame().detailBackground())
+            },
             // Approve / Request changes (#964, mockup 3).
             DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
                 ReviewShotFixtures.approvePopover()
