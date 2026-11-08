@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/reviewdiff"
 	"watchtower/internal/reviewmap"
@@ -327,7 +328,7 @@ func (r *run) callBatch(ctx context.Context, i, n int, b Batch, full bool) {
 	class := ""
 	if err != nil {
 		class = r.classify(callCtx, err)
-		fmt.Fprintf(r.opt.Stderr, "review overview: batch %d of %d: %v\n", i+1, n, err)
+		fmt.Fprintf(r.opt.Stderr, "review overview: batch %d of %d: %s\n", i+1, n, logredact.Full(err))
 		log.Printf("reviewai: overview batch %d of %d: %s (%d chapters, %d described)", i+1, n, class, len(b.Chapters), len(descs))
 	}
 	now := r.opt.Now()
@@ -394,12 +395,10 @@ func (r *run) classify(callCtx context.Context, err error) string {
 }
 
 // failure is the owner's sentence for class on title (tech spec §3.6);
-// budget is the call's, cause the provider's text.
+// budget is the call's, cause the provider's error: Detail is its full
+// text (logredact.Full), the owner's to read.
 func failure(class, title string, budget time.Duration, cause error) *RunError {
-	e := &RunError{Class: class}
-	if cause != nil {
-		e.Detail = cause.Error()
-	}
+	e := &RunError{Class: class, Detail: logredact.Full(cause)}
 	named := "“" + title + "”"
 	if title == summaryTitle {
 		named = title
@@ -466,7 +465,7 @@ func (r *run) summary(ctx context.Context, batches []Batch, full bool) (Summary,
 	sum, err := r.p.Summarize(sumCtx, SummaryInput{Intent: r.intent, Map: r.m, Described: r.descs})
 	if err != nil {
 		class := r.classify(sumCtx, err)
-		fmt.Fprintf(r.opt.Stderr, "review overview: summary: %v\n", err)
+		fmt.Fprintf(r.opt.Stderr, "review overview: summary: %s\n", logredact.Full(err))
 		log.Printf("reviewai: overview summary: %s (%d batches)", class, len(batches))
 		return Summary{}, failure(class, summaryTitle, budget, err)
 	}

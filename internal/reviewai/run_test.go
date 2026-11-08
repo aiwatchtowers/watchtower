@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/logcanary"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/reviewdiff"
 	"watchtower/internal/reviewmap"
@@ -496,6 +497,10 @@ func TestRun_ErrorTextsVerbatim(t *testing.T) {
 	assert.Equal(t, "The overview of the summary did not finish in 2 min.", failure(ClassTimeout, summaryTitle, SummaryBudget, cause).Text)
 	assert.Equal(t, "The AI provider failed on the summary.", failure(ClassProvider, summaryTitle, 0, cause).Text)
 	assert.Equal(t, "x", failure(ClassProvider, "api", 0, cause).Detail)
+	redacted := logredact.Errorf("claude CLI failed: %s", logredact.Text("quota reached"))
+	assert.Equal(t, "claude CLI failed: quota reached", failure(ClassProvider, "api", 0, redacted).Detail,
+		"detail is the provider's full text, not the fingerprinted Error()")
+	assert.Empty(t, failure(ClassParse, "api", 0, nil).Detail)
 }
 
 // PartHash covers the chapter's files and its own notes and the prompt,
