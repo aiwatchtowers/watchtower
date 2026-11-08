@@ -341,7 +341,8 @@ final class AppState {
     /// Dashboard action strip (pending agent-action proposals + due reminders)
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
-    private(set) var inboxArtifactMenu: InboxArtifactMenuModel? // the Inbox's ⋯ menus; a press outlives the screen
+    /// The Inbox's ⋯ menus; a press outlives the screen.
+    private(set) var inboxArtifactMenu: InboxArtifactMenuModel?
 
     /// Workbench tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
@@ -1329,7 +1330,8 @@ final class AppState {
         }
         vm.start()
         automationsViewModel = vm
-        let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli, notifier: notifier)
+        let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
+                                      notifier: notifier)
         quickRun.showAutomationsTab = { [weak self] in self?.navigateToAutomations() }
         quickRunCenter = quickRun
         let editorCenter = AutomationEditorCenter(
@@ -1755,7 +1757,9 @@ final class AppState {
         }
         // The badge counts the rows this read lists, and the daemon's writes
         // to them never fire the counts VM's observation; resolved at call time.
-        vm.onFeedRefreshed = { [weak self] in await self?.sidebarCountsViewModel?.refresh() }
+        vm.onFeedRefreshed = { [weak self] in
+            await self?.sidebarCountsViewModel?.refresh()
+        }
         vm.disabledFeatures = featureVisibility.disabledFeatureIDs
         Task { await vm.refresh() }
         actionStripViewModel = vm
