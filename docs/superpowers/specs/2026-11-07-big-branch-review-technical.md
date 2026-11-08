@@ -185,7 +185,12 @@ ticket found in §2.1 (a board target or a Jira issue; title + intent / summary)
 `source`: `session` or `lane`. Coverage entries carry the item's `source`. The owner sees
 coverage of every item; the finish gate (§4) checks only `source: session` items, so its
 strictness does not change. A round with no session has only lane items (it had none).
-`IntentHash` covers both lists.
+`IntentHash` (the `review_overviews` key) covers the session items only, byte-identical to
+today's hash: lane items go to the model and into the assembled JSON but are not part of the
+key, so a lane ticket whose title or summary changes later does not hide the cached overview
+from the finish gate (which needs no map). The map lists every lane the attribution found
+(`lanes: [{name, title, target_id?, jira_key?}]`), and lane intent items come from that list,
+not from the chapters, so a lane whose files all went into an agent chapter keeps its item.
 
 Chapter description (both prompts): `{key, what (≤ 600 runes), risks: [{path, level, why}]}`
 with risk `level` in today's `low|medium|high` (the map's `breaking|significant|normal` is a
