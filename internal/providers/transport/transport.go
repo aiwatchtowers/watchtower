@@ -10,6 +10,9 @@
 package transport
 
 import (
+	"maps"
+	"slices"
+
 	"watchtower/internal/ai"
 	"watchtower/internal/codex"
 	"watchtower/internal/config"
@@ -53,23 +56,38 @@ type Transport struct {
 	NewQuerier   func(Options) ai.Provider
 }
 
+// constructor is one provider's pair of constructors.
+type constructor struct {
+	newGenerator func(Options) digest.Generator
+	newQuerier   func(Options) ai.Provider
+}
+
+// constructors is every registry provider's constructors, by id. It covers
+// the registry exactly (CheckConstructors, TestLLMTRANSPORT01_*), so For
+// never meets a registered provider it cannot build.
+var constructors = map[string]constructor{
+	"claude": {newClaudeGenerator, newClaudeQuerier},
+	"codex":  {newCodexGenerator, newCodexQuerier},
+	"ollama": {newOllamaGenerator, newOllamaQuerier},
+}
+
+// CheckConstructors reports every registered provider without constructors
+// and every constructor row of no registered provider; nil when they match.
+func CheckConstructors() error {
+	return providers.CheckRegistryRows("internal/providers/transport's constructors", slices.Collect(maps.Keys(constructors)))
+}
+
 // For is the row of provider id. An unknown or empty id is the default
 // provider's row, as providers.ByID resolves it; a registry provider with
-// no case here is a bug, which panics rather than run another transport.
+// no constructors is a bug CheckConstructors catches in a test, and panics
+// here rather than run another transport.
 func For(id string) Transport {
 	p := providers.ByID(id)
-	t := Transport{ID: p.ID, Caps: p.Caps}
-	switch p.ID {
-	case "claude":
-		t.NewGenerator, t.NewQuerier = newClaudeGenerator, newClaudeQuerier
-	case "codex":
-		t.NewGenerator, t.NewQuerier = newCodexGenerator, newCodexQuerier
-	case "ollama":
-		t.NewGenerator, t.NewQuerier = newOllamaGenerator, newOllamaQuerier
-	default:
+	c, ok := constructors[p.ID]
+	if !ok {
 		panic("transport: no constructors for provider " + p.ID)
 	}
-	return t
+	return Transport{ID: p.ID, Caps: p.Caps, NewGenerator: c.newGenerator, NewQuerier: c.newQuerier}
 }
 
 // models is the generator's light and strong model under o.

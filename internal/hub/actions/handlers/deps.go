@@ -56,7 +56,9 @@ const (
 // actionKind on a board session of agent, refused by the agent's
 // capability row's phone half (Caps.Phone, which the terminal_session slice
 // publishes to the phone); refused is false when the row takes it. The
-// transport contract suite asserts each agent's answer through it.
+// transport contract suite asserts each agent's answer through it. A kind
+// that is no agent kind of this version takes nothing and is refused with
+// agentkind.Unsupported, never with an empty agent name.
 func PhoneRefusal(actionKind string, agent agentkind.Kind) (message string, refused bool) {
 	phone := sessionCaps(agent).Phone()
 	var format string
@@ -69,6 +71,9 @@ func PhoneRefusal(actionKind string, agent agentkind.Kind) (message string, refu
 		format = notSupportedInterruptFormat
 	default:
 		return "", false
+	}
+	if !agentkind.IsAgent(string(agent)) {
+		return agentkind.Unsupported(string(agent)).Error(), true
 	}
 	return fmt.Sprintf(format, agent.DisplayName()), true
 }

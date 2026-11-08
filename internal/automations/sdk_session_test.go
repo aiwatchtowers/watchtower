@@ -426,7 +426,7 @@ func TestSession_Validation(t *testing.T) {
 		{"no options", ``, "options"},
 		{"prompt too long", `{prompt: "a".repeat(16385)}`, "4096"},
 		{"title too long", `{prompt: "x", title: "é".repeat(81)}`, "80"},
-		{"unknown agent", `{prompt: "x", agent: "x"}`, "agent"},
+		{"unknown agent", `{prompt: "x", agent: "x"}`, "is not supported by this version (claude or codex)"},
 		{"unknown wait", `{prompt: "x", wait: "later"}`, "wait"},
 		{"unknown option", `{prompt: "x", cwd: "/tmp"}`, "cwd"},
 		{"prompt over the journal's args", `{prompt: "a".repeat(5000)}`, "4096"},

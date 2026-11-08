@@ -190,9 +190,10 @@ func TestAMissingAgentFailsWithTheAgentsReason(t *testing.T) {
 			"Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."},
 		{"codex", "codex_not_found",
 			"Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."},
-		// A value that is no agent kind reads as Claude Code's, as before.
-		{"gemini", "claude_not_found",
-			"Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."},
+		// A value that is no agent kind of this version is refused as
+		// such, never read as another agent's (A7a).
+		{"gemini", "not_supported",
+			`agent kind "gemini" is not supported by this version (claude or codex)`},
 	}
 	for _, c := range cases {
 		le.lp.startErr = &AgentNotFoundError{Agent: c.agent}

@@ -14,6 +14,15 @@ import (
 	"watchtower/internal/ollama"
 )
 
+// TestLLMTRANSPORT01_ConstructorsCoverRegistry: the one factory builds
+// every registered provider and no other, so For never panics on a
+// registered id (docs/features/adding-a-harness.md).
+func TestLLMTRANSPORT01_ConstructorsCoverRegistry(t *testing.T) {
+	if err := CheckConstructors(); err != nil {
+		t.Error(err)
+	}
+}
+
 // An unknown or empty id is the default provider's row, as providers.ByID.
 func TestFor_UnknownIsDefault(t *testing.T) {
 	assert.Equal(t, "claude", For("").ID)

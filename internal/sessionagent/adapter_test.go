@@ -100,10 +100,25 @@ func TestSessionAgent_CapsFixtureMatchesAdapters(t *testing.T) {
 	require.NoError(t, json.Unmarshal(capabilitiesJSON, &top))
 	require.NoError(t, json.Unmarshal(top["agents"], &fx.Agents))
 	for name := range top {
-		if name != "agents" && name != "comment" {
+		if name != "agents" && name != "comment" && name != "kinds" {
 			t.Errorf("unknown top-level key %q", name)
 		}
 	}
+	// "kinds" (added 2026-11-08, A7a, additive: no row key changed) is
+	// agentkind's registry in its order — kind, label (agent_label) and
+	// display_name — so Swift can read the list instead of spelling it.
+	type kindRow struct {
+		Kind        string `json:"kind"`
+		Label       string `json:"label"`
+		DisplayName string `json:"display_name"`
+	}
+	var kinds []kindRow
+	require.NoError(t, json.Unmarshal(top["kinds"], &kinds), "the fixture lists agentkind's registry under \"kinds\"")
+	var wantKinds []kindRow
+	for _, d := range agentkind.Registry() {
+		wantKinds = append(wantKinds, kindRow{string(d.Kind), d.Label, d.DisplayName})
+	}
+	assert.Equal(t, wantKinds, kinds, "\"kinds\" is agentkind's registry, in its order")
 	// Every key of every row is a Caps field: a typo cannot hide.
 	var rows map[string]map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(top["agents"], &rows))
@@ -129,6 +144,25 @@ func TestSessionAgent_CapsFixtureMatchesAdapters(t *testing.T) {
 			assert.Equal(t, a.Caps(), row, a.Kind())
 		}
 	}
+}
+
+// The adapters are exactly agentkind's registry, in its order: a kind with
+// no adapter, or an adapter of no registered kind, is named.
+func TestSessionAgent_AdaptersMatchAgentKindRegistry(t *testing.T) {
+	require.NoError(t, checkAdapters(agentkind.All(), adapterList))
+	got := make([]Kind, 0, len(All()))
+	for _, a := range All() {
+		got = append(got, a.Kind())
+	}
+	assert.Equal(t, agentkind.All(), got)
+
+	err := checkAdapters([]Kind{agentkind.Claude, "gemini"}, []Adapter{claudeAdapter{}, codexAdapter{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `agent kind "gemini" has no session adapter`)
+	assert.Contains(t, err.Error(), `session adapter "codex" serves no registered agent kind`)
+	err = checkAdapters([]Kind{agentkind.Claude}, []Adapter{claudeAdapter{}, claudeAdapter{}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `two session adapters for agent kind "claude"`)
 }
 
 func TestSessionAgent_ForKnowsTheAgentKindsOnly(t *testing.T) {
