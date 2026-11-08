@@ -188,7 +188,7 @@ func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d 
 	}
 	opt.Stderr = &lockedWriter{w: opt.Stderr} // batch calls write in parallel
 	r := &run{p: p, store: store, opt: opt, m: m, intent: intent, notes: notes, root: ctx,
-		hashes: map[string]string{}, descs: NotShown(m, d), failures: map[string]*RunError{}}
+		descs: NotShown(m, d), failures: map[string]*RunError{}}
 	if emit := opt.Emit; emit != nil {
 		var emitMu sync.Mutex
 		r.opt.Emit = func(e Event) {
@@ -199,11 +199,10 @@ func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d 
 	} else {
 		r.opt.Emit = func(Event) {}
 	}
-	units := packUnits(m, d)
+	units, single := planUnits(m, d)
 	if len(units) == 0 {
 		return Overview{}, &RunError{Class: ClassTooLarge, Text: tooLargeText}
 	}
-	single := len(firstFit(units, m)) == 1
 	todo, err := r.plan(units, single)
 	if err != nil {
 		return Overview{}, err
@@ -317,11 +316,18 @@ func readCached(store PartStore, projectID int64, units []unit, hashes map[strin
 // lock shows as cached (tech spec §3.7).
 func (p *Pipeline) CachedChapters(store PartStore, projectID int64, m reviewmap.Map, d reviewdiff.Diff,
 	notes []db.ReviewNote) (map[string]ChapterDesc, error) {
-	units := packUnits(m, d)
+	units, single := planUnits(m, d)
 	if len(units) == 0 {
 		return map[string]ChapterDesc{}, nil
 	}
-	return readCached(store, projectID, units, p.unitHashes(units, len(firstFit(units, m)) == 1, notes))
+	return readCached(store, projectID, units, p.unitHashes(units, single, notes))
+}
+
+// planUnits is the units a run over map m and diff d describes, and
+// whether they fit one batch (single: the review.overview prompt).
+func planUnits(m reviewmap.Map, d reviewdiff.Diff) (units []unit, single bool) {
+	units = packUnits(m, d)
+	return units, len(units) > 0 && len(firstFit(units, m)) == 1
 }
 
 // describe calls the batches, Parallel at a time, each under its
