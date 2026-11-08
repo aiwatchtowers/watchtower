@@ -76,15 +76,15 @@
               "resets_at": "2026-11-02T10:00:00Z",
               "projection": {
                 "state": "safe",
-                "hit_at": "2026-11-02T10:00:00Z",
-                "rate_per_hour": 59.99999999999999,
+                "hit_at": "2026-11-02T10:30:00Z",
+                "rate_per_hour": 40,
                 "drawable": true,
                 "unavailable_reason": null,
                 "line": {
                   "start_at": "2026-11-02T09:00:00Z",
                   "start_percent": 40,
                   "end_at": "2026-11-02T10:00:00Z",
-                  "end_percent": 100
+                  "end_percent": 80
                 }
               }
             }
@@ -190,8 +190,8 @@
               "resets_at": "2026-11-02T10:00:00Z",
               "projection": {
                 "state": "safe",
-                "hit_at": "2026-11-02T10:00:00Z",
-                "rate_per_hour": 59.99999999999999,
+                "hit_at": "2026-11-02T10:30:00Z",
+                "rate_per_hour": 40,
                 "drawable": false,
                 "unavailable_reason": "stale",
                 "line": null

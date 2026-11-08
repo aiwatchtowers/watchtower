@@ -50,7 +50,9 @@ func TestPlansAggregate_GoldenWire(t *testing.T) {
 	defer d.Close()
 	reset := now.Add(time.Hour)
 	scope := strings.Repeat("a", 64)
-	require.NoError(t, StoreCodexUsage(d, now.Add(-20*time.Minute), testCodexSnapshot(scope, reset, 20)))
+	// Half-hour sample spacing is exact in binary hours, keeping strict JSON
+	// goldens identical across architectures and fused arithmetic choices.
+	require.NoError(t, StoreCodexUsage(d, now.Add(-30*time.Minute), testCodexSnapshot(scope, reset, 20)))
 	snapshot := testCodexSnapshot(scope, reset, 40)
 	allowed := false
 	snapshot.OrdinaryUsageAllowed = &allowed
