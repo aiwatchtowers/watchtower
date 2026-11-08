@@ -128,13 +128,16 @@ package final class ActionStripViewModel {
     package let actionFeed: AgentActionFeed
 
     /// `customTrackControls` nil = C1's direct writes (`DirectCustomTrackControls`).
+    /// `findCLI` is how the folder menu (and so the rows' writes) finds the
+    /// binary when `cliRunner` is nil; tests pass `{ nil }` for a missing one.
     package init(
         dbPool: DatabasePool,
         cliRunner: CLIRunnerProtocol? = nil,
         customTrackControls: (any CustomTrackControlling)? = nil,
         defaults: UserDefaults = .standard,
         automationsWake: (() async throws -> Void)? = nil,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        findCLI: @escaping @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
     ) {
         self.dbPool = dbPool
         self.clock = clock
@@ -146,7 +149,7 @@ package final class ActionStripViewModel {
         self.dayDone = defaults.string(forKey: Self.dayDoneKey)
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
-            dbPool: dbPool, runner: { cliRunner ?? ProcessCLIRunner.makeDefault() }, clock: clock)
+            dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
     }
 
     /// The Inbox sidebar badge: the sum of the counts of every folder the

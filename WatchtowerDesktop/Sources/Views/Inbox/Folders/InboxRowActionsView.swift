@@ -33,10 +33,10 @@ struct InboxRowActionsView: View {
             }
             if canReply {
                 Button("Reply…") { onPress(.reply) }
-                    .disabled(content.reply != nil)
+                    .disabled(content.reply != nil || content.isOff(.reply))
             }
-            Button("Done") { onPress(.done) }
-            Button("Hide") { onPress(.hide) }
+            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
+            Button("Hide") { onPress(.hide) }.disabled(content.isOff(.hide))
             Menu("Snooze") {
                 ForEach(InboxMessagePane.snoozeChoices, id: \.duration) { choice in
                     Button(choice.label) { onPress(.snooze(duration: choice.duration)) }
@@ -44,6 +44,7 @@ struct InboxRowActionsView: View {
             }
             .menuStyle(.button)
             .fixedSize()
+            .disabled(content.isOff(.snooze(duration: "")))
             if !content.isBusy {
                 more {
                     Button("Discuss in Chat") { onPress(.discussInChat) }
@@ -53,12 +54,12 @@ struct InboxRowActionsView: View {
                 }
             }
         case let .track(custom, linkedTargetID):
-            Button("Done") { onPress(.done) }
+            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
             if !content.isBusy {
                 more {
-                    Button("Stop watching") { onPress(.stopWatching) }
+                    Button("Stop watching") { onPress(.stopWatching) }.disabled(content.isOff(.stopWatching))
                     if !custom {
-                        Button("Make a Task") { onPress(.makeTask) }
+                        Button("Make a Task") { onPress(.makeTask) }.disabled(content.isOff(.makeTask))
                     }
                     if custom, linkedTargetID != nil {
                         Button("Go to Target") { onPress(.goToTarget) }
@@ -72,10 +73,11 @@ struct InboxRowActionsView: View {
             ForEach(InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict),
                     id: \.self) { button in
                 ideaButton(button)
+                    .disabled(content.isOff(.approve)) // every idea verdict writes
             }
         case .reminder:
-            Button("Done") { onPress(.done) }
-            Button("Snooze 1h") { onPress(.snoozeHour) }
+            Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
+            Button("Snooze 1h") { onPress(.snoozeHour) }.disabled(content.isOff(.snoozeHour))
         case let .action(summary, buttons):
             Text(summary)
                 .font(.caption)
@@ -87,6 +89,7 @@ struct InboxRowActionsView: View {
                 .accessibilityIdentifier("inboxRow.actionSummary")
             ForEach(buttons, id: \.self) { button in
                 actionButton(button)
+                    .disabled(content.isOff(button.press))
             }
         }
     }
@@ -152,6 +155,12 @@ struct InboxRowActionsFooter: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
+            if content.cliMissing {
+                Text(InboxRowActionsContent.cliMissingMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("inboxRow.cliMissing")
+            }
             if case let .failed(message) = content.state {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Text(message)
@@ -161,6 +170,7 @@ struct InboxRowActionsFooter: View {
                         .textSelection(.enabled)
                     Button("Retry") { onPress(.retryFailedPress) }
                         .buttonStyle(.kitSecondary)
+                        .disabled(content.isOff(.retryFailedPress))
                 }
             }
             switch content.reply {
@@ -188,7 +198,8 @@ struct InboxRowActionsFooter: View {
                 Button("Propose Reply") { onPress(.proposeReply) }
                     .buttonStyle(.kitSecondary)
                     .keyboardShortcut(composing ? KeyboardShortcut(.return, modifiers: .command) : nil)
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.isBusy)
+                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.isBusy
+                              || content.isOff(.proposeReply))
                 Button("Cancel") { onPress(.cancelReply) }
                     .buttonStyle(.kitQuiet)
             }

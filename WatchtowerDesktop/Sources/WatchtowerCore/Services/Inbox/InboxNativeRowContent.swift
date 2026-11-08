@@ -70,6 +70,18 @@ package struct InboxRowActionsContent: Equatable {
     /// the row cannot make a press the way the card does.
     package enum ActionButton: Equatable, Sendable {
         case approve, reject, edit, openDraft, retry, dismiss
+
+        /// The press it makes.
+        package var press: InboxRowPress {
+            switch self {
+            case .approve: .approve
+            case .reject: .reject
+            case .edit: .edit
+            case .openDraft: .openDraft
+            case .retry: .retry
+            case .dismiss: .dismiss
+            }
+        }
     }
 
     package enum State: Equatable, Sendable {
@@ -97,15 +109,27 @@ package struct InboxRowActionsContent: Equatable {
     package var reply: Reply?
     /// A's `.preview` mode: every native action drawn disabled.
     package var isPreview: Bool
+    /// No `watchtower` binary: the row's writes are drawn disabled and the
+    /// footer says why; what only opens or navigates stays.
+    package var cliMissing: Bool
 
-    package init(kind: Kind, state: State = .idle, reply: Reply? = nil, isPreview: Bool = false) {
+    package init(
+        kind: Kind, state: State = .idle, reply: Reply? = nil, isPreview: Bool = false, cliMissing: Bool = false
+    ) {
         self.kind = kind
         self.state = state
         self.reply = reply
         self.isPreview = isPreview
+        self.cliMissing = cliMissing
     }
 
     package var isBusy: Bool { state == .busy }
+
+    /// The footer's line while the CLI is missing (the folder menu's words).
+    package static let cliMissingMessage = InboxFoldersCLIError.cliUnavailable.localizedDescription
+
+    /// Whether `press` is drawn disabled for the missing CLI.
+    package func isOff(_ press: InboxRowPress) -> Bool { cliMissing && press.writes }
 
     /// `IdeaActionBar`'s verdict buttons, without its Merge, delete and a
     /// decision's Supersede / Reverse (the full pane opens on a press of
@@ -139,6 +163,19 @@ package enum InboxRowPress: Equatable, Sendable {
     /// **Retry** under a failed press: repeats it.
     case retryFailedPress
     case replyChanged(String), proposeReply, cancelReply
+}
+
+package extension InboxRowPress {
+    /// The press writes (a CLI call or a database write), as opposed to one
+    /// that only opens, navigates or edits a draft.
+    var writes: Bool {
+        switch self {
+        case .open, .discussInChat, .handToAgent, .goToTarget, .deleteTrack, .edit, .openDraft,
+             .replyChanged, .cancelReply: false
+        case .reply, .done, .hide, .snooze, .stopWatching, .makeTask, .approve, .reject, .retry, .dismiss,
+             .notNow, .activate, .drop, .snoozeHour, .retryFailedPress, .proposeReply: true
+        }
+    }
 }
 
 /// A row's failed press (spec "Native row actions", Failure): the message

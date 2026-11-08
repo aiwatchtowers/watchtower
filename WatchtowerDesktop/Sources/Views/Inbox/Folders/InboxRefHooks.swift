@@ -45,7 +45,8 @@ struct InboxRefHooks {
             nativeKinds: { nativeKinds($0.kind) },
             nativeFooter: { ref, mode in
                 let inbox = inboxRef(ref)
-                guard let content = content(inbox, mode), content.state != .idle || content.reply != nil
+                guard let content = content(inbox, mode),
+                      content.state != .idle || content.reply != nil || content.cliMissing
                 else { return nil }
                 return AnyView(InboxRowActionsFooter(content: content) { onPress(inbox, $0) })
             },
@@ -88,7 +89,8 @@ struct InboxRefHooks {
     /// actions) when the read does not list it.
     func content(_ ref: InboxRef, _ mode: ArtifactRenderMode) -> InboxRowActionsContent? {
         guard let kind = kind(ref) else { return nil }
-        return InboxRowActionsContent(kind: kind, state: state(ref), isPreview: mode == .preview)
+        return InboxRowActionsContent(kind: kind, state: state(ref), isPreview: mode == .preview,
+                                      cliMissing: mode != .preview && vm.folderMenu.isCLIMissing)
     }
 
     private func kind(_ ref: InboxRef) -> InboxRowActionsContent.Kind? {

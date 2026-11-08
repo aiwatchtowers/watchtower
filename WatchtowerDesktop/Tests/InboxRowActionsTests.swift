@@ -218,6 +218,27 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertTrue(runner.invocations.isEmpty, "Open Draft writes nothing")
     }
 
+    /// No `watchtower` binary: the row's writes are off and its footer says why (plan "Failure paths").
+    func testMissingCLIDisablesRowWritesAndSaysWhy() async throws {
+        let id = try insertReminder()
+        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
+        await vm.refresh()
+        let hooks = hooks(vm)
+        let content = try XCTUnwrap(hooks.content(InboxRef(kind: .reminder, id: id), .inbox))
+        XCTAssertTrue(content.cliMissing)
+        XCTAssertTrue(content.isOff(.done))
+        XCTAssertTrue(content.isOff(.snoozeHour))
+        XCTAssertFalse(content.isOff(.open), "what only opens stays")
+        XCTAssertFalse(content.isOff(.edit))
+        XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .reminder, id: id), .inbox),
+                        "the footer carries \(InboxRowActionsContent.cliMissingMessage)")
+        XCTAssertEqual(InboxRowActionsContent.cliMissingMessage, "The watchtower CLI isn't available")
+        XCTAssertFalse(hooks.content(InboxRef(kind: .reminder, id: id), .preview)?.cliMissing ?? true,
+                       "a preview draws everything disabled without the line")
+        let present = await strip()
+        XCTAssertFalse(self.hooks(present).content(InboxRef(kind: .reminder, id: id), .inbox)?.cliMissing ?? true)
+    }
+
     func testDuplicatesSuppressedPerKind() {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.inboxItem), [.open, .chat, .agent])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.track), [.target])
