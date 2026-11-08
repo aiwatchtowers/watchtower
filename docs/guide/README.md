@@ -91,7 +91,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
 - [Built-in automations](features/automations-built-in.md) — Morning brief, Track my threads, Idea finder and Reactions: when they run, on and off, editing and reset
 - [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
-- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent and Reply buttons on an automation's Inbox card, and what a press does
+- [How an automation's card looks](features/automations-card-look.md) — the editor's Look step, laid-out Inbox cards drawn from a dry run, and cards that stay current
+- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent, Task and Reply buttons on an automation's Inbox card, and what a press does
 - [Reactions and tracks in Automations](features/automations-rules.md) — the Reactions card and its dictionary, reaction-triggered recipes, and custom tracks as watches
 - [Automations: confirmation, budgets and writes](features/automations-safety.md) — what you confirm, the per-run budget, how writes wait for you and auto grants
 
