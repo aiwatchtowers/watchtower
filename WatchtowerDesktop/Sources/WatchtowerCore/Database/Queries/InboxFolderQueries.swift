@@ -71,6 +71,13 @@ package struct InboxFolderTree: Equatable, Sendable {
 
     package func folder(_ id: Int64) -> InboxFolder? { folders.first { $0.id == id } }
 
+    /// Where an automation's artifacts land: its route's folder, else the
+    /// folder named `defaultSlug` (a built-in's `default_folder`), else the
+    /// root — the built-in card's **Show in Inbox**.
+    package func folder(forAutomation automationID: Int64, defaultSlug: String) -> InboxFolder {
+        routes[automationID].flatMap(folder) ?? folders.first { $0.slug == defaultSlug } ?? root
+    }
+
     /// A folder whose own `hidden` or any ancestor's is set leaves the menu
     /// and the badge. An unknown id is not visible.
     package func isVisible(_ id: Int64) -> Bool {

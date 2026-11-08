@@ -412,7 +412,7 @@ Swift (`make test-swift FILTER=…`, Core where possible):
 
 - Waiting for me rows get **Reply…**: a `send_slack_message` proposal bound to the item's own thread or channel (recipient pinned at propose), landing in Needs approval, never sent directly; Jira and Linear items reply through `add_jira_comment` / `add_linear_comment` the same way; mail has no write path and no Reply — ask #445; the AGENT-03/AGENT-07 amendments and the STRIP-01 narrowing it needs — ask #451.
 - Day cards, tracks and ideas stay visible in the root as legacy entries over today's panes (Morning brief per date, Track my threads, Idea finder) until sub-project C retires each — ask #445.
-- The day card loses **Done** (nothing pins a day in the folder model): the root lists today's Morning brief and every unread one, and a past brief the owner has read is reached only through Home's Briefing link or a briefing notification until sub-project C — ask #607.
+- The legacy Morning brief entry lists today's day and unread days only; a read past brief opens only through a route (a Home link, a notification) until sub-project C, and the day card has no **Done**, since nothing pins it in the folder model — owner's decisions, ask #607.
 - Every inventory amendment B relies on — STRIP-01 (built-in wording and Reply narrowing), STRIP-02, STRIP-03, INBOX-05, AGENT-03/AGENT-07, new FOLDER-01 and APPROVAL-01 — approved in full — ask #451.
 - Sources: asks #947, #952, #959, #961 and #964 are the owner's decisions on the umbrella (board #1400), recorded in `docs/superpowers/specs/2026-11-02-inbox-builder-design.md`; ask #445 answered this spec's open questions.
 - Folders, root first and undeletable, Needs approval pinned, many automations per folder — ask #947.

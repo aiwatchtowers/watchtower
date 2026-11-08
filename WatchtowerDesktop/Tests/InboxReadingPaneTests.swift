@@ -256,7 +256,7 @@ final class InboxReadingPaneTests: XCTestCase {
         let sut = InboxReadingPane(
             item: .day(card), navScreens: [], onCommand: { _ in },
             dayCard: { card in
-                InboxDayPane(card: card, today: date, plan: plan, owner: owner, onDone: {},
+                InboxDayPane(card: card, today: date, plan: plan, owner: owner,
                              onCommand: { _ in }, onOpenSource: { _ in })
             },
             trackCard: { InboxCardPlaceholder(track: $0, now: Date()) },
@@ -318,29 +318,46 @@ final class InboxReadingPaneTests: XCTestCase {
 
     // MARK: - The header
 
-    func testHeaderMoreMenuOffersLearnedRulesAndProfile() throws {
+    /// Learned Rules (INBOX-05) and Assistant Profile open from the root's
+    /// ⋯ in the folder menu, into the reading pane (the strip's ⋯ is gone
+    /// with the filter bar).
+    func testRootMenuOffersLearnedRulesAndProfile() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
         var opened: [InboxAuxPane] = []
-        let sut = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true,
-                                 onOpenAux: { opened.append($0) }) // swiftlint:disable:this trailing_closure
+        let model = InboxFolderMenuModel(dbPool: pool) { FakeCLIRunner() }
+        await model.reload()
+        let sut = InboxFolderMenuColumn(model: model) { opened.append($0) }
 
         try sut.inspect().find(button: "Learned Rules").tap()
         try sut.inspect().find(button: "Assistant Profile").tap()
 
         XCTAssertEqual(opened, [.learnedRules, .profile])
-        for filter in InboxFilter.allCases {
-            XCTAssertNoThrow(try sut.inspect().find(text: filter.title), filter.title)
-        }
     }
 
-    /// The `?` opens the cheat sheet in the reading pane; the header has no pop-up.
-    func testCheatSheetButtonOpensTheReadingPane() throws {
-        var opened: [InboxAuxPane] = []
-        let sut = InboxFilterBar(filter: .constant(.messages), showsCheatSheetButton: true,
-                                 onOpenAux: { opened.append($0) }) // swiftlint:disable:this trailing_closure
+    /// The Inbox's header, above the menu, the list and the reading pane
+    /// (b-01): its title and the `?`, which opens the cheat sheet in the
+    /// reading pane; the header has no pop-up and no filter segments.
+    func testHeaderShowsTheTitleAndTheCheatSheetButton() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await pool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+        await vm.refresh()
+        let sut = ActionStripActionsView(
+            vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
+            onEnable: {}, onOpenSettings: {}, onOpen: { _ in })
 
-        try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton").button().tap()
-
-        XCTAssertEqual(opened, [.reactionCommands])
+        XCTAssertNoThrow(try sut.inspect().find(text: "Inbox"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        for gone in ["All", "Day", "Automations"] {
+            XCTAssertThrowsError(try sut.inspect().find(button: gone), gone)
+        }
         XCTAssertThrowsError(try sut.inspect().find(ViewType.Popover.self))
     }
 
@@ -381,35 +398,6 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "Nothing here"), "the empty list stays on the left")
     }
 
-    /// The Day filter ends with Show older while older dates exist; each
-    /// press reads 30 more, and the row goes once nothing older is left.
-    func testDayFilterShowOlderReadsAnotherPage() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-            }
-        }
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
-        vm.filter = .day
-        await vm.refresh()
-        func split() -> some View {
-            InboxSplitView(vm: vm, proposalCard: Self.proposalCard, onCardAction: { _ in },
-                           emptyList: { Text("Nothing here") })
-        }
-
-        try split().inspect().find(button: "Show older").tap()
-        await vm.refresh()
-
-        XCTAssertEqual(vm.dayLimit, 60)
-        XCTAssertEqual(vm.feed.days.count, 31)
-        XCTAssertThrowsError(try split().inspect().find(button: "Show older"), "nothing older left")
-    }
-
     /// Learned Rules adds a rule inline under its `+`, never in a sheet.
     func testLearnedRulesAddsInline() throws {
         let (pool, path) = try TestDatabase.createPool()
@@ -446,17 +434,6 @@ final class InboxReadingPaneTests: XCTestCase {
 
         XCTAssertEqual(AppState.inboxTargetFallbackTitle(InboxCardSubject(output)), "Inbox card #5")
         XCTAssertEqual(AppState.inboxTargetFallbackTitle(message), "Inbox card")
-    }
-
-    func testIdeasHeaderShowsOnlyOnTheIdeasFilter() throws {
-        let ideas = InboxFilterBar(filter: .constant(.ideas), showsCheatSheetButton: false,
-                                   onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
-        XCTAssertNoThrow(try ideas.inspect().find(text: "New idea slot"))
-        XCTAssertThrowsError(try ideas.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
-
-        let all = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true,
-                                 onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
-        XCTAssertThrowsError(try all.inspect().find(text: "New idea slot"))
     }
 }
 

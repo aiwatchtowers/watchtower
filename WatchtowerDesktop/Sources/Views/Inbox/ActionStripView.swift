@@ -95,7 +95,6 @@ struct ActionStripView: View {
             today: HomeFeedBuilder.dayString(Date(), calendar: .current),
             plan: plan,
             owner: appState.owner,
-            onDone: { vm.markDayDone(day.date) },
             onCommand: { command in Task { await appState.perform(command) } },
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
@@ -189,7 +188,7 @@ struct ActionStripActionsView: View {
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
     /// The Your day card's pane (`ActionStripView.dayPane`); nil shows its title.
     var dayPane: ((InboxDayCard) -> InboxDayPane?)?
-    /// The Ideas filter's New idea and Find Ideas rows; nil leaves them out.
+    /// The Idea finder's New idea and Find Ideas rows; nil leaves them out.
     var ideas: IdeasViewModel?
     /// The idea card (`ActionStripView.ideaPane`); nil shows its title.
     var ideaPane: ((Idea) -> InboxIdeaPane?)?
@@ -235,7 +234,7 @@ struct ActionStripActionsView: View {
     /// nil (tests, shots) draws neither.
     var artifactMenu: InboxArtifactMenuModel?
 
-    /// What the header opened in the reading pane, and the Ideas filter's
+    /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
     @State var aux: InboxAuxPane?
     @State var ideasRow: InboxIdeasRow?
@@ -246,28 +245,34 @@ struct ActionStripActionsView: View {
     /// draws their native card, with its argument editor, in its place.
     @State private var editingActions: Set<Int64> = []
 
-    /// The folder menu (inbox builder B), then the selected folder.
+    /// The Inbox's header and the strip's error line above all three
+    /// columns (b-01), then the folder menu and the selected folder.
     var body: some View {
-        HSplitView {
-            InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
-                                  onNewArtifact: onNewArtifact, onSelect: selectFolder)
-                .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
-                       maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
-            inbox
-                .frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            header
+            if let message = vm.lastError {
+                errorBanner(message)
+            }
+            HSplitView {
+                InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
+                                      onNewArtifact: onNewArtifact, onSelect: selectFolder)
+                    .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
+                           maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
+                inbox
+                    .frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
     private var inbox: some View {
         VStack(spacing: 0) {
-            if let message = vm.lastError {
-                errorBanner(message)
-            }
-            header
-            if vm.legacyList == .ideas, let ideas, let ideasRow {
-                self.ideasRow(ideasRow, ideas: ideas)
-                    .padding(.horizontal, Spacing.medium)
-                    .padding(.bottom, Spacing.regular)
+            if let list = vm.legacyList {
+                legacyHeader(list)
+                if list == .ideas, let ideas, let ideasRow {
+                    self.ideasRow(ideasRow, ideas: ideas)
+                        .padding(.horizontal, Spacing.medium)
+                        .padding(.bottom, Spacing.regular)
+                }
             }
             content
         }
@@ -339,24 +344,11 @@ struct ActionStripActionsView: View {
             && vm.folderMenu.snapshot.counts.values.allSatisfy { $0 == 0 }
     }
 
-    /// The legacy list's way back and title, the Idea finder's controls,
-    /// and the `?`.
+    /// The Inbox's title and the `?` (reaction commands), above the menu,
+    /// the list and the reading pane.
     private var header: some View {
         HStack(spacing: Spacing.regular) {
-            if let list = vm.legacyList {
-                Button {
-                    vm.closeLegacy()
-                } label: {
-                    Label(vm.folderMenu.tree.root.title, systemImage: "chevron.left")
-                }
-                .buttonStyle(.kitQuiet)
-                .help("Back to the folder")
-                Text(Self.legacyTitle(list)).font(.headline)
-                if list == .ideas, let ideas {
-                    InboxIdeasHeader(isMining: ideas.isBackfilling,
-                                     row: Binding(get: { ideasRow }, set: openIdeasRow))
-                }
-            }
+            Text("Inbox").font(.headline)
             Spacer(minLength: 0)
             if !showsInlineCheatSheet {
                 Button {
@@ -374,14 +366,26 @@ struct ActionStripActionsView: View {
         .padding(.vertical, Spacing.regular)
     }
 
-    /// A legacy entry's list title.
-    static func legacyTitle(_ list: InboxFilter) -> String {
-        switch list {
-        case .tracks: "Track my threads"
-        case .ideas: "Idea finder"
-        case .messages: "Messages"
-        case .all, .day, .automations: list.title
+    /// A legacy list's way back to the root, its title and the Idea
+    /// finder's controls.
+    private func legacyHeader(_ list: InboxLegacyList) -> some View {
+        HStack(spacing: Spacing.regular) {
+            Button {
+                vm.closeLegacy()
+            } label: {
+                Label(vm.folderMenu.tree.root.title, systemImage: "chevron.left")
+            }
+            .buttonStyle(.kitQuiet)
+            .help("Back to the folder")
+            Text(list.title).font(.headline)
+            if list == .ideas, let ideas {
+                InboxIdeasHeader(isMining: ideas.isBackfilling,
+                                 row: Binding(get: { ideasRow }, set: openIdeasRow))
+            }
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.regular)
     }
 
     @ViewBuilder
@@ -585,8 +589,7 @@ struct ActionStripActionsView: View {
             switch id {
             case .output(let output): await vm.markOutputDone(output)
             case .reminder(let reminder): await vm.markReminderDone(reminder)
-            case .day(let date): vm.markDayDone(date)
-            case .proposal, .track, .idea, .message, .builtinNotice: break
+            case .proposal, .day, .track, .idea, .message, .builtinNotice: break
             }
         }
     }
@@ -672,7 +675,7 @@ struct ActionStripActionsView: View {
     // MARK: - A legacy list
 
     /// Today's list for a legacy entry, with its own reading pane.
-    private func legacySplit(_ list: InboxFilter) -> some View {
+    private func legacySplit(_ list: InboxLegacyList) -> some View {
         // The Messages entry's card has Reply while it stands in for Waiting for me.
         let handler = rowHandler(replyHost: InboxRefHooks.replyHost(nil))
         let refHooks = refHooks(handler)
@@ -704,7 +707,7 @@ struct ActionStripActionsView: View {
             trackControls: trackControls
         ) {
             TabEmptyState(copyKey: list.emptyCopyKey, context: emptyState)
-                .accessibilityIdentifier("inbox.emptyFilter")
+                .accessibilityIdentifier("inbox.emptyLegacyList")
         }
         .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
     }
@@ -744,7 +747,7 @@ struct ActionStripActionsView: View {
         case .newIdea:
             InboxNewIdeaRow(ideas: ideas, draft: $newIdea, onCreated: { id in
                 ideasRow = nil
-                await vm.open(.ideas, select: .idea(id))
+                await vm.open(folder: nil, select: .card(.idea(id)))
             }, onCancel: { ideasRow = nil })
         case .findIdeas:
             InboxIdeaBackfillRow(ideas: ideas, range: $backfillRange) { ideasRow = nil }

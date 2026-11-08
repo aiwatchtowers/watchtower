@@ -81,10 +81,8 @@ type Entry struct {
 	Pipelines  []string // pipeline_runs names counted in Costs before the built-in's first run
 	Reads      []string // card copy
 	Sends      []string // card copy
-	// Does is the card's steps in plain words, in order; ResultFilter is the
-	// Inbox filter ("day", "tracks", "ideas", "automations") the result lands in.
-	Does         []string
-	ResultFilter string
+	// Does is the card's steps in plain words, in order.
+	Does []string
 	// DefaultFolder is the slug of the Inbox folder the built-in's artifacts
 	// go to: RootFolder, or another folder whose route the indexer seeds
 	// when the built-in has none (Sync), so the owner's later move is kept.
@@ -126,7 +124,6 @@ var registry = []Entry{
 			"Still makes the plan when the brief fails",
 		},
 		Sends:         []string{"Your day card in your Inbox"},
-		ResultFilter:  "day",
 		DefaultFolder: RootFolder,
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every morning at the first sync after %02d:00", briefingHour(cfg))
@@ -149,7 +146,6 @@ var registry = []Entry{
 			"Starts a track for a new thread, or adds news to one you already follow",
 		},
 		Sends:         []string{"Track cards in your Inbox"},
-		ResultFilter:  "tracks",
 		DefaultFolder: RootFolder,
 		When:          func(*config.Config) string { return "After every sync, while Slack Digests are on" },
 		RunNow:        true,
@@ -171,7 +167,6 @@ var registry = []Entry{
 			"Merges repeats and keeps what is worth your attention",
 		},
 		Sends:         []string{"Idea cards in your Inbox; decisions go to your brief"},
-		ResultFilter:  "ideas",
 		DefaultFolder: RootFolder,
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every %d hours", ideasIntervalHours(cfg))
@@ -195,7 +190,6 @@ var registry = []Entry{
 			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction",
 		},
 		Sends:         []string{"A proposal in your Inbox, in Needs approval; ideas, reminders and brief notes are saved at once"},
-		ResultFilter:  "automations",
 		DefaultFolder: RootFolder,
 		When:          func(*config.Config) string { return "When you react to a Slack message" },
 		RunNow:        false,
@@ -215,7 +209,6 @@ var registry = []Entry{
 			"Uses no AI",
 		},
 		Sends:         []string{"One Waiting for me list in your Inbox"},
-		ResultFilter:  "messages",
 		DefaultFolder: RootFolder,
 		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
 		RunNow:        true,
@@ -234,7 +227,6 @@ var registry = []Entry{
 			"Uses no AI",
 		},
 		Sends:         []string{"One card per approval in your Inbox, in Needs approval"},
-		ResultFilter:  "automations",
 		DefaultFolder: NeedsApprovalID,
 		When:          func(*config.Config) string { return "When an action or a reminder needs you" },
 		RunNow:        true,

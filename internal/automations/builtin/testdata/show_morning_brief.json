@@ -26,7 +26,6 @@
   "sends": [
     "Your day card in your Inbox"
   ],
-  "result_filter": "day",
   "default_folder": "inbox",
   "parameters": [
     {

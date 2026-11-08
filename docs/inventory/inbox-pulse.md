@@ -131,9 +131,11 @@ INBOX-05's rule store.
 
 ## INBOX-05 — I can see and edit what the assistant has learned about me
 
-**Status:** Enforced (reworded 2026-09-14)
+**Status:** Enforced (reworded 2026-09-14; reached from the Inbox's root ⋯ since 2026-11-08)
 
-**Observable:** The "Learned" tab on the inbox action strip is the visible,
+**Observable:** Learned Rules — opened from the root's ⋯ in the Inbox's
+folder menu, into the reading pane (it was the "Learned" tab of the inbox
+action strip, then the strip header's ⋯) — is the visible,
 editable store of `inbox_learned_rules` — mutes, boosts, manual rules — each
 with weight, source ("learned from my feedback" / "I added this manually"), and
 an inline remove/edit. I can add a rule, remove a rule, change a weight; changes
@@ -241,6 +243,7 @@ deleted with the triage stage, not relaxed.
 
 ## Changelog
 
+- 2026-11-08 (Inbox builder B Task 16, approved in ask #451): **INBOX-05 amended** — the filter bar and its ⋯ are gone; Learned Rules (and Assistant Profile) are reached from the root's ⋯ in the Inbox's folder menu and still open in the reading pane. The store, its two writers, its readers and the guards are unchanged (`test_INBOX_05_add_manual_rule`, `test_INBOX_05_remove_rule`, `test_INBOX_05_list_rules_ordered_by_weight` green); `InboxReadingPaneTests::testRootMenuOffersLearnedRulesAndProfile` (not an inventory guard) pins the way in.
 - 2026-11-06 (Inbox builder B Task 9, board #1400, ask #952): no contract changed and no guard changed. **INBOX-02, INBOX-09:** the open items are now also shown by the **Waiting for me** built-in (`waiting-for-me`, `trigger: {sync: waiting_for_me}`, run by `phaseWaitingForMe` right after `phaseInbox`): its one living artifact lists them through `db.OpenInboxItems` — the Go twin of `HomeFeedQueries.openMessageClause`, at most 200, newest first, a channel-folded item (INBOX-09) one row with its count — and by the Messages legacy entry until its first run or after a failed one. An item INBOX-02 auto-resolves leaves the artifact at the next read through the Desktop's render-time check and at the next cycle's run. The detector, its auto-resolve and its watermark are untouched; the built-in only reads `inbox_items`. The shared fixture `internal/inbox/testdata/open_items.json` pins the Go and Swift open predicates (`TestOpenInboxItems_SharedFixture`).
 - 2026-11-03 (board #914/#915): INBOX-09 amended, owner decision in ask #454 ("free inbox detection, as for revoked"). A Slack account whose sync stops on the team-mismatch guard (`sync.ErrSlackTeamMismatch`: its token, or the `team.info` it answers, is for another Slack team than the data the account holds) no longer freezes the shared inbox watermark: `phaseSlackSync` gives it the revoked-token carve-out, so every other account keeps being detected while it waits for a Re-login. Its own handling is the revoked one's: the sync error is still logged and returned as the cycle's sync error, its row shows the Re-login error, and its history backfill row is paused. The known loss is the revoked one's too: its messages synced after the Re-login lie behind the watermark and are not detected (`watchtower inbox backfill-mentions` recovers them). Any other sync error, and an incomplete search, still freezes. Guard added: `TestInbox09_TeamMismatchSyncErrorDoesNotFreeze`; no guard relaxed.
 - 2026-10-22 (C1 — One Inbox, spec 2026-10-22 §6/§9, approved in ask #500): no contract changed and no guard changed. **INBOX:** `inbox_items` gain a screen — the Inbox's **Messages** filter (and the All mix) lists the open actionable items with Home's predicate, without Home's 72 h window, at most 200 (`InboxQueries.fetchOpenMessages`). The Desktop writes only `inbox_items.read_at`, when a card is opened and only while NULL (`InboxQueries.markRead`; guard `InboxFeedQueriesTests::testMarkMessageReadWritesOnlyReadAt`, full-row comparison); **Done**, **Hide** and **Snooze** run `watchtower inbox resolve|dismiss|snooze` (`ActionStripAllKindsTests::testMessageButtonsRunTheInboxCLI`). The detectors, INBOX-02 auto-resolve, INBOX-05 (learned rules, now opened from the Inbox header's ⋯ as Learned Rules) and INBOX-09 one-record-per-channel accumulation are unchanged.
