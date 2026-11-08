@@ -44,6 +44,11 @@ type ExecutorOptions struct {
 	Modules func(b Backends) []Module
 	// Logger receives the executor's errors and notices; nil = log.Default().
 	Logger *log.Logger
+	// FullWake reports the system capability bits and whether the Mac is
+	// fully awake (board #877; powerstate.Probe); while full is false (a
+	// Power Nap dark wake) Step claims no queued run and resumes no run kept
+	// for a resume. caps go into the dark/full log lines. nil = always awake.
+	FullWake func() (caps uint32, full bool)
 }
 
 // Executor claims queued runs and executes them (spec §7.3): it cancels a
@@ -64,7 +69,11 @@ type Executor struct {
 	// replace it).
 	finishPause func(ctx context.Context, attempt int)
 
+	// fullWake is ExecutorOptions.FullWake (always true when unset).
+	fullWake func() (caps uint32, full bool)
+
 	gated atomic.Bool // claims refused for abandoned goroutines (logged once per change)
+	dark  atomic.Bool // claims held for a dark wake (logged once per change)
 	// readyWaits counts waits whose ready check passed and that wait for a
 	// running slot: resumes take priority, so Step leaves them those slots.
 	readyWaits atomic.Int64
@@ -86,7 +95,10 @@ func NewExecutor(d *db.DB, b Backends, opts ExecutorOptions) *Executor {
 	e := &Executor{
 		db: d, b: b, clock: b.Clock, maxConcurrent: opts.MaxConcurrent,
 		modules: opts.Modules, logger: opts.Logger, abandoned: AbandonedRuns, finishPause: finishRetryPause,
-		wakeCh: make(chan struct{}, 1), nudge: make(chan struct{}),
+		fullWake: opts.FullWake, wakeCh: make(chan struct{}, 1), nudge: make(chan struct{}),
+	}
+	if e.fullWake == nil {
+		e.fullWake = alwaysFullWake
 	}
 	if e.maxConcurrent <= 0 {
 		e.maxConcurrent = MaxConcurrentRuns
@@ -184,8 +196,9 @@ func (e *Executor) markInterrupted(ctx context.Context) bool {
 // one whose recipe changed meanwhile is ended interrupted), cancels
 // queued runs of non-runnable automations, and claims queued runs oldest
 // first while running runs are fewer than MaxConcurrent, starting one
-// goroutine per claim. It claims nothing while AbandonedRuns() ≥ 2 (but
-// still cancels non-runnable queued runs). Every
+// goroutine per claim. It claims nothing while AbandonedRuns() ≥ 2 or in a
+// dark wake (ExecutorOptions.FullWake false), but still cancels
+// non-runnable queued runs and ends kept runs that can no longer resume. Every
 // failure is returned, joined; one run's failure does not stop the others.
 func (e *Executor) Step(ctx context.Context) (started int, err error) {
 	now := e.clock.Now()
@@ -199,6 +212,7 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 		errs = append(errs, err)
 	}
 	gated := e.claimsGated()
+	gated = e.darkWakeGated() || gated // both run, so each logs its own change
 	resumes, err := e.db.NextResumePendingAutomationRuns()
 	if err != nil {
 		return 0, errors.Join(append(errs, err)...)
@@ -260,6 +274,24 @@ func (e *Executor) claimsGated() bool {
 		e.logger.Printf("automations: abandoned script goroutines down to %d; claiming again", n)
 	}
 	return gated
+}
+
+// darkWakeGated reports whether the FullWake probe says dark wake (no claim,
+// no resume of a kept run). The change into and out of that state is logged
+// once each. Runs already running, and waits resuming in their own
+// goroutine, are not touched.
+func (e *Executor) darkWakeGated() bool {
+	caps, full := e.fullWake()
+	dark := !full
+	if e.dark.Swap(dark) == dark {
+		return dark
+	}
+	if dark {
+		e.logger.Printf("automations: dark wake (Power Nap, caps 0x%02x), no run is claimed until full wake", caps)
+	} else {
+		e.logger.Printf("automations: full wake (caps 0x%02x); claiming again", caps)
+	}
+	return dark
 }
 
 // freeSlots is MaxConcurrent minus the runs in status running (waiting runs

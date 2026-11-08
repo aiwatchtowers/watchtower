@@ -249,6 +249,11 @@ type Daemon struct {
 	cycleSection    atomic.Int32
 	fetchProgressAt atomic.Int64
 	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
+	// fullWake reports the system capability bits and whether the Mac is in
+	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
+	// runLoop starts no scheduled cycle while it says no. nil = always a
+	// full wake.
+	fullWake func() (caps uint32, full bool)
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -260,7 +265,34 @@ func New(cfg *config.Config) *Daemon {
 		config:       cfg,
 		logger:       log.New(os.Stderr, "[daemon] ", log.LstdFlags),
 		reactionSlot: builtin.NewReactionSlot(),
+		fullWake:     alwaysFullWake,
 	}
+}
+
+// alwaysFullWake is the default full-wake probe: no dark wake gate.
+func alwaysFullWake() (caps uint32, full bool) { return 0, true }
+
+// SetFullWakeProbe sets the probe runLoop asks before it starts a scheduled
+// cycle (the first one, a poll tick, the end of the post-wake wait): while it
+// reports a dark wake (full false), the cycle is deferred until it reports a
+// full wake. caps are the raw system capability bits the dark/full log lines
+// carry (powerstate.Probe). A manual trigger is never gated. The probe must
+// fail open — report a full wake when it cannot tell. nil restores the
+// default (always a full wake). Call it before Run.
+func (d *Daemon) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
+	if probe == nil {
+		probe = alwaysFullWake
+	}
+	d.fullWake = probe
+}
+
+// wakeState asks the full-wake probe; a Daemon built without New has none
+// and is always in a full wake.
+func (d *Daemon) wakeState() (caps uint32, full bool) {
+	if d.fullWake == nil {
+		return alwaysFullWake()
+	}
+	return d.fullWake()
 }
 
 // SetOrchestrators attaches one Slack sync orchestrator per connected account.
@@ -1005,8 +1037,14 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 // snapshot, Flush keyed by its own start — so a calendar change made while
 // the daemon was stopped still fires, though this pass writes it before the
 // first runSync's snapshot. With no bus, or no calendar subscriber, it just
-// runs the two phases.
+// runs the two phases. In a Power Nap dark wake (SetFullWakeProbe) it syncs
+// nothing: the pass would be cut off when the Mac sleeps again, and the
+// first cycle, deferred to the full wake, syncs the calendars anyway.
 func (d *Daemon) startupCalendarSync(ctx context.Context) {
+	if caps, full := d.wakeState(); !full {
+		d.logger.Printf("dark wake (Power Nap, caps 0x%02x), skipping the startup calendar sync; the first full-wake cycle syncs calendars", caps)
+		return
+	}
 	start := time.Now()
 	d.cycleEvents = d.beginAutomationEvents()
 	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {

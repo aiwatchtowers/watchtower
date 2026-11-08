@@ -3,9 +3,11 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,4 +91,40 @@ func TestStartupCalendarSync_NoBusOrNoSubscriberJustSyncs(t *testing.T) {
 	require.Len(t, calls, 3, "calls: %v", calls)
 	assert.Equal(t, "wants:calendar.event_changed", calls[1])
 	assert.Empty(t, ev.published)
+}
+
+// In a dark wake the startup pass syncs nothing and says so: the first
+// cycle, deferred to the full wake, syncs the calendars.
+func TestStartupCalendarSync_SkippedInDarkWake(t *testing.T) {
+	d, database, cal := startupCalendarDaemon(t)
+	logs := &lockedLog{}
+	d.SetLogger(log.New(logs, "", 0))
+	var awake atomic.Bool
+	d.SetFullWakeProbe(boolProbe(&awake))
+	ev := newRecordingEvents("calendar.event_changed")
+	d.SetAutomationEvents(ev)
+
+	d.startupCalendarSync(context.Background())
+
+	assert.Empty(t, ev.callList(), "no event cycle in a dark wake")
+	events, err := database.GetCalendarEvents(db.CalendarEventFilter{CalendarID: cal})
+	require.NoError(t, err)
+	assert.False(t, hasPlanning(events), "the feed was not synced: %+v", events)
+	assert.Equal(t, 1, logs.count("dark wake (Power Nap, caps 0x0d), skipping the startup calendar sync"))
+
+	awake.Store(true)
+	d.startupCalendarSync(context.Background())
+	events, err = database.GetCalendarEvents(db.CalendarEventFilter{CalendarID: cal})
+	require.NoError(t, err)
+	assert.True(t, hasPlanning(events), "a full wake syncs the feed: %+v", events)
+}
+
+// hasPlanning reports whether events hold the feed's "Planning" event.
+func hasPlanning(events []db.CalendarEvent) bool {
+	for _, e := range events {
+		if e.Title == "Planning" {
+			return true
+		}
+	}
+	return false
 }
