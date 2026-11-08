@@ -18,8 +18,7 @@ type DBTitles struct {
 	ProjectID int64
 }
 
-// Titles implements TitleSource. Branch names are compared trimmed on both
-// sides (an older writer stores them as given).
+// Titles implements TitleSource.
 func (s DBTitles) Titles(branches []string, jiraKeys []string, boardRefs []int64) (LaneTitles, error) {
 	out := LaneTitles{
 		BranchTargets: map[string]TargetTitle{},
@@ -27,16 +26,12 @@ func (s DBTitles) Titles(branches []string, jiraKeys []string, boardRefs []int64
 		JiraProjects:  map[string]bool{},
 		BoardRefs:     map[int64]TargetTitle{},
 	}
-	trimmed := make([]string, 0, len(branches))
-	for _, b := range branches {
-		trimmed = append(trimmed, strings.TrimSpace(b))
-	}
-	targets, err := s.DB.TargetsByBranches(s.ProjectID, trimmed)
+	targets, err := s.DB.TargetsByBranches(s.ProjectID, branches)
 	if err != nil {
 		return LaneTitles{}, err
 	}
-	for i, b := range branches {
-		if t, ok := targets[trimmed[i]]; ok {
+	for _, b := range branches {
+		if t, ok := targets[strings.TrimSpace(b)]; ok {
 			out.BranchTargets[b] = TargetTitle{ID: int64(t.ID), Text: t.Text}
 		}
 	}
