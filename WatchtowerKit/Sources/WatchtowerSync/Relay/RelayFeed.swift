@@ -542,6 +542,14 @@ public actor RelayFeed {
             }
             deletes.append(ConditionalDelete(recordName: wireName, zone: .relay, expect: record.recordSeq.map { .seq($0) } ?? .none))
         }
+        // An older copy of a record already read newer (relay client Phase 5: a keybox merge reseals this phone's own
+        // rows, and the copy on the transport it followed is read first) is stale by definition: it goes with the rest.
+        // Not while the device record stays: an unopened copy cannot be told apart from it.
+        if !keepingDeviceRecord {
+            for stale in scan.unopenable where stale.reason == SecureTransport.rolledBackReason {
+                deletes.append(ConditionalDelete(recordName: stale.wireName, zone: .relay, expect: .none))
+            }
+        }
         defer {
             if appliedEcho, let onActionApplied { Task { await onActionApplied() } }
         }

@@ -56,9 +56,16 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertEqual(link.leftTransport, .relay)
         XCTAssertEqual(link.relayMacDeviceID, bed.mac.deviceID, "kept for a later switch back")
         XCTAssertEqual(second.route, .cloudKit(.private))
+        // A relay link's switch keybox goes through the outbox's merge (relay client Phase 5): the two actions, sealed
+        // in epoch 1, are resealed under the switch's epoch 2 with the same wire names, then sent on CloudKit.
         let onCloud = try await bed.cloudMailbox()
-        for envelope in envelopes {
-            XCTAssertTrue(onCloud.contains { $0.payload == envelope }, "the same bytes on CloudKit")
+        let names = try await second.store.reader.read { db in
+            try String.fetchAll(db, sql: "SELECT wire_name FROM pending_actions WHERE action_seq IS NOT NULL ORDER BY action_seq")
+        }
+        XCTAssertEqual(names.count, envelopes.count)
+        for name in names {
+            let record = try XCTUnwrap(onCloud.first { $0.recordName == name }, "sent on CloudKit")
+            XCTAssertEqual(try Envelope.parse(record.payload).header.epoch, 2)
         }
     }
 
@@ -829,8 +836,9 @@ final class Bed {
         try await cloud.inner.save([try TestE2E.sealedDataRecord(plain, seq: TestPhone.nextSeqBlock())])
     }
 
-    func writeControl(_ control: ControlPayload, on route: TransportKind) async throws {
-        let record = try sealedControl(control, to: TestE2E.deviceID)
+    /// `control` sealed as the Go hub does, in `epoch` (the test hub's static keys exist for any epoch).
+    func writeControl(_ control: ControlPayload, on route: TransportKind, epoch: UInt32 = 1) async throws {
+        let record = try sealedControl(control, to: TestE2E.deviceID, epoch: epoch)
         switch route {
         case .cloudKit: try await cloud.inner.save([record])
         case .relay: try await macSaveSealed(record, zone: "relay/\(mac.deviceID)/\(phone.deviceID)")
@@ -838,8 +846,8 @@ final class Bed {
     }
 
     /// `control` sealed to `device` as the Go hub's `sealControl` does.
-    private func sealedControl(_ control: ControlPayload, to device: UUID) throws -> CloudRecord {
-        let keys = TestE2E.hub(firstSeq: TestPhone.nextSeqBlock())
+    private func sealedControl(_ control: ControlPayload, to device: UUID, epoch: UInt32 = 1) throws -> CloudRecord {
+        let keys = TestE2E.hub(epoch: epoch, firstSeq: TestPhone.nextSeqBlock())
         if device == TestE2E.strangerDeviceID { keys.link(TestE2E.strangerIdentity) }
         let wire = try TestPhone.hub(over: InMemoryCloudTransport()).wireName(plain: control.recordName, zone: .relay)
         let frame = InnerFrame(
@@ -862,7 +870,7 @@ final class Bed {
         try await macSaveSealed(sealed, zone: zone)
     }
 
-    private func macSaveSealed(_ sealed: CloudRecord, zone: String) async throws {
+    func macSaveSealed(_ sealed: CloudRecord, zone: String) async throws {
         var item = Relay_V1_SaveItem()
         item.record.zone = zone
         item.record.name = sealed.recordName
@@ -1113,6 +1121,8 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? { await root.openSwitchKeybox(sealed, hubID: hubID) }
     func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
+    func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
+    func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
 
     func relayUse(for link: LinkRecord) async -> RelayUse {

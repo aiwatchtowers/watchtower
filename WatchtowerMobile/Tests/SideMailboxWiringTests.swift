@@ -67,9 +67,16 @@ final class SideMailboxWiringTests: XCTestCase {
         XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1, 2])
         await second.waitForBoot()
         try await bed.fetch(second)
+        // The relay link's switch keybox goes through the outbox's merge (relay client Phase 5): the actions are
+        // resealed under epoch 2 with their wire names, then sent on CloudKit.
         let onCloud = try await bed.cloudMailbox()
-        for envelope in envelopes {
-            XCTAssertTrue(onCloud.contains { $0.payload == envelope }, "the same bytes on CloudKit")
+        let names = try await second.store.reader.read { db in
+            try String.fetchAll(db, sql: "SELECT wire_name FROM pending_actions WHERE action_seq IS NOT NULL ORDER BY action_seq")
+        }
+        XCTAssertEqual(names.count, envelopes.count)
+        for name in names {
+            let record = try XCTUnwrap(onCloud.first { $0.recordName == name }, "sent on CloudKit")
+            XCTAssertEqual(try Envelope.parse(record.payload).header.epoch, 2)
         }
     }
 

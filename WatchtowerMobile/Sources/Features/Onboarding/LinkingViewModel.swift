@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 import os
@@ -111,6 +112,9 @@ final class LinkingViewModel {
     /// switch): a removal or an account signal arriving meanwhile is the
     /// ending's own, and is ignored.
     @ObservationIgnored private var ending: Set<String> = []
+    /// Hubs whose stored keybox this phone refused to merge (F17: it names an ephemeral key the phone does not hold,
+    /// or a hub key no agreement takes), logged once until a merge of that hub succeeds. The link is kept.
+    @ObservationIgnored private(set) var refusedKeyboxes: Set<String> = []
     /// The hub of the code being linked (`open`), from its check on: a
     /// kept farewell of that hub is not followed by a share leave.
     @ObservationIgnored private var linkingHubID: String?
@@ -752,32 +756,68 @@ final class LinkingViewModel {
         await mergeKeys(of: stored, into: row.link)
     }
 
-    /// Adds `keybox`'s epoch keys to `link`'s stored hub keys when that changes which epochs the Keychain holds
-    /// (epoch numbers are compared, never key material), then has the host open the rows they unlock. Every epoch
-    /// but the newest carries when it was superseded (the previous newest stamped now; one stored before the stamp
-    /// existed too), which the Keychain's 7-day retention reads; the host hears whether the newest epoch went up.
-    /// Returns whether the Keychain holds the keybox's epochs afterwards (merged now, or already there).
+    /// Merges `keybox`'s epoch keys into `link`'s stored hub keys through the hub's session (`LinkHost.mergeKeybox`:
+    /// one `updateHubLink` under the store's lock, `HubLinkKeys.merging`, and on a link that reseals across epochs the
+    /// outbox's own-row reseal), then, when the stored link changed, has the host open the rows they unlock and hear
+    /// whether the newest epoch went up and whether the hub dropped this phone's relay pair. Every epoch but the newest
+    /// carries when it was superseded, which the Keychain's 7-day retention reads. Returns whether the Keychain holds
+    /// the keybox's keys afterwards (merged now, or already there).
+    /// - A locked keychain: nothing written, the next fetch or the unlock merges it.
+    /// - A refused keybox (F17: `relay_kx` names a key this phone does not hold, or a low-order hub key, which
+    ///   CryptoKit refuses itself): logged once, nothing written, the link kept.
+    /// - An unlink meanwhile: the store has no link, so nothing is written and nothing is reported.
     @discardableResult
     private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async -> Bool {
         guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
-              let boxKeys = keybox.keys else { return false }
-        let raised: Bool
+              let boxKeys = keybox.keys, let host else { return false }
+        let hubID = link.hubID
+        let before: HubLinkKeys
+        let merge: KeyboxMerge
+        let after: HubLinkKeys
         do {
-            guard let current = try keys.hubLink(link.hubID) else { return false }
-            let merged = try current.adding(boxKeys).stampingSuperseded(from: current, now: clock.now())
-            guard merged.epochs.map(\.epoch) != current.epochs.map(\.epoch) else { return true }
-            raised = merged.newestEpochRaised(over: current)
-            try keys.saveHubLink(merged)
-        } catch KeyStoreError.locked {
+            guard let stored = try keys.hubLink(hubID) else { return false }
+            // A static link that holds the keybox's epochs has nothing to take: epoch numbers are compared, never key
+            // material (as before relay key rotation). A link with ephemeral state merges: its pairs may change.
+            if !stored.hasEphemeralState, Self.namedEpochs(boxKeys).isSubset(of: Set(stored.epochs.map(\.epoch))) {
+                return true
+            }
+            guard let merged = try await host.mergeKeybox(boxKeys, hubID: hubID, now: clock.now()),
+                  let now = try keys.hubLink(hubID) else { return false }
+            (before, merge, after) = (stored, merged, now)
+        } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
             Self.logger.notice("keybox keys wait for the unlock")
+            return false
+        } catch let error where Self.isRefusedKeybox(error) {
+            if refusedKeyboxes.insert(hubID).inserted {
+                Self.logger.error("keybox refused, link kept: \(String(describing: error), privacy: .public)")
+            }
             return false
         } catch {
             Self.logger.error("keybox keys not stored: \(String(describing: error), privacy: .public)")
             return false
         }
+        refusedKeyboxes.remove(hubID)
+        guard after != before else { return true }
         Self.logger.notice("epoch keys merged from the keybox")
-        host?.keysMerged(hubID: link.hubID, newestEpochRaised: raised)
+        await host.keysMerged(
+            hubID: hubID, newestEpochRaised: after.newestEpochRaised(over: before), droppedNewestPair: merge.droppedNewestPair)
         return true
+    }
+
+    /// The epochs a keybox carries keys for: its own and the previous one it retired.
+    private static func namedEpochs(_ keys: KeyboxKeys) -> Set<UInt32> {
+        var named: Set<UInt32> = [keys.epoch]
+        if let previous = keys.previousEpoch, keys.previousDataKey != nil, keys.previousAlertKey != nil { named.insert(previous) }
+        return named
+    }
+
+    /// A keybox the merge refuses for good (F17): it names an ephemeral key this phone does not hold, or its hub key
+    /// is one no agreement takes (CryptoKit's own error on Apple platforms, else the all-zero check).
+    private static func isRefusedKeybox(_ error: any Error) -> Bool {
+        if error as? KeyboxKeysError == .unknownEphemeral { return true }
+        if error is CryptoKitError { return true }
+        if case E2EError.allZeroSharedSecret? = error as? E2EError { return true }
+        return false
     }
 
     // MARK: - The transport follower's questions (relay client Phase 3 Task 11)
@@ -787,6 +827,19 @@ final class LinkingViewModel {
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
         guard let row = row(hubID), row.state == .linked, !ending.contains(hubID) else { return false }
         return await mergeKeys(of: keybox, into: row.link)
+    }
+
+    /// The follower's clear on a follow to iCloud (relay client Phase 5, "Losing and regaining reader status"): both
+    /// private ephemeral keys go, stored pairs stay (resends and a `resend_from` reseal still need them). true when
+    /// done or nothing was there (no link: the unlink's); false when the Keychain could not be written (locked).
+    func clearEphemeral(hubID: String) -> Bool {
+        do {
+            _ = try keys.updateHubLink(hubID) { $0.clearingEphemeral() }
+            return true
+        } catch {
+            Self.logger.error("ephemeral keys not cleared: \(String(describing: error), privacy: .public)")
+            return false
+        }
     }
 
     /// The newest epoch the Keychain holds for `hubID`; nil when it cannot be read (locked) or holds none.
