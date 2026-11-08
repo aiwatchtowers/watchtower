@@ -9,11 +9,13 @@ import WatchtowerTestSupport
 /// and draws only the approvals open in the same read as the folder.
 @MainActor
 final class Approval01Tests: XCTestCase {
-    private var path = ""
+    /// Every database a test seeded (two tests seed twice).
+    private var paths: [String] = []
     private let suite = "Approval01Tests.\(UUID().uuidString)"
 
     override func tearDown() {
-        if !path.isEmpty { TestDatabase.cleanup(path: path) }
+        paths.forEach { TestDatabase.cleanup(path: $0) }
+        paths = []
         UserDefaults.standard.removePersistentDomain(forName: suite)
         super.tearDown()
     }
@@ -28,7 +30,7 @@ final class Approval01Tests: XCTestCase {
     /// The folders, the Needs approval built-in with one succeeded run.
     private func seed(disabledReason: String = "", runStatus: String = "succeeded") throws -> Seed {
         let (pool, path) = try TestDatabase.createPool()
-        self.path = path
+        paths.append(path)
         return try pool.write { db in
             let folders = try InboxFolderFixtures.seed(db)
             let builtin = try NeedsApprovalFixtures.builtin(

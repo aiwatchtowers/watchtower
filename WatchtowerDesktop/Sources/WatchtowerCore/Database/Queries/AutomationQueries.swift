@@ -137,9 +137,15 @@ package enum AutomationQueries {
     /// the recipe's state; unread ones only unless `includeRead` (the Inbox
     /// lists read cards too, Home only unread ones). `since` keeps only the
     /// ones changed then or later and `limit` caps the rows (Home's window);
-    /// the Inbox passes neither.
+    /// the Inbox passes neither. `excludingAutomation` leaves one
+    /// automation's cards out before the cap (Home leaves out the
+    /// `needs-approval` built-in's, APPROVAL-01).
     package static func fetchInboxOutputs(
-        _ db: Database, since: Date? = nil, limit: Int? = nil, includeRead: Bool = false
+        _ db: Database,
+        since: Date? = nil,
+        limit: Int? = nil,
+        includeRead: Bool = false,
+        excludingAutomation: Int64? = nil
     ) throws -> [AutomationOutputCard] {
         // needs_confirmation and runnable are `Automation.needsConfirmation`
         // and `Automation.isRunnable` (Go `Runnable()`), in SQL.
@@ -161,6 +167,10 @@ package enum AutomationQueries {
         if let since {
             sql += " AND o.changed_at >= ?"
             arguments += [AutomationDates.format(since)]
+        }
+        if let excludingAutomation {
+            sql += " AND o.automation_id != ?"
+            arguments += [excludingAutomation]
         }
         // `changed_at` is backfilled by migration 00175 and written by every
         // Go writer since, so the order uses `idx_automation_outputs_changed`.

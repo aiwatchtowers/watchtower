@@ -217,8 +217,9 @@ final class InboxFolderEntriesTests: XCTestCase {
     }
 
     /// The selected artifact leaves and a day is next: the day is selected
-    /// as a click selects it, its briefing's read mark written.
-    func testSelectionMovingToADaySelectsItAndMarksItRead() async throws {
+    /// as a click selects it, but no read mark is written — only the
+    /// owner's own gesture marks a card read (STRIP-02).
+    func testSelectionMovingToADaySelectsItAndLeavesItUnread() async throws {
         let today = HomeFeedBuilder.dayString(NeedsApprovalFixtures.now, calendar: .current)
         let inbox = try await rootWithArtifact { db in
             _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U001")
@@ -231,7 +232,41 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertEqual(inbox.vm.entrySelection, "day:\(today)")
         XCTAssertEqual(inbox.vm.selection, .day(today))
         let readAt = try await inbox.pool.read { try String.fetchOne($0, sql: "SELECT read_at FROM briefings") }
-        XCTAssertNotNil(readAt, "the day's read mark is written, as a click writes it")
+        XCTAssertNil(readAt, "moving the selection writes no read mark")
+    }
+
+    /// The selected artifact is closed elsewhere and a 30 s poll sees it:
+    /// the next artifact is selected and shown, and the poll writes nothing
+    /// — no read mark on the card it moved to (STRIP-02).
+    func testSelectionMovingOnAPollWritesNothing() async throws {
+        let inbox = try await rootWithArtifact { db in
+            let other = try TestDatabase.insertAutomation(db, slug: "daily", name: "Daily notes")
+            let run = try TestDatabase.insertAutomationRun(db, automationID: other)
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: other, runID: run, title: "Daily notes", createdAt: "2026-11-06T09:00:00Z")
+        }
+        let next = try XCTUnwrap(inbox.vm.folderEntries.map(\.id).first { $0 != "artifact:\(inbox.card)" })
+        try await inbox.pool.write { db in
+            try db.execute(
+                sql: "UPDATE automation_outputs SET done_at = '2026-11-06T10:00:00Z' WHERE id = ?",
+                arguments: [inbox.card])
+        }
+        let marks = {
+            try await inbox.pool.read { db in
+                let rows = try Row.fetchAll(
+                    db, sql: "SELECT id, read_at, done_at, dismissed_at FROM automation_outputs ORDER BY id")
+                return rows.map(\.description)
+            }
+        }
+        let before = try await marks()
+
+        await inbox.vm.pollTick()
+
+        XCTAssertEqual(inbox.vm.entrySelection, next)
+        let nextID = try XCTUnwrap(Int64(next.dropFirst("artifact:".count)))
+        XCTAssertEqual(inbox.vm.selection, .output(nextID), "the pane follows")
+        let after = try await marks()
+        XCTAssertEqual(after, before, "a poll never marks anything read")
     }
 
     /// Yesterday's unread brief, opened: its read mark is written, and it

@@ -224,7 +224,8 @@ package final class ActionStripViewModel {
     /// only thing that can surface a row a subprocess (CLI action commands,
     /// the daemon's phases, an automation run) wrote. Reads only (STRIP-02).
     /// A selected card that is gone now gives way to the next row still listed;
-    /// a selected folder entry to the next entry, opened as a click opens it.
+    /// a selected folder entry to the next entry, shown in the pane but never
+    /// marked read (only the owner's gesture writes a read mark).
     ///
     /// Calls never overlap: a call while a read is under way waits for it and
     /// then for one more read, so every caller returns after a read that
@@ -244,10 +245,6 @@ package final class ActionStripViewModel {
         }
         refreshTask = task
         await task.value
-        if let opening = pendingEntryOpening {
-            pendingEntryOpening = nil
-            if selection == opening { await select(opening) }
-        }
         await onFeedRefreshed?()
     }
 
@@ -282,6 +279,7 @@ package final class ActionStripViewModel {
             folderMenu.receive(snapshot.folders)
             hasRead = true
             dropLeftRowErrors()
+            firstReadError = nil
             rebuildSections()
             keepSelectionListed(was: before)
             keepEntryListed(was: entriesBefore)
@@ -289,14 +287,20 @@ package final class ActionStripViewModel {
             // The previous feed, tree and entries stay under the error line.
             lastError = error.localizedDescription
             folderMenu.receiveFailure(error.localizedDescription)
+            if !hasRead { firstReadError = error.localizedDescription }
         }
     }
 
     // MARK: - Folders (inbox builder B)
 
     /// A read has landed: before it the folders show nothing (not even
-    /// today's placeholder day, which waits on the read's owner check).
-    private var hasRead = false
+    /// today's placeholder day, which waits on the read's owner check),
+    /// and the Inbox a spinner rather than its empty state.
+    package private(set) var hasRead = false
+
+    /// Why no read has landed yet: the Inbox shows an error state with
+    /// Try Again in place of its spinner. Cleared by the first read that lands.
+    package private(set) var firstReadError: String?
 
     /// The selected folder's entries (`InboxFolderEntries`), from the last read.
     package var folderEntries: [InboxFolderEntry] {
@@ -376,11 +380,6 @@ package final class ActionStripViewModel {
         }
     }
 
-    /// The entry `keepEntryListed` moved to inside a read, opened (its read
-    /// mark written) once the read is over: a write inside the read would
-    /// wait on the read's own refresh.
-    private var pendingEntryOpening: InboxSelection?
-
     /// Opens today's list for a legacy entry (its filter's list and pane).
     package func openLegacy(_ list: InboxFilter) {
         legacyList = list
@@ -412,9 +411,10 @@ package final class ActionStripViewModel {
             return
         }
         let below = before[(index + 1)...].first(where: listed.contains)
-        // The same path as a click: a legacy entry's list opens, an
-        // artifact or a day is selected and its read mark follows the read.
-        pendingEntryOpening = showEntry(below ?? before[..<index].last(where: listed.contains))
+        // A click's path without its write: a legacy entry's list opens, an
+        // artifact or a day is selected, and no read mark is written — a
+        // poll or refresh never marks anything read (STRIP-02).
+        _ = showEntry(below ?? before[..<index].last(where: listed.contains))
     }
 
     // MARK: - Needs approval's note
