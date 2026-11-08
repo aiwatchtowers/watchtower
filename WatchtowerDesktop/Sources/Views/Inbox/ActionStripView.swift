@@ -325,7 +325,10 @@ struct ActionStripActionsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if !vm.hasRead {
+        if !vm.hasRead, let reason = vm.firstReadError {
+            // The first read failed: say so, never a spinner that never ends.
+            Self.firstReadFailure(reason) { Task { await vm.refresh() } }
+        } else if !vm.hasRead {
             // Nothing read yet: no "empty" or cheat sheet for a moment.
             ProgressView()
                 .controlSize(.small)
@@ -653,6 +656,19 @@ struct ActionStripActionsView: View {
     private func openContext(_ action: AgentAction) -> (() -> Void)? {
         guard let onOpenAutomationRun, let runID = ActionStripViewModel.automationRunID(action) else { return nil }
         return { onOpenAutomationRun(runID) }
+    }
+
+    /// The Inbox when its first read failed: the reason and Try Again.
+    static func firstReadFailure(_ reason: String, onTryAgain: @escaping () -> Void) -> some View {
+        FeatureEmptyState(
+            copy: EmptyStateCopy(
+                icon: "exclamationmark.triangle", title: "The Inbox could not be read", landsHere: reason,
+                feature: nil, primaryAction: .tabAction(label: "Try Again")),
+            readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
+            onAction: { _ in onTryAgain() },
+            extra: { EmptyView() }
+        )
+        .accessibilityIdentifier("inbox.readFailed")
     }
 
     /// The `IdeasView` house pattern: a write failure

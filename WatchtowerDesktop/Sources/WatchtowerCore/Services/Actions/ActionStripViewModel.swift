@@ -272,6 +272,7 @@ package final class ActionStripViewModel {
             lastReactionCheck = snapshot.lastCheck
             folderMenu.receive(snapshot.folders)
             hasRead = true
+            firstReadError = nil
             rebuildSections()
             keepSelectionListed(was: before)
             keepEntryListed(was: entriesBefore)
@@ -279,6 +280,7 @@ package final class ActionStripViewModel {
             // The previous feed, tree and entries stay under the error line.
             lastError = error.localizedDescription
             folderMenu.receiveFailure(error.localizedDescription)
+            if !hasRead { firstReadError = error.localizedDescription }
         }
     }
 
@@ -288,6 +290,10 @@ package final class ActionStripViewModel {
     /// today's placeholder day, which waits on the read's owner check),
     /// and the Inbox a spinner rather than its empty state.
     package private(set) var hasRead = false
+
+    /// Why no read has landed yet: the Inbox shows an error state with
+    /// Try Again in place of its spinner. Cleared by the first read that lands.
+    package private(set) var firstReadError: String?
 
     /// The selected folder's entries (`InboxFolderEntries`), from the last read.
     package var folderEntries: [InboxFolderEntry] {
