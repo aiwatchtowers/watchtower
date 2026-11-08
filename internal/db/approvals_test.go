@@ -298,12 +298,12 @@ func TestApprovalDriftOf(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, ApprovalDrift{Missing: 2}, drift)
 	})
-	t.Run("not an approval: workbench audit row, inbox press row, settled session call", func(t *testing.T) {
+	t.Run("not an approval: workbench audit row, inbox one-press row, settled session call", func(t *testing.T) {
 		d := openTestDB(t)
 		a := seedBuiltinRow(t, d, "needs-approval", "needs-approval", "c", "h")
 		for _, row := range []AgentAction{
 			{Tool: "create_target", ArgsJSON: `{}`, ContextType: "project"},
-			{Tool: "create_target", ArgsJSON: `{}`, Surface: "inbox"},
+			{Tool: "apply_track_action", ArgsJSON: `{}`, Surface: "inbox"},
 		} {
 			_, err := d.InsertAgentAction(row)
 			require.NoError(t, err)
@@ -347,8 +347,9 @@ func TestActionCanBeApproval(t *testing.T) {
 		{AgentAction{Tool: "t", ArgsJSON: `{}`}, true},
 		{AgentAction{Tool: "t", ArgsJSON: `{}`, ContextType: "project"}, false},
 		{AgentAction{Tool: "t", ArgsJSON: `{}`, ContextType: "project", External: true}, true},
-		{AgentAction{Tool: "t", ArgsJSON: `{}`, Surface: "inbox"}, false},
+		{AgentAction{Tool: "create_target", ArgsJSON: `{}`, Surface: "inbox"}, true},
 		{AgentAction{Tool: "apply_track_action", ArgsJSON: `{}`, Surface: "inbox"}, false},
+		{AgentAction{Tool: "apply_track_action", ArgsJSON: `{}`, Surface: "chat"}, true},
 		{AgentAction{Tool: "send_slack_message", ArgsJSON: `{}`, Surface: "inbox", External: true}, true},
 		{AgentAction{Tool: "add_jira_comment", ArgsJSON: `{}`, Surface: "inbox", External: true}, true},
 		{AgentAction{Tool: "add_linear_comment", ArgsJSON: `{}`, Surface: "inbox", External: true}, true},
@@ -389,13 +390,9 @@ func TestApprovalDriftOf_SameSecondIsDriftAndConverges(t *testing.T) {
 	assert.False(t, drift.Any(), "the redraw a second later converges")
 }
 
-// The SQL list of Reply tools in approvalRowClause is the Go list
-// (InboxReplyToolNames): a Reply proposal is an approval (the spec's STRIP-01
-// narrowing), every other inbox row stays a one-press row.
-func TestApprovalRowClause_ListsEveryInboxReplyTool(t *testing.T) {
-	for _, name := range InboxReplyToolNames() {
-		assert.Contains(t, approvalRowClause, "'"+name+"'", name)
-	}
-	assert.Equal(t, len(InboxReplyToolNames()), strings.Count(approvalRowClause, "'")/2-2,
-		"the clause names exactly the Reply tools plus 'project' and 'inbox'")
+// approvalRowClause leaves out only the inbox surface's one-press tool: the
+// tool the clause names is the one `actions propose --approve` applies in
+// the same press.
+func TestApprovalRowClause_OnlyTheOnePressInboxToolIsLeftOut(t *testing.T) {
+	assert.Contains(t, approvalRowClause, "NOT (surface = 'inbox' AND tool = 'apply_track_action')")
 }
