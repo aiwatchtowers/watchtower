@@ -233,6 +233,7 @@ envelope:
 
 ```
 {"event":"map", "map":{…}}                                  (first, before any model call)
+{"event":"waiting","by":"desktop|agent|cli"}               (another run holds the lock, §3.7)
 {"event":"chapter","key":K,"state":"cached|ok|failed","what":…,"risks":[…],"error":{class,text}?}
 {"event":"summary","state":"ok|failed", …}
 {"ok":true,"overview":{…},"incomplete":[…]}                 (last)
@@ -245,8 +246,8 @@ Chapter states in events: `cached|ok|failed|not_started`.
 "Chapters could not be built — Retry" (Retry re-runs `review map`); the overview is not
 started without a map. The Go side logs the error class only.
 
-Without `--stream` the command behaves as today (one envelope). `--chapter K` redoes only K
-(ignores its part row) and the summary; `--summary` redoes only the summary from the cached
+Without `--stream` the command behaves as today (one envelope). `--chapter K` (repeatable) redoes only
+those chapters (ignoring their part rows) and then the summary; `--summary` redoes only the summary from the cached
 parts (refused with `missing_parts` when a part is missing); `--cached-only` keeps its meaning (assembled
 overview only).
 
@@ -259,6 +260,36 @@ provider failed on “<title>”." ; `parse` → "The AI answer for “<title>�
 summary failures the same with "the summary". The provider's own text goes to stderr and the
 envelope's `detail` (the Desktop shows it behind a disclosure), never into the log file:
 logs carry the class, the chapter's index and counts only (FILES-01).
+
+### 3.7 One run at a time
+
+- Every model-calling form (the full run, `--continue`, `--chapter`, `--summary`; also the
+  finish gate's `--session`) holds an exclusive lock for its whole run:
+  `fsutil.LockFile` on `<workspace>/locks/review-overview-<project>-<sha256(real path of
+  the snapshot folder)[:16]>.lock` (the workspace, never the repository — REVIEW-01 is
+  untouched). The key is the folder, not the tree: the agent's and the Desktop's snapshots
+  of a branch being edited differ, yet share most part rows. The kernel drops the lock with
+  its holder; `--cached-only` and `review map` take none.
+- The holder writes `{"by":"desktop|agent|cli","started_at":…}` into the lock file
+  (`--caller desktop` from the Desktop, `agent` from the finish gate, `cli` by default).
+- A run that finds the lock held does not call the model. It waits (`LockFile`, its ctx =
+  its own ceiling; for the agent's form the wait counts into the ceiling), and while waiting
+  it re-reads its chapters' part rows every 5 s: with `--stream` it prints
+  `{"event":"waiting","by":…}` once and every 60 s, and a `chapter` event (`cached`) for each
+  part that appears. Once it holds the lock it re-reads the parts and calls the model only
+  for chapters still without one — the first run's work is never redone (same `part_hash`
+  ⇒ same row). A lock wait that hits the ceiling ends as `timeout` with "Another overview
+  of this branch is still running."
+- The Desktop starts at most one overview process per session. **Retry** of a chapter (or of
+  the summary) while it runs sets that chapter `queued`; when the process ends, one
+  follow-up run is started with every queued key (`--chapter` is repeatable; the summary is
+  remade once after them). **Refresh** during a run sends SIGTERM to the process (class
+  `cancelled`, finished parts stay — each part row is its own short write) and starts on the
+  new snapshot. Leaving the screen does not stop it (the run is owned by
+  `ReviewChangesModel`, §5).
+- Part rows are written with `INSERT OR REPLACE` in their own short transaction; two
+  processes writing one `part_hash` (only possible outside the lock: none today) would store
+  identical content.
 
 ## 4. The finish gate
 
@@ -275,8 +306,10 @@ The agent's form (`--session`) runs the same packing.
   and the file list's badges come from it. `ReviewChapters.resolve`/`mechanical`/`lenses(for:)` are removed;
   `done(_:isViewed:)` stays.
 - The overview is run with `--stream`; the model holds per-chapter state
-  (`pending|running|ok|cached|failed(text)`); a failed chapter shows its line and **Retry**
-  (`--chapter K`). The Meaning phase shows the summary when it arrives; the chapter list
+  (`pending|running|queued|waiting|ok|cached|failed(text)`); a failed chapter shows its line
+  and **Retry** (`--chapter K`; during a run it is `queued`, §3.7). A `waiting` stream line
+  shows "The agent is describing this branch — chapters appear as it finishes them" on the
+  progress card. The Meaning phase shows the summary when it arrives; the chapter list
   fills in as lines arrive. The streaming state lives on `ReviewChangesModel`, which
   `WorkbenchesViewModel.reviewModels` already keeps per session across navigation; the
   running stream is owned by the model, not the view.
@@ -304,7 +337,9 @@ The agent's form (`--session`) runs the same packing.
 - **Send to author** on an answer makes a design comment in the open round of the Branch
   review the owner is looking at (that session's round; the owner's own write; the round's
   existing delivery path). With no open round it is disabled with "Start a round to send". Nothing reaches the author's session otherwise.
-- The author's Workchat panel stays as it is.
+- The reviewer and the author's Workchat share today's agent chat panel (PanelSplit, same
+  toolbar toggle), switched by a **Reviewer | Author** segmented control; the Workchat side
+  stays as it is.
 
 ## 7. Contracts
 
@@ -334,6 +369,13 @@ The agent's form (`--session`) runs the same packing.
   chapters `ok`, `incomplete` lists the failed ones, nothing in `review_overviews`; `--chapter`
   redoes only it and then assembles.
 - Cache: Refresh after editing one file redoes only its chapter; parts survive a new process.
+- One run at a time: two processes on one folder with a stub generator that counts calls —
+  the second waits, streams `waiting` and the first run's chapters as `cached`, and makes
+  calls only for the rest (no `part_hash` called twice); the lock is released when the holder
+  is killed. Desktop: Retry during a run → `queued` → one follow-up `--chapter` run with all
+  queued keys; Refresh during a run → the process is terminated and parts kept.
+- Budgets: the §3.2 table for 1, 4 and 20 batches (pure function).
+- FILES-01 canary over a failing chapter run (no title, path or provider text in the log).
 - Stream golden: `review-overview-stream.jsonl` fixture decoded by WatchtowerCore.
 - Map under 30 s on the synthetic 700-file branch (a benchmark, not a CI timing assert).
 

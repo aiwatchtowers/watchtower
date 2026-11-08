@@ -327,6 +327,41 @@ h1.frame code { font-size: 12px; font-weight: 500; }
 </div>
 <p class="note">The danger level and signal hint come from the map (no AI) and show at once; the states fill in from the streamed overview. A chapter row's caption is its lane: a branch label (<span class="mono">tn/g7</span>), a Jira key or a board ticket (<span class="mono">#219</span>); a file touched by more than one lane shows the others as “also …”. Package chapters (no lane) say so. <b>Can skip</b> is folded and never sent to the model. The counter excludes Can skip; “Next” names the next not-viewed chapter in danger order.</p>
 
+<!-- ============================================================= 1b -->
+<h1 class="frame">1b · Another run of this branch is going (the agent's finish check) — item 3: wait and fill in, a Retry queued (Deep · Chapters, list column)</h1>
+<div class="win" style="width:340px">
+  <div class="body" style="grid-template-columns: 1fr; min-height: 0;">
+    <div class="col" style="border-right:none">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:6px;font-size:12px"><span class="spin"></span><b style="font-weight:500">The agent is describing this branch</b></div>
+        <div class="sec" style="font-size:11px;margin-top:3px">Chapters appear as it finishes them; then only what is still missing is described here. 6 of 13 done.</div>
+      </div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">Token store per provider</div>
+          <div class="meta"><span class="tag">#219</span><span>auth / tokens</span></div>
+          <div class="state wait">Queued — Retry runs after the current run</div></div>
+        <div class="r"><span class="chip orange">Significant</span><span class="lines">640 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">CI and dependencies</div>
+          <div class="meta"><span class="tag mono">lane/build-bump</span><span>dependency · CI</span></div>
+          <div class="state run"><span class="spin"></span>Being described by the agent's run</div></div>
+        <div class="r"><span class="chip orange">Significant</span><span class="lines">120 lines</span></div>
+      </div>
+      <div class="ch">
+        <span class="ck">○</span>
+        <div><div class="t">`ai models` command flags</div>
+          <div class="meta"><span class="tag">#221</span><span>CLI flags</span></div>
+          <div class="state ok"><span class="g">✓</span>Described</div></div>
+        <div class="r"><span class="lines">310 lines</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<p class="note">One overview run per branch folder at a time. A second run (here Branch review, while the agent's finish check runs) makes no model call while it waits: chapters fill in as the first run caches them, then it describes only what is left. A Retry pressed during a run is <b>Queued</b> and runs right after it, with one summary after all queued chapters. Refresh during a run stops it and keeps finished chapters.</p>
+
 <!-- ============================================================= 2a -->
 <h1 class="frame">2a · Big branch, done — item 4: summary checked against the goal (Deep · Meaning)</h1>
 <div class="win">

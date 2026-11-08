@@ -47,6 +47,15 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    behind a disclosure; the log file gets only the error class and counts, never names or
    text (FILES-01). Finished chapters are cached and survive Retry, relaunch and Refresh;
    only chapters whose code changed are redone.
+   **One run at a time per branch folder.** The Desktop and the agent's finish check never
+   describe the same branch at once: a second run waits for the first, shows "The agent is
+   describing this branch — chapters appear as it finishes them" (or "Branch review is…"
+   for the agent), fills in each chapter the moment the first run caches it, and then calls
+   the model only for what is still missing — nothing is described twice. A Retry pressed
+   while a run is going does not start a second run: the chapter shows **Queued** and is
+   redone right after the run ends (several Retries go in one follow-up run, with one
+   summary after them). Refresh while a run is going stops it (finished chapters are kept)
+   and starts on the new state of the branch.
 4. **Checked against the goal.** A short summary on top checks the whole branch against the
    intent of its ticket(s) — the session's ticket and every lane's ticket found on the board
    or in Jira: done, partial, not found, and what was done outside the goal. The agent's
@@ -81,7 +90,10 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    author): one thread per branch, each turn a fresh call that gets a compact map of the
    branch (chapters, danger, summary, the open chapter) and reads the code itself. It
    answers "what breaks if…", "what would adding another provider take". An answer becomes
-   a comment for the author only when the owner presses **Send to author**. A failed or
+   a comment for the author only when the owner presses **Send to author**; with no open
+   round the button is disabled with "Start a round to send". The panel sits where today's
+   agent chat panel sits, and a **Reviewer | Author** switch flips it between the reviewer
+   and the author's Workchat, which stays as it is today. A failed or
    timed-out turn shows an error line with Retry, like the other embedded chats. To read a
    session that works in its own worktree, `ai query --read-folder` is widened from the
    workbench folder to that workbench's registered session worktrees (ask #560; amends the
@@ -124,27 +136,58 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
 
 ## Done when
 
-- On a branch of ≈700 files Branch review shows chapters, the **Can skip** chapter and the
-  danger order within 30 s, with no AI; AI chapter texts arrive as they finish.
-- One chapter's call cut off by force leaves the others shown; its Retry redoes only it;
-  the cache survives a relaunch.
-- Tests on a large synthetic branch (hundreds of files plus fixtures) and on "one chapter
-  failed".
-- A branch past 50k changed lines shows the size banner; a one-chapter PR shows no chapter
-  list and makes exactly one model call.
-- The summary's failure leaves the chapters shown and its Retry redoes only the summary.
-- A chapter that fails on every try still gets a summary, with that chapter under **Not
-  covered**; the agent's session can still be finished (with a handover ask).
-- With the map command failing, the review shows the plain file list, the diff and the
-  "Chapters could not be built — Retry" banner; Retry rebuilds the chapters.
-- Every new state (chapter list with danger sections, chapter states, **Can skip**,
-  summary and its failure, both banners, the one-chapter PR, the reviewer panel) matches
-  the mockups in `docs/design/mockups/big-branch-review/` and uses the design kit's shared
-  empty, loading and error states.
-- Phase 3: the reviewer answers a cross-chapter question from a session in its own
-  worktree, its failed turn shows Retry, and **Send to author** adds one design comment to
-  the open round — nothing reaches the author's session without that press.
-- REVIEW-01 changes only as listed above; REVIEW-02..05 unchanged.
+Each item above has its check; the timing and size checks run on a synthetic branch of
+≈700 files plus fixtures (hundreds of files, several lanes, one nested integration lane).
+
+1. **Chapters at once.** On that branch Branch review shows chapters, the **Can skip**
+   chapter and the danger order within 30 s, with no AI call. Lane chapters carry their
+   ticket's title (board target or synced Jira issue); a lane with no ticket found shows its
+   branch name; a single-author branch with no lanes gets package chapters with today's keys;
+   a large lane is split by package; a file touched by two lanes sits in one chapter and shows
+   the other lane as a label. No **Can skip** file is ever in a model call's input.
+2. **Danger first.** Every listed signal is detected by its own test (an `api_removed` test
+   also proves a rename in place does not fire); a pattern in `.watchtower/review-map.md`
+   moves a chapter's level or into **Can skip**; the list shows **Breaking and significant**
+   first and **Can skip** last.
+3. **AI per chapter.** The run's parallel calls and time limits follow the table of the
+   technical spec (unit-tested for 1, 4 and 20 batches). One chapter's call cut off by force
+   leaves the others shown with a plain error line; its Retry redoes only it and then the
+   summary; chapters a run did not reach show **Describe N remaining**, which describes only
+   them. Described chapters survive a relaunch and Refresh; after an edit to one file only its
+   chapter is redone. The log file gets only the error class and counts (a FILES-01 canary
+   test); the provider's text is behind the disclosure.
+   **One run at a time:** with the agent's run going, the Desktop's run waits, fills in its
+   chapters as they are cached and then makes calls only for what is missing (a test counts
+   model calls: none twice); Retry during a run shows **Queued** and runs after it; Refresh
+   during a run stops it and keeps finished chapters.
+4. **Goal check.** The summary's coverage lists the session's ticket items and every lane
+   ticket's items; the agent's finish check fails only on the session's own items. A chapter
+   that fails on every try still gets a summary with that chapter under **Not covered** (its
+   items at most partial) and the session can still be finished with a handover ask. The
+   summary's failure leaves the chapters shown and its own Retry redoes only the summary.
+   Jira titles come from the local database (no network call in the test).
+5. **Small and big, one path.** A one-chapter PR shows no chapter list and makes exactly one
+   model call; the synthetic branch's batches stay ≤ 2,500 lines and every chapter is in
+   exactly one; an oversized chapter is cut by danger with "(+N lines not shown)", never
+   dropped.
+6. **Reading progress.** "N chapters / M files left" counts down as files and chapters are
+   marked Viewed (**Can skip** excluded); Next names the next not-viewed chapter in danger
+   order.
+7. **Honest limits.** A branch past 50k changed lines shows the size banner. With the map
+   command failing, the review shows the plain file list, the diff and "Chapters could not be
+   built — Retry"; Retry rebuilds the chapters.
+8. **Reviewer (phase 3).** It answers a cross-chapter question from a session in its own
+   worktree; a folder that is not the workbench's or one of its registered session worktrees
+   is refused; its failed turn shows Retry; **Send to author** adds one design comment to the
+   open round and is disabled with "Start a round to send" without one; nothing reaches the
+   author's session without that press; the **Reviewer | Author** switch keeps the author's
+   Workchat as it is.
+
+For every item: each new state (danger sections, chapter states incl. **Queued** and
+waiting for another run, **Can skip**, summary and its failure, both banners, the
+one-chapter PR, the reviewer panel) matches the mockups in
+`docs/design/mockups/big-branch-review/` and uses the design kit's shared empty, loading and
+error states. REVIEW-01 changes only as listed above; REVIEW-02..05 unchanged.
 
 ## Decisions
 
@@ -179,6 +222,11 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
   reading position of rounds made before this release is lost; keeping `ai:` keys alive
   would need a second chapter source just for them.
 - Chapters a run did not reach get **Describe N remaining** — agent's call.
+- One overview run per branch folder at a time; a second waits and reuses what the first
+  caches, a Retry during a run is queued — agent's call, after ask #569 asked whether two
+  runs or a Retry can interleave.
+- The reviewer shares the agent chat panel's place with a **Reviewer | Author** switch —
+  agent's call (mockup), written into item 8 after ask #569.
 
 ## What the spike showed (lane attribution, no AI)
 
