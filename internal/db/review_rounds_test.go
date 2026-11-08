@@ -509,7 +509,7 @@ func TestTicketBranchChain(t *testing.T) {
 	}
 }
 
-// head_sha (00174) is stored by create, Refresh and a move, and is ” on a
+// head_sha (00174) is stored by create, Refresh and a move, and is empty on a
 // round made without one.
 func TestReviewRounds_HeadSHAStoredByCreateRefreshAndRepoint(t *testing.T) {
 	d := openTestDB(t)
