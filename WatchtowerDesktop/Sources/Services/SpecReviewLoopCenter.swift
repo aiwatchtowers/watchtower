@@ -57,8 +57,6 @@ extension WorkbenchCLI: SpecReviewRevealing {}
 @Observable
 final class SpecReviewLoopCenter {
     nonisolated static let pollInterval: Duration = .seconds(3)
-    /// The loop's round cap (Go `specreview.MaxLoopRounds`).
-    nonisolated static let maxRounds = 3
 
     /// Session id → the round of its author loop.
     private(set) var progress: [Int64: Int] = [:]
@@ -90,9 +88,11 @@ final class SpecReviewLoopCenter {
         self.pollInterval = pollInterval
     }
 
-    /// The session row's line, "Spec review: round 2 of 3".
+    /// The session row's line, "Spec review: round 2". The loop runs while
+    /// the author's fixes hold (spec 2026-11-08 §1): its fuse is no target,
+    /// so no "of N".
     nonisolated static func progressLine(round: Int) -> String {
-        "Spec review: round \(round) of \(maxRounds)"
+        "Spec review: round \(round)"
     }
 
     func start() {

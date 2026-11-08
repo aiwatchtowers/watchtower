@@ -20,7 +20,9 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
     }
 
     package var key: String
-    /// `agreement`, `decided_alone`, `blind_spot` or `check`.
+    /// `agreement`, `decided_alone`, `blind_spot`, `check`, or
+    /// `owner_comment`: the owner's own comment carried into a loop seeded
+    /// from their **Request changes** (spec 2026-11-08 §1, D8).
     package var kind: String
     package var text: String
     package var note: String
@@ -96,6 +98,24 @@ package enum SpecReviewLoop {
     /// settled, so it is in neither list.
     package static func fixed(_ row: SpecReviewRow) -> [SpecReviewLedgerEntry] {
         row.ledger.filter { $0.verdict == "resolved" && $0.item.reply?.reply != "disagree" }
+    }
+
+    /// The owner's own item in a loop seeded from **Request changes** (Go
+    /// `specreview.KindOwnerComment`).
+    package static let ownerCommentKind = "owner_comment"
+
+    /// An unsettled item's note when the loop stalled and the author gave no
+    /// reason (Go `stalledNote`): the loop's end line says it once, so a card
+    /// does not repeat it.
+    package static let stalledNote = "The reviewer and the author stopped making progress"
+
+    /// Whether the author fixed the owner's own item, in the owner's words;
+    /// nil for the reviewer's findings. Fixed = resolved after a `fixed`
+    /// reply, as `fixed` reads it.
+    package static func ownerItemLine(_ entry: SpecReviewLedgerEntry) -> String? {
+        guard entry.item.kind == ownerCommentKind else { return nil }
+        let fixed = entry.verdict == "resolved" && !isDisagree(entry)
+        return fixed ? "Your item — fixed by the author" : "Your item — still open"
     }
 
     package static func endedEarly(_ row: SpecReviewRow) -> Bool {

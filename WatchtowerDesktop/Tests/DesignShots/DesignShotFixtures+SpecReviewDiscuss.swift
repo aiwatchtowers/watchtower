@@ -127,9 +127,10 @@ extension SpecReviewShotFixtures {
             let asAgreed = try XCTUnwrap(findings.first { $0.key == "ag:1" })
             let actionable = try XCTUnwrap(findings.first { $0.key == "ag:4" })
             let check = try XCTUnwrap(model.chapters.flatMap(\.checks).first { $0.key == "ck:3" })
-            let fromThread = try JSONDecoder().decode(SpecReviewResult.BlindSpot.self, from: Data("""
-                {"key":"tf:1","text":"Followed threads go silent","chapter":"ch:2","severity":"major",
-                 "why":"A reply in a thread the owner follows stays silent for the whole mute.",
+            let fromThread = try JSONDecoder().decode(SpecReviewProposedFinding.self, from: Data("""
+                {"key":"tf:1","kind":"blind_spot","title":"Followed threads go silent","chapter":"ch:2","severity":"major",
+                 "text":"A reply in a thread the owner follows stays silent for the whole mute.",
+                 "quote":{"source":"thread","text":"what about threads I follow?"},
                  "where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours."}}
                 """.utf8))
             let thesis = try XCTUnwrap(model.row?.result?.theses.first { $0.key == "th:goal" })
@@ -137,7 +138,7 @@ extension SpecReviewShotFixtures {
                 SpecReviewFindingCard(model: model, finding: asAgreed)
                 SpecReviewFindingCard(model: model, finding: actionable)
                 SpecReviewCheckCard(model: model, check: check)
-                SpecReviewFindingCard(model: model, finding: .blindSpot(fromThread), kind: .fromDiscussion)
+                SpecReviewFindingCard(model: model, finding: .fromDiscussion(fromThread))
                 SpecReviewThesisRow(thesis: thesis, isExpanded: .constant(true), onDiscuss: {}, onReadSpec: {})
             }
             .environment(\.specReviewThreads, threads([:])))

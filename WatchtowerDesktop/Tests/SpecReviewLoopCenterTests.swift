@@ -129,6 +129,14 @@ final class SpecReviewLoopCenterTests: XCTestCase {
         _ = try await insertRound(round: 2)
         await center.poll()
         XCTAssertEqual(center.progress, [session: 2])
-        XCTAssertEqual(SpecReviewLoopCenter.progressLine(round: 2), "Spec review: round 2 of 3")
+        XCTAssertEqual(SpecReviewLoopCenter.progressLine(round: 2), "Spec review: round 2")
+    }
+
+    /// Spec 2026-11-08 §1: the loop runs while fixes hold; its fuse is no
+    /// target, so the line names the round alone, past the old cap too.
+    func testProgressLineHasNoCap() {
+        XCTAssertEqual(SpecReviewLoopCenter.progressLine(round: 1), "Spec review: round 1")
+        XCTAssertEqual(SpecReviewLoopCenter.progressLine(round: 5), "Spec review: round 5")
+        XCTAssertFalse(SpecReviewLoopCenter.progressLine(round: 8).contains(" of "))
     }
 }

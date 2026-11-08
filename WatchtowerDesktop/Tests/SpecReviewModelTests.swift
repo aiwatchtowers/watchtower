@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -651,6 +652,183 @@ final class SpecReviewModelTests: XCTestCase {
         _ = await asks.answer(ask, verdict: .changes)
         let stored = try await storedAnswer()
         XCTAssertEqual(try OwnerAskAnswer.decode(stored).verdict, .changes)
+    }
+
+    // MARK: - Discuss: card kinds, thread findings, owner items (spec 2026-11-08)
+
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                XCTFail("condition not met in \(timeout)s")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    /// Every kind of card one review can hold.
+    private func kindsResultJSON() -> String {
+        let end = snapshot.utf8.count
+        return """
+        {"summary":"s","chapters":[{"key":"ch:0","heading":"Title","start":0,"end":19},
+        {"key":"ch:1","heading":"Behaviour","start":19,"end":\(end)}],
+        "agreements":[{"key":"ag:1","text":"Mute lasts a day","status":"as_agreed","chapter":"ch:1"},
+                      {"key":"ag:2","text":"Mute is per channel","status":"differs","chapter":"ch:1"}],
+        "decided_alone":[{"key":"da:1","text":"Local db","chapter":"ch:0"}],
+        "checks":[{"key":"ck:1","chapter":"ch:1","lens":"l","question":"q1","answer":"concern"},
+                  {"key":"ck:2","chapter":"ch:1","lens":"l","question":"q2","answer":"ok"}],
+        "theses":[{"key":"th:1","kind":"goal","text":"Mute for a day","chapter":"ch:1"}]}
+        """
+    }
+
+    private func addThreadFinding(_ key: String, json: String) throws {
+        let id = askID
+        try pool.write { d in
+            try d.execute(sql: """
+                INSERT INTO spec_review_thread_findings (ask_id, item_key, thread, finding, created_at)
+                VALUES (?, ?, ?, ?, '2026-11-08T10:00:00Z')
+                """, arguments: [id, key, "1:\(id):ag:2", json])
+        }
+    }
+
+    func testCardKinds() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        try addThreadFinding("tf:1", json: #"{"kind":"blind_spot","title":"Followed threads","text":"t","chapter":"ch:1"}"#)
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertEqual(model.cardKind(for: "ag:1"), .asAgreed)
+        XCTAssertEqual(model.cardKind(for: "ag:2"), .actionable, "differs")
+        XCTAssertEqual(model.cardKind(for: "da:1"), .actionable)
+        XCTAssertEqual(model.cardKind(for: "ck:1"), .actionable, "a check with a concern")
+        XCTAssertEqual(model.cardKind(for: "ck:2"), .checkToVerify, "a check without one")
+        XCTAssertEqual(model.cardKind(for: "tf:1"), .fromDiscussion)
+        XCTAssertEqual(model.cardKind(for: "th:1"), .thesis)
+        XCTAssertEqual(SpecReviewPresentation.okLabel(model.cardKind(for: "ck:2")), "Checked")
+        XCTAssertEqual(SpecReviewPresentation.okLabel(model.cardKind(for: "ag:2")), "Skip")
+    }
+
+    /// A thread finding sits in its chapter by `chapter`, one with no known
+    /// chapter in Other, with the From discussion card; it counts as
+    /// unmarked, and a Fix on it is no orphan of a re-run.
+    func testThreadFindingsJoinTheirChapter() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        try addThreadFinding("tf:1", json: #"{"kind":"blind_spot","title":"Followed threads","text":"t","chapter":"ch:1"}"#)
+        try addThreadFinding("tf:2", json: #"{"kind":"missing","text":"No undo","chapter":"ch:gone"}"#)
+        let model = try await makeModel()
+        await model.load()
+        XCTAssertEqual(model.threadFindings.map(\.key), ["tf:1", "tf:2"])
+        let chapters = model.chapters
+        XCTAssertEqual(chapters.map(\.key), ["ch:0", "ch:1", "other"])
+        XCTAssertTrue(chapters[1].findings.contains { $0.key == "tf:1" })
+        XCTAssertEqual(chapters[2].findings.map(\.key), ["tf:2"])
+        let card = try XCTUnwrap(chapters[1].findings.first { $0.key == "tf:1" })
+        XCTAssertEqual(SpecReviewPresentation.cardKind(for: card), .fromDiscussion)
+        XCTAssertEqual(SpecReviewPresentation.badge(for: card).title, "Blind spot")
+        let unmarked = model.unmarkedCount
+        await model.mark("tf:1", .comment)
+        XCTAssertEqual(model.unmarkedCount, unmarked - 1)
+        XCTAssertEqual(model.marks["tf:1"]?.about, "Followed threads", "the comment keeps its finding's words")
+        XCTAssertTrue(model.orphans.isEmpty, "an added finding is not from the previous run")
+        let groups = SpecReviewPresentation.wrapUpGroups(try XCTUnwrap(model.row?.result), threadFindings: model.threadFindings)
+        XCTAssertEqual(groups.last?.title, "From discussion")
+        XCTAssertEqual(groups.last?.items.map(\.key), ["tf:1", "tf:2"])
+    }
+
+    /// The thread key's root is the first ask of the review chain.
+    func testRootAskIDIsTheChainsFirstAsk() async throws {
+        let (id, project) = (askID, projectID)
+        let first = try await pool.write { d in
+            let first = try TestDatabase.insertOwnerAsk(d, projectID: project, kind: "review", docPath: "spec.md")
+            try d.execute(sql: "UPDATE owner_asks SET previous_ask_id = ? WHERE id = ?", arguments: [first, id])
+            return first
+        }
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeModel()
+        XCTAssertEqual(model.rootAskID, askID, "the ask itself until loaded")
+        await model.load()
+        XCTAssertEqual(model.rootAskID, first)
+    }
+
+    /// **Skip** is today's Fine as is: the one `ok` mark, written to the
+    /// database; **Checked** on a check to verify is the same mark.
+    func testSkipWritesOkMark() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeModel()
+        await model.load()
+        try SpecReviewMarkControls(model: model, key: "ag:2", kind: model.cardKind(for: "ag:2"))
+            .inspect().find(button: "Skip").tap()
+        await waitUntil { model.marks["ag:2"] != nil }
+        try SpecReviewMarkControls(model: model, key: "ck:2", kind: model.cardKind(for: "ck:2"))
+            .inspect().find(button: "Checked").tap()
+        await waitUntil { model.marks["ck:2"] != nil }
+        let id = askID
+        let stored = try await pool.read { d in
+            let rows = try Row.fetchAll(d, sql: "SELECT item_key, state FROM spec_review_marks WHERE ask_id = ? ORDER BY item_key",
+                                        arguments: [id])
+            return rows.map { "\($0["item_key"] as String)=\($0["state"] as String)" }
+        }
+        XCTAssertEqual(stored, ["ag:2=ok", "ck:2=ok"])
+        let checked = try SpecReviewMarkControls(model: model, key: "ck:2", kind: .checkToVerify).inspect()
+        let labels = try checked.findAll(ViewType.Text.self).map { try $0.string() }
+        XCTAssertTrue(labels.contains("Checked"), "\(labels)")
+    }
+
+    /// After **Fix** the card still offers **Add Comment** for a one-line
+    /// note without a thread (spec 2026-11-08 §2).
+    func testPickedFixKeepsAddComment() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeModel()
+        await model.load()
+        let controls = SpecReviewMarkControls(model: model, key: "ag:2", kind: .actionable) {}
+        XCTAssertThrowsError(try controls.inspect().find(button: "Add Comment"), "no Add Comment before Fix")
+        XCTAssertThrowsError(try controls.inspect().find(button: "Comment"), "Discuss stands in Comment's place")
+        try controls.inspect().find(button: "Fix").tap()
+        await waitUntil { model.marks["ag:2"]?.state == .comment }
+        XCTAssertEqual(model.marks["ag:2"]?.body, "", "Fix sends the finding as it is")
+        XCTAssertNoThrow(try controls.inspect().find(button: "Add Comment"))
+        XCTAssertNoThrow(try controls.inspect().find(button: "Undo"))
+    }
+
+    /// In a loop seeded from the owner's Request changes, each of the
+    /// owner's own items says whether the author fixed it; a stalled
+    /// loop's end line is said once, never on a card.
+    func testOwnerItemsShowFixedOrOpen() async throws {
+        try setRow(status: "done", result: resultJSON())
+        let id = askID
+        let stalled = SpecReviewLoop.stalledNote
+        let ledger = """
+        [{"key":"ow:1","kind":"owner_comment","text":"Say what mute does to threads","note":"","round":1,
+          "reply":{"key":"ow:1","reply":"fixed","note":"added a line"},"verdict":"resolved","verdict_note":"ok","settled":1},
+         {"key":"ow:2","kind":"owner_comment","text":"Drop the local db","note":"","round":1,
+          "reply":{"key":"ow:2","reply":"disagree","note":"needed offline"},"verdict":"disputed","verdict_note":"still needed","settled":2},
+         {"key":"ow:3","kind":"owner_comment","text":"Name the setting","note":"","round":2,
+          "verdict":"unsettled","verdict_note":"\(stalled)","settled":2},
+         {"key":"bs:2","kind":"blind_spot","text":"No undo","note":"","round":1,
+          "reply":{"key":"bs:2","reply":"fixed","note":""},"verdict":"resolved","verdict_note":"ok","settled":1}]
+        """
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE spec_reviews SET loop = 'owner', round = 2, ledger = ?, loop_end = 'stalled' WHERE ask_id = ?",
+                          arguments: [ledger, id])
+        }
+        let model = try await makeModel()
+        await model.load()
+        func line(_ key: String) -> String? {
+            (model.fixes + model.disputes + model.unanswered).first { $0.item.key == key }.flatMap(SpecReviewLoop.ownerItemLine)
+        }
+        XCTAssertEqual(model.fixes.map(\.item.key), ["ow:1", "bs:2"])
+        XCTAssertEqual(line("ow:1"), "Your item — fixed by the author")
+        XCTAssertEqual(line("ow:2"), "Your item — still open")
+        XCTAssertEqual(line("ow:3"), "Your item — still open")
+        XCTAssertNil(line("bs:2"), "the reviewer's own finding has no such line")
+        XCTAssertEqual(model.cardKind(for: "ow:1"), .fixedByAuthor)
+        XCTAssertEqual(model.cardKind(for: "ow:2"), .dispute)
+        XCTAssertEqual(model.cardKind(for: "ow:3"), .unanswered)
+        XCTAssertEqual(SpecReviewPresentation.loopBadge(try XCTUnwrap(model.unanswered.first)).title, "Your item · New in round 2")
+        XCTAssertEqual(model.row.flatMap(SpecReviewLoop.endLine),
+                       "The reviewer and the author stopped making progress: these are still open.")
+        XCTAssertNil(SpecReviewPresentation.loopStatus(try XCTUnwrap(model.unanswered.first)),
+                     "the end line is shown once, not on the card")
     }
 
     private func storedAnswer() async throws -> String {

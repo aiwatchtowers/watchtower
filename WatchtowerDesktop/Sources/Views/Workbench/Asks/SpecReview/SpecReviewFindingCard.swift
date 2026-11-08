@@ -8,13 +8,11 @@ import WatchtowerCore
 struct SpecReviewFindingCard: View {
     let model: SpecReviewModel
     let finding: SpecReviewChapterFinding
-    /// Nil: read from the finding (`SpecReviewPresentation.cardKind`).
-    var kind: SpecReviewCardKind?
     @State private var thread = SpecReviewThreadVisibility.auto
     @Environment(\.specReviewThreads) private var threads
 
     var body: some View {
-        let kind = kind ?? SpecReviewPresentation.cardKind(for: finding)
+        let kind = SpecReviewPresentation.cardKind(for: finding)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
                 SpecReviewChips(
@@ -25,14 +23,14 @@ struct SpecReviewFindingCard: View {
                 Text(text).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
             if let source, !source.quote.isEmpty {
-                SpecReviewQuote(label: SpecReviewPresentation.sourceLabel(source), quote: source.quote)
+                SpecReviewQuote(label: source.label, quote: source.quote)
             }
             if let anchor, !anchor.quote.isEmpty {
                 SpecReviewQuote(label: anchor.heading.isEmpty ? "The document says" : "The document says · \(anchor.heading)",
                                 quote: anchor.quote)
             }
-            if !note.isEmpty {
-                SpecReviewQuote(label: "Reviewer", quote: note, quoted: false)
+            if !note.text.isEmpty {
+                SpecReviewQuote(label: note.label, quote: note.text, quoted: false)
             }
             if case let .blindSpot(spot) = finding, let evidence = spot.evidence, !evidence.path.isEmpty {
                 Text(evidence.line > 0 ? "\(evidence.path):\(evidence.line)" : evidence.path)
@@ -61,12 +59,18 @@ struct SpecReviewFindingCard: View {
         case let .agreement(f): f.text
         case let .decidedAlone(f): f.text
         case let .blindSpot(f): f.text
+        case let .fromDiscussion(f): f.headline
         }
     }
 
-    private var source: SpecReviewResult.Source? {
-        if case let .agreement(f) = finding { return f.source }
-        return nil
+    /// Where it comes from, labelled: an agreement's source, or the owner's
+    /// own words a thread finding quotes (its document quote is the anchor's).
+    private var source: (label: String, quote: String)? {
+        switch finding {
+        case let .agreement(f): f.source.map { (SpecReviewPresentation.sourceLabel($0), $0.quote) }
+        case let .fromDiscussion(f) where f.quote.source == "thread": ("What you said in the discussion", f.quote.text)
+        default: nil
+        }
     }
 
     private var anchor: SpecReviewResult.Anchor? {
@@ -74,14 +78,18 @@ struct SpecReviewFindingCard: View {
         case let .agreement(f): f.anchor
         case let .decidedAlone(f): f.anchor
         case let .blindSpot(f): f.anchor
+        case let .fromDiscussion(f): f.anchor
         }
     }
 
-    private var note: String {
+    /// The reviewer's note, or the text of a finding the assistant wrote
+    /// in a thread (its title heads the card).
+    private var note: (label: String, text: String) {
         switch finding {
-        case let .agreement(f): f.note
-        case let .decidedAlone(f): f.note
-        case let .blindSpot(f): f.why
+        case let .agreement(f): ("Reviewer", f.note)
+        case let .decidedAlone(f): ("Reviewer", f.note)
+        case let .blindSpot(f): ("Reviewer", f.why)
+        case let .fromDiscussion(f): ("Assistant", f.title.isEmpty ? "" : f.text)
         }
     }
 }

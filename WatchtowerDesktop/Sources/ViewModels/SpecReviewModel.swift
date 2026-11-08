@@ -9,12 +9,15 @@ enum SpecReviewChapterFinding: Equatable {
     case agreement(SpecReviewResult.Agreement)
     case decidedAlone(SpecReviewResult.DecidedAlone)
     case blindSpot(SpecReviewResult.BlindSpot)
+    /// A finding the owner added from a Discuss thread (spec 2026-11-08 §3).
+    case fromDiscussion(SpecReviewProposedFinding)
 
     var key: String {
         switch self {
         case let .agreement(f): f.key
         case let .decidedAlone(f): f.key
         case let .blindSpot(f): f.key
+        case let .fromDiscussion(f): f.key
         }
     }
 
@@ -23,6 +26,16 @@ enum SpecReviewChapterFinding: Equatable {
         case let .agreement(f): f.severity
         case let .decidedAlone(f): f.severity
         case let .blindSpot(f): f.severity
+        case let .fromDiscussion(f): f.severity
+        }
+    }
+
+    var chapter: String {
+        switch self {
+        case let .agreement(f): f.chapter
+        case let .decidedAlone(f): f.chapter
+        case let .blindSpot(f): f.chapter
+        case let .fromDiscussion(f): f.chapter
         }
     }
 }
@@ -53,6 +66,12 @@ struct SpecReviewChapterVM: Equatable, Identifiable {
 final class SpecReviewModel {
     private(set) var row: SpecReviewRow?
     private(set) var marks: [String: SpecReviewMark] = [:]
+    /// Findings the owner added to this ask from a Discuss thread (Go writes
+    /// `spec_review_thread_findings`); they sit in their chapter, or Other.
+    private(set) var threadFindings: [SpecReviewProposedFinding] = []
+    /// The first ask of this ask's review chain: the middle part of its
+    /// threads' keys (`SpecReviewThreadKey`). The ask itself until loaded.
+    private(set) var rootAskID: Int64
     var phase: ReviewPhase = .meaning
     var chapterKey: String?
     var lastError: String?
@@ -82,6 +101,7 @@ final class SpecReviewModel {
         now: @escaping () -> Date = Date.init
     ) {
         self.ask = ask
+        self.rootAskID = ask.id
         self.dbPool = dbPool
         self.cli = cli
         self.asks = asks
@@ -97,13 +117,17 @@ final class SpecReviewModel {
     func load() async {
         let askID = ask.id
         do {
-            let (row, marks) = try await dbPool.read { db in
-                (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
+            let (row, marks, found, root) = try await dbPool.read { db in
+                (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID),
+                 try SpecReviewThreadQueries.threadFindings(db, askID: askID),
+                 try SpecReviewThreadQueries.chainRoot(db, askID: askID))
             }
             // A finished author loop opens on its disputes (spec 2026-10-26 §6).
             if self.row == nil, row?.loop == .owner { phase = .wrapup }
             self.row = row
             self.marks = marks
+            if found != threadFindings { threadFindings = found }
+            rootAskID = root
             if chapterKey == nil || !chapters.contains(where: { $0.key == chapterKey }) {
                 chapterKey = chapters.first?.key
             }
@@ -189,6 +213,7 @@ final class SpecReviewModel {
         if state == .comment {
             let finding = row?.result?.findings.first { $0.key == key }?.text
                 ?? row?.ledger.first { $0.item.key == key }?.item.text
+                ?? threadFindings.first { $0.key == key }.map(\.headline)
             about = finding ?? marks[key]?.about ?? ""
         }
         let mark = SpecReviewMark(key: key, state: state, body: body, about: about)
@@ -271,13 +296,12 @@ final class SpecReviewModel {
         guard let result = row?.result else { return [] }
         let known = Set(result.chapters.map(\.key))
         func inChapter(_ key: String) -> Bool { known.contains(key) }
+        let all: [SpecReviewChapterFinding] = result.agreements.map { .agreement($0) }
+            + result.decidedAlone.map { .decidedAlone($0) }
+            + result.blindSpots.map { .blindSpot($0) }
+            + threadFindings.map { .fromDiscussion($0) }
         func findings(_ pick: (String) -> Bool) -> [SpecReviewChapterFinding] {
-            SpecReviewPresentation.sortedBySeverity(
-                result.agreements.filter { pick($0.chapter) }.map { .agreement($0) }
-                    + result.decidedAlone.filter { pick($0.chapter) }.map { .decidedAlone($0) }
-                    + result.blindSpots.filter { pick($0.chapter) }.map { .blindSpot($0) },
-                \.severity
-            )
+            SpecReviewPresentation.sortedBySeverity(all.filter { pick($0.chapter) }, \.severity)
         }
         var out = result.chapters.map { chapter in
             SpecReviewChapterVM(
@@ -315,17 +339,47 @@ final class SpecReviewModel {
     }
 
     /// Findings the owner can mark that carry no mark yet: agreements,
-    /// decided-alone items, blind spots, and lens checks that raised a concern.
+    /// decided-alone items, blind spots, lens checks that raised a concern,
+    /// and findings added from a thread.
     var unmarkedCount: Int {
         guard let result = row?.result else { return 0 }
         let keys = result.agreements.map(\.key) + result.decidedAlone.map(\.key)
             + result.blindSpots.map(\.key) + result.checks.filter { $0.answer == "concern" }.map(\.key)
+            + threadFindings.map(\.key)
         return keys.filter { marks[$0] == nil }.count
     }
 
+    /// Comment marks whose finding the re-run dropped; a finding added from
+    /// a thread is no reviewer finding, but it is not gone either.
     var orphans: [SpecReviewMark] {
         guard let result = row?.result else { return [] }
-        return SpecReviewAnswer.orphanMarks(result: result, marks: marks)
+        let added = Set(threadFindings.map(\.key))
+        return SpecReviewAnswer.orphanMarks(result: result, marks: marks).filter { !added.contains($0.key) }
+    }
+
+    /// What the card under `key` is, for its buttons and its `ok` mark's
+    /// label (spec 2026-11-08 §2): a finished loop's dispute, fix or
+    /// unanswered finding; a finding added from a thread; an agreement the
+    /// document matches; a check with a concern (fixable) or without one
+    /// (to verify — one the reviewer found not applicable shows no buttons
+    /// at all, `SpecReviewPresentation.checkCardKind`); a thesis. Anything
+    /// else is a finding to act on.
+    func cardKind(for key: String) -> SpecReviewCardKind {
+        if isLoop, let row {
+            if SpecReviewLoop.disputed(row).contains(where: { $0.item.key == key }) { return .dispute }
+            if SpecReviewLoop.unanswered(row).contains(where: { $0.item.key == key }) { return .unanswered }
+            if SpecReviewLoop.fixed(row).contains(where: { $0.item.key == key }) { return .fixedByAuthor }
+        }
+        if threadFindings.contains(where: { $0.key == key }) { return .fromDiscussion }
+        guard let result = row?.result else { return .actionable }
+        if let agreement = result.agreements.first(where: { $0.key == key }) {
+            return SpecReviewPresentation.cardKind(for: .agreement(agreement))
+        }
+        if let check = result.checks.first(where: { $0.key == key }) {
+            return SpecReviewPresentation.checkCardKind(answer: check.answer) ?? .checkToVerify
+        }
+        if result.theses.contains(where: { $0.key == key }) { return .thesis }
+        return .actionable
     }
 
     /// The document's Decisions list (spec §6), from the snapshot; nil when
