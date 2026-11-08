@@ -32,11 +32,11 @@ func (it IntentItem) source() string {
 	return SourceSession
 }
 
-// Input is everything the overview sees.
+// Input is the session's side of an overview: the intent items and the
+// agent's notes.
 type Input struct {
 	Intent []IntentItem
 	Notes  []db.ReviewNote
-	Diff   reviewdiff.Diff
 }
 
 // Coverage is the model's verdict on one intent item. Index is the item's
