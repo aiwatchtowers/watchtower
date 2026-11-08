@@ -166,6 +166,8 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package var selection: Int64?
     package var note: InboxFolderMenuNote?
     package var dropIndicator: InboxFolderDrop?
+    /// The folder a live drag carries; nil = no drop is taken.
+    package var draggedID: Int64?
     package var deleteConfirmation: InboxFolderDeleteSummary?
     package var folderDraft: InboxFolderDraft?
     /// A refused write's message; a draft's own refusal is `folderDraft.error`.
@@ -185,6 +187,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         selection: Int64? = nil,
         note: InboxFolderMenuNote? = nil,
         dropIndicator: InboxFolderDrop? = nil,
+        draggedID: Int64? = nil,
         deleteConfirmation: InboxFolderDeleteSummary? = nil,
         folderDraft: InboxFolderDraft? = nil,
         refusal: InboxFolderMenuRefusal? = nil,
@@ -197,6 +200,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         self.selection = selection
         self.note = note
         self.dropIndicator = dropIndicator
+        self.draggedID = draggedID
         self.deleteConfirmation = deleteConfirmation
         self.folderDraft = folderDraft
         self.refusal = refusal

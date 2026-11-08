@@ -32,9 +32,7 @@ struct InboxFolderMenuColumn: View {
         case let .menu(folderID, command): menu(command, folderID: folderID)
         case let .beginDrag(id): model.beginDrag(id)
         case let .dragOver(drop): model.dragOver(drop)
-        case let .drop(drop):
-            guard let dragged = model.draggedID else { return }
-            Task { await model.drop(dragged, onto: drop) }
+        case let .drop(dragged, drop): Task { await model.drop(dragged, onto: drop) }
         }
     }
 

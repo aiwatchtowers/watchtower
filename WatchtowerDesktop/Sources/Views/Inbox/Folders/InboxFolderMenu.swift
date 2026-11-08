@@ -18,7 +18,8 @@ enum InboxFolderMenuAction: Equatable {
     /// and drops.
     case beginDrag(Int64)
     case dragOver(InboxFolderDrop?)
-    case drop(InboxFolderDrop)
+    /// The drop of the folder its drag carried.
+    case drop(dragged: Int64, InboxFolderDrop)
 }
 
 /// The Inbox's first column (spec "The Inbox screen" 1): the root and its
@@ -129,7 +130,8 @@ struct InboxFolderMenu: View {
             .opacity(row.hidden || pending ? 0.5 : 1)
             .contentShape(Rectangle())
             .onTapGesture { onAction(.select(row.id)) }
-            .modifier(FolderDragModifier(row: row, readOnly: content.isReadOnly, onAction: onAction))
+            .modifier(FolderDragModifier(row: row, draggedID: content.draggedID, indicator: content.dropIndicator,
+                                         onAction: onAction))
             .contextMenu {
                 InboxMenuItems(entries: menuEntries(row), readOnly: content.isReadOnly) {
                     onAction(.menu(folderID: row.id, $0))
@@ -301,52 +303,81 @@ private func refusalLine(_ message: String, depth: Int) -> some View {
         .padding(.horizontal, Spacing.regular)
 }
 
-/// Drag and drop on a folder row (spec "Drag"): an owner folder drags; every
-/// row takes a drop, before it (its top band) or into it. Whether a drop is
-/// allowed is the model's call: a refused one draws no indicator.
+/// The in-process type a dragged folder travels as: nothing else (text,
+/// files, another app's drag) is ever taken as a folder.
+extension UTType {
+    static let inboxFolder = UTType(exportedAs: "com.watchtower.inbox-folder", conformingTo: .data)
+}
+
+/// Drag and drop on a folder row (spec "Drag"): every row offers a drag and
+/// takes a drop, before it (its top band) or into it. Which folder may move,
+/// and where, is the model's call: only an owner folder starts a drag, and a
+/// refused drop draws no indicator and is forbidden.
 private struct FolderDragModifier: ViewModifier {
     let row: InboxFolderRow
-    let readOnly: Bool
+    let draggedID: Int64?
+    let indicator: InboxFolderDrop?
     let onAction: (InboxFolderMenuAction) -> Void
 
     func body(content: Content) -> some View {
-        if readOnly {
-            content
-        } else if row.kind == .owner {
-            content
-                .onDrag {
-                    onAction(.beginDrag(row.id))
-                    return NSItemProvider(object: String(row.id) as NSString)
+        content
+            .onDrag {
+                onAction(.beginDrag(row.id))
+                let provider = NSItemProvider()
+                let id = row.id
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.inboxFolder.identifier, visibility: .ownProcess
+                ) { completion in
+                    completion(Data(String(id).utf8), nil)
+                    return nil
                 }
-                .onDrop(of: [.text], delegate: FolderDropDelegate(rowID: row.id, onAction: onAction))
-        } else {
-            content.onDrop(of: [.text], delegate: FolderDropDelegate(rowID: row.id, onAction: onAction))
-        }
+                return provider
+            }
+            .onDrop(of: [.inboxFolder], delegate: FolderDropDelegate(
+                rowID: row.id, draggedID: draggedID, indicator: indicator, onAction: onAction))
     }
 }
 
 private struct FolderDropDelegate: DropDelegate {
     let rowID: Int64
+    /// The folder of the live drag; nil = none, so nothing drops.
+    let draggedID: Int64?
+    /// Where the model allows the drop now.
+    let indicator: InboxFolderDrop?
     let onAction: (InboxFolderMenuAction) -> Void
 
     /// The top of a row places the folder before it; the rest, into it.
-    private static let beforeBand: CGFloat = 8
+    private static let beforeBand = Spacing.regular
 
     private func drop(_ info: DropInfo) -> InboxFolderDrop {
         InboxFolderDrop(targetID: rowID, placement: info.location.y < Self.beforeBand ? .before : .into)
     }
 
+    func validateDrop(info: DropInfo) -> Bool {
+        draggedID != nil && info.hasItemsConforming(to: [.inboxFolder])
+    }
+
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        onAction(.dragOver(drop(info)))
-        return DropProposal(operation: .move)
+        let drop = drop(info)
+        onAction(.dragOver(drop))
+        return DropProposal(operation: indicator == drop ? .move : .forbidden)
     }
 
     func dropExited(info: DropInfo) {
         onAction(.dragOver(nil))
     }
 
+    /// Accepted only where the model allows it, and only for the folder the
+    /// live drag carries: the id in the drop must be `draggedID`.
     func performDrop(info: DropInfo) -> Bool {
-        onAction(.drop(drop(info)))
+        let drop = drop(info)
+        guard let draggedID, indicator == drop,
+              let provider = info.itemProviders(for: [.inboxFolder]).first else { return false }
+        let onAction = onAction
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.inboxFolder.identifier) { data, _ in
+            guard let data, let id = Int64(String(decoding: data, as: UTF8.self)), id == draggedID else { return }
+            DispatchQueue.main.async { onAction(.drop(dragged: id, drop)) }
+        }
         return true
     }
 }

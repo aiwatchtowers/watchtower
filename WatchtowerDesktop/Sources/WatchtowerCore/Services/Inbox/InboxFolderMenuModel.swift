@@ -71,6 +71,7 @@ package final class InboxFolderMenuModel {
     private var collapsed: Set<Int64> = []
     private var cliMissing = false
     private var noteTask: Task<Void, Never>?
+    private var dragTask: Task<Void, Never>?
 
     private let dbPool: DatabasePool
     /// The CLI, found at each call; nil = no binary (edits off).
@@ -79,17 +80,22 @@ package final class InboxFolderMenuModel {
     /// How long the "menu changed" line stays (spec: 5 seconds, or until the
     /// next drag).
     private let noteLifetime: Duration
+    /// A drag SwiftUI never reports as ended (it was cancelled outside the
+    /// menu) is forgotten after this long.
+    private let dragLifetime: Duration
 
     package init(
         dbPool: DatabasePool,
         runner: @escaping @MainActor () -> (any CLIRunnerProtocol)?,
         clock: @escaping @Sendable () -> Date = { Date() },
-        noteLifetime: Duration = .seconds(5)
+        noteLifetime: Duration = .seconds(5),
+        dragLifetime: Duration = .seconds(60)
     ) {
         self.dbPool = dbPool
         self.runner = runner
         self.clock = clock
         self.noteLifetime = noteLifetime
+        self.dragLifetime = dragLifetime
     }
 
     package var tree: InboxFolderTree { snapshot.tree }
@@ -159,7 +165,7 @@ package final class InboxFolderMenuModel {
         return InboxFolderMenuContent(
             rows: rows, selection: selectedFolderID,
             note: cliMissing ? .cliUnavailable : note,
-            dropIndicator: dropIndicator, deleteConfirmation: deleteConfirmation, folderDraft: draft,
+            dropIndicator: dropIndicator, draggedID: draggedID, deleteConfirmation: deleteConfirmation, folderDraft: draft,
             refusal: draft == nil ? refusal : nil, pendingMoveID: pendingMoveID, showsHidden: showsHidden,
             icons: Self.icons, approvalsEnabled: approvalsEnabled)
     }
@@ -408,6 +414,13 @@ package final class InboxFolderMenuModel {
         if note == .menuChanged { note = nil }
         refusal = nil
         draggedID = id
+        dragTask?.cancel()
+        let lifetime = dragLifetime
+        dragTask = Task { [weak self] in
+            try? await Task.sleep(for: lifetime)
+            guard !Task.isCancelled, self?.draggedID == id else { return }
+            self?.endDrag()
+        }
     }
 
     /// The drag is over `drop`: its indicator, only where the drop is allowed.
@@ -420,15 +433,19 @@ package final class InboxFolderMenuModel {
     }
 
     package func endDrag() {
+        dragTask?.cancel()
+        dragTask = nil
         draggedID = nil
         dropIndicator = nil
     }
 
-    /// Drops the dragged folder: refused locally (no CLI call) where
+    /// Drops the dragged folder: only the folder of the live drag (`id` is
+    /// the one the drop carried), and refused locally (no CLI call) where
     /// `canDrop` says no; else one `move`.
     package func drop(_ id: Int64, onto drop: InboxFolderDrop) async {
+        let live = draggedID == id
         endDrag()
-        guard !isReadOnly, let target = moveTarget(id, onto: drop) else { return }
+        guard live, !isReadOnly, let target = moveTarget(id, onto: drop) else { return }
         await move(id, toParent: target.parent, position: target.position)
     }
 

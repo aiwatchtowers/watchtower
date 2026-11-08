@@ -169,6 +169,7 @@ enum InboxFolderMenuShotFixtures {
             runner.blockUntilCancelled = true
             let (model, ids) = try model([.release, .team], runner: runner)
             let team = try XCTUnwrap(ids["team"]), release = try XCTUnwrap(ids["release"])
+            model.beginDrag(team)
             spin(until: "the move in progress", model.pendingMoveID != nil) {
                 await model.drop(team, onto: InboxFolderDrop(targetID: release, placement: .before))
             }

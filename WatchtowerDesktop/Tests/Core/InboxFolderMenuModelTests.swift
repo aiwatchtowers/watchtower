@@ -276,6 +276,39 @@ final class InboxFolderMenuModelTests: XCTestCase {
         XCTAssertNil(model.content.dropIndicator)
     }
 
+    func testOnlyTheLiveDragsFolderMoves() async throws {
+        let cli = answering()
+        let model = await model(cli)
+        let drop = InboxFolderDrop(targetID: ids.release, placement: .into)
+
+        await model.drop(ids.team, onto: drop)
+        XCTAssertTrue(cli.invocations.isEmpty, "no drag at all")
+
+        model.beginDrag(ids.team)
+        await model.drop(ids.blockers, onto: drop)
+        XCTAssertTrue(cli.invocations.isEmpty, "the drop carried another folder than the drag")
+        XCTAssertNil(model.draggedID, "a drop ends the drag either way")
+
+        model.beginDrag(ids.team)
+        model.endDrag()
+        await model.drop(ids.team, onto: drop)
+        XCTAssertTrue(cli.invocations.isEmpty, "a drag that ended moves nothing")
+    }
+
+    func testAForgottenDragIsClearedAfterItsLifetime() async throws {
+        let cli = answering()
+        let model = InboxFolderMenuModel(dbPool: pool, runner: { cli }, dragLifetime: .milliseconds(20))
+        await model.reload()
+
+        model.beginDrag(ids.team)
+        XCTAssertEqual(model.draggedID, ids.team)
+        try await Task.sleep(for: .milliseconds(300))
+
+        XCTAssertNil(model.draggedID, "a cancelled drag SwiftUI never reported")
+        await model.drop(ids.team, onto: InboxFolderDrop(targetID: ids.release, placement: .into))
+        XCTAssertTrue(cli.invocations.isEmpty, "a stale drag moves nothing")
+    }
+
     func testDropPastTheDepthLimitIsRefusedLocally() async {
         let cli = answering()
         let model = await model(cli)
@@ -319,6 +352,7 @@ final class InboxFolderMenuModelTests: XCTestCase {
         cli.onRunAsync = { _ in await gate.wait() }
         let model = await model(cli)
 
+        model.beginDrag(ids.team)
         let moving = Task { await model.drop(ids.team, onto: .init(targetID: ids.release, placement: .before)) }
         while model.pendingMoveID == nil { await Task.yield() }
         let content = model.content
