@@ -7,8 +7,9 @@ import WatchtowerCore
 /// What one Discuss thread runs on (spec 2026-11-08 §3), gathered when the
 /// thread opens: the item, the reviewer's data for it (`watchtower workbench
 /// spec-review thread-context`, fetched once and held here for the system
-/// prompt) and the configured provider. The folder the agent reads is the
-/// CLI's to find (`ai query --read-folder-ask <askID>`).
+/// prompt) and the configured provider. Whether the agent reads a folder is
+/// that provider's capability row (`AIModelCatalog`, LLMTRANSPORT-01); which
+/// folder is the CLI's to find (`ai query --read-folder-ask <askID>`).
 struct SpecReviewThreadContext {
     let workbenchID: Int64
     /// The first ask of the review chain: a re-round's card with the same
@@ -20,7 +21,8 @@ struct SpecReviewThreadContext {
     let itemKey: String
     /// The `thread-context` output: fenced data blocks.
     let data: String
-    /// The configured provider, at its strong tier.
+    /// The configured provider, at its strong tier. Only its id is used: what
+    /// it can do is its capability row.
     let provider: AIProvider
     /// The item is gone after a re-run (not in the current result, ledger,
     /// thread findings or theses): the thread is readable only.
@@ -42,6 +44,10 @@ struct SpecReviewThreadContext {
 @MainActor
 final class SpecReviewThreadTurns {
     var concluding = false
+    /// The running turn's folder access, set when its run options are built:
+    /// its notice follows what the turn had, whatever a later catalog read
+    /// says.
+    var folderAccess: SpecReviewThreadSurface.FolderAccess = .reads
 
     nonisolated init() {}
 }
@@ -59,11 +65,12 @@ final class SpecReviewThreadTurns {
 ///   'spec_review_thread'` and `context_id = '<workbench>:<root>:<key>'`
 ///   (`SpecReviewThreadKey`, Go's `ThreadContextID`): Go's `add-finding`
 ///   reads the owner's rows of it to check a thread quote.
-/// - The configured provider at its strong tier, `--read-folder-ask
-///   <askID>` (the CLI resolves the folder the reviewer read: the session's
-///   worktree when recorded, else the workbench folder; none on ollama,
-///   which is told so once), and `--purpose spec_review.discuss` for the
-///   usage ledger.
+/// - The configured provider at its strong tier, and `--read-folder-ask
+///   <askID>` when its capability row reads folders (the CLI resolves the
+///   folder the reviewer read: the session's worktree when recorded, else the
+///   workbench folder). A transport that reads none, or a turn started while
+///   the catalog could not be read, runs without a folder and the thread says
+///   so once. `--purpose spec_review.discuss` for the usage ledger.
 /// - A reply's blocks stay in the stored text, so a proposal still shows
 ///   after the drawer or the app was closed; the thread view strips them
 ///   when it renders (`SpecReviewThreadBlocks`).
@@ -73,6 +80,38 @@ enum SpecReviewThreadSurface {
     static let purpose = "spec_review.discuss"
     static let cannotReadFilesNotice =
         "This model cannot read files: the assistant answers from the review's data only."
+    /// A turn started after the catalog read failed: the provider's row is
+    /// unknown, so the turn had no folder.
+    static let capabilitiesUnreadNotice =
+        "Provider capabilities could not be read, so the assistant answers from the review's data only "
+        + "— see Settings → System → AI."
+
+    /// What a turn could read: the folder, nothing (its row reads none), or
+    /// nothing because the catalog read failed; `.unknown` while no read
+    /// finished (no folder, and no notice it cannot back).
+    enum FolderAccess: Equatable {
+        case reads, cannotRead, catalogUnread, unknown
+
+        @MainActor static func of(provider: AIProvider, catalog: AIModelCatalog) -> Self {
+            if catalog.unreadReason != nil { return .catalogUnread }
+            guard catalog.isLoaded else { return .unknown }
+            return catalog.capabilities(for: provider.rawValue).readsFolder ? .reads : .cannotRead
+        }
+
+        /// The notice a turn with this access leaves in the thread, once.
+        var notice: String? {
+            switch self {
+            case .reads, .unknown: nil
+            case .cannotRead: SpecReviewThreadSurface.cannotReadFilesNotice
+            case .catalogUnread: SpecReviewThreadSurface.capabilitiesUnreadNotice
+            }
+        }
+    }
+
+    /// The provider's capability row (the shared catalog).
+    static func capabilities(_ context: SpecReviewThreadContext) -> ProviderCapabilities {
+        AIModelCatalog.shared.capabilities(for: context.provider.rawValue)
+    }
 
     /// The thread's conversation, created on first use.
     static func conversationID(
@@ -85,17 +124,23 @@ enum SpecReviewThreadSurface {
     }
 
     static func spec(context: SpecReviewThreadContext, conversationID: Int64, dbPool: DatabasePool) -> ChatSurfaceSpec {
-        let readsFiles = context.provider != .ollama
         let runOptions = { @MainActor () -> ChatRunOptions in
-            ChatRunOptions(provider: context.provider.rawValue, purpose: purpose,
-                           readFolderAskID: readsFiles ? context.askID : nil)
+            let access = FolderAccess.of(provider: context.provider, catalog: .shared)
+            context.turns.folderAccess = access
+            return ChatRunOptions(provider: context.provider.rawValue, purpose: purpose,
+                                  readFolderAskID: access == .reads ? context.askID : nil)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: context.contextID, conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
             ownerInstructions: true,
-            systemPrompt: { buildSystemPrompt(context: context) },
+            // Built after the turn's run options: the prompt says what the
+            // turn was given, a folder or none.
+            systemPrompt: {
+                buildSystemPrompt(context: context,
+                                  capabilities: context.turns.folderAccess == .reads ? capabilities(context) : .none)
+            },
             turnPrompt: { $0.text },
             postTurn: { input in
                 var result = ChatPostTurnResult.identity(input)
@@ -109,8 +154,9 @@ enum SpecReviewThreadSurface {
                 if blocks.question != nil || blocks.finding != nil {
                     context.onReply(blocks.question, blocks.finding)
                 }
-                if !readsFiles, !hasCannotReadNotice(conversationID: conversationID, dbPool: dbPool) {
-                    result.notices = [cannotReadFilesNotice]
+                if let notice = context.turns.folderAccess.notice,
+                   !hasNotice(notice, conversationID: conversationID, dbPool: dbPool) {
+                    result.notices = [notice]
                 }
                 return result
             },
@@ -121,15 +167,16 @@ enum SpecReviewThreadSurface {
         )
     }
 
-    /// Whether the thread already told the owner its model reads no files.
-    /// A failed read shows it again rather than never.
-    private static func hasCannotReadNotice(conversationID: Int64, dbPool: DatabasePool) -> Bool {
+    /// Whether the thread already shows `notice` (its model reads no files,
+    /// or its capabilities were unread). A failed read shows it again rather
+    /// than never.
+    private static func hasNotice(_ notice: String, conversationID: Int64, dbPool: DatabasePool) -> Bool {
         do {
             return try dbPool.read { db in
                 try Bool.fetchOne(db, sql: """
                     SELECT EXISTS (SELECT 1 FROM chat_messages
                                    WHERE conversation_id = ? AND role = 'system' AND text = ?)
-                    """, arguments: [conversationID, cannotReadFilesNotice]) ?? false
+                    """, arguments: [conversationID, notice]) ?? false
             }
         } catch {
             NSLog("SpecReviewThreadSurface: reading the notices of conversation %lld: %@",
@@ -140,13 +187,15 @@ enum SpecReviewThreadSurface {
 
     // MARK: - System prompt
 
-    static func buildSystemPrompt(context: SpecReviewThreadContext) -> String {
-        let reading = context.provider == .ollama
+    /// `capabilities` words the folder section for how the row reads (file
+    /// tools, a read-only shell sandbox) or says there is no folder.
+    static func buildSystemPrompt(context: SpecReviewThreadContext, capabilities: ProviderCapabilities) -> String {
+        let reading = !capabilities.readsFolder
             ? """
             You cannot read any file, run commands or reach the web: answer from the review's data below only, and \
             say so when the answer needs code you have not been shown.
             """
-            : CodeQuestionSurface.readingInstructions(context.provider)
+            : CodeQuestionSurface.readingInstructions(capabilities)
                 .replacingOccurrences(of: "workbench folder", with: "folder the reviewer read")
         return """
         You are Watchtower's assistant in a Discuss thread on one item of a spec review: a finding an independent \

@@ -15,12 +15,14 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
+        ProviderCatalogFixture.seedShared() // folder reading is the provider's capability row
         do {
             (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         } catch { XCTFail("setUp failed: \(error)") }
     }
 
     override func tearDown() {
+        ProviderCatalogFixture.seedShared()
         TestDatabase.cleanup(path: dbPath)
         super.tearDown()
     }
@@ -74,6 +76,8 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertNil(call.model, "the provider's strong tier")
         let system = try XCTUnwrap(call.systemPrompt)
         XCTAssertTrue(system.contains("You did not write this item"))
+        XCTAssertTrue(system.contains("inside the folder the reviewer read with the read-only file tools"),
+                      "file tools, worded for the reviewer's folder")
         XCTAssertTrue(system.contains("Muting lasts a day."), "the review's data is in the prompt")
         XCTAssertTrue(system.contains("```watchtower-ask-author"))
         XCTAssertTrue(system.contains("```watchtower-finding"))
@@ -82,8 +86,11 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertEqual(stored?.contextID, "3:7:da:abc")
     }
 
-    /// Ollama reads no folder and the thread says so once.
-    func testOllamaRunsWithoutTheFolderAndSaysSoOnce() async throws {
+    /// A provider whose capability row reads no folder (ollama's, in the
+    /// Go-written table) runs without one, its prompt says so, and the thread
+    /// says so once (LLMTRANSPORT-01: the row decides, not the name).
+    func testAProviderThatReadsNoFolderRunsWithoutItAndSaysSoOnce() async throws {
+        XCTAssertFalse(AIModelCatalog.shared.capabilities(for: "ollama").readsFolder)
         let conv = try await conversation()
         let spec = SpecReviewThreadSurface.spec(context: context(provider: .ollama), conversationID: conv,
                                                 dbPool: dbManager.dbPool)
@@ -93,8 +100,45 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
         await turn(engine, ai, "Why?", reply: "Because.")
         await turn(engine, ai, "And?", reply: "That's all.")
+        XCTAssertNil(ai.calls.first?.readFolderAskID)
+        XCTAssertTrue(ai.calls.first?.systemPrompt?.contains("You cannot read any file") ?? false)
         let notices = engine.messages.filter { $0.message.role == "system" }.map(\.message.text)
         XCTAssertEqual(notices, [SpecReviewThreadSurface.cannotReadFilesNotice])
+    }
+
+    /// A read-only shell sandbox row (codex's) gets the folder and the
+    /// sandbox wording for the reviewer's folder.
+    func testAShellSandboxProviderReadsTheReviewersFolder() async throws {
+        let conv = try await conversation()
+        let spec = SpecReviewThreadSurface.spec(context: context(provider: .codex), conversationID: conv,
+                                                dbPool: dbManager.dbPool)
+        XCTAssertEqual(spec.runOptions().readFolderAskID, 9)
+        let system = spec.systemPrompt()
+        XCTAssertTrue(system.contains("inside the folder the reviewer read under a read-only sandbox"))
+        XCTAssertFalse(system.contains("workbench folder"))
+    }
+
+    /// The turn's folder access follows the catalog: a failed read gives no
+    /// folder and names it, a read not finished gives no folder and no
+    /// notice it cannot back.
+    func testFolderAccessFollowsTheCatalog() async {
+        let read = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        XCTAssertEqual(SpecReviewThreadSurface.FolderAccess.of(provider: .claude, catalog: read), .reads)
+        XCTAssertEqual(SpecReviewThreadSurface.FolderAccess.of(provider: .ollama, catalog: read), .cannotRead)
+        XCTAssertEqual(SpecReviewThreadSurface.FolderAccess.of(provider: .claude, catalog: AIModelCatalog { nil }),
+                       .unknown)
+        let failed = AIModelCatalog { nil }
+        await failed.load()
+        XCTAssertEqual(SpecReviewThreadSurface.FolderAccess.of(provider: .claude, catalog: failed), .catalogUnread)
+        XCTAssertEqual(SpecReviewThreadSurface.FolderAccess.catalogUnread.notice,
+                       SpecReviewThreadSurface.capabilitiesUnreadNotice)
+        XCTAssertNil(SpecReviewThreadSurface.FolderAccess.unknown.notice)
+        XCTAssertNil(SpecReviewThreadSurface.FolderAccess.reads.notice)
+
+        AIModelCatalog.shared.replaceProviders([])
+        let spec = SpecReviewThreadSurface.spec(context: context(), conversationID: 1, dbPool: dbManager.dbPool)
+        XCTAssertNil(spec.runOptions().readFolderAskID, "no row read yet: no folder")
+        XCTAssertTrue(spec.systemPrompt().contains("You cannot read any file"), "the prompt says what the turn had")
     }
 
     func testOrphanRefusesNewTurns() async throws {
