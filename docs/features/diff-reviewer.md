@@ -214,8 +214,9 @@ If the tree moved while it ran, it is followed up when it lands: Deep makes the 
 overview; Quick reads the new tree's cache and, on a miss, shows the made overview as
 `outdated` ("for an earlier version of the changes") with **Make overview**, without its
 risks, chapters or coverage. The model call has a 330 s timeout (the cached-only read uses
-the CLI's default one); the CLI bounds the whole command — git, the model call, the db — at
-5 minutes, `reviewAIBudget`, and a cancelled parent or a SIGINT/SIGTERM cancels the model
+the CLI's default one); the CLI bounded the whole command — git, the model call, the db — at
+5 minutes, `reviewAIBudget` (since #1025 that bounds only `review lessons`; an overview run is bounded
+by its run ceiling, see "Big branches" below), and a cancelled parent or a SIGINT/SIGTERM cancels the model
 call, which kills its claude/codex child. The refresh after an owner **Undo** does not ask
 for a new overview (ask #249): after an owner Undo, the overview is kept until the next
 Refresh, which asks again (Deep makes one, Quick reads the cache; as does an auto-refresh;
@@ -225,10 +226,13 @@ answered. A linked target that cannot be read fails `review context` and `review
 (`ok:false`, nothing cached) instead of being skipped. Input: the review
 context items (the linked targets' text, intent and plan task, `reviewContextItems`), the
 session's agent notes, the lens ids, and the round's diff from base to tree. Caps live only
-in `internal/reviewai/limits.go`: at most 300 diff lines per file and 6,000 in all; a file
-past either cap, binary or collapsed is listed as `<path> (+a −d) — not shown`, and once the
-overall cap is spent every later file is only listed. The call is strong tier
-(`workbench.review_overview`, prompt `review.overview` v2, tunable in Settings → Prompts).
+in `internal/reviewai/limits.go`: since #1025 at most 300 diff lines per file
+(`MaxOverviewFileLines`, the rest counted as `(+N lines not shown)`) and 2,500 per call
+(`MaxBatchLines`); a change that fits one call is still one call, a bigger one is described per
+chapter (see "Big branches" below). The calls are strong tier, with ledger purposes and prompts
+`review.overview` v3 (the one full call), `review.chapters` v1 and `review.summary` v1, all
+tunable in Settings → Prompts (before #1025: `workbench.review_overview`, prompt v2, 6,000 lines
+in all).
 The reply is validated, never trusted: malformed JSON, an array root or an empty `summary`
 fails the call; coverage entries with an unknown status (`done|partial|not_found`) or an
 `index` (the item's 1-based number in the INTENT list) out of range or already used, risk
@@ -393,3 +397,84 @@ Owner's report (board comment #451, target #987): on a session whose folder is o
 - **Desktop staleness keyed on the diff**: the overview and comment re-placement follow `ReviewRoundInfo.diffKey` (base and tree), so a move that changes only the base regenerates the overview. A comment row records only its tree, so old-side drafts and carried comments are re-placed whenever the model has not seen the round on the same base (every first open, and a Refresh whose base changed). `open()` re-places drafts and carried comments of a moved round as Refresh does; a failure there is the banner "Could not re-place N comments on the new tree: …" and the round still opens with the rows untouched.
 - **Identity bar**: a branch-tip round shows `feature/x → main · N files · branch tip, read-only · <place>` whatever the folder is on, never the uncommitted count or the on-main notice; its empty state reads "No commits on feature/x past main." (`ReviewIdentityPresentation.branchLine`/`emptyDescription`).
 - **Not covered**: `annotate_changes` and the finish check's session overview still snapshot the folder, so on a branch-tip round the agent's notes and the finish overview are on another tree than the round (notes show unplaced; board #1013). On a branch-tip round, Show in Finder, go to definition / usages and the read-only preview resolve paths in the session's folder, not in the reviewed tip: a file the folder lacks or holds in another version opens as it is in the folder.
+
+## Big branches (#1025, 2026-11-08)
+
+Owner's report: on a 700-file integration branch Branch review waited minutes for one AI call
+and then showed folder chapters with no order of what to read first. Specs:
+`docs/superpowers/specs/2026-11-07-big-branch-review-design.md` (business, owner-approved in ask
+#591) and `docs/superpowers/specs/2026-11-07-big-branch-review-technical.md` (§ numbers below);
+plan `docs/superpowers/plans/2026-11-08-big-branch-review.md`. Phase 1 (Go) is below; the
+Desktop (phase 2) and the reviewer chat (phase 3) follow.
+
+- **Map** (`internal/reviewmap`, `watchtower workbench review map --round R | --session S --json`,
+  writes nothing, budget `reviewMapBudget` 20 s): chapters in reading order — the agent's
+  chapters (`agent:<n>`), lane chapters (`lane:<lane>`, a lane over 400 changed lines split
+  `lane:<lane>/<dir>[#N]`), the rest by directory (`dir:<dir>[#N]`, byte-identical to the old
+  Swift builder), **Can skip** last (`collapsed`); no `ai:` keys. Each chapter carries its
+  level, paths, signals and changed lines; the map lists every lane found (`lanes: [{name,
+  title, target_id?, jira_key?}]`) and notes such as `lanes_partial`.
+- **Lanes** (§2.1): from the round's `head_sha` (migration 00174, stored by `start`, Refresh and
+  a moved round; empty on an older round → no lanes, `lanes_partial`) back to its base, a
+  first-parent walk (`FirstParentWalk`, `rev-list --first-parent --parents`) finds lane merges
+  by their subjects; a merge whose second parent is in the default branch is a base sync
+  (`IsAncestor`) and is skipped. Direct commits on an integration lane go to their subject's tag
+  (Jira key, `#N`, plan tag, conventional scope). Per-walk file lists (`CommitFiles`, `log
+  --name-only -z`) give each file the lane with the most commits touching it, the others as
+  `also`. Titles: a board target on that branch (`db.TargetsByBranches`), a Jira key in the
+  branch name, a `#N` tag, else the name. Bounds 2,000 commits / 200 lanes, map budget 20 s;
+  past them files fall back to package chapters with `lanes_partial`.
+- **Danger** (§2.3): per file from the path, status and diff lines only — `migration_edited`,
+  `api_removed`, `test_deleted` (breaking), `migration_added`, `dependency`, `ci`,
+  `security_path`, `file_deleted` (significant), `repo:<level>`; a chapter's level is its
+  highest file's. **Noise** (§2.2): lock and generated files, `testdata`/fixtures/snapshots/
+  golden segments, `.snap`/`.pbxproj`/`.xcodeproj`, binaries, and the repository's own **Can
+  skip** globs; never sent to a model.
+- **Repository patterns** (§2.4): `.watchtower/review-map.md` in the workbench folder, read under
+  the lens-file rules (≤ 65,536 bytes): `## Breaking`, `## Significant`, `## Can skip` headings
+  with `- <glob>` lines (`path.Match` per segment, `**` any depth; a glob without `/` matches a
+  top-level file only); anything else becomes a note in the map. This repository has its own
+  (inventory, guard tests and the prompt defaults breaking; the schema, `internal/tools/**` and
+  `cmd/**` significant; the generated schemas, golden and relay protos skippable), checked by
+  `TestPatterns_ThisRepositorysFile`.
+- **Packing** (§3.1): chapters in reading order, first fit, into batches of at most 2,500 shown
+  lines (`MaxBatchLines`; a chapter over it gets a batch of its own, cut by file level then
+  path); `collapsed` is never packed and a chapter with no line to show (its files past the
+  diff's cap) is described "not shown" without a call. One batch = the one full call
+  (`review.overview` v3: chapter descriptions plus summary, coverage, out of scope); more =
+  `review.chapters` v1 per batch, then one `review.summary` v1 call over the intent, the map and
+  every description, never the diff. Intent items: the session's (numbered first), then one per
+  lane ticket with `source: lane`; `IntentHash` covers the session's items only.
+- **Budgets** (§3.2): `min(batches, 4)` calls at once, one call `90 s + 60 s × ceil(lines/1000)`,
+  summary 2 min, run ceiling `waves × max(call) + summary` capped at 45 min. Chapters not reached
+  are `not_started`; a timeout names the budget that cut the call (its own or the ceiling's).
+- **Cache** (§3.3): `review_overview_parts` (migration 00174), one row per described chapter
+  under `part_hash` = its key, files with their blobs, its own line notes and the prompt id +
+  version — no intent; 30-day pruning on write. A Refresh after editing one file redoes only its
+  chapter. The assembled overview goes to `review_overviews` under the old key whenever a summary
+  exists, with `incomplete: [chapter key]`; the summary never waits for every chapter. A change
+  of only Can-skip files is assembled without a call ("Only files that can be skipped
+  changed.", every item `not_found`).
+- **Stream** (§3.5): `review overview … --json --stream` prints `map`, `waiting`, `tick` (every
+  30 s), `chapter` (`cached|ok|failed|not_started`) and `summary` events, then the envelope.
+  `--continue`, `--chapter K` (repeatable), `--summary` and `--cached-only` pick what to redo.
+  Errors (§3.6): `timeout|provider|parse|cancelled|too_large|busy`, one owner sentence each;
+  the provider's text goes to stderr and the envelope's `detail`, never to the log (FILES-01).
+- **Lock** (§3.7): every model-calling form holds `<workspace>/locks/review-overview-<project>-<hash
+  of the snapshot folder>.lock` for its run (holder `desktop|agent|cli` in the file). Only the
+  streamed form waits (up to `LockWaitCap` 50 min, re-reading parts every 5 s and streaming them
+  as `cached`), then calls the model only for chapters still undescribed; every other form
+  answers `busy` at once.
+- **Finish gate** (§4, `internal/tools/workbench_finish_gate.go`): unchanged in what it checks —
+  every `source: session` item `done`; lane items never gate, an `incomplete` overview counts,
+  an overview whose every chapter is Can skip passes. It builds no map and never runs the model;
+  the missing-overview refusal adds "Re-run it; only the missing chapters are redone." and, when
+  the session's diff packs into more than one batch, to run the command in the background. Skill
+  pack v20 says the same and that `busy` means Branch review is describing the branch — run
+  again later, nothing is lost.
+- **Contracts**: REVIEW-01 amended (ask #591: `review_overview_parts`, `head_sha`; `review map`
+  writes nothing), REVIEW-05 guard lists the map's git reads (`docs/inventory/review.md`).
+- **v1 limits**: tech spec §9 — subjects only for lanes, squash-merged lanes, line-based
+  `api_removed`, the head branch read at map time, no default branch → `lanes_partial`, NFC
+  paths, top-level-only globs without `/`, and a multi-batch summary judging coverage from
+  descriptions (the agent can hand over).
