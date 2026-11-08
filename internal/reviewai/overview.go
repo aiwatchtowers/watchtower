@@ -7,36 +7,50 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
-	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/reviewdiff"
+	"watchtower/internal/reviewmap"
 )
 
-const overviewSource = "workbench.review_overview"
+// Intent item sources: the session's own items, and one item per lane
+// ticket of the branch (tech spec §3.1). Empty reads as session.
+const (
+	SourceSession = "session"
+	SourceLane    = "lane"
+)
 
-// IntentItem is one thing the owner asked the session for.
-type IntentItem struct{ Text, Intent, Task string }
+// IntentItem is one thing the owner asked for: a session context item, or
+// a lane's ticket (Source "lane").
+type IntentItem struct{ Text, Intent, Task, Source string }
 
-// Input is everything the overview call sees.
+func (it IntentItem) source() string {
+	if it.Source == SourceLane {
+		return SourceLane
+	}
+	return SourceSession
+}
+
+// Input is everything the overview sees.
 type Input struct {
-	Intent  []IntentItem
-	Notes   []db.ReviewNote
-	Diff    reviewdiff.Diff
-	LensIDs []string
+	Intent []IntentItem
+	Notes  []db.ReviewNote
+	Diff   reviewdiff.Diff
 }
 
 // Coverage is the model's verdict on one intent item. Index is the item's
 // 1-based number in the INTENT block: the Desktop keys the Wrap-up mark to
-// that item, never to the model's wording.
+// that item, never to the model's wording. Source is the item's.
 type Coverage struct {
 	Index  int      `json:"index"`
 	Item   string   `json:"item"`
 	Status string   `json:"status"` // done | partial | not_found
 	Where  []string `json:"where"`
+	Source string   `json:"source"` // session | lane
 }
 
 type Risk struct {
@@ -46,10 +60,9 @@ type Risk struct {
 }
 
 type Chapter struct {
-	Title  string   `json:"title"`
-	Paths  []string `json:"paths"`
-	Core   bool     `json:"core"`
-	Lenses []string `json:"lenses"`
+	Title string   `json:"title"`
+	Paths []string `json:"paths"`
+	Core  bool     `json:"core"`
 }
 
 type Overview struct {
@@ -60,10 +73,13 @@ type Overview struct {
 	Chapters   []Chapter  `json:"chapters"`
 }
 
-// IntentHash identifies the intent the overview was made for: the context
-// items plus the agent's notes (a new note re-runs the overview). Row ids and
-// tree ids stay out; the cache key carries the tree.
+// IntentHash identifies the intent the overview was made for: the session's
+// items, the lane items and the agent's notes (a new note re-runs the
+// overview). Row ids and tree ids stay out; the cache key carries the tree.
+// With no lane items the bytes hashed are the same as before lane items
+// existed, so overviews cached for session-only intent stay valid.
 func IntentHash(items []IntentItem, notes []db.ReviewNote) string {
+	type item struct{ Text, Intent, Task string }
 	type note struct {
 		Kind               string
 		Ord                int
@@ -74,14 +90,26 @@ func IntentHash(items []IntentItem, notes []db.ReviewNote) string {
 		Core               bool
 		Why                string
 	}
+	var session, lanes []item
+	if items != nil {
+		session = make([]item, 0, len(items))
+	}
+	for _, it := range items {
+		if it.source() == SourceLane {
+			lanes = append(lanes, item{it.Text, it.Intent, it.Task})
+		} else {
+			session = append(session, item{it.Text, it.Intent, it.Task})
+		}
+	}
 	ns := make([]note, 0, len(notes))
 	for _, n := range notes {
 		ns = append(ns, note{n.Kind, n.Ord, n.Path, n.StartLine, n.EndLine, n.Quote, n.Text, n.Paths, n.Core, n.Why})
 	}
 	b, _ := json.Marshal(struct {
-		Items []IntentItem
+		Items []item
 		Notes []note
-	}{items, ns})
+		Lanes []item `json:",omitempty"`
+	}{session, ns, lanes})
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
@@ -94,21 +122,19 @@ func fileLines(f reviewdiff.File) int {
 	return n
 }
 
-// BuildOverviewUser is the data part of the call: intent, the agent's notes,
-// the lens ids and the diff, capped by limits.go. A file past a cap, binary
-// or collapsed is listed as "<path> (+a −d) — not shown".
-func BuildOverviewUser(in Input) string {
-	var b strings.Builder
-	b.WriteString("=== DATA ===\n\n=== INTENT ===\n")
-	writeOverviewIntent(&b, in.Intent)
-	b.WriteString("\n=== AGENT NOTES ===\n")
-	writeOverviewNotes(&b, in.Notes)
-	b.WriteString("\n=== LENS IDS ===\n" + strings.Join(in.LensIDs, ", ") + "\n\n=== DIFF ===\n")
-	writeOverviewDiff(&b, in.Diff)
-	return b.String()
+// BuildOverviewUser is the data of the one full call (review.overview):
+// the intent, then the batch as review.chapters sees it.
+func BuildOverviewUser(b Batch, intent []IntentItem, notes []db.ReviewNote) string {
+	var s strings.Builder
+	s.WriteString("=== DATA ===\n\n=== INTENT ===\n")
+	writeOverviewIntent(&s, intent)
+	s.WriteString("\n")
+	writeBatch(&s, b, notes)
+	return s.String()
 }
 
-// writeOverviewIntent lists the intent items, numbered from 1.
+// writeOverviewIntent lists the intent items, numbered from 1; a lane
+// ticket says so.
 func writeOverviewIntent(b *strings.Builder, items []IntentItem) {
 	if len(items) == 0 {
 		b.WriteString("(none given)\n")
@@ -121,53 +147,8 @@ func writeOverviewIntent(b *strings.Builder, items []IntentItem) {
 		if it.Task != "" {
 			fmt.Fprintf(b, "   Plan task: %s\n", it.Task)
 		}
-	}
-}
-
-// writeOverviewNotes lists the agent's notes and chapters.
-func writeOverviewNotes(b *strings.Builder, notes []db.ReviewNote) {
-	if len(notes) == 0 {
-		b.WriteString("(none)\n")
-	}
-	for _, n := range notes {
-		switch n.Kind {
-		case "chapter":
-			fmt.Fprintf(b, "chapter %q: %s\n", n.Text, strings.Join(n.Paths, ", "))
-		default:
-			fmt.Fprintf(b, "%s:%d-%d: %s\n", n.Path, n.StartLine, n.EndLine, oneLine(n.Text))
-		}
-	}
-}
-
-// writeOverviewDiff writes the diff under the caps: a file past a cap,
-// binary or collapsed is only listed.
-func writeOverviewDiff(b *strings.Builder, d reviewdiff.Diff) {
-	shown := 0
-	capped := false
-	for _, f := range d.Files {
-		n := fileLines(f)
-		if capped || f.Binary || f.CollapsedReason != "" || n > MaxOverviewFileLines || shown+n > MaxOverviewLines {
-			if !f.Binary && f.CollapsedReason == "" && n <= MaxOverviewFileLines {
-				capped = true // the overall cap is spent: every later file is only listed
-			}
-			fmt.Fprintf(b, "%s (+%d −%d) — not shown\n", f.Path, f.Additions, f.Deletions)
-			continue
-		}
-		shown += n
-		writeOverviewFile(b, f)
-	}
-	if d.Truncated {
-		b.WriteString("(the diff itself was truncated; more files changed than listed)\n")
-	}
-}
-
-// writeOverviewFile writes one shown file's header and hunks.
-func writeOverviewFile(b *strings.Builder, f reviewdiff.File) {
-	fmt.Fprintf(b, "--- %s (%s, +%d −%d)\n", f.Path, f.Status, f.Additions, f.Deletions)
-	for _, h := range f.Hunks {
-		b.WriteString(h.Header + "\n")
-		for _, l := range h.Lines {
-			b.WriteString(l + "\n")
+		if it.source() == SourceLane {
+			b.WriteString("   From: the ticket of a lane merged into the branch\n")
 		}
 	}
 }
@@ -197,36 +178,33 @@ func extractObject(raw string) (string, error) {
 	return js, nil
 }
 
-// ParseOverview validates a model reply against the input: unknown paths,
-// lens ids and enum values, and coverage entries whose index is out of range
-// or repeated, are dropped entry by entry; malformed JSON or an
-// empty summary fails the whole call.
-func ParseOverview(raw string, in Input) (Overview, error) {
+// ParseOverview validates a review.overview reply against its batch and
+// intent: the chapter descriptions as ParseChapters keeps them, the summary
+// part as ParseSummary does. A reply without a summary or naming none of
+// the batch's chapters fails with ErrParse. NotCovered is always empty:
+// the one call sees every chapter.
+func ParseOverview(raw string, b Batch, intent []IntentItem) (map[string]ChapterDesc, Summary, error) {
 	js, err := extractObject(raw)
 	if err != nil {
-		return Overview{}, fmt.Errorf("overview reply: %w", err)
+		return nil, Summary{}, fmt.Errorf("overview reply: %w: %w", ErrParse, err)
 	}
-	var o Overview
-	if err := json.Unmarshal([]byte(js), &o); err != nil {
-		return Overview{}, fmt.Errorf("overview reply: %w", err)
+	var r struct {
+		Summary
+		Chapters []ChapterDesc `json:"chapters"`
 	}
-	o.Summary = clipRunes(strings.TrimSpace(o.Summary), maxSummaryRunes)
-	if o.Summary == "" {
-		return Overview{}, errors.New("overview reply: empty summary")
+	if err := json.Unmarshal([]byte(js), &r); err != nil {
+		return nil, Summary{}, fmt.Errorf("overview reply: %w: %w", ErrParse, err)
 	}
-	paths := map[string]bool{}
-	for _, f := range in.Diff.Files {
-		paths[f.Path] = true
+	sum, err := checkSummary(r.Summary, intent, b.paths())
+	if err != nil {
+		return nil, Summary{}, err
 	}
-	lensOK := map[string]bool{}
-	for _, id := range in.LensIDs {
-		lensOK[id] = true
+	sum.NotCovered = []string{}
+	descs, err := keepChapters(r.Chapters, b)
+	if err != nil {
+		return nil, Summary{}, err
 	}
-	o.Coverage = parseCoverage(o.Coverage, len(in.Intent), paths)
-	o.OutOfScope = keepKnown(o.OutOfScope, paths)
-	o.Risk = parseRisk(o.Risk, paths)
-	o.Chapters = parseChapters(o.Chapters, paths, lensOK)
-	return o, nil
+	return descs, sum, nil
 }
 
 // keepKnown keeps the entries of ss that ok knows, in order (never nil).
@@ -241,9 +219,9 @@ func keepKnown(ss []string, ok map[string]bool) []string {
 }
 
 // parseCoverage keeps the coverage entries with an item, a known status and
-// an index among the intentCount given items not already covered, up to
-// maxCoverage.
-func parseCoverage(in []Coverage, intentCount int, paths map[string]bool) []Coverage {
+// an index among the given intent items not already covered, up to
+// maxCoverage; each carries its item's source.
+func parseCoverage(in []Coverage, intent []IntentItem, paths map[string]bool) []Coverage {
 	cov := []Coverage{}
 	seenIndex := map[int]bool{}
 	for _, c := range in {
@@ -251,11 +229,12 @@ func parseCoverage(in []Coverage, intentCount int, paths map[string]bool) []Cove
 		if item == "" || (c.Status != "done" && c.Status != "partial" && c.Status != "not_found") || len(cov) >= maxCoverage {
 			continue
 		}
-		if c.Index < 1 || c.Index > intentCount || seenIndex[c.Index] {
+		if c.Index < 1 || c.Index > len(intent) || seenIndex[c.Index] {
 			continue // not one of the given items, or one already covered
 		}
 		seenIndex[c.Index] = true
-		cov = append(cov, Coverage{Index: c.Index, Item: item, Status: c.Status, Where: keepKnown(c.Where, paths)})
+		cov = append(cov, Coverage{Index: c.Index, Item: item, Status: c.Status, Where: keepKnown(c.Where, paths),
+			Source: intent[c.Index-1].source()})
 	}
 	return cov
 }
@@ -273,30 +252,46 @@ func parseRisk(in []Risk, paths map[string]bool) []Risk {
 	return risk
 }
 
-// parseChapters keeps the chapters with at least one known path, up to
-// maxChapters; an empty title falls back to the first path.
-func parseChapters(in []Chapter, paths, lensOK map[string]bool) []Chapter {
-	chs := []Chapter{}
-	for _, c := range in {
-		ps := keepKnown(c.Paths, paths)
-		if len(ps) == 0 || len(chs) >= maxChapters {
-			continue
-		}
-		title := clipRunes(strings.TrimSpace(c.Title), maxOverviewFields)
-		if title == "" {
-			title = ps[0]
-		}
-		chs = append(chs, Chapter{Title: title, Paths: ps, Core: c.Core, Lenses: keepKnown(c.Lenses, lensOK)})
-	}
-	return chs
-}
-
-// Overview runs the strong-tier call and validates the reply. Nothing is
-// cached here and no write transaction is open around the call.
+// Overview describes the whole diff in one go: the map's chapters packed
+// into batches (one batch = the one full call; more = a call per batch, in
+// turn, then the summary), assembled into the overview. Any failed call
+// fails it. This is the pre-stream path; the run orchestrator replaces it.
 func (p *Pipeline) Overview(ctx context.Context, in Input) (Overview, error) {
-	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, overviewSource), p.getPrompt(prompts.ReviewOverview), BuildOverviewUser(in), "")
-	if err != nil {
-		return Overview{}, err
+	m := reviewmap.Build(reviewmap.Input{Diff: in.Diff, AgentChapters: in.Notes})
+	batches := Pack(m, in.Diff, nil)
+	if len(batches) == 0 {
+		return Overview{}, errors.New("no chapter has a diff the AI can read")
 	}
-	return ParseOverview(raw, in)
+	descs := NotShown(m, in.Diff)
+	intent := in.Intent
+	if intent == nil {
+		intent = []IntentItem{} // non-nil: the one full call makes the summary
+	}
+	var sum Summary
+	if len(batches) == 1 {
+		d, s, err := p.DescribeBatch(ctx, batches[0], intent, in.Notes)
+		if err != nil {
+			return Overview{}, err
+		}
+		maps.Copy(descs, d)
+		sum = *s
+	} else {
+		for _, b := range batches {
+			d, _, err := p.DescribeBatch(ctx, b, nil, in.Notes)
+			if err != nil {
+				return Overview{}, err
+			}
+			maps.Copy(descs, d)
+		}
+		var err error
+		if sum, err = p.Summarize(ctx, SummaryInput{Intent: intent, Map: m, Described: descs}); err != nil {
+			return Overview{}, err
+		}
+	}
+	o := Overview{Summary: sum.Summary, Coverage: sum.Coverage, OutOfScope: sum.OutOfScope, Risk: []Risk{}, Chapters: []Chapter{}}
+	for _, ch := range m.Chapters {
+		o.Chapters = append(o.Chapters, Chapter{Title: ch.Title, Paths: ch.Paths, Core: ch.Core})
+		o.Risk = append(o.Risk, descs[ch.Key].Risks...)
+	}
+	return o, nil
 }

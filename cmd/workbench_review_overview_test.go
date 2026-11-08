@@ -45,7 +45,9 @@ func useReviewGenerator(t *testing.T, g digest.Generator) {
 	t.Cleanup(func() { reviewAIGeneratorFactory = old })
 }
 
-const overviewReply = `{"summary":"Edits the readme.","coverage":[],"out_of_scope":[],"risk":[{"path":"README.md","level":"low","why":"docs"}],"chapters":[{"title":"Readme","paths":["README.md"],"core":true,"lenses":["correctness"]}]}`
+// overviewReply is a review.overview v3 reply for the fixture's one root
+// chapter ("dir:").
+const overviewReply = `{"summary":"Edits the readme.","coverage":[],"out_of_scope":[],"chapters":[{"key":"dir:","what":"The readme.","risks":[{"path":"README.md","level":"low","why":"docs"}]}]}`
 
 // overviewRound: a changed README and an open round on the fixture session.
 func overviewRound(t *testing.T) (database *db.DB, wb, session int64, round string) {

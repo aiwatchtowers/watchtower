@@ -105,6 +105,8 @@ package enum LLMPurposeNames {
             ("workbench.review_lessons", "Review lessons"),
             ("workbench.ask_guard", "Ask guard"),
             ("review.overview", "Review overviews"),
+            ("review.chapters", "Review chapter descriptions"),
+            ("review.summary", "Review summaries"),
             ("review.lessons", "Review lessons"),
             ("review.spec", "Spec reviews"),
             ("terminal.title", "Session titles")
