@@ -21,7 +21,7 @@
 - Captured inputs and replays live at most 7 days; 5 rows per `prompt_id` unless pinned by a non-discarded replay.
 - Exact UI strings are the spec's; every visible string lives in `TuningChatTexts` / `AgentAnalyticsFormat` and is tested. Colours only through `Tone`; screens from `DesignKit`; no row separators.
 - Owner verbs (`prompts replay …`, `coach accept|decline|rollback`) are refused under an agent marker.
-- Inventory guard tests (`Test<MODULE>NN_…`) are never weakened; new guards: `TestCAPTURE01_*`, `TestCAPTURE02_*`, the four AGENTLOG-04 Codex guards, `TestAgent01_Tuning*`.
+- Inventory guard tests (`Test<MODULE>NN_…`) are never weakened; new guards: `TestCAPTURE01_*` (captures and replays never outlive their sources), `TestCAPTURE02_*` (what a tuning conversation or chat proposal read goes with it), `TestCAPTURE03_*` (every prompt call site captures or is listed), the four AGENTLOG-04 Codex guards, `TestAgent01_Tuning*`.
 - Public repo: fixtures are written from scratch (`acme`, `example.com`, "colleague A"); no live-install data, no real Codex rollout content.
 - Inner loop per task: `go test ./internal/<pkg>` / `make test-swift FILTER=…`, `make lint-diff` (Go) and `make lint-swift` (Swift). The full gate (`make test`, `make test-swift`, `make lint-all`) runs once per phase by the controller and before the PR.
 
@@ -52,12 +52,27 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 - **Run launch:** the Desktop starts `prompts replay <id> --json` as a detached child (its own session / process group, not in the quit kill list), polls the row every 2 s, and reads the outcome from the row, not from the child's exit (Task 5.8).
 - **Chats panel listing and the "Settings → AI" wording** wait on the owner's ask #1123; Tasks 5.11/5.13 follow its answer (if tuning chats stay out of the Chats panel, the `…-in-chats` mockup and its Swift test are dropped).
 
+## Owner decisions this plan waits on
+
+Choices found in recon that the spec does not settle. The plan follows the recommended option; a different answer changes the named tasks before they start.
+
+| Choice | Plan follows | Tasks | Source |
+|---|---|---|---|
+| Tuning chats in the Chats panel | not listed there; tuning panel only | 5.7, 5.11, 5.13 | ask #1123 |
+| The no-tools line's settings path | "Settings → System → AI" | 5.4 | ask #1123 |
+| Memory and catch-up captures name every account in `refs` | yes (any account purge removes them) | 1.11, 1.12 | ask #1125 |
+| `media.*`, `chat.title`, `instructions.suggest`, `terminal.title` not captured (no A/B for them) | yes, v1 limit | 1.13 | ask #1125 |
+| An owned Codex session row stores the header cwd in `home_cwd` (file rows never store a cwd) | yes, like Claude | 4.7 | ask #1125 |
+| **Propose this addition** text: title "Add to <prompt>: <line>", why "Tried on N past calls in A/B #id.", metric `corrections` | yes | 3.13 | ask #1125 |
+
+Settled by the plan without an owner choice (they follow the code or the spec): the IMAP item key `<uidvalidity>:<uid>` (no mailbox column exists); pack re-renders at Accept/Rollback (all of the owner's workbench folders at once), `integrate` and `workbenchSetupOptions` (the spec's "daemon drift check" does not exist; no folder is left unrendered after an overlay change); a Codex interrupt maps to `outcome = interrupted` only, as the spec says.
+
 ## Execution order and lanes
 
 - Phase 1: 1.1 first (alone). Then 1.2 → {1.3 → {1.5 → {1.6, 1.8, 1.9, 1.10, 1.11 → 1.12} → 1.13; 1.7}; 1.4}.
 - Phase 2 starts after 1.1: 2.1 → {2.2, 2.3 → 2.4 → 2.5}, 2.6 → 2.7 → 2.8 (also needs 1.5) → 2.9 → {2.10, 2.11}.
 - Phase 3 needs Phases 1 and 2 for its tool and CLI tasks; 3.1, 3.2, 3.4, 3.15 can start any time.
-- Phase 4 is independent: lanes {4.1 → 4.2}, {4.3 → 4.4 → 4.5, 4.6}, {4.8}; 4.9 → 4.14 serial; 4.15 after 4.5; 4.16 after 4.15 and Phase 2; 4.17 last.
+- Phase 4 is independent: lanes {4.1 → 4.2}, {4.3 → 4.4 → 4.5, 4.6}, {4.8}; 4.9 → 4.14 serial; 4.18 after 4.14; 4.15 after 4.5; 4.16 after 4.15 and Phase 2; 4.17 last.
 - Phase 5 needs Phase 3's contracts and Phase 4's report keys (5.10); 5.3, 5.4, 5.9 can start early.
 - Phase 6 last.
 
@@ -282,16 +297,16 @@ END;
   - `const RemovedProposalTitle = "Removed with its source data"`.
 
 - [ ] **Step 1: Write the failing tests** (`OpenTestDB`; deletes made through the real writers — `TombstoneSlackMessages`, `DeleteGmailMessages`, `DeleteImapMessages` and `DeleteImapMessagesOutsideUIDValidity`, `ReplaceJiraIssueComments`, `DeleteJiraIssues` (which also deletes the issue's comments, so both triggers fire); the Desktop recording delete as its raw SQL `DELETE FROM meeting_transcripts WHERE id = ?` and `UPDATE meeting_transcripts SET private = 1 WHERE id = ?`):
-  - `TestTUNING_TriggerKeysMatchItemKeys` (the `TestSRCDEL03_TriggerKeysMatchSourceKeys` shape): for each of the seven triggers seed one source row, insert one `prompt_inputs` row whose single item is the Go builder's output for that row, fire the change, assert the input is gone; a second input carrying a builder output for a *different* row of the same account survives.
-  - `TestTUNING_SlackEditRemovesNothing`: re-upsert a message with the same and with edited text → no input removed.
-  - `TestTUNING_DigestDedupeRemovesNothing`: deleting a `digests` row removes nothing (no trigger on digests).
-  - `TestTUNING_SourceDeleteRemovesConversation`: a `chat_conversations` row (`context_type='analytics_tuning'`) with `chat_conversation_sources` for the item, two `chat_messages` → after the source change the conversation, its messages and their `chat_fts` rows are gone; a second conversation with no source row stays.
-  - `TestTUNING_SourceDeleteBlanksProposals`: three proposals linked to the item through `coach_proposal_sources` — `open`, `declined`, `accepted` — after the change: open → `superseded`, title = `RemovedProposalTitle`, `why`/`before_text`/`after_text` = '', `evidence` = '[]', fingerprint unchanged; declined blanked, status kept; accepted keeps its text and gets `source_removed_at` != NULL; firing a second item of the same proposal leaves `source_removed_at` unchanged.
-  - `TestTUNING_ConversationDeleteByHandKeepsProposalLinks`: delete the conversation by hand → its `coach_proposal_sources`-linked proposal and its inputs stay; its `prompt_replays` go (FK cascade).
-  - `TestTUNING_InputDeleteDeletesReplays`: a replay whose `input_ids` = `[3,5]`, another `[6]`; deleting input 5 deletes only the first.
+  - `TestCAPTURE01_TriggerKeysMatchItemKeys` (the `TestSRCDEL03_TriggerKeysMatchSourceKeys` shape): for each of the seven triggers seed one source row, insert one `prompt_inputs` row whose single item is the Go builder's output for that row, fire the change, assert the input is gone; a second input carrying a builder output for a *different* row of the same account survives.
+  - `TestCAPTURE01_SlackEditRemovesNothing`: re-upsert a message with the same and with edited text → no input removed.
+  - `TestCAPTURE01_DigestDedupeRemovesNothing`: deleting a `digests` row removes nothing (no trigger on digests).
+  - `TestCAPTURE02_SourceDeleteRemovesConversation`: a `chat_conversations` row (`context_type='analytics_tuning'`) with `chat_conversation_sources` for the item, two `chat_messages` → after the source change the conversation, its messages and their `chat_fts` rows are gone; a second conversation with no source row stays.
+  - `TestCAPTURE02_SourceDeleteBlanksProposals`: three proposals linked to the item through `coach_proposal_sources` — `open`, `declined`, `accepted` — after the change: open → `superseded`, title = `RemovedProposalTitle`, `why`/`before_text`/`after_text` = '', `evidence` = '[]', fingerprint unchanged; declined blanked, status kept; accepted keeps its text and gets `source_removed_at` != NULL; firing a second item of the same proposal leaves `source_removed_at` unchanged.
+  - `TestCAPTURE02_ConversationDeleteByHandKeepsProposalLinks`: delete the conversation by hand → its `coach_proposal_sources`-linked proposal and its inputs stay; its `prompt_replays` go (FK cascade).
+  - `TestCAPTURE01_InputDeleteDeletesReplays`: a replay whose `input_ids` = `[3,5]`, another `[6]`; deleting input 5 deletes only the first.
   - `TestAgent01_TuningConversationDeleteEmptiesActions`: two `agent_actions` rows (`surface='tuning'`, `conversation_id` = a tuning conversation, `args_json` with text, `result_json`, `reason`, `error` set) and one `surface='main'` row of a `main` conversation; delete the tuning conversation (once via a source trigger, once by hand) → its rows remain with `args_json='{}'`, the three others `''`, `tool`/`surface`/`status`/`created_at`/`applied_at` unchanged; the main row untouched.
   - `TestAgent01_TuningActionForRemovedConversationRefused`: insert `agent_actions` with `surface='tuning'`, `conversation_id` = 999 → error containing `conversation removed`, no row; the same insert with `surface='main'` succeeds.
-  - `TestTUNING_RemovedTitleMatchesTrigger`: `schema.sql` text contains `'` + `RemovedProposalTitle` + `'` exactly 7 times (the dual path of the literal).
+  - `TestCAPTURE02_RemovedTitleMatchesTrigger`: `schema.sql` text contains `'` + `RemovedProposalTitle` + `'` exactly 7 times (the dual path of the literal).
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/db -run 'TestTUNING_|TestAgent01_Tuning'` (builders undefined).
 - [ ] **Step 3: Implement the builders in `prompt_input_keys.go`** — `SlackItem` takes the account from `channelID` up to the first `:`; keys exactly as the vocabulary table; integers with `strconv.FormatInt`.
 - [ ] **Step 4: Run, expect PASS** (+ `make lint-diff`).
@@ -321,12 +336,12 @@ END;
 
 - [ ] **Step 1: Write the failing tests:**
   - `TestInsertPromptInput_KeepsFivePerPrompt`: insert 7 for `digest.channel`, 2 for `digest.daily` → 5 newest ids of `digest.channel` remain, both `digest.daily` remain.
-  - `TestInsertPromptInput_TrimSkipsPinned`: replays (state `proposed`, `running`, `done`, `failed`) pin ids 1–4 of a prompt; 6 more inserts → ids 1–4 and the newest 5 remain; a `discarded` replay pins nothing.
+  - `TestCAPTURE01_TrimSkipsPinned`: replays (state `proposed`, `running`, `done`, `failed`) pin ids 1–4 of a prompt; 6 more inserts → ids 1–4 and the newest 5 remain; a `discarded` replay pins nothing.
   - `TestInsertPromptInput_AccountRowsFromRefs`: refs `[{slack,"1"},{jira,"2"}]` + one Slack item → `prompt_input_items` has the item and two `item_key=''` rows.
-  - `TestInsertPromptInput_ItemGoneWritesNothing`: one item per source kind; for each, tombstone (Slack `is_deleted=1`) or delete it, or set the transcript `private=1`, before the insert → `ErrCaptureItemGone`, no `prompt_inputs`/`prompt_input_items` row. A Jira issue row with `is_deleted=1` counts as gone. Unknown item source → error, no row.
-  - `TestInsertPromptInput_PrivateTranscriptRefRefused`: a ref `{transcript, "", 7}` with transcript 7 private → `ErrCaptureItemGone`.
+  - `TestCAPTURE01_ItemGoneWritesNothing`: one item per source kind; for each, tombstone (Slack `is_deleted=1`) or delete it, or set the transcript `private=1`, before the insert → `ErrCaptureItemGone`, no `prompt_inputs`/`prompt_input_items` row. A Jira issue row with `is_deleted=1` counts as gone. Unknown item source → error, no row.
+  - `TestCAPTURE01_PrivateTranscriptRefRefused`: a ref `{transcript, "", 7}` with transcript 7 private → `ErrCaptureItemGone`.
   - `TestReadPromptInputForConversation_CopiesSources`: returns text; `chat_conversation_sources` holds every item and account row of the input; a second read inserts no duplicate.
-  - `TestReadPromptInputForConversation_RemovedBeforeRead`: test hook `testHookBeforeReadTx` deletes the Slack source (tombstone, which removes the input) → `ErrNotFound`, no `chat_conversation_sources` row.
+  - `TestCAPTURE02_ReadRemovedBeforeRead`: test hook `testHookBeforeReadTx` deletes the Slack source (tombstone, which removes the input) → `ErrNotFound`, no `chat_conversation_sources` row.
   - `TestReadPromptInputForConversation_ConversationGone` → `ErrConversationRemoved`, nothing inserted.
   - `TestDeletePromptCaptureOlderThan`: inputs captured 8 and 2 days ago, a replay created 8 days ago and one created 1 day ago pinning the 8-day-old input → both old rows and both replays go (the second through the input trigger), counts `(1, 1)`; the 2-day-old input stays.
   - `TestPromptInput_RoundTrip`: every field survives `GetPromptInput`; `ListPromptInputs` returns no text and the right `Size`.
@@ -359,7 +374,7 @@ DELETE FROM prompt_inputs WHERE prompt_id = ?1
 
 - [ ] **Step 1: Write the failing tests:**
   - `TestPurge02_EveryAccountTableCovered` (existing) now fails on `prompt_input_items`, `chat_conversation_sources`, `coach_proposal_sources`; add to `purgeKeptTables`: `prompt_input_items` → "deleted by cascade with the prompt_inputs rows the capture step removes", `chat_conversation_sources` → "deleted by cascade with the tuning conversations the capture step removes", `coach_proposal_sources` → "ids only; kept with the proposal row the capture step blanks or marks (D44)".
-  - `TestPurgeTuning_PerSource` (table over slack/google/jira/linear, `drainPurge(t, d, src, 1, 2)`): an input with an account row of account 1 (google: one with `gmail`, one with `calendar`), an input of account 2, a tuning conversation listing account 1, open + declined + accepted proposals listing account 1 → account-1 inputs, their replays and the conversation (and its `agent_actions` content) are gone; account-2 input stays; proposals blanked / superseded / marked exactly as in Task 1.2; running the steps again changes 0 rows.
+  - `TestCAPTURE01_PurgePerSource` (table over slack/google/jira/linear, `drainPurge(t, d, src, 1, 2)`): an input with an account row of account 1 (google: one with `gmail`, one with `calendar`), an input of account 2, a tuning conversation listing account 1, open + declined + accepted proposals listing account 1 → account-1 inputs, their replays and the conversation (and its `agent_actions` content) are gone; account-2 input stays; proposals blanked / superseded / marked exactly as in Task 1.2; running the steps again changes 0 rows.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/db -run 'TestPurge02_EveryAccountTableCovered|TestPurgeTuning_'`.
 - [ ] **Step 3: Implement `capture`.** With `in := "source IN " + itemSources + " AND account_id = ?"` (`itemSources` = `('slack')`, `('gmail','calendar')`, `('jira')`, `('linear')`; account bound as `strconv.FormatInt(id, 10)`): `s.del("captured prompt inputs", "prompt_inputs", "id IN (SELECT input_id FROM prompt_input_items WHERE "+in+")", acct)`; `s.del("tuning conversations", "chat_conversations", "id IN (SELECT conversation_id FROM chat_conversation_sources WHERE "+in+")", acct)`; two `UPDATE` steps on `coach_proposals` in the "detach kept calendars" shape (`WHERE rowid IN (SELECT rowid FROM coach_proposals WHERE … LIMIT ?)`): blank = the trigger's SET list with predicate `status != 'accepted' AND (title != ? OR why != '' OR before_text != '' OR after_text != '' OR evidence != '[]' OR status = 'open') AND id IN (SELECT proposal_id FROM coach_proposal_sources WHERE `+in+`)` (title bound to `RemovedProposalTitle`); mark = `status = 'accepted' AND source_removed_at IS NULL AND id IN (…)`.
 - [ ] **Step 4: Run, expect PASS** — `go test ./internal/db -run 'Purge'` (+ `make lint-diff`).
@@ -420,7 +435,7 @@ DELETE FROM prompt_inputs WHERE prompt_id = ?1
 
 - [ ] **Step 1: Write the failing tests:**
   - per leaf (each package's existing stub: the fake `claude`/`codex` binaries already used by its tests, reaped in `t.Cleanup`; `httptest.Server` for ollama): `Test<Leaf>_CapturesOnSuccess` — a capture in ctx → one `prompt_inputs` row with the exact system and user text and the provider/model; `Test<Leaf>_NoCaptureOnFailure` — stub exits non-zero / HTTP 500 → no row; `GenerateWithImage` with a capture → no row.
-  - `TestCAPTURE02_LeavesRecordCapture` (`internal/prompts`, go/ast like `TestLLMUSAGE01_LeavesRecord`): the set of functions under `cmd/` and `internal/` whose body calls `prompts.RecordCapture` equals `captureLeaves` = `{"digest.(*ClaudeGenerator).Generate", "codex.(*CodexGenerator).Generate", "ollama.(*Generator).Generate", "ai.(*Client).QuerySync", "codex.(*Client).QuerySync"}`; each entry exists.
+  - `TestCAPTURE03_LeavesRecordCapture` (`internal/prompts`, go/ast like `TestLLMUSAGE01_LeavesRecord`): the set of functions under `cmd/` and `internal/` whose body calls `prompts.RecordCapture` equals `captureLeaves` = `{"digest.(*ClaudeGenerator).Generate", "codex.(*CodexGenerator).Generate", "ollama.(*Generator).Generate", "ai.(*Client).QuerySync", "codex.(*Client).QuerySync"}`; each entry exists.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/digest ./internal/codex ./internal/ollama ./internal/ai ./internal/prompts -run 'Capture|CAPTURE02'`.
 - [ ] **Step 3: Add the five calls.** Not captured on purpose (name them in the guard test's doc comment): streaming `Query` paths (chat, `ai query`), `chat.ClaudeTranslator`, `agentloop` (chat runtime B and automation `agent()`), image calls.
 - [ ] **Step 4: Run, expect PASS** (+ `make lint-diff`).
@@ -435,7 +450,7 @@ DELETE FROM prompt_inputs WHERE prompt_id = ?1
 - Modify: `internal/daemon/llm_ledger.go` (const `promptCaptureRetention = 7 * 24 * time.Hour`; every cycle, before the daily `lastLLMPrune` gate, `d.db.DeletePromptCaptureOlderThan(now.Add(-promptCaptureRetention))`; log counts only)
 - Test: `internal/daemon/llm_ledger_test.go`
 
-- [ ] **Step 1: Write the failing test** `TestPhaseLLMLedger_DropsCaptureOlderThan7Days`: an input captured 8 days ago, a pinning replay created 8 days ago, an input of 6 days ago; `lastLLMPrune` = now (daily gate closed) → the 8-day rows are gone, the 6-day row stays.
+- [ ] **Step 1: Write the failing test** `TestCAPTURE01_LedgerDropsCaptureOlderThan7Days`: an input captured 8 days ago, a pinning replay created 8 days ago, an input of 6 days ago; `lastLLMPrune` = now (daily gate closed) → the 8-day rows are gone, the 6-day row stays.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/daemon -run TestPhaseLLMLedger`.
 - [ ] **Step 3: Implement** (error → `d.logger.Printf("llm ledger: capture retention: %v", err)`; counts logged when > 0).
 - [ ] **Step 4: Run, expect PASS** (+ `make lint-diff`).
@@ -627,14 +642,14 @@ Side is `system` and tail is `""` for all of these.
 - `chat.title` (`cmd/chat.go`) and `instructions.suggest`: chat text, which may quote a tuning conversation, so they are chat surfaces in the spec's sense.
 - `terminal.title`: workbench session text.
 
-- [ ] **Step 1: Write the failing test** `TestCAPTURE01_ResolveCallersCapture`. It uses go/parser over `cmd/` and `internal/`, the same walk as `TestLLMUSAGE01_LeavesRecord`.
+- [ ] **Step 1: Write the failing test** `TestCAPTURE03_ResolveCallersCapture`. It uses go/parser over `cmd/` and `internal/`, the same walk as `TestLLMUSAGE01_LeavesRecord`.
   - Every package with a non-test call to `prompts.Resolve` or `prompts.ResolveRef` must also call `prompts.WithCapture`, or be listed in `knownUncaptured` with a non-empty reason:
     - `briefing`, `dayplan`, `reactioncmd`, `tracks`: only `MovedToBuiltin` prompts, so `TakesAdditions` is false;
     - `media`: image bytes or a fetched web page held only for the call; no source item to remove it by;
     - `instructions`: chat text.
   - A listed package that does call `WithCapture` also fails the test, so the list stays exact.
   - Add the per-family `TestCapture_Review*`, `TestCapture_TasksGenerate` cases where a fake generator is already used (reviewai, coach). For the cmd callers, a test with the existing `cliGenerator` seam.
-- [ ] **Step 2: Run, expect FAIL.** `go test ./internal/prompts -run TestCAPTURE01`
+- [ ] **Step 2: Run, expect FAIL.** `go test ./internal/prompts -run TestCAPTURE03`
 - [ ] **Step 3: Implement** the remaining call sites.
 - [ ] **Step 4: Run, expect PASS.** Run `go test ./internal/prompts ./internal/reviewai ./internal/coach`, `go test ./cmd -run 'Dictate|Targets|SpecReview'`, then `make lint-diff`.
 - [ ] **Step 5: Commit.** `git commit -m "feat(prompts): capture the remaining callers; guard every Resolve caller (#1517)"`
@@ -648,7 +663,7 @@ Side is `system` and tail is `""` for all of these.
 | §4.9 failure injected after the new tables leaves nothing behind; the rerun succeeds | 1.1 |
 | §4.9 six tables, indexes, schema.sql, `TestAllTablesExist`, golden, Swift schema | 1.1 |
 | §4.5 the seven source triggers, four statements each; `prompt_inputs` BEFORE DELETE; §4.1 `chat_conversations` BEFORE DELETE and `agent_actions` BEFORE INSERT | 1.1 (SQL), 1.2 (behaviour) |
-| Trigger-key dual path (`TestSRCDEL03` shape) | 1.2 `TestTUNING_TriggerKeysMatchItemKeys` |
+| Trigger-key dual path (`TestSRCDEL03` shape) | 1.2 `TestCAPTURE01_TriggerKeysMatchItemKeys` |
 | One Slack tombstone removes only its input; an edit or re-upsert removes nothing; Gmail, IMAP (plus old UIDVALIDITY), Jira comment and Jira issue deletes; digest dedupe removes nothing; recording deleted by Desktop SQL or made private | 1.2 |
 | A deleted source blanks open and declined proposals and marks accepted ones; a conversation deleted by hand keeps its proposals' links; conversations, their messages and `chat_fts` rows go with a source | 1.2 |
 | §4.1 tests: a tuning conversation deleted by trigger or by hand empties its `agent_actions` rows; the insert for a removed conversation is refused; `main` rows untouched; AGENT-01 guard extended | 1.2 (`TestAgent01_Tuning*`) |
@@ -658,11 +673,11 @@ Side is `system` and tail is `""` for all of these.
 | Purge removes inputs, replays, conversations, and blanks or marks proposals; `PurgeSteps`/`purgeKeptTables` | 1.4 |
 | `prompts.ResolveRef`/`Ref`/`TemplateHash` (role instruction plus template; a version-0 default change shows); `TakesAdditions`; the custom-tracks guard | 1.5 |
 | Capture failure never fails the call; no text in logs (`TestFILES01_*`); private transcript refused | 1.5, 1.10 |
-| Recording at the leaf after a successful call; leaves guard | 1.6 (`TestCAPTURE02`) |
+| Recording at the leaf after a successful call; leaves guard | 1.6 (`TestCAPTURE03_LeavesRecordCapture`) |
 | 7-day sweep of inputs and replays in the ledger phase | 1.3, 1.7 |
 | Per-family side, tail, refs and items (people with Jira; recap listing the transcript id; `targets.next_step`, `catchup.learn` and `ideas.digest_email` tails) | 1.8–1.13 |
 | `ideas.digest_email` check moved to the template before additions | 1.12 |
-| Every `prompts.Resolve` caller package captures or is listed with a reason | 1.13 (`TestCAPTURE01`) |
+| Every `prompts.Resolve` caller package captures or is listed with a reason | 1.13 (`TestCAPTURE03_ResolveCallersCapture`) |
 | The With/Without replay goldens | Phase 3; it uses `prompts.CutAdditions`/`AdditionsBlock` from 1.5 |
 
 ### Phase 1 notes from recon (resolved above where they conflict)
@@ -1303,12 +1318,12 @@ Rules:
   func (db *DB) FailPromptReplay(id int64, from, failure, errText string, now time.Time) (bool, error)          // from → failed
   func (db *DB) FinishPromptReplay(id int64, now time.Time) (bool, error)                // running → done
   func (db *DB) DiscardPromptReplay(id int64, now time.Time) (bool, error)               // proposed|done|failed → discarded
-  func (db *DB) SetPromptReplayResult(id int64, inputID int64, side string, out string) (bool, error)
+  func (db *DB) SetPromptReplayResult(id int64, inputID int64, side string, out string, costUSD float64) (bool, error)
   func (db *DB) SetPromptReplayError(id int64, inputID int64, side string, errText string) (bool, error)
   func (db *DB) SweepStalePromptReplays(cutoff, now time.Time) (int64, error)
   func (db *DB) MedianLLMOutputTokens(purpose string, since time.Time) (int64, bool, error)
   ```
-  `results` JSON shape (pinned, read by the Desktop in Phase 5): `{"<input id>":{"without":{"out":"…","error":""},"with":{"out":"…","error":""}}}`; a side absent = not run.
+  `results` JSON shape (pinned, read by the Desktop in Phase 5): `{"<input id>":{"without":{"out":"…","error":"","cost_usd":0.012},"with":{"out":"…","error":"","cost_usd":0.013}}}`; a side absent = not run; `cost_usd` is the call's cost from the leaf's usage (0 when the provider reports none; estimated like `llm_calls`). `ReplaySide` gains `CostUSD float64`. The fixture `internal/db/testdata/prompt_replay_results.json` (read by Task 5.5) is written by this task with these keys.
 
 - [ ] **Step 1: Write the failing tests** (seed a conversation and inputs with Phase 1's `InsertPromptInputTrimmed`)
   - `TestPromptReplay_InsertGetRoundTrip`: every field round-trips; `InputIDs` stored as a JSON array; state `proposed`.
@@ -1477,7 +1492,7 @@ Rules:
 **Files:**
 - Create: `internal/tuning/fence.go`
 - Create: `internal/tuning/tools_read.go` (`Deps`, `ReadTools`, the eight tools below)
-- Modify: `internal/tools/company_data.go` (`unmarkedReadTools` entries)
+- Modify: `internal/tools/company_data.go` (one `unmarkedReadTools` entry: `list_prompt_inputs`)
 - Test: `internal/tuning/fence_test.go`, `internal/tuning/tools_read_test.go`
 
 **Interfaces:**
@@ -1523,7 +1538,7 @@ Rules:
   - `TestGetPromptInput_ConversationRemoved`: conversation deleted through a second `db.Open` of the same file → error `"conversation removed"`, no text.
   - `TestListPrompts_Shape`: a prompt with one addition and a 30-day `llm_calls` row → `additions == ["x"]`, `spend_30d_usd > 0`; `briefing.daily` → `takes_additions false`.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/tuning -run 'TestFence|TestReadTools|TestGetAgentReport|TestListPromptInputs|TestGetPromptInput|TestListPrompts'`; `go test ./internal/tools -run TestUndecided`.
-- [ ] **Step 3: Implement** — add the seven unmarked tools with the reasons in the table to `unmarkedReadTools`.
+- [ ] **Step 3: Implement** — mark every tool of the table `CompanyData: true` except `list_prompt_inputs`, which goes into `unmarkedReadTools` with the reason "capture metadata only, never the text" (spec §4.2; cross-phase resolution).
 - [ ] **Step 4: Run, expect PASS** (+ `make lint-diff`).
 - [ ] **Step 5: Commit** — `git commit -m "feat(tuning): fences and the analytics, usage and prompt read tools (#1517)"`.
 
@@ -1538,7 +1553,7 @@ Rules:
 - Test: `internal/tuning/tools_skills_test.go`
 
 **Interfaces:**
-- Consumes (Phase 2, names assumed — see Open points): `coach.ReadUserFile(path string) (text string, exists bool, err error)` (the regular-file, ≤ 256 KB, UTF-8, no-symlink reader Accept uses), `coach.CodexSkillPath(home, name string) (path string, ok bool)`, `db.ListSkillPackOverlays() ([]db.SkillPackOverlay, error)`, `devpack.Skills()`, `devpack.WorkbenchSkill()`, `devpack.FlowSkill()`, `coach.BudgetOf(dest, before)`, `db.ListCoachProposals()`.
+- Consumes (Phase 2, Tasks 2.4, 2.6, 2.8 — use exactly these): `coach.ReadText(d *db.DB, env coach.Env, dest string, wb int64, prompt, skill string) (coach.CurrentText, error)` (the regular-file, ≤ 256 KB, UTF-8, no-symlink read Accept uses), `coach.CodexSkillPath(e coach.Env, name string) (path string, ok bool)`, `coach.ClaudeSkillPath(e coach.Env, name string) string`, `db.AllSkillPackOverlays() (map[string][]string, error)`, `devpack.Skills()`, `devpack.WorkbenchSkill()`, `devpack.FlowSkill()`, `coach.BudgetOf(dest, before)`, `db.ListCoachProposals()`.
 - Produces: the four tools, all `Surfaces: ["tuning"]`.
 
   | Tool | Returns | CompanyData |
@@ -1681,14 +1696,16 @@ Rules:
   func replayGenerator(cfg *config.Config) tuning.GenFor // claude → digest.NewClaudeGenerator(m, m, cfg.ClaudePath); codex → codex.NewCodexGenerator(m, m, cfg.CodexPath); ollama → ollama.NewGenerator(m, m, cfg.AI.OllamaURL); each wrapped in digest.WithCallTimeout(…, digest.DaemonAICallTimeout); providers.Allowed(provider) first; other providers → error "provider <p> cannot replay"
   ```
   Pinned `--json` (one object, last stdout line, failure also on stderr like `coachWriteFailure`):
-  - run/retry ok: `{"ok":true,"id":N,"state":"done","calls_done":10,"failed":2}`
+  - run/retry ok: `{"ok":true,"id":N,"state":"done","calls_done":10,"failed":2,"cost_usd":0.12}`
+  - `--detach` ok (run or `--retry`): `{"ok":true,"id":N,"started":true}` — the verb checks the state (`proposed`, or `failed`/`stopped` with `--retry`) and the agent marker, then starts `prompts replay <id> [--retry] --json` through `LaunchReplay(exe string, id int64, retry bool, logDir string) error` (new, `cmd/prompts_replay_launch.go`, the `LaunchSpecReview` shape: `SysProcAttr{Setsid: true}`, stdout/stderr to a log file under the workspace, a `replayExe` seam like `specReviewExe`) and returns at once; the child's outcome is read from the row, never from this process.
   - discard ok: `{"ok":true,"id":N,"state":"discarded"}`
   - propose ok: `{"ok":true,"replay_id":N,"proposal_id":M,"existing":false}`
   - failure: `{"ok":false,"error":"…","code":"refused|removed|state|agent"}`
   `ProposeFromReplay`: state must be `done`; `ProposalID != 0` → return it with `existing true`; else build a `prompt_addition` `add` with `after` = the addition through `coach.ValidateChatProposal`, title `"Add to <prompt>: <addition>"` (cut to the coach's title cap), why `"Tried on <n> past calls in A/B #<id>."`, metric `"corrections"`, evidence `[{chat, "c<conv>"}]`, `origin chat`, `conversation_id` = the replay's; `ValidateChatProposal`; `InsertCoachProposalWithSources(p, &conv, &id)` (sets `prompt_replays.proposal_id` in the same tx); id 0 → re-read the replay's `proposal_id`.
 - [ ] **Step 1: Write the failing tests**
   - `TestPromptsReplay_RefusedUnderAgentMarker` (table over `run`, `--retry`, `discard`, `propose`): `t.Setenv("CLAUDECODE","1")` → exit error, JSON `code "agent"`, row unchanged.
-  - `TestPromptsReplay_RunJSONKeysPinned`: with a `replayGenerator` seam (package var `replayGenFor = replayGenerator`) set to a fake → keys exactly `ok,id,state,calls_done,failed`.
+  - `TestPromptsReplay_RunJSONKeysPinned`: with a `replayGenerator` seam (package var `replayGenFor = replayGenerator`) set to a fake → keys exactly `ok,id,state,calls_done,failed,cost_usd`.
+  - `TestLaunchReplay_DetachedSessionLeader` (the `workbench_spec_review_launch_test.go` technique, a stub exe): the child is its own session and group leader, the parent returns before the child exits, `t.Cleanup` kills `-pid` and waits; `--detach` on a `running` row → `code "state"`, nothing started; under the agent marker → `code "agent"`, nothing started.
   - `TestPromptsReplay_RemovedPrintsLine`: the fake deletes the input mid-run → `{"ok":false,"error":"replay removed with its source data","code":"removed"}`.
   - `TestPromptsReplay_DiscardStates`: `proposed`, `done`, `failed` → `discarded`; `running` → `code "state"`.
   - `TestPromptsReplayPropose_SecondPressSameID`: two `propose` runs → same `proposal_id`, second `existing true`; the proposal has `origin chat`, the replay's `conversation_id`, and `coach_proposal_sources` rows copied from the replay's inputs.
@@ -2084,7 +2101,7 @@ PRAGMA foreign_keys = ON;
   - `api_call` per `token_count` with `last_token_usage`: `input_tokens` stored = `max(0, input − cached − cache_write)` (negative → stored 0, `UsageMismatch++`), `cache_read_tokens` = `cached_input_tokens`, `cache_write_5m_tokens` = `cache_write_input_tokens`, `output_tokens` = `output_tokens` (reasoning never added), `name` = the current `turn_context.model`; cost `CostFor("codex", model, "", …)`; unknown or missing model → cost 0, `cost_estimated`. A `token_count` with no `last_token_usage` stores nothing.
   - `owner_turn` (trigger `""`): the first `user_message` (legacy) or `UserMessage` item (`item_completed`/`item_started`, paginated) after `task_started`/`turn_started`; a turn with both dialects counts once (`Turn.OwnerCounted`); a user message with no turn start opens its own turn. `response_item` and `compacted` text is never counted.
   - `tool` per `function_call`/`custom_tool_call` (`name` = tool name, key reserved at the call, held in `State.Open`), paired by `call_id` with its `_output`: an `AgentToolResult{Key: <the call's key>, TS, Outcome, ErrorClass, ResultBytes}`; outcome `denied` (class `user-rejected`… as pinned) only where the output matches Codex's denial wording pinned in `denial.jsonl`, else `ok`/`error` (`errorClass`); at most 256 open calls, the oldest dropped as `AgentToolResult{Key, Outcome: "pending", ErrorClass: "unpaired"}`.
-  - `turn_aborted` with reason `interrupted`: the turn's open calls get outcome `interrupted`, plus one `owner_turn` with trigger `interrupt` (the twin of Claude's interrupt turn).
+  - `turn_aborted` with reason `interrupted`: the turn's open calls get outcome `interrupted`; no extra `owner_turn` row is written (spec §4.7 maps an interrupt to `outcome = interrupted` only) (earlier draft: plus one `owner_turn` with trigger `interrupt`, the twin of Claude's interrupt turn).
   - `compacted` line / `context_compacted` event → `compaction`.
   - Key `codex:<State.SessionID>:<ordinal>`, ordinal from `State.NextOrdinal`. Events go under `RootSessionID` (or the file's own id for a root); a child's events carry `agent_id` = the child's thread id.
   - Session row (roots only, child → the root's row with `SourcePath = RootPath`): `agent = 'codex'`, `home_cwd` = header cwd, `source_path` = `Path`, `model`, `git_branch` from `session_meta`, `started_at`/`ended_at` from line timestamps.
@@ -2098,7 +2115,7 @@ PRAGMA foreign_keys = ON;
   - `TestParseCodex_LateTurnContext`: `token_count` before the first `turn_context` → `name == ""`, cost 0, `CostEstimated`
   - `TestParseCodex_BothDialects`: legacy file, paginated file, mixed file, a turn carrying both dialects (one `owner_turn`), a user message with no turn start (its own turn)
   - `TestParseCodex_ToolsPairAndDenial`: `function_call` + output → `ok` with duration; denial wording → `denied`; other text → `ok`; 257 open calls → oldest `unpaired`
-  - `TestParseCodex_AbortedTurn` (open calls `interrupted`, one `interrupt` owner turn) and `TestParseCodex_Compaction`
+  - `TestParseCodex_AbortedTurn` (open calls `interrupted`; the owner-turn count is unchanged by the abort) and `TestParseCodex_Compaction`
   - `TestParseCodex_TruncatedLine`: last line without `\n` is not consumed (`Consumed` stops before it); completed later → parsed once
   - `TestParseCodex_MidFileResumeEqualsWholeRead`: `MaxRows = 3`, read in slices carrying `State` → same events, keys, model, cost as one read; a tool call spanning a slice boundary still pairs
   - `TestParseCodex_NoStateMidFileRefused` → `ErrNoCodexState`
@@ -2340,6 +2357,7 @@ PRAGMA foreign_keys = ON;
     - top level: `agent` (`"all"|"claude"|"codex"`, the filter applied), `agents` (`[]string`, sorted, the agents with sessions in the filtered period, never null), `agent_filter` (`[]string` `["claude","codex"]`, **omitted** unless both agents have sessions in the unfiltered period), `codex_unread` (int; `CodexUnread(workbench, since)`; 0 under `--agent claude`)
     - `context.agents`, `skills.agents`, `trouble.agents` (`[]string`, never null): the agents whose sessions the block's numbers cover — `context`/`skills` = `["claude"]` when the filtered period has a Claude session else `[]`; `trouble` = the filtered period's agents (Codex sessions count in Trouble, and in its `facts_sessions` and sub-agent read)
     - `sessions[].agent`
+    - `hints[].agents` (`[]string`, never null): the agents whose rows the hint was computed from — the Context (C1–C3) and Skills (S1) hints `["claude"]`; H1–H7 and T1–T3 the filtered period's agents that contributed to the hint's numbers (spec §4.7: Claude hints say "Claude Code only"). Test `TestBuildOverview_HintAgents`: a period with Claude and Codex sessions → a C1 hint has `["claude"]`, a T1 hint fed by both has `["claude","codex"]`.
   - The pane's "Claude Code only" rule (for Phase 5, stated here so the JSON carries it): a block shows it when the top-level `agents` contains `codex` and the block's `agents` does not.
   - `cmd`: `agents report --agent all|claude|codex` (default `all`); any other value → error `--agent must be all, claude or codex` before any read.
 - [ ] **Step 1: Write the failing tests**
@@ -2383,9 +2401,27 @@ PRAGMA foreign_keys = ON;
 - [ ] **Step 4: Run, expect PASS** — `go test ./internal/coach`, `go test ./cmd -run Coach`; `make lint-diff`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(coach): measure each proposal on its destination's agent (#1517)"`
 
+### Task 4.18: The owner's `CODEX_HOME` reaches the Codex pass
+
+**Depends on:** Task 4.14
+**Files:**
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift` (`startDaemon()` sets `CODEX_HOME` in the daemon's environment from `Constants.resolvedLoginEnvironment()` when the login shell gives an absolute one; nothing when it gives none or does not answer)
+- Modify: `internal/agentlog/scan_codex.go` (store the home the pass read: `agent_log_meta.codex_home`), `cmd/agents.go` (`agents scan --json` `codex.home`)
+- Test: `WatchtowerDesktop/Tests/Core/DaemonManagerTests.swift`, `internal/agentlog/scan_codex_test.go`, `cmd/agents_test.go`
+
+Why: the daemon runs under launchd and would read `~/.codex` while the owner's shell sets another `CODEX_HOME`, so Codex sessions would silently miss the pane (plan review, ask #1124). The Desktop already resolves the login shell's `CODEX_HOME` for Codex relaunches (`WorkbenchesViewModel.resolveCodexHome`); the daemon gets the same value. `agents scan` started by the Desktop inherits the Desktop's environment, so it passes the same variable.
+
+- [ ] **Step 1: Write the failing tests**
+  - `DaemonManagerTests.testDaemonEnvCarriesLoginCodexHome`: login env `["CODEX_HOME": "/tmp/x/codex"]` → the launch environment has `CODEX_HOME == "/tmp/x/codex"`; login env without it, or a relative value, or no answer → no `CODEX_HOME` key added (the daemon's default `~/.codex` applies).
+  - `TestScanCodex_StoresHomeRead`: a pass with `CodexOptions.Home = <tmp>` → `agent_log_meta.codex_home = <tmp>`; `agents scan --json` → `codex.home` equals it (key pinned beside the other `codex` keys).
+- [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=DaemonManagerTests`; `go test ./internal/agentlog -run TestScanCodex_StoresHomeRead`; `go test ./cmd -run TestAgentsScan`.
+- [ ] **Step 3: Implement** — the login-environment read is the existing async helper; `startDaemon()` awaits it with its existing timeout and starts without the key on a timeout.
+- [ ] **Step 4: Run, expect PASS** + `make lint-diff` + `make lint-swift`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(analytics): the daemon reads the owner's CODEX_HOME (#1517)"`.
+
 ### Task 4.17: Inventory amendments — AGENTLOG-01..05 (asks #999, #1013, #1018)
 
-**Depends on:** Task 4.14, Task 4.15, Task 4.16
+**Depends on:** Task 4.14, Task 4.15, Task 4.16, Task 4.18
 **Files:**
 - Modify: `docs/inventory/agent-analytics.md`
 - Modify: `docs/inventory/coach.md` (COACH-01: per-agent measurement line only; the rest of COACH-01's amendments belong to Phases 2/6)
@@ -2438,10 +2474,10 @@ PRAGMA foreign_keys = ON;
 2. **Facts from the builder's real-file check (spec says "confirm"), each pinned in a from-scratch fixture:** the exec `originator` value(s) and the interactive one(s) (`IsExecOriginator`); whether Codex writes `rollout-*.jsonl.zst` (if not, `ListRollouts` still accepts the name harmlessly and the discovery test says so); `total_tokens = input + output`; that a parent's `token_count` excludes its children (else Task 4.12 switches children to tool/time rows); Codex's denial wording; the `session_meta.source` shape that names a spawned agent; the Codex model ids and OpenAI's price rows (D36: cache write at the input rate unless a write rate is published).
 3. **Spec drift found in code:** `agentlog.ParserVersion` is **4** today (spec §4.7 says 3); nothing in the plan depends on its value. `agentReportFactsParserVersion` is 3 and `agentReportMinParserVersion` 2 as the spec says.
 4. **Simplification of the fingerprint write:** `ApplyCodexOwnerFingerprint` queues only `foreign → pending`; `detached` rows return through step 3's owner check on every pass (the spec says step 3 needs no fingerprint change), so the fingerprint transaction does not also re-derive `detached` rows. Behaviour is the same within one pass.
-5. **Interrupt mapping:** besides `outcome = interrupted` on the aborted turn's open calls, Task 4.7 stores one `owner_turn` with trigger `interrupt` so the time model and Trouble treat a Codex interrupt like Claude's; the spec names only the outcome.
+5. **Interrupt mapping:** (Resolved: spec only, no extra row.) besides `outcome = interrupted` on the aborted turn's open calls, Task 4.7 stores one `owner_turn` with trigger `interrupt` so the time model and Trouble treat a Codex interrupt like Claude's; the spec names only the outcome.
 6. **Tool pairing key:** Codex tool rows are keyed `codex:<id>:<ordinal>`, so `AgentToolResult` gains `Key` (pair by key) instead of `"tool:"+ToolUseID`; an overflowed open call is closed as `pending`/`unpaired` (outcome CHECK has no `unpaired`).
 7. **Owned session `home_cwd`:** an owned Codex session row stores the header cwd in `agent_log_sessions.home_cwd`, as Claude's does; file rows never store a cwd (D31). If the owner reads D31 as covering session rows too, store the workbench folder there instead.
-8. **`CODEX_HOME` in the daemon:** the daemon resolves it from its own environment (`codexrollout.DefaultHome`), which under launchd may differ from the owner's shell; a mismatch reads `~/.codex`. Not addressed in v1.
+8. **`CODEX_HOME` in the daemon:** (Resolved: Task 4.18.) the daemon resolves it from its own environment (`codexrollout.DefaultHome`), which under launchd may differ from the owner's shell; a mismatch reads `~/.codex`. Not addressed in v1.
 9. **`pragma_foreign_key_check` as a table-valued function on the SQLCipher build** is proven by `TestMigration00003_FKViolationAbortsAndRerunSucceeds`; if it fails to parse, the migration keeps the plain `PRAGMA foreign_key_check` and the test asserts the check (spec note to update).
 10. The feature note `docs/features/agent-analytics.md` (Codex pass, budget share, widened `complete`, `codex` keys) and the guide line belong to Phase 6.
 
@@ -2597,7 +2633,7 @@ The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `Assistant
 
 **Interfaces:**
 - Produces:
-  - `struct PromptReplay { id, conversationID: Int64; promptID, addition, state, failure, error: String; inputIDs: [Int64]; estCostUSD: Double; callsDone: Int; results: [Int64: PromptReplayResult]; proposalID: Int64?; createdAt: String }`; `struct PromptReplayResult { without, with: Side? }` with `enum Side { case text(String), error(String) }`.
+  - `struct PromptReplay { id, conversationID: Int64; promptID, addition, state, failure, error: String; inputIDs: [Int64]; estCostUSD: Double; callsDone: Int; results: [Int64: PromptReplayResult]; proposalID: Int64?; createdAt: String }`; `struct PromptReplayResult { without, with: Side? }` with `struct Side { let text: String?; let error: String?; let costUSD: Double }`; `PromptReplay.actualCostUSD` = the sum of the sides' `costUSD` (the done and failed lines show it: `"10 calls · $0.12 · 3 of 5 outputs changed"`, `"4 of 10 calls · $0.05"`; the proposed and running lines keep the estimate `≈`).
   - `struct PromptReplayInput { id: Int64; capturedAt: Date; promptVersion: Int; source: String; items: Int }`.
   - `PromptReplayQueries.fetch(_ db: Database, conversationID: Int64) throws -> [PromptReplay]` (by id), `inputs(_ db: Database, ids: [Int64]) throws -> [PromptReplayInput]` (`captured_at`, `prompt_version`, item count and first source from `prompt_input_items`), `currentVersion(_ db: Database, templateID: String) throws -> Int` (`prompts.version`, 0 without a row).
   - `struct TuningReplayCardModel: Equatable` built by `static func make(_ r: PromptReplay, inputs: [PromptReplayInput], currentVersion: Int, proposeError: String?, timeZone: TimeZone) -> TuningReplayCardModel` with `phase: Phase` (`.proposed, .running, .done, .failedStopped, .refused, .proposeRefused, .discarded`), `title`, `chips`, `costLine`, `versionLine`, `notice: (text, isWarning)?`, `rows: [Row]` (`label`, `chip`, `without`, `withRuns: [(String, Bool)]`, `expanded`), `buttons: [Button]` (`.run, .notNow, .discard, .propose, .retry`), `primary: Button?`.
@@ -2666,7 +2702,7 @@ The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `Assistant
   - `testRecentListsTenNewestOfThisWorkbenchOnly`: 12 conversations for workbench 3, 1 for workbench 30 → 10 ids, newest first, none of workbench 30.
   - `testNewConversationIsAnotherRow`: `newConversation` twice → two ids, both `analytics_tuning`/`"3"`.
   - `testNoKnowledgePrefixInTuning`: `EmbeddedChatEngineFactory.savesKnowledge(contextType: "analytics_tuning") == false`, `"meeting"` → true.
-  - `testTuningConversationNotInMainChatHistory`: the conversation is absent from `ChatHistoryQueries` panel rows (as `testConversationNotInMainChatHistory` for automations).
+  - `testTuningConversationNotInMainChatHistory` (holds if the owner keeps tuning chats out of the Chats panel in ask #1123; if the answer is to list them, this test is replaced by the listing task's tests): the conversation is absent from `ChatHistoryQueries` panel rows (as `testConversationNotInMainChatHistory` for automations).
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=TuningChatSurfaceTests`.
 - [ ] **Step 3: Implement** — the rules block, exact text:
 ```
@@ -2708,7 +2744,7 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
   - `testTitleFromFirstOwnerMessage`: after the first turn the conversation title is the first 60 characters of the owner text; a later turn does not change it.
   - `testRemovedKeepsTextAndNewSeedsIt` (§4.5 Swift test): type `"Also check why digest.daily repeats the channel names"`, delete the conversation through a second connection, `await engine.checkPresence()` → `isRemoved`, `keptDraft` is the text; `startNew()` → the new engine's `draft` is the text, the old engine is dropped (`center.loaded(oldKey) == nil`).
   - `testCardsAfterTurn`: an applied `propose_tuning_edit` action row in turn `t1` → after the turn `cards.byTurn["t1"] == [.proposal(21)]` and `coach.refreshProposals()` ran (`coach proposals --status all` in the fake runner's args).
-  - `testRunCallsTheCLIAndPollsWhileRunning`: `run(4)` → args `["prompts","replay","4","--json"]` with the long timeout; while the row is `running` `refreshCards` re-reads every `replayPoll`; it stops polling once `done`.
+  - `testRunCallsTheCLIAndPollsWhileRunning`: `run(4)` → args `["prompts","replay","4","--detach","--json"]` with the ordinary short timeout (the CLI returns once the detached child is started, Task 3.13); `retry(4)` → `["prompts","replay","4","--retry","--detach","--json"]`; `testCloseDoesNotStopARun`: `run(4)`, then `close()` → no cancel or kill reaches any process and a new `TuningChat` on the conversation picks up the row's state; while the row is `running` `refreshCards` re-reads every `replayPoll`; it stops polling once `done`.
   - `testRetryDiscardPropose`: `retry(4)` → `["prompts","replay","4","--retry","--json"]`; `discard(4)` → `["prompts","replay","discard","4"]`; `propose(4)` → `["prompts","replay","propose","4","--json"]`, then proposals refresh; a refusal `{"ok":false,"error":"with today's additions digest.channel would pass 600 characters."}` → `replayCards[4].phase == .proposeRefused`.
   - `testDeletedWorkbenchDropsTheEngine`: `center.dropContext(type: "analytics_tuning", id: "3")` → `center.loaded(key) == nil` (the hook Task 5.12 calls).
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=TuningChatTests`.
@@ -2746,13 +2782,15 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
 
 - [ ] **Step 1: Write the failing tests**
   - `AgentReportDecodingTests.testAgentKeys`: the fixture plus `"agents":["claude","codex"]`, `"codex_unread":2`, `context.agents ["claude"]` decodes; without the keys → nil (older CLI).
+  - `CoachCenterTests.testStatusFollowsAgentFilter`: filter `.codex` → `coach status` args contain `["--agent","codex"]`; `.all` → no `--agent`.
+  - `AgentAnalyticsFormatTests.testHintScopeNote`: hint agents `["claude"]` + overview `["claude","codex"]` → `"Claude Code only"`; hint agents `["claude","codex"]` → nil.
   - `AgentAnalyticsCenterTests.testAgentFilterAddsFlag`: `.codex` → args end `["--days","7","--agent","codex"]`; `.all` → no `--agent`; changing only the agent reruns the overview.
   - `AgentAnalyticsFormatTests.testPickerShownOnlyWithBothAgents`: agents `["claude","codex"]` → true; `["claude"]` + filter `.all` → false; `["codex"]` + filter `.codex` → true (a chosen filter keeps its picker); nil → false.
   - `testScopeNote`: block `["claude"]` + overview `["claude","codex"]` → `"Claude Code only"`; overview `["claude"]` → nil (§5: no note without Codex rows); block nil → nil.
   - `testCodexUnreadLine`: 2 → `"2 Codex sessions were not read: too large or damaged."`; 1 → `"1 Codex session was not read: too large or damaged."`; 0/nil → nil.
   - `AgentAnalyticsPaneViewTests.testContextBlockShowsClaudeOnlyNote` and `testCodexUnreadLineUnderStatistics` (ViewInspector `find(text:)`).
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER='AgentReportDecodingTests|AgentAnalyticsCenterTests|AgentAnalyticsFormatTests|AgentAnalyticsPaneViewTests'`.
-- [ ] **Step 3: Implement** — `show` keys its "changed" check on `(period, agent)`; the coach keeps its own unfiltered `show` (see Open points). The `codex_unread` line sits right under the **Statistics** header (or above the tiles when there is no coach), `.font(.caption)`, `.secondary`.
+- [ ] **Step 3: Implement** — `show` keys its "changed" check on `(period, agent)`; the coach tiles follow the same filter: `CoachCenter` passes `--agent <filter>` to `coach status` (Task 4.16's flag) when it is not `.all` (spec §4.7: "the Analytics tiles keep the owner's chosen filter"). Hints carry the note too: a hint whose `agents` (Task 4.15) lacks `codex` while the overview has it shows `claudeOnly` in its caption. The `codex_unread` line sits right under the **Statistics** header (or above the tiles when there is no coach), `.font(.caption)`, `.secondary`.
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(desktop): agent filter, unread Codex line and Claude-only notes (#1517)"`.
 
@@ -2897,10 +2935,10 @@ action: nav:projects
 - Modify: `docs/inventory/agent-actions.md` (AGENT-01 amendment, D47, ask #1109: on `tuning` the two proposal tools apply inline; a deleted tuning conversation's rows keep tool, surface, status and times and lose `args_json`/`result_json`/`reason`/`error`; the insert guard; the extended AGENT-01 guard test from Phase 1/3; changelog)
 - Modify: `docs/inventory/coach.md` (COACH-01: new destinations and chat origin without the weekly gates (D10); source-linked proposals blanked unless accepted, accepted ones marked and kept only while the text is in the owner's file, `writeCut` neutral text (D44, D46, ask #1109); per-agent measurement, `writeCut` skips `codex_rules_allow` and does not count chat proposals (D35, ask #1018); Module line gains the new files; guards from Phase 2/4; changelog)
 - Modify: `docs/inventory/dev-surface.md` (DEV-04: the pack overlay renders into the shipped digest, so it is not drift; a hand-edited copy stays drifted; D15, ask #999; guard from Phase 2)
-- Create: `docs/inventory/prompt-capture.md` (`CAPTURE-01` — captured inputs never outlive their sources: per-item triggers, purge by `refs`, 5-row trim never deleting a pinned row, 7-day sweep of inputs and replays, a capture whose item is already gone writes nothing, private transcripts refused, no text in logs; `CAPTURE-02` — what a tuning conversation or chat proposal read goes with it (`chat_conversation_sources`, `coach_proposal_sources`, the read-after-commit rule); guards = the Phase 1/3 tests named `TestCAPTURE01_*`/`TestCAPTURE02_*`)
+- Create: `docs/inventory/prompt-capture.md` (`CAPTURE-01` — captured inputs never outlive their sources: per-item triggers, purge by `refs`, 5-row trim never deleting a pinned row, 7-day sweep of inputs and replays, a capture whose item is already gone writes nothing, private transcripts refused, no text in logs; `CAPTURE-02` — what a tuning conversation or chat proposal read goes with it (`chat_conversation_sources`, `coach_proposal_sources`, the read-after-commit rule); guards = Phase 1's `TestCAPTURE01_*` (trigger, trim, retention, purge, item-gone and private tests) and `TestCAPTURE02_*` (conversation and proposal removal, read-after-commit); `CAPTURE-03` — every `prompts.Resolve` caller captures at its leaf or is listed with a reason, guards `TestCAPTURE03_ResolveCallersCapture`, `TestCAPTURE03_LeavesRecordCapture`)
 - Modify: `docs/inventory/README.md` (mapping row: `Prompt capture` → `prompt-capture.md` → `internal/prompts/capture*.go`, `internal/db/prompt_inputs.go`, `internal/db/migrations/00173_tuning_chat.sql`, `cmd/prompts_replay.go`)
 
-- [ ] **Step 1: Collect the guard names** — `grep -rn 'func TestCAPTURE0\|func TestCOACH01_\|func TestAgent01_\|func TestDEV04\|TestListChatTurnsForIdeas' --include='*_test.go' internal cmd` and the Swift test names above; every guard cited must exist.
+- [ ] **Step 1: Collect the guard names** — `grep -rn 'func TestCAPTURE0[123]_\|func TestCOACH01_\|func TestAgent01_\|func TestDEV04\|TestListChatTurnsForIdeas' --include='*_test.go' internal cmd` and the Swift test names above; every guard cited must exist.
 - [ ] **Step 2: Write** the amendments in each file's existing format (Status / Observable / Why locked / Test guards / Locked since, and a dated changelog line naming the ask); never weaken an existing guard line.
 - [ ] **Step 3: Check** — `grep` each cited test name once more; `scripts/leak-check.sh` style hygiene (no live ids).
 - [ ] **Step 4: Commit** — `git commit -m "docs(inventory): tuning chat amendments and the prompt capture contract (#1517)"`.
@@ -2946,8 +2984,8 @@ action: nav:projects
 2. **Cross-phase contracts this plan assumes** (pin them in Phases 2–4 or adjust 5.x): `coach proposals --json` keys `origin`/`conversation_id`/`source_removed_at` and a CLI error code `source_removed` for Accept losing the trigger race (5.1); Go testdata `internal/chat/testdata/actions_contract_tuning.txt` (5.2); tool argument keys `days`, `prompt_id`, `skill`, `name` (5.4); `agent_actions.result_json` keys `proposal_id` / `replay_id`, and a refused `propose_prompt_replay` recorded as a `failed` row with the refusal text in `error` (5.6 — if Phase 3 writes no row on refusal, the too-few line needs another source); a shared fixture `internal/db/testdata/prompt_replay_results.json` for the `results` JSON shape (5.5); report keys `agents` (top level = agents with sessions in the period, per block = agents the block reads) and `codex_unread` (5.10).
 3. **Swift twin ownership.** 5.1 (Swift `CoachProposal`/`+Row`) and 5.2 (`AgentToolsContract`/`AssistantToolSurface`) are Swift and placed here; Phases 2/3 must not also do them.
 4. **Done-card cost.** `db.SetPromptReplayResult` stores text only, so the Desktop has no actual cost per replay; the plan shows the estimate (`"10 calls · ≈ $0.14 · …"`) where the mockup shows `"$0.12"`. Either Phase 3 stores per-call cost in `results`, or the mockup difference is accepted.
-5. **"Detached" Run.** The Desktop has no detached CLI launcher; Run uses an unstructured task like `CoachCenter.runNow`. If `ProcessCLIRunner` kills children on quit, the run stops and the daemon sweep offers **Retry** (spec allows it), but "keeps going after the Desktop quits" holds only if the child survives — confirm or add a detached spawn.
-6. **Coach tiles and the agent filter.** "The Analytics tiles keep the owner's chosen filter" — the tiles are `coach status`, which gets no `--agent` flag in Phase 4's list; 5.10 leaves the coach tiles unfiltered.
-7. **Claude-hint notes.** §4.7 names "Claude hints" among the Claude-only blocks; the plan puts `scopeNote` on the Context, Skills and Trouble blocks only (the mockup shows Context and Skills). Hints need a per-hint `agents` key to do the same.
+5. **"Detached" Run.** The Desktop has no detached CLI launcher; (Resolved: Run and Retry use `--detach`, Tasks 3.13 and 5.8.) Earlier draft: Run uses an unstructured task like `CoachCenter.runNow`. If `ProcessCLIRunner` kills children on quit, the run stops and the daemon sweep offers **Retry** (spec allows it), but "keeps going after the Desktop quits" holds only if the child survives — confirm or add a detached spawn.
+6. **Coach tiles and the agent filter.** (Resolved: `coach status --agent`, Task 5.10.) "The Analytics tiles keep the owner's chosen filter" — the tiles are `coach status`, which gets no `--agent` flag in Phase 4's list; 5.10 leaves the coach tiles unfiltered.
+7. **Claude-hint notes.** (Resolved: `hints[].agents`, Tasks 4.15 and 5.10.) §4.7 names "Claude hints" among the Claude-only blocks; the plan puts `scopeNote` on the Context, Skills and Trouble blocks only (the mockup shows Context and Skills). Hints need a per-hint `agents` key to do the same.
 8. **No-tools text.** "pick one in Settings → AI": the AI section is under Settings → **System**; **Open Settings** opens `.system`. Wording kept from the mockup; change to "Settings → System → AI" if wanted.
 9. **Inventory guard names.** 6.4 cites `TestCAPTURE01_*` / `TestCAPTURE02_*`; Phases 1/3 should name their capture/removal guards that way.
