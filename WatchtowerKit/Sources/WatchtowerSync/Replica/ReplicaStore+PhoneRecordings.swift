@@ -327,6 +327,26 @@ extension ReplicaStore {
         }
     }
 
+    /// Swaps a row's stored envelope for its resealed copy (same wire name, same sealed file), only while the row
+    /// still holds `old`; returns whether this call swapped it.
+    func replacePhoneRecordingEnvelope(id: String, old: Data, new: Data) throws -> Bool {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE phone_recordings SET envelope = ? WHERE recording_id = ? AND envelope = ?",
+                arguments: [new, id, old])
+            return db.changesCount > 0
+        }
+    }
+
+    /// A fresh backoff for a row, its state kept (a rotation re-arms a "stuck" row).
+    func resetPhoneRecordingBackoff(id: String) throws {
+        try writer.write { db in
+            try db.execute(
+                sql: "UPDATE phone_recordings SET upload_attempts = 0, last_attempt_at = NULL WHERE recording_id = ?",
+                arguments: [id])
+        }
+    }
+
     /// Rewrites where a row's file is (the move to a relative name).
     func setPhoneRecordingPath(id: String, storedPath: String) throws {
         try writer.write { db in
