@@ -264,6 +264,24 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertFalse(vm.folderEntries.contains { $0.id == "day:\(yesterday)" }, "read and not selected: gone")
     }
 
+    /// A route (Home, a notification) opens its list for this session
+    /// only: the remembered filter is never a route's.
+    func testRouteNeverRemembersItsFilter() async throws {
+        let pool = try pool()
+        try await pool.write { db in
+            try InboxFolderFixtures.seed(db)
+            try TestDatabase.insertTrack(db, text: "Release acme 2.0 checklist")
+        }
+        let vm = await read(pool)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+
+        await vm.open(.tracks, select: nil)
+
+        XCTAssertEqual(vm.legacyList, .tracks)
+        XCTAssertEqual(vm.filter, .tracks)
+        XCTAssertNil(defaults.string(forKey: ActionStripViewModel.filterKey), "not written into inbox.filter")
+    }
+
     /// The folder read fails: the previous tree and entries stay, with
     /// today's strip-wide error line.
     func testFolderReadFailureKeepsPreviousTree() async throws {

@@ -56,8 +56,9 @@ package final class ActionStripViewModel {
             rebuildSections()
         }
     }
-    /// A legacy list sets the filter for this session only: the remembered
-    /// filter is the owner's own choice, never a legacy entry's.
+    /// A legacy list or a route sets the filter for this session only: the
+    /// remembered filter is the owner's own choice, never a legacy entry's
+    /// or a route's (`showSessionFilter`).
     private var showingLegacyList = false
     /// The Tracks filter's Stopped fold is open (per session).
     package var showsStopped = false {
@@ -376,11 +377,11 @@ package final class ActionStripViewModel {
     /// Opens today's list for a legacy entry (its filter's list and pane).
     package func openLegacy(_ list: InboxFilter) {
         legacyList = list
-        showLegacyFilter(list)
+        showSessionFilter(list)
         selection = nil
     }
 
-    private func showLegacyFilter(_ list: InboxFilter) {
+    private func showSessionFilter(_ list: InboxFilter) {
         showingLegacyList = true
         filter = list
         showingLegacyList = false
@@ -498,7 +499,7 @@ package final class ActionStripViewModel {
             folderMenu.select(tree.root.id)
             entrySelection = InboxFolderEntry.legacyID(list)
             legacyList = list
-            showLegacyFilter(list)
+            showSessionFilter(list)
             return
         }
         switch item {
@@ -522,7 +523,7 @@ package final class ActionStripViewModel {
     }
 
     private func openFilter(_ filter: InboxFilter, select item: InboxSelection?) async {
-        self.filter = filter
+        showSessionFilter(filter)
         await refresh()
         switch item {
         case .track(let id)?:
