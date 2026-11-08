@@ -544,9 +544,7 @@ package final class AutomationsViewModel {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
-        let pressRoute = pressRoutes.removeValue(forKey: contextID)
-        let newFlowRoute = newDraftRoutes.removeValue(forKey: contextID)
-        let route = pressRoute ?? newFlowRoute
+        let route = takeDraftRoute(contextID)
         await removeDraftCache(conversationID)
         draftRows.removeAll { $0.conversationID == conversationID }
         let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
@@ -588,8 +586,11 @@ package final class AutomationsViewModel {
     /// After the editor's save press: `landed` is the automation this
     /// press's save wrote (`AutomationEditorCenter.commit`), nil when it
     /// saved nothing — then nothing is routed, whatever an earlier press
-    /// left behind. A saved automation goes to the folder its line showed;
-    /// a new draft's route waits for `draftSaved`.
+    /// left behind. A saved automation goes to the folder its line showed.
+    /// A new draft's route (the press's, else its New flow's) waits for
+    /// `draftSaved` when the save finished (`.done`); a save that landed
+    /// short of that (not turned on, auto not kept) is routed now, so a
+    /// panel closed on the failure never loses it.
     package func routeEditorSave(
         key: Int64,
         landed: Int64?,
@@ -597,8 +598,21 @@ package final class AutomationsViewModel {
         editor: AutomationEditorCenter,
         route: InboxNewArtifactRoute?
     ) async {
-        guard let landed, draftContextID == nil, let route else { return }
-        await routeSaved(landed, route, reread: false)
+        guard let landed else { return }
+        guard let draftContextID else {
+            if let route { await routeSaved(landed, route, reread: false) }
+            return
+        }
+        guard editor.saving[key] != .done, let draftRoute = takeDraftRoute(draftContextID) else { return }
+        await routeSaved(landed, draftRoute, reread: false)
+    }
+
+    /// A new draft's route, taken once: the save press's folder, else the
+    /// New flow's.
+    private func takeDraftRoute(_ contextID: String) -> InboxNewArtifactRoute? {
+        let pressRoute = pressRoutes.removeValue(forKey: contextID)
+        let newFlowRoute = newDraftRoutes.removeValue(forKey: contextID)
+        return pressRoute ?? newFlowRoute
     }
 
     /// Sends the saved automation's route; a failure keeps the folder for

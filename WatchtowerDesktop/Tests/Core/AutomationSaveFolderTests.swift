@@ -336,6 +336,41 @@ final class AutomationSaveFolderTests: XCTestCase {
         XCTAssertEqual(routeCalls.count, 1, "a refused save never routes, whatever an earlier save left")
     }
 
+    /// A new draft's **Save and Turn On** whose save landed but whose
+    /// turn-on failed is saved: its folder route goes at once, so a panel
+    /// closed while it shows the failure never loses it — and the later
+    /// `draftSaved` sends no second one.
+    func testNewDraftSavedButNotTurnedOnStillRoutes() async throws {
+        let automation = automation
+        runner.on("validate") { _ in try AutomationEditFixtures.validateJSON(approval: "hn") }
+        runner.on("save") { _ in
+            Data((#"{"automation_id":\#(automation),"path":"/acme/automations/digest.md","#
+                + #""approval_hash":"hn","confirmed":true}"#).utf8)
+        }
+        runner.on("enable") { _ in throw Self.failure("Error: config locked") }
+        let center = editorCenter()
+        let key = AutomationEditorCenter.newDraftKey(conversationID: 77)
+        center.beginNew(key: key, scope: .personal, recipeDir: "/acme/automations", startText: nil)
+        center.drafts[key]?.fields.name = "Digest"
+        await center.check(key)
+        guard case let .review(plan) = center.saving[key] else { return XCTFail("no checked plan") }
+        vm.showEditor(.newDraft(contextID: "draft-i", scope: .personal, startText: nil),
+                      route: InboxNewArtifactRoute(folderID: release, title: "Release"))
+        vm.setPressRoute(nil, forDraft: "draft-i")
+
+        let landed = await center.commit(key, plan: plan, turnOn: true)
+        XCTAssertEqual(landed, automation)
+        guard case .failed = center.saving[key] else { return XCTFail("the turn-on did not fail") }
+        await vm.routeEditorSave(key: key, landed: landed, draftContextID: "draft-i", editor: center, route: nil)
+        XCTAssertEqual(routeCalls, [[
+            "inbox", "folders", "route", String(automation), "--folder", String(release), "--expect-revision", "7", "--json"
+        ]])
+
+        XCTAssertNil(center.settleUnwatched(key), "the panel closed while it showed the failure")
+        await vm.draftSaved(contextID: "draft-i", conversationID: 77, automationID: automation)
+        XCTAssertEqual(routeCalls.count, 1, "routed once")
+    }
+
     func testSaveWithoutPlacementMakesNoFolderCallOnAnEdit() async throws {
         runner.on("save") { _ in
             Data(#"{"automation_id":7,"path":"/acme/automations/digest.md","approval_hash":"h2","confirmed":true}"#.utf8)
