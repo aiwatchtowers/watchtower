@@ -558,6 +558,14 @@ func onlySkippable(m reviewmap.Map) bool {
 	return len(m.Chapters) > 0 && !slices.ContainsFunc(m.Chapters, func(ch reviewmap.Chapter) bool { return ch.Key != collapsedKey })
 }
 
+// OnlySkippable: every chapter of the assembled overview is "collapsed" —
+// a change of only "Can skip" files, which nothing describes and the
+// finish gate does not check (tech spec §4). An overview with no chapters
+// (one cached before #1025) is not.
+func (o Overview) OnlySkippable() bool {
+	return len(o.Chapters) > 0 && !slices.ContainsFunc(o.Chapters, func(ch Chapter) bool { return ch.Key != collapsedKey })
+}
+
 // assembleSkippable assembles, without a call, the overview of a diff of
 // only "Can skip" files: a fixed summary and every intent item not_found
 // (nothing describes it). The finish gate passes an overview whose every

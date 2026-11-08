@@ -173,6 +173,17 @@ func TestProj14_FinishCheckOffSkipsGates(t *testing.T) {
 // the given coverage statuses.
 func cacheOverview(t *testing.T, d *db.DB, wb, session int64, statuses ...string) {
 	t.Helper()
+	var ov reviewai.Overview
+	for i, s := range statuses {
+		ov.Coverage = append(ov.Coverage, reviewai.Coverage{Index: i + 1, Item: fmt.Sprintf("item %d", i+1), Status: s})
+	}
+	putOverview(t, d, wb, session, ov)
+}
+
+// putOverview caches ov as the overview of the session's folder as it
+// stands.
+func putOverview(t *testing.T, d *db.DB, wb, session int64, ov reviewai.Overview) {
+	t.Helper()
 	ctx := context.Background()
 	p, err := d.GetWorkbench(wb)
 	require.NoError(t, err)
@@ -180,10 +191,6 @@ func cacheOverview(t *testing.T, d *db.DB, wb, session int64, statuses ...string
 	require.NoError(t, err)
 	in, err := ReviewOverviewInput(ctx, d, p, session)
 	require.NoError(t, err)
-	var ov reviewai.Overview
-	for i, s := range statuses {
-		ov.Coverage = append(ov.Coverage, reviewai.Coverage{Index: i + 1, Item: fmt.Sprintf("item %d", i+1), Status: s})
-	}
 	js, err := json.Marshal(ov)
 	require.NoError(t, err)
 	require.NoError(t, d.PutReviewOverview(wb, snap.Tree, snap.Base, reviewai.IntentHash(in.Intent, in.Notes), string(js), "m"))
@@ -205,6 +212,69 @@ func TestProj14_FinishRefusesWithoutOverview(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(reviewFolder(t, fx.d, wb), "c.go"), []byte("gamma\n"), 0o600))
 	_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done again.","reason":"r"}`)
 	assert.Contains(t, refusal(t, err), "your changes have no AI overview yet")
+}
+
+// The missing-overview refusal, pinned (tech spec §4, §3.7): a re-run
+// redoes only the missing chapters; a small branch gets no background hint.
+func TestProj14_MissingOverviewRefusalText(t *testing.T) {
+	_, wb, session, reg := repoSession(t)
+	finishGateExecutable = func() (string, error) { return "/opt/wt/watchtower", nil }
+	t.Cleanup(func() { finishGateExecutable = os.Executable })
+	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	cmd := fmt.Sprintf("/opt/wt/watchtower workbench review overview --workbench %d --session %d --json", wb, session)
+	assert.Equal(t, "your changes have no AI overview yet: annotate_changes first if you have notes, then run `"+cmd+
+		"`, compare its coverage with your work, and call finish_session again. Re-run it; only the missing chapters are redone. "+
+		"If the overview cannot be made, file one ask_owner that says so and pass it as handover_ask_id", refusal(t, err))
+}
+
+// A branch whose shown lines exceed one batch: the refusal says to run the
+// overview in the background (tech spec §3.7).
+func TestProj14_MissingOverviewOnABigBranchSaysBackground(t *testing.T) {
+	fx, wb, session, reg := repoSession(t)
+	dir := reviewFolder(t, fx.d, wb)
+	body := strings.Repeat("line\n", 300)
+	for i := range 10 {
+		sub := filepath.Join(dir, fmt.Sprintf("pkg%02d", i))
+		require.NoError(t, os.MkdirAll(sub, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "f.go"), []byte(body), 0o600))
+	}
+	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	msg := refusal(t, err)
+	assert.Contains(t, msg, "Re-run it; only the missing chapters are redone. "+bigBranchHint)
+	assertNotFinished(t, fx.d, session, 0)
+}
+
+// Only session items gate: a lane item not_found is the owner's view only;
+// a session item at partial in an incomplete overview refuses as today.
+func TestProj14_OnlySessionItemsGate(t *testing.T) {
+	fx, wb, session, reg := repoSession(t)
+	linkIntent(t, fx.d, wb, session, 2)
+	ov := reviewai.Overview{Incomplete: []string{"dir:server"}, Coverage: []reviewai.Coverage{
+		{Index: 1, Item: "goal 1", Status: "done", Source: reviewai.SourceSession},
+		{Index: 2, Item: "goal 2", Status: "partial", Source: reviewai.SourceSession},
+		{Index: 3, Item: "PROJ-1 lane", Status: "not_found", Source: reviewai.SourceLane},
+	}}
+	putOverview(t, fx.d, wb, session, ov)
+	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	msg := refusal(t, err)
+	assert.Contains(t, msg, "the reviewer's AI overview of your changes does not see all of the work done:\n2. [partial] goal 2\n")
+	assert.NotContains(t, msg, "PROJ-1")
+
+	ov.Coverage[1].Status = "done"
+	putOverview(t, fx.d, wb, session, ov)
+	mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+}
+
+// Carry-over (Task 9): an overview whose every chapter is "Can skip" (a
+// lock-file-only change) has nothing to check, whatever its coverage says.
+func TestProj14_OnlySkippableOverviewPasses(t *testing.T) {
+	fx, wb, session, reg := repoSession(t)
+	linkIntent(t, fx.d, wb, session, 1)
+	putOverview(t, fx.d, wb, session, reviewai.Overview{
+		Chapters: []reviewai.Chapter{{Key: "collapsed", Title: "Can skip", Paths: []string{"b.go"}}},
+		Coverage: []reviewai.Coverage{{Index: 1, Item: "goal 1", Status: "not_found", Source: reviewai.SourceSession}},
+	})
+	mustApply(t, reg, wb, "finish_session", `{"summary":"Lock file bumped.","reason":"r"}`)
 }
 
 // A new note changes the intent the overview was made for: it is asked again.

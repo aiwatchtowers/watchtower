@@ -4,7 +4,7 @@
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 >
-> AI assistant: when working in `internal/reviewdiff/`, `internal/reviewai/`,
+> AI assistant: when working in `internal/reviewdiff/`, `internal/reviewai/`, `internal/reviewmap/`,
 > `internal/db/review_rounds.go`, `internal/db/review_agent.go`,
 > `cmd/workbench_review*.go`, `internal/tools/workbench_review*.go`,
 > `WatchtowerDesktop/Sources/WatchtowerCore/Services/Review/`,
@@ -13,7 +13,7 @@
 > Any proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/reviewdiff/` + `internal/reviewai/` + `internal/db/review_rounds.go` + `internal/db/review_agent.go` + `internal/db/migrations/{00121,00124,00128}_*.sql` + `cmd/workbench_review.go` + `cmd/workbench_review_context.go` + `cmd/workbench_review_{revert,overview,lessons}.go` + `internal/tools/workbench_review{,_annotate,_reply}.go` + `internal/gitbin/run.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/ReviewModels.swift,Database/Queries/ReviewQueries.swift,Services/Review/}` + `WatchtowerDesktop/Sources/ViewModels/ReviewChangesModel.swift`
+**Module:** `internal/reviewdiff/` + `internal/reviewai/` + `internal/db/review_rounds.go` + `internal/db/review_agent.go` + `internal/reviewmap/` + `internal/db/migrations/{00121,00124,00128,00174}_*.sql` + `cmd/workbench_review.go` + `cmd/workbench_review_context.go` + `cmd/workbench_review_{revert,overview,lessons,map}.go` + `internal/tools/workbench_review{,_annotate,_reply}.go` + `internal/gitbin/run.go` + `WatchtowerDesktop/Sources/WatchtowerCore/{Models/ReviewModels.swift,Database/Queries/ReviewQueries.swift,Services/Review/}` + `WatchtowerDesktop/Sources/ViewModels/ReviewChangesModel.swift`
 **Last full audit:** 2026-10-16 (created; Plan 3 amendments the same day)
 **Owner approval:** spec review ask #179 (2026-10-16), board #328; spec `docs/superpowers/specs/2026-10-16-workbench-diff-reviewer-design.md` §13; Plan 3 amendments (REVIEW-01/03 amended, REVIEW-02 new, REVIEW-05 strengthened) ask #214.
 
@@ -22,7 +22,9 @@
 ## REVIEW-01 — the reviewer never writes a ref or the owner's index, and writes a work-tree file only on the owner's Undo or Accept
 
 **Status:** Enforced (Go). Amended 2026-10-16 (Plan 3, ask #214): Undo and
-Accept are the two owner-pressed writes.
+Accept are the two owner-pressed writes. Amended 2026-11-08 (big-branch review,
+board #1025, ask #591): the overview's chapter parts and the round's `head_sha`
+are database rows; `review map` writes nothing.
 
 **Observable:** Opening, refreshing or diffing a review (`workbench review
 start|diff|file|send|context`) only reads the folder. The snapshot of the work
@@ -38,7 +40,11 @@ only things written are git objects; no ref is created or moved, the owner's
 from tree objects (`diff-tree`, `cat-file`), never from the work tree. A folder
 that is not a repository answers an envelope, writes nothing. The AI overview
 (`review overview`) and Find repeats (`review lessons propose`) write only
-database rows (`review_overviews`, `review_lessons`), never a file.
+database rows (`review_overviews`, `review_overview_parts` — one row per
+described chapter —, `review_lessons`), never a file in the folder (the
+overview's one-run lock lives under the workspace's `locks/`). `start` and
+Refresh store the folder's HEAD commit on the round (`review_rounds.head_sha`,
+read with `rev-parse`); the big-branch map (`review map`) writes nothing at all.
 
 The two exceptions, both pressed by the owner in the Desktop:
 - **Undo** (`workbench review revert-hunk`, `reviewdiff.Repo.RevertHunk`)
@@ -273,7 +279,7 @@ agent (or a cloned repository) planted, with no owner action.
 **Test guards:**
 - `internal/reviewdiff/guard_test.go::TestReview05_SnapshotAndDiffRunNothingFromTheFolder` (a filter driver and an fsmonitor named by the folder never run through snapshot, diff and file)
 - `internal/reviewdiff/guard_test.go::TestReview05_UndoRunsNothingFromTheFolder` (the same through Undo's `hash-object` and `apply`)
-- `internal/reviewdiff/guard_test.go::TestReview05_HistoryReadsRunNothingFromTheFolder` (the same through the big-branch map's history reads: `rev-list --first-parent`, `log --name-only -z`, `merge-base --is-ancestor`)
+- `internal/reviewdiff/guard_test.go::TestReview05_HistoryReadsRunNothingFromTheFolder` (the same through the big-branch map's history reads: `rev-list --first-parent`, `log --name-only -z`, `merge-base --is-ancestor`, `rev-parse --verify`; none asks for content)
 - supporting: `internal/gitbin/run_test.go` (`TestReadArgsIn_BlanksTheFoldersFilterDrivers`, `TestReadsContent` (the unexported `readsContent`), `TestReadsContent_AddAndPatchDiffTree`, `TestReadsContent_ApplyAndHashObject`, `TestReadArgsIn_NoFilterIsReadArgs`); `internal/reviewdiff/diff_test.go` (`TestDiff_TypeChangeToSymlink`, `TestSplitSections_LineOverMaxIsAnError`)
 
 **Locked since:** 2026-10-16
@@ -291,3 +297,4 @@ agent (or a cloned repository) planted, with no owner action.
 - 2026-10-24 (board #964, Branch review polish, **approved by the owner, ask #559**): REVIEW-04 amended — the Approve path joins Send under the same order (the round stored as approved first, then the approved line through `LineKey.review` under PROJ-12's gates); migration 00155 `review_rounds.outcome`; new guards `TestReview04_ApproveIsGuardedAndStoredBeforeTheLine` and `testReview04_ApproveTypesOnce`. No assertion relaxed, no guard renamed.
 - 2026-10-25 (board #964, final review fix): strengthening, no guard relaxed. `workbench review approve` refuses under the AGENT-07 agent markers (`refuseUnderAgent`) before anything is read and otherwise needs the owner's Confirm in the Desktop (`confirmWithOwner`, the Desktop's own Approve granted without a window), like Undo and the lessons commands; by the owner's decision in ask #575 `send` gets the same guard (REVIEW-04's order and guards unchanged). Guards: `TestWorkbenchReviewApprove_RefusedUnderAgentMarkers`, `TestWorkbenchReviewApprove_OwnerDeniedLeavesRoundOpen`, `TestWorkbenchReviewSend_RefusedUnderAgentMarkers`, `TestWorkbenchReviewSend_OwnerDeniedLeavesRoundOpen`; AGENT-07's list in `agent-actions.md` names it.
 - 2026-11-07 (board #1012, owner rule in ask #543, scoped in fix round 1 to "the folder on the default branch or a detached HEAD", pending the owner's confirmation): strengthening, no guard relaxed or renamed. REVIEW-01's "only reads" now also covers a round on the task branch's committed tip (`source = 'pr'`, read from refs, never checked out), and REVIEW-02's Undo is refused on such a round before any other check after "the round is not open" (Go `revert-hunk`, Desktop `canUndo`/`undo` — no file, no `review_reverts` row). REVIEW-03 holds through a moved round: an open round whose place changed is moved in place (`RepointReviewRound`), keeping its comments; the Desktop re-places them on open as on Refresh, keyed on base and tree, and a failure there leaves the rows untouched. A removed worktree is not a move (the round stays, `place_missing`), a git failure other than git's exit 1 is an error rather than a fallback, a move keeps `prev_round_id` and a new round links to the session's last sent round whatever its place (so its unresolved comments carry), while **Since round N** treats a previous round of another place as a lost snapshot, and the round stores the branch it reviews (migration 00173 `review_rounds.branch`) so a renamed ticket branch moves it. New supporting tests: `TestWorkbenchReview_RenamedTicketBranchMovesTheRound`, `TestWorkbenchReviewRevertHunk_RefusedOnABranchRound`, `TestWorkbenchReview_OpenRoundFollowsTheSessionsPlace`, `TestWorkbenchReview_FolderOnAnotherBranchKeepsTheFolder`, `TestWorkbenchReview_RemovedWorktreeKeepsTheOpenRound`, `TestWorkbenchReview_GitFailureDoesNotMoveTheRound`, `TestWorkbenchReview_PreviousRoundOfAnotherPlace` (`cmd`), `TestReviewRounds_RepointMovesOnlyAnOpenRound`, `TestReviewRounds_RepointKeepsThePreviousRoundLink` (`internal/db`), `TestBranchReads_OtherGitFailuresAreErrors` (`internal/reviewdiff`), `testUndoRefusedOnABranchTipRoundCallsNoCLI`, `testOpenOfAMovedRoundReplacesItsDrafts`, `testOpenFinishesWhenCommentsCannotBeReplaced`, `testBaseOnlyChangeReplacesOldSideDrafts`, `testRoundAtAnotherPlaceCarriesCommentsAndShowsAllChanges` (`ReviewChangesModelTests`).
+- 2026-11-08 (board #1025, big-branch review, **owner approved in ask #591**): REVIEW-01 amended — the AI overview also writes `review_overview_parts` (one row per described chapter, keyed by the chapter's files, their blobs, its own line notes and the prompt; pruned after 30 days; migration 00174), and `start`/Refresh/a moved round store `review_rounds.head_sha` (a database row, read with `rev-parse`); `workbench review map` writes nothing; the one-run lock file lives under the workspace, never the repository. REVIEW-02..04 unchanged. REVIEW-05 note: the map's new git reads (`FirstParentWalk` = `rev-list --first-parent --parents`, `CommitFiles` = `log --first-parent --no-merges --name-only -z`, `IsAncestor` = `merge-base --is-ancestor`, `HeadCommit` = `rev-parse --verify`) go through `reviewdiff.Repo`'s hardened runner and ask for no content; guard `TestReview05_HistoryReadsRunNothingFromTheFolder` lists them. The finish gate still checks only the session's own intent items (lane items are the owner's view) and reads the cached overview without building the map. No guard relaxed or renamed.
