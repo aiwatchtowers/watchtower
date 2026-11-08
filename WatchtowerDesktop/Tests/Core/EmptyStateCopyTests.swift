@@ -7,7 +7,7 @@ final class EmptyStateCopyTests: XCTestCase {
     private let covered = [
         "catchUp", "briefings", "dayPlan", "inbox", "ideas", "calendar", "targets", "tracks", "projects", "automations",
         "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics",
-        "inboxMessages", "inboxAutomations", "inboxFolder"
+        "inboxMessages", "inboxFolder"
     ]
 
     private func copy(_ rawValue: String, briefingHour: Int = 8) -> EmptyStateCopy? {
@@ -25,8 +25,7 @@ final class EmptyStateCopyTests: XCTestCase {
 
     /// The Inbox's root, empty, speaks of automations and offers New
     /// Artifact… (inbox builder B); the Getting ready card keeps what the
-    /// Inbox holds; its Automations filter keeps B's proposals-and-reminders
-    /// sentence (owner, ask #299).
+    /// Inbox holds. The Automations filter's copy left with the filters.
     func testInboxCopySaysProposalsAndReminders() throws {
         let root = try XCTUnwrap(copy("inbox"))
         XCTAssertEqual(root.title, "Your Inbox is empty")
@@ -35,9 +34,7 @@ final class EmptyStateCopyTests: XCTestCase {
         XCTAssertEqual(
             EmptyStateCopyTable.featureCard(.inbox, briefingHour: 8).whatItIs,
             "Your day, messages, tracks, ideas and automation cards that need you.")
-        XCTAssertEqual(
-            try XCTUnwrap(copy("inboxAutomations")).landsHere,
-            "Proposals and due reminders that need you, plus reaction shortcuts.")
+        XCTAssertNil(copy("inboxAutomations"))
     }
 
     /// An owner folder names itself; Needs approval says only its title.
@@ -52,9 +49,9 @@ final class EmptyStateCopyTests: XCTestCase {
         XCTAssertNil(approvals.feature)
     }
 
-    func testEveryInboxFilterHasCopy() {
-        for filter in InboxFilter.allCases {
-            XCTAssertNotNil(copy(filter.emptyCopyKey), filter.rawValue)
+    func testEveryLegacyListHasCopy() {
+        for list in InboxLegacyList.allCases {
+            XCTAssertNotNil(copy(list.emptyCopyKey), list.rawValue)
         }
     }
 

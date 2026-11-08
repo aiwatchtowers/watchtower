@@ -48,7 +48,10 @@ struct InboxRefHooks {
             // The recipe's own buttons step aside only for native ones: a
             // shown row the read does not list (past a cap, a kind its list
             // leaves out) keeps them, never ending with no buttons.
-            nativeKinds: { ref in content(inboxRef(ref), .inbox) == nil ? [] : nativeKinds(ref.kind) },
+            nativeKinds: { ref in
+                guard let content = content(inboxRef(ref), .inbox) else { return [] }
+                return nativeKinds(ref.kind, hasReply: content.hasReply)
+            },
             nativeFooter: { ref, mode in
                 let inbox = inboxRef(ref)
                 guard let content = content(inbox, mode), content.hasFooter else { return nil }
@@ -78,11 +81,11 @@ struct InboxRefHooks {
     /// The recipe's row actions a native one replaces ("Duplicates"): a
     /// ping keeps one Open, one Discuss in Chat and one Hand to Agent…; a
     /// track and an idea have Make a Task natively; a reminder's Slack link
-    /// is its card's. A ping's recipe `reply` stays until the native
-    /// Reply… lands (plan Task 18).
-    static func nativeKinds(_ kind: ArtifactRefKind) -> Set<ArtifactActionKind> {
+    /// is its card's. A ping with a native Reply… (Slack, Jira, Linear)
+    /// also drops the recipe's `reply`; a mail item keeps it.
+    static func nativeKinds(_ kind: ArtifactRefKind, hasReply: Bool = false) -> Set<ArtifactActionKind> {
         switch kind {
-        case .inboxItem: [.open, .chat, .agent]
+        case .inboxItem: hasReply ? [.open, .chat, .agent, .reply] : [.open, .chat, .agent]
         case .track, .idea: [.target]
         case .reminder: [.open]
         case .action: []
@@ -93,10 +96,32 @@ struct InboxRefHooks {
     /// actions) when the read does not list it.
     func content(_ ref: InboxRef, _ mode: ArtifactRenderMode) -> InboxRowActionsContent? {
         guard let kind = kind(ref) else { return nil }
-        return InboxRowActionsContent(kind: kind, state: state(ref), isPreview: mode == .preview,
+        let reply = ref.kind == .inboxItem ? vm.replyState(Int(ref.id)) : nil
+        return InboxRowActionsContent(kind: kind, state: state(ref), reply: reply, isPreview: mode == .preview,
                                       cliMissing: mode != .preview && vm.folderMenu.isCLIMissing,
                                       writesUnavailable: ref.kind == .idea && !ideasAvailable,
                                       failedVerb: ref.kind == .action ? vm.actionFeed.rowErrors[ref.id]?.verb : nil)
+    }
+
+    /// Reply on the Messages entry's message card while it stands in for
+    /// Waiting for me (before its first run, after a failed run): the same
+    /// Reply… as a row, for an item with a write path, off with the
+    /// footer's line while the CLI is missing. Nil otherwise — today's card.
+    func messageReply(_ row: HomeFeedInboxRow) -> InboxRowActionsContent? {
+        guard vm.folderMenu.snapshot.waitingForMe.messagesStandIn,
+              InboxReplyPolicy.tool(for: row.item) != nil else { return nil }
+        let id = row.item.id
+        return InboxRowActionsContent(
+            kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: true, showsHandToAgent: true),
+            state: vm.isWriting(.message(id)) ? .busy : .idle, reply: vm.replyState(id),
+            cliMissing: vm.folderMenu.isCLIMissing)
+    }
+
+    /// The title a Reply names as its host ("Reply from <host>"): the
+    /// artifact the row is on, else the Messages legacy entry.
+    static func replyHost(_ item: InboxListItem?) -> String {
+        guard case let .output(card)? = item else { return "Messages" }
+        return card.title.isEmpty ? "Automation output" : card.title
     }
 
     private func kind(_ ref: InboxRef) -> InboxRowActionsContent.Kind? {
@@ -107,7 +132,7 @@ struct InboxRefHooks {
             let link = InboxMessagePane.link(row.item.permalink)
             return .inboxItem(openLabel: link.map { _ in InboxMessagePane.openLabel(row.item.triggerType) },
                               openEnabled: link.map { InboxCardLinkPolicy.permits($0, navScreens: navScreens) } ?? false,
-                              canReply: false, showsHandToAgent: true)
+                              canReply: InboxReplyPolicy.tool(for: row.item) != nil, showsHandToAgent: true)
         case .track:
             guard let track = feed.tracks.first(where: { Int64($0.track.id) == ref.id })?.track else { return nil }
             return .track(custom: track.isCustom, linkedTargetID: track.linkedTargetID.map(Int64.init))
@@ -209,8 +234,12 @@ struct InboxRowActionHandler {
     var sessionHoldsCall: (AgentAction) -> Bool = { _ in false }
     var navScreens: Set<String> = []
     var now: () -> Date = { Date() }
+    /// The title of what the rows are on — an artifact's, or "Messages" for
+    /// the legacy entry — for a Reply's reason ("Reply from <host>").
+    var replyHost = "Messages"
 
     func press(_ press: InboxRowPress, on ref: InboxRef) async {
+        if pressNow(press, on: ref) { return }
         if press == .retryFailedPress {
             await retry(ref)
             return
@@ -222,6 +251,21 @@ struct InboxRowActionHandler {
         case .reminder: await reminder(press, id: ref.id)
         case .action: await action(press, id: ref.id)
         }
+    }
+
+    /// The Reply composer's own presses (open, type, cancel), carried out at
+    /// once so keystrokes never reorder; true when `press` was one of them.
+    @discardableResult
+    func pressNow(_ press: InboxRowPress, on ref: InboxRef) -> Bool {
+        guard ref.kind == .inboxItem else { return false }
+        let id = Int(ref.id)
+        switch press {
+        case .reply: vm.startReply(id)
+        case let .replyChanged(text): vm.editReply(id, text: text)
+        case .cancelReply: vm.cancelReply(id)
+        default: return false
+        }
+        return true
     }
 
     /// The failed press again: a proposal's by the verb that failed, any
@@ -256,6 +300,9 @@ struct InboxRowActionHandler {
         case .done: await vm.messageDone(id)
         case .hide: await vm.hideMessage(id)
         case let .snooze(duration): await vm.snoozeMessage(id, duration: duration)
+        case .proposeReply:
+            guard let draft = vm.replyDrafts[id] else { return }
+            await vm.proposeReply(id, text: draft.text, host: replyHost)
         default: break
         }
     }
@@ -271,14 +318,14 @@ struct InboxRowActionHandler {
             if let target = track.linkedTargetID { onGoToTarget(target) }
         case .deleteTrack:
             // Its inline confirmation lives on the track's card.
-            await vm.open(.tracks, select: .track(id))
+            await vm.open(folder: nil, select: .card(.track(id)))
         default: break
         }
     }
 
     private func idea(_ press: InboxRowPress, id: Int) async {
         if press == .open {
-            await vm.open(.ideas, select: .idea(id))
+            await vm.open(folder: nil, select: .card(.idea(id)))
             return
         }
         guard let ideas, let idea = vm.feed.ideas.first(where: { $0.id == id }) else { return }

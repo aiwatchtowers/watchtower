@@ -100,9 +100,9 @@ final class ActionStripActionsViewTests: XCTestCase {
         let sut = view(vm, rows: await dictionaryRows(pool), feature: .off)
 
         // The negative finds walk only the list and reading pane (the split's
-        // second column): the folder menu holds no cheat sheet, and walking
-        // it on every miss made this test take minutes.
-        let inbox = try sut.inspect().hSplitView().vStack(1)
+        // second column, under the Inbox header): the folder menu holds no
+        // cheat sheet, and walking it on every miss made this test take minutes.
+        let inbox = try sut.inspect().vStack().hSplitView(2).vStack(1)
         XCTAssertThrowsError(try inbox.find(ReactionCheatSheetView.self), "no inline sheet among real cards")
         XCTAssertThrowsError(try inbox.find(button: "Enable Reaction Commands"))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
@@ -124,7 +124,7 @@ final class ActionStripActionsViewTests: XCTestCase {
 
     /// An empty legacy list (opened from the root, as a route to Messages
     /// does) shows its own empty state; the cheat sheet stays behind `?` there.
-    func testEmptyFilterShowsItsOwnEmptyState() async throws {
+    func testEmptyLegacyListShowsItsOwnEmptyState() async throws {
         let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -136,7 +136,7 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "No messages waiting"))
         XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyFilter"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyLegacyList"))
     }
 
     /// Before the first read the Inbox shows a spinner, never "empty" and
@@ -212,5 +212,34 @@ final class ActionStripActionsViewTests: XCTestCase {
             ReactionCheatSheetView.FeatureState.from(features: [info("enabled")], lastCheck: "x"),
             .on(lastCheck: "x")
         )
+    }
+
+    /// The Messages entry stands in for Waiting for me (before its first
+    /// run): its message card, drawn through the legacy split view, has
+    /// Reply… for a Slack item (B Task 18).
+    func testMessagesStandInCardHasReplyThroughTheLegacySplit() async throws {
+        let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var item: Int64 = 0
+        let pool = try makePool { db in
+            item = try TestDatabase.insertInboxItem(
+                db, channelID: "1:C001", triggerType: "mention",
+                permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
+            let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
+            try db.execute(sql: """
+                UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me'
+                WHERE id = ?
+                """, arguments: [id])
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+        vm.openLegacy(.messages)
+        await vm.refresh()
+        XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.messagesStandIn)
+        vm.selection = .message(Int(item))
+        let sut = view(vm, rows: [], feature: .off)
+
+        XCTAssertNoThrow(try sut.inspect().find(InboxMessagePane.self), "the message card is shown")
+        XCTAssertNoThrow(try sut.inspect().find(button: "Reply…"))
     }
 }

@@ -53,7 +53,7 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertEqual(waiting.slot, "waiting_for_me")
         XCTAssertEqual(waiting.featureIDs, ["secretary-inbox"])
         XCTAssertEqual(waiting.parameters, [])
-        XCTAssertEqual(waiting.resultFilter, .messages)
+        XCTAssertEqual(waiting.defaultFolder, "inbox")
         XCTAssertTrue(waiting.runNow)
     }
 
@@ -65,17 +65,19 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertEqual(needs.featureIDs, ["approval-cards"])
         XCTAssertEqual(needs.parameters, [])
         XCTAssertEqual(needs.defaultPrompts, [:])
-        XCTAssertEqual(needs.resultFilter, .automations)
+        XCTAssertEqual(needs.defaultFolder, "needs-approval")
         XCTAssertTrue(needs.runNow)
         XCTAssertTrue(needs.shippedText.contains("type: approval"))
     }
 
-    func testDecodesDoesAndResultFilter() throws {
+    /// The card's Does lines and its default folder (Show in Inbox); a
+    /// block without `default_folder` hides the link ("").
+    func testDecodesDoesAndDefaultFolder() throws {
         let detail = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden())
         XCTAssertGreaterThanOrEqual(detail.does.count, 1)
-        XCTAssertEqual(detail.resultFilter, .day)
-        let unknown = Data(#"{"id":"x","result_filter":"nope"}"#.utf8)
-        XCTAssertNil(try JSONDecoder().decode(BuiltinAutomationDetail.self, from: unknown).resultFilter)
+        XCTAssertEqual(detail.defaultFolder, "inbox")
+        let missing = Data(#"{"id":"x"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(BuiltinAutomationDetail.self, from: missing).defaultFolder, "")
     }
 
     func testDecodesSharedGoldenBlock() throws {

@@ -51,7 +51,7 @@ package enum HomeFeedQueries {
     private static let rowLimit = 200
     private static let calendarDays = 4
     private static let nextDayHorizon = 3
-    /// The triggers of a Messages row; the Inbox's Messages filter reads the same set.
+    /// The triggers of a Messages row; the Inbox's Messages list reads the same set.
     package static let feedTriggers = [
         "mention", "dm", "thread_reply", "reaction",
         "jira_assigned", "jira_comment_mention", "linear_assigned", "linear_comment_mention",
@@ -115,7 +115,7 @@ package enum HomeFeedQueries {
     }
 
     /// The open messages clause every Messages read shares (Home's feed, the
-    /// Inbox's Messages filter and its badge): pending actionable rows of the
+    /// Inbox's Messages list and its badge): pending actionable rows of the
     /// feed triggers that are not archived or snoozed. One `?`: the current time.
     package static let openMessageClause = """
         status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL

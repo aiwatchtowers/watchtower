@@ -108,7 +108,7 @@ extension AppState {
         selectedDestination = .usage
     }
 
-    /// A Getting ready card's Open: the Inbox filter of a feature whose cards
+    /// A Getting ready card's Open: the Inbox entry of a feature whose cards
     /// live there, Connections → Jira for Jira, else the feature's tab.
     private func openFeature(_ feature: ReadinessFeature) {
         if let route = InboxRoute.forFeature(feature, today: Self.inboxToday()) {
@@ -123,7 +123,7 @@ extension AppState {
     /// An automation note's Inbox card, selected so its buttons show; the
     /// run in the Automations tab while the Inbox has no view model yet.
     private func openInboxOutput(_ id: Int64, automationID: Int64, runID: Int64) {
-        if openInbox(InboxRoute(filter: .all, selection: .output(id))) == nil {
+        if openInbox(.card(.output(id))) == nil {
             openAutomationRun(automationID: automationID, runID: runID)
         }
     }

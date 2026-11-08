@@ -151,6 +151,12 @@ package struct InboxRowActionsContent: Equatable {
 
     package var isBusy: Bool { state == .busy }
 
+    /// A ping with **Reply…** (a Slack, Jira or Linear item).
+    package var hasReply: Bool {
+        if case let .inboxItem(_, _, canReply, _) = kind { return canReply }
+        return false
+    }
+
     /// A proposal's own summary, drawn under the row's line; nil for any other kind.
     package var actionSummary: String? {
         guard case let .action(summary, _) = kind, !summary.isEmpty else { return nil }

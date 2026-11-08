@@ -3,8 +3,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Inbox read like mail (spec B1, C1 §6.1): the list on the left —
-/// Needs your decision, Today, Earlier, for the chosen filter, or the
-/// filter's empty state — and the reading pane on the right, which also
+/// Needs your decision, Today, Earlier, for the legacy entry the root opened
+/// (Track my threads, Idea finder, Messages), or its empty state — and the reading pane on the right, which also
 /// holds the reaction cheat sheet, Learned Rules or Assistant Profile when
 /// the header opens one.
 /// Arrow keys move the selection, Escape clears it, and opening a card marks
@@ -40,8 +40,11 @@ struct InboxSplitView<EmptyList: View>: View {
     /// (tests, design shots) shows a track card's title and source line.
     let tracks: TracksViewModel?
     let trackControls: (any CustomTrackControlling)?
-    /// The list column when the filter has nothing.
+    /// The list column when the list has nothing.
     let emptyList: EmptyList
+    /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
+    private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
+    private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
 
     @Environment(\.markdownNavScreens) private var navScreens
 
@@ -81,6 +84,18 @@ struct InboxSplitView<EmptyList: View>: View {
         self.tracks = tracks
         self.trackControls = trackControls
         self.emptyList = emptyList()
+    }
+
+    /// This split view with Reply on its reading pane's message card
+    /// (`InboxReadingPane.messageReply(_:onPress:)`).
+    func messageReply(
+        _ content: @escaping (HomeFeedInboxRow) -> InboxRowActionsContent?,
+        onPress: @escaping (Int, InboxRowPress) -> Void
+    ) -> Self {
+        var split = self
+        split.messageReplyContent = content
+        split.onMessageReplyPress = onPress
+        return split
     }
 
     var body: some View {
@@ -123,26 +138,13 @@ struct InboxSplitView<EmptyList: View>: View {
                             .listRowSeparator(.hidden)
                     }
                 }
-                if vm.filter == .day, vm.feed.hasOlderDays {
-                    showOlderRow
-                }
             }
             .clearPlainList()
             .onExitCommand { Task { await vm.select(nil) } }
         }
     }
 
-    /// The Day filter's last row while older dates exist: 30 more per press.
-    private var showOlderRow: some View {
-        Button("Show older") { vm.showOlderDays() }
-            .buttonStyle(.kitQuiet)
-            .controlSize(.small)
-            .help("Show \(ActionStripViewModel.dayPage) more days")
-            .selectionDisabled()
-            .listRowSeparator(.hidden)
-    }
-
-    /// A section's title; the Tracks filter's Stopped fold opens and closes here.
+    /// A section's title; Track my threads' Stopped fold opens and closes here.
     @ViewBuilder
     private func sectionTitle(_ section: InboxSection) -> some View {
         if section.foldable {
@@ -205,7 +207,7 @@ struct InboxSplitView<EmptyList: View>: View {
             artifactPeople: vm.feed.artifactPeople,
             dayCard: { card in
                 if let pane = dayPane?(card) {
-                    around(pane, card)
+                    pane
                 } else {
                     InboxCardPlaceholder(day: card)
                 }
@@ -219,13 +221,7 @@ struct InboxSplitView<EmptyList: View>: View {
                 }
             }
         )
-    }
-
-    /// The day pane with what only the split view knows.
-    private func around(_ pane: InboxDayPane, _ card: InboxDayCard) -> InboxDayPane {
-        var pane = pane
-        pane.isWriting = vm.isWriting(.day(card.date))
-        return pane
+        .messageReply(messageReplyContent, onPress: onMessageReplyPress)
     }
 
     /// The track card; Done and Stop watching open the next row once it left.
@@ -273,8 +269,7 @@ struct InboxSplitView<EmptyList: View>: View {
         case .reminder(let reminder): await vm.markReminderDone(reminder)
         case .message(let message): await vm.messageDone(message)
         case .track(let track): await vm.markTrackDone(track)
-        case .day(let date): vm.markDayDone(date)
-        case .proposal, .idea, .builtinNotice: break
+        case .proposal, .day, .idea, .builtinNotice: break
         }
     }
 

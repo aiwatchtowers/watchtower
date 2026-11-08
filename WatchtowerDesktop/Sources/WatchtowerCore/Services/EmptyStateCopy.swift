@@ -56,7 +56,7 @@ package enum EmptyStateAction: Equatable, Sendable {
 package enum EmptyStateCopyTable {
     /// Keyed by `SidebarDestination.rawValue` (SidebarDestination lives in the
     /// Desktop target; Workbench's persisted raw value is "projects"), plus
-    /// the Inbox filters' own keys (`InboxFilter.emptyCopyKey`) and the
+    /// the Inbox legacy lists' own keys (`InboxLegacyList.emptyCopyKey`) and the
     /// Inbox folders' (`InboxFolderListContent.emptyCopyKey`); `folderTitle`
     /// fills an owner folder's `{folder}`.
     package static func copy(
@@ -117,15 +117,11 @@ package enum EmptyStateCopyTable {
         "inboxApprovals": EmptyStateCopy(
             icon: "checkmark.circle", title: "Nothing waits for your approval", landsHere: "",
             feature: nil, primaryAction: nil),
-        // The Inbox's Messages and Automations filters (`InboxFilter.emptyCopyKey`).
+        // The Inbox's Messages legacy list (`InboxLegacyList.emptyCopyKey`).
         "inboxMessages": EmptyStateCopy(
             icon: "bubble.left.and.bubble.right", title: "No messages waiting",
             landsHere: "Mentions, DMs, thread replies, mail and Jira or Linear items that need you.",
             feature: .inbox, primaryAction: nil),
-        "inboxAutomations": EmptyStateCopy(
-            icon: "gearshape.2", title: "Nothing from your automations",
-            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
-            feature: nil, primaryAction: nil),
         "ideas": EmptyStateCopy(
             icon: "lightbulb", title: "No ideas yet",
             landsHere: "Ideas and decisions picked up from conversations, every ~6 h.",
