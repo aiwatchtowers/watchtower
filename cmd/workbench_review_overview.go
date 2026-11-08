@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -265,7 +266,8 @@ func answerReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJ
 	var busy *reviewai.BusyError
 	switch {
 	case errors.As(err, &busy):
-		env := reviewEnvelope{Error: busy.Error(), ErrorClass: reviewai.ClassBusy}
+		re := busy.RunError()
+		env := reviewEnvelope{Error: re.Text, ErrorClass: re.Class}
 		if busy.Waited { // the streamed form: an envelope like any failed run
 			return writeReview(cmd, env)
 		}
@@ -273,7 +275,7 @@ func answerReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJ
 			return werr
 		}
 		return &exitCodeError{code: 1, err: busy}
-	case err != nil && ctx.Err() != nil:
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
 		return writeReview(cmd, reviewEnvelope{Error: reviewai.CancelledText, ErrorClass: reviewai.ClassCancelled})
 	case err != nil:
 		return failReview(cmd, err)
@@ -329,6 +331,7 @@ type overviewLock struct {
 	waited bool
 	shown  map[string]bool
 	said   time.Time // the last waiting line
+	warned bool      // a part read failed and was logged
 }
 
 func (l *overviewLock) acquire(ctx context.Context, workspaceDir string) (func(), error) {
@@ -351,8 +354,12 @@ func (l *overviewLock) onWait(h reviewai.Holder) {
 	}
 	l.waited = true
 	cached, err := l.pipe.CachedChapters(l.job.database, l.job.p.ID, l.job.m, l.job.diff, l.job.in.Notes)
-	if err != nil {
-		return // the run itself reads the parts again once it holds the lock
+	if err != nil { // the run itself reads the parts again once it holds the lock
+		if !l.warned {
+			l.warned = true
+			log.Printf("review overview: waiting run could not read the cached parts (project %d)", l.job.p.ID)
+		}
+		return
 	}
 	for _, ch := range l.job.m.Chapters {
 		if d, ok := cached[ch.Key]; ok && !l.shown[ch.Key] {
@@ -365,7 +372,7 @@ func (l *overviewLock) onWait(h reviewai.Holder) {
 // runEmit is the run's emit: a cached line the wait already printed is not
 // printed twice.
 func (l *overviewLock) runEmit() func(reviewai.Event) {
-	if l.emit == nil || len(l.shown) == 0 {
+	if len(l.shown) == 0 {
 		return l.emit
 	}
 	return func(e reviewai.Event) {

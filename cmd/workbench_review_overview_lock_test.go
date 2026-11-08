@@ -245,7 +245,7 @@ func TestReviewOverviewLock_StreamedWaiterShowsTheHoldersPartsThenCallsTheRest(t
 	require.NoError(t, err)
 
 	_, kill := holdOverviewLock(t, wb, repo)
-	shortLockWait(t, reviewai.LockWait{Every: 20 * time.Millisecond}, 24*time.Hour)
+	shortLockWait(t, reviewai.LockWait{Cap: 2 * time.Minute, Every: 20 * time.Millisecond}, 24*time.Hour)
 	g := &keyReviewGen{}
 	useReviewGenerator(t, g)
 	lines := streamOverviewAsync(t, wb, "--round", round)
