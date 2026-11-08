@@ -347,25 +347,3 @@ func TestThreadContextCmd_Blocks(t *testing.T) {
 	_, err = runSpecReview(t, "thread-context", "--ask", itoa(id), "--item", "ag:000000000000")
 	requireExit(t, err, 3, "no such item")
 }
-
-// TestThreadContextCmd_FolderOnly: --folder-only prints the folder the
-// reviewer read, for the thread's --read-folder: the workbench folder, or the
-// session's recorded working directory once there is one.
-func TestThreadContextCmd_FolderOnly(t *testing.T) {
-	database, id := boundSpecReviewAsk(t)
-	ask, err := database.GetOwnerAskByID(id)
-	require.NoError(t, err)
-	wb, err := database.GetWorkbench(ask.WorkbenchID)
-	require.NoError(t, err)
-
-	out, err := runSpecReview(t, "thread-context", "--ask", itoa(id), "--item", "da:0123456789ab", "--folder-only")
-	require.NoError(t, err)
-	assert.Equal(t, "read_folder: "+wb.FolderPath+"\n", out)
-
-	cwd := t.TempDir()
-	_, err = database.Exec(`UPDATE terminal_sessions SET agent_cwd = ? WHERE id = ?`, cwd, ask.SessionID.Int64)
-	require.NoError(t, err)
-	out, err = runSpecReview(t, "thread-context", "--ask", itoa(id), "--item", "da:0123456789ab", "--folder-only")
-	require.NoError(t, err)
-	assert.Equal(t, "read_folder: "+cwd+"\n", out)
-}

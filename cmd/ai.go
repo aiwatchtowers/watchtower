@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/ollama"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/specreview"
 
 	"github.com/spf13/cobra"
 )
@@ -53,6 +54,9 @@ var (
 	aiFlagContextID         string
 	aiFlagEvents            string
 	aiFlagReadFolder        string
+	// aiFlagReadFolderAsk names a spec/plan review ask whose reviewer's
+	// folder (specreview.ReadFolder) the run reads: a Discuss thread.
+	aiFlagReadFolderAsk int64
 	// aiFlagPurpose records this query's LLM calls under its own purpose
 	// in the usage ledger (one of queryPurposes; "" keeps the default).
 	aiFlagPurpose string
@@ -144,6 +148,8 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
 		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
+	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderAsk, "read-folder-ask", 0,
+		"run, like --read-folder, in the folder the reviewer of spec/plan review ask N read; exit 2 if it is no such ask")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
 		"record this query's LLM calls under this usage purpose (spec_review.discuss); exit 2 on any other value")
 }
@@ -610,12 +616,21 @@ type readFolderConfigurable interface{ SetReadFolder(dir string) }
 
 // resolveReadFolder resolves --read-folder to the folder of a workbench in
 // the database at dbPath: absolute, symlinks resolved, an existing directory
-// bound to a workbench or, exactly, a folder a session of one works in — its
-// recorded working directory or worktree, where the spec reviewer reads (a
-// subfolder of either is not). "" without the flag. Any
+// bound to a workbench (a subfolder is not). "" without the flag. Any
 // refusal is a usage error (exit 2), as is combining it with --tools: a
-// read-folder run mounts no write tool.
+// read-folder run mounts no write tool. --read-folder-ask N instead names the
+// folder by a spec/plan review ask (resolveReviewReadFolder); it excludes
+// --read-folder and --tools the same way.
 func resolveReadFolder(dbPath string) (string, error) {
+	if aiFlagReadFolderAsk != 0 {
+		if aiFlagReadFolder != "" {
+			return "", usageError("give --read-folder or --read-folder-ask, not both")
+		}
+		if aiFlagTools != "" {
+			return "", usageError("--read-folder-ask runs without --tools")
+		}
+		return resolveReviewReadFolder(dbPath, aiFlagReadFolderAsk)
+	}
 	if aiFlagReadFolder == "" {
 		return "", nil
 	}
@@ -639,21 +654,48 @@ func resolveReadFolder(dbPath string) (string, error) {
 	}
 	defer func() { _ = database.Close() }()
 	wb, err := database.WorkbenchByFolder(resolved)
-	if err == nil {
-		return wb.FolderPath, nil
-	}
-	if !errors.Is(err, db.ErrWorkbenchNotFound) {
-		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
-	}
-	// The folder a spec review thread reads is the reviewer's: the session's
-	// recorded working directory or worktree (specreview.ReadFolder). The
-	// ledger stores resolved roots; agent_cwd is the path as the hook saw it.
-	ok, err := database.IsSessionFolder(context.Background(), resolved, abs)
 	if err != nil {
+		if errors.Is(err, db.ErrWorkbenchNotFound) {
+			return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
+		}
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
-	if !ok {
-		return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
+	return wb.FolderPath, nil
+}
+
+// resolveReviewReadFolder is --read-folder-ask's folder: the one the reviewer
+// of spec/plan review ask askID read, computed by the reviewer's own
+// specreview.ReadFolder (the session's recorded working directory when it is
+// still a directory, else the workbench folder), then symlink-resolved and
+// checked to be a directory. The reviewer reads that same path, so a recorded
+// folder that is now a symlink leads both to its target. Any failure is a
+// usage error (exit 2).
+func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
+	if askID < 0 {
+		return "", usageError("--read-folder-ask %d: not an ask id", askID)
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return "", usageError("--read-folder-ask: opening the database: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	ask, err := database.GetOwnerAskByID(askID)
+	if err != nil {
+		return "", usageError("--read-folder-ask %d: %v", askID, err)
+	}
+	if t := specreview.DocType(ask.DocType); ask.Kind != "review" || (t != specreview.Spec && t != specreview.Plan) {
+		return "", usageError("--read-folder-ask %d: not a spec or plan review", askID)
+	}
+	dir, err := specreview.ReadFolder(database, ask)
+	if err != nil {
+		return "", usageError("--read-folder-ask %d: %v", askID, err)
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", usageError("--read-folder-ask %d: %v", askID, err)
+	}
+	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+		return "", usageError("--read-folder-ask %d: not a directory", askID)
 	}
 	return resolved, nil
 }

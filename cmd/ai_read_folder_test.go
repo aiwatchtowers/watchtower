@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -176,63 +178,94 @@ func firstText(t *testing.T, lines []string) string {
 	return ""
 }
 
-// recordSessionFolders gives the fixture's workbench a terminal session whose
-// agent works in cwd and that recorded worktree root, and returns both,
-// symlink-resolved.
-func (f readFolderFixture) recordSessionFolders(t *testing.T) (cwd, root string) {
+// addAsk files an ask of kind/docType on the fixture's workbench, bound to a
+// new claude session whose recorded working directory is cwd ("" = none,
+// and no session when bound is false); it returns the ask id.
+func (f readFolderFixture) addAsk(t *testing.T, kind, docType string, bound bool, cwd string) int64 {
 	t.Helper()
-	var err error
-	cwd, err = filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
-	root, err = filepath.EvalSymlinks(t.TempDir())
-	require.NoError(t, err)
 	database, err := db.Open(f.dbPath)
 	require.NoError(t, err)
 	defer func() { _ = database.Close() }()
 	wb, err := database.WorkbenchByFolder(f.folder)
 	require.NoError(t, err)
-	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, agent_cwd)
-		VALUES (?, 'claude', 's', ?, 'agent-1', ?)`, wb.ID, f.folder, cwd)
-	require.NoError(t, err)
-	id, err := res.LastInsertId()
-	require.NoError(t, err)
-	_, err = database.RecordSessionWorktree(t.Context(), nil, id, root, "feat/x", "2026-10-12T12:00:00.000Z")
-	require.NoError(t, err)
-	return cwd, root
+	ask := db.OwnerAsk{WorkbenchID: wb.ID, Kind: kind, Title: "Spec", DocType: docType}
+	if kind == "review" {
+		ask.DocPath, ask.DocSnapshot = "docs/x-design.md", "# X\n"
+	}
+	if bound {
+		var cwdArg any
+		if cwd != "" {
+			cwdArg = cwd
+		}
+		res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, agent_cwd)
+			VALUES (?, 'claude', 's', ?, 'agent-1', ?)`, wb.ID, f.folder, cwdArg)
+		require.NoError(t, err)
+		sid, err := res.LastInsertId()
+		require.NoError(t, err)
+		ask.SessionID = sql.NullInt64{Int64: sid, Valid: true}
+	}
+	var id int64
+	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
+		id, _, err = database.InsertOwnerAsk(tx, ask)
+		return err
+	}))
+	return id
 }
 
-// TestAIQueryReadFolder_AcceptsASessionFolder: the folder the spec reviewer
-// read — a session's recorded working directory or worktree, named through a
-// symlink too — is accepted and becomes the run's cwd; a subfolder of one is
-// refused like any other folder.
-func TestAIQueryReadFolder_AcceptsASessionFolder(t *testing.T) {
+// TestAIQueryReadFolderAsk_ReadsTheReviewersFolder: --read-folder-ask N runs
+// in the folder specreview.ReadFolder gives the reviewer of ask N — the
+// session's recorded working directory (its worktree), else the workbench
+// folder — symlink-resolved.
+func TestAIQueryReadFolderAsk_ReadsTheReviewersFolder(t *testing.T) {
 	f := newReadFolderFixture(t)
-	cwd, root := f.recordSessionFolders(t)
-	link := filepath.Join(t.TempDir(), "link")
-	require.NoError(t, os.Symlink(root, link))
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	// A recorded cwd that is now a symlink: the reviewer reads the same raw
+	// path, so both end up in its target.
+	link := filepath.Join(t.TempDir(), "moved")
+	require.NoError(t, os.Symlink(worktree, link))
 
-	for name, tc := range map[string]struct{ arg, want string }{
-		"agent cwd":       {cwd, cwd},
-		"worktree":        {root, root},
-		"worktree link":   {link, root},
-		"workbench still": {f.folder, f.folder},
+	for name, tc := range map[string]struct {
+		ask  int64
+		want string
+	}{
+		"session worktree":     {f.addAsk(t, "review", "spec", true, worktree), worktree},
+		"no recorded cwd":      {f.addAsk(t, "review", "plan", true, ""), f.folder},
+		"no session":           {f.addAsk(t, "review", "spec", false, ""), f.folder},
+		"cwd gone":             {f.addAsk(t, "review", "spec", true, filepath.Join(worktree, "gone")), f.folder},
+		"cwd is now a symlink": {f.addAsk(t, "review", "spec", true, link), worktree},
 	} {
 		t.Run(name, func(t *testing.T) {
-			code, stdout, stderr := f.run(t, "--read-folder", tc.arg)
+			code, stdout, stderr := f.run(t, "--read-folder-ask", strconv.FormatInt(tc.ask, 10))
 			require.Equal(t, 0, code, stderr)
 			parts := strings.Split(firstText(t, stdout), "|")
 			require.Len(t, parts, 4)
 			assert.Equal(t, tc.want, parts[0], "cwd")
+			assert.Equal(t, "ToolSearch,Read,Grep,Glob,LS", parts[3], "a read-folder run")
 		})
 	}
+}
 
-	sub := filepath.Join(root, "sub")
-	require.NoError(t, os.Mkdir(sub, 0o755))
-	for name, dir := range map[string]string{"worktree subdir": sub, "unrelated folder": t.TempDir()} {
+// TestAIQueryReadFolderAsk_Refusals: no provider runs (exit 2) for an ask
+// that is not a spec/plan review, an unknown ask, or the flag combined with
+// --read-folder or --tools.
+func TestAIQueryReadFolderAsk_Refusals(t *testing.T) {
+	f := newReadFolderFixture(t)
+	review := strconv.FormatInt(f.addAsk(t, "review", "spec", false, ""), 10)
+	for name, tc := range map[string]struct {
+		args []string
+		text string
+	}{
+		"question ask":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "question", "", false, ""), 10)}, "not a spec or plan review"},
+		"other review":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "review", "other", false, ""), 10)}, "not a spec or plan review"},
+		"unknown ask":      {[]string{"--read-folder-ask", "999999"}, "--read-folder-ask 999999"},
+		"with read-folder": {[]string{"--read-folder-ask", review, "--read-folder", f.folder}, "not both"},
+		"with tools":       {[]string{"--read-folder-ask", review, "--tools", "chat"}, "without --tools"},
+	} {
 		t.Run(name, func(t *testing.T) {
-			code, stdout, stderr := f.run(t, "--read-folder", dir)
+			code, stdout, stderr := f.run(t, tc.args...)
 			assert.Equal(t, 2, code)
-			assert.Contains(t, stderr, "not a workbench folder")
+			assert.Contains(t, stderr, tc.text)
 			assert.Empty(t, stdout, "no provider ran")
 		})
 	}
