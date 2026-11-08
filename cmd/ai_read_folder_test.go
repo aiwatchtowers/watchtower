@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -174,4 +176,110 @@ func firstText(t *testing.T, lines []string) string {
 	}
 	t.Fatalf("no text event in %v", lines)
 	return ""
+}
+
+// addAsk files an ask of kind/docType on the fixture's workbench, bound to a
+// new claude session whose recorded working directory is cwd ("" = none,
+// and no session when bound is false); it returns the ask id.
+func (f readFolderFixture) addAsk(t *testing.T, kind, docType string, bound bool, cwd string) int64 {
+	t.Helper()
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	defer func() { _ = database.Close() }()
+	wb, err := database.WorkbenchByFolder(f.folder)
+	require.NoError(t, err)
+	ask := db.OwnerAsk{WorkbenchID: wb.ID, Kind: kind, Title: "Spec", DocType: docType}
+	if kind == "review" {
+		ask.DocPath, ask.DocSnapshot = "docs/x-design.md", "# X\n"
+	}
+	if bound {
+		var cwdArg any
+		if cwd != "" {
+			cwdArg = cwd
+		}
+		res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, agent_cwd)
+			VALUES (?, 'claude', 's', ?, 'agent-1', ?)`, wb.ID, f.folder, cwdArg)
+		require.NoError(t, err)
+		sid, err := res.LastInsertId()
+		require.NoError(t, err)
+		ask.SessionID = sql.NullInt64{Int64: sid, Valid: true}
+	}
+	var id int64
+	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
+		id, _, err = database.InsertOwnerAsk(tx, ask)
+		return err
+	}))
+	return id
+}
+
+// TestAIQueryReadFolderAsk_ReadsTheReviewersFolder: --read-folder-ask N runs
+// in the folder specreview.ReadFolder gives the reviewer of ask N — the
+// session's recorded working directory (its worktree), else the workbench
+// folder — symlink-resolved.
+func TestAIQueryReadFolderAsk_ReadsTheReviewersFolder(t *testing.T) {
+	f := newReadFolderFixture(t)
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	// A recorded cwd that is now a symlink: the reviewer reads the same raw
+	// path, so both end up in its target.
+	link := filepath.Join(t.TempDir(), "moved")
+	require.NoError(t, os.Symlink(worktree, link))
+
+	for name, tc := range map[string]struct {
+		ask  int64
+		want string
+	}{
+		"session worktree":     {f.addAsk(t, "review", "spec", true, worktree), worktree},
+		"no recorded cwd":      {f.addAsk(t, "review", "plan", true, ""), f.folder},
+		"no session":           {f.addAsk(t, "review", "spec", false, ""), f.folder},
+		"cwd gone":             {f.addAsk(t, "review", "spec", true, filepath.Join(worktree, "gone")), f.folder},
+		"cwd is now a symlink": {f.addAsk(t, "review", "spec", true, link), worktree},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, "--read-folder-ask", strconv.FormatInt(tc.ask, 10))
+			require.Equal(t, 0, code, stderr)
+			parts := strings.Split(firstText(t, stdout), "|")
+			require.Len(t, parts, 4)
+			assert.Equal(t, tc.want, parts[0], "cwd")
+			assert.Equal(t, "ToolSearch,Read,Grep,Glob,LS", parts[3], "a read-folder run")
+		})
+	}
+}
+
+// TestAIQueryReadFolderAsk_Refusals: no provider runs (exit 2) for an ask
+// that is not a spec/plan review, an unknown ask, or the flag combined with
+// --read-folder or --tools.
+func TestAIQueryReadFolderAsk_Refusals(t *testing.T) {
+	f := newReadFolderFixture(t)
+	review := strconv.FormatInt(f.addAsk(t, "review", "spec", false, ""), 10)
+	for name, tc := range map[string]struct {
+		args []string
+		text string
+	}{
+		"question ask":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "question", "", false, ""), 10)}, "not a spec or plan review"},
+		"other review":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "review", "other", false, ""), 10)}, "not a spec or plan review"},
+		"unknown ask":      {[]string{"--read-folder-ask", "999999"}, "--read-folder-ask 999999"},
+		"with read-folder": {[]string{"--read-folder-ask", review, "--read-folder", f.folder}, "not both"},
+		"with tools":       {[]string{"--read-folder-ask", review, "--tools", "chat"}, "without --tools"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, tc.args...)
+			assert.Equal(t, 2, code)
+			assert.Contains(t, stderr, tc.text)
+			assert.Empty(t, stdout, "no provider ran")
+		})
+	}
+}
+
+// resolveReviewReadFolder hands the provider the symlink-resolved path (the
+// stub's `pwd -P` cannot tell a link from its target).
+func TestResolveReviewReadFolder_ResolvesASymlinkedCwd(t *testing.T) {
+	f := newReadFolderFixture(t)
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "moved")
+	require.NoError(t, os.Symlink(worktree, link))
+	got, err := resolveReviewReadFolder(f.dbPath, f.addAsk(t, "review", "spec", true, link))
+	require.NoError(t, err)
+	assert.Equal(t, worktree, got)
 }

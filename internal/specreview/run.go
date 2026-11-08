@@ -100,7 +100,7 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	if ask.Kind != "review" || (t != Spec && t != Plan) {
 		return db.SpecReview{}, fmt.Errorf("ask %d is not a spec or plan review", askID)
 	}
-	folder, err := readFolder(d.DB, ask)
+	folder, err := ReadFolder(d.DB, ask)
 	if err != nil {
 		return db.SpecReview{}, err
 	}
@@ -184,10 +184,11 @@ func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out
 	return nil
 }
 
-// readFolder is where the reviewer reads: the session's working directory (its
+// ReadFolder is where the reviewer reads: the session's working directory (its
 // worktree) when it is recorded and still a directory, else the workbench
 // folder, which must be a directory too: the reviewer never runs without one.
-func readFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
+// A Discuss thread reads the same folder (`thread-context --folder-only`).
+func ReadFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
 	if ask.SessionID.Valid {
 		cwd, err := d.TerminalAgentCwd(ask.SessionID.Int64)
 		if err != nil {
