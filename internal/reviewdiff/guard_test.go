@@ -61,3 +61,38 @@ func TestReview05_UndoRunsNothingFromTheFolder(t *testing.T) {
 		t.Fatal("a command from the folder's git config ran")
 	}
 }
+
+// TestReview05_HistoryReadsRunNothingFromTheFolder: the big-branch map's
+// history reads (FirstParentWalk, CommitFiles, IsAncestor) run none of the
+// folder's filter drivers, its fsmonitor or a textconv driver.
+func TestReview05_HistoryReadsRunNothingFromTheFolder(t *testing.T) {
+	dir, ids := historyRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	script := filepath.Join(t.TempDir(), "evil.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ntouch "+marker+"\ncat\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "config", "filter.evil.clean", script)
+	gitIn(t, dir, "config", "filter.evil.smudge", script)
+	gitIn(t, dir, "config", "diff.evil.textconv", script)
+	gitIn(t, dir, "config", "core.fsmonitor", script)
+	writeFile(t, dir, ".git/info/attributes", "*.go filter=evil diff=evil\n")
+
+	r := openRepo(t, dir)
+	ctx := context.Background()
+	if _, err := r.FirstParentWalk(ctx, ids["after"], []string{ids["init"]}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CommitFiles(ctx, ids["after"], []string{ids["init"]}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CommitFiles(ctx, ids["l2"], []string{ids["init"]}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.IsAncestor(ctx, ids["l2"], ids["after"]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a command from the folder's git config ran")
+	}
+}
