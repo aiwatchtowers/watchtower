@@ -1129,12 +1129,23 @@ final class ReviewChangesModel {
             return
         }
         overviewTask?.cancel()
-        overviewDiffKey = info.diffKey
+        adoptOverviewDiff(info.diffKey)
         if generate || mode == .deep {
             startStream(.full)
             return
         }
         overviewTask = Task { [weak self] in await self?.readCachedOverview(info, earlier: earlier) }
+    }
+
+    /// The overview is now asked for `key`: what the runs streamed for
+    /// another tree goes (only no run is going here, so nothing is queued).
+    private func adoptOverviewDiff(_ key: String) {
+        if overviewDiffKey != key {
+            streamedChapters = [:]
+            chapterStates = [:]
+            summaryState = .pending
+        }
+        overviewDiffKey = key
     }
 
     /// Quick mode's cached read: no model call. A miss drops the old tree's
@@ -1218,7 +1229,7 @@ final class ReviewChangesModel {
     private func startStream(_ kind: RunKind) {
         guard run == nil, let info = round else { return }
         overviewTask?.cancel()
-        overviewDiffKey = info.diffKey
+        adoptOverviewDiff(info.diffKey)
         let now = streamClock.now
         let started = OverviewRun(roundID: info.id, diffKey: info.diffKey, kind: kind, lastLine: now)
         run = started

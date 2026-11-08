@@ -290,6 +290,30 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(first.stopCount, 1)
     }
 
+    /// Quick: what a run streamed for one tree never shows on a cached overview of the next.
+    func testCachedOverviewOfANewTreeDropsTheStreamedChapters() async throws {
+        let h = try harness()
+        let quick = { (tree: String) in self.deepStart(tree: tree).replacingOccurrences(of: #""mode":"deep""#, with: #""mode":"quick""#) }
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["cmd/x.go", "pkg/y.go"])])
+        h.cli.script("start", [quick("t7"), quick("u7")])
+        h.cli.script("overview", [#"{"ok":true}"#, Self.overviewEnvelope.replacingOccurrences(of: "Flags.", with: "New flags.")])
+        await h.model.open()
+        await h.model.mapTask?.value
+        await h.model.overviewTask?.value
+        h.model.makeOverview()
+        let run = try await process(h, 0)
+        run.send(chapterLine("dir:cmd", "ok", what: "Old flags."))
+        run.send(Self.overviewEnvelope)
+        run.finish()
+        await h.settle()
+        XCTAssertEqual(h.model.chapterDescription("dir:cmd"), "Old flags.")
+        await h.model.refresh()
+        await h.model.mapTask?.value
+        await h.model.overviewTask?.value
+        XCTAssertEqual(h.model.chapterDescription("dir:cmd"), "New flags.")
+        XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .cached, "dir:pkg": .cached])
+    }
+
     /// A refresh that finds the same snapshot (the window became key) leaves the run alone.
     func testRefreshOnTheSameTreeKeepsTheRun() async throws {
         let h = try harness()
