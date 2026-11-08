@@ -273,6 +273,7 @@ agent (or a cloned repository) planted, with no owner action.
 **Test guards:**
 - `internal/reviewdiff/guard_test.go::TestReview05_SnapshotAndDiffRunNothingFromTheFolder` (a filter driver and an fsmonitor named by the folder never run through snapshot, diff and file)
 - `internal/reviewdiff/guard_test.go::TestReview05_UndoRunsNothingFromTheFolder` (the same through Undo's `hash-object` and `apply`)
+- `internal/reviewdiff/guard_test.go::TestReview05_HistoryReadsRunNothingFromTheFolder` (the same through the big-branch map's history reads: `rev-list --first-parent`, `log --name-only -z`, `merge-base --is-ancestor`)
 - supporting: `internal/gitbin/run_test.go` (`TestReadArgsIn_BlanksTheFoldersFilterDrivers`, `TestReadsContent` (the unexported `readsContent`), `TestReadsContent_AddAndPatchDiffTree`, `TestReadsContent_ApplyAndHashObject`, `TestReadArgsIn_NoFilterIsReadArgs`); `internal/reviewdiff/diff_test.go` (`TestDiff_TypeChangeToSymlink`, `TestSplitSections_LineOverMaxIsAnError`)
 
 **Locked since:** 2026-10-16
