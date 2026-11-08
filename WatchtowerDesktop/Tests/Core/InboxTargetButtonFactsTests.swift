@@ -297,3 +297,45 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         }
     }
 }
+
+/// A waiting button's click opens the approval card when the list has it,
+/// and otherwise keeps the card on screen with a notice (review A15 #1).
+@MainActor
+final class InboxTargetOpenProposalTests: XCTestCase {
+    func testOpenProposalNotListedKeepsTheSelection() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let (outputID, proposalID) = try await pool.write { db -> (Int64, Int64) in
+            let automationID = try TestDatabase.insertAutomation(db, slug: "digest", name: "Acme digest")
+            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
+            let output = try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
+            // An inbox-surface row: the strip leaves it out today.
+            let proposal = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", contextType: "automation_output", contextID: "\(output):0:abc")
+            return (output, proposal)
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.open(.automations, select: .output(outputID))
+        XCTAssertEqual(vm.selection, .output(outputID))
+
+        await vm.openProposal(proposalID)
+
+        XCTAssertEqual(vm.selection, .output(outputID))
+        XCTAssertEqual(vm.filter, .automations)
+        XCTAssertEqual(vm.lastError, ActionStripViewModel.proposalNotListed(proposalID))
+    }
+
+    func testOpenProposalListedSelectsIt() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let proposalID = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, surface: "main", contextType: "automation_output",
+                                               contextID: "1:0:abc")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.open(.all, select: nil)
+        await vm.openProposal(proposalID)
+        XCTAssertEqual(vm.selection, .proposal(proposalID))
+        XCTAssertNil(vm.lastError)
+    }
+}

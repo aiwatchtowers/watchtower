@@ -785,12 +785,22 @@ package final class ActionStripViewModel {
     }
 
     /// A waiting button's click: its approval card in the reading pane.
+    /// When the list has no such card (another filter hides it, or the
+    /// strip leaves the row out), the shown card stays and a short notice
+    /// says why; the button keeps its waiting state.
     package func openProposal(_ id: Int64) async {
         if isListed(.proposal(id)) {
             await select(.proposal(id))
-        } else {
+        } else if filter != .all, actionRows.contains(where: { $0.id == id }) {
             await open(.all, select: .proposal(id))
+        } else {
+            lastError = Self.proposalNotListed(id)
         }
+    }
+
+    /// The notice of a waiting button whose approval card the list does not show.
+    nonisolated static func proposalNotListed(_ id: Int64) -> String {
+        "The approval for this task (#\(id)) isn't in the Inbox list yet."
     }
 
     /// A CLI refusal's own text (stderr without cobra's "Error: "), else the error's.
