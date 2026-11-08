@@ -147,6 +147,11 @@ final class InboxFolderQueriesTests: XCTestCase {
         try pool.write { _ = try TestDatabase.insertAutomationRun($0, automationID: automation, status: "succeeded") }
         XCTAssertFalse(try pool.read { try InboxFolderQueries.messagesStandIn($0) })
 
+        try pool.write {
+            _ = try TestDatabase.insertAutomationRun($0, automationID: automation, trigger: "dry_run", status: "failed")
+        }
+        XCTAssertFalse(try pool.read { try InboxFolderQueries.messagesStandIn($0) }, "a dry run is not the last run")
+
         try pool.write { _ = try TestDatabase.insertAutomationRun($0, automationID: automation, status: "running") }
         XCTAssertFalse(try pool.read { try InboxFolderQueries.messagesStandIn($0) }, "a run under way keeps the last result")
 

@@ -165,6 +165,29 @@ final class NeedsApprovalNoteTests: XCTestCase {
         XCTAssertEqual(opened.first?.1, inbox.runs[2])
     }
 
+    /// A dry run never decides the note nor Run History's target
+    /// (`newestEndedRuns(dryRuns: false)`, Go `HasUnfinishedAutomationRun`).
+    func testDryRunsNeverDecideTheNote() async throws {
+        let inbox = try await inbox(runs: ["succeeded"])
+        try await inbox.pool.write {
+            _ = try TestDatabase.insertAutomationRun($0, automationID: inbox.automation, trigger: "dry_run", status: "failed")
+        }
+        await inbox.vm.refresh()
+        XCTAssertNil(inbox.vm.approvalsNoteContent, "a failed dry run is not the last run")
+
+        let failed = try await inbox.pool.write { db -> Int64 in
+            let real = try NeedsApprovalFixtures.run(db, inbox.automation, status: "failed")
+            _ = try TestDatabase.insertAutomationRun(db, automationID: inbox.automation, trigger: "dry_run", status: "failed")
+            _ = try TestDatabase.insertAutomationRun(db, automationID: inbox.automation, trigger: "dry_run", status: "succeeded")
+            return real
+        }
+        await inbox.vm.refresh()
+        XCTAssertEqual(inbox.vm.approvalsNoteContent?.state, .lastRunFailed, "a later good dry run hides no failure")
+        var opened: [Int64?] = []
+        await inbox.vm.pressApprovalsNote(turnOn: { XCTFail("no Turn On"); return nil }, runHistory: { opened.append($1) })
+        XCTAssertEqual(opened, [failed], "Run History opens the real failed run, not a dry run")
+    }
+
     /// No failed run left (pruned): the automation's card opens alone.
     func testRunHistoryWithoutFailedRunOpensCard() {
         let state = NeedsApprovalState(automationID: 7, lastRunFailed: true, latestFailedRunID: nil)

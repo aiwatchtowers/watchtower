@@ -173,6 +173,8 @@ package enum InboxFolderQueries {
     }
 
     /// The `waiting-for-me` built-in as the root's composition needs it.
+    /// A dry run never counts as its last run (`newestEndedRuns(dryRuns:
+    /// false)`): a dry run commits no outputs.
     package static func waitingForMe(_ db: Database) throws -> WaitingForMeState {
         do {
             let automationID = try Int64.fetchOne(
@@ -180,7 +182,7 @@ package enum InboxFolderQueries {
             guard let automationID else { return WaitingForMeState(automationID: nil, messagesStandIn: true) }
             let status = try String.fetchOne(db, sql: """
                 SELECT status FROM automation_runs
-                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting')
+                WHERE automation_id = ? AND trigger != 'dry_run' AND status NOT IN ('queued', 'running', 'waiting')
                 ORDER BY id DESC LIMIT 1
                 """, arguments: [automationID])
             return WaitingForMeState(automationID: automationID, messagesStandIn: status != "succeeded")
@@ -196,7 +198,9 @@ package enum InboxFolderQueries {
     /// selection need it: stopped by the daemon (`disabled_reason`), and
     /// its latest finished run and latest failed run — failed meaning any
     /// finish but `succeeded` (a timed-out, over-budget or cancelled run
-    /// left its cards as stale as a failed one). No row (not indexed
+    /// left its cards as stale as a failed one). Dry runs are never
+    /// counted: they commit no cards, so they neither hide a failure nor
+    /// make one up (Go `HasUnfinishedAutomationRun`). No row (not indexed
     /// yet, or a database without the automation tables) is `.absent`.
     package static func needsApproval(_ db: Database) throws -> NeedsApprovalState {
         do {
@@ -207,12 +211,13 @@ package enum InboxFolderQueries {
             let disabledReason: String = row["disabled_reason"] ?? ""
             let latest = try String.fetchOne(db, sql: """
                 SELECT status FROM automation_runs
-                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting')
+                WHERE automation_id = ? AND trigger != 'dry_run' AND status NOT IN ('queued', 'running', 'waiting')
                 ORDER BY id DESC LIMIT 1
                 """, arguments: [automationID])
             let failedRun = try Int64.fetchOne(db, sql: """
                 SELECT id FROM automation_runs
-                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting', 'succeeded')
+                WHERE automation_id = ? AND trigger != 'dry_run'
+                  AND status NOT IN ('queued', 'running', 'waiting', 'succeeded')
                 ORDER BY id DESC LIMIT 1
                 """, arguments: [automationID])
             return NeedsApprovalState(
