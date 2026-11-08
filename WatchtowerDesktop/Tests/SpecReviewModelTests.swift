@@ -703,7 +703,8 @@ final class SpecReviewModelTests: XCTestCase {
     private func makeThreadModel(
         _ ai: ScriptedAIService,
         threads: SpecReviewThreadCenter? = nil,
-        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        now: @escaping () -> Date = Date.init
     ) async throws -> SpecReviewModel {
         let base = try await makeModel()
         let pool = try XCTUnwrap(pool)
@@ -714,7 +715,7 @@ final class SpecReviewModelTests: XCTestCase {
         }
         threadCenter = center
         let model = SpecReviewModel(ask: base.ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, chats: center,
-                                    threadCenter: threads, sleep: sleep)
+                                    threadCenter: threads, sleep: sleep, now: now)
         model.configuredProvider = { .claude }
         return model
     }
@@ -725,11 +726,12 @@ final class SpecReviewModelTests: XCTestCase {
         _ ai: ScriptedAIService,
         reply: String = "It holds.",
         threads: SpecReviewThreadCenter? = nil,
-        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        now: @escaping () -> Date = Date.init
     ) async throws -> SpecReviewModel {
         runner = FakeCLIRunner(stdout: Data("data".utf8))
         try setRow(status: "done", result: kindsResultJSON())
-        let model = try await makeThreadModel(ai, threads: threads, sleep: sleep)
+        let model = try await makeThreadModel(ai, threads: threads, sleep: sleep, now: now)
         await model.load()
         let threads = try XCTUnwrap(model.threads)
         threads.open("ag:2")
@@ -827,6 +829,33 @@ final class SpecReviewModelTests: XCTestCase {
         let stored = try await storedAnswer()
         XCTAssertEqual(stored, "", "nothing was sent")
         XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
+    }
+
+    /// The owner typed on while the comment was being written: the stored
+    /// body is the earlier text, and the newer words stay in the field.
+    func testFixDraftTypedDuringTheSaveIsKept() async throws {
+        let ai = ScriptedAIService()
+        weak var typing: SpecReviewModel?
+        var armed = false
+        // `mark` stamps the row right before its write: the owner types then.
+        let model = try await discussedModel(ai) {
+            if armed {
+                armed = false
+                MainActor.assumeIsolated { typing?.editFixDraft("ag:2", text: "Make it per user, and say why.") }
+            }
+            return Date()
+        }
+        typing = model
+        try await fillConclusion(model, ai)
+        armed = true
+        let saved = await model.saveFixDraft("ag:2")
+        XCTAssertFalse(saved, "the field is not done: it holds newer words")
+        XCTAssertEqual(model.marks["ag:2"]?.body, "Make it per user.")
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user, and say why.")
+        let again = await model.saveFixDraft("ag:2")
+        XCTAssertTrue(again)
+        XCTAssertEqual(model.marks["ag:2"]?.body, "Make it per user, and say why.")
+        XCTAssertNil(model.fixDrafts["ag:2"])
     }
 
     /// The Fix field lives in the app's thread center: a conclusion still

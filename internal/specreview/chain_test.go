@@ -218,3 +218,37 @@ func TestClosedList_LearnsThreadFindings(t *testing.T) {
 	require.Len(t, notes, 1)
 	assert.Contains(t, notes[0], "thread finding tf:broken00000 of ask #"+strconv.FormatInt(r1.ID, 10))
 }
+
+// A differs agreement the owner dismissed, which a later round re-emits as
+// agreed, keeps closing its passage: the kind is never downgraded to
+// closedKindAsAgreed, so a reworded differs finding there stays dropped.
+func TestClosedList_DismissedDiffersStaysClosedWhenLaterAsAgreed(t *testing.T) {
+	f := newFixture(t)
+	result := func(status string) string {
+		return `{"summary":"s","agreements":[{"key":"ag:differs00000","text":"Lives locally","status":"` + status + `",` +
+			`"where":{"heading":"Decisions","quote":"Mute state lives in the local database"}}],` +
+			`"decided_alone":[],"blind_spots":[],"checks":[],"resolved":[],"chapters":[],"notes":[],"code_read":false,"dropped":0}`
+	}
+	first := f.ask(t, "spec", testDoc)
+	finishRow(t, f.d, first.ID, "owner", result("differs"), nil, nil)
+	mark(t, f.d, first.ID, "ag:differs00000", db.SpecReviewMarkNotUseful)
+	second := f.reround(t, first.ID)
+	finishRow(t, f.d, second.ID, "owner", result("as_agreed"), nil, nil)
+	third := f.reround(t, second.ID)
+
+	closed, err := ClosedList(f.d, third.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []ClosedItem{{Key: "ag:differs00000", Kind: KindAgreement, WhereQuote: "Mute state lives in the local database"}}, closed)
+
+	src := loopSources(1)
+	src.PrevDoc = ""
+	src.Closed = closed
+	b, _ := json.Marshal(map[string]any{
+		"text": "Now on the server", "status": "differs", "note": "n", "severity": "major",
+		"source": map[string]string{"kind": "decisions", "ref": "", "quote": "Mute state lives in the local database"},
+		"where":  map[string]string{"heading": "Decisions", "quote": "Mute state lives in the local database"},
+	})
+	r := parseOne(t, `{"summary":"s","agreements":[`+string(b)+`]}`, src)
+	assert.Empty(t, r.Agreements)
+	assert.Equal(t, map[string]int{DropDecided: 1}, r.DroppedBy)
+}

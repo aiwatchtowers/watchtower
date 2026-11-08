@@ -996,6 +996,8 @@ extension SpecReviewModel {
         }
         await mark(key, .comment, body: body)
         guard marks[key]?.state == .comment, marks[key]?.body == body else { return false }
+        // The owner typed on during the write: the newer words stay.
+        guard fixDrafts[key]?.text.trimmingCharacters(in: .whitespacesAndNewlines) == body else { return false }
         setFixDraft(key, nil)
         return true
     }
@@ -1061,7 +1063,10 @@ extension SpecReviewModel {
         }
         let outcome = await Self.nextOutcome(of: engine)
         turns.concluding = false
-        guard case let .completed(_, result) = outcome else { return failed("the turn ended with \(outcome)") }
+        // The case name only (FILES-01): its payload may carry the provider's text.
+        guard case let .completed(_, result) = outcome else {
+            return failed("the turn ended as \(String(describing: outcome).prefix { $0 != "(" })")
+        }
         let text = SpecReviewThreadBlocks.parse(result.displayText, final: true).text
         return text.isEmpty ? failed("the reply was empty") : text
     }
