@@ -310,9 +310,11 @@ final class InboxTargetOpenProposalTests: XCTestCase {
             let automationID = try TestDatabase.insertAutomation(db, slug: "digest", name: "Acme digest")
             let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
             let output = try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
-            // An inbox-surface row: the strip leaves it out today.
+            // A row the strip never lists (the inbox surface's one-press
+            // tool, STRIP-01): openProposal finds it nowhere in the list.
             let proposal = try TestDatabase.insertAgentAction(
-                db, surface: "inbox", contextType: "automation_output", contextID: "\(output):0:abc")
+                db, tool: "apply_track_action", surface: "inbox", contextType: "automation_output",
+                contextID: "\(output):0:abc")
             return (output, proposal)
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
@@ -331,6 +333,22 @@ final class InboxTargetOpenProposalTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let proposalID = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, surface: "main", contextType: "automation_output",
+                                               contextID: "1:0:abc")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.open(.all, select: nil)
+        await vm.openProposal(proposalID)
+        XCTAssertEqual(vm.selection, .proposal(proposalID))
+        XCTAssertNil(vm.lastError)
+    }
+
+    /// A card's target button proposal (create_target on the inbox surface)
+    /// is an approval since the STRIP-01 narrowing: its click opens it.
+    func testOpenProposalOfAnInboxTargetButtonSelectsIt() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let proposalID = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, surface: "inbox", contextType: "automation_output",
                                                contextID: "1:0:abc")
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
