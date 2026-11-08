@@ -470,6 +470,10 @@ func removeDevice(tx *sql.Tx, device string, at time.Time) (bool, error) {
 			return false, err
 		}
 	}
+	// The offer went with the row; its per-epoch relay keys go too.
+	if err := state.ClearDeviceKX(tx, device); err != nil {
+		return false, err
+	}
 	if agreement != nil {
 		if _, err := tx.Exec(`INSERT INTO revoked_devices (device_id, name, scope, agreement_key, removed_at) VALUES (?, ?, ?, ?, ?)`,
 			strings.ToUpper(id), name, scope, agreement, secs(at)); err != nil {

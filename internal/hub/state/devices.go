@@ -56,6 +56,12 @@ type Device struct {
 	// device record: the hub pushes it no alert. Read only: the device record's
 	// rewrite writes it, LinkDevice clears it.
 	WorkAlertsOff bool
+	// KXOffer is the phone's newest offered ephemeral X25519 public key (its
+	// epoch_ack's next_kx) and KXOfferEpoch that ack's epoch; nil and 0 when
+	// it has none. Read only: SetKXOffer writes them, ClearKXOffers and
+	// ClearDeviceKX clear them, and LinkDevice clears them on a re-link.
+	KXOffer      []byte
+	KXOfferEpoch uint32
 }
 
 // MarkRelayAdmitted stamps at on the linked phones among relayIDs (their
@@ -90,9 +96,10 @@ const deviceColumns = `device_id, name, scope, linked_at, signing_key, agreement
 	last_applied_action_seq, ordered, relay_device_id, resend_requested_from, acked_epoch`
 
 // deviceRead is what a read selects: the link's columns, the relay's admission
-// stamp, which only MarkRelayAdmitted writes (a re-link clears it), and the
-// switch only a device record's rewrite writes (a re-link clears it too).
-const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off, resend_requested_at`
+// stamp, which only MarkRelayAdmitted writes (a re-link clears it), the
+// switch only a device record's rewrite writes (a re-link clears it too), and
+// the relay key offer only SetKXOffer writes (a re-link clears it).
+const deviceRead = deviceColumns + `, relay_admitted_at, relay_lapsed_at, relay_skip_before, relay_skip_seq, work_alerts_off, resend_requested_at, kx_offer, kx_offer_epoch`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
@@ -107,11 +114,12 @@ func scanDevice(r rowScanner) (Device, error) {
 		lapsed, skip       sql.NullFloat64
 		skipSeq            int64
 		resendAt           sql.NullFloat64
+		offerEpoch         int64
 	)
 	err := r.Scan(&d.ID, &d.Name, &d.Scope, &linked, &d.SigningKey, &d.AgreementKey, &nonce,
 		&d.TypingAllowed, &d.TypingRequested, &d.PermissionsAllowed, &d.PermissionsRequested,
 		&d.StartSessionsAllowed, &d.StartSessionsGranted,
-		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff, &resendAt)
+		&lastApplied, &d.Ordered, &relayID, &resnd, &acked, &admitted, &lapsed, &skip, &skipSeq, &d.WorkAlertsOff, &resendAt, &d.KXOffer, &offerEpoch)
 	if err != nil {
 		return Device{}, err
 	}
@@ -136,6 +144,7 @@ func scanDevice(r rowScanner) (Device, error) {
 	d.LastAppliedActionSeq = uint64(max(lastApplied, 0))
 	d.ResendRequestedFrom = uint64(max(resnd, 0))
 	d.AckedEpoch = uint32(min(max(acked, 0), math.MaxUint32))
+	d.KXOfferEpoch = uint32(min(max(offerEpoch, 0), math.MaxUint32))
 	return d, nil
 }
 

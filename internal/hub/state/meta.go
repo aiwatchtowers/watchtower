@@ -22,6 +22,10 @@ const (
 	// whose relay mailbox refused the hub's write as over quota, until a
 	// write to that phone's mailbox succeeds or the phone is unlinked.
 	MetaMailboxFullPhones = "mailbox_full_phones"
+	// MetaLapsePending is the relay lapses waiting for the switcher's Step,
+	// "<device id>@<unix seconds>" comma-joined; only the switcher writes it.
+	// A phone listed here offers no relay key (SetKXOffer).
+	MetaLapsePending = "lapse_pending"
 )
 
 // Meta reads one hub_meta value; ok is false when the key is unset.

@@ -3,8 +3,10 @@ package actions
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -288,7 +290,11 @@ func (p *Processor) skipTo(ctx context.Context, b mailbox, rec transport.Stored,
 
 // epochAck records the newest hub epoch the phone confirmed (never lowered;
 // an epoch the hub has not reached is ignored). Phase 3's key retirement
-// reads it (sim rule 14).
+// reads it (sim rule 14). Its next_kx, the phone's relay key offer (relay
+// client Phase 5), is checked here and stored in the same transaction only
+// while the hub is on the relay (onRelayTx) and the phone is not lapsed
+// (state.SetKXOffer); an unusable offer is logged by its class and ignored,
+// and the ack counts either way.
 func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, c wire.Control) error {
 	current, err := p.cfg.Keys.CurrentEpoch()
 	if err != nil {
@@ -299,12 +305,75 @@ func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Store
 		return p.markRead(ctx, b, rec, o)
 	}
 	epoch, device := *c.Epoch, b.id.String()
+	var offer []byte
+	if c.NextKX != nil {
+		if offer, err = offeredKey(*c.NextKX); err != nil {
+			log.Printf("hub: epoch_ack of device %s offers an unusable relay key (%v): offer ignored", b.id, err)
+		}
+	}
 	return p.decide(ctx, b, func(tx *sql.Tx) error {
 		if err := mark(tx, b, rec.Name, o); err != nil {
 			return err
 		}
-		return state.AckEpoch(tx, device, epoch)
+		if err := state.AckEpoch(tx, device, epoch); err != nil {
+			return err
+		}
+		if offer == nil {
+			return nil
+		}
+		on, err := p.onRelayTx(tx)
+		if err != nil || !on {
+			return err
+		}
+		_, err = state.SetKXOffer(tx, device, offer, epoch)
+		return err
 	})
+}
+
+// onRelayTx reports whether the hub runs on the relay, read in the caller's
+// transaction so a switch away committed before it wins: hub_meta.transport,
+// which the switcher writes; a hub without a switcher (headless, relay-only)
+// never writes it, and its processor's own transport decides.
+func (p *Processor) onRelayTx(tx *sql.Tx) (bool, error) {
+	v, ok, err := state.MetaTx(tx, state.MetaTransport)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		return v == string(transport.KindRelay), nil
+	}
+	return p.cfg.Switch == nil && p.cfg.Transport.Kind() == transport.KindRelay, nil
+}
+
+// Classes of an unusable relay key offer (logged; the bytes never are).
+var (
+	errOfferEncoding = errors.New("not unpadded base64url")
+	errOfferKey      = errors.New("not a 32-byte X25519 key")
+	errOfferLowOrder = errors.New("a low-order key: its exchange is all zero")
+)
+
+// offeredKey decodes and checks an epoch_ack's next_kx: 32 bytes of unpadded
+// base64url, an X25519 public key whose test exchange with a fresh key is not
+// all zero (crypto/ecdh refuses that result).
+func offeredKey(s string) ([]byte, error) {
+	pub, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, errOfferEncoding
+	}
+	peer, err := ecdh.X25519().NewPublicKey(pub)
+	if err != nil {
+		return nil, errOfferKey
+	}
+	probe, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("drawing a test key: %w", err)
+	}
+	shared, err := probe.ECDH(peer)
+	if err != nil {
+		return nil, errOfferLowOrder
+	}
+	clear(shared)
+	return pub, nil
 }
 
 // requestSwitch hands a phone's transport_switch to the hub's switcher
