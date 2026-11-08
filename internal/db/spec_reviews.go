@@ -344,3 +344,37 @@ func (db *DB) SpecLoopsToSweep() ([]SpecLoopRow, error) {
 	}
 	return out, nil
 }
+
+// specReviewChainMaxDepth bounds the walk along previous_ask_id, so a cycle
+// (which no writer makes) still ends.
+const specReviewChainMaxDepth = 100
+
+// SpecReviewChain returns the ask ids of askID's review chain, the asks
+// linked by owner_asks.previous_ask_id: the root first, askID last. An ask
+// with no previous ask is a chain of one; an unknown ask is an empty chain.
+func (db *DB) SpecReviewChain(askID int64) ([]int64, error) {
+	rows, err := db.Query(`WITH RECURSIVE chain(id, prev, depth) AS (
+			SELECT id, previous_ask_id, 0 FROM owner_asks WHERE id = ?
+			UNION ALL
+			SELECT a.id, a.previous_ask_id, c.depth + 1 FROM owner_asks a
+				JOIN chain c ON a.id = c.prev
+			WHERE c.depth < ?
+		)
+		SELECT id FROM chain ORDER BY depth DESC`, askID, specReviewChainMaxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("reading spec review chain: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning spec review chain: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading spec review chain: %w", err)
+	}
+	return out, nil
+}
