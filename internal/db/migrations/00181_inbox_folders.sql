@@ -4,6 +4,11 @@
 -- (the CLI under a compare-and-set on inbox_folder_state.revision, the
 -- built-in indexer's route seed, a run's commit); the Desktop never. No CHECK
 -- changes on an existing table, so no table rebuild.
+-- A later rebuild of automation_outputs must keep folder_id exactly as
+-- `folder_id INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL`
+-- (deleting a folder sends its cards back to the route or the root), and
+-- must drop the inbox_artifact_folders view before the rebuild and recreate
+-- it unchanged after (the view reads automation_outputs.folder_id).
 CREATE TABLE IF NOT EXISTS inbox_folders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')),
