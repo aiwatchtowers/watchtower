@@ -366,7 +366,9 @@ the model and never waits (§3.7).
   branch share the thread (same code). A renamed branch starts a new thread.
 - `ai query --read-folder` is widened (owner, ask #560): besides a workbench's own folder it
   accepts a session worktree of that workbench recorded in `terminal_session_worktrees`
-  (exact real path, resolved symlinks; anything else refused as today). The capability
+  (exact real path, resolved symlinks; for a workbench bound to a repository subfolder,
+  that subfolder inside the worktree — the round's `folder_root`; anything else refused as
+  today). The capability
   contract of spec 2026-10-02 §9.1 is amended in the same PR.
 - **Send to author** on an answer makes a design comment in the open round of the Branch
   review the owner is looking at (that session's round; the owner's own write; the round's

@@ -615,8 +615,8 @@ func refuseQuery(enc *json.Encoder, err error) error {
 // resolveReadFolder resolves --read-folder to the folder of a workbench in
 // the database at dbPath, or to one of its registered session worktrees
 // (owner, ask #560): absolute, symlinks resolved, an existing directory
-// bound to a workbench or recorded as a session worktree root (a subfolder
-// of either is not). "" without the flag. Any
+// bound to a workbench or its folder in a recorded session worktree
+// (checkSessionWorktree; any other subfolder is not). "" without the flag. Any
 // refusal is a usage error (exit 2), as is combining it with --tools: a
 // read-folder run mounts no write tool. --read-folder-ask N instead names the
 // folder by a spec/plan review ask (resolveReviewReadFolder); it excludes
@@ -666,13 +666,16 @@ func resolveReadFolder(dbPath string) (string, error) {
 	return resolved, nil
 }
 
-// checkSessionWorktree is nil when dir (absolute, symlinks resolved) is a
-// worktree root a session of some workbench recorded in
-// terminal_session_worktrees — compared the way the file system does
-// (workbenchgit.SamePath: case-insensitive on APFS) — and a linked work tree
-// of that workbench folder's own repository (linkedWorktreeOf). Otherwise
-// the error names why: not recorded, not a linked worktree, another
-// repository, or unreadable. A root a session recorded in another
+// checkSessionWorktree is nil when dir (absolute, symlinks resolved) is the
+// workbench's folder in a worktree root a session of that workbench
+// recorded in terminal_session_worktrees — the root itself, or for a
+// workbench bound to a repository subfolder that subfolder inside it
+// (worktreeFolder, as review rounds record it; never the top then) —
+// compared the way the file system does (workbenchgit.SamePath:
+// case-insensitive on APFS), and the root is a linked work tree of that
+// workbench folder's own repository (linkedWorktreeOf). Otherwise the error
+// names why: not recorded, the worktree's top, not a linked worktree,
+// another repository, or unreadable. A root a session recorded in another
 // repository — its agent cd'd there — is not the workbench's. Owner, ask
 // #560; spec 2026-10-02 §9.1 amendment.
 func checkSessionWorktree(database *db.DB, dir string) error {
@@ -687,16 +690,51 @@ func checkSessionWorktree(database *db.DB, dir string) error {
 		if err != nil {
 			return err
 		}
+		if len(roots) == 0 {
+			continue
+		}
+		rel := workbenchSubpath(wb.FolderPath)
 		for root := range roots {
-			if !sameRecordedRoot(root, dir) {
-				continue
-			}
-			if refusal = linkedWorktreeOf(dir, wb.FolderPath); refusal == nil {
-				return nil
+			switch {
+			case sameRecordedRoot(worktreeFolder(root, rel), dir):
+				if refusal = linkedWorktreeOf(root, wb.FolderPath); refusal == nil {
+					return nil
+				}
+			case sameRecordedRoot(root, dir): // a subfolder workbench's worktree top
+				if refusal = linkedWorktreeOf(root, wb.FolderPath); refusal == nil {
+					refusal = errors.New("the worktree's top, not the workbench folder inside it")
+				}
 			}
 		}
 	}
 	return refusal
+}
+
+// workbenchSubpath is folder's path below its repository's top level ("" for
+// a workbench bound to the top, or outside any repository).
+func workbenchSubpath(folder string) string {
+	resolved, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		return ""
+	}
+	top, _, found, err := gitdir.FindWorkTree(resolved)
+	if err != nil || !found || workbenchgit.SamePath(top, resolved) {
+		return ""
+	}
+	return strings.TrimPrefix(resolved[len(top):], string(filepath.Separator))
+}
+
+// worktreeFolder is the workbench's folder in the worktree at root, the way
+// review rounds record it (workbenchgit.ResolveFolder's mapped root): root
+// joined with rel when that directory exists there, else root.
+func worktreeFolder(root, rel string) string {
+	if rel == "" {
+		return root
+	}
+	if fi, err := os.Stat(filepath.Join(root, rel)); err == nil && fi.IsDir() {
+		return filepath.Join(root, rel)
+	}
+	return root
 }
 
 // sameRecordedRoot reports whether the ledger's root names dir: the same

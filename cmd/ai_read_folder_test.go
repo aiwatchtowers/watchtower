@@ -347,6 +347,53 @@ func TestAIQueryReadFolder_AcceptsARegisteredSessionWorktree(t *testing.T) {
 	})
 }
 
+// A workbench bound to a repository subfolder: a session worktree's read
+// folder is that subfolder inside it — the folder_root a review round
+// records (workbenchgit.ResolveFolder's mapped root) — never the
+// worktree's top or another subfolder of it; a worktree without the
+// subfolder maps to its top, as the round does.
+func TestAIQueryReadFolder_SubfolderWorkbenchReadsItsFolderInTheWorktree(t *testing.T) {
+	f := newReadFolderFixture(t)
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	gitDir := readFolderRepo(t, repoRoot)
+	app := filepath.Join(repoRoot, "app")
+	require.NoError(t, os.Mkdir(app, 0o755))
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	_, err = database.CreateWorkbench("delta", app)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	wt := readFolderWorktree(t, gitDir, "feature")
+	inWt := filepath.Join(wt, "app")
+	other := filepath.Join(wt, "other")
+	require.NoError(t, os.Mkdir(inWt, 0o755))
+	require.NoError(t, os.Mkdir(other, 0o755))
+	f.recordWorktree(t, app, wt)
+	bare := readFolderWorktree(t, gitDir, "bare") // no app/ in it
+	f.recordWorktree(t, app, bare)
+
+	for name, dir := range map[string]string{"the workbench's folder in the worktree": inWt, "a worktree without it": bare} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, "--read-folder", dir)
+			require.Equal(t, 0, code, stderr)
+			assert.Equal(t, dir, strings.Split(firstText(t, stdout), "|")[0], "cwd")
+		})
+	}
+	for name, c := range map[string]struct{ dir, reason string }{
+		"the worktree's top":                {wt, "the worktree's top, not the workbench folder inside it"},
+		"another subfolder of the worktree": {other, "not recorded by any workbench session"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, "--read-folder", c.dir)
+			assert.Equal(t, 2, code)
+			assert.Contains(t, stderr, c.reason)
+			assert.Empty(t, stdout, "no provider ran")
+		})
+	}
+}
+
 // Everything else stays refused: a worktree no session recorded, a
 // recorded root that is no worktree of the workbench's repository (another
 // workbench's), a folder inside a recorded worktree (named directly or
