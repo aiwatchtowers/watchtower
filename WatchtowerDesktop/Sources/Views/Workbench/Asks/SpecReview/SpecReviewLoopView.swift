@@ -225,7 +225,7 @@ struct SpecReviewDisputeCard: View {
         case .discuss:
             // The comment field above already carries a note for the author.
             if threads != nil {
-                Button("Discuss") { thread = .shown }
+                Button("Discuss") { thread = .discussed }
                     .buttonStyle(.kitSecondary)
                     .help("Ask the assistant about this finding")
             }
@@ -289,7 +289,7 @@ struct SpecReviewFixRow: View {
                                 .buttonStyle(.kitQuiet)
                                 .help("Send it back to the author with your comment")
                         case .discuss where threads != nil:
-                            Button("Discuss") { thread = .shown }
+                            Button("Discuss") { thread = .discussed }
                                 .buttonStyle(.kitSecondary)
                                 .help("Ask the assistant about this fix")
                         default:

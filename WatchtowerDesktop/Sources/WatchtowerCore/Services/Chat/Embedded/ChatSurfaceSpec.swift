@@ -139,11 +139,26 @@ package struct ChatRunOptions: Equatable, Sendable {
     /// 2026-10-02 §9.1), checked by the CLI; no provider reads files in it
     /// yet (rulings R42/R44).
     package var readFolder: String?
+    /// `--purpose`: the LLM usage ledger's purpose for the turn's calls (a
+    /// value `ai query` knows, such as `spec_review.discuss`); nil = none.
+    package var purpose: String?
+    /// `--read-folder-ask N`: the CLI reads the folder review ask N's
+    /// reviewer read (a spec review's Discuss thread); never with
+    /// `readFolder`.
+    package var readFolderAskID: Int64?
 
-    package init(provider: String? = nil, model: String? = nil, readFolder: String? = nil) {
+    package init(
+        provider: String? = nil,
+        model: String? = nil,
+        readFolder: String? = nil,
+        purpose: String? = nil,
+        readFolderAskID: Int64? = nil
+    ) {
         self.provider = provider
         self.model = model
         self.readFolder = readFolder
+        self.purpose = purpose
+        self.readFolderAskID = readFolderAskID
     }
 }
 

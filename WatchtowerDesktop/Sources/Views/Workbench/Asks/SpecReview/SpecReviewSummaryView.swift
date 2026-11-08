@@ -104,7 +104,7 @@ struct SpecReviewThesisRow: View {
                         Spacer()
                         if let onDiscuss {
                             Button("Discuss") {
-                                thread = .shown
+                                thread = .discussed
                                 onDiscuss()
                             }
                             .buttonStyle(.kitSecondary)

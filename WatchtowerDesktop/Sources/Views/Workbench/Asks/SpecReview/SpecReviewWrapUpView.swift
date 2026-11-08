@@ -65,7 +65,7 @@ struct SpecReviewWrapUpView: View {
     }
 
     @ViewBuilder
-    private func markGlyph(_ mark: SpecReviewMark?, kind: SpecReviewCardKind = .actionable) -> some View {
+    private func markGlyph(_ mark: SpecReviewMark?, kind: SpecReviewCardKind? = .actionable) -> some View {
         switch mark?.state {
         case .ok:
             // Skip or Checked: the label the card itself shows.

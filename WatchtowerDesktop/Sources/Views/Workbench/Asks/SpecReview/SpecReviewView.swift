@@ -562,8 +562,9 @@ enum SpecReviewPresentation {
         }
     }
 
-    /// The label of an `ok` mark: **Checked** on a check to verify, else **Skip**.
-    static func okLabel(_ kind: SpecReviewCardKind) -> String {
+    /// The label of an `ok` mark: **Checked** on a check to verify, else
+    /// **Skip** (also on a card with no buttons, nil).
+    static func okLabel(_ kind: SpecReviewCardKind?) -> String {
         kind == .checkToVerify ? "Checked" : "Skip"
     }
 

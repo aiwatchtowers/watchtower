@@ -677,7 +677,8 @@ final class SpecReviewModelTests: XCTestCase {
                       {"key":"ag:2","text":"Mute is per channel","status":"differs","chapter":"ch:1"}],
         "decided_alone":[{"key":"da:1","text":"Local db","chapter":"ch:0"}],
         "checks":[{"key":"ck:1","chapter":"ch:1","lens":"l","question":"q1","answer":"concern"},
-                  {"key":"ck:2","chapter":"ch:1","lens":"l","question":"q2","answer":"ok"}],
+                  {"key":"ck:2","chapter":"ch:1","lens":"l","question":"q2","answer":"ok"},
+                  {"key":"ck:3","chapter":"ch:1","lens":"l","question":"q3","answer":"n/a"}],
         "theses":[{"key":"th:1","kind":"goal","text":"Mute for a day","chapter":"ch:1"}]}
         """
     }
@@ -692,6 +693,169 @@ final class SpecReviewModelTests: XCTestCase {
         }
     }
 
+    // MARK: - Discuss threads (spec 2026-11-08 §3)
+
+    /// A model with the app's embedded chats over `ai`.
+    private func makeThreadModel(_ ai: ScriptedAIService) async throws -> SpecReviewModel {
+        let base = try await makeModel()
+        let pool = try XCTUnwrap(pool)
+        let center = EmbeddedChatCenter { spec, gate in
+            guard case .database(let conversationID) = spec.persistence else { preconditionFailure("database chat") }
+            return EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID),
+                                      aiService: ai, gate: gate)
+        }
+        threadCenter = center
+        let model = SpecReviewModel(ask: base.ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, chats: center)
+        model.configuredProvider = { .claude }
+        return model
+    }
+
+    private var threadCenter: EmbeddedChatCenter?
+
+    func testDiscussRunsOnTheReviewersDataAndShowsTheBlocks() async throws {
+        runner = FakeCLIRunner(stdout: Data("```document\nMuting lasts twenty-four hours\n```".utf8))
+        try setRow(status: "done", result: kindsResultJSON())
+        let ai = ScriptedAIService()
+        let model = try await makeThreadModel(ai)
+        await model.load()
+        let threads = try XCTUnwrap(model.threads)
+        XCTAssertFalse(model.threadContent("ag:2").isOpen)
+
+        threads.open("ag:2")
+        await waitUntil { model.threadStates["ag:2"]?.context != nil }
+        XCTAssertEqual(runner.invocations.last,
+                       ["workbench", "spec-review", "thread-context", "--ask=\(askID)", "--item=ag:2"])
+        XCTAssertTrue(model.threadContent("ag:2").isOpen)
+        threads.open("ag:2")
+        XCTAssertEqual(runner.invocations.count, 1, "the data is fetched once")
+
+        XCTAssertTrue(threads.send("ag:2", "Why per channel?"))
+        await waitUntil { ai.calls.count == 1 }
+        let call = try XCTUnwrap(ai.calls.first)
+        XCTAssertNil(call.toolMode, "draft-only (AGENT-04)")
+        XCTAssertEqual(call.purpose, "spec_review.discuss")
+        XCTAssertNil(call.readFolder)
+        XCTAssertEqual(call.readFolderAskID, askID, "the CLI reads the folder this ask's reviewer read")
+        XCTAssertTrue(try XCTUnwrap(call.systemPrompt).contains("Muting lasts twenty-four hours"))
+
+        let id = askID
+        let thread = SpecReviewThreadKey.contextID(workbenchID: projectID, rootAskID: id, itemKey: "ag:2")
+        try await pool.write { d in
+            try d.execute(sql: """
+                INSERT INTO spec_review_questions (ask_id, thread, item_key, question, answer, state, created_at)
+                VALUES (?, ?, 'ag:2', 'Per user?', '', 'open', '2026-11-08T10:00:00Z')
+                """, arguments: [id, thread])
+        }
+        let reply = """
+            It holds.
+
+            ```watchtower-finding
+            {"kind": "missing", "severity": "minor", "title": "Ends at midnight", "text": "t", \
+            "quote": {"source": "thread", "text": "Why per channel"}, "where": null}
+            ```
+
+            ```watchtower-ask-author
+            {"question": "Per user?"}
+            ```
+            """
+        ai.emit(.text(reply), .turnComplete(reply), .done)
+        ai.finish()
+        await waitUntil { model.threadContent("ag:2").entries.count == 4 }
+        let entries = model.threadContent("ag:2").entries
+        guard entries.count == 4, case let .owner(_, owner) = entries[0], case let .assistant(_, text) = entries[1],
+              case let .finding(_, finding) = entries[2], case let .question(question) = entries[3] else {
+            return XCTFail("rows: \(entries.map(\.id))")
+        }
+        XCTAssertEqual(owner, "Why per channel?")
+        XCTAssertEqual(text, "It holds.", "the blocks leave the reply's text")
+        XCTAssertEqual(finding.title, "Ends at midnight")
+        XCTAssertEqual(question.question, "Per user?")
+        XCTAssertEqual(model.threadMessageCounts["ag:2"], 2)
+    }
+
+    /// An open thread on screen keeps its chat through the center's idle
+    /// sweep; once no view draws it, the sweep lets it go, and drawing it
+    /// again brings it back.
+    func testShownThreadSurvivesTheSweepAndAHiddenOneIsReleased() async throws {
+        runner = FakeCLIRunner(stdout: Data("data".utf8))
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeThreadModel(ScriptedAIService())
+        await model.load()
+        let threads = try XCTUnwrap(model.threads)
+        let center = try XCTUnwrap(threadCenter)
+        threads.shown("ag:2")
+        threads.open("ag:2")
+        await waitUntil { model.threadEngine("ag:2") != nil }
+        let later = Date().addingTimeInterval(301)
+
+        center.sweep(now: later)
+        XCTAssertNotNil(model.threadEngine("ag:2"), "a thread on screen is never swept")
+
+        threads.hidden("ag:2")
+        center.sweep(now: later.addingTimeInterval(301))
+        XCTAssertNil(model.threadEngine("ag:2"), "a hidden idle thread is let go")
+
+        threads.shown("ag:2")
+        XCTAssertNotNil(model.threadEngine("ag:2"), "drawn again: back in the center")
+        center.sweep(now: later.addingTimeInterval(1000))
+        XCTAssertNotNil(model.threadEngine("ag:2"))
+    }
+
+    /// An orphaned item without a conversation gets none.
+    func testOrphanedThreadCreatesNoConversation() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeThreadModel(ScriptedAIService())
+        await model.load()
+        try XCTUnwrap(model.threads).open("bs:gone")
+        await waitUntil { model.threadStates["bs:gone"]?.isOpening == false }
+        let count = try await pool.read { d in
+            try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_conversations WHERE context_type = 'spec_review_thread'")
+        }
+        XCTAssertEqual(count, 0)
+        XCTAssertNil(model.threadEngine("bs:gone"))
+        XCTAssertTrue(model.threadContent("bs:gone").isOrphaned)
+    }
+
+    func testFailedThreadOpeningShowsRetry() async throws {
+        runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeThreadModel(ScriptedAIService())
+        await model.load()
+        let threads = try XCTUnwrap(model.threads)
+        threads.open("ag:2")
+        await waitUntil { model.threadContent("ag:2").loadError != nil }
+        XCTAssertFalse(model.threadContent("ag:2").isOpening)
+        XCTAssertFalse(threads.send("ag:2", "Why?"), "nothing to send to before it opened")
+
+        runner.shouldThrow = nil
+        threads.open("ag:2")
+        await waitUntil { model.threadStates["ag:2"]?.context != nil }
+        XCTAssertNil(model.threadContent("ag:2").loadError)
+    }
+
+    /// A thread whose item a re-run dropped is readable only: no data to
+    /// fetch, no new turn.
+    func testOrphanedThreadTakesNoTurns() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        let ai = ScriptedAIService()
+        let model = try await makeThreadModel(ai)
+        await model.load()
+        XCTAssertTrue(model.isOrphanedItem("bs:gone"))
+        XCTAssertFalse(model.isOrphanedItem("th:1"), "a thesis has a thread too")
+        // Its thread from the previous run.
+        let conversation = try await SpecReviewThreadSurface.conversationID(
+            workbenchID: projectID, rootAskID: askID, itemKey: "bs:gone", title: "Gone", dbPool: pool)
+        let threads = try XCTUnwrap(model.threads)
+        threads.open("bs:gone")
+        await waitUntil { model.threadStates["bs:gone"]?.context != nil }
+        XCTAssertEqual(model.threadStates["bs:gone"]?.conversationID, conversation)
+        XCTAssertNotNil(model.threadEngine("bs:gone"), "readable")
+        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertTrue(model.threadContent("bs:gone").isOrphaned)
+        XCTAssertFalse(threads.send("bs:gone", "Still there?"))
+        XCTAssertTrue(ai.calls.isEmpty)
+    }
+
     func testCardKinds() async throws {
         try setRow(status: "done", result: kindsResultJSON())
         try addThreadFinding("tf:1", json: #"{"kind":"blind_spot","title":"Followed threads","text":"t","chapter":"ch:1"}"#)
@@ -702,6 +866,7 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(model.cardKind(for: "da:1"), .actionable)
         XCTAssertEqual(model.cardKind(for: "ck:1"), .actionable, "a check with a concern")
         XCTAssertEqual(model.cardKind(for: "ck:2"), .checkToVerify, "a check without one")
+        XCTAssertNil(model.cardKind(for: "ck:3"), "a check the reviewer found not applicable has no buttons")
         XCTAssertEqual(model.cardKind(for: "tf:1"), .fromDiscussion)
         XCTAssertEqual(model.cardKind(for: "th:1"), .thesis)
         XCTAssertEqual(SpecReviewPresentation.okLabel(model.cardKind(for: "ck:2")), "Checked")
@@ -735,6 +900,34 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(groups.last?.items.map(\.key), ["tf:1", "tf:2"])
     }
 
+    /// A thread finding's quote is shown whatever its source: the owner's
+    /// words, or the document's (unless it is the anchor's own quote).
+    func testThreadFindingShowsItsDocumentQuote() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        try addThreadFinding("tf:1", json: #"{"kind":"differs","title":"Per user","text":"t","chapter":"ch:1","quote":"#
+            + #"{"source":"document","text":"Muting lasts twenty-four hours"}}"#)
+        let model = try await makeModel()
+        await model.load()
+        let finding = try XCTUnwrap(model.threadFindings.first)
+        let card = try SpecReviewFindingCard(model: model, finding: .fromDiscussion(finding)).inspect()
+        XCTAssertNoThrow(try card.find(text: "The document says"))
+        XCTAssertNoThrow(try card.find(SpecReviewQuote.self) { try $0.actualView().quote == "Muting lasts twenty-four hours" })
+    }
+
+    /// The composer takes the focus on an explicit **Discuss** only, not
+    /// when a thread left open is drawn again.
+    func testThreadComposerFocusesOnDiscussOnly() throws {
+        let threads = SpecReviewThreads { _ in SpecReviewThreadContent(isOpen: true) }
+        func autoFocus(_ visibility: SpecReviewThreadVisibility) throws -> Bool {
+            let section = SpecReviewCardThreadSection(key: "ag:1", visibility: .constant(visibility))
+                .environment(\.specReviewThreads, threads)
+            return try section.inspect().find(SpecReviewThreadView.self).actualView().autoFocus
+        }
+        XCTAssertFalse(try autoFocus(.auto))
+        XCTAssertFalse(try autoFocus(.shown))
+        XCTAssertTrue(try autoFocus(.discussed))
+    }
+
     /// The thread key's root is the first ask of the review chain.
     func testRootAskIDIsTheChainsFirstAsk() async throws {
         let (id, project) = (askID, projectID)
@@ -756,10 +949,10 @@ final class SpecReviewModelTests: XCTestCase {
         try setRow(status: "done", result: kindsResultJSON())
         let model = try await makeModel()
         await model.load()
-        try SpecReviewMarkControls(model: model, key: "ag:2", kind: model.cardKind(for: "ag:2"))
+        try SpecReviewMarkControls(model: model, key: "ag:2", kind: XCTUnwrap(model.cardKind(for: "ag:2")))
             .inspect().find(button: "Skip").tap()
         await waitUntil { model.marks["ag:2"] != nil }
-        try SpecReviewMarkControls(model: model, key: "ck:2", kind: model.cardKind(for: "ck:2"))
+        try SpecReviewMarkControls(model: model, key: "ck:2", kind: XCTUnwrap(model.cardKind(for: "ck:2")))
             .inspect().find(button: "Checked").tap()
         await waitUntil { model.marks["ck:2"] != nil }
         let id = askID

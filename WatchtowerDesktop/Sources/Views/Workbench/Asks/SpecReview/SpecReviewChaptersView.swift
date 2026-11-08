@@ -170,7 +170,7 @@ struct SpecReviewCheckCard: View {
                     key: check.key,
                     kind: kind,
                     commentOnly: model.isLoop,
-                    onDiscuss: threads == nil ? nil : { thread = .shown }
+                    onDiscuss: threads == nil ? nil : { thread = .discussed }
                 )
                 SpecReviewCardThreadSection(key: check.key, visibility: $thread, placeholder: "Ask about this check")
             }

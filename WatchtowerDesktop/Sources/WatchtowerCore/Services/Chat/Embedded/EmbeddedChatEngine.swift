@@ -469,7 +469,9 @@ package final class EmbeddedChatEngine {
             provider: options.provider,
             toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turn.turnID),
             readFolder: options.readFolder,
-            ownerInstructions: spec.ownerInstructions
+            ownerInstructions: spec.ownerInstructions,
+            purpose: options.purpose,
+            readFolderAskID: options.readFolderAskID
         )
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)

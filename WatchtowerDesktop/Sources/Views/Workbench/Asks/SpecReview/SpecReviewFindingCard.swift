@@ -45,7 +45,7 @@ struct SpecReviewFindingCard: View {
                 key: finding.key,
                 kind: kind,
                 commentOnly: model.isLoop,
-                onDiscuss: threads == nil ? nil : { thread = .shown }
+                onDiscuss: threads == nil ? nil : { thread = .discussed }
             )
             SpecReviewCardThreadSection(key: finding.key, visibility: $thread)
         }
@@ -63,12 +63,14 @@ struct SpecReviewFindingCard: View {
         }
     }
 
-    /// Where it comes from, labelled: an agreement's source, or the owner's
-    /// own words a thread finding quotes (its document quote is the anchor's).
+    /// Where it comes from, labelled: an agreement's source, or what a
+    /// thread finding quotes — the owner's own words, or the document (shown
+    /// unless it is the anchor's quote, which the card shows anyway).
     private var source: (label: String, quote: String)? {
         switch finding {
         case let .agreement(f): f.source.map { (SpecReviewPresentation.sourceLabel($0), $0.quote) }
         case let .fromDiscussion(f) where f.quote.source == "thread": ("What you said in the discussion", f.quote.text)
+        case let .fromDiscussion(f) where f.quote.text != f.anchor?.quote: ("The document says", f.quote.text)
         default: nil
         }
     }

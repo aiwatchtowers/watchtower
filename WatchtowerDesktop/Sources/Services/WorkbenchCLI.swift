@@ -729,10 +729,13 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
     case agentNotFound(AgentKind)
     /// `spec-review start` exited 3: a reviewer run is already in progress.
     case specReviewRunning
+    /// The command printed bytes that are not UTF-8 text.
+    case unreadableOutput(command: String)
 
     var errorDescription: String? {
         switch self {
         case .specReviewRunning: "The reviewer is already running"
+        case let .unreadableOutput(command): "`watchtower \(command)` printed text that is not UTF-8"
         case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
         }
     }
@@ -1180,6 +1183,20 @@ struct WorkbenchCLI {
     func specReviewReveal(askID: Int64, reason: String) async throws {
         _ = try await runner.run(args: ["workbench", "spec-review", "reveal", "--ask", String(askID),
                                         "--reason", reason])
+    }
+
+    /// The Discuss thread agent's data for item `itemKey` of review ask
+    /// `askID` (spec 2026-11-08 §3): the document snapshot, the item with its
+    /// quotes, the whole result, the ledger, the author's replies and the
+    /// conversation the reviewer was given, as fenced data blocks. Exit 3 is
+    /// "no such item".
+    func specReviewThreadContext(askID: Int64, itemKey: String) async throws -> String {
+        let data = try await runner.run(args: ["workbench", "spec-review", "thread-context",
+                                               "--ask=\(askID)", "--item=\(itemKey)"])
+        guard let text = String(bytes: data, encoding: .utf8) else {
+            throw WorkbenchCLIError.unreadableOutput(command: "workbench spec-review thread-context")
+        }
+        return text
     }
 
     /// Removes what was installed in the folder, then the workbench and every
