@@ -239,27 +239,84 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertTrue(runner.invocations.isEmpty, "Open Draft writes nothing")
     }
 
-    /// No `watchtower` binary: the row's writes are off and its footer says why (plan "Failure paths").
+    /// No `watchtower` binary: a row's CLI presses are off and its footer says why (plan "Failure paths").
     func testMissingCLIDisablesRowWritesAndSaysWhy() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertInboxItem(db, triggerType: "mention",
+                                             permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
+        }
+        let ref = InboxRef(kind: .inboxItem, id: Int64(id))
+        // Labeled: a trailing closure would bind to `automationsWake`.
+        // swiftlint:disable:next trailing_closure
+        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
+        await vm.refresh()
+        let hooks = hooks(vm)
+        let content = try XCTUnwrap(hooks.content(ref, .inbox))
+        XCTAssertTrue(content.cliMissing)
+        XCTAssertTrue(content.isOff(.done))
+        XCTAssertTrue(content.isOff(.hide))
+        XCTAssertTrue(content.isOff(.snooze(duration: "")))
+        XCTAssertTrue(content.isOff(.reply))
+        XCTAssertFalse(content.isOff(.open), "what only opens stays")
+        XCTAssertFalse(content.isOff(.discussInChat))
+        XCTAssertTrue(content.showsCLIMissingLine)
+        XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .inboxItem, id: Int64(id)), .inbox),
+                        "the footer carries \(InboxRowActionsContent.cliMissingMessage)")
+        XCTAssertEqual(InboxRowActionsContent.cliMissingMessage, "The watchtower CLI isn't available")
+        XCTAssertFalse(hooks.content(ref, .preview)?.cliMissing ?? true,
+                       "a preview draws everything disabled without the line")
+        let present = await strip()
+        XCTAssertFalse(self.hooks(present).content(ref, .inbox)?.cliMissing ?? true)
+
+        let action = InboxRowActionsContent(kind: .action(summary: "Team: ACME", buttons: [.approve, .reject, .edit]),
+                                            cliMissing: true)
+        XCTAssertTrue(action.isOff(.approve))
+        XCTAssertTrue(action.isOff(.reject))
+        XCTAssertFalse(action.isOff(.edit), "Edit… only opens the card")
+        XCTAssertTrue(action.showsCLIMissingLine)
+    }
+
+    /// A reminder's, a track's and an idea's writes go straight to the
+    /// database: they stay on without the CLI, and their rows carry no
+    /// missing-CLI line. A custom track's Stop watching runs the CLI.
+    func testMissingCLIKeepsDatabaseWritesOn() async throws {
         let id = try insertReminder()
         // Labeled: a trailing closure would bind to `automationsWake`.
         // swiftlint:disable:next trailing_closure
         let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
         await vm.refresh()
         let hooks = hooks(vm)
-        let content = try XCTUnwrap(hooks.content(InboxRef(kind: .reminder, id: id), .inbox))
-        XCTAssertTrue(content.cliMissing)
-        XCTAssertTrue(content.isOff(.done))
-        XCTAssertTrue(content.isOff(.snoozeHour))
-        XCTAssertFalse(content.isOff(.open), "what only opens stays")
-        XCTAssertFalse(content.isOff(.edit))
-        XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .reminder, id: id), .inbox),
-                        "the footer carries \(InboxRowActionsContent.cliMissingMessage)")
-        XCTAssertEqual(InboxRowActionsContent.cliMissingMessage, "The watchtower CLI isn't available")
-        XCTAssertFalse(hooks.content(InboxRef(kind: .reminder, id: id), .preview)?.cliMissing ?? true,
-                       "a preview draws everything disabled without the line")
-        let present = await strip()
-        XCTAssertFalse(self.hooks(present).content(InboxRef(kind: .reminder, id: id), .inbox)?.cliMissing ?? true)
+        let reminder = try XCTUnwrap(hooks.content(InboxRef(kind: .reminder, id: id), .inbox))
+        XCTAssertTrue(reminder.cliMissing)
+        XCTAssertFalse(reminder.isOff(.done))
+        XCTAssertFalse(reminder.isOff(.snoozeHour))
+        XCTAssertFalse(reminder.isOff(.retryFailedPress))
+        XCTAssertFalse(reminder.showsCLIMissingLine)
+        XCTAssertNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .reminder, id: id), .inbox),
+                     "an idle reminder row draws nothing under its line")
+        await InboxRowActionHandler(vm: vm).press(.done, on: InboxRef(kind: .reminder, id: id))
+        XCTAssertNil(vm.rowErrors[.reminder(id)], "Done lands without the CLI")
+        let status = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(status, "done")
+
+        let auto = InboxRowActionsContent(kind: .track(custom: false, linkedTargetID: nil), cliMissing: true)
+        for press: InboxRowPress in [.done, .stopWatching, .makeTask, .retryFailedPress] {
+            XCTAssertFalse(auto.isOff(press), "\(press)")
+        }
+        XCTAssertFalse(auto.showsCLIMissingLine)
+        let custom = InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: nil), cliMissing: true)
+        XCTAssertFalse(custom.isOff(.done))
+        XCTAssertFalse(custom.isOff(.makeTask))
+        XCTAssertTrue(custom.isOff(.stopWatching), "a custom track's recipe goes through the CLI")
+        XCTAssertTrue(custom.showsCLIMissingLine)
+        let idea = InboxRowActionsContent(kind: .idea(kind: .idea, status: .proposed, awaitsVerdict: true),
+                                          cliMissing: true)
+        for press: InboxRowPress in [.approve, .reject, .makeTask, .notNow(until: ""), .activate, .drop] {
+            XCTAssertFalse(idea.isOff(press), "\(press)")
+        }
+        XCTAssertFalse(idea.showsCLIMissingLine)
     }
 
     /// A shown row without native content keeps the recipe's own buttons.

@@ -331,7 +331,7 @@ Errors (exit 1, message on stderr, nothing written): `the Inbox menu changed —
 | The `waiting-for-me` run fails or never ran | the Messages legacy entry stands in |
 | A native row write fails | the row stays with its error and **Retry** |
 | A Reply proposal is refused | the composer stays open with the CLI's message; no row written |
-| The CLI is missing | menu and row writes disabled with the message; reading works |
+| The CLI is missing | menu writes and the row presses that run the CLI (a ping's Done / Hide / Snooze / Reply…, every proposal verb, a custom track's Stop watching) disabled, with the message under each such row; a reminder's, an idea's and a track's database writes stay on; reading works |
 | A folder write is refused (validation, database busy) or its answer does not decode | the CLI's message under the field or row; nothing assumed written (an undecodable answer re-reads the tree) |
 | Turn On on the Needs approval note fails | the reason under that note (off or stopped); the note stays |
 | Turn On enabled the feature but the daemon restart failed | the app-wide daemon banner with **Retry** after the note leaves |

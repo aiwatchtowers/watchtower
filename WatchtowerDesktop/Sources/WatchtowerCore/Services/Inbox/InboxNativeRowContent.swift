@@ -121,8 +121,9 @@ package struct InboxRowActionsContent: Equatable {
     package var reply: Reply?
     /// A's `.preview` mode: every native action drawn disabled.
     package var isPreview: Bool
-    /// No `watchtower` binary: the row's writes are drawn disabled and the
-    /// footer says why; what only opens or navigates stays.
+    /// No `watchtower` binary: the row's presses that run the CLI are drawn
+    /// disabled and the footer says why (`usesCLI`); a write straight to the
+    /// database and what only opens or navigates stay.
     package var cliMissing: Bool
     /// What would carry the row's writes is not there yet (an idea's
     /// `IdeasViewModel`): its writes are drawn disabled, never dead.
@@ -161,8 +162,35 @@ package struct InboxRowActionsContent: Equatable {
         state != .idle || reply != nil || showsCLIMissingLine || actionSummary != nil
     }
 
-    /// The footer's missing-CLI line.
-    package var showsCLIMissingLine: Bool { cliMissing }
+    /// The footer's missing-CLI line: only on a row that draws a press
+    /// the missing CLI turns off, so a list of database-only rows stays quiet.
+    package var showsCLIMissingLine: Bool { cliMissing && drawsCLIPress }
+
+    /// Whether the row draws a press that runs the `watchtower` CLI.
+    private var drawsCLIPress: Bool {
+        switch kind {
+        case .inboxItem: true
+        case let .action(_, buttons): buttons.contains { usesCLI($0.press) }
+        case let .track(custom, _): custom
+        case .idea, .reminder: false
+        }
+    }
+
+    /// Whether `press` on this row runs the `watchtower` CLI: a ping's
+    /// Done / Hide / Snooze and Reply (`watchtower inbox …`, `actions
+    /// propose`), every proposal verb (`watchtower actions …`), a custom
+    /// track's Stop watching (its recipe through `automations disable`).
+    /// A reminder's and an idea's writes, a track's Done and an auto
+    /// track's Stop watching, and Make a Task are GRDB writes. A custom
+    /// track's Retry counts as the CLI's: the failed press is not known here.
+    package func usesCLI(_ press: InboxRowPress) -> Bool {
+        guard press.writes else { return false }
+        switch kind {
+        case .inboxItem, .action: return true
+        case let .track(custom, _): return custom && (press == .stopWatching || press == .retryFailedPress)
+        case .idea, .reminder: return false
+        }
+    }
 
     /// The footer's **Retry** under a failed press. A proposal's repeats
     /// its failed verb only while the row still offers that press (an
@@ -192,9 +220,11 @@ package struct InboxRowActionsContent: Equatable {
     /// The footer's line while the CLI is missing (the folder menu's words).
     package static let cliMissingMessage = InboxFoldersCLIError.cliUnavailable.localizedDescription
 
-    /// Whether `press` is drawn disabled: a write while the CLI is missing
-    /// or the row's writes are unavailable.
-    package func isOff(_ press: InboxRowPress) -> Bool { (cliMissing || writesUnavailable) && press.writes }
+    /// Whether `press` is drawn disabled: a CLI press while the CLI is
+    /// missing, or a write while the row's writes are unavailable.
+    package func isOff(_ press: InboxRowPress) -> Bool {
+        (cliMissing && usesCLI(press)) || (writesUnavailable && press.writes)
+    }
 
     /// `IdeaActionBar`'s verdict buttons, without its Merge, delete and a
     /// decision's Supersede / Reverse (the full pane opens on a press of
