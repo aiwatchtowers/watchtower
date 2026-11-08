@@ -68,10 +68,11 @@ var (
 	// An exported Go func/method/type/const/var declared on a diff line.
 	goDecl = regexp.MustCompile(`^[-+]\s*(?:func(?: \([^)]*\))? |type |(?:const|var) )([A-Z]\w*)`)
 	// A Swift public/package/open declaration on a diff line: attributes and
-	// other modifiers may come before or after the access keyword.
+	// other modifiers may come before or after the access keyword; an
+	// operator's name is its symbols ("static func ==(…)").
 	swiftDecl = regexp.MustCompile(`^[-+]\s*(?:@[\w.]+(?:\([^)]*\))?\s+)*(?:[\w()]+\s+)*?(?:public|package|open)\s+` +
 		`(?:[\w()]+\s+)*?(?:(?:func|var|let|class|struct|enum|protocol|typealias|actor|associatedtype)\s+` +
-		"`?" + `(\w+)|(init|subscript)\b)`)
+		"(?:`?" + `(\w+)|([^\s\w(` + "`" + `]+))|(init|subscript)\b)`)
 )
 
 // Signals lists f's danger signal ids, in a fixed order, from its path,
@@ -189,13 +190,9 @@ func apiRemoved(f reviewdiff.File) bool {
 			if line == "" || (line[0] != '-' && line[0] != '+') {
 				continue
 			}
-			m := decl.FindStringSubmatch(line)
-			if m == nil {
+			name := declName(decl, line)
+			if name == "" {
 				continue
-			}
-			name := m[1]
-			if len(m) > 2 && name == "" {
-				name = m[2]
 			}
 			if line[0] == '-' {
 				removed[name] = true
@@ -210,4 +207,19 @@ func apiRemoved(f reviewdiff.File) bool {
 		}
 	}
 	return false
+}
+
+// declName is the name decl captures on line ("" for no declaration): the
+// first non-empty group.
+func declName(decl *regexp.Regexp, line string) string {
+	m := decl.FindStringSubmatch(line)
+	if m == nil {
+		return ""
+	}
+	for _, g := range m[1:] {
+		if g != "" {
+			return g
+		}
+	}
+	return ""
 }
