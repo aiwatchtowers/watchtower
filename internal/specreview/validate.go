@@ -232,10 +232,12 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 
 	out := Result{
 		Summary:      summary,
+		Brief:        clip(in.Brief, maxBriefRunes),
 		Chapters:     v.chapters,
 		CodeRead:     in.CodeRead,
 		Agreements:   v.agreements(in.Agreements),
 		DecidedAlone: v.decidedAlone(in.DecidedAlone),
+		Theses:       v.theses(in.Theses),
 		BlindSpots:   v.blindSpots(in.BlindSpots),
 		Checks:       v.checks(in.Checks),
 		Resolved:     v.resolved(in.Resolved),
@@ -315,6 +317,38 @@ func (v *validator) decidedAlone(in []DecidedAlone) []DecidedAlone {
 		}
 		seen[d.Key] = true
 		out = append(out, d)
+	}
+	return out
+}
+
+func validThesisKind(k string) bool {
+	switch k {
+	case ThesisGoal, ThesisDecision, ThesisOwnerChange, ThesisNonGoal, ThesisRisk:
+		return true
+	}
+	return false
+}
+
+// theses keeps a thesis of a known kind whose where-quote is found; its
+// chapter comes from the anchor and its key from kind and text alone.
+func (v *validator) theses(in []Thesis) []Thesis {
+	out := []Thesis{}
+	seen := map[string]bool{}
+	for _, t := range in {
+		t.Text = field(t.Text)
+		ch, h, ok := v.anchor(t.Where)
+		if t.Text == "" || !validThesisKind(t.Kind) || !ok || len(out) >= maxTheses {
+			v.drop()
+			continue
+		}
+		t.Chapter, t.Where.Heading = ch, h
+		t.Key = itemKey("th:", t.Kind+"\x00"+t.Text, "")
+		if seen[t.Key] {
+			v.drop()
+			continue
+		}
+		seen[t.Key] = true
+		out = append(out, t)
 	}
 	return out
 }

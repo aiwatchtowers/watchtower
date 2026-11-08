@@ -320,6 +320,11 @@ func TestParse_Caps(t *testing.T) {
 func TestResult_JSONKeysPinned(t *testing.T) {
 	r := Result{
 		Summary: "The spec matches the idea; one promise has no task.",
+		Brief:   "Builds a one-day channel mute for the owner.\nIt keeps the state on this Mac.\nThreads are left as they are.",
+		Theses: []Thesis{{
+			Key: "th:0123456789ab", Kind: ThesisGoal, Text: "Mute a channel for a day", Chapter: "ch:1",
+			Where: Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"},
+		}},
 		Idea: &Idea{
 			OwnerQuote: "mute a channel for a day", GoalQuote: "the owner can mute a channel for a day",
 			Verdict: "matches", Note: "Same scope.",
