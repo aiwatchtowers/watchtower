@@ -20,6 +20,7 @@ struct NowView: View {
     static let topBlocks: [TopBlock] = [.chip, .relayBanner, .outbox]
 
     @Environment(AppEnvironment.self) private var env
+    @Environment(LinkingViewModel.self) private var linking
     @State private var answerError: String?
     @State private var showsSubscription = false
     /// A banner to show in place of the live one (the screenshot tour's frames); its actions do nothing.
@@ -31,6 +32,12 @@ struct NowView: View {
 
     private var replica: WorkbenchReplicaModel { env.workbenchReplica }
 
+    /// The hub on screen, named as its Relay banner names it.
+    private var macName: String {
+        let session = env.activeSession
+        return linking.links.first { $0.hubID == session.hubID }?.link.macName ?? session.hubName ?? ""
+    }
+
     var body: some View {
         NavigationStack {
             // The working timers tick, and the Mac turns asleep by the clock
@@ -39,7 +46,7 @@ struct NowView: View {
                 content(
                     NowModel(
                         snapshot: replica.snapshot, linked: env.linkedDevice != nil, now: context.date,
-                        lastFlushStopped: env.activeSession.outboxBacklog.lastFlushStopped
+                        backlog: env.activeSession.outboxBacklog, macName: macName
                     ),
                     date: context.date
                 )
@@ -314,13 +321,25 @@ private struct RelayBannerCard: View {
     }
 }
 
-/// Waiting to send and the Not delivered row (relay client mockup 5a): the
-/// header with the count over the oldest queued actions, then the red row
-/// that opens the list. Rows are spaced, never divided.
+/// The parked feed's row (S58), Waiting to send and the Not delivered row
+/// (relay client mockup 5a): the quiet secondary card, the header with the
+/// count over the oldest queued actions, then the red row that opens the
+/// list. Rows are spaced, never divided.
 private struct NowOutboxGroup: View {
     let rows: NowOutboxRows
 
     var body: some View {
+        if let parked = rows.parked {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(parked.title).font(TypeScale.rowTitle)
+                Text(parked.detail).font(TypeScale.meta)
+            }
+            .foregroundStyle(parked.tone.color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .combine)
+            .card()
+            .padding(.top, Spacing.large)
+        }
         if let count = rows.waitingCount {
             SectionHeader(rows.waitingTitle, count: count)
             VStack(alignment: .leading, spacing: Spacing.regular) {

@@ -723,8 +723,7 @@ final class HubSession {
     /// The backlog's counts follow the replica for the session's lifetime.
     private func observeOutboxBacklog() {
         backlogObservation = OutboxBacklog.observe(store: store) { [weak self] counts in
-            self?.outboxBacklog.queued = counts.queued
-            self?.outboxBacklog.undelivered = counts.undelivered
+            self?.outboxBacklog.apply(counts)
         }
     }
 

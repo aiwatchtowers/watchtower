@@ -1,5 +1,6 @@
+import GRDB
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -196,7 +197,10 @@ final class NowWiringTests: XCTestCase {
         XCTAssertNil(stopped.notDeliveredText)
         XCTAssertNil(try outbox(stopped: true, queued: []), "nothing queued, nothing shown")
         XCTAssertNil(
-            NowModel(snapshot: try demoSnapshot(now: now), linked: true, now: now, lastFlushStopped: true).outbox,
+            NowModel(
+                snapshot: try demoSnapshot(now: now), linked: true, now: now,
+                backlog: OutboxBacklog(queued: 3, sent: 0, undelivered: 0, lastFlushStopped: true, feedParkedSince: nil)
+            ).outbox,
             "a snapshot without ordered rows (today's path) shows neither")
     }
 
@@ -220,6 +224,110 @@ final class NowWiringTests: XCTestCase {
         XCTAssertNil(rows.waitingCount, "the flush has not stopped")
         XCTAssertTrue(rows.toneUses.contains { $0.element == "not delivered row" && $0.tone == .red && $0.role == .status })
         XCTAssertFalse(rows.toneUses.contains { $0.tone == .orange })
+    }
+
+    // MARK: - The parked feed (relay client Phase 5 Task 16, S58)
+
+    private static let parkedTail = "If this lasts, open Watchtower on the Mac."
+
+    /// A replica whose outbox holds `sent` written, unanswered actions, the feed parked when `parked`.
+    private func replica(sent: Int, parked: Bool = true) async throws -> ReplicaStore {
+        let store = try TestPhone.replica()
+        let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
+        try await outbox.enableOrderedActions()
+        for target in 0..<sent {
+            let params = BoardTargetStatusParams(workbenchID: DemoSeed.acmeID, status: .done, fromStatus: .todo)
+            _ = try await outbox.enqueue(
+                kind: .boardTargetStatus, entityRecordName: SliceKind.workbenchTarget.recordName(id: "\(410 + target)"),
+                params: try params.wireParams())
+            _ = try await outbox.flush()
+        }
+        if parked { try store.markRelayFeedParked(at: now) }
+        return store
+    }
+
+    /// Now's model over the replica's backlog, as the session reads it.
+    private func model(_ store: ReplicaStore, macName: String, lastFlushStopped: Bool = false) throws -> NowModel {
+        var backlog = OutboxBacklog.empty
+        backlog.lastFlushStopped = lastFlushStopped
+        backlog.apply(try store.reader.read { try OutboxBacklog.Counts.read(store, $0) })
+        return NowModel(snapshot: try demoSnapshot(now: now), linked: true, now: now, backlog: backlog, macName: macName)
+    }
+
+    func testNowShowsTheParkedRowWithSentCount() async throws {
+        let store = try await replica(sent: 2)
+        let parked = try XCTUnwrap(try model(store, macName: "Work Mac").outbox?.parked)
+        XCTAssertEqual(parked.title, "Waiting for new keys from Work Mac")
+        XCTAssertEqual(
+            parked.detail,
+            "2 actions have no answer yet. They finish once it sends them. If this lasts, open Watchtower on the Mac.")
+    }
+
+    func testOneSentActionReadsSingular() async throws {
+        let store = try await replica(sent: 1)
+        let parked = try XCTUnwrap(try model(store, macName: "Work Mac").outbox?.parked)
+        XCTAssertEqual(parked.detail, "1 action has no answer yet. It finishes once it sends it. \(Self.parkedTail)")
+    }
+
+    func testNoSentActionsOmitsTheCountSentences() async throws {
+        let store = try await replica(sent: 0)
+        let parked = try XCTUnwrap(try model(store, macName: "Work Mac").outbox?.parked, "parked with nothing sent still shows")
+        XCTAssertEqual(parked.title, "Waiting for new keys from Work Mac")
+        XCTAssertEqual(parked.detail, Self.parkedTail)
+        XCTAssertEqual(NowParkedRow(macName: "", sent: 0).title, "Waiting for new keys from your Mac", "no name yet")
+    }
+
+    func testTwoMacsEachNameTheirOwn() async throws {
+        let work = try await replica(sent: 2)
+        let home = try await replica(sent: 1)
+        let idle = try await replica(sent: 1, parked: false)
+        XCTAssertEqual(try model(work, macName: "Work Mac").outbox?.parked?.title, "Waiting for new keys from Work Mac")
+        XCTAssertEqual(try model(home, macName: "Home Mac").outbox?.parked?.title, "Waiting for new keys from Home Mac")
+        XCTAssertEqual(try model(home, macName: "Home Mac").outbox?.parked?.detail.hasPrefix("1 action has"), true)
+        XCTAssertNil(try model(idle, macName: "Studio Mac").outbox, "a Mac whose feed reads shows nothing")
+    }
+
+    @MainActor
+    func testTheRowGoesOnAMerge() async throws {
+        let store = try await replica(sent: 2, parked: false)
+        var seen: [OutboxBacklog.Counts] = []
+        let observation = OutboxBacklog.observe(store: store) { seen.append($0) }
+        defer { observation.cancel() }
+        try await poll({ seen.last?.sent == 2 }, "the first read")
+        XCTAssertNil(seen.last?.feedParkedSince)
+
+        try store.markRelayFeedParked(at: now)
+        try await poll({ seen.last?.feedParkedSince != nil }, "the park reaches Now")
+        try store.endRelayWait()
+        try await poll({ seen.last.map { $0.feedParkedSince == nil } ?? false }, "a read with no pending record clears it")
+        var backlog = OutboxBacklog.empty
+        backlog.apply(try XCTUnwrap(seen.last))
+        XCTAssertNil(
+            NowModel(snapshot: try demoSnapshot(now: now), linked: true, now: now, backlog: backlog, macName: "Work Mac").outbox)
+    }
+
+    func testNoParkedRowWhileReplayingUnderTheCap() async throws {
+        let store = try await replica(sent: 2, parked: false)
+        _ = try store.startRelayWait(at: now.addingTimeInterval(-600))
+        XCTAssertNil(try model(store, macName: "Work Mac").outbox, "the feed still replays: only the sighting is stamped")
+    }
+
+    func testParkedRowUsesNoOrange() async throws {
+        let store = try await replica(sent: 2)
+        let rows = try XCTUnwrap(try model(store, macName: "Work Mac").outbox)
+        XCTAssertEqual(rows.parked?.toneUse, ToneUse(element: "parked feed row", tone: .secondary, role: .info))
+        XCTAssertTrue(rows.toneUses.contains { $0.element == "parked feed row" && $0.tone == .secondary && $0.role == .info })
+        XCTAssertFalse(rows.toneUses.contains { $0.tone == .orange })
+    }
+
+    func testParkedAndWaitingToSendShowTogether() throws {
+        let three = (1...3).map { outboxItem("q\($0)", seq: UInt64($0), .queued) }
+        let rows = try XCTUnwrap(NowOutboxRows(
+            lastFlushStopped: true, queued: three, undelivered: [], snapshot: try demoSnapshot(now: now), now: now,
+            calendar: .current, parked: NowParkedRow(macName: "Work Mac", sent: 2)))
+        XCTAssertEqual(rows.parked?.title, "Waiting for new keys from Work Mac")
+        XCTAssertEqual(rows.waitingCount, 3)
+        XCTAssertEqual(rows.toneUses.map(\.element), ["parked feed row", "waiting to send count"], "the parked row first")
     }
 
     // MARK: - The Relay banner (relay client Phase 4 Task 10)
