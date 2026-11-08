@@ -296,10 +296,9 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         await h.settle()
     }
 
-    /// The owner's sentence and the provider's own text stay apart. Go's
-    /// real sequence when the summary fails after the chapters: the failed
-    /// summary event, then the summary's error envelope — the chapters stay
-    /// and only the summary is retried (mockup frame 2c), never the run.
+    /// The owner's sentence and the provider's own text stay apart. With a
+    /// chapter failed, Go's `--summary` would refuse (`missing_parts`), so a
+    /// summary failure after it is the run's failure: its Retry stays.
     func testFailedChapterKeepsTheSentenceAndTheDetailApart() async throws {
         let h = try harness()
         await openDeep(h)
@@ -309,24 +308,75 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
             + #""error":{"class":"provider","text":"The AI provider failed on “pkg”.","detail":"HTTP 529 overloaded"}}"#)
         run.send(#"{"event":"summary","state":"failed","#
             + #""error":{"class":"timeout","text":"The overview of the summary did not finish in 2 min.","detail":"deadline"}}"#)
-        run.send(#"{"ok":false,"error":"The overview of the summary did not finish in 2 min.","#
-            + #""error_class":"timeout","detail":"deadline"}"#)
+        run.send(Self.summaryFailedEnvelope)
         run.finish()
         await h.settle()
         XCTAssertEqual(h.model.chapterStates["dir:pkg"], .failed(text: "The AI provider failed on “pkg”.", detail: "HTTP 529 overloaded"))
         XCTAssertEqual(h.model.summaryState, .failed(text: "The overview of the summary did not finish in 2 min.", detail: "deadline"))
         XCTAssertEqual(h.model.chapterStates["dir:cmd"], .ok, "the described chapter stays")
-        XCTAssertEqual(h.model.chapterDescription("dir:cmd"), "Does it.")
-        if case .failed = h.model.overview { XCTFail("a summary failure is not the whole run's failure") }
+        guard case .failed = h.model.overview else { return XCTFail("the run's Retry: \(h.model.overview)") }
+    }
+
+    private static let summaryFailedEnvelope = #"{"ok":false,"error":"The overview of the summary did not finish in 2 min.","#
+        + #""error_class":"timeout","detail":"deadline"}"#
+
+    /// Go's real sequence when the summary fails after every chapter is
+    /// described: the failed summary event, then the summary's error
+    /// envelope. The chapters stay and only the summary is retried (mockup
+    /// frame 2c), its card shown while it runs.
+    func testSummaryFailureAfterEveryChapterRetriesOnlyTheSummary() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let run = try await process(h, 0)
+        run.send(chapterLine("dir:cmd", "ok"))
+        run.send(chapterLine("dir:pkg", "cached", what: "Locks."))
+        run.send(#"{"event":"summary","state":"failed","#
+            + #""error":{"class":"timeout","text":"The overview of the summary did not finish in 2 min.","detail":"deadline"}}"#)
+        run.send(Self.summaryFailedEnvelope)
+        run.finish()
+        await h.settle()
+        XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .ok, "dir:pkg": .cached], "the chapters stay")
+        XCTAssertEqual(h.model.chapterDescription("dir:pkg"), "Locks.")
+        XCTAssertEqual(h.model.overview, .idle, "not the whole run's failure")
+        XCTAssertTrue(h.model.summaryOnlyAfterFailure)
         h.model.retrySummary()
         let second = try await process(h, 1)
         XCTAssertEqual(second.args.last, "--summary", "Retry redoes only the summary")
+        XCTAssertTrue(h.model.summaryOnlyAfterFailure, "the card stays while the summary is redone")
         second.send(#"{"event":"summary","state":"ok"}"#)
         second.send(Self.overviewEnvelope)
         second.finish()
         await h.settle()
         XCTAssertEqual(h.model.summaryState, .ok)
+        XCTAssertFalse(h.model.summaryOnlyAfterFailure)
         guard case .ready = h.model.overview else { return XCTFail("the summary Retry lands the overview") }
+    }
+
+    /// A chapter Retry whose key Go no longer has: Go sends the map it just
+    /// built, then the refusal. The new chapter is offered by Describe N
+    /// remaining instead of having no way to run.
+    func testAStaleChapterRetryOffersTheRebuiltMapsChapters() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let first = try await process(h, 0)
+        first.send(chapterLine("dir:cmd", "ok"))
+        first.send(chapterLine("dir:pkg", "failed"))
+        first.send(Self.overviewEnvelope)
+        first.finish()
+        await h.settle()
+        h.model.retry(chapter: "dir:pkg")
+        let second = try await process(h, 1)
+        second.send(#"{"event":"map","map":{"chapters":[{"key":"dir:cmd","title":"cmd","level":"normal","paths":["cmd/x.go"]},"#
+            + #"{"key":"dir:pkg/sub","title":"pkg/sub","level":"normal","paths":["pkg/y.go"]}],"files":[]}}"#)
+        second.send(#"{"ok":false,"error":"The chapters changed since this was asked for; retry from the chapters shown now."}"#)
+        second.finish()
+        await h.settle()
+        XCTAssertEqual(h.model.chapterStates["dir:pkg/sub"], .notStarted)
+        h.model.describeRemaining()
+        let third = try await process(h, 2)
+        XCTAssertEqual(third.args.last, "--chapter=dir:pkg/sub")
+        third.finish()
+        await h.settle()
     }
 
     /// Retry during a run queues; one follow-up run takes every queued key.

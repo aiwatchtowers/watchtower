@@ -18,8 +18,8 @@ struct ReviewOverviewView<Extra: View>: View {
     var body: some View {
         switch model.overview {
         case .idle:
-            if case .failed = model.summaryState {
-                // A first run whose summary failed: its chapters stay, the summary's Retry (frame 2c).
+            if model.summaryOnlyAfterFailure {
+                // A first run whose summary failed: its chapters stay, the summary's Retry and its run (frame 2c).
                 ReviewRunCard(model: model, framed: false)
             }
             if style == .compact { extra() }

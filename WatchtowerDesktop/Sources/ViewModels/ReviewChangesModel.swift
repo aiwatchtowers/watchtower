@@ -1455,10 +1455,12 @@ final class ReviewChangesModel {
     /// A run that failed as a whole (`busy`, `cancelled`, killed, silent):
     /// the full run's card shows the text with Retry; a partial run's
     /// chapters and summary show it on their own lines. A full run whose
-    /// summary event already failed (Go then answers that error) keeps its
-    /// chapters and shows the summary's own Retry (mockup frame 2c).
+    /// summary event failed while every chapter is described (Go then
+    /// answers that error) keeps its chapters and shows the summary's own
+    /// Retry (mockup frame 2c); with a chapter missing, Go's `--summary`
+    /// would refuse, so the run's Retry stays.
     private func failRun(_ finished: OverviewRun, text: String, detail: String?) {
-        if finished.kind == .full, case .failed = summaryState {
+        if finished.kind == .full, case .failed = summaryState, everyChapterDescribed {
             settleFailed(finished, text: nil, detail: nil)
             failedGenerating = true
             overview = .idle
@@ -1472,11 +1474,28 @@ final class ReviewChangesModel {
     }
 
     /// The run's chapters and summary it did not answer: failed with `text`,
-    /// or not started when there is none.
+    /// or not started when there is none. A chapter of a map that arrived
+    /// with the run (Go rebuilt it: a stale key) and no state yet is not
+    /// started, so Describe N remaining offers it.
     private func settleFailed(_ finished: OverviewRun, text: String?, detail: String?) {
         let end: ChapterRunState = text.map { .failed(text: $0, detail: detail) } ?? .notStarted
         for (key, state) in chapterStates where Self.unsettled(state) { chapterStates[key] = end }
+        for key in describableKeys where chapterStates[key] == nil { chapterStates[key] = .notStarted }
         if Self.unsettled(summaryState) { summaryState = end }
+    }
+
+    /// No overview yet, the summary failed or is being redone after a
+    /// failure (frame 2c): Meaning shows the run card in its place.
+    var summaryOnlyAfterFailure: Bool {
+        guard overview == .idle else { return false }
+        switch summaryState {
+        case .failed, .running, .waiting, .queued: return true
+        default: return false
+        }
+    }
+
+    private var everyChapterDescribed: Bool {
+        describableKeys.allSatisfy { chapterStates[$0] == .ok || chapterStates[$0] == .cached }
     }
 
     /// The one follow-up run after a run ends: every queued chapter (the
