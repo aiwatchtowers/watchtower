@@ -149,17 +149,23 @@ struct ReviewOverviewView<Extra: View>: View {
             Text("–").foregroundStyle(.secondary).accessibilityHidden(true)
             Text(line).font(.callout)
             Spacer(minLength: Spacing.small)
-            Button("Open chapter") { openChapter(chapter.key) }
-                .buttonStyle(.kitQuiet)
-                .font(.caption)
+            // A chapter with none of its files in this view (a later round's Since) has nothing to open.
+            if model.chapters.contains(where: { $0.key == chapter.key }) {
+                Button("Open chapter") { openChapter(chapter.key) }
+                    .buttonStyle(.kitQuiet)
+                    .font(.caption)
+            }
         }
     }
 
     /// Deep's Meaning has no diff: the chapter opens in Chapters.
     private func openChapter(_ key: String) {
         Task {
-            if model.mode == .deep, model.phase != .chapters { try? await model.setPhase(.chapters) }
-            try? await model.selectChapter(key) // a failure lands in lastError
+            // A failure lands in lastError; the first one stops here so the next call does not clear it.
+            do {
+                if model.mode == .deep, model.phase != .chapters { try await model.setPhase(.chapters) }
+                try await model.selectChapter(key)
+            } catch {}
         }
     }
 
