@@ -269,7 +269,10 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			spool := filepath.Join(t.TempDir(), "calls.jsonl")
 			llmusage.SetSpoolPath(spool)
 			t.Cleanup(func() { llmusage.SetSpoolPath("") })
-			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), time.Second)
+			// fakeCLI re-executes this test binary, which takes about a second to
+			// start under -race; the router starts it twice (preferred, then
+			// reserve). The deadline only guards against a hang.
+			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), 30*time.Second)
 			defer cancel()
 			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
 			require.NoError(t, err)

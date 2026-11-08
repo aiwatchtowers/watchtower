@@ -204,13 +204,21 @@ func TestRefresh_MergeRefsOnlyReadTheirBase(t *testing.T) {
 	for _, a := range gitArgs {
 		assert.NotContains(t, a, "refs/remotes/origin/HEAD", "the default branch is never looked up")
 	}
-	n := 0
+	n, want := 0, 1
 	for _, a := range gitArgs {
-		if len(a) > 0 && a[0] == "for-each-ref" {
-			n++
+		if len(a) == 0 || a[0] != "for-each-ref" {
+			continue
+		}
+		n++
+		joined := strings.Join(a, " ")
+		if !strings.Contains(joined, "ahead-behind") && !strings.Contains(joined, "--merged") {
+			// A git before 2.41 (the Command Line Tools' git) refuses the
+			// %(ahead-behind) atom: the batch is then the refused read, the
+			// plain read and one --merged list.
+			want = 3
 		}
 	}
-	assert.Equal(t, 1, n, "one batch read serves every leaf of a base")
+	assert.Equal(t, want, n, "one batch read serves every leaf of a base")
 }
 
 func TestRefresh_BadIntoRefIsSkipped(t *testing.T) {

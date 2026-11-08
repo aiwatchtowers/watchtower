@@ -26,7 +26,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [A tab is empty](troubleshooting/tab-is-empty.md) — which switch and source each tab waits for, and what its status line wants
 - [Sync is stuck or slow](troubleshooting/sync-stuck-or-slow.md) — "Sync daemon not running", a sync that never ends, data that stops arriving
 - [No briefing or day plan today](troubleshooting/no-briefing-or-day-plan.md) — the gates a daily job waits behind, and how to generate one now
-- [The Claude or Codex tool is not found or not signed in](troubleshooting/ai-tool-not-found-or-not-signed-in.md) — the red cross, "isn't signed in", and Test Connection
+- [The Claude or Codex tool is not found or not signed in](troubleshooting/ai-tool-not-found-or-not-signed-in.md) — Not installed, "isn't signed in", and Check connection
 - [An account needs attention](troubleshooting/account-needs-attention.md) — red dots, Re-login, and which accounts you must remove and add again
 - [Calendar events are missing](troubleshooting/calendar-events-missing.md) — a hidden Calendar tab, sync banners and unselected calendars
 - [Recording or transcript problems](troubleshooting/recording-or-transcript-problems.md) — macOS permissions, no call audio, failed transcription and missing recaps

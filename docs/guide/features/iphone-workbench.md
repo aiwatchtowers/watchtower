@@ -44,6 +44,15 @@ Tap a session in **Now** or a workbench. The top shows the workbench, the title 
 A permission prompt and the session's open asks sit at the end of the chat. **Allow once** and **Deny** answer the prompt (see [iPhone: permission prompts and interrupts](iphone-agent-prompts.md)). A question with suggested answers takes one tap; other asks have **Open** for the full form.
 
 ### Write to the session
+<!-- learn
+id: iphone-write-to-codex
+title: Write to a Codex session from the phone
+text: Send a line to a Codex session from the phone; the Mac hands it over once Codex finishes its turn.
+area: iphone
+level: next
+kind: tip
+since: next
+-->
 
 Type into **Message the session…** and send. Your line shows under it:
 
@@ -54,7 +63,7 @@ Type into **Message the session…** and send. Your line shows under it:
 
 ### Stop, finish or see the report
 
-The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
+The **⋯** menu has **Stop**, **Finish** (asks the agent to wrap up), **Interrupt**, **Report and timeline** and **Open board target**. A Codex session takes no **Interrupt** from the phone; stop it on the Mac. The report shows the targets' progress, the pull requests and the session's milestones. Tasks not done yet whose branch is already merged into the branch of the task above them are counted apart, as on the Mac: "1 / 3 targets · 1 merged".
 
 ### Run an automation
 

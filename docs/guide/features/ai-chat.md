@@ -20,14 +20,27 @@ done_when: chat.used
 -->
 
 <!-- learn
-id: chat-pick-provider
-title: Pick the model for a chat
-text: Use the pill in the composer to switch between Claude, Codex and Ollama and pick a model for the next reply.
+id: chat-provider-choice
+title: Pick the provider for a chat
+text: New chats use **Preferred + reserve · Auto**; pick **Only Claude** or **Only Codex** in the composer's pill to pin one.
+replaces: [chat-pick-provider]
+changed: New chats follow your preferred provider and move to the reserve at its limit.
 area: assistant
 level: next
 kind: tip
-since: 0.24.0
+since: next
 action: nav:chat
+-->
+
+<!-- learn
+id: chat-web-search
+title: Search the web from the chat
+text: On Claude or Codex, ask about public docs, products or news; the pages show under **Web** in **Sources**.
+area: assistant
+level: next
+kind: feature
+since: next
+action: chat:What changed in the latest macOS release?
 -->
 
 <!-- learn
@@ -89,6 +102,17 @@ level: next
 kind: shortcut
 since: 0.24.0
 action: hotkey:search-chats
+-->
+
+<!-- learn
+id: chat-codex-images
+title: Show Codex an image
+text: On Codex, attach a screenshot or photo to a message and ask about it; PDFs still need Claude.
+area: assistant
+level: next
+kind: tip
+since: next
+action: nav:chat
 -->
 
 1. Open **Chats**. A start page offers a composer, starter prompts, and your pinned and recent chats; the list on the left is [the Chats panel](#the-chats-panel). If you left a chat less than two hours ago, the tab reopens it instead. A chat with a reply running, or an unsent draft or file, always reopens.
