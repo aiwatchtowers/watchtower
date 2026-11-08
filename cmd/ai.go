@@ -648,7 +648,7 @@ func checkSessionWorktree(database *db.DB, dir string) error {
 			return err
 		}
 		for root := range roots {
-			if !workbenchgit.SamePath(root, dir) {
+			if !sameRecordedRoot(root, dir) {
 				continue
 			}
 			if refusal = linkedWorktreeOf(dir, wb.FolderPath); refusal == nil {
@@ -657,6 +657,19 @@ func checkSessionWorktree(database *db.DB, dir string) error {
 		}
 	}
 	return refusal
+}
+
+// sameRecordedRoot reports whether the ledger's root names dir: the same
+// string, or — a case difference — the same directory on disk
+// (workbenchgit.SamePath) while root itself is still its own real path. A
+// recorded root since replaced by a symlink to a folder spelled in another
+// case (a case-sensitive volume) is not dir.
+func sameRecordedRoot(root, dir string) bool {
+	if root == dir {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	return err == nil && resolved == root && workbenchgit.SamePath(root, dir)
 }
 
 // linkedWorktreeOf is nil when root (a real path) is a linked work tree
