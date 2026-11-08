@@ -132,5 +132,9 @@
     "The conversation was trimmed to the last 50 entries."
   ],
   "code_read": true,
-  "dropped": 2
+  "dropped": 2,
+  "dropped_by": {
+    "minor finding after round 2": 1,
+    "on unchanged text": 1
+  }
 }

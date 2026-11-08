@@ -185,6 +185,10 @@ type Result struct {
 	Notes        []string       `json:"notes"`
 	CodeRead     bool           `json:"code_read"`
 	Dropped      int            `json:"dropped"`
+	// DroppedBy counts, by drift-guard reason (DropUnchangedText,
+	// DropMinorLate, DropDecided), the entries Dropped holds for that
+	// reason; left out when no guard dropped anything.
+	DroppedBy map[string]int `json:"dropped_by,omitempty"`
 }
 
 // Sources is everything a quote may come from. Every map is keyed by the Ref
@@ -210,6 +214,15 @@ type Sources struct {
 	Closed []ClosedItem
 	// KnownKeys is every key in a ledger or an open list along the chain.
 	KnownKeys map[string]bool
+	// LoopRound is the round of the author loop under review, 0 when the
+	// review is not a loop round: the drift guards run only in a loop.
+	LoopRound int
+	// PrevDoc is the previous ask's document along the chain, "" for none:
+	// the baseline of the changed-text guard.
+	PrevDoc string
+	// NewRefs is the conversation entries, asks and comments newer than the
+	// previous ask: a finding with no where-quote may cite only these.
+	NewRefs map[string]bool
 }
 
 // Severity levels of a finding.

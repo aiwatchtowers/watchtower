@@ -104,3 +104,23 @@ func TestClosedList_CarriesAcrossLoops(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []ClosedItem{{Key: "bs:loopone0000", Kind: KindBlindSpot, WhereQuote: "Mute a channel."}}, got)
 }
+
+// A key seen in several rounds keeps the latest where-quote and kind known
+// for it, so a reworded repeat is compared with the text as it stands now.
+func TestClosedList_LatestWhereQuote(t *testing.T) {
+	f := newFixture(t)
+	r1 := f.ask(t, "spec", "# Spec\n\n## Goals\n\nMute a channel.\n")
+	open := []AuthorItem{{Key: "bs:moved000000", Kind: KindBlindSpot, Text: "Restart", Round: 1, Where: &Anchor{Heading: "Goals", Quote: "Mute a channel."}}}
+	finishRow(t, f.d, r1.ID, "author", `{}`, open, nil)
+	r2 := f.reround(t, r1.ID)
+	require.NoError(t, f.d.WithTx(func(tx *sql.Tx) error {
+		return f.d.QueueSpecReview(tx, r2.ID, runNow, &db.SpecLoopStart{Round: 2})
+	}))
+	moved := entry("bs:moved000000", KindBlindSpot, "Mute, now for a day.", VerdictResolved, nil)
+	finishRow(t, f.d, r2.ID, "owner", `{}`, nil, []LedgerEntry{moved})
+	r3 := f.reround(t, r2.ID)
+
+	got, err := ClosedList(f.d, r3.ID)
+	require.NoError(t, err)
+	assert.Equal(t, []ClosedItem{{Key: "bs:moved000000", Kind: KindBlindSpot, WhereQuote: "Mute, now for a day."}}, got)
+}

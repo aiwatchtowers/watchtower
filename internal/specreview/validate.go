@@ -58,6 +58,9 @@ type validator struct {
 	docNorm  string
 	root     *os.Root // nil when Folder is unset or unopenable
 	dropped  int
+	// guard is the drift guards of a loop round, nil outside a loop.
+	guard     *driftGuard
+	droppedBy map[string]int
 }
 
 // normHeading is a heading as compared: leading # and case stripped.
@@ -201,7 +204,8 @@ func (v *validator) unanchoredChapter(ref string) string {
 // Parse validates a reviewer reply against what it may quote. A wrong enum, a
 // missing or unfound anchor, an unknown source ref or verdict key, an
 // unreadable evidence path, a duplicate or an entry over the cap drops that entry (counted in
-// Dropped); malformed JSON or an empty summary fails the whole call.
+// Dropped); in an author loop the drift guards drop more (drift, counted in
+// DroppedBy too). Malformed JSON or an empty summary fails the whole call.
 func Parse(raw string, src Sources, t DocType) (Result, error) {
 	js, err := prompts.ExtractJSONObject(raw)
 	if err != nil {
@@ -223,6 +227,7 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 	for _, c := range v.chapters {
 		v.norm = append(v.norm, Normalize(src.Doc[c.Start:c.End]))
 	}
+	v.guard = newDriftGuard(src, v.chapters)
 	if src.Folder != "" {
 		if r, err := os.OpenRoot(src.Folder); err == nil {
 			v.root = r
@@ -250,7 +255,7 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 			out.Notes = append(out.Notes, n)
 		}
 	}
-	out.Dropped = v.dropped
+	out.Dropped, out.DroppedBy = v.dropped, v.droppedBy
 	return out, nil
 }
 
@@ -293,6 +298,12 @@ func (v *validator) agreements(in []Agreement) []Agreement {
 			continue
 		}
 		seen[a.Key] = true
+		if a.Status != "as_agreed" {
+			if r := v.drift(KindAgreement, a.Key, a.Severity, a.Where, a.Source.Ref, a.Chapter); r != "" {
+				v.dropFor(r)
+				continue
+			}
+		}
 		out = append(out, a)
 	}
 	return out
@@ -316,6 +327,10 @@ func (v *validator) decidedAlone(in []DecidedAlone) []DecidedAlone {
 			continue
 		}
 		seen[d.Key] = true
+		if r := v.drift(KindDecidedAlone, d.Key, d.Severity, &d.Where, "", d.Chapter); r != "" {
+			v.dropFor(r)
+			continue
+		}
 		out = append(out, d)
 	}
 	return out
@@ -379,6 +394,10 @@ func (v *validator) blindSpots(in []BlindSpot) []BlindSpot {
 			continue
 		}
 		seen[b.Key] = true
+		if r := v.drift(KindBlindSpot, b.Key, b.Severity, b.Where, "", b.Chapter); r != "" {
+			v.dropFor(r)
+			continue
+		}
 		out = append(out, b)
 	}
 	return out
@@ -405,6 +424,12 @@ func (v *validator) checks(in []Check) []Check {
 			continue
 		}
 		seen[c.Key] = true
+		if c.Answer == "concern" {
+			if r := v.drift(KindCheck, c.Key, c.Severity, nil, "", c.Chapter); r != "" {
+				v.dropFor(r)
+				continue
+			}
+		}
 		out = append(out, c)
 	}
 	return out

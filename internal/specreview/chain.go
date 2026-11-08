@@ -62,11 +62,17 @@ func readChain(d *db.DB, askID int64) (chainState, []string, error) {
 	}
 	var notes []string
 	info := map[string]ClosedItem{}
+	// learn keeps the latest kind and where-quote known for a key: the
+	// chain is read root first, so a later round's anchor wins.
 	learn := func(key, kind string, where *Anchor) {
-		if _, ok := info[key]; ok || key == "" {
+		if key == "" {
 			return
 		}
-		it := ClosedItem{Key: key, Kind: kind}
+		it := info[key]
+		it.Key = key
+		if kind != "" {
+			it.Kind = kind
+		}
 		if where != nil {
 			it.WhereQuote = where.Quote
 		}
