@@ -41,9 +41,11 @@ const (
 	ClassMissingParts = "missing_parts"
 )
 
+// CancelledText is the owner's text of a cancelled run.
+const CancelledText = "The overview was stopped."
+
 // Owner texts of the failures without a chapter title.
 const (
-	cancelledText    = "The overview was stopped."
 	tooLargeText     = "No chapter has a diff the AI can read: its files are binary or past the diff's size limit."
 	missingPartsText = "Some chapters have no description yet; run the overview to describe them first."
 	summaryTitle     = "the summary"
@@ -215,7 +217,7 @@ func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d 
 	r.describe(batches, full)
 	if ctx.Err() != nil {
 		log.Printf("reviewai: overview run cancelled (%d of %d chapters described)", r.described(), len(units))
-		return Overview{}, &RunError{Class: ClassCancelled, Text: cancelledText}
+		return Overview{}, &RunError{Class: ClassCancelled, Text: CancelledText}
 	}
 	if r.described() == 0 {
 		return Overview{}, r.firstFailure()
@@ -235,30 +237,10 @@ func (p *Pipeline) Run(ctx context.Context, store PartStore, m reviewmap.Map, d 
 // requested ones for the --chapter form, none for the summary-only form
 // (refused when a unit has no part row), else those without a part row.
 func (r *run) plan(units []unit, single bool) ([]unit, error) {
-	prompt := prompts.ReviewChapters
-	if single {
-		prompt = prompts.ReviewOverview
-	}
-	version := r.p.promptVersion(prompt)
-	hashes := make([]string, 0, len(units))
-	for _, u := range units {
-		h := PartHash(u.ch, u.files, r.notes, prompt, version)
-		r.hashes[u.ch.Key] = h
-		hashes = append(hashes, h)
-	}
-	rows, err := r.store.ReviewOverviewParts(r.opt.ProjectID, hashes)
+	r.hashes = r.p.unitHashes(units, single, r.notes)
+	cached, err := readCached(r.store, r.opt.ProjectID, units, r.hashes)
 	if err != nil {
-		log.Printf("reviewai: overview parts not read (%d chapters)", len(units))
-		return nil, fmt.Errorf("reading the overview's chapter parts: %w", err)
-	}
-	cached := map[string]ChapterDesc{}
-	for _, u := range units {
-		row, ok := rows[r.hashes[u.ch.Key]]
-		var desc ChapterDesc
-		if ok && json.Unmarshal([]byte(row.JSON), &desc) == nil && desc.What != "" {
-			desc.Key = u.ch.Key
-			cached[u.ch.Key] = desc
-		}
+		return nil, err
 	}
 	var todo []unit
 	switch {
@@ -281,14 +263,65 @@ func (r *run) plan(units []unit, single bool) ([]unit, error) {
 		_, packable := r.hashes[ch.Key]
 		if desc, ok := cached[ch.Key]; ok && !redo[ch.Key] {
 			r.descs[ch.Key] = desc
-			r.opt.Emit(chapterEvent(StateCached, desc))
+			r.opt.Emit(ChapterEvent(StateCached, desc))
 		} else if desc, ok := r.descs[ch.Key]; ok { // not shown: described without a call
-			r.opt.Emit(chapterEvent(StateOK, desc))
+			r.opt.Emit(ChapterEvent(StateOK, desc))
 		} else if packable && !redo[ch.Key] { // the --chapter form left it undescribed
 			r.opt.Emit(Event{Event: "chapter", Key: ch.Key, State: StateNotStarted})
 		}
 	}
 	return todo, nil
+}
+
+// unitHashes is each unit's part hash (by chapter key) under the prompt a
+// run over units uses: review.overview for a map that fits one batch, else
+// review.chapters.
+func (p *Pipeline) unitHashes(units []unit, single bool, notes []db.ReviewNote) map[string]string {
+	prompt := prompts.ReviewChapters
+	if single {
+		prompt = prompts.ReviewOverview
+	}
+	version := p.promptVersion(prompt)
+	hashes := make(map[string]string, len(units))
+	for _, u := range units {
+		hashes[u.ch.Key] = PartHash(u.ch, u.files, notes, prompt, version)
+	}
+	return hashes
+}
+
+// readCached is the readable part row of each unit, by chapter key.
+func readCached(store PartStore, projectID int64, units []unit, hashes map[string]string) (map[string]ChapterDesc, error) {
+	list := make([]string, 0, len(units))
+	for _, u := range units {
+		list = append(list, hashes[u.ch.Key])
+	}
+	rows, err := store.ReviewOverviewParts(projectID, list)
+	if err != nil {
+		log.Printf("reviewai: overview parts not read (%d chapters)", len(units))
+		return nil, fmt.Errorf("reading the overview's chapter parts: %w", err)
+	}
+	cached := map[string]ChapterDesc{}
+	for _, u := range units {
+		row, ok := rows[hashes[u.ch.Key]]
+		var desc ChapterDesc
+		if ok && json.Unmarshal([]byte(row.JSON), &desc) == nil && desc.What != "" {
+			desc.Key = u.ch.Key
+			cached[u.ch.Key] = desc
+		}
+	}
+	return cached, nil
+}
+
+// CachedChapters is the description a run over map m and diff d would
+// reuse for each chapter, by key: what a run waiting for another run's
+// lock shows as cached (tech spec §3.7).
+func (p *Pipeline) CachedChapters(store PartStore, projectID int64, m reviewmap.Map, d reviewdiff.Diff,
+	notes []db.ReviewNote) (map[string]ChapterDesc, error) {
+	units := packUnits(m, d)
+	if len(units) == 0 {
+		return map[string]ChapterDesc{}, nil
+	}
+	return readCached(store, projectID, units, p.unitHashes(units, len(firstFit(units, m)) == 1, notes))
 }
 
 // describe calls the batches, Parallel at a time, each under its
@@ -374,7 +407,7 @@ func (r *run) keep(key string, desc ChapterDesc, now time.Time) {
 	r.mu.Lock()
 	r.descs[key] = desc
 	r.mu.Unlock()
-	r.opt.Emit(chapterEvent(StateOK, desc))
+	r.opt.Emit(ChapterEvent(StateOK, desc))
 }
 
 // fail records chapter key's failure.
@@ -414,7 +447,7 @@ func failure(class, title string, budget time.Duration, cause error) *RunError {
 	case ClassParse:
 		e.Text = fmt.Sprintf("The AI answer for %s could not be read.", named)
 	case ClassCancelled:
-		e.Text = cancelledText
+		e.Text = CancelledText
 	default:
 		e.Class = ClassProvider
 		e.Text = fmt.Sprintf("The AI provider failed on %s.", named)
@@ -422,7 +455,8 @@ func failure(class, title string, budget time.Duration, cause error) *RunError {
 	return e
 }
 
-func chapterEvent(state string, d ChapterDesc) Event {
+// ChapterEvent is the chapter event of description d in state.
+func ChapterEvent(state string, d ChapterDesc) Event {
 	risks := d.Risks
 	if risks == nil {
 		risks = []Risk{}

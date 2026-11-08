@@ -57,6 +57,9 @@ type reviewPlace struct {
 	Head       string
 	HeadBranch string
 	SessionID  int64
+	// Folder is the snapshot folder's root: the overview's run lock is
+	// keyed by its real path (tech spec §3.7).
+	Folder string
 }
 
 // roundReviewPlace is round r's place. The head is the round's own
@@ -64,7 +67,7 @@ type reviewPlace struct {
 // the branch is the round's (a branch-tip round, #1012), else the folder's
 // checked-out branch.
 func roundReviewPlace(ctx context.Context, repo *reviewdiff.Repo, r *db.ReviewRound) (reviewPlace, error) {
-	pl := reviewPlace{Repo: repo, Tree: r.TreeSHA, Base: r.BaseSHA, Head: r.HeadSHA, HeadBranch: r.Branch}
+	pl := reviewPlace{Repo: repo, Tree: r.TreeSHA, Base: r.BaseSHA, Head: r.HeadSHA, HeadBranch: r.Branch, Folder: r.FolderRoot}
 	if r.SessionID.Valid {
 		pl.SessionID = r.SessionID.Int64
 	}
@@ -93,7 +96,8 @@ func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 	if err != nil {
 		return reviewPlace{}, err
 	}
-	return reviewPlace{Repo: snap.Repo, Tree: snap.Tree, Base: snap.Base, Head: head, HeadBranch: branch, SessionID: sessionID}, nil
+	return reviewPlace{Repo: snap.Repo, Tree: snap.Tree, Base: snap.Base, Head: head, HeadBranch: branch, SessionID: sessionID,
+		Folder: snap.Folder}, nil
 }
 
 // BuildReviewMap reads the place's diff, the session's agent chapters, the
