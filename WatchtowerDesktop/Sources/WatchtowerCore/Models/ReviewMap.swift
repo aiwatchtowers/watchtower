@@ -42,27 +42,47 @@ package struct ReviewMap: Decodable, Equatable, Sendable {
         package let also: [String]
     }
 
+    /// A lane of the branch (its name, its title — the name when none was found —
+    /// and its ticket when found).
+    package struct Lane: Decodable, Equatable, Sendable {
+        package let name: String
+        package let title: String
+        package let targetId: Int64?
+        package let jiraKey: String?
+    }
+
     package let chapters: [Chapter]
     package let files: [File]
+    /// Every lane of the branch, by name.
+    package let lanes: [Lane]
     package let lanesPartial: Bool
     package let diffTruncated: Bool
     package let notes: [String]
 
-    private enum CodingKeys: String, CodingKey { case chapters, files, lanesPartial, diffTruncated, notes }
+    private enum CodingKeys: String, CodingKey { case chapters, files, lanes, lanesPartial, diffTruncated, notes }
 
     /// Go omits empty lists (`null` or absent): they read as `[]`.
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         chapters = try c.decodeIfPresent([Chapter].self, forKey: .chapters) ?? []
         files = try c.decodeIfPresent([File].self, forKey: .files) ?? []
+        lanes = try c.decodeIfPresent([Lane].self, forKey: .lanes) ?? []
         lanesPartial = try c.decodeIfPresent(Bool.self, forKey: .lanesPartial) ?? false
         diffTruncated = try c.decodeIfPresent(Bool.self, forKey: .diffTruncated) ?? false
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
     }
 
-    package init(chapters: [Chapter], files: [File], lanesPartial: Bool = false, diffTruncated: Bool = false, notes: [String] = []) {
+    package init(
+        chapters: [Chapter],
+        files: [File],
+        lanes: [Lane] = [],
+        lanesPartial: Bool = false,
+        diffTruncated: Bool = false,
+        notes: [String] = []
+    ) {
         self.chapters = chapters
         self.files = files
+        self.lanes = lanes
         self.lanesPartial = lanesPartial
         self.diffTruncated = diffTruncated
         self.notes = notes

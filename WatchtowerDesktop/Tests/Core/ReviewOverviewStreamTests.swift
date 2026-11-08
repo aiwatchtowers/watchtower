@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerCore
 
 /// The streamed overview, pinned by the Go golden `cmd/testdata/review-overview-stream.jsonl`
-/// (copied byte for byte into `Fixtures/review-overview-stream.jsonl`).
+/// on feature/1025-p1 (copied byte for byte into `Fixtures/review-overview-stream.jsonl`).
 final class ReviewOverviewStreamTests: XCTestCase {
     private func golden() throws -> Data {
         try ReviewMapTests.fixture("review-overview-stream.jsonl")
@@ -36,6 +36,8 @@ final class ReviewOverviewStreamTests: XCTestCase {
             "summary:true",
             "final:true"
         ])
+        guard case .map(let map) = events[0] else { return XCTFail("not the map") }
+        XCTAssertEqual(map.lanes.map(\.name), ["ABC-1-login", "task-b"])
         guard case .chapter(let described) = events[1] else { return XCTFail("not a chapter") }
         XCTAssertEqual(described.what, "about dir:api")
         XCTAssertEqual(described.risks, [ReviewOverview.Risk(path: "api/api.go", level: .low, why: "check dir:api")])

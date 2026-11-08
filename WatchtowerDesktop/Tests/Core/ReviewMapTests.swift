@@ -1,8 +1,8 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// The map wire shape, pinned by the Go golden `cmd/testdata/review-map.json`
-/// (copied byte for byte into `Fixtures/review-map.json`).
+/// The map wire shape, pinned by the Go golden `cmd/testdata/review-map.json` on
+/// feature/1025-p1 (copied byte for byte into `Fixtures/review-map.json`).
 final class ReviewMapTests: XCTestCase {
     static func fixture(_ name: String) throws -> Data {
         let url = URL(fileURLWithPath: #filePath)
@@ -46,6 +46,10 @@ final class ReviewMapTests: XCTestCase {
         XCTAssertEqual(shared.also, ["ABC-1-login"])
         XCTAssertEqual(map.files.first { $0.path == "README.md" }?.signals, ["file_deleted"])
         XCTAssertEqual(map.files.first { $0.path == "README.md" }?.also, [])
+        XCTAssertEqual(map.lanes, [
+            ReviewMap.Lane(name: "ABC-1-login", title: "Login with a passkey", targetId: nil, jiraKey: "ABC-1"),
+            ReviewMap.Lane(name: "task-b", title: "Payments lane", targetId: 1, jiraKey: nil)
+        ])
         XCTAssertFalse(map.lanesPartial)
         XCTAssertFalse(map.diffTruncated)
         XCTAssertEqual(map.notes, [])
@@ -56,12 +60,20 @@ final class ReviewMapTests: XCTestCase {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let map = try decoder.decode(ReviewMap.self, from: Data("""
             {"chapters":[{"key":"dir:a","title":"a","level":"normal","core":false,"paths":null,"changed_lines":0,
-            "signals_summary":null}],"files":null,"lanes_partial":true,"diff_truncated":true,"notes":null}
+            "signals_summary":null}],"files":null,"lanes":null,"lanes_partial":true,"diff_truncated":true,"notes":null}
             """.utf8))
         XCTAssertEqual(map.chapters[0].paths, [])
+        XCTAssertEqual(map.lanes, [])
         XCTAssertEqual(map.chapters[0].signalsSummary, [:])
         XCTAssertEqual(map.files, [])
         XCTAssertTrue(map.lanesPartial)
         XCTAssertTrue(map.diffTruncated)
+    }
+
+    func testAbsentLanesReadAsEmpty() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let map = try decoder.decode(ReviewMap.self, from: Data(#"{"chapters":[],"files":[]}"#.utf8))
+        XCTAssertEqual(map.lanes, [])
     }
 }
