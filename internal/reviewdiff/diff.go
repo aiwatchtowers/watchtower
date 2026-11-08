@@ -76,7 +76,7 @@ func (r *Repo) Diff(ctx context.Context, from, to string) (Diff, error) {
 	total, next := 0, 0
 	for i := range d.Files {
 		f := &d.Files[i]
-		f.CollapsedReason = collapsedReason(f.Path)
+		f.CollapsedReason = CollapsedReason(f.Path)
 		parseSection(f, sections[next])
 		next++
 		if f.typeChange { // a file turned symlink (or back): git patches it as delete + create
