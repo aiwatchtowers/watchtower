@@ -330,6 +330,31 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
             },
+            // Branch review of a big branch (#1025, mockup frames 1–4b).
+            DesignShot(name: "big-branch-1-running", size: NSSize(width: 1280, height: 860)) {
+                BigBranchReviewShotFixtures.running()
+            },
+            DesignShot(name: "big-branch-1b-waiting", size: NSSize(width: 1280, height: 860)) {
+                BigBranchReviewShotFixtures.waiting()
+            },
+            DesignShot(name: "big-branch-2a-done", size: NSSize(width: 1280, height: 860)) {
+                BigBranchReviewShotFixtures.doneMeaning()
+            },
+            DesignShot(name: "big-branch-2b-failed-chapter", size: NSSize(width: 1280, height: 860)) {
+                BigBranchReviewShotFixtures.failedChapter()
+            },
+            DesignShot(name: "big-branch-2c-summary-failed", size: NSSize(width: 1280, height: 620)) {
+                BigBranchReviewShotFixtures.summaryFailed()
+            },
+            DesignShot(name: "big-branch-3-small-pr", size: NSSize(width: 1280, height: 620)) {
+                BigBranchReviewShotFixtures.smallPR()
+            },
+            DesignShot(name: "big-branch-4a-past-cap", size: NSSize(width: 1280, height: 620)) {
+                BigBranchReviewShotFixtures.pastTheCap()
+            },
+            DesignShot(name: "big-branch-4b-map-failed", size: NSSize(width: 1280, height: 620)) {
+                BigBranchReviewShotFixtures.mapFailed()
+            },
             // Spec review in the review ask drawer (spec 2026-10-25 §7).
             DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
                 SpecReviewShotFixtures.screen(.meaning)

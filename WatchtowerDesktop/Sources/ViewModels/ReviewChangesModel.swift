@@ -34,8 +34,10 @@ final class ReviewChangesModel {
     /// strong model runs only when the owner presses Make overview (board #585).
     /// `outdated`: a made overview landed after the tree moved on and none is
     /// cached for the new tree; it is shown as being for an earlier version.
+    /// `failed`'s `detail` is the provider's own text, shown behind a disclosure.
     enum OverviewState: Equatable {
-        case idle, loading, onRequest, outdated(ReviewOverview), ready(ReviewOverview), failed(String)
+        case idle, loading, onRequest, outdated(ReviewOverview), ready(ReviewOverview)
+        case failed(String, detail: String? = nil)
     }
 
     enum ModelError: Error, Equatable, LocalizedError {
@@ -176,7 +178,18 @@ final class ReviewChangesModel {
 
     // The map and the streamed overview (board #1025, tech spec §3.5, §3.7, §5).
     /// The round's map: chapters, levels and the file badges come from it.
-    private(set) var map: MapState = .loading
+    private(set) var map: MapState = .loading {
+        didSet {
+            guard map != oldValue else { return }
+            if case .ready(let ready) = map {
+                mapFiles = Dictionary(ready.files.map { ($0.path, $0) }) { first, _ in first }
+            } else {
+                mapFiles = [:]
+            }
+        }
+    }
+    /// The map's files by path (a file's danger badge); empty without a map.
+    private(set) var mapFiles: [String: ReviewMap.File] = [:]
     /// The diff the map in `map` was built for: until it is the round's, the
     /// chapters are the old map's over the new files and the selection stays.
     @ObservationIgnored private var mapDiffKey: String?
@@ -972,8 +985,6 @@ final class ReviewChangesModel {
         case failed
     }
 
-    /// The map could not be built: the file list stays, without chapters.
-    static let mapFailedMessage = "Chapters could not be built — Retry"
     /// No complete line from the overview process for this long: it is stuck
     /// (a slow model call still ticks every 30 s; tech spec §3.2, §3.5).
     static let streamSilenceLimit: TimeInterval = 300
@@ -1031,10 +1042,14 @@ final class ReviewChangesModel {
         startStream(.summary)
     }
 
-    /// "Describe N remaining" (`--continue`): only the chapters not described yet.
+    /// "Describe N remaining": only the chapters the last run did not reach
+    /// (`--chapter K` each, then the summary). Failed chapters keep their own
+    /// Retry, so the button's count is exactly what runs.
     func describeRemaining() {
         guard hasChanges, case .ready = map, run == nil else { return }
-        startStream(.remaining)
+        let keys = describableKeys.filter { chapterStates[$0] == .notStarted }
+        guard !keys.isEmpty else { return }
+        startStream(.chapters(keys))
     }
 
     /// Repeats what failed: a cached read stays a cached read in Quick.
@@ -1221,7 +1236,6 @@ final class ReviewChangesModel {
         case full
         case chapters([String])
         case summary
-        case remaining
     }
 
     private struct OverviewRun {
@@ -1253,7 +1267,6 @@ final class ReviewChangesModel {
         case .full: cli.reviewOverviewStream(projectID: projectID, roundID: info.id)
         case .chapters(let keys): cli.reviewOverviewStream(projectID: projectID, roundID: info.id, chapters: keys)
         case .summary: cli.reviewOverviewStream(projectID: projectID, roundID: info.id, summaryOnly: true)
-        case .remaining: cli.reviewOverviewStream(projectID: projectID, roundID: info.id, continue: true)
         }
         overviewTask = Task { [weak self] in await self?.consume(stream, runID: started.id) }
         watchSilence(started.id)
@@ -1270,8 +1283,6 @@ final class ReviewChangesModel {
             keys = describableKeys
         case .chapters(let list):
             keys = list
-        case .remaining:
-            keys = describableKeys.filter { chapterStates[$0] != .ok && chapterStates[$0] != .cached }
         case .summary:
             keys = []
         }
@@ -1418,7 +1429,7 @@ final class ReviewChangesModel {
         if finished.kind == .full {
             settleFailed(finished, text: nil, detail: nil)
             failedGenerating = true
-            overview = .failed(text)
+            overview = .failed(text, detail: detail)
         } else {
             settleFailed(finished, text: text, detail: detail)
         }
@@ -1495,21 +1506,29 @@ final class ReviewChangesModel {
     /// What the chapter's risk section shows (#961): the ready overview's
     /// risks; on a failed refresh the last ready overview's and on an
     /// overview of an earlier version that one's, both out of date. nil = no
-    /// overview to show (the section offers to run one).
+    /// overview to show (the section offers to run one). While a run goes, a
+    /// chapter it already described shows its streamed risks (board #1025).
     func chapterRiskList(_ key: String) -> (risks: [ReviewOverview.Risk], outOfDate: Bool)? {
         switch overview {
         case .ready: (chapterRisks(key), false)
         case let .outdated(earlier): (chapterRisks(key, in: earlier), true)
         case .failed: lastReadyOverview.map { (chapterRisks(key, in: $0), true) }
-        case .idle, .loading, .onRequest: nil
+        case .loading:
+            streamedChapters[key].flatMap { streamed in
+                streamed.state == .ok || streamed.state == .cached ? (Self.bySeverity(streamed.risks), false) : nil
+            }
+        case .idle, .onRequest: nil
         }
+    }
+
+    private static func bySeverity(_ risks: [ReviewOverview.Risk]) -> [ReviewOverview.Risk] {
+        [ReviewOverview.Risk.Level.high, .medium, .low].flatMap { level in risks.filter { $0.level == level } }
     }
 
     private func chapterRisks(_ key: String, in overview: ReviewOverview?) -> [ReviewOverview.Risk] {
         guard let chapter = chapters.first(where: { $0.key == key }) else { return [] }
         let paths = Set(chapter.paths)
-        let mine = (overview?.risk ?? []).filter { paths.contains($0.path) }
-        return [ReviewOverview.Risk.Level.high, .medium, .low].flatMap { level in mine.filter { $0.level == level } }
+        return Self.bySeverity((overview?.risk ?? []).filter { paths.contains($0.path) })
     }
 
     private static func severity(_ level: ReviewOverview.Risk.Level) -> Int {

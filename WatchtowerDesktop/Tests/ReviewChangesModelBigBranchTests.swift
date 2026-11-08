@@ -185,6 +185,47 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(overview.summary, "Adds y.")
     }
 
+    /// While the run goes, a described chapter's risks show at once; a failed run keeps the provider's text.
+    func testStreamedRisksShowWhileTheRunGoesAndAFailedRunKeepsItsDetail() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let run = try await process(h, 0)
+        XCTAssertNil(h.model.chapterRiskList("dir:pkg"), "nothing described yet")
+        run.send(#"{"event":"chapter","key":"dir:pkg","state":"ok","what":"Locks.","risks":["#
+            + #"{"path":"pkg/y.go","level":"low","why":"Naming."},{"path":"pkg/y.go","level":"high","why":"Deadlock."}]}"#)
+        await eventually("dir:pkg ok") { h.model.chapterStates["dir:pkg"] == .ok }
+        let list = try XCTUnwrap(h.model.chapterRiskList("dir:pkg"))
+        XCTAssertEqual(list.risks.map(\.why), ["Deadlock.", "Naming."], "most serious first")
+        XCTAssertFalse(list.outOfDate)
+        XCTAssertNil(h.model.chapterRiskList("dir:cmd"), "still describing")
+        run.send(#"{"ok":false,"error":"Another overview of this branch is still running.","detail":"lock held"}"#)
+        run.finish(status: 1)
+        await h.settle()
+        XCTAssertEqual(h.model.overview, .failed("Another overview of this branch is still running.", detail: "lock held"))
+    }
+
+    /// Describe N remaining redoes exactly the chapters the run did not reach, never a failed one.
+    func testDescribeRemainingSkipsFailedChapters() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let first = try await process(h, 0)
+        first.send(#"{"event":"chapter","key":"dir:cmd","state":"failed","error":{"class":"provider","text":"x"}}"#)
+        first.send(#"{"event":"chapter","key":"dir:pkg","state":"not_started"}"#)
+        first.send(#"{"event":"summary","state":"ok"}"#)
+        first.send(Self.overviewEnvelope)
+        first.finish()
+        await h.settle()
+        h.model.describeRemaining()
+        let second = try await process(h, 1)
+        XCTAssertEqual(second.args.filter { $0.hasPrefix("--chapter") }, ["--chapter=dir:pkg"])
+        XCTAssertFalse(second.args.contains("--continue"))
+        XCTAssertEqual(h.model.chapterStates["dir:cmd"], .failed(text: "x", detail: nil), "a failed chapter keeps its Retry")
+        XCTAssertEqual(h.model.chapterStates["dir:pkg"], .running)
+        second.send(Self.overviewEnvelope)
+        second.finish()
+        await h.settle()
+    }
+
     /// The owner's sentence and the provider's own text stay apart.
     func testFailedChapterKeepsTheSentenceAndTheDetailApart() async throws {
         let h = try harness()
@@ -244,7 +285,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(h.model.chapterStates["dir:pkg"], .notStarted)
         h.model.describeRemaining()
         let second = try await process(h, 1)
-        XCTAssertEqual(second.args.last, "--continue")
+        XCTAssertEqual(Array(second.args.suffix(1)), ["--chapter=dir:pkg"], "only the chapter the run did not reach")
         XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .ok, "dir:pkg": .running], "only what is left runs")
         second.send(Self.overviewEnvelope)
         second.finish()

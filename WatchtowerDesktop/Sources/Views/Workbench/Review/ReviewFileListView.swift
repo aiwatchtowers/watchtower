@@ -83,6 +83,7 @@ struct ReviewFileListView: View {
             viewed: model.isViewed(file.path),
             comments: model.comments.filter { $0.path == file.path && $0.status != .resolved }.count,
             risk: model.highestRisk(for: file.path),
+            danger: model.mapFiles[file.path],
             select: { Task { await model.select(file.path) } },
             toggleViewed: { Task { try? await model.toggleViewed(file.path) } } // a failure lands in lastError
         )
@@ -109,6 +110,8 @@ struct ReviewFileRow: View {
     let viewed: Bool
     let comments: Int
     var risk: ReviewOverview.Risk?
+    /// The map's entry for the file: its danger badge (board #1025).
+    var danger: ReviewMap.File?
     let select: () -> Void
     let toggleViewed: () -> Void
 
@@ -128,7 +131,10 @@ struct ReviewFileRow: View {
                     Text(Self.foldReason(reason)).font(.caption2).foregroundStyle(.secondary)
                 }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: Spacing.small)
+            if let danger, let badge = ReviewMapPresentation.fileBadge(danger) {
+                ReviewDangerBadge(level: danger.level, text: badge)
+            }
             ReviewRiskBadge(level: risk?.level, why: risk?.why ?? "")
             if comments > 0 {
                 Text("\(comments)")

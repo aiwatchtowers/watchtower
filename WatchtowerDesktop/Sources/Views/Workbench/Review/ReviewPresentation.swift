@@ -102,13 +102,6 @@ enum ReviewPresentation {
             ? "No repeated comments found in the last 20 rounds."
             : "No stored proposals. Find Repeats looks for comments you keep repeating."
     }
-
-    static func sourceCaption(_ source: ReviewChapter.Source) -> String? {
-        switch source {
-        case .agent: "by the agent"
-        case .mechanical: nil
-        }
-    }
 }
 
 /// High red, medium orange; low shows only with `showsLow` (a list of every
@@ -144,7 +137,7 @@ struct ReviewUndoneList: View {
 
     var body: some View {
         if !reverts.isEmpty {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text("Undone").font(.caption.weight(.semibold))
                 ForEach(Array(reverts.enumerated()), id: \.offset) { _, revert in
                     Text("\(revert.path) \(revert.header)")
