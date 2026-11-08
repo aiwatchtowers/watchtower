@@ -42,7 +42,10 @@ struct InboxRefHooks {
                     content: content, subject: subject(inbox), workbenches: workbenches, onCommand: onCommand
                 ) { onPress(inbox, $0) })
             },
-            nativeKinds: { nativeKinds($0.kind) },
+            // The recipe's own buttons step aside only for native ones: a
+            // shown row the read does not list (past a cap, a kind its list
+            // leaves out) keeps them, never ending with no buttons.
+            nativeKinds: { ref in content(inboxRef(ref), .inbox) == nil ? [] : nativeKinds(ref.kind) },
             nativeFooter: { ref, mode in
                 let inbox = inboxRef(ref)
                 guard let content = content(inbox, mode),

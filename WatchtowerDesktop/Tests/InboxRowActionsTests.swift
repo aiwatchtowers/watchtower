@@ -239,6 +239,19 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertFalse(self.hooks(present).content(InboxRef(kind: .reminder, id: id), .inbox)?.cliMissing ?? true)
     }
 
+    /// A shown row without native content keeps the recipe's own buttons.
+    func testRowWithoutNativeContentKeepsTheRecipesButtons() {
+        let ref = ArtifactRef(kind: .inboxItem, id: 7)
+        let none = InboxRefHooks.make(isShown: { _ in true }, content: { _, _ in nil })
+        XCTAssertEqual(none.nativeKinds(ref), [])
+        XCTAssertNil(none.nativeActions(ref, .inbox))
+        let some = InboxRefHooks.make(isShown: { _ in true }, content: { _, _ in
+            InboxRowActionsContent(kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: false,
+                                                    showsHandToAgent: true))
+        })
+        XCTAssertEqual(some.nativeKinds(ref), [.open, .chat, .agent])
+    }
+
     func testDuplicatesSuppressedPerKind() {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.inboxItem), [.open, .chat, .agent])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.track), [.target])
