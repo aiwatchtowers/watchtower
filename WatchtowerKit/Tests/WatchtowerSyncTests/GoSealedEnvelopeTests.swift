@@ -35,7 +35,7 @@ final class GoSealedEnvelopeTests: XCTestCase {
     func testEveryGoSealedRecordOpensInTheKit() throws {
         let k = try E2EFixtureKeys()
         let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
-        XCTAssertEqual(Set(file.cases.keys), ["data", "alert", "relayToPhone", "keybox", "alertPush"])
+        XCTAssertEqual(Set(file.cases.keys), ["data", "alert", "relayToPhone", "keybox", "keyboxRelayKX", "alertPush"])
         let metaKey = SymmetricKey(data: E2EFixtureKeys.metaKeyBytes)
         let hubToPhone = try KeyDerivation.relayKey(
             agreementPrivate: k.hubKX, peerPublic: k.devKX.publicKey, linkNonce: k.linkNonce,
@@ -56,8 +56,9 @@ final class GoSealedEnvelopeTests: XCTestCase {
                 opened = try EnvelopeSealer.openSymmetric(
                     data, accepting: [.relayToPhone], context: context, verifier: nil) { _ in hubToPhone }
             case .keybox:
+                // `keyboxRelayKX` is sealed to the offered ephemeral key, `keybox` to `dev_kx`: the phone's candidates.
                 opened = try SealedBox.open(
-                    data, envelopeClass: .keybox, recipient: k.devKX,
+                    data, envelopeClass: .keybox, recipients: [k.devEph, k.devKX],
                     info: SealedBox.keyboxInfo(hubID: k.hubID, deviceID: k.deviceID), context: context,
                     verifier: k.hubSig.publicKey)
                 XCTAssertEqual(item.wireName, Keybox.recordName(deviceID: k.deviceID.uuidString), name)
@@ -128,5 +129,36 @@ final class GoSealedEnvelopeTests: XCTestCase {
         let recordName = KeyDerivation.recordName(
             metaKey: SymmetricKey(data: E2EFixtureKeys.metaKeyBytes), zone: .data, kind: parts[0], id: parts[1])
         XCTAssertNil(opener.open(wireName: recordName, envelope: envelope))
+    }
+
+    /// Relay client Phase 5: the Go hub's keybox sealed to the phone's offered ephemeral key opens in the replica
+    /// with the phone's candidates, and its `relay_kx` merges into the stored pair the hub derives.
+    func testGoSealedKeyboxWithRelayKXOpens() throws {
+        let k = try E2EFixtureKeys()
+        let file = try JSONDecoder().decode(File.self, from: Data(contentsOf: Self.url))
+        let item = try XCTUnwrap(file.cases["keyboxRelayKX"])
+        let store = try InMemoryPhoneKeyStore(identity: DeviceIdentityKeys(signing: k.devSig, agreement: k.devKX))
+        let offer = EphemeralKey(publicKey: k.devEph.publicKey.rawRepresentation, privateKey: k.devEph.rawRepresentation)
+        try store.saveHubLink(HubLinkKeys(
+            hubID: k.hubID.uuidString, hubSigningKey: k.hubSig.publicKey.rawRepresentation,
+            hubAgreementKey: k.hubKX.publicKey.rawRepresentation, linkNonce: k.linkNonce, offeredKX: offer))
+        let opener = EnvelopeReplicaOpener(hubID: k.hubID.uuidString, deviceID: k.deviceID, keys: store)
+
+        let keybox = try opener.openKeybox(wireName: item.wireName, envelope: Data(hex: item.envelope))
+
+        let keys = try XCTUnwrap(keybox.keys)
+        let relayKX = try XCTUnwrap(keys.relayKX)
+        XCTAssertEqual(relayKX.devicePub, WireBytes.base64URL(k.devEph.publicKey.rawRepresentation))
+        XCTAssertEqual(relayKX.hubPub, WireBytes.base64URL(k.hubEph.publicKey.rawRepresentation))
+        let link = try XCTUnwrap(store.updateHubLink(k.hubID.uuidString) { link in
+            try link.merging(
+                keys, identity: try store.identity(), hubID: k.hubID, deviceID: k.deviceID, now: Date(timeIntervalSince1970: 0)
+            ).keys
+        })
+        let pair = try XCTUnwrap(link.epochs.first { $0.epoch == keys.epoch }?.relayKeys)
+        XCTAssertEqual(pair.h2p, try k.ephemeralRelayKey(.hubToPhone, keys.epoch).withUnsafeBytes { Data($0) })
+        XCTAssertEqual(pair.p2h, try k.ephemeralRelayKey(.phoneToHub, keys.epoch).withUnsafeBytes { Data($0) })
+        XCTAssertEqual(link.currentKX, offer, "the offer it answered is the current key now")
+        XCTAssertNil(link.offeredKX)
     }
 }

@@ -58,6 +58,13 @@ extension ReplicaStore {
     static let actionSeqNextKey = "action_seq_next"
     /// The highest epoch an `epoch_ack` was queued for (relay client Phase 3): a lower or equal one never is.
     static let epochAckKey = "epoch_ack_epoch"
+    /// The offer (`next_kx`, base64url) the queued `epoch_ack` carried (relay client Phase 5): the same epoch is due
+    /// again only with another offer. Cleared by `offerAgain`, so the same offer goes once more.
+    static let epochAckKXKey = "epoch_ack_kx"
+    /// When the relay feed first met a record in an epoch above the phone's newest (relay client Phase 5, F15).
+    static let relayWaitSinceKey = "relay_wait_since"
+    /// When the relay feed parked: it waited `SecureTransport.keyboxWaitCap` for a keybox (F26). Now reads it.
+    static let relayFeedParkedSinceKey = "relay_feed_parked_since"
     static let resendFloorKey = "resend_floor"
     /// How long a handled hub control id is remembered (sim "Bounded state").
     static let handledControlRetention: TimeInterval = 15 * 86_400
@@ -384,21 +391,81 @@ extension ReplicaStore {
         }
     }
 
-    /// Whether an `epoch_ack` for `epoch` is due: above every epoch one was queued for.
-    func epochAckDue(_ epoch: UInt32) throws -> Bool {
-        try writer.read { db in try Self.ackedEpoch(db).map { epoch > $0 } ?? true }
+    /// Whether an `epoch_ack` for `epoch` with the offer `nextKX` is due: above every epoch one was queued for, or
+    /// that very epoch with an offer it has not carried yet (a phone offering again inside an epoch). Never below.
+    func epochAckDue(_ epoch: UInt32, nextKX: Data?) throws -> Bool {
+        try writer.read { db in try Self.epochAckDue(db, epoch, nextKX: nextKX) }
     }
 
-    /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch) and records
-    /// the epoch, in one transaction; false, nothing written, when `epoch` is not above the recorded one.
-    func queueEpochAck(_ control: QueuedControl, epoch: UInt32) throws -> Bool {
+    /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch, or the same
+    /// epoch with an older offer) and records the epoch and its offer, in one transaction; false, nothing written,
+    /// when it is not due (`epochAckDue`).
+    func queueEpochAck(_ control: QueuedControl, epoch: UInt32, nextKX: Data?) throws -> Bool {
         try writer.write { db in
-            if let acked = try Self.ackedEpoch(db), epoch <= acked { return false }
+            guard try Self.epochAckDue(db, epoch, nextKX: nextKX) else { return false }
             try db.execute(
                 sql: "DELETE FROM outbound_controls WHERE kind = ?", arguments: [ControlKind.epochAck.rawValue])
             try Self.insertControl(db, control)
             try Self.setMeta(db, Self.epochAckKey, String(epoch))
+            if let nextKX {
+                try Self.setMeta(db, Self.epochAckKXKey, WireBytes.base64URL(nextKX))
+            } else {
+                try Self.deleteMeta(db, Self.epochAckKXKey)
+            }
             return true
+        }
+    }
+
+    /// Forgets which offer the last `epoch_ack` carried, so the same offer is due once more for the same epoch (a
+    /// keybox dropped this phone's stored pair: the hub has no offer of it any more).
+    func clearEpochAckOffer() throws {
+        try writer.write { db in try Self.deleteMeta(db, Self.epochAckKXKey) }
+    }
+
+    // MARK: Waiting for a keybox (relay client Phase 5)
+
+    /// When the relay feed first met a pending epoch in the batch it is replaying; nil when it is not waiting.
+    func relayWaitSince() throws -> Date? {
+        try writer.read { db in try Self.metaDate(db, Self.relayWaitSinceKey) }
+    }
+
+    /// Records the first sighting of a pending epoch; an earlier one stays. Returns the sighting in force.
+    func startRelayWait(at date: Date) throws -> Date {
+        try writer.write { db in
+            if let since = try Self.metaDate(db, Self.relayWaitSinceKey) { return since }
+            try Self.setMeta(db, Self.relayWaitSinceKey, String(date.timeIntervalSince1970))
+            return date
+        }
+    }
+
+    /// When the relay feed parked (Now shows it); nil while it reads.
+    public func relayFeedParkedSince() throws -> Date? {
+        try writer.read { db in try Self.metaDate(db, Self.relayFeedParkedSinceKey) }
+    }
+
+    /// Marks the feed parked; an earlier mark stays.
+    func markRelayFeedParked(at date: Date) throws {
+        try writer.write { db in
+            guard try Self.metaDate(db, Self.relayFeedParkedSinceKey) == nil else { return }
+            try Self.setMeta(db, Self.relayFeedParkedSinceKey, String(date.timeIntervalSince1970))
+        }
+    }
+
+    /// Removes the parked mark (a resume: the feed reads again).
+    func clearRelayFeedParked() throws {
+        try writer.write { db in try Self.deleteMeta(db, Self.relayFeedParkedSinceKey) }
+    }
+
+    /// A batch was read with no pending epoch: the wait and the parked mark both end, in one transaction. Writes
+    /// nothing when neither is set (the feed calls it after every batch).
+    func endRelayWait() throws {
+        let keys = [Self.relayWaitSinceKey, Self.relayFeedParkedSinceKey]
+        let set = try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM replica_meta WHERE key IN (?, ?)", arguments: StatementArguments(keys)) ?? 0
+        }
+        guard set > 0 else { return }
+        try writer.write { db in
+            for key in keys { try Self.deleteMeta(db, key) }
         }
     }
 
@@ -495,6 +562,22 @@ extension ReplicaStore {
     /// nil when no ack was queued yet, or the stored value does not read (the next ack then goes out).
     private static func ackedEpoch(_ db: Database) throws -> UInt32? {
         try meta(db, epochAckKey).flatMap { UInt32($0) }
+    }
+
+    private static func epochAckDue(_ db: Database, _ epoch: UInt32, nextKX: Data?) throws -> Bool {
+        guard let acked = try ackedEpoch(db) else { return true }
+        if epoch != acked { return epoch > acked }
+        guard let nextKX else { return false }
+        return try meta(db, epochAckKXKey) != WireBytes.base64URL(nextKX)
+    }
+
+    /// nil when absent or unreadable.
+    private static func metaDate(_ db: Database, _ key: String) throws -> Date? {
+        try meta(db, key).flatMap(TimeInterval.init).map(Date.init(timeIntervalSince1970:))
+    }
+
+    private static func deleteMeta(_ db: Database, _ key: String) throws {
+        try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [key])
     }
 
     private static func meta(_ db: Database, _ key: String) throws -> String? {

@@ -212,29 +212,73 @@ extension ActionOutbox {
 
     // MARK: epoch_ack
 
-    /// Confirms the phone's newest epoch to an ordered hub (sim rule 13): an `epoch_ack{epoch}` queued once per
-    /// raise, never for an epoch at or below one already acknowledged, in place of an unsent ack for a lower one,
-    /// then a flush. A hub on today's path gets none. Returns whether an ack was queued.
+    /// Confirms the phone's newest epoch to an ordered hub (sim rule 13): an `epoch_ack{epoch, next_kx}` queued once
+    /// per raise, never for an epoch below one already acknowledged, in place of an unsent ack, then a flush.
+    /// `nextKX` is the phone's offered ephemeral public key (relay client Phase 5; nil off the relay route), carried
+    /// as base64url: the same epoch is due again with an offer it has not carried (`epochAckDue`). The ack is sealed
+    /// like any phone record, under the newest epoch's key; the hub retains that epoch. A hub on today's path gets
+    /// none. Returns whether an ack was queued.
     @discardableResult
-    public func enqueueEpochAck(epoch: UInt32) async throws -> Bool {
-        let queued = try await onChain { try await self.queueEpochAck(epoch) }.value
+    public func enqueueEpochAck(epoch: UInt32, nextKX: Data? = nil) async throws -> Bool {
+        let queued = try await onChain { try await self.queueEpochAck(epoch, nextKX: nextKX) }.value
         if queued { requestFlush() }
         return queued
     }
 
-    private func queueEpochAck(_ epoch: UInt32) async throws -> Bool {
-        guard try orderedPath(), try store.epochAckDue(epoch) else { return false }
+    /// A keybox dropped this phone's stored pair for its newest epoch (the hub cleared its offer): the offer the last
+    /// ack carried is forgotten, so the next `enqueueEpochAck` sends it once more for the same epoch.
+    public func offerAgain() async throws {
+        try await onChain { try await self.forgetAckedOffer() }.value
+    }
+
+    private func forgetAckedOffer() throws {
+        try store.clearEpochAckOffer()
+    }
+
+    private func queueEpochAck(_ epoch: UInt32, nextKX: Data?) async throws -> Bool {
+        guard try orderedPath(), try store.epochAckDue(epoch, nextKX: nextKX) else { return false }
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
         let control = ControlPayload(
-            id: UUID().uuidString, kind: .epochAck, deviceID: device.uuidString, hubID: hub.uuidString, epoch: epoch)
+            id: UUID().uuidString, kind: .epochAck, deviceID: device.uuidString, hubID: hub.uuidString, epoch: epoch,
+            nextKX: nextKX.map(WireBytes.base64URL))
         let at = now()
         let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
         let queued = try store.queueEpochAck(
             QueuedControl(id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at),
-            epoch: epoch)
-        if queued { logger.notice("epoch_ack for epoch \(epoch, privacy: .public) queued") }
+            epoch: epoch, nextKX: nextKX)
+        if queued {
+            logger.notice("epoch_ack for epoch \(epoch, privacy: .public) queued, offer: \(nextKX != nil, privacy: .public)")
+        }
         return queued
+    }
+
+    // MARK: A record dropped in a gone epoch (relay client Phase 5)
+
+    /// The feed dropped a hub record sealed in an epoch whose keys this phone will never hold (an echo, a
+    /// `resend_from`, a control): every ordered action without a final echo (`queued` or `sent`) is queued again, in
+    /// order, on the chain after any flush in flight, then a flush. Each goes out as a new version of its record
+    /// (sim rule 3); the hub applies a missing seq and answers the rest as repeats (rule 4), so a lost echo or a lost
+    /// `resend_from` is recovered with no hub write. The feed calls it once per batch. Legacy rows are not touched.
+    /// Returns how many rows are queued.
+    @discardableResult
+    public func requeueUnechoedAfterDrop() async throws -> Int {
+        let count = try await onChain { try await self.requeueUnechoed() }.value
+        if count > 0 {
+            logger.notice("\(count, privacy: .public) unechoed actions queued again after a dropped record")
+            requestFlush()
+        }
+        return count
+    }
+
+    private func requeueUnechoed() throws -> Int {
+        guard try orderedPath() else { return 0 }
+        let rows = try store.outboxRows([.queued, .sent])
+        guard let first = rows.first?.actionSeq else { return 0 }
+        // A rewrite is not a first save: the rows put back leave no timing.
+        for row in rows { stampLatency { try self.store.latencyDrop(actionID: row.actionID) } }
+        _ = try store.requeue(fromSeq: first)
+        return rows.count
     }
 
     // MARK: transport_switch (relay client Phase 3b Task 19)
@@ -533,9 +577,10 @@ extension ActionOutbox {
                     try written(row, version: current.recordSeq, rewritingEcho: rewritingEcho)
                     return .written
                 }
-                // nil = cannot tell what is there (rolled back, garbage, not a RelayZone record): never written over.
-                guard let opened = try await transport.openConflict(current) else { return .left }
-                if let echo = hubEcho(opened, of: row) {
+                // Cannot tell what is there (rolled back, garbage, not a RelayZone record): never written over.
+                let read = try await readConflict(current)
+                guard read.overwritable else { return .left }
+                if let opened = read.opened, let echo = hubEcho(opened, of: row) {
                     if echo.status.isFinal {
                         if !rewritingEcho { try store.markSent(actionID: row.actionID, recordSeq: current.recordSeq, at: now()) }
                         try applyOrderedEcho(echo)
@@ -560,6 +605,14 @@ extension ActionOutbox {
             }
         }
         return .left
+    }
+
+    /// A conflict's current record, opened when it opens; `overwritable` when it opened, or when it is the hub's in an
+    /// epoch this phone will never hold (relay client Phase 5: an echo nothing can read again, written over as sim
+    /// rule 3 writes over anything else, so the hub answers the action again as a repeat).
+    private func readConflict(_ current: CloudRecord) async throws -> (opened: CloudRecord?, overwritable: Bool) {
+        if let opened = try await transport.openConflict(current) { return (opened, true) }
+        return (nil, try await transport.isHubRecordInGoneEpoch(current))
     }
 
     /// The row's write landed (or its own bytes were found) at `version`.
