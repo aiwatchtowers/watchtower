@@ -6,8 +6,11 @@ import (
 	"crypto/ed25519"
 	"database/sql"
 	"errors"
+	"log"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -499,5 +502,49 @@ func TestICloudHubHousekeepingIsAsToday(t *testing.T) {
 	}
 	if after := epochRows(t, r.st); len(after) != len(before) || after[0] != before[0] || after[1] != before[1] {
 		t.Fatalf("an iCloud hub's epoch rows changed:\n%v\n%v", before, after)
+	}
+}
+
+// TestStuckRotationLogsOncePerDay: a relay hub whose epoch is past 14 days
+// (the weekly rotation did not happen: held, or serving nobody) logs a line
+// once a day; a younger epoch or a hub off the relay logs nothing.
+func TestStuckRotationLogsOncePerDay(t *testing.T) {
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	r := newRelayKeysRig(t, "relay")
+	var note stuckRotationNote
+	note.check(r.kr, r.st, r.clock())
+	if buf.Len() != 0 {
+		t.Fatalf("a fresh epoch logged: %q", buf.String())
+	}
+	r.advance(15 * 24 * time.Hour)
+	note.check(r.kr, r.st, r.clock())
+	note.check(r.kr, r.st, r.clock())
+	if n := strings.Count(buf.String(), "epoch rotation is stuck"); n != 1 {
+		t.Fatalf("logged %d times in one day, want 1: %q", n, buf.String())
+	}
+	r.advance(23 * time.Hour)
+	note.check(r.kr, r.st, r.clock())
+	if n := strings.Count(buf.String(), "epoch rotation is stuck"); n != 1 {
+		t.Fatalf("logged again within the day: %d", n)
+	}
+	r.advance(2 * time.Hour)
+	note.check(r.kr, r.st, r.clock())
+	if n := strings.Count(buf.String(), "epoch rotation is stuck"); n != 2 {
+		t.Fatalf("logged %d times after a day, want 2", n)
+	}
+	if !strings.Contains(buf.String(), "15 days") || strings.Contains(buf.String(), r.dir) {
+		t.Fatalf("line should carry the age and no path: %q", buf.String())
+	}
+
+	// Off the relay: the 90-day cadence, nothing to say at 15 days.
+	buf.Reset()
+	c := newRelayKeysRig(t, "cloudkit")
+	c.advance(15 * 24 * time.Hour)
+	var cn stuckRotationNote
+	cn.check(c.kr, c.st, c.clock())
+	if buf.Len() != 0 {
+		t.Fatalf("a cloudkit hub logged: %q", buf.String())
 	}
 }

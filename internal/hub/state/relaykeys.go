@@ -148,3 +148,22 @@ func EraseEpoch(tx *sql.Tx, epoch uint32) error {
 	}
 	return nil
 }
+
+// EpochRelayKeyDevices is the devices (ids as stored) that hold a relay-key
+// row in epoch. Read-only; no key material is read.
+func (s *Store) EpochRelayKeyDevices(epoch uint32) ([]string, error) {
+	rows, err := s.db.Query(`SELECT device_id FROM epoch_relay_keys WHERE epoch = ?`, int64(epoch))
+	if err != nil {
+		return nil, fmt.Errorf("listing relay-key devices: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning relay-key device: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

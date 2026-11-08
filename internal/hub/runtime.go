@@ -95,6 +95,7 @@ type zoneWatcher interface {
 // keyring, the transport, the link center, the processor and the publisher,
 // one worker goroutine and the publisher's.
 type hubRuntime struct {
+	stuck   stuckRotationNote // the daily stuck-rotation log line
 	sup     *supervisor
 	st      *state.Store
 	lat     *measure.Recorder // the content-free latency samples (RC §10)
@@ -1117,6 +1118,7 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	if rotated {
 		h.pub.PublishSoon(slices.AllKinds...)
 	}
+	h.stuck.check(h.kr, h.st, time.Now())
 	// Relay sim rule 14: a retired epoch's keys go once every phone acked a
 	// newer one and no held action is sealed in it, 7 days at most; an epoch
 	// that began on the relay is erased then (ask #1066).
@@ -1276,4 +1278,33 @@ func (h *hubRuntime) typingRequested(device, name string) {
 		return
 	}
 	h.sup.notifyDesktop(ControlAnswer{Event: EventTypingRequest, OK: true, DeviceID: device, Name: name})
+}
+
+// stuckRotationAfter: a relay hub's epoch rotates weekly, so one past this
+// age means the rotation is held back (a running switch, held, or serving
+// nobody before the hold's end).
+const stuckRotationAfter = 14 * 24 * time.Hour
+
+// stuckRotationNote logs, at most once a day, that a relay hub's epoch is
+// past stuckRotationAfter. The housekeeping goroutine is its only caller.
+type stuckRotationNote struct{ last time.Time }
+
+func (n *stuckRotationNote) check(kr *identity.Keyring, st *state.Store, now time.Time) {
+	if !n.last.IsZero() && now.Sub(n.last) < 24*time.Hour {
+		return
+	}
+	if on, err := kr.OnRelay(); err != nil || !on {
+		return
+	}
+	epochs, err := st.Epochs()
+	if err != nil || len(epochs) == 0 {
+		return
+	}
+	cur := epochs[len(epochs)-1]
+	age := now.Sub(cur.CreatedAt)
+	if age < stuckRotationAfter {
+		return
+	}
+	n.last = now
+	log.Printf("hub: epoch rotation is stuck: epoch %d is %d days old on the relay", cur.Epoch, int(age/(24*time.Hour)))
 }
