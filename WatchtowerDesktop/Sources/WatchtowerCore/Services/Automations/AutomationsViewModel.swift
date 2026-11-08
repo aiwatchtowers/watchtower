@@ -585,12 +585,20 @@ package final class AutomationsViewModel {
         pressRoutes[contextID] = route
     }
 
-    /// After the editor's save press on a saved automation: routes it to the
-    /// folder its line showed, only when the save landed (`savedIDs`); a
-    /// refused save sends nothing. A new draft's route waits for `draftSaved`.
-    package func routeEditorSave(_ editor: AutomationEditorCenter, key: Int64, route: InboxNewArtifactRoute?) async {
-        guard let route, !AutomationEditorCenter.isNewDraft(key), let savedID = editor.savedIDs[key] else { return }
-        await routeSaved(savedID, route, reread: false)
+    /// After the editor's save press: `landed` is the automation this
+    /// press's save wrote (`AutomationEditorCenter.commit`), nil when it
+    /// saved nothing — then nothing is routed, whatever an earlier press
+    /// left behind. A saved automation goes to the folder its line showed;
+    /// a new draft's route waits for `draftSaved`.
+    package func routeEditorSave(
+        key: Int64,
+        landed: Int64?,
+        draftContextID: String?,
+        editor: AutomationEditorCenter,
+        route: InboxNewArtifactRoute?
+    ) async {
+        guard let landed, draftContextID == nil, let route else { return }
+        await routeSaved(landed, route, reread: false)
     }
 
     /// Sends the saved automation's route; a failure keeps the folder for

@@ -294,9 +294,9 @@ final class AutomationSaveFolderTests: XCTestCase {
         }
         let center = editorCenter()
         let plan = try await checkedEdit(center)
-        await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
-        XCTAssertEqual(center.savedIDs[7], 7)
-        await vm.routeEditorSave(center, key: 7, route: newRelease)
+        let landed = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
+        XCTAssertEqual(landed, 7)
+        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: newRelease)
         XCTAssertEqual(routeCalls, [[
             "inbox", "folders", "route", "7", "--new-title", "Release", "--expect-revision", "7", "--json"
         ]])
@@ -307,10 +307,33 @@ final class AutomationSaveFolderTests: XCTestCase {
         runner.on("save") { _ in throw Self.failure("Error: not saved: approval hash does not match") }
         let center = editorCenter()
         let plan = try await checkedEdit(center)
-        await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
+        let landed = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
         guard case .failed = center.saving[7] else { return XCTFail("the save was not refused") }
-        await vm.routeEditorSave(center, key: 7, route: newRelease)
+        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: newRelease)
         XCTAssertTrue(routeCalls.isEmpty, "a refused save never makes the folder")
+    }
+
+    /// A save that landed but did not turn on keeps `savedIDs`; the next
+    /// press's refused save must still send nothing (spec: never after a
+    /// refused save).
+    func testRefusedSaveAfterALandedSaveMakesNoFolderCall() async throws {
+        runner.on("save") { _ in
+            Data(#"{"automation_id":7,"path":"/acme/automations/digest.md","approval_hash":"h2","confirmed":true}"#.utf8)
+        }
+        runner.on("enable") { _ in throw Self.failure("Error: config locked") }
+        let center = editorCenter()
+        var plan = try await checkedEdit(center)
+        let first = await center.commit(7, plan: plan, turnOn: true)
+        guard case .failed = center.saving[7] else { return XCTFail("the turn-on did not fail") }
+        await vm.routeEditorSave(key: 7, landed: first, draftContextID: nil, editor: center, route: newRelease)
+        XCTAssertEqual(routeCalls.count, 1, "the save landed: its route goes")
+
+        runner.on("save") { _ in throw Self.failure("Error: not saved: the recipe changed on disk") }
+        plan = try await checkedEdit(center)
+        let second = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
+        XCTAssertNil(second)
+        await vm.routeEditorSave(key: 7, landed: second, draftContextID: nil, editor: center, route: newRelease)
+        XCTAssertEqual(routeCalls.count, 1, "a refused save never routes, whatever an earlier save left")
     }
 
     func testSaveWithoutPlacementMakesNoFolderCallOnAnEdit() async throws {
@@ -319,8 +342,8 @@ final class AutomationSaveFolderTests: XCTestCase {
         }
         let center = editorCenter()
         let plan = try await checkedEdit(center)
-        await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
-        await vm.routeEditorSave(center, key: 7, route: nil)
+        let landed = await center.commit(7, plan: plan, turnOn: false, setsEnabled: false)
+        await vm.routeEditorSave(key: 7, landed: landed, draftContextID: nil, editor: center, route: nil)
         XCTAssertTrue(routeCalls.isEmpty)
     }
 

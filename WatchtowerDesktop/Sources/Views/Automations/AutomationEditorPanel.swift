@@ -526,26 +526,30 @@ struct AutomationEditorPanel: View {
                     await editor.confirmShown(key, plan: checked, turnOn: false)
                     return
                 }
-                await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
-                await vm.routeEditorSave(editor, key: key, route: route)
+                let landed = await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                await vm.routeEditorSave(key: key, landed: landed, draftContextID: nil, editor: editor, route: route)
                 if action == .saveAndTurnOn, editor.saving[key] == .done { await turnOnBuiltin() }
             }
             return
         }
+        let draftContextID = newDraftContextID
         whenLanded(key) {
+            // The automation this press saved; nil for a confirm or a refusal.
+            var landed: Int64?
             switch action {
             case .saveAndTurnOn, .saveAndConfirm:
-                await editor.commit(key, plan: checked, turnOn: true)
+                landed = await editor.commit(key, plan: checked, turnOn: true)
             case .saveTurnedOff:
-                await editor.commit(key, plan: checked, turnOn: false)
+                landed = await editor.commit(key, plan: checked, turnOn: false)
             case .confirmAndTurnOn:
                 await editor.confirmShown(key, plan: checked, turnOn: true)
             case .confirmTurnedOff, .confirm:
                 await editor.confirmShown(key, plan: checked, turnOn: false)
             case .save:
-                await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                landed = await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
             }
-            await vm.routeEditorSave(editor, key: key, route: route)
+            await vm.routeEditorSave(key: key, landed: landed, draftContextID: draftContextID, editor: editor,
+                                     route: route)
         }
     }
 
