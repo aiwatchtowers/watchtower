@@ -10,10 +10,22 @@ import XCTest
 extension RelayFeedTests {
     /// Counts the feed's fetches (its `pull` hook runs once per fetching cycle).
     private final class Fetches: @unchecked Sendable {
+        struct Offline: Error {}
         private let lock = NSLock()
         private var count = 0
+        private var failing = false
         var value: Int { lock.withLock { count } }
-        func hit() { lock.withLock { count += 1 } }
+        /// While set, each fetch fails as a network error would.
+        var offline: Bool {
+            get { lock.withLock { failing } }
+            set { lock.withLock { failing = newValue } }
+        }
+        func hit() throws {
+            try lock.withLock {
+                count += 1
+                if failing { throw Offline() }
+            }
+        }
     }
 
     private struct Rotation {
@@ -46,7 +58,7 @@ extension RelayFeedTests {
     private func rotation(epochs: [UInt32]) async throws -> Rotation {
         let clock = OSAllocatedUnfairLock(initialState: OrderedRig.base)
         let fetches = Fetches()
-        let rig = try await OrderedRig.make(now: { clock.withLock { $0 } }, pull: { fetches.hit() })
+        let rig = try await OrderedRig.make(now: { clock.withLock { $0 } }, pull: { try fetches.hit() })
         try EphemeralLink.make(rig.keys, epochs: epochs)
         return Rotation(rig: rig, clock: clock, fetches: fetches)
     }
@@ -141,7 +153,7 @@ extension RelayFeedTests {
         XCTAssertNil(try r.rig.store.relayWaitSince())
     }
 
-    func testParkingWritesTheMetaKeyAndAResumeRemovesIt() async throws {
+    func testParkingWritesTheMetaKeyAndAnOpeningReadRemovesIt() async throws {
         let r = try await rotation(epochs: [1])
         r.hubSeals(in: 2)
         try await r.rig.hub.writeControl(await r.rig.hub.control(.transportSwitchRejected))
@@ -155,9 +167,113 @@ extension RelayFeedTests {
         XCTAssertNotNil(mark)
 
         await r.rig.feed.resumeIfParked()
-
-        XCTAssertNil(try r.rig.store.relayFeedParkedSince())
+        XCTAssertNotNil(try r.rig.store.relayFeedParkedSince(), "a resume alone keeps the mark")
         XCTAssertNotNil(try r.rig.store.relayWaitSince(), "a resume is no merge: the first sighting stays")
+
+        try EphemeralLink.add(r.rig.keys, epoch: 2)
+        _ = try await r.rig.feed.pollOnce()
+        XCTAssertNil(try r.rig.store.relayFeedParkedSince(), "the read that opens removes it")
+        XCTAssertNil(try r.rig.store.relayWaitSince())
+    }
+
+    /// Parks the rig's feed on a record of epoch 2; returns the mark.
+    private func parked(_ r: Rotation) async throws -> Date {
+        r.hubSeals(in: 2)
+        try await r.rig.hub.writeControl(await r.rig.hub.control(.transportSwitchRejected))
+        await r.pollWaiting()
+        r.advance(by: SecureTransport.keyboxWaitCap)
+        await r.pollWaiting()
+        return try XCTUnwrap(r.rig.store.relayFeedParkedSince())
+    }
+
+    func testAForegroundWithNoNewKeysKeepsTheMarkAndItsSince() async throws {
+        let r = try await rotation(epochs: [1])
+        let mark = try await parked(r)
+        r.advance(by: 3_600)
+        let fetched = r.fetches.value
+
+        await r.rig.feed.resumeIfParked()
+        await r.pollWaiting()
+
+        XCTAssertEqual(r.fetches.value, fetched + 1, "the foreground reads once")
+        XCTAssertEqual(try r.rig.store.relayFeedParkedSince(), mark, "no flicker: the mark and its since stay")
+    }
+
+    func testAForegroundWhileOfflineKeepsTheMark() async throws {
+        let r = try await rotation(epochs: [1])
+        let mark = try await parked(r)
+        r.fetches.offline = true
+
+        await r.rig.feed.resumeIfParked()
+        do {
+            _ = try await r.rig.feed.pollOnce()
+            XCTFail("offline")
+        } catch is Fetches.Offline {}
+
+        XCTAssertEqual(try r.rig.store.relayFeedParkedSince(), mark, "Now keeps the row while the actions still wait")
+    }
+
+    /// M3: the hours a locked keychain blocks every read do not count against the cap.
+    func testALockedKeychainDoesNotCountAgainstTheWait() async throws {
+        let r = try await rotation(epochs: [1])
+        r.hubSeals(in: 2)
+        try await r.rig.hub.writeControl(await r.rig.hub.control(.transportSwitchRejected))
+        await r.pollWaiting()
+        XCTAssertEqual(try r.rig.store.relayWaitSince(), OrderedRig.base)
+
+        r.rig.keys.isLocked = true
+        r.advance(by: 8 * 3_600)
+        await r.pollWaiting()
+        XCTAssertNil(try r.rig.store.relayWaitSince(), "a lock restarts the wait")
+        r.rig.keys.isLocked = false
+        await r.pollWaiting()
+
+        XCTAssertNil(try r.rig.store.relayFeedParkedSince(), "the first read after unlock does not park")
+        XCTAssertEqual(try r.rig.store.relayWaitSince(), OrderedRig.base.addingTimeInterval(8 * 3_600))
+    }
+
+    /// Blocks the key-source check until released, telling when the feed reached it.
+    private final class BlockingCheck: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reached = false
+        private let release = DispatchSemaphore(value: 0)
+        var hasReached: Bool { lock.withLock { reached } }
+
+        func check() -> Bool {
+            lock.withLock { reached = true }
+            _ = release.wait(timeout: .now() + 10)
+            return true
+        }
+
+        func open() { release.signal() }
+    }
+
+    /// I1: a resume sent while a cycle is deciding whether to park, at the key-source check, is not lost: the check
+    /// and the park run with no suspension, so the resume lands after the park and wins.
+    func testAResumeWhileTheKeySourceIsCheckedIsNotLost() async throws {
+        let r = try await rotation(epochs: [1])
+        r.hubSeals(in: 2)
+        try await r.rig.hub.writeControl(await r.rig.hub.control(.transportSwitchRejected))
+        await r.pollWaiting()
+        r.advance(by: SecureTransport.keyboxWaitCap)
+        let blocking = BlockingCheck()
+        r.rig.phone.setWaitsForKeybox { blocking.check() }
+
+        let running = Task { _ = try? await r.rig.feed.pollOnce() }
+        while !blocking.hasReached { await Task.yield() }
+        let resume = Task { await r.rig.feed.resumeIfParked() }
+        await Task.yield()
+        blocking.open()
+        await running.value
+        await resume.value
+        r.rig.phone.setWaitsForKeybox { true }
+        let fetched = r.fetches.value
+
+        try EphemeralLink.add(r.rig.keys, epoch: 2)
+        _ = try await r.rig.feed.pollOnce()
+
+        XCTAssertEqual(r.fetches.value, fetched + 1, "the merge's resume stands: the feed reads")
+        XCTAssertNil(try r.rig.store.relayFeedParkedSince(), "and the opening read removes the mark")
     }
 
     func testResumeIfParkedFetchesAgain() async throws {
@@ -240,7 +356,7 @@ extension RelayFeedTests {
         let fetched = r.fetches.value
 
         let relaunched = RelayFeed(
-            transport: r.rig.phone, store: r.rig.store, outbox: r.rig.outbox, pull: { r.fetches.hit() },
+            transport: r.rig.phone, store: r.rig.store, outbox: r.rig.outbox, pull: { try r.fetches.hit() },
             now: { r.clock.withLock { $0 } })
         do { _ = try await relaunched.pollOnce() } catch SecureTransportError.keysUnavailable {}
         _ = try await relaunched.pollOnce()
@@ -251,7 +367,7 @@ extension RelayFeedTests {
 
     func testNoKeySourceStopsTheFeedSilently() async throws {
         let r = try await rotation(epochs: [1])
-        await r.rig.phone.setWaitsForKeybox { false }
+        r.rig.phone.setWaitsForKeybox { false }
         r.hubSeals(in: 2)
         try await r.rig.hub.writeControl(await r.rig.hub.control(.transportSwitchRejected))
         let token = try r.rig.store.relayToken()
@@ -266,7 +382,7 @@ extension RelayFeedTests {
         XCTAssertNil(try r.rig.store.relayWaitSince())
 
         // A launch builds a new feed: it reads again.
-        let relaunched = RelayFeed(transport: r.rig.phone, store: r.rig.store, outbox: r.rig.outbox) { r.fetches.hit() }
+        let relaunched = RelayFeed(transport: r.rig.phone, store: r.rig.store, outbox: r.rig.outbox) { try r.fetches.hit() }
         do { _ = try await relaunched.pollOnce() } catch SecureTransportError.keysUnavailable {}
         XCTAssertEqual(r.fetches.value, stopped + 1)
         await r.rig.feed.resumeIfParked()
@@ -376,7 +492,9 @@ extension RelayFeedTests {
         XCTAssertEqual(try r.rig.rows().map(\.delivery), [.sent, .sent])
     }
 
-    func testADroppedSwitchIsFollowedByTheMarker() async throws {
+    /// The dropped `transport_switched` is never handed over; the transport marker on the next sync carries the move
+    /// (rule 12a), pinned by the sim twin `testMarkerLeadsReturningPhone` and Go's `TestMarkerLeadsReturningPhone`.
+    func testADroppedSwitchIsNeverHandedOver() async throws {
         let r = try await rotation(epochs: [2, 3])
         let handled = OSAllocatedUnfairLock(initialState: 0)
         await r.rig.feed.setTransportHandler { _ in

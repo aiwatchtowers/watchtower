@@ -451,9 +451,11 @@ extension ReplicaStore {
         }
     }
 
-    /// Removes the parked mark (a resume: the feed reads again).
-    func clearRelayFeedParked() throws {
-        try writer.write { db in try Self.deleteMeta(db, Self.relayFeedParkedSinceKey) }
+    /// A locked keychain: the wait's first sighting goes (the parked mark stays), so locked hours never count against
+    /// the cap. Writes nothing when no wait is recorded (the feed calls it on every locked cycle).
+    func resetRelayWait() throws {
+        guard try relayWaitSince() != nil else { return }
+        try writer.write { db in try Self.deleteMeta(db, Self.relayWaitSinceKey) }
     }
 
     /// A batch was read with no pending epoch: the wait and the parked mark both end, in one transaction. Writes

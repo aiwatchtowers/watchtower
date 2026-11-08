@@ -48,10 +48,9 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     private var knownNames: [String: String] = [:]
     /// "<wire name>|<reason>" already reported: another phone's records come back on every full read.
     private var reported: Set<String> = []
-    /// Whether this phone has a source for the keybox a pending epoch waits for (relay client Phase 5). true by
-    /// default; the session sets it (Task 13): false while the relay refuses this phone or the Mac moved, when the
-    /// feed stops at a pending record at once, silently, instead of waiting.
-    public private(set) var waitsForKeybox: @Sendable () -> Bool = { true }
+    /// The check behind `waitsForKeybox`, read without a hop to this actor.
+    private static let alwaysWaits: @Sendable () -> Bool = { true }
+    private let waitsForKeyboxCheck = OSAllocatedUnfairLock<@Sendable () -> Bool>(initialState: alwaysWaits)
     private let logger = Logger(subsystem: "WatchtowerKit", category: "SecureTransport")
 
     public init(
@@ -68,9 +67,17 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         self.onRejected = onRejected
     }
 
+    /// Whether this phone has a source for the keybox a pending epoch waits for (relay client Phase 5). true by
+    /// default; the session sets it (Task 13): false while the relay refuses this phone or the Mac moved, when the
+    /// feed stops at a pending record at once, silently, instead of waiting. Nonisolated: the feed reads it with no
+    /// suspension, so nothing can interleave between this read and the feed's park.
+    nonisolated public var waitsForKeybox: @Sendable () -> Bool {
+        waitsForKeyboxCheck.withLock { $0 }
+    }
+
     /// Sets the keybox-source check (`waitsForKeybox`).
-    public func setWaitsForKeybox(_ check: @escaping @Sendable () -> Bool) {
-        waitsForKeybox = check
+    nonisolated public func setWaitsForKeybox(_ check: @escaping @Sendable () -> Bool) {
+        waitsForKeyboxCheck.withLock { $0 = check }
     }
 
     // MARK: - Naming

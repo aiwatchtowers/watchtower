@@ -77,7 +77,8 @@ public enum DesktopReachability: Equatable, Sendable {
 /// `relay_feed_parked_since` tells Now. Nothing is skipped: every record is read
 /// in order once the keys come. While `SecureTransport.waitsForKeybox` is false
 /// (no key source) it stops at once, with no mark. A batch read with no pending
-/// record ends the wait and the mark. A hub record in an epoch the phone will
+/// record ends the wait and the mark; a resume alone keeps the mark, and a
+/// locked keychain restarts the wait (locked hours never count). A hub record in an epoch the phone will
 /// never hold is dropped (`epochGone`) and, once per batch, every unechoed
 /// action is queued again (`requeueUnechoedAfterDrop`), so a lost echo or a
 /// lost `resend_from` is recovered.
@@ -205,7 +206,12 @@ public actor RelayFeed {
         do {
             (batch, epochGone) = try await transport.relayChanges(since: since)
         } catch SecureTransportError.epochKeysPending {
-            try await waitForKeybox(resumedSince: resumes != resumesAtStart)
+            try waitForKeybox(resumesAtStart: resumesAtStart)
+            throw SecureTransportError.keysUnavailable
+        } catch SecureTransportError.keysUnavailable {
+            // A locked keychain: the hours it stays locked do not count against the wait (an overnight lock must not
+            // park the feed at the first read after unlock). The next pending read starts the hour again.
+            try store.resetRelayWait()
             throw SecureTransportError.keysUnavailable
         }
         try store.endRelayWait()
@@ -252,11 +258,11 @@ public actor RelayFeed {
 
     /// A record of the batch waits for a keybox: the first sighting is recorded; past `keyboxWaitCap` the feed parks
     /// and marks it. With no key source it parks at once, with no mark and no sighting. Never parks when a resume came
-    /// while this cycle read (`resumedSince`): the next cycle reads again.
-    private func waitForKeybox(resumedSince: Bool) async throws {
-        guard !resumedSince else { return }
-        let waits = await transport.waitsForKeybox
-        guard waits() else {
+    /// since this cycle started (`resumesAtStart`): the next cycle reads again. Synchronous on purpose: no suspension
+    /// between the check and the park, so a resume cannot land in between.
+    private func waitForKeybox(resumesAtStart: Int) throws {
+        guard resumes == resumesAtStart else { return }
+        guard transport.waitsForKeybox() else {
             parked = true
             logger.notice("relay feed stopped: a record waits for a keybox and none can come")
             return
@@ -268,17 +274,12 @@ public actor RelayFeed {
         logger.notice("relay feed parked: no keybox for a newer epoch within the wait cap")
     }
 
-    /// Reads again after a park: the parked mark goes and the next cycle fetches. Called on a merge, a return to the
-    /// foreground and when a key source comes back. The wait's first sighting stays: if the record still waits, the
-    /// feed parks again after one read; a read with no pending record ends the wait.
+    /// Reads again after a park: the next cycle fetches. Called on a merge, a return to the foreground and when a
+    /// key source comes back. The parked mark and the wait's first sighting stay: a read with no pending record ends
+    /// both (`endRelayWait`); if the record still waits, the feed parks again after one read, the mark unchanged.
     public func resumeIfParked() {
         resumes += 1
         parked = false
-        do {
-            try store.clearRelayFeedParked()
-        } catch {
-            logger.error("relay feed parked mark not cleared: \(error.localizedDescription, privacy: .public)")
-        }
     }
 
     /// Drops the consumed relay buffer (events at or below the token just
