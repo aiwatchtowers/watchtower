@@ -171,7 +171,7 @@ struct InboxDayPane: View {
 }
 
 /// Today's card before its brief and plan exist. Per half: a fresh install
-/// (the feature not ready yet) gets the Day filter's first-run copy and its
+/// (the feature not ready yet) gets the briefing's first-run copy and its
 /// readiness line; an established one only says when today's comes (owner,
 /// ask #299, from the old Day Plan screen). Then **Make today's brief and
 /// plan**, its progress and any CLI refusal. With no owner, the OWNER-02
@@ -208,7 +208,7 @@ struct InboxDayNothingReady: View {
             Text("Nothing is ready for today yet.")
                 .font(.headline)
             if briefingOn {
-                half(.briefing, copyKey: InboxFilter.day.emptyCopyKey,
+                half(.briefing, copyKey: "briefings",
                      established: Self.todaysBriefLine(hour: emptyState.briefingHour))
             }
             if dayPlanOn {

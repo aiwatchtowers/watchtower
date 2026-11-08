@@ -178,7 +178,6 @@ final class InboxFolderEntriesTests: XCTestCase {
         let vm = await read(pool)
         await vm.selectEntry("ideas")
         XCTAssertEqual(vm.legacyList, .ideas)
-        XCTAssertEqual(vm.filter, .ideas)
         XCTAssertFalse(vm.sections.isEmpty, "the Ideas list itself")
         vm.closeLegacy()
         XCTAssertNil(vm.legacyList)
@@ -213,7 +212,7 @@ final class InboxFolderEntriesTests: XCTestCase {
 
         XCTAssertEqual(inbox.vm.entrySelection, "ideas")
         XCTAssertEqual(inbox.vm.legacyList, .ideas, "the pane shows the Ideas list, not \"Select a card\"")
-        XCTAssertEqual(inbox.vm.filter, .ideas)
+        XCTAssertFalse(inbox.vm.sections.isEmpty)
     }
 
     /// The selected artifact leaves and a day is next: the day is selected
@@ -300,8 +299,8 @@ final class InboxFolderEntriesTests: XCTestCase {
     }
 
     /// A route (Home, a notification) opens its list for this session
-    /// only: the remembered filter is never a route's.
-    func testRouteNeverRemembersItsFilter() async throws {
+    /// only: the remembered folder is never a route's.
+    func testRouteNeverRemembersItsFolder() async throws {
         let pool = try pool()
         try await pool.write { db in
             try InboxFolderFixtures.seed(db)
@@ -310,11 +309,11 @@ final class InboxFolderEntriesTests: XCTestCase {
         let vm = await read(pool)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
 
-        await vm.open(.tracks, select: nil)
+        await vm.open(folder: nil, select: .legacy(.tracks))
 
         XCTAssertEqual(vm.legacyList, .tracks)
-        XCTAssertEqual(vm.filter, .tracks)
-        XCTAssertNil(defaults.string(forKey: ActionStripViewModel.filterKey), "not written into inbox.filter")
+        XCTAssertEqual(vm.entrySelection, "tracks")
+        XCTAssertNil(defaults.object(forKey: ActionStripViewModel.folderKey), "not written into inbox.folder")
     }
 
     /// The folder read fails: the previous tree and entries stay, with

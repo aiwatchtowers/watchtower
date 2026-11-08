@@ -5,7 +5,7 @@ import WatchtowerTestSupport
 
 /// The Inbox view model over every kind (C1 Task 5): one pure read
 /// (STRIP-02 extended), the opening writes per kind, the track and message
-/// buttons, the remembered filter and day Done, and the on-screen poll.
+/// buttons, the remembered day Done, the routes, and the on-screen poll.
 @MainActor
 final class ActionStripAllKindsTests: XCTestCase {
     private var defaults: UserDefaults!
@@ -90,7 +90,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
         let vm = makeVM(runner)
         await vm.refresh()
-        XCTAssertEqual(vm.sections.first?.items.first?.id, .builtinNotice("morning-brief"))
+        XCTAssertEqual(vm.feed.builtinNotices.map(\.builtinID), ["morning-brief"], "the notice is read")
         var restarts = 0
 
         await vm.retryBuiltinUpgrade("morning-brief") { restarts += 1 }
@@ -442,8 +442,8 @@ final class ActionStripAllKindsTests: XCTestCase {
             ]
         }
         let vm = makeVM()
-        vm.filter = .messages
         await vm.refresh()
+        vm.openLegacy(.messages)
         XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), ids.map { .message($0) })
         await vm.select(.message(ids[1]))
         try await pool.write { db in
@@ -471,8 +471,8 @@ final class ActionStripAllKindsTests: XCTestCase {
             ]
         }
         let vm = makeVM()
-        vm.filter = .messages
         await vm.refresh()
+        vm.openLegacy(.messages)
         await vm.select(.message(ids[1]))
         try await pool.write { db in
             try db.execute(sql: "UPDATE inbox_items SET status = 'resolved' WHERE id = ?", arguments: [ids[1]])
@@ -497,28 +497,25 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     // MARK: - Per-viewer state
 
-    func testFilterAndDayDoneSurviveANewViewModel() {
+    func testDayDoneSurvivesANewViewModel() {
         let vm = makeVM()
-        XCTAssertEqual(vm.filter, .all)
         XCTAssertNil(vm.dayDone)
 
-        vm.filter = .tracks
         vm.markDayDone("2026-10-22")
 
-        XCTAssertEqual(defaults.string(forKey: "inbox.filter"), "tracks")
         XCTAssertEqual(defaults.string(forKey: "inbox.dayCardDone"), "2026-10-22")
+        XCTAssertNil(defaults.object(forKey: "inbox.filter"), "the filter bar's key is gone")
         let next = makeVM()
-        XCTAssertEqual(next.filter, .tracks)
         XCTAssertEqual(next.dayDone, "2026-10-22")
     }
 
-    func testOpenSetsTheFilterAndSelects() async throws {
+    func testOpenShowsTheListAndSelects() async throws {
         let id = try await pool.write { try Self.message($0, 1) }
         let vm = makeVM()
 
-        await vm.open(.messages, select: .message(id))
+        await vm.open(folder: nil, select: .card(.message(id)))
 
-        XCTAssertEqual(vm.filter, .messages)
+        XCTAssertEqual(vm.legacyList, .messages)
         XCTAssertEqual(vm.selection, .message(id))
         XCTAssertNotNil(try row("inbox_items", id)["read_at"] as String?)
     }
@@ -533,9 +530,9 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
         let vm = makeVM()
 
-        await vm.open(.messages, select: .message(id))
+        await vm.open(folder: nil, select: .card(.message(id)))
 
-        XCTAssertEqual(vm.filter, .messages)
+        XCTAssertEqual(vm.legacyList, .messages)
         XCTAssertNil(vm.selection)
         XCTAssertNil(try row("inbox_items", id)["read_at"] as String?)
     }
@@ -555,7 +552,7 @@ final class ActionStripAllKindsTests: XCTestCase {
 
         XCTAssertEqual(vm.dayLimit, 60)
         XCTAssertEqual(vm.feed.days.count, 31)
-        XCTAssertFalse(vm.feed.hasOlderDays, "nothing older left: Show older goes")
+        XCTAssertFalse(vm.feed.hasOlderDays, "nothing older left")
     }
 
     /// A route to a day past the loaded pages reads older pages until the
@@ -569,12 +566,14 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
         let vm = makeVM()
 
-        await vm.open(.day, select: .day("2026-07-01"))
+        await vm.open(folder: nil, select: .card(.day("2026-07-01")))
         XCTAssertEqual(vm.selection, .day("2026-07-01"))
+        XCTAssertEqual(vm.entrySelection, "day:2026-07-01", "its Morning brief entry in the root")
         XCTAssertEqual(vm.dayLimit, 90)
 
-        await vm.open(.day, select: .day("2020-01-01"))
+        await vm.open(folder: nil, select: .card(.day("2020-01-01")))
         XCTAssertNil(vm.selection, "not found: nothing selected")
+        XCTAssertNil(vm.entrySelection)
         XCTAssertFalse(vm.feed.hasOlderDays)
     }
 
@@ -593,16 +592,16 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
         let vm = makeVM()
 
-        await vm.open(.tracks, select: .track(stopped))
+        await vm.open(folder: nil, select: .card(.track(stopped)))
         XCTAssertTrue(vm.showsStopped, "the Stopped fold opens")
         XCTAssertEqual(vm.selection, .track(stopped))
 
-        await vm.open(.ideas, select: .idea(merged))
+        await vm.open(folder: nil, select: .card(.idea(merged)))
         XCTAssertEqual(vm.selection, .idea(target), "the merge target opens")
 
-        await vm.open(.ideas, select: .idea(9999))
+        await vm.open(folder: nil, select: .card(.idea(9999)))
         XCTAssertNil(vm.selection)
-        await vm.open(.tracks, select: .track(9999))
+        await vm.open(folder: nil, select: .card(.track(9999)))
         XCTAssertNil(vm.selection)
     }
 
@@ -614,7 +613,6 @@ final class ActionStripAllKindsTests: XCTestCase {
             }
         }
         let vm = makeVM()
-        vm.filter = .day
         await vm.refresh()
         XCTAssertTrue(vm.feed.hasOlderDays)
         // Every later read fails on a column the day query orders by.
@@ -622,7 +620,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             try db.execute(sql: "ALTER TABLE briefings RENAME COLUMN created_at TO created_at_gone")
         }
 
-        await vm.open(.day, select: .day("2020-01-01"))
+        await vm.open(folder: nil, select: .card(.day("2020-01-01")))
 
         XCTAssertNotNil(vm.lastError)
         XCTAssertNil(vm.selection)
@@ -630,18 +628,16 @@ final class ActionStripAllKindsTests: XCTestCase {
     }
 
     /// Today with neither a brief nor a plan: its placeholder card is listed
-    /// (All and Day) but the badge stays 0.
+    /// in the root but the badge stays 0; no legacy list carries it.
     func testTodaysPlaceholderIsListedButNeverCounted() async throws {
         let vm = makeVM()
         await vm.refresh()
-        XCTAssertEqual(vm.sections, [], "no owner: All has no placeholder")
+        XCTAssertEqual(vm.folderEntries.map(\.id), [], "no owner: the root has no placeholder")
         try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1") }
         await vm.refresh()
 
-        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(today)])
-        vm.filter = .day
-        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(today)])
-        vm.filter = .messages
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["day:\(today)"])
+        vm.openLegacy(.messages)
         XCTAssertEqual(vm.sections, [])
         let nowUTC = AutomationDates.format(Date())
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: nowUTC) }

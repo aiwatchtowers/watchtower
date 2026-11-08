@@ -298,12 +298,10 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 	}
 }
 
-// TestCard_DoesAndResultFilter: every card lists what it does and names the
-// Inbox filter its result lands in and its default folder (the root, but
-// Needs approval's own folder).
-func TestCard_DoesAndResultFilter(t *testing.T) {
-	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations",
-		"waiting-for-me": "messages", NeedsApprovalID: "automations"}
+// TestCard_DoesAndDefaultFolder: every card lists what it does and names its
+// default folder (the root, but Needs approval's own folder) — the Inbox
+// folder its Show in Inbox opens.
+func TestCard_DoesAndDefaultFolder(t *testing.T) {
 	wantFolder := map[string]string{NeedsApprovalID: NeedsApprovalID}
 	f := newFixture(t)
 	for _, e := range All() {
@@ -313,9 +311,6 @@ func TestCard_DoesAndResultFilter(t *testing.T) {
 		}
 		if len(card.Does) < 1 {
 			t.Errorf("%s: no Does steps", e.ID)
-		}
-		if card.ResultFilter != want[e.ID] {
-			t.Errorf("%s: result_filter %q, want %q", e.ID, card.ResultFilter, want[e.ID])
 		}
 		folder := cmp.Or(wantFolder[e.ID], RootFolder)
 		if card.DefaultFolder != folder {

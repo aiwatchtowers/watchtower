@@ -20,7 +20,6 @@
   "sends": [
     "One card per approval in your Inbox, in Needs approval"
   ],
-  "result_filter": "automations",
   "default_folder": "needs-approval",
   "parameters": [],
   "feature_ids": [

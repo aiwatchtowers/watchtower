@@ -24,7 +24,6 @@
   "sends": [
     "Idea cards in your Inbox; decisions go to your brief"
   ],
-  "result_filter": "ideas",
   "default_folder": "inbox",
   "parameters": [
     {

@@ -1,35 +1,31 @@
 import Foundation
 
-/// The Inbox filter bar's segments (spec §5.1). Each one shows its own kinds
-/// of card; `all` is the triage mix.
-package enum InboxFilter: String, CaseIterable, Sendable {
-    case all, day, messages, tracks, ideas, automations
+/// A legacy entry of the Inbox's root whose pane is today's list for it
+/// (ask #445): Track my threads, Idea finder and Messages. The filter bar
+/// that once chose these lists is gone (inbox builder B).
+package enum InboxLegacyList: String, CaseIterable, Sendable {
+    case tracks, ideas, messages
 
+    /// The entry's and its list's title.
     package var title: String {
         switch self {
-        case .all: "All"
-        case .day: "Day"
+        case .tracks: "Track my threads"
+        case .ideas: "Idea finder"
         case .messages: "Messages"
-        case .tracks: "Tracks"
-        case .ideas: "Ideas"
-        case .automations: "Automations"
         }
     }
 
-    /// The `EmptyStateCopyTable` key of the filter's empty list.
+    /// The `EmptyStateCopyTable` key of the list when it has nothing.
     package var emptyCopyKey: String {
         switch self {
-        case .all: "inbox"
-        case .day: "briefings"
-        case .messages: "inboxMessages"
         case .tracks: "tracks"
         case .ideas: "ideas"
-        case .automations: "inboxAutomations"
+        case .messages: "inboxMessages"
         }
     }
 }
 
-/// One day of the Day filter: the briefing and the day plan of one date.
+/// One day of the Morning brief: the briefing and the day plan of one date.
 package struct InboxDayCard: Equatable, Sendable {
     package let date: String // "YYYY-MM-DD"
     package let briefing: Briefing?
@@ -61,7 +57,7 @@ package struct InboxDayCard: Equatable, Sendable {
     package var isEmpty: Bool { briefing == nil && plan == nil }
 }
 
-/// One track of the Tracks filter with its latest activity.
+/// One track of Track my threads with its latest activity.
 package struct InboxTrackCard: Equatable, Sendable {
     package let track: Track
     package let lastEventAt: Date
@@ -85,24 +81,24 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     /// (`AutomationQueries.artifactPeople`).
     package var artifactPeople: [String: String] = [:]
     package var days: [InboxDayCard] = []
-    /// More dates exist past `days` (the Day filter's **Show older**).
+    /// More dates exist past `days` (a route to an old day reads more pages).
     package var hasOlderDays = false
-    /// Watchtower knows the owner (OWNER-01). Without one, All shows no
+    /// Watchtower knows the owner (OWNER-01). Without one, the root shows no
     /// placeholder day card, so the empty Inbox says why (OWNER-02).
     package var ownerKnown = true
     /// The briefing and day-plan features are on (Settings → Features). With
-    /// both off no list shows today's placeholder day card, and its pane
+    /// both off the root shows no placeholder day card, and its pane
     /// offers to make only the halves still on.
     package var briefingOn = true
     package var dayPlanOn = true
     package var tracks: [InboxTrackCard] = []
-    /// Dismissed tracks: only the Tracks filter's Stopped fold lists them,
+    /// Dismissed tracks: only Track my threads' Stopped fold lists them,
     /// nothing counts them.
     package var stoppedTracks: [InboxTrackCard] = []
     package var ideas: [Idea] = []
     package var messages: [HomeFeedInboxRow] = []
     /// Built-ins whose one-time move to Automations failed (C2): first in
-    /// Needs your decision under All and Automations, each with **Retry**.
+    /// Needs approval, each with **Retry**.
     package var builtinNotices: [BuiltinUpgradeNotice] = []
 
     package init(

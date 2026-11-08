@@ -100,9 +100,9 @@ final class ActionStripActionsViewTests: XCTestCase {
         let sut = view(vm, rows: await dictionaryRows(pool), feature: .off)
 
         // The negative finds walk only the list and reading pane (the split's
-        // second column): the folder menu holds no cheat sheet, and walking
-        // it on every miss made this test take minutes.
-        let inbox = try sut.inspect().hSplitView().vStack(1)
+        // second column, under the Inbox header): the folder menu holds no
+        // cheat sheet, and walking it on every miss made this test take minutes.
+        let inbox = try sut.inspect().vStack().hSplitView(2).vStack(1)
         XCTAssertThrowsError(try inbox.find(ReactionCheatSheetView.self), "no inline sheet among real cards")
         XCTAssertThrowsError(try inbox.find(button: "Enable Reaction Commands"))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
@@ -124,7 +124,7 @@ final class ActionStripActionsViewTests: XCTestCase {
 
     /// An empty legacy list (opened from the root, as a route to Messages
     /// does) shows its own empty state; the cheat sheet stays behind `?` there.
-    func testEmptyFilterShowsItsOwnEmptyState() async throws {
+    func testEmptyLegacyListShowsItsOwnEmptyState() async throws {
         let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -136,7 +136,7 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "No messages waiting"))
         XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyFilter"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyLegacyList"))
     }
 
     /// Before the first read the Inbox shows a spinner, never "empty" and

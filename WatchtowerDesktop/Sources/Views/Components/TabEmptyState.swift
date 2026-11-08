@@ -19,12 +19,12 @@ struct EmptyStateContext {
     static let neutral = Self()
 }
 
-/// `FeatureEmptyState` for one sidebar tab (or one Inbox filter): its copy
+/// `FeatureEmptyState` for one sidebar tab (or one Inbox list): its copy
 /// (`EmptyStateCopyTable`), its feature's readiness and Turn on state from the
 /// context, the tab's own action, and what the tab keeps inside (`extra`).
 struct TabEmptyState<Extra: View>: View {
     /// The `EmptyStateCopyTable` key: a `SidebarDestination.rawValue` or an
-    /// `InboxFilter.emptyCopyKey`.
+    /// `InboxLegacyList.emptyCopyKey`.
     let copyKey: String
     /// Replaces the row's icon; nil keeps it.
     let icon: String?

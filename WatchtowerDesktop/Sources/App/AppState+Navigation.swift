@@ -17,8 +17,8 @@ extension AppState {
         selectedDestination = .digests
     }
 
-    /// The Inbox on `route`'s filter with its card open (old screen links,
-    /// Home, notifications, the four helpers below). The Inbox has no
+    /// The Inbox on `route`'s folder with its entry open (old screen links,
+    /// Home, notifications, a built-in's Show in Inbox, the helpers below). The Inbox has no
     /// feature or source gate (C1), so it always shows. The returned task is
     /// the Inbox's read and selection, for a test to await; nil before the
     /// Inbox's view model exists.
@@ -26,7 +26,21 @@ extension AppState {
     func openInbox(_ route: InboxRoute) -> Task<Void, Never>? {
         selectedDestination = .inbox
         guard let inbox = actionStripViewModel else { return nil }
-        return Task { await inbox.open(route.filter, select: route.selection) }
+        return Task { await inbox.open(folder: route.folderID, select: route.entry) }
+    }
+
+    /// A built-in card's **Show in Inbox**: the folder its artifacts land in
+    /// (its route, else its default folder, else the root), resolved on a
+    /// fresh read of the menu.
+    @discardableResult
+    func openBuiltinInInbox(automationID: Int64, defaultFolder: String) -> Task<Void, Never>? {
+        selectedDestination = .inbox
+        guard let inbox = actionStripViewModel else { return nil }
+        return Task {
+            await inbox.refresh()
+            let folder = inbox.folderMenu.tree.folder(forAutomation: automationID, defaultSlug: defaultFolder)
+            await inbox.open(folder: folder.id, select: nil)
+        }
     }
 
     /// Today's local day, "YYYY-MM-DD" — the Inbox's own day key.
@@ -34,10 +48,10 @@ extension AppState {
         HomeFeedBuilder.dayString(now, calendar: .current)
     }
 
-    /// The idea's card in the Inbox's Ideas filter.
+    /// The idea's card in the Inbox's Idea finder list.
     @discardableResult
     func navigateToIdea(_ ideaID: Int) -> Task<Void, Never>? {
-        openInbox(InboxRoute(filter: .ideas, selection: .idea(ideaID)))
+        openInbox(.card(.idea(ideaID)))
     }
 
     func navigateToTarget(_ targetID: Int) {
@@ -45,7 +59,7 @@ extension AppState {
         selectedDestination = .targets
     }
 
-    /// The briefing's day card in the Inbox's Day filter: the Inbox shows at
+    /// The briefing's day card in the Inbox's root (its Morning brief entry): the Inbox shows at
     /// once, the briefing's date is read off the main thread, then its card
     /// opens; a briefing that is gone (or no database) opens today's card.
     @discardableResult
@@ -72,16 +86,16 @@ extension AppState {
         selectedDestination = .calendar
     }
 
-    /// The day card of `date` ("YYYY-MM-DD", today when nil) in the Day filter.
+    /// The day card of `date` ("YYYY-MM-DD", today when nil) in the Inbox's root.
     @discardableResult
     func navigateToDayPlan(_ date: String? = nil) -> Task<Void, Never>? {
-        openInbox(InboxRoute(filter: .day, selection: .day(date ?? Self.inboxToday())))
+        openInbox(.card(.day(date ?? Self.inboxToday())))
     }
 
-    /// The track's card in the Inbox's Tracks filter.
+    /// The track's card in the Inbox's Track my threads list.
     @discardableResult
     func navigateToTrack(_ trackID: Int) -> Task<Void, Never>? {
-        openInbox(InboxRoute(filter: .tracks, selection: .track(trackID)))
+        openInbox(.card(.track(trackID)))
     }
 
     func navigateToPerson(_ userID: String) {
@@ -130,7 +144,7 @@ extension AppState {
     func openBriefingLink(_ link: BriefingLink) {
         switch link {
         case .track(let id):
-            if let id { navigateToTrack(id) } else { openInbox(InboxRoute(filter: .tracks)) }
+            if let id { navigateToTrack(id) } else { openInbox(.legacy(.tracks)) }
         case .digest(let id):
             if let id { navigateToDigest(id) } else { selectedDestination = .digests }
         case .person(let userID):
