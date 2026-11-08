@@ -201,6 +201,36 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertNotNil(readAt, "the day's read mark is written, as a click writes it")
     }
 
+    /// Yesterday's unread brief, opened: its read mark is written, and it
+    /// stays listed while it is selected — it leaves once the selection moves.
+    func testSelectedDayStaysListedOnceRead() async throws {
+        let today = HomeFeedBuilder.dayString(NeedsApprovalFixtures.now, calendar: .current)
+        let yesterday = HomeFeedBuilder.dayString(
+            NeedsApprovalFixtures.now.addingTimeInterval(-86400), calendar: .current)
+        let pool = try pool()
+        let root = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U001")
+            try TestDatabase.insertBriefing(db, userID: "1:U001", date: today, readAt: "2026-11-06T08:00:00Z")
+            try TestDatabase.insertBriefing(db, userID: "1:U001", date: yesterday)
+            return folders.root
+        }
+        let vm = await read(pool, folder: root)
+        XCTAssertTrue(vm.folderEntries.contains { $0.id == "day:\(yesterday)" }, "unread: listed")
+
+        await vm.selectEntry("day:\(yesterday)")
+
+        let unread = try await pool.read {
+            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM briefings WHERE read_at IS NULL")
+        }
+        XCTAssertEqual(unread, 0, "the read mark is written")
+        XCTAssertEqual(vm.entrySelection, "day:\(yesterday)", "the brief stays open while it is read")
+        XCTAssertTrue(vm.folderEntries.contains { $0.id == "day:\(yesterday)" })
+
+        await vm.selectEntry("day:\(today)")
+        XCTAssertFalse(vm.folderEntries.contains { $0.id == "day:\(yesterday)" }, "read and not selected: gone")
+    }
+
     /// The folder read fails: the previous tree and entries stay, with
     /// today's strip-wide error line.
     func testFolderReadFailureKeepsPreviousTree() async throws {

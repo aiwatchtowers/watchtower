@@ -65,6 +65,9 @@ package enum InboxFolderEntries {
         /// The `approval-cards` feature is on.
         package var approvalsOn: Bool
         package var dayDone: String?
+        /// The day the owner has open (`yyyy-MM-dd`): listed while it is
+        /// selected even once read, so it does not vanish while being read.
+        package var selectedDay: String?
         package var now: Date
         package var calendar: Calendar
 
@@ -73,6 +76,7 @@ package enum InboxFolderEntries {
             folders: InboxFolderMenuSnapshot,
             approvalsOn: Bool = true,
             dayDone: String? = nil,
+            selectedDay: String? = nil,
             now: Date,
             calendar: Calendar = .current
         ) {
@@ -80,6 +84,7 @@ package enum InboxFolderEntries {
             self.folders = folders
             self.approvalsOn = approvalsOn
             self.dayDone = dayDone
+            self.selectedDay = selectedDay
             self.now = now
             self.calendar = calendar
         }
@@ -156,16 +161,22 @@ package enum InboxFolderEntries {
     }
 
     /// The day cards the All list showed (today's, the unread ones, and
-    /// today's placeholder while the owner is known), one entry per date.
+    /// today's placeholder while the owner is known), one entry per date,
+    /// plus the selected day while it is open (`Inputs.selectedDay`).
     private static func days(_ inputs: Inputs) -> [InboxDayCard] {
         let today = HomeFeedBuilder.dayString(inputs.now, calendar: inputs.calendar)
         let sections = InboxListBuilder.sections(
             inputs.feed, filter: .all, dayDone: inputs.dayDone, today: today, now: inputs.now,
             calendar: inputs.calendar, placeholdsToday: true)
-        return sections.flatMap(\.items).compactMap { item in
+        var days: [InboxDayCard] = sections.flatMap(\.items).compactMap { item in
             if case let .day(card) = item { return card }
             return nil
         }
+        if let selected = inputs.selectedDay, !days.contains(where: { $0.date == selected }),
+           let card = inputs.feed.days.first(where: { $0.date == selected }) {
+            days.append(card)
+        }
+        return days
     }
 
     private static func ideasUpdatedAt(_ feed: InboxFeedSnapshot) -> Date? {

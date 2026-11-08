@@ -300,7 +300,13 @@ package final class ActionStripViewModel {
     package var entryInputs: InboxFolderEntries.Inputs {
         InboxFolderEntries.Inputs(
             feed: feed, folders: folderMenu.snapshot,
-            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), dayDone: dayDone, now: clock())
+            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), dayDone: dayDone,
+            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
+    }
+
+    /// The date of a day entry's id (`day:<yyyy-MM-dd>`), else nil.
+    private static func dayOfEntry(_ id: String) -> String? {
+        id.hasPrefix("day:") ? String(id.dropFirst("day:".count)) : nil
     }
 
     /// The selected folder's list column.
