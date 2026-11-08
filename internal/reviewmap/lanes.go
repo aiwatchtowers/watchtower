@@ -146,6 +146,13 @@ func (w *walker) excludeWith(revs ...string) []string {
 	return revs
 }
 
+// withRev is a merged lane's exclusions: the walked lane's own (base and
+// what its callers exclude, so a commit reached twice is recorded once)
+// plus the merge's other parent.
+func withRev(exclude []string, rev string) []string {
+	return append(slices.Clone(exclude), rev)
+}
+
 // segment is one stretch of a lane's first-parent walk, newest first. A
 // segment that ends at a fast-forward merge carries the lane it brings in
 // (ff), read between the older segment and this one.
@@ -191,7 +198,7 @@ func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude [
 	for s := len(segs) - 1; s >= 0; s-- {
 		seg := segs[s]
 		if seg.ff != nil {
-			if err := w.walkLane(ctx, seg.ff.name, seg.ff.first, w.excludeWith(seg.ff.second)); err != nil {
+			if err := w.walkLane(ctx, seg.ff.name, seg.ff.first, withRev(exclude, seg.ff.second)); err != nil {
 				return err
 			}
 		}
@@ -200,7 +207,7 @@ func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude [
 			switch {
 			case seg.sync[i]:
 			case seg.merges[i] != "":
-				if err := w.walkLane(ctx, seg.merges[i], c.Parents[1], w.excludeWith(c.Parents[0])); err != nil {
+				if err := w.walkLane(ctx, seg.merges[i], c.Parents[1], withRev(exclude, c.Parents[0])); err != nil {
 					return err
 				}
 			case len(c.Parents) < 2:

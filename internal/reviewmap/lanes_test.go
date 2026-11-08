@@ -437,6 +437,40 @@ func TestAttribute_FastForwardIntoMerge(t *testing.T) {
 	}
 }
 
+func TestAttribute_NestedLaneKeepsTheCallersExclusions(t *testing.T) {
+	// b is merged into the top, then into a, and a into the top: b's commit
+	// is counted once, so the later lane c wins b.go's tie.
+	r := newLaneRepo(t)
+	r.checkout("-b", "feature/b")
+	r.commit("b1", "b.go")
+	r.checkout("main")
+	r.checkout("-b", "feature/a")
+	r.checkout("main")
+	r.checkout("-b", "feature/top")
+	r.merge("feature/b", "Merge branch 'feature/b' into feature/top")
+	r.checkout("feature/a")
+	r.merge("feature/b", "Merge branch 'feature/b' into feature/a")
+	r.commit("a1", "a.go")
+	r.checkout("feature/top")
+	r.merge("feature/a", "Merge branch 'feature/a' into feature/top")
+	r.checkout("feature/b")
+	r.checkout("-b", "feature/c")
+	r.commit("c1", "b.go")
+	r.checkout("feature/top")
+	r.merge("feature/c", "Merge branch 'feature/c' into feature/top")
+	a, err := Attribute(context.Background(), r.open(), r.rev("main"), r.rev("HEAD"), "feature/top", r.rev("main"),
+		newFakeTitles(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.FileLane["b.go"]; got != "feature/c" {
+		t.Errorf("b.go lane = %q, want feature/c (b's commit counted twice?)", got)
+	}
+	if got := a.Also["b.go"]; !reflect.DeepEqual(got, []string{"feature/b"}) {
+		t.Errorf("b.go also = %v, want [feature/b]", got)
+	}
+}
+
 func TestCommitTag(t *testing.T) {
 	titles := newFakeTitles().t
 	for _, c := range []struct{ subject, branch, want string }{
