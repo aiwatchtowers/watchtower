@@ -70,8 +70,8 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     /// A store whose device identity is `identity` (a fixed test pairing) instead of a fresh one.
-    public convenience init(identity: DeviceIdentityKeys) throws {
-        self.init()
+    public convenience init(identity: DeviceIdentityKeys, now: @escaping @Sendable () -> Date = { Date() }) throws {
+        self.init(now: now)
         _ = try backend.add(
             identity.signing.rawRepresentation, account: "identity.sig", access: .whenUnlocked, group: nil, dataProtection: true)
         _ = try backend.add(

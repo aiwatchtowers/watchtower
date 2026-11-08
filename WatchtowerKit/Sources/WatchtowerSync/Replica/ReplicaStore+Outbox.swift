@@ -95,6 +95,13 @@ extension ReplicaStore {
         CREATE TABLE IF NOT EXISTS handled_controls (
             control_id TEXT PRIMARY KEY,
             handled_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_reseal (
+            action_id TEXT PRIMARY KEY,
+            old_payload BLOB NOT NULL,
+            old_epoch INTEGER NOT NULL,
+            payload BLOB NOT NULL,
+            epoch INTEGER NOT NULL
         )
         """
 
@@ -422,6 +429,67 @@ extension ReplicaStore {
         try writer.write { db in try Self.deleteMeta(db, Self.epochAckKXKey) }
     }
 
+    // MARK: Own rows across a merge (relay client Phase 5)
+
+    /// Every row of this phone's own sealed actions, any state: action id, envelope, wire name.
+    func ownSealedRows() throws -> [(actionID: String, envelope: Data, wireName: String)] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: "SELECT action_id, payload, wire_name FROM pending_actions WHERE wire_name IS NOT NULL")
+                .map { ($0["action_id"], $0["payload"], $0["wire_name"]) }
+        }
+    }
+
+    /// Replaces the staged reseals with `reseals` (one transaction). Writes nothing when both are empty.
+    func stageReseals(_ reseals: [StagedReseal]) throws {
+        if reseals.isEmpty, try stagedReseals().isEmpty { return }
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM pending_reseal")
+            for reseal in reseals {
+                try db.execute(
+                    sql: "INSERT INTO pending_reseal (action_id, old_payload, old_epoch, payload, epoch) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [reseal.actionID, reseal.oldPayload, Int64(reseal.oldEpoch), reseal.payload, Int64(reseal.epoch)])
+            }
+        }
+    }
+
+    func stagedReseals() throws -> [StagedReseal] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM pending_reseal ORDER BY action_id").map { row in
+                StagedReseal(
+                    actionID: row["action_id"], oldPayload: row["old_payload"],
+                    oldEpoch: UInt32(truncatingIfNeeded: row["old_epoch"] as Int64), payload: row["payload"],
+                    epoch: UInt32(truncatingIfNeeded: row["epoch"] as Int64))
+            }
+        }
+    }
+
+    /// Applies `reseals` in one transaction: each row still holding its old envelope takes the new one (its `epoch`
+    /// column too, when it has one; its state stays); the ids in `undeliver` that are `queued` or `sent` are listed
+    /// Not delivered (`refused`, `message`); the applied ones leave the stage.
+    func promoteReseals(_ reseals: [StagedReseal], undeliver: Set<String>, message: String) throws {
+        guard !reseals.isEmpty else { return }
+        try writer.write { db in
+            for reseal in reseals {
+                try db.execute(
+                    sql: """
+                        UPDATE pending_actions SET payload = ?, epoch = CASE WHEN epoch IS NULL THEN NULL ELSE ? END
+                        WHERE action_id = ? AND payload = ?
+                        """,
+                    arguments: [reseal.payload, Int64(reseal.epoch), reseal.actionID, reseal.oldPayload])
+                if undeliver.contains(reseal.actionID) {
+                    try db.execute(
+                        sql: """
+                            UPDATE pending_actions
+                            SET state = 'failed', delivery = 'undelivered', undelivered_reason = ?, error_message = ?
+                            WHERE action_id = ? AND delivery IN ('queued','sent')
+                            """,
+                        arguments: [UndeliveredReason.refused.rawValue, message, reseal.actionID])
+                }
+                try db.execute(sql: "DELETE FROM pending_reseal WHERE action_id = ?", arguments: [reseal.actionID])
+            }
+        }
+    }
+
     // MARK: Waiting for a keybox (relay client Phase 5)
 
     /// When the relay feed first met a pending epoch in the batch it is replaying; nil when it is not waiting.
@@ -613,4 +681,14 @@ extension ReplicaStore {
             sentAt: (row["sent_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
             createdAt: Date(timeIntervalSince1970: row["created_at"]))
     }
+}
+
+/// One own row resealed for a keybox merge and not applied yet (`pending_reseal`): the envelope it held and its
+/// epoch, and the new one under the merged newest epoch.
+struct StagedReseal: Equatable, Sendable {
+    let actionID: String
+    let oldPayload: Data
+    let oldEpoch: UInt32
+    let payload: Data
+    let epoch: UInt32
 }
