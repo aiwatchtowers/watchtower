@@ -11,6 +11,9 @@ import WatchtowerCore
 @MainActor
 protocol SpecReviewQuestionDelivering: AnyObject {
     func deliverSpecReviewQuestion(_ line: String, questionID: Int64, sessionID: Int64) async -> SessionLineDelivery.Delivery
+    /// The question closed before its line went: a line filed after it in
+    /// the session's order may go now.
+    func forgetSpecReviewQuestion(questionID: Int64)
 }
 
 extension SessionLineDelivery: SpecReviewQuestionDelivering {
@@ -18,6 +21,10 @@ extension SessionLineDelivery: SpecReviewQuestionDelivering {
     /// round's findings line filed before it.
     func deliverSpecReviewQuestion(_ line: String, questionID: Int64, sessionID: Int64) async -> Delivery {
         await specReviewLines.send(line, key: .specReviewQuestion(questionID), sessionID: sessionID)
+    }
+
+    func forgetSpecReviewQuestion(questionID: Int64) {
+        specReviewLines.forget(.specReviewQuestion(questionID))
     }
 }
 
@@ -176,6 +183,7 @@ final class SpecReviewThreadCenter {
             guard !Task.isCancelled else { return }
             guard before.first(where: { $0.id == pending.id })?.state == .open else {
                 undelivered[pending.id] = nil
+                delivery.forgetSpecReviewQuestion(questionID: pending.id)
                 continue
             }
             switch await delivery.deliverSpecReviewQuestion(pending.line, questionID: pending.id,

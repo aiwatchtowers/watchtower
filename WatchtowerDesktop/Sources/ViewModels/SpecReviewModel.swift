@@ -514,6 +514,7 @@ final class SpecReviewModel {
     }
 
     func send() async -> OwnerAsksViewModel.AnswerResult {
+        await flushFixDrafts()
         guard canSend else {
             return .invalid("Comment on a finding, or write a note, before requesting changes.")
         }
@@ -521,7 +522,8 @@ final class SpecReviewModel {
     }
 
     func approve() async -> OwnerAsksViewModel.AnswerResult {
-        await asks.answer(ask, with: answer(verdict: .approved))
+        await flushFixDrafts()
+        return await asks.answer(ask, with: answer(verdict: .approved))
     }
 
     /// The footer's Approve: asks first when `needsApproveConfirm`.
@@ -555,6 +557,28 @@ struct SpecReviewFixDraft: Equatable {
     var isDrafting = true
     /// It failed or took too long: "Couldn't draft a conclusion".
     var couldNotDraft = false
+}
+
+/// Resumes a turn's waiter once: with the turn's outcome, or with
+/// `.notStarted` when it is freed first (its engine was let go).
+final class SpecReviewOutcomeWaiter: @unchecked Sendable {
+    static let goneMessage = "The discussion was closed"
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<EmbeddedChatEngine.TurnOutcome, Never>?
+
+    init(_ continuation: CheckedContinuation<EmbeddedChatEngine.TurnOutcome, Never>) {
+        self.continuation = continuation
+    }
+
+    deinit { resume(.notStarted(message: Self.goneMessage)) }
+
+    func resume(_ outcome: EmbeddedChatEngine.TurnOutcome) {
+        let pending = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: outcome)
+    }
 }
 
 /// Resumes a continuation once: the first of two racing tasks wins.
@@ -905,6 +929,15 @@ extension SpecReviewModel {
         await mark(key, .comment, body: body)
     }
 
+    /// Send and Approve: every open Fix field with words in it (the drafted
+    /// conclusion or the owner's own) becomes its comment mark's body before
+    /// the answer is built; an empty one stays a plain Fix.
+    func flushFixDrafts() async {
+        for key in fixDrafts.keys.sorted() {
+            await saveFixDraft(key)
+        }
+    }
+
     /// Closes the field: the plain Fix stays.
     func closeFixDraft(_ key: String) {
         fixDrafts[key] = nil
@@ -931,22 +964,50 @@ extension SpecReviewModel {
             threadStates[key, default: SpecReviewThreadState()].isOpening = true
             await prepareThread(key)
         }
-        guard let engine = threadEngine(key) else { return nil }
-        while engine.isBusy { _ = await Self.nextOutcome(of: engine) }
-        engine.sendHidden(Self.conclusionPrompt)
-        guard engine.isBusy, case let .completed(_, result) = await Self.nextOutcome(of: engine) else { return nil }
+        // Held weakly across the waits: a chat the center lets go ends the
+        // wait (`nextOutcome`) instead of being kept alive by it.
+        weak var engine = threadEngine(key)
+        guard let turns = threadStates[key]?.context?.turns, engine != nil else { return nil }
+        while engine?.isBusy == true { _ = await Self.nextOutcome(of: engine) }
+        guard let idle = engine else { return nil }
+        turns.concluding = true
+        idle.sendHidden(Self.conclusionPrompt)
+        let accepted = idle.isBusy
+        guard accepted else {
+            turns.concluding = false
+            return nil
+        }
+        let outcome = await Self.nextOutcome(of: engine)
+        turns.concluding = false
+        guard case let .completed(_, result) = outcome else { return nil }
         let text = SpecReviewThreadBlocks.parse(result.displayText, final: true).text
         return text.isEmpty ? nil : text
     }
 
-    /// The outcome of the engine's next turn to end.
-    private static func nextOutcome(of engine: EmbeddedChatEngine) async -> EmbeddedChatEngine.TurnOutcome {
+    /// The outcome of the engine's next turn to end; `.notStarted` when no
+    /// turn will end — a queued turn withdrawn, the engine let go by the
+    /// center (`onTurnDropped`), or freed — so the wait never hangs.
+    static func nextOutcome(of engine: EmbeddedChatEngine?) async -> EmbeddedChatEngine.TurnOutcome {
         await withCheckedContinuation { continuation in
+            let waiter = SpecReviewOutcomeWaiter(continuation)
+            guard let engine else { return waiter.resume(.notStarted(message: SpecReviewOutcomeWaiter.goneMessage)) }
             let previous = engine.onTurnFinished
-            engine.onTurnFinished = { [weak engine] outcome in
+            let previousDropped = engine.onTurnDropped
+            let restore = { [weak engine] in
                 engine?.onTurnFinished = previous
+                engine?.onTurnDropped = previousDropped
+            }
+            // The waiter lives in these closures only: when the engine is
+            // freed, so are they, and the waiter's deinit resumes.
+            engine.onTurnFinished = { outcome in
+                restore()
                 previous?(outcome)
-                continuation.resume(returning: outcome)
+                waiter.resume(outcome)
+            }
+            engine.onTurnDropped = {
+                restore()
+                previousDropped?()
+                waiter.resume(.notStarted(message: SpecReviewOutcomeWaiter.goneMessage))
             }
         }
     }

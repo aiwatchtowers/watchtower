@@ -14,6 +14,9 @@ private final class FakeQuestionDelivery: SpecReviewQuestionDelivering {
         lines.append((line, questionID, sessionID))
         return answers.isEmpty ? .submitted : answers.removeFirst()
     }
+
+    private(set) var forgotten: [Int64] = []
+    func forgetSpecReviewQuestion(questionID: Int64) { forgotten.append(questionID) }
 }
 
 /// Go's `spec-review question`: files a row (or refuses), closes one.
@@ -72,6 +75,16 @@ private final class OrderedDelivery: SpecReviewLineDelivering, SpecReviewQuestio
     func deliverSpecReviewQuestion(_ line: String, questionID: Int64, sessionID: Int64) async -> SessionLineDelivery.Delivery {
         await order.send(line, key: .specReviewQuestion(questionID), sessionID: sessionID)
     }
+
+    func forgetSpecReviewLine(askID: Int64) { order.forget(.specReview(askID)) }
+    func forgetSpecReviewQuestion(questionID: Int64) { order.forget(.specReviewQuestion(questionID)) }
+}
+
+/// The reveal half of a loop, recorded.
+@MainActor
+private final class RecordingReveal: SpecReviewRevealing {
+    private(set) var asks: [Int64] = []
+    func specReviewReveal(askID: Int64, reason: String) async throws { asks.append(askID) }
 }
 
 @MainActor
@@ -270,6 +283,58 @@ final class SpecReviewThreadCenterTests: XCTestCase {
         await center.poll()
         XCTAssertEqual(ordered.tried, [findings, findings, findings, question])
         XCTAssertEqual(ordered.pasted, [findings, question])
+    }
+
+    /// A held loop round, inserted for the order tests.
+    private func insertLoopRound() async throws -> Int64 {
+        try await pool.write { [project, session] d in
+            let id = try TestDatabase.insertOwnerAsk(d, projectID: project, sessionID: session, kind: "review",
+                                                     docPath: "docs/plan.md")
+            try d.execute(sql: """
+                INSERT INTO spec_reviews (ask_id, status, queued_at, finished_at, loop, round, open_items)
+                VALUES (?, 'done', '2026-11-08T09:59:00Z', '2026-11-08T10:00:00Z', 'author', 2,
+                        '[{"key":"ag:1","kind":"agreement","text":"a","note":"","round":1}]')
+                """, arguments: [id])
+            return id
+        }
+    }
+
+    /// A question held at the head of the order closes (expired): it is
+    /// forgotten at once, and the findings line filed after it goes on the
+    /// loop's next poll, with no 30 s wait.
+    func testClosedQuestionLetsTheNextLineGo() async throws {
+        let ordered = OrderedDelivery()
+        ordered.answers = [.held]
+        center = makeCenter(delivery: ordered)
+        await askAuthor()
+        let id = try XCTUnwrap(center.questions[thread]?.first?.id)
+        let loopAsk = try await insertLoopRound()
+        let loop = SpecReviewLoopCenter(dbPool: pool, delivery: ordered, cli: NoReveal())
+        let findings = OwnerAskPrompt.specReviewLine(askID: loopAsk, round: 2, items: 1)
+        await loop.poll()
+        XCTAssertFalse(ordered.tried.contains(findings), "behind the held question")
+        try await setState(id, "expired")
+        await center.poll()
+        await loop.poll()
+        XCTAssertEqual(ordered.pasted, [findings])
+    }
+
+    /// Show Now on a loop whose line is held at the head: the question
+    /// filed after it goes on the thread's next poll.
+    func testShowNowLetsTheQuestionGo() async throws {
+        let ordered = OrderedDelivery()
+        ordered.answers = [.held]
+        center = makeCenter(delivery: ordered)
+        let loopAsk = try await insertLoopRound()
+        let loop = SpecReviewLoopCenter(dbPool: pool, delivery: ordered, cli: RecordingReveal())
+        await loop.poll()
+        await askAuthor()
+        XCTAssertTrue(ordered.pasted.isEmpty)
+        _ = await loop.showNow(askID: loopAsk)
+        await center.poll()
+        let id = try XCTUnwrap(center.questions[thread]?.first?.id)
+        XCTAssertEqual(ordered.pasted, [OwnerAskPrompt.specReviewQuestionLine(askID: askID, questionID: id,
+                                                                              question: "Per user?")])
     }
 
     // MARK: - Follow-ups

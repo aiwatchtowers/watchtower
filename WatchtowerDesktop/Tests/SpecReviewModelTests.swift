@@ -721,11 +721,12 @@ final class SpecReviewModelTests: XCTestCase {
     private func discussedModel(
         _ ai: ScriptedAIService,
         reply: String = "It holds.",
+        threads: SpecReviewThreadCenter? = nil,
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) async throws -> SpecReviewModel {
         runner = FakeCLIRunner(stdout: Data("data".utf8))
         try setRow(status: "done", result: kindsResultJSON())
-        let model = try await makeThreadModel(ai, sleep: sleep)
+        let model = try await makeThreadModel(ai, threads: threads, sleep: sleep)
         await model.load()
         let threads = try XCTUnwrap(model.threads)
         threads.open("ag:2")
@@ -770,6 +771,118 @@ final class SpecReviewModelTests: XCTestCase {
         ai.finish()
         await again.value
         XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
+    }
+
+    /// The drafted conclusion fills the field; Request changes without Save
+    /// sends it as that finding's comment, with its key.
+    func testDraftedConclusionIsSentWithoutSave() async throws {
+        let ai = ScriptedAIService()
+        let model = try await discussedModel(ai)
+        try await fillConclusion(model, ai)
+        _ = await model.send()
+        try await assertSentConclusion(verdict: .changes)
+        XCTAssertTrue(model.fixDrafts.isEmpty)
+    }
+
+    /// The same on Approve; an empty field stays a plain Fix.
+    func testDraftedConclusionIsSentOnApprove() async throws {
+        let ai = ScriptedAIService()
+        let model = try await discussedModel(ai)
+        try await fillConclusion(model, ai)
+        await model.mark("da:1", .comment)
+        _ = await model.approve()
+        try await assertSentConclusion(verdict: .approved)
+        XCTAssertEqual(model.marks["da:1"]?.body, "", "no field: the plain Fix")
+    }
+
+    private func fillConclusion(_ model: SpecReviewModel, _ ai: ScriptedAIService) async throws {
+        let fixing = Task { await model.fix(key: "ag:2") }
+        await waitUntil { ai.calls.count == 2 }
+        ai.emit(.text("Make it per user."), .turnComplete("Make it per user."), .done)
+        ai.finish()
+        await fixing.value
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
+    }
+
+    private func assertSentConclusion(verdict: OwnerAskAnswer.Verdict) async throws {
+        let answer = try OwnerAskAnswer.decode(try await storedAnswer())
+        XCTAssertEqual(answer.verdict, verdict)
+        let comment = try XCTUnwrap(answer.comments.first { $0.itemKey == "ag:2" })
+        XCTAssertEqual(comment.body, "Mute is per channel — Make it per user.")
+    }
+
+    /// The conclusion turn runs none of the thread's block handling: a
+    /// block in it files no question and shows no proposal, and the stored
+    /// reply has none.
+    func testConclusionTurnFilesNoQuestionAndShowsNoProposal() async throws {
+        let ai = ScriptedAIService()
+        let pool = try XCTUnwrap(pool)
+        let threads = SpecReviewThreadCenter(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data("1".utf8))),
+                                             delivery: SessionLineDelivery(terminalCenter: nil), pollInterval: .seconds(3600))
+        defer { threads.stop() }
+        let model = try await discussedModel(ai, threads: threads)
+        let fixing = Task { await model.fix(key: "ag:2") }
+        await waitUntil { ai.calls.count == 2 }
+        let reply = """
+            Make it per user.
+
+            ```watchtower-ask-author
+            {"question": "Per user?"}
+            ```
+
+            ```watchtower-finding
+            {"kind": "missing", "severity": "minor", "title": "Ends at midnight", "text": "t", \
+            "quote": {"source": "document", "text": "Muting lasts"}, "where": null}
+            ```
+            """
+        ai.emit(.text(reply), .turnComplete(reply), .done)
+        ai.finish()
+        await fixing.value
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
+        await model.threadEngine("ag:2")?.finished()
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertTrue(threads.questions.isEmpty, "no question filed")
+        let entries = model.threadContent("ag:2").entries
+        XCTAssertFalse(entries.contains { if case .finding = $0 { true } else { false } }, "\(entries.map(\.id))")
+        let stored = model.threadEngine("ag:2")?.messages.map(\.message).last { $0.role == "assistant" }?.text
+        XCTAssertEqual(stored, "Make it per user.")
+    }
+
+    /// A chat let go while **Fix**'s turn waits for a slot ends the wait at
+    /// once (`.notStarted`), never leaving it hanging; so does a withdrawn
+    /// queued turn.
+    func testOutcomeWaitEndsWhenTheEngineIsReleased() async throws {
+        let pool = try XCTUnwrap(pool)
+        let conversation = try await SpecReviewThreadSurface.conversationID(
+            workbenchID: projectID, rootAskID: askID, itemKey: "ag:2", title: "t", dbPool: pool)
+        let context = SpecReviewThreadContext(workbenchID: projectID, rootAskID: askID, askID: askID, itemKey: "ag:2",
+                                              data: "", provider: .claude)
+        // No free slot: the hidden turn waits in the queue.
+        let gate = EmbeddedStreamGate(limit: 1)
+        XCTAssertTrue(gate.tryAcquire(UUID()))
+        let engine = EmbeddedChatEngine(
+            spec: SpecReviewThreadSurface.spec(context: context, conversationID: conversation, dbPool: pool),
+            store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversation),
+            aiService: ScriptedAIService(), gate: gate)
+        engine.sendHidden("conclude")
+        XCTAssertTrue(engine.isQueued)
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        Task { outcome = await SpecReviewModel.nextOutcome(of: engine) }
+        await waitUntil { engine.onTurnDropped != nil }
+        engine.shutdown(quietly: true)
+        await waitUntil { outcome != nil }
+        XCTAssertEqual(outcome, .notStarted(message: SpecReviewOutcomeWaiter.goneMessage))
+        XCTAssertNil(engine.onTurnDropped, "the waiter's hooks are gone")
+
+        engine.sendHidden("conclude")
+        outcome = nil
+        Task { outcome = await SpecReviewModel.nextOutcome(of: engine) }
+        await waitUntil { engine.onTurnDropped != nil }
+        engine.stop()
+        await waitUntil { outcome != nil }
+        XCTAssertEqual(outcome, .notStarted(message: SpecReviewOutcomeWaiter.goneMessage), "Stop withdrew it")
+        let none = await SpecReviewModel.nextOutcome(of: nil)
+        XCTAssertEqual(none, .notStarted(message: SpecReviewOutcomeWaiter.goneMessage))
     }
 
     /// The conclusion takes longer than 30 s: the field stays as it is with

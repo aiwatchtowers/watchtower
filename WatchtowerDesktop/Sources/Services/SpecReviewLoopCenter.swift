@@ -12,11 +12,18 @@ protocol SpecReviewLineDelivering: AnyObject {
     /// is surely gone: never before the launch's reattach of hosted runs is
     /// done, nor when a new run of it started meanwhile (both `.held`).
     func deliverSpecReviewLine(_ line: String, askID: Int64, sessionID: Int64) async -> SessionLineDelivery.Delivery
+    /// The round's line will not be asked for again (its loop ended): a
+    /// line filed after it in the session's order may go now.
+    func forgetSpecReviewLine(askID: Int64)
 }
 
 extension SessionLineDelivery: SpecReviewLineDelivering {
     func deliverSpecReviewLine(_ line: String, askID: Int64, sessionID: Int64) async -> Delivery {
         await specReviewLines.send(line, key: .specReview(askID), sessionID: sessionID)
+    }
+
+    func forgetSpecReviewLine(askID: Int64) {
+        specReviewLines.forget(.specReview(askID))
     }
 
     /// One try of a spec review line (a round's or a thread question's),
@@ -45,9 +52,10 @@ extension SessionLineDelivery: SpecReviewLineDelivering {
 /// without being tried, so a later line never overtakes a held one. The
 /// line at the head is tried through `deliver`, which keeps every PROJ-12
 /// rule (never mid-turn, never over the owner's typing, held while the
-/// hosted sessions reattach). A line its center stopped asking for (its
-/// round revealed, its question closed) leaves the order after
-/// `staleAfter`, so it never blocks the session.
+/// hosted sessions reattach). A line its center is done with (its round
+/// revealed, its question closed) leaves the order at once (`forget`); one
+/// nobody forgot leaves it after `staleAfter`, so it never blocks the
+/// session.
 @MainActor
 final class SpecReviewLineOrder {
     typealias Deliver = @MainActor (
@@ -89,14 +97,16 @@ final class SpecReviewLineOrder {
         trying.insert(key)
         let delivery = await deliver(line, key, sessionID)
         trying.remove(key)
-        if delivery != .held, delivery != .queued { forget(key, sessionID: sessionID) }
+        if delivery != .held, delivery != .queued { forget(key) }
         return delivery
     }
 
     /// The line will not be asked for again: the next one may go.
-    func forget(_ key: SessionLineDelivery.LineKey, sessionID: Int64) {
-        queues[sessionID]?.removeAll { $0.key == key }
-        if queues[sessionID]?.isEmpty == true { queues[sessionID] = nil }
+    func forget(_ key: SessionLineDelivery.LineKey) {
+        for (sessionID, queue) in queues where queue.contains(where: { $0.key == key }) {
+            let rest = queue.filter { $0.key != key }
+            queues[sessionID] = rest.isEmpty ? nil : rest
+        }
     }
 }
 
@@ -210,6 +220,8 @@ final class SpecReviewLoopCenter {
     @discardableResult
     func showNow(askID: Int64) async -> Bool {
         revealed.insert(askID)
+        // Its round's line never goes now: a line filed after it may.
+        delivery.forgetSpecReviewLine(askID: askID)
         do {
             try await cli.specReviewReveal(askID: askID, reason: "owner")
         } catch {

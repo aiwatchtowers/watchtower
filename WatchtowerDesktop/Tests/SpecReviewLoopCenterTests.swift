@@ -13,6 +13,9 @@ private final class FakeLineDelivery: SpecReviewLineDelivering {
         lines.append((line, askID, sessionID))
         return answers.isEmpty ? .submitted : answers.removeFirst()
     }
+
+    private(set) var forgotten: [Int64] = []
+    func forgetSpecReviewLine(askID: Int64) { forgotten.append(askID) }
 }
 
 @MainActor
@@ -110,6 +113,7 @@ final class SpecReviewLoopCenterTests: XCTestCase {
         XCTAssertTrue(shown)
         XCTAssertEqual(cli.asks, [ask])
         XCTAssertEqual(cli.reasons, ["owner"])
+        XCTAssertEqual(delivery.forgotten, [ask], "its line leaves the session's order")
         XCTAssertEqual(delivery.lines.count, 1, "no line after Show Now")
     }
 

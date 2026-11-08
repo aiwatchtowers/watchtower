@@ -28,10 +28,22 @@ struct SpecReviewThreadContext {
     /// A completed reply's blocks: a question to the author and a proposed
     /// finding (either may be nil, never both).
     var onReply: @MainActor (_ question: String?, _ finding: SpecReviewProposedFinding?) -> Void = { _, _ in }
+    /// Set while **Fix**'s hidden conclusion turn runs: its reply is stored
+    /// with any block taken out, and files no question and shows no proposal.
+    let turns = SpecReviewThreadTurns()
 
     var contextID: String {
         SpecReviewThreadKey.contextID(workbenchID: workbenchID, rootAskID: rootAskID, itemKey: itemKey)
     }
+}
+
+/// The thread's turn state shared by its screen and its surface (the chat
+/// outlives the screen in the app's center).
+@MainActor
+final class SpecReviewThreadTurns {
+    var concluding = false
+
+    nonisolated init() {}
 }
 
 // MARK: - SpecReviewThreadSurface
@@ -88,6 +100,12 @@ enum SpecReviewThreadSurface {
             postTurn: { input in
                 var result = ChatPostTurnResult.identity(input)
                 let blocks = SpecReviewThreadBlocks.parse(input.reply, final: true)
+                if context.turns.concluding {
+                    // A conclusion for the owner's comment: never a question
+                    // to the author, never a proposal.
+                    result.displayText = blocks.text
+                    return result
+                }
                 if blocks.question != nil || blocks.finding != nil {
                     context.onReply(blocks.question, blocks.finding)
                 }
