@@ -275,4 +275,66 @@ final class ActionOutboxResealTests: XCTestCase {
         try await phone.outbox.mergeKeybox(box, into: phone.keys, hubID: hubID, now: phone.now)
         XCTAssertEqual(try epoch(of: try listed(phone, id), phone), 12, "after unlock the merge runs whole")
     }
+
+    // MARK: - N4: our own older copy in a gone epoch
+
+    /// Moves the phone on to epoch 3 more than 7 days after epoch 2, so epoch 1 is gone.
+    private func moveOnPastEpochOne(_ phone: Phone) async throws {
+        phone.advance(by: day)
+        try await merge(phone, epoch: 2)
+        phone.advance(by: 8 * day)
+        try await merge(phone, epoch: 3)
+        XCTAssertFalse(try XCTUnwrap(phone.keys.hubLink(hubID)).epochs.contains { $0.epoch == 1 })
+    }
+
+    private func onWire(_ phone: Phone, _ wireName: String) async throws -> CloudRecord? {
+        try await phone.inner.changes(in: .relay, since: nil).changed.first { $0.recordName == wireName }
+    }
+
+    /// Rule 13 back and forth: written on the relay in epoch 1, the Mac moves to iCloud and back more than 7 days
+    /// later (`record_seq` cleared, `.absent`), while the relay mailbox still holds the old copy in a gone epoch.
+    func testAMoveAndBackPastAWeekOverwritesOurOldCopy() async throws {
+        let phone = try await makePhone()
+        try await merge(phone, epoch: 1)
+        let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        _ = try await phone.outbox.flush()
+        let first = try XCTUnwrap(phone.store.outboxRows([.sent]).first { $0.actionID == id })
+        let oldVersion = try XCTUnwrap(first.recordSeq)
+        try await moveOnPastEpochOne(phone)
+
+        _ = try await phone.outbox.resendUnechoed(onNewTransport: .relay)
+        _ = try await phone.outbox.flush()
+
+        let row = try XCTUnwrap(phone.store.outboxRows([.sent]).first { $0.actionID == id }, "delivered")
+        XCTAssertEqual(try Envelope.parse(row.envelope).header.epoch, 3)
+        let wire = try await onWire(phone, first.wireName)
+        XCTAssertEqual(wire?.payload, row.envelope, "our old copy is overwritten")
+        let saves = await phone.recorder.conditionalSaves.filter { $0.names == [first.wireName] }
+        XCTAssertEqual(saves.last?.expects, [.seq(oldVersion)], "under the version of the old copy")
+    }
+
+    /// A lost write reply: the copy landed but the row never learned it, and more than 7 days pass with no
+    /// successful send.
+    func testALostWriteReplyPastAWeekOverwritesOurOldCopy() async throws {
+        let phone = try await makePhone()
+        try await merge(phone, epoch: 1)
+        await phone.inner.refuseNext(.unreachable, count: 1)
+        let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        await phone.outbox.drain()
+        let queued = try XCTUnwrap(phone.store.outboxRows([.queued]).first { $0.actionID == id })
+        // The write landed; its reply was lost.
+        _ = try await phone.inner.save([ConditionalSave(
+            record: CloudRecord(
+                recordName: queued.wireName, zone: .relay, kind: WireKind.envelope, modifiedAt: phone.now,
+                payload: queued.envelope),
+            expect: .absent)])
+        try await moveOnPastEpochOne(phone)
+
+        _ = try await phone.outbox.flush()
+
+        let row = try XCTUnwrap(phone.store.outboxRows([.sent]).first { $0.actionID == id }, "delivered")
+        let wire = try await onWire(phone, queued.wireName)
+        XCTAssertEqual(wire?.payload, row.envelope)
+        XCTAssertEqual(try Envelope.parse(row.envelope).header.epoch, 3)
+    }
 }

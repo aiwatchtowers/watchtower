@@ -607,12 +607,12 @@ extension ActionOutbox {
         return .left
     }
 
-    /// A conflict's current record, opened when it opens; `overwritable` when it opened, or when it is the hub's in an
-    /// epoch this phone will never hold (relay client Phase 5: an echo nothing can read again, written over as sim
-    /// rule 3 writes over anything else, so the hub answers the action again as a repeat).
+    /// A conflict's current record, opened when it opens; `overwritable` when it opened, or when it is the hub's or
+    /// this phone's own older copy in an epoch this phone will never hold (relay client Phase 5: nothing can read it
+    /// again, so it is written over as sim rule 3 writes over anything else; the hub answers the action as a repeat).
     private func readConflict(_ current: CloudRecord) async throws -> (opened: CloudRecord?, overwritable: Bool) {
         if let opened = try await transport.openConflict(current) { return (opened, true) }
-        return (nil, try await transport.isHubRecordInGoneEpoch(current))
+        return (nil, try await transport.isRecordInGoneEpoch(current))
     }
 
     /// The row's write landed (or its own bytes were found) at `version`.

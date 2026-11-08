@@ -32,13 +32,16 @@ extension SecureTransport {
         }
     }
 
-    /// The phone: whether a conflict's current record is the hub's, sealed in an epoch whose keys this phone will
-    /// never hold (relay client Phase 5). Nothing can ever read it, so the ordered outbox writes over it as sim rule
-    /// 3 does anything else, and the hub answers the action again as a repeat.
-    func isHubRecordInGoneEpoch(_ current: CloudRecord) throws -> Bool {
-        guard current.zone == .relay, case .phone(let hubID, _) = keys.role,
+    /// The phone: whether a conflict's current record is the hub's, or this phone's own older copy, sealed in an epoch
+    /// whose keys this phone will never hold (relay client Phase 5). Nothing here can ever read it, so the ordered
+    /// outbox writes over it as sim rule 3 does anything else: the hub answers the action again as a repeat, and our
+    /// own older copy (a write whose reply was lost, a copy left in the mailbox across a move and back) is replaced
+    /// by the row's current bytes.
+    func isRecordInGoneEpoch(_ current: CloudRecord) throws -> Bool {
+        guard current.zone == .relay, case let .phone(hubID, deviceID) = keys.role,
               let header = try? Envelope.parse(current.payload).header,
-              header.envelopeClass == .relayToPhone, header.senderID == hubID
+              (header.envelopeClass == .relayToPhone && header.senderID == hubID)
+                || (header.envelopeClass == .relayToHub && header.senderID == deviceID)
         else { return false }
         do {
             guard case .unopenable(let reason) = try open(current) else { return false }

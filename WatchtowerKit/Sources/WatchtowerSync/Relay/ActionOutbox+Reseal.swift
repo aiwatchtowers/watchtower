@@ -15,9 +15,13 @@ import Foundation
 // 2. stage the new envelopes in `pending_reseal` (rows and keys untouched: a kill here changes nothing a reader sees,
 //    and the re-run stages again);
 // 3. save the merged link (`updateHubLink`, the one writer of `hub.<id>` here);
-// 4. promote: each row still holding its old envelope takes the new one in one transaction; a `queued` or `sent` row
-//    whose old epoch's key is gone after the save is listed Not delivered (F7: it is never sent). A kill between 3 and
-//    4 leaves the stage, and step 1 of the next merge (they run after every fetch) applies it.
+// 4. promote: each row still holding its old envelope takes the new one in one transaction, keeping its state. A
+//    kill between 3 and 4 leaves the stage, and step 1 of the next merge (they run after every fetch) applies it.
+//
+// A `queued`/`sent` row moved this way stays sendable: the hub answers it applied, or expired by its age window. Only
+// a row nothing moved (sealed before a raise that ran without this hook) can be past its key at a merge; that one is
+// listed Not delivered and never sent (F7). A moved row's earlier copy left in the mailbox in a gone epoch is written
+// over by the flush (`isRecordInGoneEpoch`).
 extension ActionOutbox {
     /// Merges `keybox` into the link of `hubID` in `keys` (as `HubLinkKeys.merging` does) and keeps this phone's own
     /// rows readable across it. Returns the merge, nil when the link is gone (nothing written). A locked keychain
