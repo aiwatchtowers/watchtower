@@ -28,6 +28,11 @@ const lanesUnreadNote = "Lanes: the branch's history could not be read; chapters
 // tags are not checked.
 const laneTitlesUnreadNote = "Lanes: ticket titles could not be read; lanes are named by branch."
 
+// laneBaseUnknownNote is the map's note when no default branch exists
+// (no origin HEAD, main or master): merges from it cannot be told from lane
+// merges, so they may show as lanes.
+const laneBaseUnknownNote = "Lanes: no default branch found; merges from it may show as lanes."
+
 var workbenchReviewMapCmd = &cobra.Command{
 	Use:   "map",
 	Short: "The review's instant map: chapters in reading order, danger signals, lanes (no AI, writes nothing)",
@@ -138,18 +143,25 @@ func (t *mapTitles) Titles(branches, jiraKeys []string, boardRefs []int64) (revi
 
 // reviewLanes attributes the place's committed files to lanes, with the
 // notes to add to the map. A history git could not walk gives an empty
-// partial attribution and lanesUnreadNote; unreadable lane titles give
+// partial attribution and lanesUnreadNote; no default branch gives a
+// partial attribution and laneBaseUnknownNote; unreadable lane titles give
 // laneTitlesUnreadNote. Only a done ctx is an error.
 func reviewLanes(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPlace, deadline time.Time) (reviewmap.Attribution, []string, error) {
 	titles := &mapTitles{DBTitles: reviewmap.DBTitles{DB: d, ProjectID: p.ID}}
-	a, err := attributeLanes(ctx, pl, titles, deadline)
+	a, baseKnown, err := attributeLanes(ctx, pl, titles, deadline)
 	if err == nil {
-		if !titles.failed {
-			return a, nil, nil
+		var notes []string
+		if !baseKnown {
+			a.Partial = true
+			stderrLogf("review map: no default branch (workbench %d, session %d); base syncs not told from lanes", p.ID, pl.SessionID)
+			notes = append(notes, laneBaseUnknownNote)
 		}
-		// No error text (FILES-01): a database message may carry a name.
-		stderrLogf("review map: lane titles unreadable (workbench %d, session %d); lanes named by branch", p.ID, pl.SessionID)
-		return a, []string{laneTitlesUnreadNote}, nil
+		if titles.failed {
+			// No error text (FILES-01): a database message may carry a name.
+			stderrLogf("review map: lane titles unreadable (workbench %d, session %d); lanes named by branch", p.ID, pl.SessionID)
+			notes = append(notes, laneTitlesUnreadNote)
+		}
+		return a, notes, nil
 	}
 	if ctx.Err() != nil {
 		return reviewmap.Attribution{}, nil, ctx.Err()
@@ -161,19 +173,20 @@ func reviewLanes(ctx context.Context, d *db.DB, p *db.Workbench, pl reviewPlace,
 
 // attributeLanes reads the default branch and walks the lanes, both before
 // deadline: a default-branch read past it is an error (package chapters),
-// a walk past it is partial.
-func attributeLanes(ctx context.Context, pl reviewPlace, titles reviewmap.TitleSource, deadline time.Time) (reviewmap.Attribution, error) {
+// a walk past it is partial. baseKnown is false when the place has a head
+// but the repository has no default branch to tell base syncs by.
+func attributeLanes(ctx context.Context, pl reviewPlace, titles reviewmap.TitleSource, deadline time.Time) (a reviewmap.Attribution, baseKnown bool, err error) {
 	var defaultTip string
 	if pl.Head != "" {
 		tipCtx, cancel := context.WithDeadline(ctx, deadline)
-		tip, err := pl.Repo.DefaultTip(tipCtx)
+		defaultTip, err = pl.Repo.DefaultTip(tipCtx)
 		cancel()
 		if err != nil {
-			return reviewmap.Attribution{}, err
+			return reviewmap.Attribution{}, false, err
 		}
-		defaultTip = tip
 	}
-	return reviewmap.Attribute(ctx, pl.Repo, pl.Base, pl.Head, pl.HeadBranch, defaultTip, titles, time.Until(deadline))
+	a, err = reviewmap.Attribute(ctx, pl.Repo, pl.Base, pl.Head, pl.HeadBranch, defaultTip, titles, time.Until(deadline))
+	return a, pl.Head == "" || defaultTip != "", err
 }
 
 func runWorkbenchReviewMap(cmd *cobra.Command, _ []string) error {

@@ -247,6 +247,22 @@ func TestReviewMap_UnreadableTitlesArePartialWithANote(t *testing.T) {
 	assert.Contains(t, chapterKeys(m), "lane:task-b")
 }
 
+// TestReviewMap_NoDefaultBranchIsPartialWithANote: with no origin HEAD,
+// main or master the lanes stay, but base syncs cannot be told from them,
+// so the map is partial and says why.
+func TestReviewMap_NoDefaultBranchIsPartialWithANote(t *testing.T) {
+	_, wb, s, repo, _ := mapFixture(t)
+	r := startRound(t, wb, s)
+	reviewGit(t, repo, "branch", "-m", "main", "trunk")
+	require.Empty(t, reviewGit(t, repo, "branch", "--list", "main", "master"))
+
+	m, _ := reviewMap(t, wb, "--round", itoa(int64(r["id"].(float64))))
+	assert.Equal(t, true, m["lanes_partial"])
+	assert.Contains(t, m["notes"], laneBaseUnknownNote)
+	assert.NotContains(t, m["notes"], lanesUnreadNote)
+	assert.Contains(t, chapterKeys(m), "lane:task-b")
+}
+
 func TestReviewMap_BranchTipRoundTakesLanesFromTheTip(t *testing.T) {
 	database, wb, s, repo := reviewFixture(t)
 	laneBranch(t, repo, "lane-x", []string{"x/x.go"})
