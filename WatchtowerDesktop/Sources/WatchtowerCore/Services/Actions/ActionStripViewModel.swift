@@ -660,12 +660,15 @@ package final class ActionStripViewModel {
 
     /// Snooze on a reminder (Snooze 1h is the only one the cards offer).
     package func snoozeReminder(_ id: Int64, until: String) async {
+        // Labeled: `change` before it also takes a closure.
+        // swiftlint:disable trailing_closure
         let snoozed = await write(.card(.reminder(id)), { try ReminderQueries.snooze($0, id: id, until: until) },
-                                  press: .snoozeHour) { error in
+                                  press: .snoozeHour, onFailure: { error in
             // A reminder deleted elsewhere leaves the strip; `refresh` clears
             // `lastError`, so the reason is set after it.
             if error is RowNotFoundError { await self.refresh() }
-        }
+        })
+        // swiftlint:enable trailing_closure
         if snoozed { await reminderChanged(id) }
     }
 

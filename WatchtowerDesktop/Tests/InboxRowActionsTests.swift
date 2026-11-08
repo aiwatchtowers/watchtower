@@ -126,13 +126,18 @@ final class InboxRowActionsTests: XCTestCase {
 
     /// The row's buttons for one proposal row, as the Inbox reads it.
     private func actionButtons(
-        tool: String = "create_target", argsJSON: String = #"{"text":"Call colleague A"}"#,
-        status: String = "pending", error: String = "", sessionHolds: Bool = false
+        tool: String = "create_target",
+        argsJSON: String = #"{"text":"Call colleague A"}"#,
+        status: String = "pending",
+        error: String = "",
+        sessionHolds: Bool = false
     ) async throws -> [InboxRowActionsContent.ActionButton]? {
         let id = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, tool: tool, argsJSON: argsJSON, status: status, error: error)
         }
         let vm = await strip()
+        // Labeled: a trailing closure would read as the row's press.
+        // swiftlint:disable:next trailing_closure
         let hooks = InboxRefHooks(vm: vm, navScreens: [], sessionHoldsCall: { _ in sessionHolds })
         guard case let .action(_, buttons)? = hooks.content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
             return nil
@@ -212,6 +217,8 @@ final class InboxRowActionsTests: XCTestCase {
         let runner = FakeCLIRunner()
         let vm = await strip(runner)
         var opened: [Int64] = []
+        // Labeled: a trailing closure would bind to `onCommand`.
+        // swiftlint:disable:next trailing_closure
         let handler = InboxRowActionHandler(vm: vm, onOpenSaveDraft: { _ in opened.append(id) })
         await handler.press(.openDraft, on: InboxRef(kind: .action, id: id))
         XCTAssertEqual(opened, [id])
@@ -221,6 +228,8 @@ final class InboxRowActionsTests: XCTestCase {
     /// No `watchtower` binary: the row's writes are off and its footer says why (plan "Failure paths").
     func testMissingCLIDisablesRowWritesAndSaysWhy() async throws {
         let id = try insertReminder()
+        // Labeled: a trailing closure would bind to `automationsWake`.
+        // swiftlint:disable:next trailing_closure
         let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
         await vm.refresh()
         let hooks = hooks(vm)
@@ -559,11 +568,11 @@ final class InboxRowActionsTests: XCTestCase {
         let busyDuringFire = LockedFlag()
         runner.onRun = { [weak vm] _ in
             let busy = await MainActor.run { vm?.isWriting(.reminder(id)) ?? true }
-            busyDuringFire.set(busy)
+            if busy { busyDuringFire.set() }
         }
         await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
         XCTAssertEqual(runner.invocations.count, 1)
-        XCTAssertEqual(busyDuringFire.value, false)
+        XCTAssertFalse(busyDuringFire.value)
     }
 
     func testReminderFireNotRunAfterFailure() async throws {
@@ -607,7 +616,7 @@ private actor Gate {
 /// A flag `FakeCLIRunner.onRun` sets off the main actor.
 private final class LockedFlag: @unchecked Sendable {
     private let lock = NSLock()
-    private var stored: Bool?
-    var value: Bool? { lock.withLock { stored } }
-    func set(_ flag: Bool) { lock.withLock { stored = flag } }
+    private var stored = false
+    var value: Bool { lock.withLock { stored } }
+    func set() { lock.withLock { stored = true } }
 }

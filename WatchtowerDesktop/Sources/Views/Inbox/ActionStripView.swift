@@ -468,11 +468,13 @@ struct ActionStripActionsView: View {
     /// The native actions on an artifact's rows with a `ref`.
     private var rowHooks: ArtifactRefHooks {
         let handler = rowHandler
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
         return InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches,
                              sessionHoldsCall: { sessionHoldsCall?($0) ?? false }, ideasAvailable: ideas != nil,
-                             onCommand: onCardAction) { ref, press in
-            Task { await handler.press(press, on: ref) }
-        }.hooks
+                             onCommand: onCardAction,
+                             onPress: { ref, press in Task { await handler.press(press, on: ref) } }).hooks
+        // swiftlint:enable trailing_closure
     }
 
     private var rowHandler: InboxRowActionHandler {

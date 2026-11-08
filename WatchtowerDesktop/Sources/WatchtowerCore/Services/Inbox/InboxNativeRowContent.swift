@@ -129,7 +129,11 @@ package struct InboxRowActionsContent: Equatable {
     package var writesUnavailable: Bool
 
     package init(
-        kind: Kind, state: State = .idle, reply: Reply? = nil, isPreview: Bool = false, cliMissing: Bool = false,
+        kind: Kind,
+        state: State = .idle,
+        reply: Reply? = nil,
+        isPreview: Bool = false,
+        cliMissing: Bool = false,
         writesUnavailable: Bool = false
     ) {
         self.kind = kind
