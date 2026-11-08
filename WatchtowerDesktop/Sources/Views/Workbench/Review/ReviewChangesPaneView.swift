@@ -220,7 +220,11 @@ struct ReviewChangesPaneView: View {
             HSplitView {
                 ReviewChapterListView(model: model)
                     .frame(minWidth: 200, idealWidth: 260, maxWidth: 420)
-                detail(checklist: true).frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 0) {
+                    chapterHeader
+                    detail(checklist: true)
+                }
+                .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             }
         case nil:
             HSplitView {
@@ -228,6 +232,16 @@ struct ReviewChangesPaneView: View {
                     .frame(minWidth: 200, idealWidth: 260, maxWidth: 420)
                 detail(checklist: false).frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+    }
+
+    /// The current chapter's head over its diff (board #1025): only where the
+    /// chapter list shows (a map with more than one chapter), never for Can skip.
+    @ViewBuilder private var chapterHeader: some View {
+        if case .ready(let map) = model.map, ReviewChapterList.showsList(map), let key = model.currentChapterKey,
+           let chapter = map.chapters.first(where: { $0.key == key }), !chapter.isCollapsed {
+            ReviewChapterHeader(model: model, chapter: chapter, map: map)
+            Divider()
         }
     }
 

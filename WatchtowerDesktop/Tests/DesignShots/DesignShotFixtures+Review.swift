@@ -10,9 +10,15 @@ import WatchtowerTestSupport
 /// (`args[2]`); an unscripted one fails as Go's would.
 final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let answers: [String: String]
+    /// The streamed overview's lines (board #1025); nil = the `overview` answer as its one line.
+    private let streamLines: [String]?
+    /// The scripted stream ends after its lines; false keeps the run going (a shot of a run in progress).
+    private let streamEnds: Bool
 
-    init(_ answers: [String: String]) {
+    init(_ answers: [String: String], streamLines: [String]? = nil, streamEnds: Bool = true) {
         self.answers = answers
+        self.streamLines = streamLines
+        self.streamEnds = streamEnds
     }
 
     /// `diff --since` answers from `diff-since` when that is scripted.
@@ -26,13 +32,18 @@ final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
 /// The streamed overview (board #1025): the scripted `overview` answer as its one line.
 extension ReviewStubRunner: CLIStreamingRunner {
     func stream(args: [String]) async throws -> CLIStreamedRun {
-        let answer = try await run(args: args)
-        let line = (try? JSONSerialization.jsonObject(with: answer)).flatMap { try? JSONSerialization.data(withJSONObject: $0) } ?? answer
-        let output = AsyncStream<Data> { c in
-            c.yield(line + Data("\n".utf8))
-            c.finish()
+        let lines: [Data]
+        if let streamLines {
+            lines = streamLines.map { Data($0.utf8) }
+        } else {
+            let answer = try await run(args: args)
+            lines = [(try? JSONSerialization.jsonObject(with: answer)).flatMap { try? JSONSerialization.data(withJSONObject: $0) } ?? answer]
         }
-        return CLIStreamedRun(output: output, exit: { 0 }, stop: {})
+        let ends = streamEnds
+        let (output, c) = AsyncStream<Data>.makeStream()
+        for line in lines { c.yield(line + Data("\n".utf8)) }
+        if ends { c.finish() }
+        return CLIStreamedRun(output: output, exit: { 0 }, stop: { c.finish() })
     }
 }
 
@@ -73,7 +84,10 @@ struct ReviewFixture {
         mode: String = "quick",
         phase: String = "",
         drafts: Int = 0,
-        overview: String? = nil
+        overview: String? = nil,
+        map: String? = nil,
+        stream: [String]? = nil,
+        streamEnds: Bool = true
     ) throws {
         let (pool, path) = try TestDatabase.createPool()
         let lastActive = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-240))
@@ -110,11 +124,11 @@ struct ReviewFixture {
             "context": Self.contextJSON(context),
             "diff": Self.diffJSON(files),
             "diff-since": Self.diffJSON(sinceFiles ?? files),
-            "map": Self.mapJSON(files),
+            "map": map ?? Self.mapJSON(files),
             "file": #"{"ok":true,"old":\#(Self.side("a")),"new":\#(Self.side("b"))}"#,
             "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#,
             "approve": #"{"ok":true,"sent":true,"line":"\#(ReviewDeliveryLine.approved(roundID: 2))"}"#
-        ])
+        ], streamLines: stream, streamEnds: streamEnds)
         model = ReviewChangesModel(projectID: projectID, sessionID: session.id, cli: WorkbenchCLI(runner: runner), db: pool,
                                    lineDelivery: ReviewNoSink()) { false }
     }
@@ -216,7 +230,7 @@ struct ReviewFixture {
 /// default branch with uncommitted edits, and Deep's Meaning. Each fixture is built once and reused for light and dark.
 @MainActor
 enum ReviewShotFixtures {
-    private static var built: [String: (fixture: ReviewFixture, identity: ReviewSessionIdentity)] = [:]
+    static var built: [String: (fixture: ReviewFixture, identity: ReviewSessionIdentity)] = [:]
 
     static func cleanUp() {
         built.values.forEach { $0.fixture.cleanUp() }
@@ -252,14 +266,14 @@ enum ReviewShotFixtures {
      "chapters":[]}
     """
 
-    private static func worktree() -> SessionPlace {
+    static func worktree() -> SessionPlace {
         .worktree(name: "capsule-corners", root: URL(fileURLWithPath: "/tmp/acme-capsule-corners"),
                   status: WorkbenchGitStatus(branch: "feature/capsule-corners", dirty: true, changes: 2))
     }
 
     /// `chat` adds the agent chat panel (#962); the shots have no session
     /// control, so it shows its "not running" line.
-    private static func pane(
+    static func pane(
         _ key: String,
         chat: Bool = false,
         codeRoot: CodeRoot? = nil,

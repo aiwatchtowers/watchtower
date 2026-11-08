@@ -73,8 +73,8 @@ extension WorkbenchCLI {
 
     /// The overview's streamed run as Desktop (`--caller desktop`): one event
     /// per complete line, the envelope last. `chapters` redoes those chapters
-    /// and then the summary, `summaryOnly` the summary, `continue` the
-    /// chapters not described yet; none of them = the full run. Ending the
+    /// and then the summary, `summaryOnly` the summary; neither = the
+    /// full run. Ending the
     /// iteration (or cancelling its task) terminates the child's process
     /// group; a stream that ends without the envelope throws `ReviewStreamEnded`.
     /// No total time limit here: the caller watches for silence.
@@ -82,15 +82,13 @@ extension WorkbenchCLI {
         projectID: Int64,
         roundID: Int64,
         chapters: [String] = [],
-        summaryOnly: Bool = false,
-        continue: Bool = false
+        summaryOnly: Bool = false
     ) -> AsyncThrowingStream<ReviewStreamEvent, Error> {
         var args = ["workbench", "review", "overview", "--workbench", String(projectID), "--round", String(roundID),
                     "--json", "--stream", "--caller", "desktop"]
         // `--chapter=K`: a key is never read as a flag.
         args += chapters.map { "--chapter=\($0)" }
         if summaryOnly { args.append("--summary") }
-        if `continue` { args.append("--continue") }
         let streamer = runner as? any CLIStreamingRunner
         let box = StreamStopBox()
         return AsyncThrowingStream { continuation in

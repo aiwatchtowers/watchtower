@@ -48,6 +48,24 @@ package enum ReviewChapterList {
         map.chapters.first { !$0.isCollapsed && !done($0, isViewed: isViewed) }?.key
     }
 
+    /// The map cut to a view of part of the diff (a later round's Since): the
+    /// chapters with a file in `paths`, each holding only those, and only those
+    /// files, so the counter and Next never point at a chapter the list does not show.
+    package static func inView(_ map: ReviewMap, paths: Set<String>) -> ReviewMap {
+        let chapters = map.chapters.compactMap { c -> ReviewMap.Chapter? in
+            let kept = c.paths.filter(paths.contains)
+            guard !kept.isEmpty else { return nil }
+            return ReviewMap.Chapter(
+                key: c.key, title: c.title, level: c.level, core: c.core, paths: kept, changedLines: c.changedLines,
+                lane: c.lane, targetId: c.targetId, jiraKey: c.jiraKey, signalsSummary: c.signalsSummary
+            )
+        }
+        return ReviewMap(
+            chapters: chapters, files: map.files.filter { paths.contains($0.path) }, lanes: map.lanes,
+            lanesPartial: map.lanesPartial, diffTruncated: map.diffTruncated, notes: map.notes
+        )
+    }
+
     /// With one chapter outside "Can skip" (or none) the list is hidden.
     package static func showsList(_ map: ReviewMap) -> Bool {
         map.chapters.filter { !$0.isCollapsed }.count > 1
