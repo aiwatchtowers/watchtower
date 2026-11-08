@@ -65,6 +65,8 @@ func TestSignals(t *testing.T) {
 			nil},
 		{"swift generic operator respaced", reviewdiff.File{Path: "Sources/A.swift", Status: "modified", Hunks: hunk("-    public static func ==<T: Equatable>(a: T, b: T) -> Bool {", "+    public static func == <T: Equatable>(a: T, b: T) -> Bool {")},
 			nil},
+		{"swift generic operator inner space", reviewdiff.File{Path: "Sources/A.swift", Status: "modified", Hunks: hunk("-    public static func ==<T: Equatable>(a: T, b: T) -> Bool {", "+    public static func ==< T: Equatable>(a: T, b: T) -> Bool {")},
+			nil},
 		{"swift less-than operator removed", reviewdiff.File{Path: "Sources/A.swift", Status: "modified", Hunks: hunk("-    public static func <(a: A, b: A) -> Bool {", "+    public static func <=(a: A, b: A) -> Bool {")},
 			[]string{"api_removed"}},
 		{"swift generic func re-added", reviewdiff.File{Path: "Sources/A.swift", Status: "modified", Hunks: hunk("-    public func load<T>(_ t: T) {", "+    public func load<U>(_ u: U) {")},
