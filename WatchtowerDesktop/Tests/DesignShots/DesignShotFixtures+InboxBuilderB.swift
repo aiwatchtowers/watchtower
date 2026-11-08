@@ -413,10 +413,14 @@ enum InboxBuilderBShotFixtures {
     private static var editorShots: [DesignShot] {
         [
             DesignShot(name: "inbox-b-changed-row-new-folder", size: NSSize(width: 480, height: 0)) {
-                changedRow(column: changedColumn(), isNew: false, placement: .newFolder(title: "Release", parent: "Inbox"))
+                changedRow(column: changedColumn(), isNew: false,
+                           placement: InboxNewArtifactRoute(newFolder: "Release", parentID: nil, parentTitle: "Inbox"))
             },
-            DesignShot(name: "inbox-b-changed-row-folder-only", size: NSSize(width: 480, height: 0)) {
-                changedRow(column: newRecipeColumn(), isNew: true, placement: .existing(title: "Release"))
+            // A fixed height: the row's lines scroll past their cap, which a
+            // fitted shot measures before the scroll view has its height.
+            DesignShot(name: "inbox-b-changed-row-folder-only", size: NSSize(width: 480, height: 380)) {
+                changedRow(column: newRecipeColumn(), isNew: true,
+                           placement: InboxNewArtifactRoute(folderID: 3, title: "Release"))
             },
             DesignShot(name: "inbox-b-save-folder-failed", size: NSSize(width: 480, height: 0)) {
                 AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -430,28 +434,13 @@ enum InboxBuilderBShotFixtures {
         ]
     }
 
-    /// The pinned Changed row (A's row model, drawn as
-    /// `AutomationSaveConfirmation` draws it) ending with the folder line,
-    /// above the footer.
+    /// The editor's pinned Changed row (A's `AutomationSaveConfirmation`)
+    /// ending with the folder line the save sets, above the footer.
     private static func changedRow(
-        column: AutomationDraftColumnModel, isNew: Bool, placement: InboxFolderPlacement
+        column: AutomationDraftColumnModel, isNew: Bool, placement: InboxNewArtifactRoute
     ) -> AnyView {
-        let row = column.confirmationRow(on: .look)
-        return AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                SectionHeader(title: row?.title ?? AutomationSaveConfirmationRow.changedTitle,
-                              systemImage: "arrow.left.arrow.right")
-                if let note = row?.note {
-                    Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(Array((row?.items ?? []).enumerated()), id: \.offset) { _, item in
-                    Text(item.text).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-                InboxFolderPlacementLine(placement: placement)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Spacing.medium)
-            .card()
+        AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
+            AutomationSaveConfirmation(column: column, step: .look, placement: placement.placementText)
             footerBar(column: column, isNew: isNew)
         }
         .padding(Spacing.large)

@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// One entry of the editor's draft cache: `draft_automation` on the
-/// `automation_editor` surface appends `{recipe_text, result, error?, at}` to
+/// `automation_editor` surface appends `{recipe_text, result, error?, at, folder?}` to
 /// `automation_draft_cache` and keeps the last five
 /// (`internal/automations/authoring/draftcache.go`, `AutomationDraftCacheQueries`).
 /// A UI cache of the tool's own result, not a store of record. A draft whose
@@ -112,13 +112,25 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     package let error: String?
     /// When the entry was written (RFC 3339 UTC); nil when absent or unreadable.
     package let atText: String?
+    /// The chat's Inbox folder suggestion for this draft; nil when it made
+    /// none, or when it does not decode (the draft is kept, Go's rule too).
+    package let folder: AutomationFolderSuggestion?
 
     /// When the entry was written: the Look step compares it with the
     /// owner's own Dry run of the same text.
     package var at: Date? { AutomationDates.parse(atText) }
 
     enum CodingKeys: String, CodingKey {
-        case recipeText = "recipe_text", result, error, atText = "at"
+        case recipeText = "recipe_text", result, error, atText = "at", folder
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        recipeText = try c.decode(String.self, forKey: .recipeText)
+        result = try c.decodeIfPresent(Result.self, forKey: .result)
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+        atText = try c.decodeIfPresent(String.self, forKey: .atText)
+        folder = try? c.decodeIfPresent(AutomationFolderSuggestion.self, forKey: .folder)
     }
 
     /// The newest cache entry: none (no entry yet), a decoded entry, or one

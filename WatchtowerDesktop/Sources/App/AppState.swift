@@ -1344,7 +1344,7 @@ final class AppState {
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
-        vm.routeSavedAutomation = { [weak self] in await self?.routeSavedAutomation($0, to: $1, reread: $2) ?? Self.inboxMenuNotReady }
+        wireInboxFolderRoutes(vm)
         automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in

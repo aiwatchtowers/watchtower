@@ -405,7 +405,8 @@ struct AutomationEditorPanel: View {
         )
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             footerMessages(form, key: key, column: column)
-            AutomationSaveConfirmation(column: column, step: step)
+            AutomationSaveConfirmation(column: column, step: step,
+                                       placement: verdict.pressSaves ? placement?.placementText : nil)
             AutomationDraftFooterBar(
                 verdict: verdict,
                 step: step,
@@ -414,6 +415,13 @@ struct AutomationEditorPanel: View {
                 isSaving: isSaving,
                 warnings: AutomationDraftFooter.Warnings(column: column, dryRunTokens: tokens)
             ) { press($0, key: key) }
+            // An earlier save of this automation landed but its folder did not.
+            if !isNew, let failure = vm.routeFailures[key] {
+                InboxFolderSaveFailureLine(reason: failure.reason, isRetrying: vm.routeRetrying.contains(key)) {
+                    let vm = vm
+                    Task { await vm.retryRoute(key) }
+                }
+            }
         }
         .controlSize(.small)
         .padding(Spacing.large)
@@ -494,13 +502,23 @@ struct AutomationEditorPanel: View {
         return false
     }
 
+    /// The Inbox folder the save puts the cards in: the chat's newest
+    /// suggestion, else a new draft's **+ New Artifact…** folder.
+    private var placement: InboxNewArtifactRoute? {
+        vm.editorPlacement(suggestion: chat?.draft.entry?.folder, draftContextID: newDraftContextID)
+    }
+
     /// The owner's press: saves or confirms the bytes the column shows,
-    /// keeping auto only for the boxes checked (AUTO-03).
+    /// keeping auto only for the boxes checked (AUTO-03). A save also sets
+    /// the folder its Changed row named: once it landed, never on a refusal.
     private func press(_ action: AutomationDraftFooter.Action, key: Int64) {
         guard case let .review(plan) = editor.saving[key] else { return }
         var checked = plan
         checked.keepAuto = (editor.keepAuto[key] ?? []).intersection(plan.pausedGrants)
         let editor = editor
+        let vm = vm
+        let route = action.saves ? placement : nil
+        if let newDraftContextID { vm.setPressRoute(route, forDraft: newDraftContextID) }
         if let turnOnBuiltin {
             // A built-in: the save never touches on/off (its feature keys).
             whenLanded(key) {
@@ -509,6 +527,7 @@ struct AutomationEditorPanel: View {
                     return
                 }
                 await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                await vm.routeEditorSave(editor, key: key, route: route)
                 if action == .saveAndTurnOn, editor.saving[key] == .done { await turnOnBuiltin() }
             }
             return
@@ -526,6 +545,7 @@ struct AutomationEditorPanel: View {
             case .save:
                 await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
             }
+            await vm.routeEditorSave(editor, key: key, route: route)
         }
     }
 

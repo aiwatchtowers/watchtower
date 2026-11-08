@@ -423,19 +423,25 @@ package final class InboxFolderMenuModel {
     }
 
     /// Sends automation `automationID`'s artifacts to folder `folderID`
-    /// (the artifact ⋯'s Move to Folder ▸, a save from **+ New Artifact…**):
-    /// one `route` at the read revision, never retried. Nil when it landed
-    /// (the tree re-read); else the reason, for the caller to show on its
-    /// own line — the menu shows only what concerns the menu (a lost race's
-    /// note, the missing CLI).
+    /// (the artifact ⋯'s Move to Folder ▸).
     package func route(_ automationID: Int64, to folderID: Int64) async -> String? {
+        await route(automationID, to: .folder(folderID))
+    }
+
+    /// Sends automation `automationID`'s artifacts to `destination`, an
+    /// existing folder or a new one the route creates (a save from **+ New
+    /// Artifact…** or with the editor's folder line): one `route` at the
+    /// read revision, never retried. Nil when it landed (the tree re-read);
+    /// else the reason, for the caller to show on its own line — the menu
+    /// shows only what concerns the menu (a lost race's note, the missing CLI).
+    package func route(_ automationID: Int64, to destination: InboxFoldersCLI.RouteDestination) async -> String? {
         guard !isBusy else { return Self.routeBusy }
         guard tree.revision >= 1 else { return Self.routeNotRead }
         var reason: String?
         await write(row: nil, onFailure: { error in
             reason = error == .menuChanged ? Self.routeMenuChanged : (error.errorDescription ?? "")
         }, { cli, revision in
-            _ = try await cli.route(automationID: automationID, to: .folder(folderID), expectRevision: revision)
+            _ = try await cli.route(automationID: automationID, to: destination, expectRevision: revision)
         })
         return reason
     }

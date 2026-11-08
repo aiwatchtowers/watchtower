@@ -88,11 +88,19 @@ package final class AutomationsViewModel {
     /// route`, through the Inbox menu's model at its read revision); nil when
     /// it landed, else the reason. **+ New Artifact…** from a folder sets the
     /// folder; the save sets the route.
-    @ObservationIgnored package var routeSavedAutomation:
-        @MainActor (_ automationID: Int64, _ folderID: Int64, _ reread: Bool) async -> String? = { _, _, _ in nil }
+    @ObservationIgnored package var routeSavedAutomation: @MainActor (
+        _ automationID: Int64, _ destination: InboxFoldersCLI.RouteDestination, _ reread: Bool
+    ) async -> String? = { _, _, _ in nil }
+    /// The Inbox menu's tree as last read (nil before the Inbox is built):
+    /// the editor resolves its chat's folder suggestion against it.
+    @ObservationIgnored package var inboxFolderTree: @MainActor () -> InboxFolderTree? = { nil }
     /// The folder each new draft started from **+ New Artifact…** goes to on
     /// save, by the draft's context id (`showEditor` takes it from the New flow).
     package private(set) var newDraftRoutes: [String: InboxNewArtifactRoute] = [:]
+    /// The folder the editor's save press showed for a new draft (its
+    /// Changed row's folder line), by context id: `draftSaved` routes it,
+    /// in place of the New flow's.
+    @ObservationIgnored private var pressRoutes: [String: InboxNewArtifactRoute] = [:]
     /// A save landed but its route did not, by automation id: "Saved. The
     /// folder was not created: <reason>" with **Try Again**.
     package private(set) var routeFailures: [Int64: InboxRouteFailure] = [:]
@@ -501,6 +509,7 @@ package final class AutomationsViewModel {
     /// assistant has no cached draft; its in-memory draft is the editor center's.
     package func discardDraft(contextID: String) async {
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
+        pressRoutes[contextID] = nil
         guard let row = draftRows.first(where: { $0.contextID == contextID }) else { return }
         draftRows.removeAll { $0.contextID == contextID }
         do {
@@ -520,7 +529,8 @@ package final class AutomationsViewModel {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
-        if let route = newDraftRoutes.removeValue(forKey: contextID) {
+        let newFlowRoute = newDraftRoutes.removeValue(forKey: contextID)
+        if let route = pressRoutes.removeValue(forKey: contextID) ?? newFlowRoute {
             await routeSaved(automationID, route, reread: false)
         }
         await removeDraftCache(conversationID)
@@ -540,10 +550,37 @@ package final class AutomationsViewModel {
         await removeDraftCache(conversationID)
     }
 
+    // MARK: - The editor's folder line
+
+    /// The folder the editor's save puts automation `key`'s cards in (its
+    /// Changed row's last line): the chat's newest suggestion, resolved
+    /// against the Inbox menu (a root-only tree before it is read), else the
+    /// folder a new draft's **+ New Artifact…** started from; nil for none.
+    package func editorPlacement(
+        suggestion: AutomationFolderSuggestion?, draftContextID: String?
+    ) -> InboxNewArtifactRoute? {
+        if let suggestion { return suggestion.route(in: inboxFolderTree() ?? .rootOnly) }
+        return draftContextID.flatMap { newDraftRoutes[$0] }
+    }
+
+    /// Before a new draft's save press: the folder its line shows goes with
+    /// the save (`draftSaved` routes it); nil keeps the New flow's.
+    package func setPressRoute(_ route: InboxNewArtifactRoute?, forDraft contextID: String) {
+        pressRoutes[contextID] = route
+    }
+
+    /// After the editor's save press on a saved automation: routes it to the
+    /// folder its line showed, only when the save landed (`savedIDs`); a
+    /// refused save sends nothing. A new draft's route waits for `draftSaved`.
+    package func routeEditorSave(_ editor: AutomationEditorCenter, key: Int64, route: InboxNewArtifactRoute?) async {
+        guard let route, !AutomationEditorCenter.isNewDraft(key), let savedID = editor.savedIDs[key] else { return }
+        await routeSaved(savedID, route, reread: false)
+    }
+
     /// Sends the saved automation's route; a failure keeps the folder for
     /// **Try Again** and never touches the saved recipe.
     private func routeSaved(_ automationID: Int64, _ route: InboxNewArtifactRoute, reread: Bool) async {
-        if let reason = await routeSavedAutomation(automationID, route.folderID, reread) {
+        if let reason = await routeSavedAutomation(automationID, route.cliDestination, reread) {
             routeFailures[automationID] = InboxRouteFailure(route: route, reason: reason)
         } else {
             routeFailures[automationID] = nil

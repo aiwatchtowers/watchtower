@@ -58,4 +58,15 @@ package struct AutomationSaveConfirmationRow: Equatable, Sendable {
     /// (`AutomationChangePresentation.firstConfirmation`/`unknownChanges`).
     package let note: String?
     package let items: [Item]
+    /// The row's last line: the Inbox folder the save puts the cards in
+    /// (`InboxNewArtifactRoute.placementText`). Placement, not a hashed
+    /// item: what the press confirms never depends on it (AUTO-06).
+    package var placement: String?
+
+    package init(title: String, note: String?, items: [Item], placement: String? = nil) {
+        self.title = title
+        self.note = note
+        self.items = items
+        self.placement = placement
+    }
 }

@@ -18,13 +18,23 @@ extension AppState {
         ))
     }
 
+    /// The Automations view model's way to the Inbox menu: the route a save
+    /// sets, and the tree the editor's folder line is resolved against.
+    func wireInboxFolderRoutes(_ vm: AutomationsViewModel) {
+        vm.routeSavedAutomation = { [weak self] in await self?.routeSavedAutomation($0, to: $1, reread: $2) ?? Self.inboxMenuNotReady }
+        vm.inboxFolderTree = { [weak self] in self?.actionStripViewModel?.folderMenu.tree }
+    }
+
     /// A saved automation's route to the Inbox folder it was made from
-    /// (**+ New Artifact…**): through the folder menu at its read revision,
-    /// after a re-read on **Try Again**. Nil when it landed.
-    func routeSavedAutomation(_ automationID: Int64, to folderID: Int64, reread: Bool) async -> String? {
+    /// (**+ New Artifact…**) or the editor's folder line names: through the
+    /// folder menu at its read revision, after a re-read on **Try Again**.
+    /// Nil when it landed.
+    func routeSavedAutomation(
+        _ automationID: Int64, to destination: InboxFoldersCLI.RouteDestination, reread: Bool
+    ) async -> String? {
         guard let menu = actionStripViewModel?.folderMenu else { return Self.inboxMenuNotReady }
         if reread { await menu.reload() }
-        return await menu.route(automationID, to: folderID)
+        return await menu.route(automationID, to: destination)
     }
 
     /// **+ New Artifact…**: the Automations tab's New flow, the selected
