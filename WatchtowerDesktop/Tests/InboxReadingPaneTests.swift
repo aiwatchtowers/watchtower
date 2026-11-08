@@ -57,6 +57,18 @@ final class InboxReadingPaneTests: XCTestCase {
         ])
     }
 
+    /// Needs approval's stack (B Task 12): an automation card there is the
+    /// recipe's look of an approval, whose Done would close the artifact,
+    /// not the approval. Until Task 13 wires the row actions it offers no
+    /// Done or Dismiss; its own actions and the common row stay.
+    func testInApprovalsAnOutputCardHasNoDoneOrDismiss() throws {
+        let sut = pane(card(actions: twoActions, link: "https://example.com/issue/482")).stackedInApprovals()
+
+        XCTAssertEqual(try buttonLabels(sut), [
+            "Move to Backlog", "Draft a Reply", "Open source", "Discuss in Chat", "Hand to Agent…"
+        ])
+    }
+
     func testOpenSourceHiddenWithoutLink() throws {
         let sut = pane(card(actions: twoActions))
 
@@ -464,6 +476,13 @@ final class InboxReminderPaneTests: XCTestCase {
         let link = try sut.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.url().absoluteString, "https://slack.com/archives/C0ABC/p17400000005")
         XCTAssertThrowsError(try sut.inspect().find(text: "1:C0ABC@1740000000.5"), "the raw ref is not shown")
+    }
+
+    /// A reminder's Done is today's reminder Done: it stays in Needs approval.
+    func testReminderInApprovalsKeepsDoneAndSnooze() throws {
+        let sut = reminderPane(messageRef: "").stackedInApprovals()
+        XCTAssertNoThrow(try sut.inspect().find(button: "Done"))
+        XCTAssertNoThrow(try sut.inspect().find(button: "Snooze 1h"))
     }
 
     func testReminderWithAnEmptyMessageRefShowsNoLink() throws {

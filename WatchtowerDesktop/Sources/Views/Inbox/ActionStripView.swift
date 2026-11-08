@@ -412,9 +412,11 @@ struct ActionStripActionsView: View {
     }
 
     /// Today's reading pane over one card, its presses on the strip's writes.
-    private func pane(_ item: InboxListItem?) -> some View {
+    /// The reading pane for `item`; `inApprovals` draws it as one card of
+    /// Needs approval's stack (`InboxReadingPane.stackedInApprovals()`).
+    private func pane(_ item: InboxListItem?, inApprovals: Bool = false) -> some View {
         let now = now ?? Date()
-        return InboxReadingPane(
+        let pane = InboxReadingPane(
             item: item,
             navScreens: navScreens,
             now: now,
@@ -439,6 +441,7 @@ struct ActionStripActionsView: View {
             trackCard: { track in InboxCardColumn { InboxCardPlaceholder(track: track, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0).padding(Spacing.page) }
         )
+        return inApprovals ? pane.stackedInApprovals() : pane
     }
 
     private func done(_ id: InboxSelection) {
@@ -502,6 +505,8 @@ struct ActionStripActionsView: View {
                 filled(Self.listItem(item))
             }
         case let .approval(item):
+            // The recipe's card, without Done/Dismiss until Task 13 wires
+            // its row actions (Approve, Reject, Edit…).
             filled(Self.listItem(item))
         case let .builtinNotice(notice):
             filled(.builtinNotice(notice))
@@ -511,7 +516,7 @@ struct ActionStripActionsView: View {
     }
 
     private func filled(_ item: InboxListItem) -> some View {
-        pane(item)
+        pane(item, inApprovals: true)
             .padding(Spacing.medium)
             .frame(maxWidth: .infinity, alignment: .leading)
             .card()
