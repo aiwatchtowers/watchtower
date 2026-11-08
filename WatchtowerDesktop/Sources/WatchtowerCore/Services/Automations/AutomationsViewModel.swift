@@ -2,6 +2,17 @@ import Foundation
 import GRDB
 import Observation
 
+/// What one write on an automation came to, for a caller that shows it as
+/// its own press's result (the Inbox's artifact ⋯): it landed, another call
+/// on the same automation was running (nothing was sent), or it failed with
+/// the CLI's text. The tab-wide `lastError` is still set on a failure.
+package enum AutomationCallResult: Equatable, Sendable {
+    case done, busy, failed(String)
+
+    /// "Another change to this automation is running — try again".
+    nonisolated package static let busyText = "Another change to this automation is running — try again"
+}
+
 /// The Automations tab and its sidebar badge (spec §12.1). Owned by
 /// `AppState`, so a run, a dry run or a delete started on the tab survives
 /// navigating away. Reads go through `AutomationQueries`; every write goes
@@ -73,6 +84,20 @@ package final class AutomationsViewModel {
     /// Drops the editor's draft by key (`AutomationEditorCenter.discard`):
     /// a saved draft's buffer is never listed or saved again.
     @ObservationIgnored package var discardEditorDraft: @MainActor (Int64) -> Void = { _ in }
+    /// Routes a just-saved automation into an Inbox folder (`inbox folders
+    /// route`, through the Inbox menu's model at its read revision); nil when
+    /// it landed, else the reason. **+ New Artifact…** from a folder sets the
+    /// folder; the save sets the route.
+    @ObservationIgnored package var routeSavedAutomation:
+        @MainActor (_ automationID: Int64, _ folderID: Int64, _ reread: Bool) async -> String? = { _, _, _ in nil }
+    /// The folder each new draft started from **+ New Artifact…** goes to on
+    /// save, by the draft's context id (`showEditor` takes it from the New flow).
+    package private(set) var newDraftRoutes: [String: InboxNewArtifactRoute] = [:]
+    /// A save landed but its route did not, by automation id: "Saved. The
+    /// folder was not created: <reason>" with **Try Again**.
+    package private(set) var routeFailures: [Int64: InboxRouteFailure] = [:]
+    /// The automations whose Try Again is running.
+    package private(set) var routeRetrying: Set<Int64> = []
     /// Saved drafts whose conversation is not re-keyed yet (`draftSaved`
     /// waits for the chat to go idle): never a row meanwhile.
     @ObservationIgnored private var savedDraftConversations: Set<Int64> = []
@@ -390,6 +415,10 @@ package final class AutomationsViewModel {
     /// goes into the editor chat's empty composer once.
     package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
         let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
+        // The New flow's folder goes with the draft it continues to.
+        if case let .new(flow) = panel, let route = flow.route, case let .newDraft(contextID, _, _) = target {
+            newDraftRoutes[contextID] = route
+        }
         if id != selectedID { expandedRuns = [] }
         selectedID = id
         panel = .editor(target)
@@ -491,6 +520,9 @@ package final class AutomationsViewModel {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
+        if let route = newDraftRoutes.removeValue(forKey: contextID) {
+            await routeSaved(automationID, route, reread: false)
+        }
         await removeDraftCache(conversationID)
         draftRows.removeAll { $0.conversationID == conversationID }
         let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
@@ -506,6 +538,25 @@ package final class AutomationsViewModel {
         }
         // The turn waited for may have drafted again.
         await removeDraftCache(conversationID)
+    }
+
+    /// Sends the saved automation's route; a failure keeps the folder for
+    /// **Try Again** and never touches the saved recipe.
+    private func routeSaved(_ automationID: Int64, _ route: InboxNewArtifactRoute, reread: Bool) async {
+        if let reason = await routeSavedAutomation(automationID, route.folderID, reread) {
+            routeFailures[automationID] = InboxRouteFailure(route: route, reason: reason)
+        } else {
+            routeFailures[automationID] = nil
+        }
+    }
+
+    /// **Try Again** on "Saved. The folder was not created": re-reads the
+    /// menu, then sends the route once more. A press while one runs is ignored.
+    package func retryRoute(_ automationID: Int64) async {
+        guard let failure = routeFailures[automationID], !routeRetrying.contains(automationID) else { return }
+        routeRetrying.insert(automationID)
+        defer { routeRetrying.remove(automationID) }
+        await routeSaved(automationID, failure.route, reread: true)
     }
 
     private func removeDraftCache(_ conversationID: Int64) async {
@@ -582,9 +633,10 @@ package final class AutomationsViewModel {
 
     // MARK: - CLI operations
 
-    /// False when the call failed (`lastError` says why) or another call on `id` is in flight.
+    /// `.failed` when the call failed (`lastError` says why too), `.busy`
+    /// when another call on `id` is in flight (nothing sent).
     @discardableResult
-    package func runNow(_ id: Int64) async -> Bool {
+    package func runNow(_ id: Int64) async -> AutomationCallResult {
         await perform(.running, on: id) { cli in _ = try await cli.run(id) }
     }
 
@@ -623,15 +675,20 @@ package final class AutomationsViewModel {
         afterCLICall()
     }
 
-    package func setEnabled(_ id: Int64, _ on: Bool) async {
+    @discardableResult
+    package func setEnabled(_ id: Int64, _ on: Bool) async -> AutomationCallResult {
         await perform(.enabling, on: id) { cli in try await cli.setEnabled(id, on) }
     }
 
-    /// Deletes the recipe; the card's state goes only once the CLI succeeded.
-    package func delete(_ id: Int64) async {
-        let deleted = await perform(.deleting, on: id) { cli in try await cli.delete(id) }
-        guard deleted else { return }
+    /// Deletes the recipe; the card's state, and an open editor's draft of
+    /// it, go only once the CLI succeeded (from the tab or the Inbox alike).
+    @discardableResult
+    package func delete(_ id: Int64) async -> AutomationCallResult {
+        let result = await perform(.deleting, on: id) { cli in try await cli.delete(id) }
+        guard result == .done else { return result }
         if selectedID == id { select(nil) }
+        discardEditorDraft(id)
+        routeFailures[id] = nil
         runs[id] = nil
         reports[id] = nil
         grants[id] = nil
@@ -639,6 +696,7 @@ package final class AutomationsViewModel {
         detailErrors[id] = nil
         dryRuns[id] = nil
         expandedAsNewest[id] = nil
+        return result
     }
 
     package func cancel(runID: Int64) async {
@@ -651,31 +709,32 @@ package final class AutomationsViewModel {
         await perform(.cancelling, on: owner) { cli in try await cli.cancel(runID: runID) }
     }
 
-    /// One CLI call marked busy on `id`; false when it failed (or another
-    /// call on `id` is in flight). A failure leaves the list as it was and
-    /// puts the CLI's stderr in `lastError`.
+    /// One CLI call marked busy on `id`; `.busy` (nothing sent) while
+    /// another call on `id` is in flight. A failure leaves the list as it
+    /// was and puts the CLI's stderr in `lastError` and in `.failed`.
     @discardableResult
     private func perform(
         _ operation: Operation, on id: Int64, _ body: (AutomationsCLI) async throws -> Void
-    ) async -> Bool {
-        guard busy[id] == nil else { return false }
+    ) async -> AutomationCallResult {
+        guard busy[id] == nil else { return .busy }
         busy[id] = operation
         defer { busy[id] = nil }
         return await call(body)
     }
 
     @discardableResult
-    private func call(_ body: (AutomationsCLI) async throws -> Void) async -> Bool {
-        var succeeded = true
+    private func call(_ body: (AutomationsCLI) async throws -> Void) async -> AutomationCallResult {
+        var result = AutomationCallResult.done
         do {
             try await body(cli)
         } catch {
-            lastError = Self.message(for: error)
+            let message = Self.message(for: error)
+            lastError = message
             lastErrorIsRead = false
-            succeeded = false
+            result = .failed(message)
         }
         afterCLICall()
-        return succeeded
+        return result
     }
 
     /// Quick run started a run through its own CLI call: read now and take

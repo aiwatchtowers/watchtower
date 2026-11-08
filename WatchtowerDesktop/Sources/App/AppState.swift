@@ -341,6 +341,7 @@ final class AppState {
     /// Dashboard action strip (pending agent-action proposals + due reminders)
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
+    private(set) var inboxArtifactMenu: InboxArtifactMenuModel? // the Inbox's ⋯ menus; a press outlives the screen
 
     /// Workbench tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
@@ -1328,8 +1329,7 @@ final class AppState {
         }
         vm.start()
         automationsViewModel = vm
-        let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: notifier)
+        let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli, notifier: notifier)
         quickRun.showAutomationsTab = { [weak self] in self?.navigateToAutomations() }
         quickRunCenter = quickRun
         let editorCenter = AutomationEditorCenter(
@@ -1344,6 +1344,7 @@ final class AppState {
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
+        vm.routeSavedAutomation = { [weak self] in await self?.routeSavedAutomation($0, to: $1, reread: $2) ?? Self.inboxMenuNotReady }
         automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
@@ -1759,12 +1760,11 @@ final class AppState {
         }
         // The badge counts the rows this read lists, and the daemon's writes
         // to them never fire the counts VM's observation; resolved at call time.
-        vm.onFeedRefreshed = { [weak self] in
-            await self?.sidebarCountsViewModel?.refresh()
-        }
+        vm.onFeedRefreshed = { [weak self] in await self?.sidebarCountsViewModel?.refresh() }
         vm.disabledFeatures = featureVisibility.disabledFeatureIDs
         Task { await vm.refresh() }
         actionStripViewModel = vm
+        inboxArtifactMenu = makeInboxArtifactMenu(strip: vm)
     }
 
     /// Not `private`: tests build the VM on a test pool (the

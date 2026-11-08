@@ -43,6 +43,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let ideaCard: (Idea) -> IdeaCard
     /// Drawn as one card of Needs approval's stack (`stackedInApprovals()`).
     private(set) var inApprovals = false
+    /// An automation card's ⋯ on its title row (`withArtifactMenu(_:)`).
+    private(set) var artifactMenu: InboxArtifactMenuState?
 
     init(
         item: InboxListItem?,
@@ -92,6 +94,14 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     func stackedInApprovals() -> Self {
         var pane = self
         pane.inApprovals = true
+        return pane
+    }
+
+    /// This pane with the artifact ⋯ on an automation card's title row, and
+    /// a failed press's text under it.
+    func withArtifactMenu(_ menu: InboxArtifactMenuState?) -> Self {
+        var pane = self
+        pane.artifactMenu = menu
         return pane
     }
 
@@ -165,6 +175,18 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                 if card.priority == "high" {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
+                if let artifactMenu, !inApprovals {
+                    Spacer(minLength: Spacing.regular)
+                    InboxArtifactMenuButton(menu: artifactMenu)
+                }
+            }
+            if let error = artifactMenu?.error, !inApprovals {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Tone.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("inbox.artifactMenuError")
             }
             switch InboxCardLayout.of(card) {
             case .markdown:

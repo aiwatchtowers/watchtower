@@ -58,7 +58,8 @@ struct ActionStripView: View {
                     onRunHistory: { automationID, runID in
                         appState.openAutomationRun(automationID: automationID, runID: runID)
                     },
-                    onNewArtifact: newArtifact
+                    onNewArtifact: { appState.newInboxArtifact() },
+                    artifactMenu: appState.inboxArtifactMenu
                 )
             } else {
                 ProgressView()
@@ -152,14 +153,6 @@ struct ActionStripView: View {
         }
     }
 
-    /// **New Artifact…**: the Automations tab's new flow. Task 14 carries
-    /// the selected folder into it as the route to set after the save.
-    private func newArtifact() {
-        guard let automations = appState.automationsViewModel else { return }
-        automations.showNew(AutomationNewFlow())
-        appState.navigateToAutomations()
-    }
-
     /// The dictionary is edited on the Reactions built-in's card (C3).
     private func openReactionDictionary() {
         appState.openBuiltinAutomation(BuiltinAutomationCard.reactionsID)
@@ -229,8 +222,12 @@ struct ActionStripActionsView: View {
     var onTurnOnApprovals: () async -> String? = { nil }
     /// Needs approval's **Run History**: the automation's card, the run open.
     var onRunHistory: (Int64, Int64?) -> Void = { _, _ in }
-    /// **+ New Artifact…** and the empty folders' **New Artifact…**.
+    /// **+ New Artifact…** and the empty folders' **New Artifact…**: the
+    /// Automations tab's New flow, the selected owner folder as its route.
     var onNewArtifact: () -> Void = {}
+    /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
+    /// nil (tests, shots) draws neither.
+    var artifactMenu: InboxArtifactMenuModel?
 
     /// What the header opened in the reading pane, and the Ideas filter's
     /// open row; settable at init so a design shot can open one.
@@ -243,8 +240,8 @@ struct ActionStripActionsView: View {
     /// The folder menu (inbox builder B), then the selected folder.
     var body: some View {
         HSplitView {
-            InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onNewArtifact: onNewArtifact,
-                                  onSelect: selectFolder)
+            InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
+                                  onNewArtifact: onNewArtifact, onSelect: selectFolder)
                 .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
                        maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
             inbox
@@ -265,6 +262,60 @@ struct ActionStripActionsView: View {
             }
             content
         }
+        .confirmationDialog(deleteTitle, isPresented: deleteConfirming) {
+            Button("Delete", role: .destructive) {
+                guard let artifactMenu, let pending = artifactMenu.pendingDelete else { return }
+                Task { await artifactMenu.confirmDelete(pending) }
+            }
+            Button("Cancel", role: .cancel) { artifactMenu?.cancelDelete() }
+        } message: {
+            Text("This removes the recipe file with its runs, state and outputs.")
+        }
+    }
+
+    // MARK: - The ⋯ menus
+
+    /// The artifact ⋯'s Delete…, behind the Automations tab's own confirmation.
+    private var deleteConfirming: Binding<Bool> {
+        Binding(get: { artifactMenu?.pendingDelete != nil }, set: { shown in
+            if !shown { artifactMenu?.cancelDelete() }
+        })
+    }
+
+    private var deleteTitle: String {
+        "Delete “\(artifactMenu?.pendingDelete?.name ?? "")”?"
+    }
+
+    /// A folder-menu ⋯ press the menu does not carry out: Needs approval's.
+    private func folderMenuCommand(_ folderID: Int64, _ command: InboxMenuCommand) {
+        guard vm.folderMenu.tree.folder(folderID)?.kind == .approvals, let artifactMenu else { return }
+        Task { await artifactMenu.performApprovals(command) }
+    }
+
+    /// `card`'s ⋯ in the reading pane.
+    private func artifactMenuState(_ card: AutomationOutputCard) -> InboxArtifactMenuState? {
+        guard let artifactMenu else { return nil }
+        return InboxArtifactMenuState(
+            entries: artifactMenu.content(for: card).entries,
+            isDisabled: artifactMenu.isDisabled(card),
+            isWorking: artifactMenu.isWorking(card),
+            error: artifactMenu.headerErrors[card.id]
+        ) { command in Task { await artifactMenu.perform(command, on: card) } }
+    }
+
+    /// The artifact a list row stands for.
+    private func artifactCard(_ rowID: String) -> AutomationOutputCard? {
+        for entry in vm.folderEntries {
+            if case let .artifact(card) = entry, entry.id == rowID { return card }
+        }
+        return nil
+    }
+
+    /// An artifact row's context menu: its ⋯.
+    private func rowContextMenu(_ row: InboxFolderListRow) -> [InboxMenuEntry] {
+        guard row.kind == .artifact, let artifactMenu, let card = artifactCard(row.id),
+              !artifactMenu.isDisabled(card) else { return [] }
+        return artifactMenu.content(for: card).entries
     }
 
     private var folderKind: InboxFolderKind {
@@ -362,6 +413,7 @@ struct ActionStripActionsView: View {
             },
             onNewArtifact: onNewArtifact,
             onMenu: entryMenu,
+            contextMenu: rowContextMenu,
             emptyState: emptyState,
             emptyExtra: { rootEmptyExtra }
         )
@@ -383,23 +435,30 @@ struct ActionStripActionsView: View {
         }
     }
 
-    /// A legacy entry's own ⋯: the Idea finder's Find Ideas in Past Messages….
+    /// A legacy entry's own ⋯ (the Idea finder's Find Ideas in Past
+    /// Messages…), or an artifact row's context menu.
     private func entryMenu(_ entryID: String, _ command: InboxMenuCommand) {
+        if let card = artifactCard(entryID), let artifactMenu {
+            Task { await artifactMenu.perform(command, on: card) }
+            return
+        }
         guard command == .findIdeasInPastMessages, ideas != nil else { return }
         vm.openLegacy(.ideas)
         openIdeasRow(.findIdeas)
     }
 
-    /// The entry's pane: an artifact or a day card in today's reading pane.
+    /// The entry's pane: an artifact (with its ⋯) or a day card in today's reading pane.
+    @ViewBuilder
     private func readingPane(_ entry: InboxFolderEntry?) -> some View {
-        let item: InboxListItem? = switch entry {
-        case let .artifact(card)?: .output(card)
-        case let .legacyDay(card)?: .day(card)
-        case let .approval(item)?: Self.listItem(item)
-        case let .builtinNotice(notice)?: .builtinNotice(notice)
-        case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: nil
+        switch entry {
+        case let .artifact(card)?:
+            pane(.output(card), menu: artifactMenuState(card))
+                .task(id: card.automationID) { await artifactMenu?.prepare(card) }
+        case let .legacyDay(card)?: pane(.day(card))
+        case let .approval(item)?: pane(Self.listItem(item))
+        case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
+        case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
         }
-        return pane(item)
     }
 
     /// An approval as today's card: the recipe's card when it is current, else native.
@@ -414,7 +473,9 @@ struct ActionStripActionsView: View {
     /// Today's reading pane over one card, its presses on the strip's writes.
     /// The reading pane for `item`; `inApprovals` draws it as one card of
     /// Needs approval's stack (`InboxReadingPane.stackedInApprovals()`).
-    private func pane(_ item: InboxListItem?, inApprovals: Bool = false) -> some View {
+    private func pane(
+        _ item: InboxListItem?, inApprovals: Bool = false, menu: InboxArtifactMenuState? = nil
+    ) -> some View {
         let now = now ?? Date()
         let pane = InboxReadingPane(
             item: item,
@@ -441,6 +502,7 @@ struct ActionStripActionsView: View {
             trackCard: { track in InboxCardColumn { InboxCardPlaceholder(track: track, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0).padding(Spacing.page) }
         )
+        .withArtifactMenu(menu)
         return inApprovals ? pane.stackedInApprovals() : pane
     }
 
@@ -476,7 +538,12 @@ struct ActionStripActionsView: View {
         return NeedsApprovalPane(
             count: entries.count,
             note: vm.approvalsNoteContent,
+            menu: artifactMenu == nil ? []
+                : InboxArtifactMenuContent.approvalsEntries(isEnabled: vm.folderMenu.approvalsEnabled),
+            menuError: artifactMenu?.approvalsError,
+            menuWorking: artifactMenu?.approvalsPressing ?? false,
             onNote: { Task { await vm.pressApprovalsNote(turnOn: onTurnOnApprovals, runHistory: onRunHistory) } },
+            onMenu: { command in Task { await artifactMenu?.performApprovals(command) } },
             emptyState: emptyState,
             cards: {
                 ForEach(entries) { entry in

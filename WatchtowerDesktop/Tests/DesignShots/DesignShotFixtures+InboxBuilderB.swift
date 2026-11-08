@@ -353,12 +353,19 @@ enum InboxBuilderBShotFixtures {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .detailBackground())
             },
-            DesignShot(name: "inbox-b-artifact-menu-error", size: NSSize(width: 660, height: 0)) {
-                AnyView(InboxArtifactHeader(
-                    title: "Weekly mail roundup", source: "Weekly mail roundup · Run #12 · 2 h ago", menu: artifact,
-                    error: "Couldn't move it: the Inbox menu changed — reload it and try again.")
-                    .padding(Spacing.page)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            DesignShot(name: "inbox-b-artifact-menu-error", size: NSSize(width: 660, height: 340)) {
+                // The wired reading pane: the ⋯ on the artifact's title row,
+                // the failed press's text (the model's own) under it.
+                let now = AutomationDates.parse("2026-11-06T12:00:00Z") ?? Date()
+                let card = AutomationOutputCard(
+                    id: 12, automationID: 4, automationName: "Weekly mail roundup", runID: 12,
+                    title: "Weekly mail roundup", body: "Two threads need you this week.", priority: "normal",
+                    createdAt: now.addingTimeInterval(-7200))
+                let menu = InboxArtifactMenuState(
+                    entries: artifact.entries, error: "Couldn't move it: \(InboxFolderMenuModel.routeMenuChanged)")
+                return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+                    .withArtifactMenu(menu)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .detailBackground())
             }
         ]

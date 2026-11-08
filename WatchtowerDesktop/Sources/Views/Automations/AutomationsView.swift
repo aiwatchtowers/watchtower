@@ -209,19 +209,28 @@ struct AutomationsView: View {
         case .empty:
             emptyPanel
         case let .card(id):
-            if let item = vm.items.first(where: { $0.id == id }), item.automation.isBuiltin {
-                builtinCard(item)
-            } else if let item = vm.items.first(where: { $0.id == id }) {
-                AutomationCardView(
-                    vm: vm,
-                    item: item,
-                    actions: actions,
-                    workbenchName: item.automation.projectID.flatMap(workbenchName),
-                    now: Date()
-                ) { vm.showEditor(.existing(id)) }
-                .id(id)
-            } else {
-                emptyPanel
+            VStack(alignment: .leading, spacing: 0) {
+                if let failure = vm.routeFailures[id] {
+                    InboxFolderSaveFailureLine(reason: failure.reason, isRetrying: vm.routeRetrying.contains(id)) {
+                        Task { await vm.retryRoute(id) }
+                    }
+                    .padding(.horizontal, Spacing.page)
+                    .padding(.vertical, Spacing.regular)
+                }
+                if let item = vm.items.first(where: { $0.id == id }), item.automation.isBuiltin {
+                    builtinCard(item)
+                } else if let item = vm.items.first(where: { $0.id == id }) {
+                    AutomationCardView(
+                        vm: vm,
+                        item: item,
+                        actions: actions,
+                        workbenchName: item.automation.projectID.flatMap(workbenchName),
+                        now: Date()
+                    ) { vm.showEditor(.existing(id)) }
+                    .id(id)
+                } else {
+                    emptyPanel
+                }
             }
         case let .new(flow):
             AutomationNewPanel(flow: flow, scopes: hooks.scopes, templates: vm.templates,

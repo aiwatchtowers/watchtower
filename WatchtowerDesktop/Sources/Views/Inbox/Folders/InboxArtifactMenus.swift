@@ -39,6 +39,31 @@ struct InboxMenuItems: View {
     }
 }
 
+/// An artifact's ⋯ as the reading pane draws it: the entries, whether they
+/// are off (a call on the automation runs, or it is not known yet), and the
+/// last failed press's text (`InboxArtifactMenuModel.headerErrors`).
+struct InboxArtifactMenuState {
+    let entries: [InboxMenuEntry]
+    var isDisabled = false
+    var isWorking = false
+    var error: String?
+    var onCommand: (InboxMenuCommand) -> Void = { _ in }
+}
+
+/// The artifact ⋯ with its progress while a press runs.
+struct InboxArtifactMenuButton: View {
+    let menu: InboxArtifactMenuState
+
+    var body: some View {
+        HStack(spacing: Spacing.small) {
+            if menu.isWorking { ProgressView().controlSize(.small) }
+            InboxMoreMenu(entries: menu.entries, help: "More for this artifact", onCommand: menu.onCommand)
+                .disabled(menu.isDisabled)
+        }
+        .controlSize(.small)
+    }
+}
+
 /// A ⋯ button that opens `entries` (the artifact header, a folder row).
 struct InboxMoreMenu: View {
     let entries: [InboxMenuEntry]

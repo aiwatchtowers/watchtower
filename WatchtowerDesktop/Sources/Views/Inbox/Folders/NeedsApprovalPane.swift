@@ -13,6 +13,10 @@ struct NeedsApprovalPane<Cards: View>: View {
     let note: NeedsApprovalNoteContent?
     /// Its ⋯ (Edit the Look…, Turn Off / Turn On, Run History); empty draws none.
     var menu: [InboxMenuEntry] = []
+    /// Its last failed (or busy) press's text, under the title.
+    var menuError: String?
+    /// A Turn On / Turn Off from its ⋯ runs: the ⋯ waits.
+    var menuWorking = false
     var onNote: () -> Void = {}
     var onMenu: (InboxMenuCommand) -> Void = { _ in }
     var emptyState: EmptyStateContext = .neutral
@@ -25,9 +29,18 @@ struct NeedsApprovalPane<Cards: View>: View {
                     Text(isEmpty ? "Needs approval" : "Needs approval · \(count)")
                         .font(.title3.weight(.semibold))
                     Spacer()
+                    if menuWorking { ProgressView().controlSize(.small) }
                     if !menu.isEmpty {
                         InboxMoreMenu(entries: menu, help: "More for Needs approval", onCommand: onMenu)
+                            .disabled(menuWorking)
                     }
+                }
+                if let menuError {
+                    Text(menuError)
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
                 if let note {
                     NeedsApprovalNote(content: note, onPress: onNote)
