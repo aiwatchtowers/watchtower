@@ -16,6 +16,10 @@ var (
 		Short: "Undo one hunk of the round in the work tree (the owner's Desktop button)", RunE: runWorkbenchReviewRevertHunk}
 
 	reviewFlagHunk string
+
+	// errBranchRoundReadOnly: a branch round reads the branch's commits, not
+	// a work tree; there is no file of its to take a hunk out of (#1012).
+	errBranchRoundReadOnly = errors.New("undo is not available on a branch review: it reads the branch's commits, not a folder")
 )
 
 func init() {
@@ -29,7 +33,7 @@ func init() {
 }
 
 // runWorkbenchReviewRevertHunk is the reviewer's Undo (REVIEW-01, REVIEW-02):
-// refused under an agent, on a round that is not open, while the session's
+// refused under an agent, on a round that is not open, on a branch round, while the session's
 // agent is working, and for a hunk already undone; RevertHunk checks the file.
 func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent("undo a review hunk"); err != nil {
@@ -42,6 +46,9 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 	if r.Status != "open" {
 		return failReview(cmd, errors.New("the round is not open"))
+	}
+	if r.Source == db.ReviewSourceBranch {
+		return failReview(cmd, errBranchRoundReadOnly)
 	}
 	if err := refuseWhileAgentWorks(database, r); err != nil {
 		return failReview(cmd, err)

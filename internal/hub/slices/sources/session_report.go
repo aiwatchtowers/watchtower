@@ -76,7 +76,8 @@ type SummaryFetch func(ctx context.Context, workbenchID int64) ([]sessionreport.
 // the report in-process as `workbench session-report --session S --json`
 // does (sessionreport.SessionRefs, Refresh, Build; git and gh in their own
 // process group, killed at the timeout); Summaries nil is
-// sessionreport.Summaries (`--summary`: the DB and the PR cache only);
+// sessionreport.Summaries (the DB and the PR cache only — unlike `--summary`,
+// which first refreshes the merge verdicts with git, board #986);
 // Active nil is always (the hub's linked-phone gate); Now nil is time.Now.
 // OnChange (nil = none) is called after a report or a workbench's summaries
 // were stored: the hub publishes session_report, session_timeline and
@@ -617,7 +618,8 @@ func (r *SessionReportRunner) runSummaries(ctx context.Context, listed []windowe
 		default:
 			byID := make(map[int64]ReportSummary, len(rows))
 			for _, s := range rows {
-				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total, PRLine: s.PRLine}
+				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total,
+					Merged: s.Merged, MergedStale: s.MergedStale, PRLine: s.PRLine}
 			}
 			r.summaries.store(id, byID)
 			r.changed()

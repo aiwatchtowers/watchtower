@@ -38,12 +38,14 @@ type Liveness struct {
 
 // ReportSummary is a session's line of `workbench session-report --summary`
 // (the Swift SessionReportSummary): the target the report is about, its
-// done/total leaves and the PR line.
+// done/total leaves, the merged share (board #986/#1008) and the PR line.
 type ReportSummary struct {
-	TargetID *int64
-	Done     int
-	Total    int
-	PRLine   string
+	TargetID    *int64
+	Done        int
+	Total       int
+	Merged      int  // not done, branch merged into its parent's
+	MergedStale bool // the merge ref could not be checked
+	PRLine      string
 }
 
 // TerminalSessionOptions wires the terminal_session source. Liveness (nil =
@@ -118,8 +120,12 @@ type sessionPayload struct {
 	ReportTargetID       *int64     `json:"report_target_id,omitempty"`
 	ReportDone           *int       `json:"report_done,omitempty"`
 	ReportTotal          *int       `json:"report_total,omitempty"`
-	ReportPRLine         *string    `json:"report_pr_line,omitempty"`
-	ReportPRLineClipped  *bool      `json:"report_pr_line_clipped,omitempty"`
+	// ReportMerged is present with the summary, 0 when none; ReportMergedStale
+	// only when true — the Desktop slice's wire (board #1008).
+	ReportMerged        *int    `json:"report_merged,omitempty"`
+	ReportMergedStale   *bool   `json:"report_merged_stale,omitempty"`
+	ReportPRLine        *string `json:"report_pr_line,omitempty"`
+	ReportPRLineClipped *bool   `json:"report_pr_line_clipped,omitempty"`
 }
 
 // publishedSession is one session of the window with its resolved state.
@@ -190,6 +196,12 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 			line, lineClipped := clipText(sum.PRLine, maxPRLine)
 			done, total := sum.Done, sum.Total
 			out.ReportTargetID, out.ReportDone, out.ReportTotal = sum.TargetID, &done, &total
+			merged := sum.Merged
+			out.ReportMerged = &merged
+			if sum.MergedStale {
+				stale := true
+				out.ReportMergedStale = &stale
+			}
 			out.ReportPRLine, out.ReportPRLineClipped = &line, lineClipped
 		}
 	}

@@ -52,11 +52,31 @@ func execRunner(ctx context.Context, dir string, env []string, name string, args
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return out, fmt.Errorf("git %s: exit %d: %s", subcommand(args), exitErr.ExitCode(), clip(stderr))
+			return out, &GitExitError{Subcommand: subcommand(args), Code: exitErr.ExitCode(), Stderr: clip(stderr)}
 		}
 		return out, fmt.Errorf("git %s: %w", subcommand(args), err)
 	}
 	return out, nil
+}
+
+// GitExitError is a git process that ran and exited non-zero; Code tells a
+// documented "no" (rev-parse --verify --quiet, merge-base, symbolic-ref
+// --quiet exit 1) from a failure.
+type GitExitError struct {
+	Subcommand string
+	Code       int
+	Stderr     string
+}
+
+func (e *GitExitError) Error() string {
+	return fmt.Sprintf("git %s: exit %d: %s", e.Subcommand, e.Code, e.Stderr)
+}
+
+// saidNo reports whether err is git's documented "no": exit 1 of
+// symbolic-ref --quiet, rev-parse --verify --quiet or merge-base.
+func saidNo(err error) bool {
+	var e *GitExitError
+	return errors.As(err, &e) && e.Code == 1
 }
 
 // subcommand is the first argument that is not an option or a -c value.

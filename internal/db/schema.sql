@@ -2910,7 +2910,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    ref         TEXT NOT NULL, -- 'pr:<number>' or 'branch:<name>'
+    ref         TEXT NOT NULL, -- 'pr:<number>', 'branch:<name>' or 'into:<base>:<branch>' (a merge verdict, board #986)
     state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
     pr_number   INTEGER, -- set for a pr ref, and for a branch whose PR gh found
     title       TEXT NOT NULL DEFAULT '',
@@ -3249,7 +3249,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
   delivered_at   TEXT,
-  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')) -- how the owner closed a sent round (00155)
+  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), -- how the owner closed a sent round (00155)
+  branch         TEXT NOT NULL DEFAULT '' -- the branch a source='pr' round reviews; '' for a folder round (00173)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);

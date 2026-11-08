@@ -189,4 +189,79 @@ final class SessionPlaceTests: XCTestCase {
         XCTAssertTrue(stale.help.hasPrefix(fresh.help))
         XCTAssertTrue(stale.help.hasSuffix(Pres.staleNote))
     }
+
+    // MARK: - The row's label (board #987)
+
+    func testRowLabelWithoutTargetBranchOrLanesIsThePlaceLabel() {
+        typealias Pres = SessionPlacePresentation
+        let main = WorkbenchGitStatus(branch: "main")
+        for place in [SessionPlace.main, .unknown, .removed(name: "a", path: worktreeRoot)] {
+            for stale in [false, true] {
+                XCTAssertEqual(Pres.rowLabel(place, mainStatus: main, stale: stale, targetBranch: nil),
+                               Pres.placeLabel(place, mainStatus: main, stale: stale))
+            }
+        }
+    }
+
+    func testRowLabelLeadsWithADifferentTargetBranch() {
+        typealias Pres = SessionPlacePresentation
+        let main = WorkbenchGitStatus(branch: "main")
+        let label = Pres.rowLabel(.main, mainStatus: main, targetBranch: .one("feature/codex-parity"),
+                                  lanes: ["/tmp/acme/.claude/worktrees/a", "/tmp/acme/.claude/worktrees/b"])
+        XCTAssertEqual(label.text, "⎇ feature/codex-parity · 2 lanes")
+        XCTAssertEqual(label.systemImage, "arrow.triangle.branch")
+        XCTAssertTrue(label.help.contains("Target branch: feature/codex-parity"))
+        XCTAssertTrue(label.help.contains("Terminal: main folder · main"))
+        XCTAssertTrue(label.help.contains("Lane worktrees: /tmp/acme/.claude/worktrees/a, /tmp/acme/.claude/worktrees/b"))
+        let oneLane = Pres.rowLabel(.main, mainStatus: main, targetBranch: .one("feature/x"), lanes: ["/tmp/l"])
+        XCTAssertEqual(oneLane.text, "⎇ feature/x · 1 lane")
+        XCTAssertEqual(Pres.rowLabel(.main, mainStatus: main, targetBranch: .one("feature/x")).text, "⎇ feature/x")
+    }
+
+    func testRowLabelKeepsThePlaceWhenItIsOnTheTargetBranch() {
+        typealias Pres = SessionPlacePresentation
+        let worktree = folderStatus(.worktree, for: worktreeRoot, branch: "feature/x", root: worktreeRoot, name: "mobile-a")
+        let place = SessionPlace.worktree(name: "mobile-a", root: URL(fileURLWithPath: worktreeRoot), status: worktree)
+        let label = Pres.rowLabel(place, mainStatus: WorkbenchGitStatus(branch: "main"), targetBranch: .one("feature/x"),
+                                  lanes: ["/tmp/l"])
+        XCTAssertEqual(label.text, "⑂ mobile-a · feature/x · 1 lane")
+        XCTAssertEqual(label.systemImage, "arrow.triangle.branch")
+        XCTAssertTrue(label.help.hasPrefix("Target branch: feature/x"))
+        let onMain = Pres.rowLabel(.main, mainStatus: WorkbenchGitStatus(branch: "main"), targetBranch: .one("main"))
+        XCTAssertEqual(onMain.text, "main folder · main")
+        XCTAssertEqual(onMain.systemImage, "folder")
+    }
+
+    /// A detached, unreadable or removed place never equals the target branch.
+    func testRowLabelNeverMatchesAnUnprovenBranch() {
+        typealias Pres = SessionPlacePresentation
+        let detached = WorkbenchGitStatus(branch: "feature/x", detached: true, head: "1a2b3c4")
+        XCTAssertEqual(Pres.rowLabel(.main, mainStatus: detached, targetBranch: .one("feature/x")).text, "⎇ feature/x")
+        let unreadable = WorkbenchGitStatus(branch: "feature/x", statusOK: false)
+        XCTAssertEqual(Pres.rowLabel(.unknown, mainStatus: unreadable, targetBranch: .one("feature/x")).text, "⎇ feature/x")
+        let removed = Pres.rowLabel(.removed(name: "a", path: worktreeRoot), mainStatus: nil, targetBranch: .one("feature/x"))
+        XCTAssertEqual(removed.text, "⎇ feature/x")
+        XCTAssertTrue(removed.help.contains("Terminal: worktree removed"))
+        XCTAssertTrue(removed.help.contains(worktreeRoot))
+    }
+
+    func testRowLabelCountsSeveralTargetBranches() {
+        typealias Pres = SessionPlacePresentation
+        let label = Pres.rowLabel(.main, mainStatus: WorkbenchGitStatus(branch: "main"),
+                                  targetBranch: .several(["feature/a", "feature/b"]), lanes: ["/tmp/l"])
+        XCTAssertEqual(label.text, "⎇ 2 target branches · 1 lane")
+        XCTAssertTrue(label.help.contains("Target branches: feature/a, feature/b"))
+        XCTAssertTrue(label.help.contains("Terminal: main folder · main"))
+    }
+
+    func testRowLabelAddsLanesToThePlaceAndKeepsTheStaleNote() {
+        typealias Pres = SessionPlacePresentation
+        let main = WorkbenchGitStatus(branch: "main")
+        let label = Pres.rowLabel(.main, mainStatus: main, stale: true, targetBranch: nil, lanes: ["/tmp/a", "/tmp/b", "/tmp/c"])
+        XCTAssertEqual(label.text, "main folder · main · 3 lanes")
+        XCTAssertTrue(label.help.contains(Pres.staleNote))
+        XCTAssertTrue(label.help.hasSuffix("Lane worktrees: /tmp/a, /tmp/b, /tmp/c"))
+        let target = Pres.rowLabel(.main, mainStatus: main, stale: true, targetBranch: .one("feature/x"))
+        XCTAssertTrue(target.help.contains(Pres.staleNote))
+    }
 }

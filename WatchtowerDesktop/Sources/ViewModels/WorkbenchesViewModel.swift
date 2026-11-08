@@ -421,6 +421,15 @@ final class WorkbenchesViewModel {
     /// Each workbench's board tree for the row menu's **Session Target ▸**,
     /// read when its session rows come on screen.
     var sessionTargetRoots: [Int64: [WorkbenchBoardNode]] = [:]
+    /// Each workbench's session work links and lane worktrees on disk
+    /// (board #987), read with its session list; the row's place line.
+    var sessionWork: [Int64: SessionWorkSnapshot] = [:]
+    /// `loadSessionWork`'s reads started per workbench: only the latest applies.
+    @ObservationIgnored var sessionWorkReads: [Int64: Int] = [:]
+    /// Which lane worktree roots exist (a seam for tests; stat'ed off the main actor).
+    @ObservationIgnored var statLaneRoots: @Sendable (Set<String>) async -> Set<String> = { roots in
+        await WorkbenchesViewModel.existingLaneRoots(roots)
+    }
     /// The worktrees the last delete kept because work was in them
     /// (`keptWorktreesNotice`): a neutral line under the list, not an error,
     /// until the owner dismisses it or the next delete replaces it.

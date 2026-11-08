@@ -84,8 +84,9 @@ func countAsks(t *testing.T, database *db.DB, pid int64) int {
 }
 
 // E12: the question is filed as a Quick ask of origin chat with the stored
-// options, the title clipped, the summary ending in the reason's line, the
-// session and its single linked target; the question is cleared.
+// options, the title clipped, the summary only the reason's line (no
+// context recorded, and never the question again), the session and its
+// single linked target; the question is cleared.
 func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 	long := strings.Repeat("word ", 30) + "or that?" // 158 runes
 	for _, tc := range []struct {
@@ -121,7 +122,7 @@ func TestEscalateFilesAQuickAskWithTheSameOptions(t *testing.T) {
 			assert.Equal(t, asks.KindQuestion, a.Kind)
 			assert.Equal(t, "open", a.Status)
 			assert.Equal(t, strings.TrimSpace(string([]rune(strings.TrimSpace(long))[:asks.MaxTitleRunes])), a.Title)
-			assert.Equal(t, long+"\n"+tc.line, a.Summary)
+			assert.Equal(t, tc.line, a.Summary, "the question is the title and q1, not the summary too")
 			assert.Equal(t, asks.OriginChat, a.Origin)
 			assert.Equal(t, asks.LevelQuick, a.Level)
 			assert.Equal(t, f.at, a.ChatAskedAt)
@@ -275,6 +276,33 @@ func TestEscalateZeroOptionsFromAFullRequestIsFull(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, asks.LevelFull, a.Level)
 	assert.JSONEq(t, `{"focus":[],"questions":[{"id":"q1","question":"`+text+`","options":[]}],"checklist":[]}`, a.Payload)
+	assert.Equal(t, text, a.Title)
+	assert.Equal(t, text+"\nAsked in the terminal while you were away.", a.Summary,
+		"a full request keeps the message text as its summary")
+}
+
+// Classifier v5: a recorded context is the summary's body, a blank line
+// before the reason's line (the summary's last line); the title and q1 stay
+// the question.
+func TestEscalateSummaryIsTheContextThenTheReason(t *testing.T) {
+	q := db.ChatQuestion{Question: "Merge the PR now?",
+		Context: "CI is green; merging now unblocks the release. I recommend yes.",
+		Options: []db.ChatQuestionOption{{Label: "Yes", Recommended: true}, {Label: "No"}}}
+	f := newEscalateFixture(t, q)
+
+	res := f.escalate(t, escalateReasonTimeout)
+
+	require.Equal(t, escalateFiled, res.Outcome)
+	assert.Equal(t, asks.LevelQuick, res.Level)
+	a, err := f.database.GetOwnerAsk(f.pid, res.AskID)
+	require.NoError(t, err)
+	assert.Equal(t, "Merge the PR now?", a.Title)
+	assert.Equal(t, q.Context+"\n\nAsked in the terminal; no answer for 10 min.", a.Summary)
+	var p asks.Payload
+	require.NoError(t, json.Unmarshal([]byte(a.Payload), &p))
+	require.Len(t, p.Questions, 1)
+	assert.Equal(t, "Merge the PR now?", p.Questions[0].Question)
+	assert.Equal(t, []asks.Option{{Label: "Yes", Recommended: true}, {Label: "No"}}, p.Questions[0].Options)
 }
 
 // E20: at the open-ask cap nothing is filed and the question stays, so the

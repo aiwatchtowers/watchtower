@@ -48,7 +48,7 @@ When no helper has reported for 30 minutes, Watchtower asks Claude Code whether 
 
 ### Where the agent works
 
-A line under the caption shows the agent's place: **main folder · main**, or **⑂ name · branch** when it moved into a git worktree, or **worktree removed** when that worktree is gone. Until Watchtower knows the place, it shows the main folder.
+A line under the caption shows where the agent works, such as **main folder · main** or **⑂ name · branch**. On a task with a branch it shows that branch: **⎇ feature/login** ([details](worktrees-and-cleanup.md#what-the-session-line-shows)).
 
 ### Sessions an automation opens
 

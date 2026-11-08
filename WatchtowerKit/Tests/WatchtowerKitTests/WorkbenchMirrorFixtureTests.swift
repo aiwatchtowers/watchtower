@@ -239,6 +239,40 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.reportDone, 1)
         XCTAssertEqual(session.reportTotal, 2)
         XCTAssertEqual(session.reportPRLine, "PR #175 open")
+        XCTAssertEqual(session.reportMerged, 1)
+        XCTAssertEqual(session.reportMergedStale, true)
+        XCTAssertEqual(session.reportMergedText, "1 merged (unchecked)")
+    }
+
+    /// Board #1008: a payload from a Mac before the merged share decodes,
+    /// reads as nothing merged and checked, and adds no merged text.
+    func testTerminalSessionWithoutTheMergedShareDecodes() throws {
+        var json = try object("terminal_session")
+        json["report_merged"] = nil
+        json["report_merged_stale"] = nil
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.reportMerged)
+        XCTAssertNil(session.reportMergedStale)
+        XCTAssertNil(session.reportMergedText)
+        XCTAssertEqual(session.reportDone, 1, "the rest of the report decodes as before")
+    }
+
+    /// The merged share is worded as the Mac's session row
+    /// (`SessionReportPresentation.rowCaption`): only with tasks in scope.
+    /// The cases are shared with the Desktop's own test of the row
+    /// (`merged_share_cases.json`), so the two wordings cannot drift.
+    func testTheMergedTextMatchesTheMacRow() throws {
+        let file = try XCTUnwrap(JSONSerialization.jsonObject(with: try fixture("merged_share_cases")) as? [String: Any])
+        let cases = try XCTUnwrap(file["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for item in cases {
+            var json = try object("terminal_session")
+            json["report_merged"] = item["merged"]
+            json["report_merged_stale"] = item["stale"]
+            json["report_total"] = item["total"]
+            let session = try TerminalSessionState.decode(payload: try data(json))
+            XCTAssertEqual(session.reportMergedText, item["text"] as? String, "\(item)")
+        }
     }
 
     /// `codex_cli` decodes as the known Codex agent; an agent this build does

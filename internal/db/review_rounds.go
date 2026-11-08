@@ -30,6 +30,7 @@ type ReviewRound struct {
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
 	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00155)
+	Branch        string // the branch a ReviewSourceBranch round reviews; "" for a folder round (00173)
 }
 
 // A sent round's outcome (review_rounds.outcome, 00155); an open round's is "".
@@ -50,12 +51,12 @@ type ReviewComment struct {
 }
 
 const reviewRoundCols = `id, project_id, session_id, source, folder_root, base_sha, base_label, tree_sha,
-	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome`
+	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome, branch`
 
 func scanReviewRound(s interface{ Scan(...any) error }) (*ReviewRound, error) {
 	var r ReviewRound
 	err := s.Scan(&r.ID, &r.ProjectID, &r.SessionID, &r.Source, &r.FolderRoot, &r.BaseSHA, &r.BaseLabel,
-		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome)
+		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome, &r.Branch)
 	if err != nil {
 		return nil, err
 	}
@@ -97,14 +98,14 @@ func (db *DB) GetReviewRound(projectID, id int64) (*ReviewRound, error) {
 // session fails on review_rounds_one_open.
 func (db *DB) CreateReviewRound(r ReviewRound) (int64, error) {
 	if r.Source == "" {
-		r.Source = "session"
+		r.Source = ReviewSourceFolder
 	}
 	if r.Mode == "" {
 		r.Mode = "quick"
 	}
 	res, err := db.Exec(`INSERT INTO review_rounds (project_id, session_id, source, folder_root, base_sha,
-		base_label, tree_sha, prev_round_id, mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ProjectID, r.SessionID, r.Source, r.FolderRoot, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.Mode)
+		base_label, tree_sha, prev_round_id, mode, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ProjectID, r.SessionID, r.Source, r.FolderRoot, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.Mode, r.Branch)
 	if err != nil {
 		return 0, fmt.Errorf("creating review round: %w", err)
 	}
@@ -119,6 +120,38 @@ func (db *DB) UpdateReviewRoundTree(id int64, tree string) error {
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fmt.Errorf("review round %d: %w", id, ErrReviewRoundNotOpen)
+	}
+	return nil
+}
+
+// Round sources (review_rounds.source): a session round reviews its folder's
+// work tree; ReviewSourceBranch reviews the task branch's committed tip,
+// read-only (board #1012). The column's 'pr' value, kept for the GitHub PR
+// side the spec shaped it for, stands for "a branch's commits, not a folder".
+const (
+	ReviewSourceFolder = "session"
+	ReviewSourceBranch = "pr"
+)
+
+// RepointReviewRound writes an open round's place — folder, source, branch,
+// base and tree — when the session's place moved under it or a branch
+// round's Refresh re-read its base (board #1012). The round keeps its id,
+// comments, Viewed marks and previous-round link (REVIEW-03: the previous
+// round's unresolved comments still carry); the Desktop re-places the
+// comments on the new diff as on a Refresh.
+func (db *DB) RepointReviewRound(r ReviewRound) error {
+	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, branch = ?, base_sha = ?, base_label = ?,
+		tree_sha = ? WHERE id = ? AND status = 'open'`,
+		r.FolderRoot, r.Source, r.Branch, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.ID)
+	if err != nil {
+		return fmt.Errorf("moving review round %d: %w", r.ID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("moving review round %d: %w", r.ID, err)
+	}
+	if n != 1 {
+		return fmt.Errorf("review round %d: %w", r.ID, ErrReviewRoundNotOpen)
 	}
 	return nil
 }

@@ -39,6 +39,9 @@ type hookEvent struct {
 	// SubagentStart, whose transcript_path is the child's rollout.
 	TranscriptPath string `json:"transcript_path"`
 	StopHookActive bool   `json:"stop_hook_active"`
+	// IsInterrupt is a PostToolUseFailure's: the owner interrupted the tool
+	// (Esc), so the failure says nothing about the agent working on.
+	IsInterrupt bool `json:"is_interrupt"`
 	// BackgroundTasks is a Claude Code Stop's or SubagentStop's snapshot of
 	// in-flight background tasks (board #411).
 	BackgroundTasks  backgroundTasks `json:"background_tasks"`

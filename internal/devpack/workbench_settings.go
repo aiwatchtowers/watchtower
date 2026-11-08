@@ -165,10 +165,17 @@ var (
 	}
 	// stateHookSpecs: every state hook an install writes and a removal takes
 	// out — the core four plus SubagentStop, which ends a subagent's or
-	// teammate's turn and lowers the background count (board #411), and
-	// SubagentStart, which opens one (board #543). The status needs all of
-	// them (HasStateHooks).
-	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"), stateHookSpec("SubagentStart"))
+	// teammate's turn and lowers the background count (board #411),
+	// SubagentStart, which opens one (board #543), and the tool start
+	// (PreToolUse, every tool: matcher "*") and failed tool
+	// (PostToolUseFailure), which keep a working agent Working (board #988,
+	// ask #525). The status needs all of them (HasStateHooks).
+	stateHookSpecs = append(coreStateHookSpecs, stateHookSpec("SubagentStop"), stateHookSpec("SubagentStart"),
+		toolStartStateSpec, stateHookSpec("PostToolUseFailure"))
+	// toolStartStateSpec: the PreToolUse state hook, in its own group with
+	// matcher "*" so it fires for every tool — beside, never inside, the ask
+	// tool block's AskUserQuestion group (askToolBlockSpec).
+	toolStartStateSpec = withMatcher(stateHookSpec("PreToolUse"), "*")
 	// askGuardSpec: the Stop command hook that sends a request the agent left
 	// as plain text back to ask_owner unless the owner is there to answer it
 	// (spec 2026-10-10-owner-asks-v2 Part 4, PROJ-13). It replaces the v1–v3
@@ -201,9 +208,10 @@ var (
 // the texts as the upgrade's fixtures): what recognises that prompt as ours.
 const askGuardMarkerTemplate = "[watchtower-workbench ask-guard <N>]"
 
-// AskGuardClassifier is the Stop ask guard's v4 classifier text (spec
-// 2026-10-10-owner-asks-v2 Part 4.4), the system prompt of the command
-// hook's light-tier model call; testdata/askguard_classifier_v4.golden pins
+// AskGuardClassifier is the Stop ask guard's v5 classifier text (spec
+// 2026-10-10-owner-asks-v2 Part 4.4; v5 adds a chat request's context and a
+// yes/no question's two answers), the system prompt of the command hook's
+// light-tier model call; testdata/askguard_classifier_v5.golden pins
 // it. PROJ-13 pins the text, so it is deliberately not an owner-editable
 // prompt in the prompt store.
 //
@@ -218,6 +226,11 @@ func askGuardMarker(workbenchID int64) string {
 
 func stateHookSpec(event string) hookSpec {
 	return hookSpec{event: event, subcommand: "workbench session-state --workbench", timeoutSec: 5, async: true}
+}
+
+func withMatcher(spec hookSpec, matcher string) hookSpec {
+	spec.matcher = matcher
+	return spec
 }
 
 // command is the hook's command line for bin and workbenchID. Claude Code

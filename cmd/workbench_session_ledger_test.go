@@ -294,7 +294,7 @@ func TestSessionStateLedger_AFullSessionTakesNoWriteLock(t *testing.T) {
 	}
 	require.NoError(t, database.SetReadOnly())
 
-	err := writeSessionLedger(database, row, pid, briefLaunchID, "/tmp/acme/new", "b", hookNow())
+	err := writeSessionLedger(database, row, pid, briefLaunchID, "/tmp/acme/new", "b", hookNow(), hookLockWait{})
 	assert.ErrorIs(t, err, errSessionLedgerFull)
 }
 

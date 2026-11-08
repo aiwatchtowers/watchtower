@@ -13,7 +13,8 @@
   },
   "progress": {
     "done": 3,
-    "total": 5
+    "total": 5,
+    "merged": 0
   },
   "on_you": [
     {
@@ -46,6 +47,7 @@
       "text": "Phase B: export UI",
       "done": 1,
       "total": 3,
+      "merged": 0,
       "started_at": "2026-10-02T09:00:00Z",
       "finished_at": "",
       "items": [
@@ -71,6 +73,7 @@
       "text": "Phase A: exporter",
       "done": 2,
       "total": 2,
+      "merged": 0,
       "started_at": "2026-10-01T09:00:00Z",
       "finished_at": "2026-10-01T12:30:00Z",
       "items": [

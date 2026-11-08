@@ -96,11 +96,17 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
     /// The failed turn's error ("" when none or unknown). Cap 60.
     public let agentError: String
     public let agentErrorClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
-    /// The session-report summary (`#<target> · <done>/<total> · <pr line>`);
+    /// The session-report summary (`#<target> · <done>/<total> · <merged> · <pr line>`);
     /// absent until the hub's first summary run for the session.
     public let reportTargetID: Int64?
     public let reportDone: Int?
     public let reportTotal: Int?
+    /// Tasks not done whose branch is merged into their parent's (board
+    /// #986, #1008); absent from a Mac before #1008, read as 0.
+    public let reportMerged: Int?
+    /// The merge ref could not be checked, so `reportMerged` counts the last
+    /// ones known; only ever `true`, absent = checked (or an older Mac).
+    public let reportMergedStale: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// Cap 120.
     public let reportPRLine: String?
     public let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
@@ -117,8 +123,26 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         case oldestAskID = "oldestAskId"
         case closedAsks, finishSummary, finishSummaryClipped, agentError, agentErrorClipped
         case reportTargetID = "reportTargetId"
-        case reportDone, reportTotal
+        case reportDone, reportTotal, reportMerged, reportMergedStale
         case reportPRLine = "reportPrLine"
         case reportPRLineClipped = "reportPrLineClipped"
+    }
+}
+
+extension TerminalSessionState {
+    /// The report line's merged share, worded as the Mac's session row
+    /// (`SessionReportPresentation.rowCaption`, board #986/#1008): "25
+    /// merged", "25 merged (unchecked)" when the merge ref could not be
+    /// checked, "merged not checked" when none is known; nil when nothing is
+    /// merged and the check ran, or no task is in scope.
+    public var reportMergedText: String? {
+        guard let total = reportTotal, total > 0 else { return nil }
+        let merged = reportMerged ?? 0
+        switch (merged > 0, reportMergedStale == true) {
+        case (true, false): return "\(merged) merged"
+        case (true, true): return "\(merged) merged (unchecked)"
+        case (false, true): return "merged not checked"
+        case (false, false): return nil
+        }
     }
 }
