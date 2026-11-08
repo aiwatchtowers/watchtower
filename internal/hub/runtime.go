@@ -956,10 +956,16 @@ func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vo
 		// A phone that became a reader (or stopped being one) gets its
 		// data-zone keybox with (or without) keys now, not at the next
 		// full diff (KeysInZone reads the list).
-		if lists && h.pub != nil && !goslices.Equal(before, rl.Readers()) {
+		if lists && h.pub != nil && readersChanged(before, rl.Readers()) {
 			h.pub.PublishSoon(slices.KindDeviceGrant)
 		}
 	}
+}
+
+// readersChanged: the reader list moved, unknown (nil) to known (even
+// empty) included, which takes keys out of the zone.
+func readersChanged(before, after []string) bool {
+	return (before == nil) != (after == nil) || !goslices.Equal(before, after)
 }
 
 // soonWindow is the link check's short-retry window after a link change

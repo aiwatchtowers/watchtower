@@ -279,3 +279,24 @@ func equalFoldID(a, b string) bool {
 	y, errB := secure.ParseID(b)
 	return errA == nil && errB == nil && x == y
 }
+
+// Review M3: the first readers sync after a restart turns an unknown list
+// (keys kept for everyone) into an empty one: the grant is published soon.
+func TestAReadersSyncFromUnknownToEmptyPublishesTheGrant(t *testing.T) {
+	r := newZoneRig(t, "relay")
+	r.phone()
+	rel := readersRelay{r.rel} // Readers() nil: unknown
+	h := &hubRuntime{sup: &supervisor{o: Options{Clock: r.clock}}, st: r.st, kr: r.kr, tr: rel}
+	h.acct = &accountReader{read: func(context.Context) (*relayv1.AccountState, error) { return &relayv1.AccountState{}, nil },
+		vouched: func() bool { return true }, clock: r.clock}
+	h.center = link.NewCenter(link.Config{Store: r.st, Keys: r.kr, Opener: secure.NewOpener(r.kr, r.kr), Clock: r.clock, KeysInZone: h.keysInZone})
+	h.pub = hubslices.NewPublisher(hubslices.Config{Store: r.st, Transport: rel, Sealer: secure.NewSealer(r.kr),
+		DataZone: transport.DataZone("hubrelay"), Sources: []hubslices.Source{hubslices.GrantSource(h.center)}, Clock: r.clock})
+	h.syncReaders(context.Background(), rel, true)
+	if rel.Readers() == nil {
+		t.Fatal("the sync set no list")
+	}
+	if !h.pub.Dirty(hubslices.KindDeviceGrant) {
+		t.Fatal("unknown to empty published nothing")
+	}
+}

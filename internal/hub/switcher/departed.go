@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 )
 
@@ -43,6 +44,10 @@ type departures struct {
 	// missed is, per phone (uppercase device id), when the first answered
 	// read of the current run that omitted it was made.
 	missed map[string]time.Time
+	// owed is the phones a ReaderLost started for and did not finish (its
+	// first clear committed, the lapsed mark or hub_on_relay did not): with no
+	// ephemeral state left, only this set brings them back at the next poll.
+	owed map[string]bool
 }
 
 // checkDeparted is one tick of the departure check (see above). It runs at
@@ -96,8 +101,15 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 	if s.dp.missed == nil {
 		s.dp.missed = map[string]time.Time{}
 	}
+	if s.dp.owed == nil {
+		s.dp.owed = map[string]bool{}
+	}
 	for _, d := range devices {
 		id := canonical(d.ID)
+		if s.dp.owed[id] {
+			s.finishReaderLost(d, id)
+			continue
+		}
 		if d.RelayDeviceID == "" || listed[d.RelayDeviceID] {
 			delete(s.dp.missed, id)
 			continue
@@ -114,12 +126,29 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 		if now.Sub(first) < NoPayerPoll {
 			continue
 		}
-		if err := s.ReaderLost(d.ID); err != nil {
-			log.Printf("hub: a departed relay reader keeps its keys until the next poll (%s)", errClass(err))
-			continue
-		}
 		delete(s.dp.missed, id)
+		if err := s.ReaderLost(d.ID); err != nil {
+			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
+			s.dp.owed[id] = true
+		}
 	}
+}
+
+// finishReaderLost retries a ReaderLost that failed after its first clear
+// (dp held): the mark, hub_on_relay and the last clear, whatever the list
+// says now. A phone marked lapsed meanwhile, or no longer linked, is done.
+func (s *Switcher) finishReaderLost(d state.Device, id string) {
+	if d.RelayLapsedAt == nil {
+		if err := s.owe(d.ID, true); err != nil {
+			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
+			return
+		}
+	}
+	if err := s.clearKeys(id); err != nil {
+		log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
+		return
+	}
+	delete(s.dp.owed, id)
 }
 
 // linkedPhones is G2's guard without its route rule: the linked phones with

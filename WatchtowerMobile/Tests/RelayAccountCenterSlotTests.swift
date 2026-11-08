@@ -45,10 +45,11 @@ final class RelayAccountCenterSlotTests: XCTestCase {
         let iCloud = FakeLapseTarget(isOnRelay: false, relayMacDeviceID: nil)
         bed.targets = [gone, iCloud]
         let center = await started(bed)
+        bed.clock.advance(by: .seconds(61)) // the start's read is no longer fresh
         let reads = bed.reads
         bed.emit(.forbidden(zone: .relay))
         try await bed.until("the read and the slot check") { gone.slotLosses == 1 }
-        XCTAssertGreaterThan(bed.reads, reads, "the account was read")
+        XCTAssertEqual(bed.reads, reads + 1, "the account was read")
         XCTAssertEqual(iCloud.slotLosses, 0, "a session off the relay hears nothing")
         XCTAssertEqual(gone.lapses, 0, "a paying phone is not lapsed")
         XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
@@ -65,6 +66,7 @@ final class RelayAccountCenterSlotTests: XCTestCase {
         let held = FakeLapseTarget(isOnRelay: true, relayMacDeviceID: mac)
         bed.targets = [held]
         let center = await started(bed)
+        bed.clock.advance(by: .seconds(61))
         let reads = bed.reads
         bed.emit(.forbidden(zone: .relay))
         try await bed.until("the read") { bed.reads > reads }
@@ -78,11 +80,32 @@ final class RelayAccountCenterSlotTests: XCTestCase {
         let gone = FakeLapseTarget(isOnRelay: true, relayMacDeviceID: "mac-gone")
         bed.targets = [gone]
         let center = await started(bed)
+        bed.clock.advance(by: .seconds(61))
         bed.fake.failNext("getAccountState", with: .unspecified, times: 5)
         bed.emit(.forbidden(zone: .relay))
         bed.emit(.unsupportedVersion)
         try await bed.until("handled") { center.updateRequired }
         XCTAssertEqual(gone.slotLosses, 0, "a failed read waits for the next event")
         XCTAssertEqual(gone.lapses, 0)
+    }
+
+    /// Review M5: a burst of `FORBIDDEN` (every refused read of a slot-less phone) costs one account read; an answered
+    /// read younger than a minute is used as it stands.
+    func testABurstOfForbiddenMakesOneAccountRead() async throws {
+        let bed = try await payingBed()
+        let gone = FakeLapseTarget(isOnRelay: true, relayMacDeviceID: "mac-gone")
+        bed.targets = [gone]
+        let center = await started(bed)
+        let afterStart = bed.reads
+        bed.emit(.forbidden(zone: .relay))
+        try await bed.until("decided from the start's read") { gone.slotLosses == 1 }
+        XCTAssertEqual(bed.reads, afterStart, "the start's answered read is fresh: no read")
+
+        bed.clock.advance(by: .seconds(61))
+        for _ in 0 ..< 3 { bed.emit(.forbidden(zone: .relay)) }
+        bed.emit(.unsupportedVersion)
+        try await bed.until("handled") { center.updateRequired }
+        XCTAssertEqual(bed.reads, afterStart + 1, "one read for the burst")
+        XCTAssertGreaterThanOrEqual(gone.slotLosses, 2)
     }
 }

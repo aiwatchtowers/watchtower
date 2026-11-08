@@ -82,10 +82,13 @@ func TestLapseClearsKeysUnderEveryAnswer(t *testing.T) {
 				c.set(w, a, b)
 			}
 			c.lap(w, a)
-			if !c.asked { // the phone's request is read by the next pass
-				if offer, rows := w.kx(a); offer || rows != 0 {
-					t.Fatalf("not cleared at the signal: offer %v, %d rows", offer, rows)
+			if c.asked { // the phone's request is read by the CloudKit pass, before any Step
+				if _, err := w.sw.Processor(transport.KindCloudKit).Pass(w.ctx); err != nil {
+					t.Fatal(err)
 				}
+			}
+			if offer, rows := w.kx(a); offer || rows != 0 {
+				t.Fatalf("not cleared at the signal, before the Step: offer %v, %d rows", offer, rows)
 			}
 			w.settle(b)
 			if c.moves {

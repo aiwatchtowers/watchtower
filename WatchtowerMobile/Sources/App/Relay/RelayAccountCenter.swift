@@ -16,11 +16,6 @@ protocol RelayLapseTarget: AnyObject {
     @MainActor func relaySlotLost() async
 }
 
-extension RelayLapseTarget {
-    @MainActor var relayMacDeviceID: String? { nil }
-    @MainActor func relaySlotLost() async {}
-}
-
 extension HubSession: RelayLapseTarget {
     var isOnRelay: Bool {
         if case .hostedRelay = route { return true }
@@ -185,6 +180,15 @@ final class RelayAccountCenter {
     @ObservationIgnored private var lastPress = Press.buy
     /// Only the newest read writes: a slower older answer, or one a control overtook, is dropped.
     @ObservationIgnored private var readGeneration = 0
+    /// When the last answered account read was applied: a slot check right after it reads nothing.
+    @ObservationIgnored private var lastAnsweredAt: Date?
+    /// One slot check at a time; a `synced()` pass running holds it back (its read is never superseded), and it runs
+    /// once that pass ends (`slotCheckOwed`).
+    @ObservationIgnored private var slotCheckRunning = false
+    @ObservationIgnored private var syncedRunning = 0
+    @ObservationIgnored private var slotCheckOwed = false
+    /// How long an answered read stands for a slot check (relay client Phase 5, review M5).
+    private static let slotCheckFresh: TimeInterval = 60
 
     init(
         link: RelayAccountLink,
@@ -299,6 +303,14 @@ final class RelayAccountCenter {
     /// failed read sends nothing (`send(false)`: it says nothing about a move, and the next pass sends); an answer of no
     /// entitlement waits behind the send, so an unsent renewal lapses no Mac. A send is followed by a new read.
     private func synced(_ send: (_ answered: Bool) async -> Bool) async -> ReadOutcome {
+        syncedRunning += 1
+        defer {
+            syncedRunning -= 1
+            if syncedRunning == 0, slotCheckOwed {
+                slotCheckOwed = false
+                Task { await slotCheck(fresh: false) }
+            }
+        }
         readGeneration += 1
         let generation = readGeneration
         guard let state = await fetchedState(generation: generation) else {
@@ -523,6 +535,7 @@ final class RelayAccountCenter {
 
     private func apply(_ state: RelayAccountState) async -> ReadOutcome {
         let previous = phase
+        lastAnsweredAt = now()
         if state.moved {
             movedAway()
         } else if state.paying {
@@ -613,8 +626,10 @@ final class RelayAccountCenter {
             readGeneration += 1
             movedAway()
             await lapseRelayMacs()
-        case .control(.slotRemoved, _), .forbidden:
-            await slotCheck()
+        case .control(.slotRemoved, _):
+            await slotCheck(fresh: true)
+        case .forbidden:
+            await slotCheck(fresh: false)
         case .unsupportedVersion, .attestation(.updateRequired):
             updateRequired = true
         case .attestation(.notSupported):
@@ -632,16 +647,39 @@ final class RelayAccountCenter {
     /// hub whose Mac is in none of this phone's slots while it pays hears `relaySlotLost()`. A failed read does
     /// nothing and waits for the next event; a Mac still in a slot (a hub that has not named this phone a reader
     /// yet) does nothing; a phone not paying is the lapse's (`apply`).
-    private func slotCheck() async {
-        readGeneration += 1
-        let generation = readGeneration
-        guard let state = await fetchedState(generation: generation), generation == readGeneration else { return }
-        _ = await apply(state)
-        guard state.paying, !state.moved else { return }
+    ///
+    /// Coalesced (review M5): every refused read of a slot-less phone says `FORBIDDEN`, so one check runs at a time,
+    /// an answered read younger than `slotCheckFresh` is used as it stands (the phase's Macs), and a `synced()` pass
+    /// running is never superseded: the check runs once it ends.
+    /// `fresh` (`SLOT_REMOVED`, a real change): always a new read, as before this check existed.
+    private func slotCheck(fresh: Bool) async {
+        guard !slotCheckRunning else { return }
+        guard syncedRunning == 0 else {
+            slotCheckOwed = true
+            return
+        }
+        slotCheckRunning = true
+        defer { slotCheckRunning = false }
+        guard let macs = await slottedMacs(fresh: fresh) else { return }
         for target in targets() where target.isOnRelay {
-            guard let mac = target.relayMacDeviceID, !state.macs.contains(mac) else { continue }
+            guard let mac = target.relayMacDeviceID, !macs.contains(mac) else { continue }
             await target.relaySlotLost()
         }
+    }
+
+    /// The Macs in this phone's slots while it pays (nil: not paying, moved, or no answer): from an answered read
+    /// younger than `slotCheckFresh`, else from a new one.
+    private func slottedMacs(fresh: Bool) async -> [String]? {
+        if !fresh, let at = lastAnsweredAt, abs(now().timeIntervalSince(at)) < Self.slotCheckFresh {
+            guard case .paying(_, let macs) = phase else { return nil }
+            return macs
+        }
+        readGeneration += 1
+        let generation = readGeneration
+        guard let state = await fetchedState(generation: generation), generation == readGeneration else { return nil }
+        _ = await apply(state)
+        guard state.paying, !state.moved else { return nil }
+        return state.macs
     }
 
     /// The relay said the entitlement ended. A renewal Apple sold and the relay has not seen goes before any lapse (past the

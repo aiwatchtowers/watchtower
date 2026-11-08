@@ -3,7 +3,6 @@ package switcher
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -180,7 +179,11 @@ func (s *Switcher) queueLapse(device string, asked bool) error {
 	req.asked = req.asked || asked
 	err := s.savePendingLocked()
 	s.mu.Unlock()
-	err = errors.Join(err, s.clearKeys(id))
+	// A failed clear is not the request's failure: the lapse is recorded and lapse() clears again before its read,
+	// so a phone's own request is never answered rejected for a lapse the hub carries out.
+	if cerr := s.clearKeys(id); cerr != nil {
+		log.Printf("hub: a lapsed phone's relay keys wait for the lapse's Step (%s)", errClass(cerr))
+	}
 	s.Kick()
 	return err
 }

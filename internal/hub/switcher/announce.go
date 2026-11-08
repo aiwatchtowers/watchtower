@@ -224,8 +224,9 @@ func (s *Switcher) announce(r switchRecord) error {
 		add(s.sealFor(r.From, dev.ID, c, s.sealEpochFor(dev, old, old)))
 		add(s.sealFor(r.Target, dev.ID, c, 0))
 	}
+	var free []state.Device
 	if r.Target == transport.KindRelay {
-		free, err := s.freeOrderedPhones()
+		free, err = s.freeOrderedPhones()
 		if err != nil {
 			log.Printf("hub: switch: who pays is unknown (%s): hub_on_relay is left to the phones' next write", errClass(err))
 		}
@@ -264,6 +265,13 @@ func (s *Switcher) announce(r switchRecord) error {
 				return err
 			}
 			queued++
+		}
+		// A free phone is no reader: its relay keys from an earlier relay period go with its hub_on_relay, so the
+		// phone's drop of every stored pair on that notice matches the hub (relay client Phase 5).
+		for _, d := range free {
+			if err := state.ClearDeviceKX(tx, d.ID); err != nil {
+				return err
+			}
 		}
 		for _, z := range rewind {
 			if err := state.SetZoneTokenTx(tx, z, 0); err != nil {
