@@ -114,6 +114,10 @@ public actor RecordingUploader: RecordingUploadAcking {
     private let macOnline: @Sendable () -> Bool
     /// Counts each upload attempt (the phone's battery diagnostics).
     private let energy: EnergyCounter?
+    /// Whether a stored envelope of an older epoch is made current before it is saved: true on a relay route (or a
+    /// link that has moved routes, ask #1066), where the hub keeps an old epoch for a week only and the phone cannot
+    /// know its window. false (an iCloud-only link) sends every stored envelope byte for byte.
+    private let resealsOlderEpochs: @Sendable () -> Bool
     /// The linked phone's device id, stamped on every upload. nil until
     /// linking finishes (or after an unlink): uploads then wait, because the
     /// hub fails a record without one as `device_not_linked`. A blank id
@@ -129,6 +133,9 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// Recordings whose save is in flight (the actor suspends inside `send`): a seal pass that runs meanwhile
     /// leaves them alone, so the send never resumes onto a seal it did not save.
     private var sendingIDs: Set<String> = []
+    /// Rows the last reseal pass could not make current (locked keys): they are not saved in the old epoch, they
+    /// wait for the next pass.
+    private var resealWaitingIDs: Set<String> = []
     private var ledgerPrepared = false
     /// Whether the next foreground pass re-saves `uploading` rows: true
     /// for the first pass of a process (the relaunch retry) and after a
@@ -153,7 +160,8 @@ public actor RecordingUploader: RecordingUploadAcking {
         now: @escaping @Sendable () -> Date = { Date() },
         retriesAllowed: @escaping @Sendable () -> Bool = { true },
         macOnline: @escaping @Sendable () -> Bool = { true },
-        energy: EnergyCounter? = nil
+        energy: EnergyCounter? = nil,
+        resealsOlderEpochs: @escaping @Sendable () -> Bool = { false }
     ) {
         self.transport = transport
         self.store = store
@@ -164,6 +172,7 @@ public actor RecordingUploader: RecordingUploadAcking {
         self.retriesAllowed = retriesAllowed
         self.macOnline = macOnline
         self.energy = energy
+        self.resealsOlderEpochs = resealsOlderEpochs
     }
 
     /// Called by the link flow once the device is linked, and with nil on
@@ -547,7 +556,7 @@ public actor RecordingUploader: RecordingUploadAcking {
             // already sealed are still sent below.
             let justSealed = try await sealRows(deviceID: deviceID).sealedInFlight
             let rows = try store.phoneRecordings().filter {
-                guard $0.isSealed else { return false }
+                guard $0.isSealed, !resealWaitingIDs.contains($0.id) else { return false }
                 // A pre-E2E `uploading` row sealed by this pass was never
                 // sent sealed: it goes out like a new row.
                 if $0.state == .uploading, justSealed.contains($0.id) { return true }
@@ -662,7 +671,7 @@ public actor RecordingUploader: RecordingUploadAcking {
     /// stops the loop; any other error is the row's, logged, and leaves that
     /// row unsealed for the next pass while the others go on.
     private func sealRows(deviceID: String) async throws -> (sealed: Int, sealedInFlight: Set<String>) {
-        try unsealStaleEpochs()
+        try await resealOlderEpochs()
         let rows = try store.phoneRecordings().filter {
             ($0.state == .waiting || $0.state == .uploading) && $0.envelope == nil
         }
@@ -686,27 +695,26 @@ public actor RecordingUploader: RecordingUploadAcking {
         return (sealedCount, sealedInFlight)
     }
 
-    /// Final review Kit I1: byte identity matters only within an epoch. A
-    /// `waiting` or `uploading` row whose stored envelope was sealed under an
-    /// epoch older than the phone's current one (rotations while it was
-    /// away; the hub accepts the previous epoch for 7 days only) loses its
-    /// seal here, so `sealRows` seals it again under the current epoch: the
-    /// same wire name (`K_meta` does not rotate, so the hub's ledger still
-    /// dedupes), a new envelope and a fresh asset key. Keys that cannot be
-    /// read now leave every row as it is.
-    private func unsealStaleEpochs() throws {
+    /// Rotation while a row waits (relay route, `resealsOlderEpochs`): a `waiting` or `uploading` row whose stored
+    /// envelope was sealed under an epoch below the current one gets a new envelope under the current epoch, the same
+    /// wire name, the same sealed file and the same asset descriptor (`SecureTransport.reseal`), stored before the
+    /// row is saved. The hub's window for the old epoch is not consulted: the phone cannot know it. When the old
+    /// epoch's key is gone (or the envelope does not open), the seal is forgotten and `sealRows` seals the row fresh
+    /// from the plain file (a missing plain file is the missing-file failure). Locked keys leave every row as it is.
+    private func resealOlderEpochs() async throws {
+        resealWaitingIDs = []
+        guard resealsOlderEpochs() else { return }
+        let candidates = try store.phoneRecordings().filter(isResealCandidate)
         let current: UInt32
         do {
             current = try transport.currentEpoch()
         } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+            // The epoch is unreadable, so no row can be told current: they all wait for the next pass.
+            resealWaitingIDs = Set(candidates.map(\.id))
             return
         }
-        let rows = try store.phoneRecordings().filter {
-            ($0.state == .waiting || $0.state == .uploading) && $0.envelope != nil && !sealingIDs.contains($0.id)
-                && !sendingIDs.contains($0.id)
-        }
-        for row in rows {
-            guard let envelope = row.envelope else { continue }
+        for (index, row) in candidates.enumerated() {
+            guard let envelope = row.envelope, let wireName = row.wireName else { continue }
             let epoch: UInt32
             do {
                 epoch = try Envelope.parse(envelope).header.epoch
@@ -714,9 +722,62 @@ public actor RecordingUploader: RecordingUploadAcking {
                 logger.error("stored recording envelope unreadable: \(row.id, privacy: .public): \(String(describing: error), privacy: .public)")
                 continue
             }
-            guard epoch < current, try store.clearPhoneRecordingSeal(id: row.id, envelope: envelope) else { continue }
-            logger.notice("recording \(row.id, privacy: .public) sealed under epoch \(epoch) is sealed again under \(current)")
+            guard epoch < current else { continue }
+            let resealed: CloudRecord?
+            do {
+                resealed = try await transport.reseal(ownEnvelope: envelope, wireName: wireName, modifiedAt: now())
+            } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+                // Every stale row from here on waits: an old-epoch save would only spend an attempt.
+                for later in candidates[index...] {
+                    if let envelope = later.envelope, let header = try? Envelope.parse(envelope).header, header.epoch < current {
+                        resealWaitingIDs.insert(later.id)
+                    }
+                }
+                return
+            } catch SecureTransportError.epochKeysGone {
+                resealed = nil
+            }
+            // Another call may have changed the row while the reseal ran: both writes compare the envelope.
+            if let resealed, resealed.recordName == wireName {
+                if try store.replacePhoneRecordingEnvelope(id: row.id, old: envelope, new: resealed.payload) {
+                    logger.notice("recording \(row.id, privacy: .public) sealed under epoch \(epoch) is resealed under \(current)")
+                }
+            } else if try store.clearPhoneRecordingSeal(id: row.id, envelope: envelope) {
+                logger.notice("recording \(row.id, privacy: .public) of epoch \(epoch) cannot be resealed: sealed again from its file")
+            }
         }
+    }
+
+    private func isResealCandidate(_ row: PhoneRecording) -> Bool {
+        (row.state == .waiting || row.state == .uploading) && row.envelope != nil && !sealingIDs.contains(row.id)
+            && !sendingIDs.contains(row.id)
+    }
+
+    /// The phone's epoch went up (a keybox was merged): every row whose stored envelope is older than the current
+    /// epoch gets a fresh backoff, a "stuck" row included, so the next pass reseals and saves it at once; an
+    /// `uploading` row is saved again by that pass too. Returns how many rows were re-armed. Nothing happens on a
+    /// link that does not reseal (`resealsOlderEpochs`) or while the keys are locked.
+    @discardableResult
+    public func epochRaised() throws -> Int {
+        guard resealsOlderEpochs() else { return 0 }
+        let current: UInt32
+        do {
+            current = try transport.currentEpoch()
+        } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
+            return 0
+        }
+        var armed = 0
+        for row in try store.phoneRecordings() where isResealCandidate(row) {
+            guard let envelope = row.envelope, let header = try? Envelope.parse(envelope).header, header.epoch < current
+            else { continue }
+            try store.resetPhoneRecordingBackoff(id: row.id)
+            if row.state == .uploading {
+                resendInFlight = true
+                resendIgnoresBackoff = true
+            }
+            armed += 1
+        }
+        return armed
     }
 
     /// true when this call sealed the row; false when another call sealed
