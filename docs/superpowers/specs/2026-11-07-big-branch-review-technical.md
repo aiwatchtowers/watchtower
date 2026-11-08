@@ -253,7 +253,8 @@ overview only).
 
 ### 3.6 Errors
 
-Error classes: `timeout`, `provider`, `parse`, `cancelled`, `too_large` (the diff cap). Text
+Error classes: `timeout`, `provider`, `parse`, `cancelled`, `too_large` (the diff cap),
+`busy` (another run held the lock past `LockWaitCap`, §3.7). Text
 for the owner, one sentence, no repetition of the provider's words:
 `timeout` → "The overview of “<title>” did not finish in <N> min." (N = its budget, rounded up) ; `provider` → "The AI
 provider failed on “<title>”." ; `parse` → "The AI answer for “<title>” could not be read." ;
@@ -272,20 +273,25 @@ logs carry the class, the chapter's index and counts only (FILES-01).
   its holder; `--cached-only` and `review map` take none.
 - The holder writes `{"by":"desktop|agent|cli","started_at":…}` into the lock file
   (`--caller desktop` from the Desktop, `agent` from the finish gate, `cli` by default).
-- A run that finds the lock held does not call the model. It waits (`LockFile`, its ctx =
-  its own ceiling; for the agent's form the wait counts into the ceiling), and while waiting
+- A run that finds the lock held does not call the model. It waits (`LockFile` with its own
+  ctx: `LockWaitCap` = 50 min, above the 45-min run ceiling; the wait does not count into the
+  run's ceiling, which starts when the lock is taken), and while waiting
   it re-reads its chapters' part rows every 5 s: with `--stream` it prints
   `{"event":"waiting","by":…}` once and every 60 s, and a `chapter` event (`cached`) for each
   part that appears. Once it holds the lock it re-reads the parts and calls the model only
   for chapters still without one — the first run's work is never redone (same `part_hash`
-  ⇒ same row). A lock wait that hits the ceiling ends as `timeout` with "Another overview
-  of this branch is still running."
+  ⇒ same row). A lock wait that hits `LockWaitCap` ends as class `busy` with
+  "Another overview of this branch is still running." — the Desktop shows it on the progress
+  card with Retry; the finish gate refuses with it plus "Try again later, or hand over with
+  an ask." (`handover_ask_id` passes the gate as today).
 - The Desktop starts at most one overview process per session. **Retry** of a chapter (or of
   the summary) while it runs sets that chapter `queued`; when the process ends, one
   follow-up run is started with every queued key (`--chapter` is repeatable; the summary is
-  remade once after them). **Refresh** during a run sends SIGTERM to the process (class
+  remade once after them). **Refresh** during its own run sends SIGTERM to that process (class
   `cancelled`, finished parts stay — each part row is its own short write) and starts on the
-  new snapshot. Leaving the screen does not stop it (the run is owned by
+  new snapshot. While its process is only `waiting` for another holder (the agent's run),
+  Refresh re-reads the map and file list, terminates its own waiting process and starts a
+  new one, which waits again; the Desktop never signals another process. Leaving the screen does not stop it (the run is owned by
   `ReviewChangesModel`, §5).
 - Part rows are written with `INSERT OR REPLACE` in their own short transaction; two
   processes writing one `part_hash` (only possible outside the lock: none today) would store
@@ -372,7 +378,8 @@ The agent's form (`--session`) runs the same packing.
 - One run at a time: two processes on one folder with a stub generator that counts calls —
   the second waits, streams `waiting` and the first run's chapters as `cached`, and makes
   calls only for the rest (no `part_hash` called twice); the lock is released when the holder
-  is killed. Desktop: Retry during a run → `queued` → one follow-up `--chapter` run with all
+  is killed; a holder that never releases with a shortened `LockWaitCap` → `busy`, the Desktop
+  card text and the finish gate's refusal (and `handover_ask_id` still passes). Desktop: Retry during a run → `queued` → one follow-up `--chapter` run with all
   queued keys; Refresh during a run → the process is terminated and parts kept.
 - Budgets: the §3.2 table for 1, 4 and 20 batches (pure function).
 - FILES-01 canary over a failing chapter run (no title, path or provider text in the log).

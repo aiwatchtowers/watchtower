@@ -54,8 +54,15 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    the model only for what is still missing — nothing is described twice. A Retry pressed
    while a run is going does not start a second run: the chapter shows **Queued** and is
    redone right after the run ends (several Retries go in one follow-up run, with one
-   summary after them). Refresh while a run is going stops it (finished chapters are kept)
-   and starts on the new state of the branch.
+   summary after them). Refresh while the Desktop's own run is going stops it (finished
+   chapters are kept) and starts on the new state of the branch; Refresh while the agent's
+   run is going rebuilds the chapters and file list at once, but the overview keeps waiting
+   for the agent's run — the Desktop never stops the agent's process. Waiting does not eat
+   a run's own time limit; it is capped at 50 min (above any run's 45-min ceiling, so it ends
+   only if the other run is stuck). If the cap is hit, the Desktop's progress card says
+   "Another overview of this branch is still running" with **Retry**, and the agent's finish
+   check refuses with the same sentence plus "try again later, or hand over with an ask" —
+   the agent can still finish with a handover ask, as in item 4.
 4. **Checked against the goal.** A short summary on top checks the whole branch against the
    intent of its ticket(s) — the session's ticket and every lane's ticket found on the board
    or in Jira: done, partial, not found, and what was done outside the goal. The agent's
@@ -159,7 +166,11 @@ Each item above has its check; the timing and size checks run on a synthetic bra
    **One run at a time:** with the agent's run going, the Desktop's run waits, fills in its
    chapters as they are cached and then makes calls only for what is missing (a test counts
    model calls: none twice); Retry during a run shows **Queued** and runs after it; Refresh
-   during a run stops it and keeps finished chapters.
+   during the Desktop's own run stops it and keeps finished chapters; Refresh during the
+   agent's run rebuilds the chapters and keeps waiting; a wait past its 50-min cap shows
+   "Another overview of this branch is still running" with Retry on the Desktop and makes the
+   finish check refuse with that sentence (a test with a stub holder that never releases and
+   a shortened cap).
 4. **Goal check.** The summary's coverage lists the session's ticket items and every lane
    ticket's items; the agent's finish check fails only on the session's own items. A chapter
    that fails on every try still gets a summary with that chapter under **Not covered** (its
