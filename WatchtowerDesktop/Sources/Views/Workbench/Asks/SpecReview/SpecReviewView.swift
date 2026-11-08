@@ -87,7 +87,8 @@ struct SpecReviewView<AskContext: View>: View {
             Group {
                 switch model.phase {
                 case .wrapup: SpecReviewLoopView(model: model)
-                case .meaning: SpecReviewMeaningView(model: model, result: result, askContext: askContext)
+                case .meaning:
+                    SpecReviewMeaningView(model: model, result: result, askContext: askContext, onReadSpec: onReadSpec)
                 case .chapters: SpecReviewChaptersView(model: model)
                 }
             }
@@ -102,7 +103,7 @@ struct SpecReviewView<AskContext: View>: View {
     @ViewBuilder
     private func phaseBody(_ result: SpecReviewResult) -> some View {
         switch model.phase {
-        case .meaning: SpecReviewMeaningView(model: model, result: result, askContext: askContext)
+        case .meaning: SpecReviewMeaningView(model: model, result: result, askContext: askContext, onReadSpec: onReadSpec)
         case .chapters: SpecReviewChaptersView(model: model)
         case .wrapup: SpecReviewWrapUpView(model: model, result: result)
         }
@@ -437,6 +438,7 @@ enum SpecReviewPresentation {
         case "decided_alone": "Decided alone"
         case "blind_spot": "Blind spot"
         case "check": "Concern"
+        case "owner_comment": "Your item"
         default: nil
         }
     }
@@ -514,5 +516,73 @@ enum SpecReviewPresentation {
             })
         ]
         return groups.filter { !$0.items.isEmpty }
+    }
+
+    // MARK: - Per-kind cards and the summary (spec 2026-11-08)
+
+    /// What a chapter's finding card is, for its buttons: an agreement
+    /// the document matches has nothing to fix.
+    static func cardKind(for finding: SpecReviewChapterFinding) -> SpecReviewCardKind {
+        if case let .agreement(f) = finding, f.status == "as_agreed" { return .asAgreed }
+        return .actionable
+    }
+
+    /// A check's card: a concern is fixable, an answered one is something
+    /// to verify; nil for one the reviewer found not applicable (no buttons).
+    static func checkCardKind(answer: String) -> SpecReviewCardKind? {
+        switch answer {
+        case "concern": .actionable
+        case "n/a": nil
+        default: .checkToVerify
+        }
+    }
+
+    /// The label of an `ok` mark: **Checked** on a check to verify, else **Skip**.
+    static func okLabel(_ kind: SpecReviewCardKind) -> String {
+        kind == .checkToVerify ? "Checked" : "Skip"
+    }
+
+    static let fromDiscussionBadge = Badge(title: "From discussion", tint: .neutral)
+
+    /// A proposed finding's neutral chip: "Proposed · <kind>".
+    static func proposedBadge(_ finding: SpecReviewProposedFinding) -> Badge {
+        let kind: String? = switch finding.kind {
+        case "differs": "Differs"
+        case "missing": "Missing"
+        case "decided_alone": "Decided alone"
+        case "blind_spot": "Blind spot"
+        default: nil
+        }
+        return Badge(title: kind.map { "Proposed · \($0)" } ?? "Proposed", tint: .neutral)
+    }
+
+    /// The owner's own item in a loop seeded from **Request changes**:
+    /// whether the author fixed it; nil for the reviewer's findings.
+    static func ownerItemLine(_ entry: SpecReviewLedgerEntry, fixed: Bool) -> String? {
+        guard entry.item.kind == "owner_comment" else { return nil }
+        return fixed ? "Your item — fixed by the author" : "Your item — still open"
+    }
+
+    struct ThesisGroup: Equatable {
+        let title: String
+        let systemImage: String
+        let theses: [SpecReviewResult.Thesis]
+    }
+
+    /// The summary's theses grouped by kind, in the spec's order; a kind
+    /// this build does not know goes to Other. Empty groups are left out.
+    static func thesisGroups(_ theses: [SpecReviewResult.Thesis]) -> [ThesisGroup] {
+        let known: [(kind: String, title: String, image: String)] = [
+            ("goal", "Goals", "target"),
+            ("decision", "Key decisions", "checkmark.seal"),
+            ("owner_change", "What changes for you", "person.crop.circle"),
+            ("non_goal", "Not in scope", "minus.circle"),
+            ("risk", "Risks", "exclamationmark.triangle")
+        ]
+        let kinds = Set(known.map(\.kind))
+        let groups = known.map { k in
+            ThesisGroup(title: k.title, systemImage: k.image, theses: theses.filter { $0.kind == k.kind })
+        } + [ThesisGroup(title: "Other", systemImage: "ellipsis.circle", theses: theses.filter { !kinds.contains($0.kind) })]
+        return groups.filter { !$0.theses.isEmpty }
     }
 }

@@ -236,7 +236,36 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
         private enum Keys: String, CodingKey { case key, heading, start, end }
     }
 
+    /// One line of the summary (spec 2026-11-08 §4). `kind`: goal,
+    /// decision, owner_change, non_goal or risk (others kept as read).
+    /// Its where-quote is checked like any quote; the chapter comes from it.
+    package struct Thesis: Decodable, Equatable, Sendable {
+        package var key: String
+        package var kind: String
+        package var text: String
+        package var chapter: String
+        package var anchor: Anchor?
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Keys.self)
+            key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+            kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? ""
+            text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+            chapter = try c.decodeIfPresent(String.self, forKey: .chapter) ?? ""
+            anchor = try c.decodeIfPresent(Anchor.self, forKey: .anchor)
+        }
+
+        private enum Keys: String, CodingKey {
+            case key, kind, text, chapter
+            case anchor = "where"
+        }
+    }
+
     package var summary: String
+    /// The summary's 3–5 lines: what is built, for whom and why. Empty for
+    /// a result stored before the summary.
+    package var brief: String
+    package var theses: [Thesis]
     package var idea: Idea?
     package var agreements: [Agreement]
     package var decidedAlone: [DecidedAlone]
@@ -251,6 +280,8 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
+        brief = try c.decodeIfPresent(String.self, forKey: .brief) ?? ""
+        theses = try c.decodeIfPresent([Thesis].self, forKey: .theses) ?? []
         // An idea with neither quote is absent: a result stored before Go
         // left the key out wrote an empty one (F2).
         idea = try c.decodeIfPresent(Idea.self, forKey: .idea).flatMap { $0.isBlank ? nil : $0 }
@@ -266,7 +297,7 @@ package struct SpecReviewResult: Decodable, Equatable, Sendable {
     }
 
     private enum Keys: String, CodingKey {
-        case summary, idea, agreements, checks, resolved, chapters, notes, dropped
+        case summary, brief, theses, idea, agreements, checks, resolved, chapters, notes, dropped
         case decidedAlone = "decided_alone"
         case blindSpots = "blind_spots"
         case codeRead = "code_read"

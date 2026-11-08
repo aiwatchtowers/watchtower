@@ -3,15 +3,25 @@ import WatchtowerCore
 
 /// One finding of a chapter (spec §7): its badge and text, where it comes
 /// from (the owner's words only when the source is the owner's), what the
-/// document says, the reviewer's note, then the mark buttons.
+/// document says, the reviewer's note, then the buttons its kind offers
+/// (spec 2026-11-08 §2) and its Discuss thread, open or folded.
 struct SpecReviewFindingCard: View {
     let model: SpecReviewModel
     let finding: SpecReviewChapterFinding
+    /// Nil: read from the finding (`SpecReviewPresentation.cardKind`).
+    var kind: SpecReviewCardKind?
+    @State private var thread = SpecReviewThreadVisibility.auto
+    @Environment(\.specReviewThreads) private var threads
 
     var body: some View {
+        let kind = kind ?? SpecReviewPresentation.cardKind(for: finding)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                SpecReviewChips(severity: finding.severity, kind: SpecReviewPresentation.badge(for: finding))
+                SpecReviewChips(
+                    severity: finding.severity,
+                    kind: SpecReviewPresentation.badge(for: finding),
+                    origin: kind == .fromDiscussion ? SpecReviewPresentation.fromDiscussionBadge : nil
+                )
                 Text(text).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
             }
             if let source, !source.quote.isEmpty {
@@ -30,9 +40,16 @@ struct SpecReviewFindingCard: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            // A finished author loop takes Fix and Comment only: the sides
-            // are picked on Decide (spec 2026-10-28 §4).
-            SpecReviewMarkControls(model: model, key: finding.key, commentOnly: model.isLoop)
+            // A finished author loop takes Fix and Discuss (or Comment)
+            // only: the sides are picked on Decide (spec 2026-10-28 §4).
+            SpecReviewMarkControls(
+                model: model,
+                key: finding.key,
+                kind: kind,
+                commentOnly: model.isLoop,
+                onDiscuss: threads == nil ? nil : { thread = .shown }
+            )
+            SpecReviewCardThreadSection(key: finding.key, visibility: $thread)
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -97,16 +114,21 @@ struct SpecReviewQuote: View {
 }
 
 /// A finding's head chips: the coloured severity, when the reviewer gave
-/// one, then the neutral kind (and loop status).
+/// one, then the neutral kind (and loop status), then where it came from
+/// (**From discussion**).
 struct SpecReviewChips: View {
     let severity: SpecReviewSeverity?
     let kind: SpecReviewPresentation.Badge
+    var origin: SpecReviewPresentation.Badge?
 
     var body: some View {
         if let badge = SpecReviewPresentation.severityBadge(severity) {
             Chip(text: badge.title, color: badge.tint.color)
         }
         Chip(text: kind.title, color: kind.tint.color)
+        if let origin {
+            Chip(text: origin.title, color: origin.tint.color)
+        }
     }
 }
 
@@ -180,16 +202,22 @@ struct SpecReviewMarkComment: View {
     }
 }
 
-/// The owner's mark on one finding: **Fix**, **Fine as is**, **Comment** and
-/// **Not useful** while unmarked; the mark with Undo, or the comment with Edit
+/// The owner's mark on one finding: the buttons its kind offers while
+/// unmarked (`SpecReviewCardActions`: **Fix**, **Skip**, **Checked**,
+/// **Discuss**, **Not useful**); the mark with Undo, or the comment with Edit
 /// and Remove, once marked. **Fix** is a comment with no words of the owner's:
-/// the finding goes to the author as it is (`SpecReviewAnswer`). A comment is
-/// written in place (⌘↩ saves, Esc cancels).
+/// the finding goes to the author as it is (`SpecReviewAnswer`); a picked Fix
+/// keeps **Add Comment** for a one-line note. **Skip** and **Checked** are the
+/// one `ok` mark. Where the screen has no threads, **Comment** stands in
+/// **Discuss**'s place. A comment is written in place (⌘↩ saves, Esc cancels).
 struct SpecReviewMarkControls: View {
     let model: SpecReviewModel
     let key: String
-    /// A finished author loop: **Fix** and **Comment** only.
+    var kind: SpecReviewCardKind = .actionable
+    /// A finished author loop: **Fix** and **Discuss** (or **Comment**) only.
     var commentOnly = false
+    /// Opens the card's thread; nil when the screen has no threads.
+    var onDiscuss: (() -> Void)?
     @State private var editing = false
     @State private var text = ""
 
@@ -202,7 +230,7 @@ struct SpecReviewMarkControls: View {
                 case .ok:
                     HStack(spacing: Spacing.regular) {
                         // In a loop the mark comes from Decide's Author is right / Skip.
-                        Label(commentOnly ? "Kept as is" : "Fine as is", systemImage: "checkmark.circle.fill")
+                        Label(SpecReviewPresentation.okLabel(kind), systemImage: "checkmark.circle.fill")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(Tone.success)
                         Spacer()
@@ -233,15 +261,17 @@ struct SpecReviewMarkControls: View {
                             Button("Remove") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                         }
                     }
-                case .viewed where commentOnly, nil where commentOnly:
-                    HStack(spacing: Spacing.regular) { fixButton; commentButton }
                 case .viewed, nil:
+                    let buttons: [SpecReviewCardButton] = commentOnly ? [.fix, .discuss] : SpecReviewCardActions.buttons(for: kind)
                     // A narrow drawer puts them on two rows.
                     ViewThatFits(in: .horizontal) {
-                        HStack(spacing: Spacing.regular) { markButtons }
+                        HStack(spacing: Spacing.regular) { ForEach(buttons, id: \.self) { button($0) } }
                         VStack(alignment: .leading, spacing: Spacing.small) {
-                            HStack(spacing: Spacing.regular) { fixButton; fineButton }
-                            HStack(spacing: Spacing.regular) { commentButton; notUsefulButton }
+                            ForEach(Array(stride(from: 0, to: buttons.count, by: 2)), id: \.self) { start in
+                                HStack(spacing: Spacing.regular) {
+                                    ForEach(buttons[start..<min(start + 2, buttons.count)], id: \.self) { button($0) }
+                                }
+                            }
                         }
                     }
                 }
@@ -251,22 +281,38 @@ struct SpecReviewMarkControls: View {
         .disabled(model.isAnswering)
     }
 
+    /// One of the card's buttons. The loop's own picks (Reviewer is right,
+    /// Author is right, Reopen) live on the loop's cards, not here.
     @ViewBuilder
-    private var markButtons: some View {
-        fixButton
-        fineButton
-        commentButton
-        notUsefulButton
+    private func button(_ button: SpecReviewCardButton) -> some View {
+        switch button {
+        case .fix: fixButton
+        case .skip:
+            Button("Skip") { Task { await model.mark(key, .ok) } }
+                .buttonStyle(.kitSecondary)
+                .help("Keep the document as it is")
+        case .checked:
+            Button("Checked") { Task { await model.mark(key, .ok) } }
+                .buttonStyle(.kitSecondary)
+                .help("You checked it: nothing goes to the author")
+        case .notUseful: notUsefulButton
+        case .discuss:
+            if let onDiscuss {
+                Button("Discuss", action: onDiscuss)
+                    .buttonStyle(.kitSecondary)
+                    .help("Ask the assistant about this finding")
+            } else {
+                commentButton
+            }
+        case .reviewerRight, .authorRight, .reopen:
+            EmptyView()
+        }
     }
 
     private var fixButton: some View {
         Button("Fix") { Task { await model.mark(key, .comment) } }
             .buttonStyle(.kitSecondary)
             .help("The reviewer is right: send this finding to the author as it is")
-    }
-
-    private var fineButton: some View {
-        Button("Fine as is") { Task { await model.mark(key, .ok) } }.buttonStyle(.kitSecondary)
     }
 
     private var commentButton: some View {

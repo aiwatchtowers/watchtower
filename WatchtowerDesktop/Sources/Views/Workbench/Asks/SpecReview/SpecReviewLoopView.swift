@@ -11,7 +11,14 @@ import WatchtowerCore
 /// goes back — sit in the drawer's footer (`SpecReviewVerdictButtons`).
 struct SpecReviewLoopView: View {
     let model: SpecReviewModel
-    @State private var fixesExpanded = false
+    @State private var fixesExpanded: Bool
+
+    init(model: SpecReviewModel) {
+        self.model = model
+        // The owner's own items that the author fixed are shown, not folded
+        // (spec 2026-11-08 §1: whether each of their items was fixed).
+        _fixesExpanded = State(initialValue: model.fixes.contains { $0.item.kind == "owner_comment" })
+    }
 
     var body: some View {
         ScrollView {
@@ -103,12 +110,15 @@ struct SpecReviewLoopView: View {
 
 /// One dispute: the finding, where the document says it, the reviewer's
 /// argument, the author's reason, why it is still open, then the owner's
-/// pick. An unanswered one picks **Fix** / **Skip** (the same marks).
-private struct SpecReviewDisputeCard: View {
+/// pick. An unanswered one picks **Fix** / **Skip** (the same marks). Both
+/// add **Discuss** (spec 2026-11-08 §2) when the screen has threads.
+struct SpecReviewDisputeCard: View {
     let model: SpecReviewModel
     let entry: SpecReviewLedgerEntry
     var unanswered = false
     @State private var comment = ""
+    @State private var thread = SpecReviewThreadVisibility.auto
+    @Environment(\.specReviewThreads) private var threads
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -129,7 +139,11 @@ private struct SpecReviewDisputeCard: View {
             if let status = SpecReviewPresentation.loopStatus(entry) {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
+            if let line = SpecReviewPresentation.ownerItemLine(entry, fixed: false) {
+                Text(line).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            }
             pick
+            SpecReviewCardThreadSection(key: entry.item.key, visibility: $thread)
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -182,16 +196,9 @@ private struct SpecReviewDisputeCard: View {
                         maxHeight: CommentTextEditor.formMaxHeight
                     )
                     HStack(spacing: Spacing.regular) {
-                        Button(unanswered ? "Fix" : "Reviewer is right") {
-                            Task { await model.pick(key, reviewerRight: true, body: comment) }
+                        ForEach(SpecReviewCardActions.buttons(for: unanswered ? .unanswered : .dispute), id: \.self) {
+                            button($0, key: key)
                         }
-                        .buttonStyle(.kitSecondary)
-                        .help("The author must fix it")
-                        Button(unanswered ? "Skip" : "Author is right") {
-                            Task { await model.pick(key, reviewerRight: false) }
-                        }
-                        .buttonStyle(.kitSecondary)
-                        .help("Keep the document as it is")
                     }
                 }
             }
@@ -199,15 +206,45 @@ private struct SpecReviewDisputeCard: View {
         .controlSize(.small)
         .disabled(model.isAnswering)
     }
+
+    @ViewBuilder
+    private func button(_ button: SpecReviewCardButton, key: String) -> some View {
+        switch button {
+        case .reviewerRight, .fix:
+            Button(button == .fix ? "Fix" : "Reviewer is right") {
+                Task { await model.pick(key, reviewerRight: true, body: comment) }
+            }
+            .buttonStyle(.kitSecondary)
+            .help("The author must fix it")
+        case .authorRight, .skip:
+            Button(button == .skip ? "Skip" : "Author is right") {
+                Task { await model.pick(key, reviewerRight: false) }
+            }
+            .buttonStyle(.kitSecondary)
+            .help("Keep the document as it is")
+        case .discuss:
+            // The comment field above already carries a note for the author.
+            if threads != nil {
+                Button("Discuss") { thread = .shown }
+                    .buttonStyle(.kitSecondary)
+                    .help("Ask the assistant about this finding")
+            }
+        case .checked, .notUseful, .reopen:
+            EmptyView()
+        }
+    }
 }
 
 /// One fix the reviewer confirmed: the finding, its round, the author's
-/// note, and **Reopen** (a comment the owner must write).
-private struct SpecReviewFixRow: View {
+/// note (or, for the owner's own item, that the author fixed it), and
+/// **Reopen** (a comment the owner must write) beside **Discuss**.
+struct SpecReviewFixRow: View {
     let model: SpecReviewModel
     let entry: SpecReviewLedgerEntry
     @State private var editing = false
     @State private var text = ""
+    @State private var thread = SpecReviewThreadVisibility.auto
+    @Environment(\.specReviewThreads) private var threads
 
     var body: some View {
         let key = entry.item.key
@@ -225,6 +262,9 @@ private struct SpecReviewFixRow: View {
                 .font(.caption)
                 .foregroundStyle(SpecReviewPresentation.authorReason(entry) == nil ? .tertiary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let line = SpecReviewPresentation.ownerItemLine(entry, fixed: true) {
+                Text(line).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            }
             if editing {
                 editor
             } else if model.marks[key]?.state == .comment {
@@ -240,13 +280,25 @@ private struct SpecReviewFixRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                HStack {
+                HStack(spacing: Spacing.regular) {
                     Spacer()
-                    Button("Reopen") { text = ""; editing = true }
-                        .buttonStyle(.kitQuiet)
-                        .help("Send it back to the author with your comment")
+                    ForEach(SpecReviewCardActions.buttons(for: .fixedByAuthor), id: \.self) { button in
+                        switch button {
+                        case .reopen:
+                            Button("Reopen") { text = ""; editing = true }
+                                .buttonStyle(.kitQuiet)
+                                .help("Send it back to the author with your comment")
+                        case .discuss where threads != nil:
+                            Button("Discuss") { thread = .shown }
+                                .buttonStyle(.kitQuiet)
+                                .help("Ask the assistant about this fix")
+                        default:
+                            EmptyView()
+                        }
+                    }
                 }
             }
+            SpecReviewCardThreadSection(key: key, visibility: $thread, placeholder: "Ask about this fix")
         }
         .controlSize(.small)
         .disabled(model.isAnswering)

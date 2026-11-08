@@ -104,7 +104,8 @@ package enum SpecReviewLoop {
 
     package static func endLine(_ row: SpecReviewRow) -> String? {
         switch row.loopEnd {
-        case "cap": return "The reviewer and the author did not settle everything in 3 rounds."
+        case "stalled": return "The reviewer and the author stopped making progress: these are still open."
+        case "cap": return "The reviewer and the author were still going after \(row.round) rounds."
         case "reviewer_failed": return "The reviewer stopped before the loop finished."
         case "session_gone": return "The author's session ended before the loop finished."
         case "timeout": return "The author did not answer the reviewer within 30 minutes."

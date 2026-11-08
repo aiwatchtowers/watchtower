@@ -67,6 +67,60 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(SpecReviewResult.self, from: Data(old.utf8)).idea)
     }
 
+    /// Spec 2026-11-08 §4: the summary's brief and theses, each thesis'
+    /// where-quote read as its anchor.
+    func testDecodesBriefAndTheses() throws {
+        let json = #"""
+        {"summary":"s","brief":"What is built.\nFor whom.","theses":[
+          {"key":"th:1","kind":"goal","text":"Mute for a day","chapter":"ch:1",
+           "where":{"heading":"Goal","quote":"mute a channel for a day"}},
+          {"key":"th:2","kind":"novel_kind","text":"t"}
+        ]}
+        """#
+        let r = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
+        XCTAssertEqual(r.brief, "What is built.\nFor whom.")
+        XCTAssertEqual(r.theses.map(\.key), ["th:1", "th:2"])
+        XCTAssertEqual(r.theses[0].kind, "goal")
+        XCTAssertEqual(r.theses[0].text, "Mute for a day")
+        XCTAssertEqual(r.theses[0].chapter, "ch:1")
+        XCTAssertEqual(r.theses[0].anchor, .init(heading: "Goal", quote: "mute a channel for a day"))
+        XCTAssertEqual(r.theses[1].kind, "novel_kind", "an unknown kind is kept as read")
+        XCTAssertEqual(r.theses[1].chapter, "")
+        XCTAssertNil(r.theses[1].anchor)
+    }
+
+    func testOldResultHasNoTheses() throws {
+        let r = try golden()
+        XCTAssertEqual(r.brief, "")
+        XCTAssertTrue(r.theses.isEmpty)
+    }
+
+    /// The Swift mirror of Go's `ThreadFindingInput`: a proposal starts
+    /// as proposed, whatever the JSON carries.
+    func testProposedFindingDecodesThreadFindingInput() throws {
+        let json = #"""
+        {"kind":"blind_spot","severity":"Major","title":"Followed threads","text":"A followed thread stays silent.",
+         "quote":{"source":"thread","text":"what about threads I follow?"},
+         "where":{"heading":"Behaviour","quote":"Muting lasts twenty-four hours."}}
+        """#
+        let f = try JSONDecoder().decode(SpecReviewProposedFinding.self, from: Data(json.utf8))
+        XCTAssertEqual(f.kind, "blind_spot")
+        XCTAssertEqual(f.severity, .major)
+        XCTAssertEqual(f.title, "Followed threads")
+        XCTAssertEqual(f.quote, .init(source: "thread", text: "what about threads I follow?"))
+        XCTAssertEqual(f.anchor?.heading, "Behaviour")
+        XCTAssertEqual(f.status, .proposed)
+        let bare = try JSONDecoder().decode(SpecReviewProposedFinding.self, from: Data("{}".utf8))
+        XCTAssertEqual(bare.kind, "")
+        XCTAssertNil(bare.severity)
+        XCTAssertNil(bare.anchor)
+    }
+
+    func testQuestionStateReadsUnknownNeutrally() {
+        XCTAssertEqual(SpecReviewQuestionRow.State(raw: "answered"), .answered)
+        XCTAssertEqual(SpecReviewQuestionRow.State(raw: "later"), .unknown)
+    }
+
     func testDecodingToleratesUnknownKeysAndEnums() throws {
         let json = #"{"summary":"s","future":{"x":1},"agreements":[{"key":"ag:1","text":"t","status":"brand_new","where":null,"extra":true}]}"#
         let r = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
