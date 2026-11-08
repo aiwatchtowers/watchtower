@@ -395,7 +395,8 @@ the model and never waits (§3.7).
   fixtures → no noise in any batch, ≤ 2,500 lines per batch, every non-noise chapter in
   exactly one batch.
 - One batch failing (stub generator returns an error / hangs past its budget) → other
-  chapters `ok`, `incomplete` lists the failed ones, nothing in `review_overviews`; `--chapter`
+  chapters `ok`, `incomplete` lists the failed ones, the summary is made and the assembled row
+  is written with `incomplete` (zero described chapters → nothing in `review_overviews`); `--chapter`
   redoes only it and then assembles.
 - Cache: Refresh after editing one file redoes only its chapter; parts survive a new process.
 - One run at a time: two processes on one folder with a stub generator that counts calls —
