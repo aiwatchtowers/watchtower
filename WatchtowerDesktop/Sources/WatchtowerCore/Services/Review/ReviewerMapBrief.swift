@@ -48,6 +48,8 @@ package enum ReviewerMapBrief {
     static let pathLimit = 160
     static let pathsPerChapter = 3
     static let openChapterPaths = 12
+    /// Room kept for the "… N more chapters not listed" line.
+    static let moreLineRoom = 48
     /// The noise chapter ("Can skip"): listed as a count only.
     static let collapsedKey = "collapsed"
 
@@ -66,7 +68,6 @@ package enum ReviewerMapBrief {
         // Chapters are listed in reading order while they fit, leaving room
         // for the line that counts the rest.
         let lines = input.chapters.map(chapterLine)
-        let moreLineRoom = 48
         var used = head.joined(separator: "\n").count
         var listed: [String] = []
         for (index, line) in lines.enumerated() {
@@ -78,6 +79,8 @@ package enum ReviewerMapBrief {
         var all = head + listed
         if listed.count < lines.count { all.append("… \(lines.count - listed.count) more chapters not listed") }
         let text = all.joined(separator: "\n")
+        // The head's parts are clipped and the list keeps within the cap, so
+        // this never cuts today; it keeps the cap a guarantee if a part grows.
         return text.count > maxCharacters ? String(text.prefix(maxCharacters)) : text
     }
 
