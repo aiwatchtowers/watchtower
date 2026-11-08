@@ -76,7 +76,7 @@ package final class ActionStripViewModel {
     /// context id, as the last `refresh()` read it.
     package private(set) var targetProposals: [String: AgentAction] = [:]
     /// Of those, the applied rows whose task still exists.
-    package private(set) var targetTasks: Set<Int64> = []
+    package private(set) var targetTasks: [Int64: Int64] = [:]
     /// The target buttons whose propose is running (one per context).
     package private(set) var proposingTargets: Set<String> = []
     /// Why a target button's last propose failed, by context id; survives
@@ -721,7 +721,7 @@ package final class ActionStripViewModel {
         let row = targetProposals[contextID]
         return InboxTargetButtonFacts(
             proposal: row.map(InboxTargetButtonFacts.Proposal.init),
-            taskExists: row.map { targetTasks.contains($0.id) } ?? false,
+            taskID: row.flatMap { targetTasks[$0.id] },
             inFlight: row.map { actionFeed.inFlight.contains($0.id) } ?? false,
             pressError: targetPressErrors[contextID]?.message,
             applyError: row.flatMap { actionFeed.rowErrors[$0.id]?.message }

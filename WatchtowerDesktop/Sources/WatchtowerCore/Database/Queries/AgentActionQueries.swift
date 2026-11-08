@@ -140,16 +140,23 @@ package enum AgentActionQueries {
         return Dictionary(rows.map { ($0.contextID, $0) }) { first, _ in first }
     }
 
-    /// Of `actionIDs`, the rows whose task still exists: `create_target`
-    /// writes its task with `source_type = 'chat'`, `source_id =
-    /// 'action:<row id>'` (Go `CreateTargetForAction`).
-    package static func actionsWithTask(_ db: Database, actionIDs: [Int64]) throws -> Set<Int64> {
-        guard !actionIDs.isEmpty else { return [] }
-        let sources = try String.fetchAll(db, sql: """
-            SELECT source_id FROM targets
+    /// Of `actionIDs`, the rows whose task still exists, row id → task id:
+    /// `create_target` writes its task with `source_type = 'chat'`,
+    /// `source_id = 'action:<row id>'` (Go `CreateTargetForAction`; one per
+    /// row, `idx_targets_action_source`).
+    package static func actionsWithTask(_ db: Database, actionIDs: [Int64]) throws -> [Int64: Int64] {
+        guard !actionIDs.isEmpty else { return [:] }
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT id, source_id FROM targets
             WHERE source_type = 'chat' AND source_id IN \(placeholders(actionIDs.count))
             """, arguments: StatementArguments(actionIDs.map { "action:\($0)" }))
-        return Set(sources.compactMap { Int64($0.dropFirst("action:".count)) })
+        var out: [Int64: Int64] = [:]
+        for row in rows {
+            let source: String = row["source_id"]
+            guard let actionID = Int64(source.dropFirst("action:".count)) else { continue }
+            out[actionID] = row["id"]
+        }
+        return out
     }
 
     /// The context type of an Inbox target button's proposal.

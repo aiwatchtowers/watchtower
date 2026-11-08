@@ -44,9 +44,9 @@ final class TargetButtonStateResolverTests: XCTestCase {
         XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("approved", decidedAgo: 30))), .creating)
         XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("executing", decidedAgo: 30))), .creating)
         let applied = try proposal("applied", result: #"{"target_id":42}"#)
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: applied, taskExists: true)), .created)
+        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: applied, taskID: 42)), .created)
         // The task deleted since: pressable again.
-        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: applied, taskExists: false)), .idle)
+        XCTAssertEqual(state(InboxTargetButtonFacts(proposal: applied, taskID: nil)), .idle)
         XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("rejected"))), .idle)
         XCTAssertEqual(state(InboxTargetButtonFacts(proposal: try proposal("failed", error: "parent_id: task #3 is closed"))),
                        .failed(message: "parent_id: task #3 is closed"))
@@ -108,8 +108,9 @@ final class TargetButtonStateResolverTests: XCTestCase {
         let failed = try proposal("failed")
         XCTAssertEqual(click(InboxTargetButtonFacts(proposal: failed)), .tryAgainTarget(failed.id))
         XCTAssertNil(click(InboxTargetButtonFacts(proposal: try proposal("approved", decidedAgo: 5))))
-        let applied = try proposal("applied", result: #"{"target_id":42}"#)
-        XCTAssertEqual(click(InboxTargetButtonFacts(proposal: applied, taskExists: true)), .openTarget(42))
+        // The task by its `source_id`, not the result's id.
+        let applied = try proposal("applied", result: #"{"target_id":7}"#)
+        XCTAssertEqual(click(InboxTargetButtonFacts(proposal: applied, taskID: 42)), .openTarget(42))
     }
 
     func testProposingHoldsTheClick() {

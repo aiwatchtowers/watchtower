@@ -83,13 +83,14 @@ final class InboxTargetButtonFactsTests: XCTestCase {
 
         var tasks = try await fx.pool.read { db in try AgentActionQueries.actionsWithTask(db, actionIDs: [newest]) }
         XCTAssertTrue(tasks.isEmpty)
-        try await fx.pool.write { db in
-            _ = try TestDatabase.insertTarget(db, sourceType: "chat", sourceID: "action:\(newest)")
+        let taskID = try await fx.pool.write { db -> Int64 in
+            let id = try TestDatabase.insertTarget(db, sourceType: "chat", sourceID: "action:\(newest)")
             // A renamed duplicate is not the row's task.
             _ = try TestDatabase.insertTarget(db, sourceType: "chat", sourceID: "action:\(newest):dup9")
+            return id
         }
         tasks = try await fx.pool.read { db in try AgentActionQueries.actionsWithTask(db, actionIDs: [newest, 77]) }
-        XCTAssertEqual(tasks, [newest])
+        XCTAssertEqual(tasks, [newest: taskID])
     }
 
     func testFactsFromTheCenter() async throws {
@@ -104,7 +105,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
 
         let facts = vm.targetFacts(contextID: fx.context)
         XCTAssertEqual(facts.proposal?.id, id)
-        XCTAssertEqual(facts.proposal?.targetID, 1)
+        XCTAssertNotNil(facts.taskID)
         XCTAssertTrue(facts.taskExists)
         XCTAssertFalse(facts.inFlight)
         XCTAssertNil(facts.pressError)

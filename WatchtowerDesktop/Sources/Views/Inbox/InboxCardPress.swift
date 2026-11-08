@@ -116,7 +116,7 @@ extension InboxCardPress {
         case .stuck, .failed:
             return facts.proposal.map { .tryAgainTarget($0.id) }
         case .created:
-            return facts.proposal?.targetID.map(InboxCardCommand.openTarget)
+            return facts.taskID.map { .openTarget(Int($0)) }
         case .creating:
             return nil
         }

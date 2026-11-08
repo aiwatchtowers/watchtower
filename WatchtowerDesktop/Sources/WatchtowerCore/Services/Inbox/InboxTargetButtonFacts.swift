@@ -7,8 +7,10 @@ import Foundation
 package struct InboxTargetButtonFacts: Equatable, Sendable {
     /// The newest `agent_actions` row of the button's context; nil = none.
     package var proposal: Proposal?
-    /// The applied row's task still exists (`targets.source_id = 'action:<id>'`).
-    package var taskExists: Bool
+    /// The applied row's task (`targets.source_id = 'action:<id>'`); nil
+    /// when there is none or it was deleted.
+    package var taskID: Int64?
+    package var taskExists: Bool { taskID != nil }
     /// This Desktop's own approve or apply process for the row is running.
     package var inFlight: Bool
     /// Why this button's last propose failed (a non-zero exit other than 3);
@@ -20,13 +22,13 @@ package struct InboxTargetButtonFacts: Equatable, Sendable {
 
     package init(
         proposal: Proposal? = nil,
-        taskExists: Bool = false,
+        taskID: Int64? = nil,
         inFlight: Bool = false,
         pressError: String? = nil,
         applyError: String? = nil
     ) {
         self.proposal = proposal
-        self.taskExists = taskExists
+        self.taskID = taskID
         self.inFlight = inFlight
         self.pressError = pressError
         self.applyError = applyError
@@ -48,14 +50,6 @@ package struct InboxTargetButtonFacts: Equatable, Sendable {
             dismissedAt = row.dismissedAt
             error = row.error
             resultJSON = row.resultJSON
-        }
-
-        /// The task the applied row made (`result_json.target_id`); nil
-        /// unless it is a positive integer.
-        package var targetID: Int? {
-            guard let object = (try? JSONSerialization.jsonObject(with: Data(resultJSON.utf8))) as? [String: Any],
-                  let number = object["target_id"] as? NSNumber, number.intValue > 0 else { return nil }
-            return number.intValue
         }
 
         /// `decided_at` (Go RFC 3339 UTC); nil when empty or unreadable.
