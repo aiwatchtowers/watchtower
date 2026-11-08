@@ -53,8 +53,6 @@ package final class ActionStripViewModel {
     package var showsStopped = false {
         didSet { rebuildSections() }
     }
-    /// The date whose day card the owner marked Done (it then stops being pinned), remembered per viewer.
-    package private(set) var dayDone: String?
     /// How many dates the read takes; `showOlderDays()` adds a page (a
     /// route to an old day reads pages until the day is there).
     package var dayLimit = ActionStripViewModel.dayPage
@@ -110,7 +108,6 @@ package final class ActionStripViewModel {
     /// The folder the owner last picked in the menu, remembered per viewer;
     /// one that no longer exists opens the root.
     package static let folderKey = "inbox.folder"
-    package static let dayDoneKey = "inbox.dayCardDone"
     package static let dayPage = 30
     /// The safety-net poll while on screen (board #731): daemon and CLI
     /// writes come from other processes, which GRDB observation cannot see.
@@ -137,7 +134,6 @@ package final class ActionStripViewModel {
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
         self.defaults = defaults
-        self.dayDone = defaults.string(forKey: Self.dayDoneKey)
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
@@ -613,14 +609,6 @@ package final class ActionStripViewModel {
     package func showOlderDays() -> Task<Void, Never> {
         dayLimit += Self.dayPage
         return Task { await refresh() }
-    }
-
-    /// Done on a day card: it stops being pinned on top of Today. A per-viewer
-    /// convenience (R3), no database write.
-    package func markDayDone(_ date: String) {
-        dayDone = date
-        defaults.set(date, forKey: Self.dayDoneKey)
-        rebuildSections()
     }
 
     // MARK: - Polling (board #731)

@@ -192,7 +192,7 @@ struct InboxSplitView<EmptyList: View>: View {
             artifactPeople: vm.feed.artifactPeople,
             dayCard: { card in
                 if let pane = dayPane?(card) {
-                    around(pane, card)
+                    pane
                 } else {
                     InboxCardPlaceholder(day: card)
                 }
@@ -206,13 +206,6 @@ struct InboxSplitView<EmptyList: View>: View {
                 }
             }
         )
-    }
-
-    /// The day pane with what only the split view knows.
-    private func around(_ pane: InboxDayPane, _ card: InboxDayCard) -> InboxDayPane {
-        var pane = pane
-        pane.isWriting = vm.isWriting(.day(card.date))
-        return pane
     }
 
     /// The track card; Done and Stop watching open the next row once it left.
@@ -260,8 +253,7 @@ struct InboxSplitView<EmptyList: View>: View {
         case .reminder(let reminder): await vm.markReminderDone(reminder)
         case .message(let message): await vm.messageDone(message)
         case .track(let track): await vm.markTrackDone(track)
-        case .day(let date): vm.markDayDone(date)
-        case .proposal, .idea, .builtinNotice: break
+        case .proposal, .day, .idea, .builtinNotice: break
         }
     }
 

@@ -95,7 +95,6 @@ struct ActionStripView: View {
             today: HomeFeedBuilder.dayString(Date(), calendar: .current),
             plan: plan,
             owner: appState.owner,
-            onDone: { vm.markDayDone(day.date) },
             onCommand: { command in Task { await appState.perform(command) } },
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
@@ -577,8 +576,7 @@ struct ActionStripActionsView: View {
             switch id {
             case .output(let output): await vm.markOutputDone(output)
             case .reminder(let reminder): await vm.markReminderDone(reminder)
-            case .day(let date): vm.markDayDone(date)
-            case .proposal, .track, .idea, .message, .builtinNotice: break
+            case .proposal, .day, .track, .idea, .message, .builtinNotice: break
             }
         }
     }

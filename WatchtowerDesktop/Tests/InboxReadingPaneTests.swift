@@ -256,7 +256,7 @@ final class InboxReadingPaneTests: XCTestCase {
         let sut = InboxReadingPane(
             item: .day(card), navScreens: [], onCommand: { _ in },
             dayCard: { card in
-                InboxDayPane(card: card, today: date, plan: plan, owner: owner, onDone: {},
+                InboxDayPane(card: card, today: date, plan: plan, owner: owner,
                              onCommand: { _ in }, onOpenSource: { _ in })
             },
             trackCard: { InboxCardPlaceholder(track: $0, now: Date()) },

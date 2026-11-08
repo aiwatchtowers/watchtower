@@ -497,16 +497,17 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     // MARK: - Per-viewer state
 
-    func testDayDoneSurvivesANewViewModel() {
+    /// Ask #607: the day card has no Done any more, so opening, reading and
+    /// leaving one never writes the old per-viewer key.
+    func testDayCardDoneIsNeverWritten() async {
         let vm = makeVM()
-        XCTAssertNil(vm.dayDone)
+        await vm.refresh()
+        await vm.select(.day("2026-10-22"))
+        await vm.select(nil)
+        await vm.refresh()
 
-        vm.markDayDone("2026-10-22")
-
-        XCTAssertEqual(defaults.string(forKey: "inbox.dayCardDone"), "2026-10-22")
+        XCTAssertNil(defaults.object(forKey: "inbox.dayCardDone"))
         XCTAssertNil(defaults.object(forKey: "inbox.filter"), "the filter bar's key is gone")
-        let next = makeVM()
-        XCTAssertEqual(next.dayDone, "2026-10-22")
     }
 
     func testOpenShowsTheListAndSelects() async throws {

@@ -188,7 +188,7 @@ enum OneInboxShotFixtures {
         _ card: InboxDayCard, manager: DatabaseManager, plan: DayPlanViewModel, row: InboxDayPlanRow?
     ) -> InboxDayPane {
         var pane = InboxDayPane(card: card, today: today, plan: plan, owner: owner,
-                                onDone: {}, onCommand: { _ in }, onOpenSource: { _ in })
+                                onCommand: { _ in }, onOpenSource: { _ in })
         pane.briefing = BriefingViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
         pane.emptyState = EmptyStateContext(readiness: { _ in .ready }, briefingHour: 8)
         pane.initialRow = row
