@@ -131,13 +131,16 @@ package enum AgentActionQueries {
             arguments += StatementArguments(contextIDs)
         }
         guard !terms.isEmpty else { return [:] }
+        // One pass, newest first, the first row per context kept: no
+        // correlated subquery per row. No index covers (context_type,
+        // context_id) for every status (`idx_agent_actions_open_context` is
+        // partial, open rows only), so this reads the table once per refresh.
         let rows = try AgentAction.fetchAll(db, sql: """
             SELECT a.* FROM agent_actions a
             WHERE a.context_type = '\(buttonContextType)' AND (\(terms.joined(separator: " OR ")))
-              AND a.id = (SELECT MAX(b.id) FROM agent_actions b
-                          WHERE b.context_type = a.context_type AND b.context_id = a.context_id)
+            ORDER BY a.id DESC
             """, arguments: arguments)
-        return Dictionary(rows.map { ($0.contextID, $0) }) { first, _ in first }
+        return Dictionary(rows.map { ($0.contextID, $0) }) { newer, _ in newer }
     }
 
     /// Of `actionIDs`, the rows whose task still exists, row id → task id:
