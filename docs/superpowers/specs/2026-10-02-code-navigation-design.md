@@ -509,7 +509,8 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
   workbench recorded in `terminal_session_worktrees`, and that root must be a
   linked work tree of the workbench folder's repository (read from files,
   never by running git: git's `gitdir` back-pointer names the root's own
-  `.git`, a `commondir` exists, and the common git dir is the folder's). A
+  `.git`, the admin dir sits in its common git dir's `worktrees`, and that
+  common git dir is the folder's). A
   subfolder of it, a symlink into it, a worktree no session recorded, a
   recorded root in another repository, a recorded main checkout and a
   folder with a forged `.git` are refused as before (exit 2). Everything else in this section

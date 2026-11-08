@@ -658,11 +658,14 @@ func isRegisteredSessionWorktree(database *db.DB, dir string) (bool, error) {
 // the way git links them: the admin dir root/.git names has a "gitdir"
 // back-pointer whose real path is root/.git itself (a pointer at another
 // work tree's admin dir fails it, and so does a ".git" symlink: its real
-// path is elsewhere) and a "commondir" (a main checkout's git dir has none —
-// a main checkout is never a session worktree here, the workbench folder
-// itself is accepted on its own — nor has a forged pointer at it); and its
-// common dir is folder's. Anything missing or unreadable is false (fail
-// closed).
+// path is elsewhere), sits where git puts it — in its common dir's
+// "worktrees" (a main checkout's git dir, which has no "commondir", and an
+// admin dir forged outside the repository do not; a main checkout is never
+// a session worktree here, the workbench folder itself is accepted on its
+// own) —, and its common dir is folder's. Anything missing or unreadable is
+// false (fail closed). An agent that can write into the repository's git
+// dir can still register any folder as a worktree, as `git worktree add`
+// does; that is the residual the ledger already carries.
 func linkedWorktreeOf(root, folder string) bool {
 	dotGit := filepath.Join(root, ".git")
 	admin, found, err := gitdir.GitDirAt(root)
@@ -679,17 +682,16 @@ func linkedWorktreeOf(root, folder string) bool {
 	if back, err = filepath.EvalSymlinks(back); err != nil || back != dotGit {
 		return false
 	}
-	common, err := gitdir.CommonDir(admin)
-	if err != nil || common == admin {
+	common, err := realCommonDir(admin)
+	if err != nil || filepath.Dir(admin) != filepath.Join(common, "worktrees") {
 		return false
 	}
 	_, folderGit, found, err := gitdir.FindWorkTree(folder)
 	if err != nil || !found {
 		return false
 	}
-	a, errA := filepath.EvalSymlinks(common)
-	b, errB := realCommonDir(folderGit)
-	return errA == nil && errB == nil && a == b
+	folderCommon, err := realCommonDir(folderGit)
+	return err == nil && common == folderCommon
 }
 
 // realCommonDir is gitDir's common git dir with symlinks resolved.

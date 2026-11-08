@@ -264,8 +264,8 @@ func TestAIQueryReadFolder_AcceptsARegisteredSessionWorktree(t *testing.T) {
 // symlink, a recorded main checkout of the workbench's repository (the
 // workbench bound to a subfolder of it), and recorded folders an agent
 // dressed up as worktrees of the workbench's repository: a ".git" file
-// pointing at its git dir, one reusing another worktree's admin dir, and a
-// ".git" symlink to its git dir.
+// pointing at its git dir, one reusing another worktree's admin dir, a
+// ".git" symlink to its git dir, and an admin dir forged outside it.
 func TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree(t *testing.T) {
 	f := newReadFolderFixture(t)
 	gitDir := readFolderRepo(t, f.folder)
@@ -329,6 +329,13 @@ func TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(filepath.Join(atGitDir, ".git")+"\n"), 0o644))
 	reusedAdmin := plant("reused-admin", filepath.Join(gitDir, "worktrees", "feature"), false)
 	symlinked := plant("symlinked", gitDir, true)
+	// An admin dir forged outside the repository that links back and names
+	// the repository's common dir.
+	fakeAdmin, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	outsideAdmin := plant("outside-admin", fakeAdmin, false)
+	require.NoError(t, os.WriteFile(filepath.Join(fakeAdmin, "gitdir"), []byte(filepath.Join(outsideAdmin, ".git")+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(fakeAdmin, "commondir"), []byte(gitDir+"\n"), 0o644))
 
 	for name, dir := range map[string]string{
 		"recorded root replaced by a symlink": replaced,
@@ -336,6 +343,7 @@ func TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree(t *testing.T) {
 		"forged pointer at the git dir":       atGitDir,
 		"forged pointer at another admin dir": reusedAdmin,
 		"git dir symlinked into a folder":     symlinked,
+		"forged admin dir outside the repo":   outsideAdmin,
 		"unrecorded worktree":                 unrecorded,
 		"another workbench's worktree":        foreign,
 		"folder inside a worktree":            sub,
