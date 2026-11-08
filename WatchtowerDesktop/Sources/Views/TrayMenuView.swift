@@ -9,8 +9,23 @@ struct TrayMenuView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(AppState.self) private var appState
+    @AppStorage(PlanUsageCenter.menuBarKey) private var showInMenuBar = true
 
     var body: some View {
+        TrayPopupContent(model: PlansPopupPresentation(screen: plansScreen), showInMenuBar: $showInMenuBar,
+                         openPlans: openPlans,
+                         refresh: { provider in Task { await appState.planUsageCenter?.refresh(provider) } },
+                         refreshAll: { Task { await appState.planUsageCenter?.refresh() } }, actions: {
+            applicationActions
+        })
+        // Refresh the existing app action state when the status item opens.
+        .onAppear {
+            appState.daemonManager.checkStatus()
+            appState.quickRunCenter?.reload()
+        }
+    }
+
+    private var applicationActions: some View {
         TrayMenuContent(
             isRunning: appState.daemonManager.isRunning,
             syncProgress: appState.daemonManager.syncProgress,
@@ -20,14 +35,7 @@ struct TrayMenuView: View {
             backfillLine: appState.planUsageCenter?.backfillLine,
             modelDownloads: appState.transcriptionModelProvisioner.downloads,
             retryModelDownloadAction: { key in appState.transcriptionModelProvisioner.retry(key) },
-            planUsagePresentation: plansMenu,
-            planUsageAction: {
-                (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
-                ActivationPolicyDecision.becomeRegularAndActivate()
-                openWindow(id: TrayAppDelegate.mainWindowSceneID)
-                appState.selectedDestination = .usage
-                UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
-            },
+            planUsageAction: openPlans,
             planUsageRefresh: { provider in
                 Task { await appState.planUsageCenter?.refresh(provider) }
             },
@@ -82,18 +90,19 @@ struct TrayMenuView: View {
                 openSettings()
             }
         )
-        // The shared DaemonManager polls from AppState.initialize(); this only
-        // refreshes the line (and the automation rows) the moment the menu is opened.
-        .onAppear {
-            appState.daemonManager.checkStatus()
-            appState.quickRunCenter?.reload()
-        }
     }
 
-    private var plansMenu: PlansMenuPresentation {
-        let screen = appState.planUsageCenter?.screenPresentation ??
+    private var plansScreen: PlansScreenPresentation {
+        appState.planUsageCenter?.screenPresentation ??
             PlansScreenPresentation(claude: nil, codex: nil, refreshing: Set(PlanUsageProvider.allCases), now: .now)
-        return PlansMenuPresentation(screen: screen)
+    }
+
+    private func openPlans() {
+        (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+        ActivationPolicyDecision.becomeRegularAndActivate()
+        openWindow(id: TrayAppDelegate.mainWindowSceneID)
+        appState.selectedDestination = .usage
+        UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
     }
 }
 
