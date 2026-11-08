@@ -59,20 +59,16 @@ enum InboxBuilderBShotFixtures {
             .detailBackground())
     }
 
-    /// The root's menu from the model; a fixture failure fails the shot.
-    private static var rootMenu: InboxFolderMenuContent {
-        do {
-            return try InboxFolderMenuShotFixtures.content("inbox-b-menu-root")
-        } catch {
-            XCTFail("design shot fixture failed: \(error)")
-            return InboxFolderMenuContent(rows: fullTree, selection: 1)
-        }
-    }
-
     /// The whole Inbox: the menu, the root's list, the selected artifact
     /// under its header (b-01's main panel).
     private static func inboxRoot() -> AnyView {
-        AnyView(VStack(spacing: 0) {
+        let rootMenu: InboxFolderMenuContent
+        do {
+            rootMenu = try InboxFolderMenuShotFixtures.content("inbox-b-menu-root")
+        } catch {
+            return DesignShotFixtures.failure(error)
+        }
+        return AnyView(VStack(spacing: 0) {
             inboxHeader
             Divider()
             HStack(spacing: 0) {
