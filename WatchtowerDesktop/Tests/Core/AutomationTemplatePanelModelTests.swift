@@ -243,14 +243,22 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
     func testInstalledHookGetsEveryCopy() async throws {
         runner.answer("install-template", Self.renderJSON(["a", "b"]))
         var got: [[Int64]] = []
+        var startedAfterInstall: [Bool] = []
+        let runner: PanelRunner = try XCTUnwrap(self.runner)
         let model = try AutomationTemplatePanelModel(
             template: Self.template(), scope: .personal, cli: AutomationsCLI(runner: runner),
-            installed: { got.append($0) }, refresh: { _ in }, sleep: { _ in })
+            installStarted: {
+                startedAfterInstall.append(runner.invocations.contains {
+                    $0.count > 1 && $0[1] == "install-template" && !$0.contains("--render")
+                })
+                return { got.append($0) }
+            }, refresh: { _ in }, sleep: { _ in })
         await model.appear()
         runner.answer("install-template", Self.installJSON(["a", "x"]))
         await model.saveAndTurnOn()
         XCTAssertEqual(model.state, .stopped(AutomationTemplatePanelModel.differs, ids: [11, 12]))
         XCTAssertEqual(got, [[11, 12]])
+        XCTAssertEqual(startedAfterInstall, [false], "the hook runs once, before the install: its route is taken then")
     }
 
     func testConfirmFailureAfterInstallLeavesTheCopy() async throws {

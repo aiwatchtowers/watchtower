@@ -201,13 +201,16 @@ package final class InboxArtifactMenuModel {
     /// feature directly), Run History. Pressed on the folder menu's row
     /// (`fromFolder`) while Needs approval is not the open folder, a failure
     /// also shows on that row: its pane, where `approvalsError` is drawn, is
-    /// not on screen.
+    /// not on screen; one that landed clears that row's old reason.
     package func performApprovals(_ command: InboxMenuCommand, fromFolder folderID: Int64? = nil) async {
         guard !approvalsPressing else { return }
         approvalsError = nil
         await runApprovals(command)
-        if let approvalsError, let folderID, folderMenu.selectedFolderID != folderID {
-            folderMenu.showRefusal(approvalsError, on: folderID)
+        guard let folderID else { return }
+        if let approvalsError {
+            if folderMenu.selectedFolderID != folderID { folderMenu.showRefusal(approvalsError, on: folderID) }
+        } else {
+            folderMenu.clearRefusal(on: folderID)
         }
     }
 

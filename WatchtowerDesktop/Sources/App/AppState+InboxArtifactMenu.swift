@@ -20,13 +20,15 @@ extension AppState {
         ))
     }
 
-    /// **+ New Artifact…**'s save routes through `routeSavedAutomation`;
-    /// its nil (landed) stays nil — only a gone app state is "not ready".
+    /// The Automations view model's way to the Inbox menu: the route a save
+    /// sets (its nil = landed stays nil — only a gone app state is "not
+    /// ready"), and the tree the editor's folder line is resolved against.
     func wireInboxRoute(_ vm: AutomationsViewModel) {
-        vm.routeSavedAutomation = { [weak self] automationID, folderID, reread in
+        vm.routeSavedAutomation = { [weak self] automationID, destination, reread in
             guard let self else { return Self.inboxMenuNotReady }
-            return await routeSavedAutomation(automationID, to: folderID, reread: reread)
+            return await routeSavedAutomation(automationID, to: destination, reread: reread)
         }
+        vm.inboxFolderTree = { [weak self] in self?.actionStripViewModel?.folderMenu.tree }
     }
 
     /// The Automations tab's template panels: an install re-reads the list
@@ -36,7 +38,7 @@ extension AppState {
         AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(
                 template: template, scope: scope, cli: cli,
-                installed: { ids in await vm?.templateInstalled(name: template.name, scope: scope, ids: ids) },
+                installStarted: { vm?.templateInstallStarted(name: template.name, scope: scope) ?? { _ in } },
                 refresh: { id in
                     vm?.refresh()
                     if let id { await vm?.loadDetail(id) }
@@ -46,12 +48,15 @@ extension AppState {
     }
 
     /// A saved automation's route to the Inbox folder it was made from
-    /// (**+ New Artifact…**): through the folder menu at its read revision,
-    /// after a re-read on **Try Again**. Nil when it landed.
-    func routeSavedAutomation(_ automationID: Int64, to folderID: Int64, reread: Bool) async -> String? {
+    /// (**+ New Artifact…**) or the editor's folder line names: through the
+    /// folder menu at its read revision, after a re-read on **Try Again**.
+    /// Nil when it landed.
+    func routeSavedAutomation(
+        _ automationID: Int64, to destination: InboxFoldersCLI.RouteDestination, reread: Bool
+    ) async -> String? {
         guard let menu = actionStripViewModel?.folderMenu else { return Self.inboxMenuNotReady }
         if reread { await menu.reload() }
-        return await menu.route(automationID, to: folderID)
+        return await menu.route(automationID, to: destination)
     }
 
     /// **+ New Artifact…**: the Automations tab's New flow, the selected

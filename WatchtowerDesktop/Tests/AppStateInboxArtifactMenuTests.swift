@@ -58,9 +58,38 @@ final class AppStateInboxArtifactMenuTests: XCTestCase {
         let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner))
         appState.wireInboxRoute(vm)
 
-        let reason = await vm.routeSavedAutomation(automation, release, false)
+        let reason = await vm.routeSavedAutomation(automation, .folder(release), false)
 
         XCTAssertNil(reason)
         XCTAssertEqual(runner.invocations.filter { $0.starts(with: ["inbox", "folders", "route"]) }.count, 1)
+    }
+
+    /// The editor's folder line through the app's own wiring (B Task 15):
+    /// the save path's route lands, so no "Saved. The folder was not
+    /// created" line on the edit's save nor on a new draft's.
+    func testEditorSaveRouteThatLandsThroughTheAppIsNoFailure() async throws {
+        let runner = FakeCLIRunner(stdout: routeJSON())
+        let appState = AppState.isolated()
+        appState.initActionStrip(dbPool: pool, cliRunner: runner)
+        await appState.actionStripViewModel?.folderMenu.reload()
+        // Its own defaults: a spent suggestion must not outlive the test.
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "AppStateInboxArtifactMenuTests.\(UUID().uuidString)"))
+        let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults)
+        appState.wireInboxRoute(vm)
+        let center = AutomationEditorCenter(cli: AutomationsCLI(runner: runner), grants: { _ in [] },
+                                            refresh: { _ in }, sleep: { _ in })
+        let placement = try XCTUnwrap(vm.editorPlacement(
+            suggestion: AutomationFolderSuggestion(title: "release"), draftContextID: nil,
+            automationID: automation, suggestionKey: "k"))
+        XCTAssertEqual(placement.placementText, "Folder: Release", "resolved against the app's Inbox tree")
+
+        await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: center,
+                                 route: placement, spending: "k")
+        XCTAssertNil(vm.routeFailures[automation])
+
+        vm.showEditor(.newDraft(contextID: "draft-a", scope: .personal, startText: nil), route: placement)
+        await vm.draftSaved(contextID: "draft-a", conversationID: 77, automationID: automation)
+        XCTAssertNil(vm.routeFailures[automation])
+        XCTAssertEqual(runner.invocations.filter { $0.starts(with: ["inbox", "folders", "route"]) }.count, 2)
     }
 }

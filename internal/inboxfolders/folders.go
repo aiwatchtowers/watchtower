@@ -21,10 +21,10 @@ import (
 	"watchtower/internal/db"
 )
 
-// Folder kinds (inbox_folders.kind).
+// Folder kinds (inbox_folders.kind). KindApprovals is Needs approval's.
 const (
 	kindRoot      = "root"
-	kindApprovals = "approvals"
+	KindApprovals = "approvals"
 	kindOwner     = "owner"
 )
 
@@ -124,7 +124,7 @@ func (s *Store) Create(ctx context.Context, req CreateRequest) (Tree, Folder, er
 	if req.ExpectRevision < 1 {
 		return Tree{}, Folder{}, ErrRevisionRequired
 	}
-	title, err := cleanTitle(req.Title)
+	title, err := CleanTitle(req.Title)
 	if err != nil {
 		return Tree{}, Folder{}, err
 	}
@@ -152,7 +152,7 @@ func (s *Store) Update(ctx context.Context, id int64, req UpdateRequest) (Tree, 
 	}
 	var title string
 	if req.Title != nil {
-		t, err := cleanTitle(*req.Title)
+		t, err := CleanTitle(*req.Title)
 		if err != nil {
 			return Tree{}, Folder{}, err
 		}
@@ -312,7 +312,7 @@ func (s *Store) Route(ctx context.Context, automationID int64, req RouteRequest)
 	}
 	var title string
 	if newFolder {
-		t, err := cleanTitle(req.NewTitle)
+		t, err := CleanTitle(req.NewTitle)
 		if err != nil {
 			return Tree{}, Folder{}, false, err
 		}
@@ -494,7 +494,7 @@ func newSnapshot(folders []db.InboxFolder, routes map[int64]int64) (*snapshot, e
 		switch f.Kind {
 		case kindRoot:
 			s.rootID = f.ID
-		case kindApprovals:
+		case KindApprovals:
 			s.approvalsID = f.ID
 		}
 		if f.ParentID != nil {
@@ -516,7 +516,7 @@ func (s *snapshot) ownerFolder(id int64) (*db.InboxFolder, error) {
 		return nil, noFolder(id)
 	case f.Kind == kindRoot:
 		return nil, ErrRootFixed
-	case f.Kind == kindApprovals:
+	case f.Kind == KindApprovals:
 		return nil, ErrApprovalsFixed
 	}
 	return f, nil

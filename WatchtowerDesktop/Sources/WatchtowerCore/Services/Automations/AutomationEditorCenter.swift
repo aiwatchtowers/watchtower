@@ -436,14 +436,20 @@ package final class AutomationEditorCenter {
     /// draft was loaded); both are idempotent in Go. `setsEnabled` false (a
     /// built-in's **Save**, whose on/off is its feature keys) only saves:
     /// no disable before it and no enable after it, whatever `turnOn` says.
-    package func commit(_ key: Int64, plan: AutomationSavePlan, turnOn: Bool, setsEnabled: Bool = true) async {
-        guard saving[key] != .saving, saving[key] != .validating, let draft = drafts[key] else { return }
+    ///
+    /// Returns the automation THIS call saved (its turn-on may still have
+    /// failed); nil when it saved nothing — refused, checked again instead,
+    /// or already busy. `savedIDs` may hold an earlier press's save: a
+    /// press decides on this value, never on that.
+    @discardableResult
+    package func commit(_ key: Int64, plan: AutomationSavePlan, turnOn: Bool, setsEnabled: Bool = true) async -> Int64? {
+        guard saving[key] != .saving, saving[key] != .validating, let draft = drafts[key] else { return nil }
         await draft.buffer.flush()
         let text = draft.renderedText()
         guard case let .review(checked) = saving[key], checked.validated.approvalHash == plan.validated.approvalHash,
               plan.validated.showsAllFields, validatedTexts[key] == text else {
             await check(key)
-            return
+            return nil
         }
         let isNew = Self.isNewDraft(key)
         let disableFirst = setsEnabled && !isNew && !turnOn
@@ -454,12 +460,12 @@ package final class AutomationEditorCenter {
             } catch {
                 saving[key] = .failed(Self.message(for: error))
                 await refresh(key)
-                return
+                return nil
             }
         }
         guard let saved = await performSave(key, draft: draft, text: text, plan: plan) else {
             if disableFirst { await refresh(key) }
-            return
+            return nil
         }
         savedIDs[key] = saved.automationID
         if Self.isNewDraft(key) { await removeDraftCache(key) }
@@ -480,6 +486,7 @@ package final class AutomationEditorCenter {
         // Done only now: a panel watching for `.done` never closes before
         // the turn-on's outcome is known.
         if saving[key] == .saving { saving[key] = .done }
+        return saved.automationID
     }
 
     private func enableAfterSave(_ key: Int64, _ id: Int64) async {

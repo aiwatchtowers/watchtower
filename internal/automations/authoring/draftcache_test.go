@@ -3,6 +3,7 @@ package authoring
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -199,5 +200,100 @@ func TestDraftCache_KeepsBlocksAndKey(t *testing.T) {
 	if len(outs) != 2 || outs[0].Key != "thread:1" || !strings.Contains(string(outs[0].Blocks), `"heading"`) ||
 		outs[0].ContentHash == "" || string(outs[1].Blocks) != "null" {
 		t.Fatalf("cached outputs = %+v; want blocks, key and hash", outs)
+	}
+}
+
+// callFolder drafts text with args' extra keys (a folder suggestion) on the
+// editor surface of conversationID; the tool's error is returned.
+func (f *draftFixture) callFolder(t *testing.T, conversationID int64, text string, folder any) error {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"recipe_text": text, "folder": folder})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.cacheTool(t.TempDir()).Execute(context.Background(), f.d,
+		tools.Call{Args: raw, Binding: editorBinding(conversationID)})
+	return err
+}
+
+// The editor chat's folder suggestion (inbox builder B, Task 15) is cached
+// with its draft, trimmed, and goes with the draft's rows when the Desktop
+// discards or saves the draft.
+func TestDraftCache_FolderSuggestionRoundTripsAndGoesWithTheDraft(t *testing.T) {
+	f := newDraftFixture(t)
+	seedConversations(t, f.d, 42)
+	if err := f.callFolder(t, 42, "not a recipe", map[string]any{"title": "  Release ", "parent_slug": "acme"}); err != nil {
+		t.Fatalf("draft_automation: %v", err)
+	}
+	if err := f.callFolder(t, 42, "not a recipe either", nil); err != nil {
+		t.Fatalf("draft_automation: %v", err)
+	}
+	entries := readDraftCache(t, f.d, 42)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d; want 2", len(entries))
+	}
+	want := &FolderSuggestion{Title: "Release", ParentSlug: "acme"}
+	if !reflect.DeepEqual(entries[0].Folder, want) {
+		t.Fatalf("folder = %+v; want %+v", entries[0].Folder, want)
+	}
+	if entries[1].Folder != nil {
+		t.Fatalf("a draft without a folder cached %+v; want none", entries[1].Folder)
+	}
+	rows, err := f.d.DraftCache(42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(rows[1], `"folder"`) {
+		t.Fatalf("a draft without a suggestion carries the key: %s", rows[1])
+	}
+	if err := f.d.DeleteDraftCache(42); err != nil {
+		t.Fatal(err)
+	}
+	if got := readDraftCache(t, f.d, 42); len(got) != 0 {
+		t.Fatalf("cache = %d entries after the discard; want the suggestion gone with the draft", len(got))
+	}
+}
+
+// A suggestion that is not a folder title is the chat's error to fix: the
+// draft is refused and nothing is cached.
+func TestDraftCache_BadFolderSuggestionRefusedNothingCached(t *testing.T) {
+	f := newDraftFixture(t)
+	seedConversations(t, f.d, 42)
+	for _, folder := range []map[string]any{
+		{"title": "   "},
+		{"title": strings.Repeat("x", 61)},
+		{"title": "Two\nlines"},
+		{"title": "Release", "parent_slug": "two words"},
+	} {
+		err := f.callFolder(t, 42, "not a recipe", folder)
+		var verr *tools.ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("folder %v: err = %v; want a ValidationError", folder, err)
+		}
+	}
+	if got := readDraftCache(t, f.d, 42); len(got) != 0 {
+		t.Fatalf("cache = %d entries; want nothing cached for a refused suggestion", len(got))
+	}
+}
+
+// A cache row whose folder does not decode as a suggestion keeps its draft;
+// only the suggestion is dropped.
+func TestDraftCacheEntry_UndecodableFolderDroppedDraftKept(t *testing.T) {
+	for _, folder := range []string{`"Release"`, `{"title": 5}`, `{"title": ""}`, `[1]`, `null`} {
+		line := `{"recipe_text":"r","result":null,"error":"e","at":"2026-10-14T12:00:00Z","folder":` + folder + `}`
+		var e DraftCacheEntry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("folder %s: the draft did not decode: %v", folder, err)
+		}
+		if e.RecipeText != "r" || e.Error != "e" || e.At != "2026-10-14T12:00:00Z" || e.Folder != nil {
+			t.Fatalf("folder %s: entry = %+v; want the draft without a suggestion", folder, e)
+		}
+	}
+	var e DraftCacheEntry
+	if err := json.Unmarshal([]byte(`{"recipe_text":"r","folder":{"title":"Release"}}`), &e); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(e.Folder, &FolderSuggestion{Title: "Release"}) {
+		t.Fatalf("folder = %+v; want Release at the top level", e.Folder)
 	}
 }

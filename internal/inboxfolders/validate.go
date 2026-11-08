@@ -15,9 +15,11 @@ const (
 	MaxTitleRunes   = 60
 )
 
-// cleanTitle trims a title and checks it: 1..MaxTitleRunes runes, on one
+// CleanTitle trims a title and checks it: 1..MaxTitleRunes runes, on one
 // line (no control or format character, no line or paragraph separator).
-func cleanTitle(raw string) (string, error) {
+// ErrBadTitle otherwise. The editor chat's folder suggestion is checked
+// with it too, so a title it proposes is one the route can create.
+func CleanTitle(raw string) (string, error) {
 	title := strings.TrimSpace(raw)
 	n := utf8.RuneCountInString(title)
 	if n == 0 || n > MaxTitleRunes || !utf8.ValidString(title) {
