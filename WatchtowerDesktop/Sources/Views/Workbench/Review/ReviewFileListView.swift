@@ -73,8 +73,11 @@ struct ReviewFileListView: View {
 
     private func row(_ file: ReviewDiffFile) -> some View { Self.row(file, model: model) }
 
-    /// A file's row with the model's Viewed mark and comment count (Chapters reuses it).
-    static func row(_ file: ReviewDiffFile, model: ReviewChangesModel, title: String? = nil, depth: Int = 0) -> some View {
+    /// A file's row with the model's Viewed mark and comment count (Chapters reuses it);
+    /// `chapter` makes the file's chapter current as it opens.
+    static func row(
+        _ file: ReviewDiffFile, model: ReviewChangesModel, title: String? = nil, depth: Int = 0, chapter: String? = nil
+    ) -> some View {
         ReviewFileRow(
             file: file,
             title: title,
@@ -84,7 +87,15 @@ struct ReviewFileListView: View {
             comments: model.comments.filter { $0.path == file.path && $0.status != .resolved }.count,
             risk: model.highestRisk(for: file.path),
             danger: model.mapFiles[file.path],
-            select: { Task { await model.select(file.path) } },
+            select: {
+                Task {
+                    if let chapter {
+                        try? await model.selectChapter(chapter, file: file.path) // a failure lands in lastError
+                    } else {
+                        await model.select(file.path)
+                    }
+                }
+            },
             toggleViewed: { Task { try? await model.toggleViewed(file.path) } } // a failure lands in lastError
         )
     }

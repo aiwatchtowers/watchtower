@@ -861,8 +861,8 @@ final class ReviewChangesModel {
         }
     }
 
-    /// Makes `key` the current chapter and opens its first non-collapsed file.
-    func selectChapter(_ key: String) async throws {
+    /// Makes `key` the current chapter and opens `file`, else its first non-collapsed file.
+    func selectChapter(_ key: String, file: String? = nil) async throws {
         guard let chapter = chapters.first(where: { $0.key == key }) else { return }
         try await run {
             // A sent round only moves on screen; the position is saved while it is open.
@@ -873,7 +873,8 @@ final class ReviewChangesModel {
             }
             currentChapterKey = key
         }
-        let first = chapter.paths.first { path in files.first { $0.path == path }?.collapsedReason == nil } ?? chapter.paths.first
+        let first = file ?? chapter.paths.first { path in files.first { $0.path == path }?.collapsedReason == nil }
+            ?? chapter.paths.first
         if let first { await select(first) }
     }
 
