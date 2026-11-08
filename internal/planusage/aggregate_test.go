@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -111,6 +112,56 @@ func TestPlansAggregate_ExitPriorityCombined(t *testing.T) {
 				require.Zero(t, calls)
 			}
 		})
+	}
+}
+
+// A failed retained-data read must remain visible even when the refresh also
+// fails. Refresh outcome and the discovered feature state remain independent.
+func TestPlansAggregate_ReadFailureOverridesRefreshError(t *testing.T) {
+	for _, source := range Sources() {
+		for _, tc := range []struct {
+			code, outcome                    string
+			initiallyEnabled, finallyEnabled bool
+			exit                             int
+		}{
+			{"network", "failed", true, true, 1},
+			{"busy", "busy", true, true, 1},
+			{"cancelled", "cancelled", true, true, 1},
+			{"feature_disabled", "disabled", true, false, 3},
+			{"feature_disabled", "disabled", false, false, 3},
+		} {
+			t.Run(source+"/"+tc.code+"/enabled="+fmt.Sprint(tc.initiallyEnabled), func(t *testing.T) {
+				calls := 0
+				readCalls := 0
+				envelope := Collect(context.Background(), source, true, tc.initiallyEnabled,
+					func(name string) (*PublicStatus, error) {
+						require.Equal(t, source, name)
+						readCalls++
+						return &PublicStatus{State: "ok"}, errors.New("private read failure")
+					}, map[string]func(context.Context) error{source: func(context.Context) error {
+						calls++
+						return &OperationError{Code: tc.code}
+					}})
+				require.Equal(t, 1, readCalls)
+				if tc.initiallyEnabled {
+					require.Equal(t, 1, calls)
+				} else {
+					require.Zero(t, calls)
+				}
+				require.Equal(t, tc.finallyEnabled, envelope.FeatureEnabled)
+				require.Len(t, envelope.Providers, 1)
+				result := envelope.Providers[0]
+				require.Equal(t, tc.outcome, result.RefreshOutcome)
+				require.False(t, result.OK)
+				require.Nil(t, result.Status)
+				require.NotNil(t, result.Error)
+				require.Equal(t, "storage", result.Error.Code)
+				require.NotContains(t, result.Error.Message, "private")
+				require.Equal(t, tc.exit, ExitCode(envelope, 0))
+				require.Equal(t, 130, ExitCode(envelope, 2))
+				require.Equal(t, 143, ExitCode(envelope, 15))
+			})
+		}
 	}
 }
 

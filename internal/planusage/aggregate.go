@@ -212,7 +212,7 @@ func Collect(ctx context.Context, requested string, refresh, enabled bool, read 
 			if readErr == nil {
 				r.Status = status
 			}
-			if operationErr == nil && readErr != nil {
+			if readErr != nil {
 				operationErr = &OperationError{Code: "storage", Cause: readErr}
 			}
 			r.Error = publicError(operationErr)
@@ -222,7 +222,7 @@ func Collect(ctx context.Context, requested string, refresh, enabled bool, read 
 	}
 	wg.Wait()
 	for _, r := range out.Providers {
-		if r.Error != nil && r.Error.Code == "feature_disabled" {
+		if r.RefreshOutcome == "disabled" {
 			out.FeatureEnabled = false
 		}
 	}
