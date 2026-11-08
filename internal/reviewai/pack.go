@@ -26,6 +26,12 @@ type Batch struct {
 	Lines int
 
 	omitted map[string]int // path → lines of a cut file not shown
+	// others are, on the one batch of the whole map, the changed files of
+	// the chapters Pack leaves out ("collapsed" and chapters with nothing
+	// to show): the one full call lists them by name so its coverage can
+	// still name them. truncated is the diff's size cap, said to that call.
+	others    []reviewdiff.File
+	truncated bool
 }
 
 // unit is one chapter ready to pack: its diff files and shown lines.
@@ -50,6 +56,8 @@ func Pack(m reviewmap.Map, d reviewdiff.Diff, have map[string]bool) []Batch {
 		return nil
 	}
 	if bs := firstFit(all, m); len(bs) == 1 {
+		bs[0].others = leftOut(m, d, bs[0])
+		bs[0].truncated = m.DiffTruncated
 		return bs
 	}
 	todo := slices.DeleteFunc(all, func(u unit) bool { return have[u.ch.Key] })
@@ -67,6 +75,23 @@ func NotShown(m reviewmap.Map, d reviewdiff.Diff) map[string]ChapterDesc {
 		}
 		if _, lines := chapterFiles(ch, byPath); lines == 0 {
 			out[ch.Key] = ChapterDesc{Key: ch.Key, What: notShownWhat, Risks: []Risk{}}
+		}
+	}
+	return out
+}
+
+// leftOut is the diff's files of the map's chapters that b does not carry,
+// in map order.
+func leftOut(m reviewmap.Map, d reviewdiff.Diff, b Batch) []reviewdiff.File {
+	in := b.paths()
+	byPath := filesByPath(d)
+	var out []reviewdiff.File
+	for _, ch := range m.Chapters {
+		for _, p := range ch.Paths {
+			if f, ok := byPath[p]; ok && !in[p] {
+				in[p] = true
+				out = append(out, f)
+			}
 		}
 	}
 	return out
@@ -189,6 +214,16 @@ func (b *Batch) addFile(f reviewdiff.File, n int) {
 func (b Batch) paths() map[string]bool {
 	out := make(map[string]bool, len(b.Files))
 	for _, f := range b.Files {
+		out[f.Path] = true
+	}
+	return out
+}
+
+// changedPaths is every path the batch's call is told about: its files and
+// the left-out files listed by name.
+func (b Batch) changedPaths() map[string]bool {
+	out := b.paths()
+	for _, f := range b.others {
 		out[f.Path] = true
 	}
 	return out

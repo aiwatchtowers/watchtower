@@ -123,13 +123,23 @@ func fileLines(f reviewdiff.File) int {
 }
 
 // BuildOverviewUser is the data of the one full call (review.overview):
-// the intent, then the batch as review.chapters sees it.
+// the intent, the batch as review.chapters sees it, then the changed files
+// of the chapters left out of the batch, by name.
 func BuildOverviewUser(b Batch, intent []IntentItem, notes []db.ReviewNote) string {
 	var s strings.Builder
 	s.WriteString("=== DATA ===\n\n=== INTENT ===\n")
 	writeOverviewIntent(&s, intent)
 	s.WriteString("\n")
 	writeBatch(&s, b, notes)
+	if len(b.others) > 0 {
+		s.WriteString("\n=== OTHER CHANGED FILES (not shown) ===\n")
+		for _, f := range b.others {
+			fmt.Fprintf(&s, "%s (+%d −%d) — not shown\n", f.Path, f.Additions, f.Deletions)
+		}
+	}
+	if b.truncated {
+		s.WriteString("(the diff itself was truncated; more files changed than listed)\n")
+	}
 	return s.String()
 }
 
@@ -195,7 +205,7 @@ func ParseOverview(raw string, b Batch, intent []IntentItem) (map[string]Chapter
 	if err := json.Unmarshal([]byte(js), &r); err != nil {
 		return nil, Summary{}, fmt.Errorf("overview reply: %w: %w", ErrParse, err)
 	}
-	sum, err := checkSummary(r.Summary, intent, b.paths())
+	sum, err := checkSummary(r.Summary, intent, b.changedPaths())
 	if err != nil {
 		return nil, Summary{}, err
 	}

@@ -194,3 +194,29 @@ func TestOverview_BigBranchCallsPerBatchThenSummary(t *testing.T) {
 	assert.NotContains(t, g.users[len(g.users)-1], "+line", "the summary sees no diff")
 	assert.Equal(t, "big", o.Summary)
 }
+
+// The one full call still names the files of the chapters Pack leaves out
+// (a binary-only chapter, the diff's size cap), and its summary may cite
+// them.
+func TestPack_OneBatchListsLeftOutFiles(t *testing.T) {
+	d := okDiff()
+	d.Files = append(d.Files, reviewdiff.File{Path: "assets/logo.png", Status: "modified", Binary: true})
+	d.Truncated = true
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	bs := Pack(m, d, nil)
+	require.Len(t, bs, 1)
+	assert.NotContains(t, bs[0].paths(), "assets/logo.png")
+
+	user := BuildOverviewUser(bs[0], okIntent(), nil)
+	assert.Contains(t, user, "=== OTHER CHANGED FILES (not shown) ===\nassets/logo.png (+0 −0) — not shown")
+	assert.Contains(t, user, "the diff itself was truncated")
+	assert.NotContains(t, BuildChaptersUser(bs[0], nil), "OTHER CHANGED FILES")
+
+	raw := `{"summary":"s","coverage":[{"index":1,"item":"logo","status":"done","where":["assets/logo.png"]}],` +
+		`"out_of_scope":["assets/logo.png"],"chapters":[{"key":"dir:server","what":"w"}]}`
+	_, sum, err := ParseOverview(raw, bs[0], okIntent())
+	require.NoError(t, err)
+	require.Len(t, sum.Coverage, 1)
+	assert.Equal(t, []string{"assets/logo.png"}, sum.Coverage[0].Where)
+	assert.Equal(t, []string{"assets/logo.png"}, sum.OutOfScope)
+}
