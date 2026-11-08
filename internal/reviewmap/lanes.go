@@ -54,7 +54,8 @@ type LaneTitles struct {
 }
 
 // TitleSource looks lanes' titles up (Task 5 wires the database). It is
-// called once per attribution, after the walk.
+// called once per attribution, after the walk; a nil TitleSource finds
+// nothing.
 type TitleSource interface {
 	Titles(branches []string, jiraKeys []string, boardRefs []int64) LaneTitles
 }
@@ -102,7 +103,7 @@ func attribute(ctx context.Context, repo *reviewdiff.Repo, base, head, headBranc
 	if base != "" && base != reviewdiff.EmptyTree {
 		w.base = base
 	}
-	top := &walkLane{branch: headBranch, top: true}
+	top := &walkLane{branch: headBranch, integration: true}
 	if err := w.walk(walkCtx, top, head, w.excludeWith()); err != nil {
 		if ctx.Err() == nil && errors.Is(walkCtx.Err(), context.DeadlineExceeded) {
 			return partialAttribution(), nil
@@ -119,7 +120,6 @@ func partialAttribution() Attribution {
 // walkLane is one first-parent walk: the top branch or a merged lane.
 type walkLane struct {
 	name, branch string
-	top          bool
 	integration  bool // its own walk merges lanes (the top always is)
 }
 
@@ -181,9 +181,6 @@ type ffMerge struct {
 // first parent is walked as the `into` lane and the walk goes on from its
 // second parent — one FirstParentWalk per segment.
 func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude []string) error {
-	if lane.top {
-		lane.integration = true
-	}
 	var segs []segment
 	for tip != "" {
 		if w.commitsLeft <= 0 {
@@ -207,7 +204,7 @@ func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude [
 		for i := len(seg.commits) - 1; i >= 0; i-- {
 			c := seg.commits[i]
 			switch {
-			case seg.sync[i]:
+			case seg.sync[i]: // a base sync: skipped
 			case seg.merges[i] != "":
 				if err := w.walkLane(ctx, seg.merges[i], c.Parents[1], withRev(exclude, c.Parents[0])); err != nil {
 					return err
@@ -315,7 +312,7 @@ func (w *walker) attribution(src TitleSource) Attribution {
 	type touch struct{ count, last int }
 	touches := map[string]map[string]*touch{}
 	for _, r := range w.records {
-		name, tag := w.label(r, titles)
+		name, tag := label(r, titles)
 		if name == "" {
 			continue
 		}
@@ -365,7 +362,7 @@ func (w *walker) attribution(src TitleSource) Attribution {
 // label is the lane a direct commit belongs to: on an integration lane its
 // subject's tag (tag = true), else the lane itself; "" = no lane (an
 // untagged direct commit of the top branch).
-func (w *walker) label(r record, titles LaneTitles) (name string, tag bool) {
+func label(r record, titles LaneTitles) (name string, tag bool) {
 	if r.lane.integration {
 		if t := commitTag(r.subject, r.lane.branch, titles); t != "" {
 			return t, true
@@ -394,9 +391,7 @@ func (w *walker) titles(src TitleSource) LaneTitles {
 		}
 		keys = append(keys, jiraKeyRe.FindAllString(r.subject, -1)...)
 		for _, m := range boardRefRe.FindAllStringSubmatch(r.subject, -1) {
-			if id, err := strconv.ParseInt(m[1], 10, 64); err == nil {
-				refs = append(refs, id)
-			}
+			refs = append(refs, boardRefID(m))
 		}
 	}
 	return src.Titles(sortedUnique(branches), sortedUnique(keys), sortedUnique(refs))
@@ -429,8 +424,7 @@ func laneOf(name string, tag bool, from *walkLane, titles LaneTitles) Lane {
 	}
 	if tag {
 		if m := boardRefRe.FindStringSubmatch(name); m != nil && m[0] == name {
-			id, _ := strconv.ParseInt(m[1], 10, 64)
-			if t, ok := titles.BoardRefs[id]; ok {
+			if t, ok := titles.BoardRefs[boardRefID(m)]; ok {
 				l.Title, l.TargetID = t.Text, t.ID
 			}
 		}
@@ -457,6 +451,12 @@ var (
 	planTagRe  = regexp.MustCompile(`\(([A-Z]{1,2}\d+[a-z]?)\b`)
 	scopeRe    = regexp.MustCompile(`^\w+\(([^)]+)\)!?:`)
 )
+
+// boardRefID is a boardRefRe match's id; at most six digits always parse.
+func boardRefID(m []string) int64 {
+	id, _ := strconv.ParseInt(m[1], 10, 64)
+	return id
+}
 
 // parseMerge reads a merge's subject (§2.1): the merged branch ("?" when
 // the subject names none) and the `into` target when it names one.
@@ -504,11 +504,7 @@ func commitTag(subject, branch string, titles LaneTitles) string {
 		}
 	}
 	for _, m := range boardRefRe.FindAllStringSubmatch(subject, -1) {
-		id, err := strconv.ParseInt(m[1], 10, 64)
-		if err != nil {
-			continue
-		}
-		if _, ok := titles.BoardRefs[id]; ok {
+		if _, ok := titles.BoardRefs[boardRefID(m)]; ok {
 			return "#" + m[1]
 		}
 	}
