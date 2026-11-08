@@ -105,7 +105,7 @@ package enum ReviewMapPresentation {
         let digits = String(count.magnitude)
         var out = ""
         for (index, digit) in digits.enumerated() {
-            if index > 0, (digits.count - index) % 3 == 0 { out.append(",") }
+            if index > 0, (digits.count - index).isMultiple(of: 3) { out.append(",") }
             out.append(digit)
         }
         return count < 0 ? "-" + out : out

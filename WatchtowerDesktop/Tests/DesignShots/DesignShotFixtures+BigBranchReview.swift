@@ -25,8 +25,13 @@ enum BigBranchReviewShotFixtures {
     }
 
     private static func file(
-        _ path: String, _ add: Int, _ del: Int, status: String = "modified",
-        level: String = "normal", signals: [String] = [], also: [String] = []
+        _ path: String,
+        _ add: Int,
+        _ del: Int,
+        status: String = "modified",
+        level: String = "normal",
+        signals: [String] = [],
+        also: [String] = []
     ) -> (file: ReviewFixture.File, level: String, signals: [String], also: [String]) {
         (ReviewFixture.File(path: path, status: status, additions: add, deletions: del), level, signals, also)
     }
@@ -175,7 +180,11 @@ enum BigBranchReviewShotFixtures {
 
     /// A Deep round of the big branch: `stream` is the overview's lines, kept going unless `ends`.
     private static func bigPane(
-        _ key: String, phase: String, stream: [String], ends: Bool, truncated: Bool = false,
+        _ key: String,
+        phase: String,
+        stream: [String],
+        ends: Bool,
+        truncated: Bool = false,
         then: (ReviewFixture) -> Void = { _ in }
     ) -> AnyView {
         ReviewShotFixtures.pane(key) {

@@ -102,7 +102,7 @@ struct ReviewRunCard: View {
         }
     }
 
-    private var keys: [String] { ReviewRunCard.describableKeys(model) }
+    private var keys: [String] { Self.describableKeys(model) }
 
     private var progress: ReviewMapPresentation.Progress? {
         ReviewMapPresentation.progress(keys: keys, states: model.chapterStates, summary: model.summaryState,
