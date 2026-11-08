@@ -38,7 +38,7 @@ extension AppState {
         AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(
                 template: template, scope: scope, cli: cli,
-                installed: { ids in await vm?.templateInstalled(name: template.name, scope: scope, ids: ids) },
+                installStarted: { vm?.templateInstallStarted(name: template.name, scope: scope) ?? { _ in } },
                 refresh: { id in
                     vm?.refresh()
                     if let id { await vm?.loadDetail(id) }

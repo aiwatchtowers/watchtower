@@ -658,13 +658,22 @@ package final class AutomationsViewModel {
         templateRoutes[AutomationTemplatePanels.key(template: name, scope: scope)]
     }
 
-    /// A template install made `ids`: each copy is routed to the folder its
-    /// New flow started in, one call each; a failure keeps **Try Again** on
-    /// that copy's card like a save's.
-    package func templateInstalled(name: String, scope: AutomationScopeChoice, ids: [Int64]) async {
-        guard let route = templateRoutes.removeValue(forKey: AutomationTemplatePanels.key(template: name, scope: scope))
-        else { return }
-        for id in ids { await routeSaved(id, route, reread: false) }
+    /// A template's install starts: its folder is the New flow's route as
+    /// it is now — the template opened again mid-install (a plain New, or
+    /// a New from another folder) never changes it. The returned hook
+    /// routes each copy the install made there, one call each (a failure
+    /// keeps **Try Again** on that copy's card like a save's), and forgets
+    /// the panel's route unless a newer flow has set another since.
+    package func templateInstallStarted(
+        name: String, scope: AutomationScopeChoice
+    ) -> @MainActor ([Int64]) async -> Void {
+        let key = AutomationTemplatePanels.key(template: name, scope: scope)
+        let route = templateRoutes[key]
+        return { [weak self] ids in
+            guard let self, let route else { return }
+            if templateRoutes[key] == route { templateRoutes[key] = nil }
+            for id in ids { await routeSaved(id, route, reread: false) }
+        }
     }
 
     /// **Try Again** on "Saved. The folder was not created": re-reads the
