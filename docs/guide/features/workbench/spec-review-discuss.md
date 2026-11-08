@@ -18,7 +18,7 @@ A thread belongs to its card, not to one ask. When the agent files the document 
 
 When only the agent can answer (what it meant, what it plans), the assistant asks it. The question is typed into the agent's session the way the reviewer's findings are: never in the middle of a turn, and never over text you typed there. The thread shows **Asked the author…**, then the agent's answer, and the assistant carries on from it.
 
-If the agent does not answer within 30 minutes, the thread says **The author did not answer** and the assistant goes on without it. A thread asks one question at a time. Answers that land while the Mac app is closed are picked up when you open the thread again.
+If the agent does not answer within 30 minutes, the thread says **The author did not answer** and the assistant goes on without it. A question still waiting when you quit the app is not typed again; it runs out the same way. A thread asks one question at a time. Answers that land while the Mac app is closed are picked up when you open the thread again.
 
 ### When the conversation finds something new
 
@@ -54,7 +54,8 @@ action: nav:projects
 
 1. Press **Discuss** on a finding or a point. The thread opens inside the card, ready to type.
 2. Ask your question. The answer quotes the document or the code.
-3. Decide with the card's buttons. **Fix** sends the finding to the agent, and on a card with a thread its comment field fills with the assistant's conclusion; edit it or clear it. **Skip** or **Not useful** drops a finding the thread showed does not hold.
+3. Decide with the card's buttons. **Fix** sends the finding to the agent. On a card with a thread, its comment field fills with the assistant's conclusion, which also appears in the thread; edit it or clear it. **Skip** or **Not useful** drops a finding the thread showed does not hold.
+4. Press **Save**, or just send your answer: text left in an open comment field goes with it, and an empty field sends the finding as it is. Closing the drawer before that keeps the **Fix** but drops the unsaved text.
 
 Press **Hide** to fold the thread. A folded card shows **thread · N**, and the thread is still there when you reopen the ask.
 
