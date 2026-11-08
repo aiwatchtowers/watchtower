@@ -87,6 +87,18 @@ final class NeedsApprovalSelectionTests: XCTestCase {
         XCTAssertEqual(items.filter { $0.recipe == nil }.map(\.ref.id), Array(51...60).map(Int64.init))
     }
 
+    /// Oldest created first, as Go's `openApprovals` orders them (actions
+    /// before reminders on a tie, then id), whatever order the read gave.
+    func testItemsAreOldestCreatedFirst() {
+        let items = NeedsApprovalSelection.items(
+            proposals: [Self.action(9, created: "2026-11-06T09:30:00Z"), Self.action(5, created: "2026-11-06T08:00:00Z"),
+                        Self.action(4, created: "2026-11-06T08:00:00Z")],
+            reminders: [Self.reminder(2, created: "2026-11-06T08:00:00Z", due: "2026-11-06T07:00:00Z"),
+                        Self.reminder(1, created: "2026-11-06T09:00:00Z", due: "2026-11-06T06:00:00Z")],
+            artifacts: [:], recipeOn: true, lastRunFailed: false)
+        XCTAssertEqual(items.map(\.key), ["action:4", "action:5", "reminder:2", "reminder:1", "action:9"])
+    }
+
     /// An artifact whose approval is closed (not in the read's open rows)
     /// is never drawn, whatever the run did.
     func testClosedApprovalWithLiveArtifactIsNotDrawn() {
@@ -98,8 +110,8 @@ final class NeedsApprovalSelectionTests: XCTestCase {
         XCTAssertEqual(items.map(\.key), ["action:7"])
     }
 
-    /// Mixed: a new action drawn natively above the recipe's cards; the
-    /// notices first.
+    /// Mixed: a new action drawn natively above the recipe's cards, each
+    /// group oldest created first; the notices first.
     func testMixedNativeAboveRecipeNoticesFirst() {
         var feed = InboxFeedSnapshot(
             proposals: [Self.action(7), Self.action(8, created: "2026-11-06T09:20:00Z")],
@@ -117,7 +129,7 @@ final class NeedsApprovalSelectionTests: XCTestCase {
         let entries = InboxFolderEntries.build(
             folder: tree.folders[1], InboxFolderEntries.Inputs(feed: feed, folders: folders, now: Date()))
         XCTAssertEqual(entries.map(\.id), [
-            "notice:morning-brief", "approval:action:8", "approval:action:7", "approval:reminder:4"
+            "notice:morning-brief", "approval:action:8", "approval:reminder:4", "approval:action:7"
         ])
     }
 }

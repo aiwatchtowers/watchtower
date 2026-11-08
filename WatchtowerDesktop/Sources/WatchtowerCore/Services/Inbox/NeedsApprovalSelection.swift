@@ -79,12 +79,21 @@ package struct NeedsApprovalItem: Identifiable, Equatable, Sendable {
         return stamps.compactMap(AutomationDates.parse).max() ?? .distantPast
     }
 
-    /// Its own time in the list: created (an action) or due (a reminder).
-    package var listedAt: Date {
-        switch record {
-        case let .action(action): AutomationDates.parse(action.createdAt) ?? .distantPast
-        case let .reminder(reminder): AutomationDates.parse(reminder.remindAt) ?? .distantPast
+    /// Its place in the list, as Go's `openApprovals` orders it: created
+    /// time (an unreadable one first), actions before reminders, then id.
+    fileprivate func listedBefore(_ other: Self) -> Bool {
+        let (lhs, rhs) = (createdAt, other.createdAt)
+        if lhs != rhs { return lhs < rhs }
+        if ref.kind != other.ref.kind { return ref.kind == .action }
+        return ref.id < other.ref.id
+    }
+
+    private var createdAt: Date {
+        let stamp = switch record {
+        case let .action(action): action.createdAt
+        case let .reminder(reminder): reminder.createdAt
         }
+        return AutomationDates.parse(stamp) ?? .distantPast
     }
 }
 
@@ -110,8 +119,8 @@ package enum NeedsApprovalSelection {
     /// Every open approval — `proposals` and `reminders` as the Inbox's one
     /// read found them open — with its card picked. `artifacts` are the
     /// built-in's own cards, by key; one whose approval is not open here is
-    /// never drawn, whatever the run did. Oldest first, as the recipe writes
-    /// them (actions before reminders on a tie).
+    /// never drawn, whatever the run did. Oldest created first, as the
+    /// recipe writes them (actions before reminders on a tie, then id).
     package static func items(
         proposals: [AgentAction],
         reminders: [Reminder],
@@ -119,7 +128,8 @@ package enum NeedsApprovalSelection {
         recipeOn: Bool,
         lastRunFailed: Bool
     ) -> [NeedsApprovalItem] {
-        let open = proposals.map { NeedsApprovalItem(.action($0)) } + reminders.map { NeedsApprovalItem(.reminder($0)) }
+        let open = (proposals.map { NeedsApprovalItem(.action($0)) } + reminders.map { NeedsApprovalItem(.reminder($0)) })
+            .sorted { $0.listedBefore($1) }
         return open.map { item in
             let artifact = artifacts[item.key]
             let picked = pick(approval: item, artifact: artifact, recipeOn: recipeOn, lastRunFailed: lastRunFailed)
