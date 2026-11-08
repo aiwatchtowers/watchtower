@@ -165,7 +165,7 @@ func (m *relayMaterial) wipe() {
 // kind, so a stale hub_meta.transport is ignored (the processor's rule,
 // actions.onRelayTx). Unset (a desktop hub, an offline unlink), the current
 // epoch's on_relay decides, hub_meta.transport only for an epoch from before
-// it existed (onRelayTx). Called once, before the hub runs.
+// it existed (OnRelayTx). Called once, before the hub runs.
 func (k *Keyring) SetRelayRule(rule func(*sql.Tx) (bool, error)) { k.relayRule = rule }
 
 // SetHeld sets the hub's held state (paused or unvouched on the relay): while
@@ -173,14 +173,15 @@ func (k *Keyring) SetRelayRule(rule func(*sql.Tx) (bool, error)) { k.relayRule =
 // published. Called once, before the hub runs.
 func (k *Keyring) SetHeld(held func() bool) { k.held = held }
 
-// onRelayTx is the relay rule in tx. Unset (SetRelayRule), the current
+// OnRelayTx is the relay rule in tx. Unset (SetRelayRule), the current
 // epoch's on_relay decides: every transport change begins an epoch toward its
 // target, so after a switch's rotation the current epoch already says where
 // the hub runs, while hub_meta.transport changes only at its announce (an
 // unlink in between must not mark an iCloud epoch as a relay one, ask #1066).
-// hub_meta.transport decides only for a current epoch from before sidecar
-// migration 00016 (on_relay NULL).
-func (k *Keyring) onRelayTx(tx *sql.Tx) (bool, error) {
+// hub_meta.transport decides only for a current epoch with no on_relay: one
+// from before sidecar migration 00016 that no hub start has stamped yet
+// (StampCurrentEpoch).
+func (k *Keyring) OnRelayTx(tx *sql.Tx) (bool, error) {
 	if k.relayRule != nil {
 		return k.relayRule(tx)
 	}
@@ -207,10 +208,36 @@ func (k *Keyring) OnRelay() (bool, error) {
 	var on bool
 	err := k.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
 		var err error
-		on, err = k.onRelayTx(tx)
+		on, err = k.OnRelayTx(tx)
 		return err
 	})
 	return on, err
+}
+
+// StampCurrentEpoch gives the current epoch an on_relay value when it has
+// none, from the relay rule: the hub's start calls it once the rule is set
+// (SetRelayRule, or the switcher's stored transport), so epoch 1 of a new
+// sidecar, inserted before the hub knows its transport, begins on the relay
+// or on iCloud like any later epoch (erased at its retention end on the
+// relay), and a later rule-less keyring (an offline unlink) reads it. Retired
+// epochs with no on_relay (from before sidecar migration 00016) stay as they
+// are and are never erased (ask #1066).
+func (k *Keyring) StampCurrentEpoch() error {
+	return k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		epochs, err := state.EpochsTx(tx)
+		if err != nil {
+			return err
+		}
+		n := len(epochs)
+		if n == 0 || epochs[n-1].OnRelay != nil {
+			return nil
+		}
+		on, err := k.OnRelayTx(tx)
+		if err != nil {
+			return err
+		}
+		return state.StampEpochOnRelay(tx, epochs[n-1].Epoch, on)
+	})
 }
 
 // NewKeyring opens the keyring over st, creating in one transaction what is
@@ -986,7 +1013,7 @@ func (k *Keyring) rotate(r Reason, toward *bool, also func(*sql.Tx) error) error
 			onRelay = *toward
 		} else {
 			var err error
-			if onRelay, err = k.onRelayTx(tx); err != nil {
+			if onRelay, err = k.OnRelayTx(tx); err != nil {
 				return err
 			}
 		}
@@ -1169,7 +1196,7 @@ type due struct {
 // before that (so it rotates once, across a restart too). Read from the
 // committed state, so a hub restarted after a rotation never rotates twice.
 func (k *Keyring) rotationDueTx(tx *sql.Tx) (due, bool, error) {
-	onRelay, err := k.onRelayTx(tx)
+	onRelay, err := k.OnRelayTx(tx)
 	if err != nil {
 		return due{}, false, err
 	}
@@ -1279,7 +1306,8 @@ func (k *Keyring) RotateIfDue(also func(*sql.Tx) error) (bool, error) {
 // whose retention has ended (retire_after passed): its sealed K_data ‖
 // K_alert and its relay-key rows, in one transaction on a connection set to
 // secure_delete, then a best-effort wal_checkpoint(TRUNCATE) so no copy stays
-// in the log. An iCloud epoch, or one from before sidecar migration 00016,
+// in the log. An iCloud epoch, or one with no on_relay (from before sidecar
+// migration 00016: the hub's start stamps every later one, StampCurrentEpoch),
 // keeps its keys (ask #1066). With nothing to erase it issues neither pragma.
 // The relay-key cache drops the erased epochs. It returns how many it erased.
 func (k *Keyring) EraseExpired() (int, error) {

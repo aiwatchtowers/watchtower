@@ -535,6 +535,7 @@ func TestEraseExpiredRemovesKeysAtRetentionEnd(t *testing.T) {
 	c := newClock()
 	k := newKeyring(t, st, c)
 	setTransport(t, st, "relay")
+	stampCurrent(t, k) // the hub's start: epoch 1 began on the relay
 	p := linkRelayPhone(t, st, 0x11)
 	p.offer(t, st, 1)
 	if err := k.Rotate(ReasonManual); err != nil { // epoch 2, on the relay
@@ -547,8 +548,8 @@ func TestEraseExpiredRemovesKeysAtRetentionEnd(t *testing.T) {
 		t.Fatalf("EraseExpired inside retention = %d, %v", n, err)
 	}
 	c.advance(PreviousEpochGrace)
-	if n, err := k.EraseExpired(); err != nil || n != 1 {
-		t.Fatalf("EraseExpired at retention end = %d, %v; want 1 (epoch 1 began before 00016)", n, err)
+	if n, err := k.EraseExpired(); err != nil || n != 2 {
+		t.Fatalf("EraseExpired at retention end = %d, %v; want 2 (epochs 1 and 2 began on the relay)", n, err)
 	}
 	if e := epochAt(t, st, 2); len(e.SealedKeys) != 0 {
 		t.Fatal("epoch 2's keys are still sealed in the sidecar")
@@ -562,11 +563,71 @@ func TestEraseExpiredRemovesKeysAtRetentionEnd(t *testing.T) {
 	if ok, _ := k.AcceptsRelayEpoch(2, p.id); ok {
 		t.Fatal("an erased epoch is accepted")
 	}
-	if len(epochAt(t, st, 1).SealedKeys) == 0 {
-		t.Fatal("epoch 1 (on_relay NULL) was erased")
+	if len(epochAt(t, st, 1).SealedKeys) != 0 {
+		t.Fatal("epoch 1, stamped on the relay at the hub's start, kept its keys")
 	}
 	if n, _ := k.EraseExpired(); n != 0 {
 		t.Fatal("an erased epoch was erased again")
+	}
+}
+
+func stampCurrent(t *testing.T, k *Keyring) {
+	t.Helper()
+	if err := k.StampCurrentEpoch(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A headless hub's start: its relay rule stamps a new sidecar's epoch 1 as a
+// relay epoch (no hub_meta.transport), erased at its retention end.
+func TestStampedRelayRuleEpochOneIsErasedAtRetentionEnd(t *testing.T) {
+	st := openStore(t)
+	c := newClock()
+	k := newKeyring(t, st, c)
+	k.SetRelayRule(func(*sql.Tx) (bool, error) { return true, nil })
+	stampCurrent(t, k)
+	if e := epochAt(t, st, 1); e.OnRelay == nil || !*e.OnRelay {
+		t.Fatalf("epoch 1 on_relay %v after the relay hub's start, want true", e.OnRelay)
+	}
+	if err := k.Rotate(ReasonManual); err != nil { // epoch 2; epoch 1 retired
+		t.Fatal(err)
+	}
+	if err := k.Rotate(ReasonManual); err != nil { // epoch 3; epoch 2 retired
+		t.Fatal(err)
+	}
+	if n, err := k.EraseExpired(); err != nil || n != 0 {
+		t.Fatalf("EraseExpired inside retention = %d, %v", n, err)
+	}
+	c.advance(PreviousEpochGrace)
+	if n, err := k.EraseExpired(); err != nil || n != 2 {
+		t.Fatalf("EraseExpired at retention end = %d, %v; want 2", n, err)
+	}
+	if len(epochAt(t, st, 1).SealedKeys) != 0 {
+		t.Fatal("the relay hub's epoch 1 kept its keys past its retention")
+	}
+}
+
+// A retired epoch with no on_relay is a row from before sidecar migration
+// 00016: the hub's start stamps only the current epoch, so it keeps its keys
+// (ask #1066).
+func TestEraseExpiredKeepsARetiredEpochWithNoOnRelay(t *testing.T) {
+	st := openStore(t)
+	c := newClock()
+	k := newKeyring(t, st, c) // epoch 1, not stamped: as a row from before 00016
+	setTransport(t, st, "relay")
+	if err := k.Rotate(ReasonManual); err != nil { // epoch 2, on the relay
+		t.Fatal(err)
+	}
+	stampCurrent(t, k) // a later start: epoch 2 is stamped already, epoch 1 is not current
+	if err := k.Rotate(ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	c.advance(PreviousEpochGrace)
+	if n, err := k.EraseExpired(); err != nil || n != 1 {
+		t.Fatalf("EraseExpired = %d, %v; want 1 (epoch 1 has no on_relay value and is never erased)", n, err)
+	}
+	if e := epochAt(t, st, 1); e.OnRelay != nil || len(e.SealedKeys) == 0 {
+		t.Fatalf("epoch 1 with no on_relay changed: on_relay %v, %d key bytes", e.OnRelay, len(e.SealedKeys))
 	}
 }
 
@@ -620,7 +681,11 @@ func TestEraseExpiredLeavesAnICloudEpoch(t *testing.T) {
 	c := newClock()
 	k := newKeyring(t, st, c)
 	setTransport(t, st, "cloudkit")
-	if err := k.Rotate(ReasonManual); err != nil { // epoch 2, on_relay 0; epoch 1 NULL
+	stampCurrent(t, k) // the hub's start: epoch 1 began on iCloud
+	if e := epochAt(t, st, 1); e.OnRelay == nil || *e.OnRelay {
+		t.Fatalf("epoch 1 on_relay %v after the iCloud hub's start, want false", e.OnRelay)
+	}
+	if err := k.Rotate(ReasonManual); err != nil { // epoch 2, on_relay 0
 		t.Fatal(err)
 	}
 	if err := k.Rotate(ReasonManual); err != nil {
