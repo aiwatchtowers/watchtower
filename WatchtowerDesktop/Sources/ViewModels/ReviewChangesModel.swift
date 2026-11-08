@@ -1858,10 +1858,13 @@ protocol ReviewStreamClock: Sendable {
     func sleep(until deadline: Date) async throws
 }
 
+/// Time the Mac is asleep does not count: the child is suspended too and its
+/// 30 s tick runs on a clock that stops in sleep, so a lid closed mid-run
+/// never reads as silence on wake.
 struct SystemReviewStreamClock: ReviewStreamClock {
-    var now: Date { Date() }
+    var now: Date { Date(timeIntervalSinceReferenceDate: ProcessInfo.processInfo.systemUptime) }
 
     func sleep(until deadline: Date) async throws {
-        try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+        try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSince(now))), clock: .suspending)
     }
 }
