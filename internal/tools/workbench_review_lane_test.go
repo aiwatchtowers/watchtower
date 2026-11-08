@@ -36,22 +36,28 @@ func TestLaneIntent_BoardTargetAndJiraIssue(t *testing.T) {
 		Status:          "To Do", StatusCategory: "new", Labels: "[]", Components: "[]", FixVersions: "[]",
 		CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z", SyncedAt: "2026-01-01T00:00:00Z",
 	}))
-	m := reviewmap.Map{Chapters: []reviewmap.Chapter{
-		{Key: "lane:task-b/pay", Lane: "task-b", TargetID: target},
-		{Key: "lane:ABC-1-login", Lane: "ABC-1-login", JiraKey: "ABC-1"},
-		{Key: "lane:task-b/docs", Lane: "task-b", TargetID: target}, // same lane: one item
-		{Key: "lane:plain", Lane: "plain"},                          // no ticket
-		{Key: "lane:gone", Lane: "gone", JiraKey: "ABC-404"},        // not synced
-		{Key: "lane:foreign", Lane: "foreign", TargetID: foreign},   // another workbench's target
-		{Key: "dir:x"},
-	}}
+	// Lanes, not chapters: task-b's files all went to an agent chapter, so
+	// it has no chapter of its own, and its ticket still counts.
+	m := reviewmap.Map{
+		Chapters: []reviewmap.Chapter{
+			{Key: "agent:1", Paths: []string{"pay/pay.go"}},
+			{Key: "lane:ABC-1-login", Lane: "ABC-1-login", JiraKey: "ABC-1"},
+		},
+		Lanes: []reviewmap.LaneInfo{
+			{Name: "ABC-1-login", JiraKey: "ABC-1"},
+			{Name: "foreign", TargetID: foreign}, // another workbench's target
+			{Name: "gone", JiraKey: "ABC-404"},   // not synced
+			{Name: "plain"},                      // no ticket
+			{Name: "task-b", TargetID: target},
+		},
+	}
 	items, err := LaneIntent(d, p, m)
 	require.NoError(t, err)
 	require.Len(t, items, 2)
-	assert.Equal(t, reviewai.IntentItem{Text: "Payments lane", Intent: "take card payments", Source: reviewai.SourceLane}, items[0])
-	assert.Equal(t, "ABC-1 Login with a passkey", items[1].Text)
-	assert.Equal(t, strings.Repeat("é", maxLaneDescriptionRunes), items[1].Intent)
-	assert.Equal(t, reviewai.SourceLane, items[1].Source)
+	assert.Equal(t, "ABC-1 Login with a passkey", items[0].Text)
+	assert.Equal(t, strings.Repeat("é", maxLaneDescriptionRunes), items[0].Intent)
+	assert.Equal(t, reviewai.SourceLane, items[0].Source)
+	assert.Equal(t, reviewai.IntentItem{Text: "Payments lane", Intent: "take card payments", Source: reviewai.SourceLane}, items[1])
 }
 
 func TestWithLaneIntent_AfterTheSessionsItemsWithoutRepeats(t *testing.T) {

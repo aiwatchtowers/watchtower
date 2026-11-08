@@ -158,6 +158,7 @@ func TestReviewMap_GoldenKeysAndWritesNothing(t *testing.T) {
 		Map struct {
 			Chapters []map[string]json.RawMessage `json:"chapters"`
 			Files    []map[string]json.RawMessage `json:"files"`
+			Lanes    []map[string]json.RawMessage `json:"lanes"`
 		} `json:"map"`
 	}
 	require.NoError(t, json.Unmarshal(want, &env))
@@ -176,7 +177,10 @@ func TestReviewMap_GoldenKeysAndWritesNothing(t *testing.T) {
 	for _, k := range []string{"path", "chapter", "level", "signals", "lane", "also"} {
 		assert.True(t, keysOf(env.Map.Files)[k], "golden files lack %q", k)
 	}
-	for _, k := range []string{"chapters", "files", "lanes_partial", "diff_truncated", "notes"} {
+	for _, k := range []string{"name", "title", "target_id", "jira_key"} {
+		assert.True(t, keysOf(env.Map.Lanes)[k], "golden lanes lack %q", k)
+	}
+	for _, k := range []string{"chapters", "files", "lanes", "lanes_partial", "diff_truncated", "notes"} {
 		assert.Contains(t, m, k)
 	}
 }

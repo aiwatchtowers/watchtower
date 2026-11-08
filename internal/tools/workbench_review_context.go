@@ -152,23 +152,16 @@ func ReviewOverviewInput(ctx context.Context, d *db.DB, p *db.Workbench, session
 // item.
 const maxLaneDescriptionRunes = 600
 
-// LaneIntent is one intent item per distinct lane of map m with a ticket
-// (tech spec §3.1), in map order: a board target of workbench p (its text
-// and intent), else a synced Jira issue (its key and summary, the
-// description clipped). Source is lane. A lane whose ticket is gone gives
-// none.
+// LaneIntent is one intent item per lane of map m with a ticket (tech spec
+// §3.1), in m.Lanes order — every lane the attribution found, with a
+// chapter of its own or not: a board target of workbench p (its text and
+// intent), else a synced Jira issue (its key and summary, the description
+// clipped). Source is lane. A lane whose ticket is gone gives none.
 func LaneIntent(d *db.DB, p *db.Workbench, m reviewmap.Map) ([]reviewai.IntentItem, error) {
-	seen := map[string]bool{}
-	var lanes []reviewmap.Chapter
 	var jiraKeys []string
-	for _, ch := range m.Chapters {
-		if ch.Lane == "" || seen[ch.Lane] || (ch.TargetID == 0 && ch.JiraKey == "") {
-			continue
-		}
-		seen[ch.Lane] = true
-		lanes = append(lanes, ch)
-		if ch.JiraKey != "" {
-			jiraKeys = append(jiraKeys, ch.JiraKey)
+	for _, l := range m.Lanes {
+		if l.JiraKey != "" {
+			jiraKeys = append(jiraKeys, l.JiraKey)
 		}
 	}
 	issues, err := d.GetJiraIssuesByKeysMap(jiraKeys)
@@ -176,9 +169,9 @@ func LaneIntent(d *db.DB, p *db.Workbench, m reviewmap.Map) ([]reviewai.IntentIt
 		return nil, fmt.Errorf("reading lane tickets: %w", err)
 	}
 	var out []reviewai.IntentItem
-	for _, ch := range lanes {
-		if ch.TargetID != 0 {
-			t, err := targetInWorkbench(d, p.ID, ch.TargetID)
+	for _, l := range m.Lanes {
+		if l.TargetID != 0 {
+			t, err := targetInWorkbench(d, p.ID, l.TargetID)
 			if err != nil && !errors.Is(err, db.ErrNotInWorkbench) {
 				return nil, fmt.Errorf("reading a lane target: %w", err)
 			}
@@ -187,8 +180,8 @@ func LaneIntent(d *db.DB, p *db.Workbench, m reviewmap.Map) ([]reviewai.IntentIt
 				continue
 			}
 		}
-		if is, ok := issues[ch.JiraKey]; ok {
-			out = append(out, reviewai.IntentItem{Text: ch.JiraKey + " " + is.Summary,
+		if is, ok := issues[l.JiraKey]; ok {
+			out = append(out, reviewai.IntentItem{Text: l.JiraKey + " " + is.Summary,
 				Intent: clipRunes(strings.TrimSpace(is.DescriptionText), maxLaneDescriptionRunes), Source: reviewai.SourceLane})
 		}
 	}

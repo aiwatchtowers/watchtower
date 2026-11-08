@@ -158,6 +158,18 @@
         "signals": []
       }
     ],
+    "lanes": [
+      {
+        "name": "ABC-1-login",
+        "title": "Login with a passkey",
+        "jira_key": "ABC-1"
+      },
+      {
+        "name": "task-b",
+        "title": "Payments lane",
+        "target_id": 1
+      }
+    ],
     "lanes_partial": false,
     "diff_truncated": false,
     "notes": []
