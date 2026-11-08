@@ -127,9 +127,12 @@ type Phone struct {
 	seen       map[string][2]uint64
 
 	// dataKeys is K_data per epoch the phone was given (Keep, Follow:
-	// switch.go); cursors is the mailbox cursor per record store left (Use).
-	dataKeys map[uint32][]byte
-	cursors  map[storeZone]uint64
+	// switch.go), alertKeys K_alert the same way (the alert material a
+	// locked phone's notification extension holds); cursors is the mailbox
+	// cursor per record store left (Use).
+	dataKeys  map[uint32][]byte
+	alertKeys map[uint32][]byte
+	cursors   map[storeZone]uint64
 
 	// The Kit's ephemeral relay state (relay client Phase 5, ephemeral.go):
 	// current and offered are the two dev_eph private keys, pairs the
@@ -933,6 +936,21 @@ func (p *Phone) OpenAlertPush(zone string, env []byte) (secure.InnerFrame, error
 			return base64.RawURLEncoding.DecodeString(k)
 		})
 	return f, err
+}
+
+// OpenHeldAlertPush opens a send_alert envelope as a locked phone's
+// notification extension does: with only the K_alert of the epochs the phone
+// was given by its last Keep (its alert material), never the zone's keybox.
+func (p *Phone) OpenHeldAlertPush(env []byte) (secure.Header, secure.InnerFrame, error) {
+	return secure.OpenSymmetric(env, []secure.EnvelopeClass{secure.ClassAlert},
+		secure.Context{Zone: secure.ZoneData, WireName: secure.AlertPushWireName}, p.cfg.HubSig,
+		func(h secure.Header) ([]byte, error) {
+			k, ok := p.alertKeys[h.Epoch]
+			if !ok {
+				return nil, fmt.Errorf("hubtest: the phone holds no alert key for epoch %d", h.Epoch)
+			}
+			return bytes.Clone(k), nil
+		})
 }
 
 // OpenData opens every live hub record of the data zone (slices and alerts)
