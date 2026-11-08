@@ -519,27 +519,37 @@ struct AgentActionCardView: View {
                 if !action.isSessionApplied || sessionHoldsCall { ProgressView().controlSize(.small) }
             } else {
                 if action.isPending {
-                    if action.isSessionApplied {
+                    switch Self.pendingApproval(for: action, editsSlack: editableSlack != nil) {
+                    case .session:
                         connectorButtons(connector)
-                    } else if let slack = editableSlack {
+                    case let .slack(slack):
                         let text = slackDraft ?? slack.text
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve & send") {
                             approveSlack(slack, text: text)
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!slack.canApprove(text: text, pick: slackPick))
-                    } else if Self.canApprove(action) {
+                    case .plain:
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve", action: onApprove)
                             .buttonStyle(.borderedProminent)
+                    case .none:
+                        EmptyView()
                     }
                     Button("Reject", action: onReject)
-                } else if action.canRetry {
-                    Button("Retry", action: onRetry)
-                } else if let onDismiss, ConnectorCallProposal.awaitsDismissal(action) {
-                    Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)
-                    Button("Dismiss", action: onDismiss)
-                        .help("Take this call off the Inbox badge")
-                        .accessibilityIdentifier("agentAction.dismissOutcomeUnknown")
+                } else {
+                    switch Self.settledOffer(for: action) {
+                    case .retry:
+                        Button("Retry", action: onRetry)
+                    case .dismiss:
+                        if let onDismiss {
+                            Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)
+                            Button("Dismiss", action: onDismiss)
+                                .help("Take this call off the Inbox badge")
+                                .accessibilityIdentifier("agentAction.dismissOutcomeUnknown")
+                        }
+                    case .none:
+                        EmptyView()
+                    }
                 }
                 if inFlight { ProgressView().controlSize(.small) }
             }
