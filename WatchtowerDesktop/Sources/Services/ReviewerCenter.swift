@@ -61,13 +61,12 @@ final class ReviewerCenter {
     /// How the configured provider reads the folder now (the panel's line).
     func currentReader() -> ReviewerSurface.Reader { reader() }
 
-    /// How the configured provider reads the folder, read when each turn starts.
+    /// How the configured provider reads the folder, read when each turn
+    /// starts: its catalog row's `read_folder` capability (LLMTRANSPORT-01),
+    /// none while the catalog is unread.
     static func configuredReader() -> ReviewerSurface.Reader {
-        switch AIProvider.fromConfig(ConfigService().aiProvider) {
-        case .claude: .claudeTools
-        case .codex: .codexSandbox
-        case .ollama: .none
-        }
+        let id = AIProvider.fromConfig(ConfigService().aiProvider).rawValue
+        return ReviewerSurface.Reader(AIModelCatalog.shared.capabilities(for: id))
     }
 
     /// The branch's thread, made on first use (the Desktop's write, migration

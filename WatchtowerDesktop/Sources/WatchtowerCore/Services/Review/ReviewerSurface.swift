@@ -27,6 +27,15 @@ package enum ReviewerSurface {
     /// sandbox, Ollama not at all (its turn then runs without the folder).
     package enum Reader: Equatable, Sendable {
         case claudeTools, codexSandbox, none
+
+        /// The row's `read_folder`: file tools, a read-only shell sandbox, or nothing.
+        package init(_ capabilities: ProviderCapabilities) {
+            switch capabilities.readFolder {
+            case "tools": self = .claudeTools
+            case "shell_sandbox": self = .codexSandbox
+            default: self = .none
+            }
+        }
     }
 
     /// Where the reviewer works: the thread's workbench and branch key, the

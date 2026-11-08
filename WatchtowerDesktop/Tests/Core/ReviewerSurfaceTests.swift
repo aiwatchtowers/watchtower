@@ -14,6 +14,17 @@ final class ReviewerSurfaceTests: XCTestCase {
         return try JSONDecoder().decode(ReviewRoundInfo.self, from: Data(json.utf8))
     }
 
+    // MARK: - Reader
+
+    /// How the reviewer reads the folder comes from the provider's catalog
+    /// row (LLMTRANSPORT-01), never from its name; an unread catalog reads nothing.
+    func testReaderComesFromTheReadFolderCapability() {
+        XCTAssertEqual(ReviewerSurface.Reader(ProviderCapabilities(readFolder: "tools")), .claudeTools)
+        XCTAssertEqual(ReviewerSurface.Reader(ProviderCapabilities(readFolder: "shell_sandbox")), .codexSandbox)
+        XCTAssertEqual(ReviewerSurface.Reader(ProviderCapabilities(readFolder: "none")), .none)
+        XCTAssertEqual(ReviewerSurface.Reader(.none), .none)
+    }
+
     // MARK: - Thread key
 
     func testThreadKeyIsTheRoundBranchWhenSet() throws {
