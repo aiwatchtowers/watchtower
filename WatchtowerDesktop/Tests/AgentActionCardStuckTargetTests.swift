@@ -45,11 +45,35 @@ final class AgentActionCardStuckTargetTests: XCTestCase {
 
     func testUnderTwoMinutesShowsInFlight() throws {
         for status in ["approved", "executing"] {
-            let sut = card(try row(status, decidedAgo: 30))
-            XCTAssertThrowsError(try sut.inspect().find(ArtifactTargetStuckLine.self), status)
-            let ours = card(try row(status, decidedAgo: 600), inFlight: true)
-            XCTAssertThrowsError(try ours.inspect().find(ArtifactTargetStuckLine.self), status)
+            for sut in [card(try row(status, decidedAgo: 30)),
+                        card(try row(status, decidedAgo: 600), inFlight: true)] {
+                XCTAssertThrowsError(try sut.inspect().find(ArtifactTargetStuckLine.self), status)
+                XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "agentAction.targetCreating"),
+                                 status)
+                XCTAssertThrowsError(try sut.inspect().find(button: "Retry"), status)
+                XCTAssertThrowsError(try sut.inspect().find(button: "Try again"), status)
+            }
         }
+    }
+
+    /// A stuck row whose Try again failed without moving it (the button
+    /// shows `.failed`) keeps Try again on the card; a `failed` row keeps
+    /// the card's own Retry.
+    func testFailedTryAgainOnAStuckRowKeepsTryAgain() throws {
+        for status in ["approved", "executing"] {
+            let action = try row(status, decidedAgo: 600)
+            var retried = 0
+            let sut = AgentActionCardView(
+                action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: { retried += 1 },
+                targetButtonState: .failed(message: "database is locked"))
+            try sut.inspect().find(ArtifactTargetStuckLine.self).find(button: "Try again").tap()
+            XCTAssertEqual(retried, 1, status)
+        }
+        let failed = try row("failed", decidedAgo: 600)
+        let sut = AgentActionCardView(action: failed, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                      targetButtonState: .failed(message: "closed"))
+        XCTAssertThrowsError(try sut.inspect().find(ArtifactTargetStuckLine.self))
+        XCTAssertNoThrow(try sut.inspect().find(button: "Retry"))
     }
 
     /// An older row of a button whose newest row is another one offers no Retry.

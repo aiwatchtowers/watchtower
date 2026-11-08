@@ -503,13 +503,40 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private func actions(connector: ConnectorCallProposal?) -> some View {
-        if targetButtonState == .stuck {
+        switch Self.targetRow(targetButtonState, status: action.status) {
+        case .stuck:
             ArtifactTargetStuckLine(onTryAgain: onRetry)
                 .controlSize(.small)
                 .disabled(inFlight)
                 .accessibilityIdentifier("agentAction.targetStuck")
-        } else {
+        case .inFlight:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityIdentifier("agentAction.targetCreating")
+        case .decision:
             decisionRow(connector: connector)
+        }
+    }
+
+    /// What an Inbox target button's proposal draws in place of the
+    /// decision row: an approved or executing row the button calls stuck,
+    /// or whose Try again failed without moving it, offers Try again on the
+    /// same row; one in flight shows progress only (no Retry while our own
+    /// or a recent apply may still land). Every other row keeps its row.
+    enum TargetRow: Equatable {
+        case stuck, inFlight, decision
+    }
+
+    static func targetRow(_ state: ArtifactTargetButtonState?, status: String) -> TargetRow {
+        switch state {
+        case .stuck?:
+            return .stuck
+        case .failed?:
+            return status == "failed" ? .decision : .stuck
+        case .creating?:
+            return .inFlight
+        default:
+            return .decision
         }
     }
 
