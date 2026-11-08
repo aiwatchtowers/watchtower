@@ -139,6 +139,22 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyFilter"))
     }
 
+    /// Before the first read the Inbox shows a spinner, never "empty" and
+    /// the cheat sheet for a moment.
+    func testBeforeTheFirstReadNoEmptyStateFlashes() async throws {
+        let vm = ActionStripViewModel(dbPool: try makePool(), cliRunner: FakeCLIRunner())
+        let sut = view(vm, rows: [], feature: .off)
+
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheet"))
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.folderList"))
+
+        await vm.refresh()
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self), "after the read: the empty root")
+    }
+
     func testFeatureStateFollowsTheLoadedFeatureList() {
         func info(_ state: String) -> FeatureInfo {
             FeatureInfo(

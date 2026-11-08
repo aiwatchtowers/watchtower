@@ -274,7 +274,7 @@ struct ActionStripActionsView: View {
     /// The empty root keeps the cheat sheet inline while nothing in the
     /// Inbox waits (every folder's count is 0); then its `?` is not shown.
     private var showsInlineCheatSheet: Bool {
-        vm.legacyList == nil && aux == nil && folderKind == .root && vm.folderEntries.isEmpty
+        vm.hasRead && vm.legacyList == nil && aux == nil && folderKind == .root && vm.folderEntries.isEmpty
             && vm.folderMenu.snapshot.counts.values.allSatisfy { $0 == 0 }
     }
 
@@ -325,7 +325,13 @@ struct ActionStripActionsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let list = vm.legacyList {
+        if !vm.hasRead {
+            // Nothing read yet: no "empty" or cheat sheet for a moment.
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("inbox.loading")
+        } else if let list = vm.legacyList {
             legacySplit(list)
         } else if folderKind == .approvals {
             if let aux {

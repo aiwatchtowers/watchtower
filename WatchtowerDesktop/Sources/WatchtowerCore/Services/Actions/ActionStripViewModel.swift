@@ -288,8 +288,9 @@ package final class ActionStripViewModel {
     // MARK: - Folders (inbox builder B)
 
     /// A read has landed: before it the folders show nothing (not even
-    /// today's placeholder day, which waits on the read's owner check).
-    private var hasRead = false
+    /// today's placeholder day, which waits on the read's owner check),
+    /// and the Inbox a spinner rather than its empty state.
+    package private(set) var hasRead = false
 
     /// The selected folder's entries (`InboxFolderEntries`), from the last read.
     package var folderEntries: [InboxFolderEntry] {
