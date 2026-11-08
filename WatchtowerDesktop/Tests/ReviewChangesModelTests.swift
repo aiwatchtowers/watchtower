@@ -1362,6 +1362,10 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(overviewCalls(h), before + 1)
     }
 
+    /// The Quick cached read and the Deep streamed run are both held when a
+    /// Refresh empties the diff: neither answer lands and nothing else is
+    /// called. The map is awaited first, since the overview starts only once
+    /// it is in (#1025): a mode switch while it loads makes one run, not two.
     func testModelCallRunningWhenTheDiffEmptiesNeverLands() async throws {
         let h = try harness()
         h.baseScript(paths: ["cmd/x.go"])
@@ -1370,8 +1374,11 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("overview", [overviewJSON()])
         h.cli.hold("overview")
         await h.model.open()
+        await h.model.mapTask?.value
         try await h.model.setMode(.deep)
         await h.cli.waitPending("overview", count: 2)
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--stream") }, [false, true],
+                       "the cached read, then the streamed run")
         await h.model.refresh()
         h.cli.release("overview")
         await awaitOverview(h)
