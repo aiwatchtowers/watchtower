@@ -2762,3 +2762,12 @@ Entry format:
 - weak-dimension: 7. A gate decided by an OS probe is tested only through injected probes, and the production wiring (main → `UseSystemReader`, cmd → both `SetFullWakeProbe`s) is pinned by nothing. The one claim that matters, which bits a real dark wake and a real display sleep report, rests on reasoning.
 - rule-gap (candidate, dim 6/9): *a gate that stops work on a reading from the OS logs the raw value it decided on, at every transition. If the reading's meaning in some state (display sleep, lid closed) is reasoned from documentation rather than measured, the PR records the measurement or says plainly that it is missing.*
 - outcome: TBD
+
+## 2026-11-08 — fix/1016-merge-refs (board #1016: sessionreport `mergeRefs` walks each parent once + set dedupe, `countedMergeRefs` set dedupe; 2 files +78/−6; panel: prosecutor (5) + codex (1 nit) + all three pr-review-toolkit specialists; round-1 fixes in a2834924e/855ebd7c8; judge verified 855ebd7c8 by reading) — verdict: approve
+
+- contested: whether skipping a repeat parent walk can change the refs' order. Settled no: a parent's walk adds every not-done leaf under it the first time, so a later walk of the same parent only re-adds keys already in the set; the progress `add(e)` still runs before the skip. Skipping covered *child* subtrees (prosecutor F3) would change first-appearance order, so the O(N²) comb-board residue is the right place to stop. [4/6]
+- false-positive: none dismissed; F4/F5 (`slices.Contains` in `phaseParents`/`refs()`) are real but outside the ticket's scope and cheap at board scale — left as nits, not majors. [4]
+- miss: the first-round perf test was a wall-clock bound that a mutation removing the memo still passed (2.66 s < budget on the patched set dedupe alone). Caught by the prosecutor's mutation run, not by reading. A perf fix with two independent savings needs one deterministic assertion per saving (here a walk counter), or the test pins only the bigger one. [7]
+- weak-dimension: 7 in round 1 (timing-only guard, `ElementsMatch` where order was the contract); both fixed before the verdict.
+- rule-gap (candidate, dim 7): *a complexity fix is guarded by a counted, clock-free assertion of the operation it removes (calls, walks, queries), mutation-checked by removing the fix; a wall-clock bound is at most a secondary check.* Also: an order-preserving refactor upgrades the test's `ElementsMatch` to `Equal` against output captured from the old code.
+- outcome: TBD
