@@ -537,6 +537,9 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
     /// `<workspace>/workchat-attachments`, next to the open database.
     @ObservationIgnored var attachmentStore: WorkchatAttachmentStore?
+    /// Branch review's reviewer (board #1025): set by the app with its
+    /// embedded chat center; nil in a test VM (the panel has no switch then).
+    @ObservationIgnored var reviewer: ReviewerCenter?
     /// Find Repeats' model per workbench, made on first use.
     @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
 
