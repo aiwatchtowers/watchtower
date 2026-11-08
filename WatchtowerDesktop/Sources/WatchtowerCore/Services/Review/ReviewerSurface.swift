@@ -40,9 +40,11 @@ package enum ReviewerSurface {
         package let readFolder: String
         /// The folder is the session's own worktree, not the workbench folder.
         package let inWorktree: Bool
-        /// A branch-tip round (#1012): the branch is read from refs and the
-        /// folder is checked out on another branch, so its files are not the branch's.
-        package let branchTip: Bool
+        /// A branch-tip round's tree (#1012): the branch is read from refs and
+        /// the folder is checked out on another branch, so its files are not
+        /// the branch's; nil for a round of the folder.
+        package let tipTree: String?
+        package var branchTip: Bool { tipTree != nil }
 
         package init(
             projectID: Int64,
@@ -50,14 +52,14 @@ package enum ReviewerSurface {
             branchLabel: String,
             readFolder: String,
             inWorktree: Bool,
-            branchTip: Bool = false
+            tipTree: String? = nil
         ) {
             self.projectID = projectID
             self.branch = branch
             self.branchLabel = branchLabel
             self.readFolder = readFolder
             self.inWorktree = inWorktree
-            self.branchTip = branchTip
+            self.tipTree = tipTree
         }
     }
 
@@ -80,7 +82,8 @@ package enum ReviewerSurface {
         if case .worktree = place { inWorktree = true }
         return Context(projectID: projectID, branch: branch,
                        branchLabel: branch.hasPrefix(sessionKeyPrefix) ? "" : branch,
-                       readFolder: round.folderRoot, inWorktree: inWorktree, branchTip: round.isBranchTip)
+                       readFolder: round.folderRoot, inWorktree: inWorktree,
+                       tipTree: round.isBranchTip ? round.treeSha : nil)
     }
 
     /// The thread key: the round's branch (#1012) when it has one, else the
@@ -174,9 +177,11 @@ package enum ReviewerSurface {
 
     /// A branch-tip round's folder is on another branch: its files are not the branch's.
     package static func branchTipNote(context: Context, reader: Reader) -> String {
-        guard context.branchTip, reader != .none else { return "" }
+        guard let tree = context.tipTree, reader != .none else { return "" }
+        // The round's tree, not the branch name: an origin-only branch has no
+        // short ref, and a tag of the same name would win the lookup.
         let read = reader == .codexSandbox
-            ? "Read the branch's own files with `git show \(context.branchLabel):<path>` and its changes with `git log` / `git diff` on it."
+            ? "Read the branch's own files with `git show \(tree):<path>` (the tree of its tip)."
             : "Say so when an answer rests on a file the branch changes."
         return "\n\nThe folder is checked out on another branch, not on \"\(context.branchLabel)\": its files are not the branch's. \(read)"
     }
