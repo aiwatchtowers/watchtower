@@ -468,7 +468,9 @@ struct ActionStripActionsView: View {
     /// The native actions on an artifact's rows with a `ref`.
     private var rowHooks: ArtifactRefHooks {
         let handler = rowHandler
-        return InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches, onCommand: onCardAction) { ref, press in
+        return InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches,
+                             sessionHoldsCall: { sessionHoldsCall?($0) ?? false },
+                             onCommand: onCardAction) { ref, press in
             Task { await handler.press(press, on: ref) }
         }.hooks
     }
@@ -484,6 +486,7 @@ struct ActionStripActionsView: View {
             onGoToTarget: onGoToTarget,
             onIdeaMadeTask: onGoToTarget,
             onEditAction: { editingActions.insert($0) },
+            onOpenSaveDraft: onOpenSaveDraft,
             navScreens: navScreens,
             now: { now ?? Date() }
         )

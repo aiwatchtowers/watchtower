@@ -11,6 +11,8 @@ struct InboxRefHooks {
     let vm: ActionStripViewModel
     let navScreens: Set<String>
     var workbenches: [Workbench] = []
+    /// `AgentActionCardView.sessionHoldsCall` for a proposal (a connector call).
+    var sessionHoldsCall: (AgentAction) -> Bool = { _ in false }
     var onCommand: (InboxCardCommand) -> Void = { _ in }
     var onPress: (InboxRef, InboxRowPress) -> Void = { _, _ in }
 
@@ -108,7 +110,7 @@ struct InboxRefHooks {
             return feed.reminders.contains { $0.id == ref.id } ? .reminder : nil
         case .action:
             guard let action = feed.proposals.first(where: { $0.id == ref.id }) else { return nil }
-            return .action(failed: action.status == "failed")
+            return .action(buttons: AgentActionCardView.rowButtons(for: action, sessionHolds: sessionHoldsCall(action)))
         }
     }
 
@@ -192,6 +194,8 @@ struct InboxRowActionHandler {
     var onIdeaMadeTask: (Int) -> Void = { _ in }
     /// **Edit…** on a proposal: its native card's argument editor.
     var onEditAction: (Int64) -> Void = { _ in }
+    /// **Open Draft** on a pending `save_automation` (`AppState.openSaveProposalDraft`).
+    var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
     var navScreens: Set<String> = []
     var now: () -> Date = { Date() }
 
@@ -311,6 +315,10 @@ struct InboxRowActionHandler {
         case .retry: await vm.retry(id)
         case .dismiss: await vm.dismiss(id)
         case .edit: onEditAction(id)
+        case .openDraft:
+            guard let action = vm.feed.proposals.first(where: { $0.id == id }),
+                  action.tool == SaveAutomationCardModel.tool else { return }
+            onOpenSaveDraft(SaveAutomationCardModel(action: action))
         default: break
         }
     }

@@ -58,9 +58,16 @@ package struct InboxRowActionsContent: Equatable {
         case idea(kind: Idea.Kind, status: Idea.Status, awaitsVerdict: Bool)
         /// A due reminder: Done, Snooze 1h.
         case reminder
-        /// A proposal: Approve, Reject, Edit…; after a failed apply Retry
-        /// and Dismiss.
-        case action(failed: Bool)
+        /// A proposal: the buttons its native card offers today
+        /// (`AgentActionCardView.rowButtons`).
+        case action(buttons: [ActionButton])
+    }
+
+    /// One of a proposal row's buttons. **Edit…** and **Open Draft** open
+    /// the native card (its argument editor, the automation editor) where
+    /// the row cannot make a press the way the card does.
+    package enum ActionButton: Equatable, Sendable {
+        case approve, reject, edit, openDraft, retry, dismiss
     }
 
     package enum State: Equatable, Sendable {
@@ -125,7 +132,7 @@ package struct InboxRowActionsContent: Equatable {
 package enum InboxRowPress: Equatable, Sendable {
     case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent
     case stopWatching, makeTask, goToTarget, deleteTrack
-    case approve, reject, edit, retry, dismiss, notNow(until: String), activate, drop
+    case approve, reject, edit, openDraft, retry, dismiss, notNow(until: String), activate, drop
     case snoozeHour
     /// **Retry** under a failed press: repeats it.
     case retryFailedPress

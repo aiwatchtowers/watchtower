@@ -73,15 +73,28 @@ struct InboxRowActionsView: View {
         case .reminder:
             Button("Done") { onPress(.done) }
             Button("Snooze 1h") { onPress(.snoozeHour) }
-        case let .action(failed):
-            if failed {
-                Button("Retry") { onPress(.retry) }
-                Button("Dismiss") { onPress(.dismiss) }
-            } else {
-                Button("Approve") { onPress(.approve) }
-                Button("Reject") { onPress(.reject) }
-                Button("Edit…") { onPress(.edit) }
+        case let .action(buttons):
+            ForEach(buttons, id: \.self) { button in
+                actionButton(button)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(_ button: InboxRowActionsContent.ActionButton) -> some View {
+        switch button {
+        case .approve: Button("Approve") { onPress(.approve) }
+        case .reject: Button("Reject") { onPress(.reject) }
+        case .edit:
+            Button("Edit…") { onPress(.edit) }
+                .help("Open the full proposal")
+        case .openDraft:
+            Button("Open Draft") { onPress(.openDraft) }
+                .help("Read the whole recipe in the editor and save it there")
+        case .retry: Button("Retry") { onPress(.retry) }
+        case .dismiss:
+            Button("Dismiss") { onPress(.dismiss) }
+                .help(ConnectorCallProposal.dismissNote)
         }
     }
 

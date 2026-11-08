@@ -124,16 +124,83 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(hooks(vm).content(InboxRef(kind: .reminder, id: id), .inbox)?.kind, .reminder)
     }
 
-    func testActionDrawsApproveOrRetryByStatus() async throws {
-        let (pending, failed) = try await pool.write { db in
-            (try TestDatabase.insertAgentAction(db, turnID: "a", status: "pending"),
-             try TestDatabase.insertAgentAction(db, turnID: "b", status: "failed", error: "archived"))
+    /// The row's buttons for one proposal row, as the Inbox reads it.
+    private func actionButtons(
+        tool: String = "create_target", argsJSON: String = #"{"text":"Call colleague A"}"#,
+        status: String = "pending", error: String = "", sessionHolds: Bool = false
+    ) async throws -> [InboxRowActionsContent.ActionButton]? {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: tool, argsJSON: argsJSON, status: status, error: error)
         }
         let vm = await strip()
-        XCTAssertEqual(hooks(vm).content(InboxRef(kind: .action, id: pending), .inbox)?.kind,
-                       .action(failed: false))
-        XCTAssertEqual(hooks(vm).content(InboxRef(kind: .action, id: failed), .inbox)?.kind,
-                       .action(failed: true))
+        let hooks = InboxRefHooks(vm: vm, navScreens: [], sessionHoldsCall: { _ in sessionHolds })
+        guard case let .action(buttons)? = hooks.content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
+            return nil
+        }
+        return buttons
+    }
+
+    func testActionDrawsApproveOrRetryByStatus() async throws {
+        let pending = try await actionButtons()
+        XCTAssertEqual(pending, [.approve, .reject, .edit])
+        // A failed apply: Retry only, as the card (Go refuses `actions dismiss` on it).
+        let failed = try await actionButtons(status: "failed", error: "archived")
+        XCTAssertEqual(failed, [.retry])
+    }
+
+    /// A pending `save_automation` is saved in the editor only: Open Draft and Reject, never Approve.
+    func testSaveAutomationRowOpensTheDraftNeverApproves() async throws {
+        let buttons = try await actionButtons(tool: SaveAutomationCardModel.tool, argsJSON: #"{"path":"a.md"}"#)
+        XCTAssertEqual(buttons, [.openDraft, .reject])
+    }
+
+    private static let connectorArgs = #"{"server":"claude.ai Gmail","tool":"send","input":{"to":"a@example.com"}}"#
+
+    /// A session call: Approve only while its chat session holds it; Retry never.
+    func testConnectorCallApprovesOnlyWhileTheSessionHoldsIt() async throws {
+        let held = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: Self.connectorArgs,
+                                           sessionHolds: true)
+        XCTAssertEqual(held, [.approve, .reject, .edit])
+        let gone = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: Self.connectorArgs)
+        XCTAssertEqual(gone, [.reject, .edit])
+        let unreadable = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: "{}", sessionHolds: true)
+        XCTAssertEqual(unreadable, [.reject, .edit])
+    }
+
+    func testConnectorCallWithUnknownOutcomeOffersDismissOnly() async throws {
+        let buttons = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: Self.connectorArgs,
+                                              status: "failed", error: ConnectorCallProposal.sessionEndedWhileRunning)
+        XCTAssertEqual(buttons, [.dismiss])
+    }
+
+    /// A Slack send whose workspace is still to be picked approves on its card only.
+    func testSlackSendNeedingAPickHasNoRowApprove() async throws {
+        let pick = ##"{"text":"On it","candidates":[{"account_id":1,"workspace":"acme","label":"#general"},"##
+            + ##"{"account_id":2,"workspace":"acme-eu","label":"#general"}]}"##
+        let picking = try await actionButtons(tool: SlackSendProposal.tool, argsJSON: pick)
+        XCTAssertEqual(picking, [.reject, .edit])
+        let pinned = ##"{"text":"On it","target":{"account_id":1,"workspace":"acme","label":"#general"}}"##
+        let ready = try await actionButtons(tool: SlackSendProposal.tool, argsJSON: pinned)
+        XCTAssertEqual(ready, [.approve, .reject, .edit])
+    }
+
+    /// An edit the card cannot show is never approved (F7).
+    func testUnreadableConfluenceEditHasNoApprove() async throws {
+        let buttons = try await actionButtons(tool: AgentActionCardView.confluenceEditTool, argsJSON: "{}")
+        XCTAssertEqual(buttons, [.reject, .edit])
+    }
+
+    func testOpenDraftOpensTheSaveProposalsDraft() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: SaveAutomationCardModel.tool, argsJSON: #"{"path":"a.md"}"#)
+        }
+        let runner = FakeCLIRunner()
+        let vm = await strip(runner)
+        var opened: [Int64] = []
+        let handler = InboxRowActionHandler(vm: vm, onOpenSaveDraft: { _ in opened.append(id) })
+        await handler.press(.openDraft, on: InboxRef(kind: .action, id: id))
+        XCTAssertEqual(opened, [id])
+        XCTAssertTrue(runner.invocations.isEmpty, "Open Draft writes nothing")
     }
 
     func testDuplicatesSuppressedPerKind() {
