@@ -218,6 +218,8 @@ struct OrderedRig {
     let outbox: ActionOutbox
     let feed: RelayFeed
     let hub: OrderedHubFake
+    /// The phone's key store (the outbox, the feed and the replica share it).
+    let keys: InMemoryPhoneKeyStore
 
     static func make(
         ordered: Bool = true,
@@ -225,7 +227,8 @@ struct OrderedRig {
         route: HubRoute = .cloudKit(.private),
         now: @escaping @Sendable () -> Date = { Self.base },
         onActionApplied: (@Sendable () async -> Void)? = nil,
-        onHubOnRelay: (@Sendable () async -> Void)? = nil
+        onHubOnRelay: (@Sendable () async -> Void)? = nil,
+        pull: (@Sendable () async throws -> Void)? = nil
     ) async throws -> Self {
         let keys = try TestE2E.phoneStore()
         let inner = InMemoryCloudTransport()
@@ -236,11 +239,11 @@ struct OrderedRig {
         if ordered { try await outbox.enableOrderedActions() }
         await outbox.setHubID(hubID)
         let feed = RelayFeed(
-            transport: phone, store: store, outbox: outbox, onActionApplied: onActionApplied, onHubOnRelay: onHubOnRelay,
-            now: now)
+            transport: phone, store: store, outbox: outbox, pull: pull, onActionApplied: onActionApplied,
+            onHubOnRelay: onHubOnRelay, now: now)
         return Self(
             inner: inner, recorder: recorder, phone: phone, store: store, outbox: outbox, feed: feed,
-            hub: OrderedHubFake(inner: inner, now: now))
+            hub: OrderedHubFake(inner: inner, now: now), keys: keys)
     }
 
     /// Inserts the next ordered row straight into the replica (no flush), sealed as the outbox seals it.

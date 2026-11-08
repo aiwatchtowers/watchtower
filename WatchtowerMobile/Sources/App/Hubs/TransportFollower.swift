@@ -17,6 +17,12 @@ protocol TransportFollowerHost: AnyObject {
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox?
     /// Merges `keybox`'s epoch keys into the Keychain; false when they could not be stored.
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool
+    /// This phone's offer for the hub, drawn and saved when it holds none (`HubSession.relayOffer`); nil when no ack
+    /// would carry it or no link is stored. Throws while the Keychain is locked.
+    func relayOffer(hubID: String) async throws -> Data?
+    /// Erases the hub's two private ephemeral keys, stored pairs kept (`HubLinkKeys.clearingEphemeral`); false when the
+    /// Keychain could not be written.
+    func clearEphemeral(hubID: String) -> Bool
     /// Saves `link` on its registry row in one write; false when it was not written.
     func persistRoute(_ link: LinkRecord) -> Bool
     /// Puts the hub's session on its row's route once the session's current fetch ended.
@@ -35,7 +41,8 @@ protocol TransportFollowerHost: AnyObject {
 /// 1. the outbox stops writing (`holdFlushes`), then its unechoed actions are queued again for the new transport
 ///    (rule 13) or listed as Not delivered (R32);
 /// 2. the new route is written to the row, in one registry write;
-/// 3. the switch's keybox is merged;
+/// 3. the switch's keybox is merged; on iCloud the private ephemeral keys are erased right after it (relay client
+///    Phase 5: the hub cleared this phone's offer when it left the relay; stored pairs stay for resends);
 /// 4. only then is the control reported handled (the feed marks and deletes it), and the session is rebuilt on the
 ///    new route's own store once its fetch ended (`TransportFollowerHost.moveSession`): a new session on the same
 ///    replica, whose tokens reset at open (`ReplicaStore.adoptRoute`), so the outbox, controls, keys and the alert
@@ -214,8 +221,13 @@ final class TransportFollower {
             guard case let .switched(_, _, _, _, _, controlID, _) = input, let keybox = keyboxes[controlID],
                   await host.mergeSwitchKeys(keybox, hubID: hubID) else { return false }
         }
+        // After the merge, so a kill before it keeps the keys the keybox may be sealed to. A pass read again after a
+        // failed clear answers `requestAnswered` on iCloud and clears then.
+        if next.route == .cloudKit, plan.move != nil || plan.answered || plan.merge, !host.clearEphemeral(hubID: hubID) {
+            return false
+        }
         if let ack = plan.ack, let newest = host.newestEpoch(hubID: hubID), newest >= ack {
-            await acknowledge(ack)
+            await acknowledge(ack, offering: next.route == .relay, host: host)
         }
         if moves {
             Self.logger.notice("the hub moved to \(next.route.rawValue, privacy: .public) in epoch \(next.newestEpoch, privacy: .public)")
@@ -258,10 +270,19 @@ final class TransportFollower {
         }
     }
 
-    /// Queued in the replica: on a move, the new session's outbox writes it on the new transport.
-    private func acknowledge(_ epoch: UInt32) async {
+    /// Queued in the replica: on a move, the new session's outbox writes it on the new transport. On the relay it
+    /// carries this phone's offer, saved before the ack is queued (relay client Phase 5); on iCloud none. An offer
+    /// that cannot be drawn (locked) queues no ack: the new session's boot sends it with the offer.
+    private func acknowledge(_ epoch: UInt32, offering: Bool, host: any TransportFollowerHost) async {
         do {
-            try await outbox.enqueueEpochAck(epoch: epoch)
+            let nextKX: Data?
+            if offering {
+                guard let offer = try await host.relayOffer(hubID: hubID) else { return }
+                nextKX = offer
+            } else {
+                nextKX = nil
+            }
+            try await outbox.enqueueEpochAck(epoch: epoch, nextKX: nextKX)
         } catch {
             Self.logger.warning("epoch_ack not queued: \(String(describing: error), privacy: .public)")
         }

@@ -189,3 +189,34 @@ func TestAReReadOfTheHubsOwnStaleCopiesEchoesAndIngestsNothing(t *testing.T) {
 	}
 	w.wantLedger("u1", "received")
 }
+
+// A recording sealed before a rotation and resealed after it (same wire name,
+// new envelope in the new epoch) is received once: whether the resealed copy
+// replaces the original the hub has not read, or comes again after the echo,
+// the ledger keeps one intake call.
+// twin of RecordingUploaderTests.testARowSealedInAnOlderEpochIsResealedBeforeSending
+func TestResealedUploadReceivedOnce(t *testing.T) {
+	w := newUploadWorld(t)
+	w.next = RecordingOutcome{Status: wire.StatusReceived}
+	name := w.pendingUpload("u1") // sealed in epoch 1
+	old := w.stored(name)
+	w.retire()
+	// The phone reseals before the hub reads: the record at its name is replaced by one of the new epoch.
+	w.resend("u1", name)
+	if resealed := w.stored(name); string(resealed.Envelope) == string(old.Envelope) {
+		t.Fatal("the resealed copy is the old envelope")
+	}
+	w.pass()
+	if e := w.echo("u1"); e["status"] != "received" {
+		t.Fatalf("echo %v", e)
+	}
+	w.wantLedger("u1", "received")
+
+	// A second resealed copy after the echo (a Retry, a late reseal) adds no intake call.
+	w.resend("u1", name)
+	w.pass()
+	if len(w.calls) != 1 {
+		t.Fatalf("%d intake calls, want 1", len(w.calls))
+	}
+	w.wantLedger("u1", "received")
+}
