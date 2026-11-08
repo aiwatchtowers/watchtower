@@ -253,7 +253,8 @@ struct OwnerAskDrawer: View {
     }
 
     private var hasTopSections: Bool {
-        asks.answerNotices[ask.id] != nil || !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
+        asks.answerNotices[ask.id] != nil || !OwnerAskPresentation.summaryParts(for: ask).isEmpty
+            || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
             || ask.previousAskID != nil || !ask.payload.questions.isEmpty
     }
 

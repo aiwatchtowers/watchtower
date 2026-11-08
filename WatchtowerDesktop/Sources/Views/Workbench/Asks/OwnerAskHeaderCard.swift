@@ -7,16 +7,22 @@ import WatchtowerCore
 /// gives a focus item a link to its place in the document — nil for one
 /// whose place is not in the snapshot, listed without a link. The agent's
 /// text renders as markdown (#394); its links route by `OwnerAskLinks`.
+/// The summary goes through `OwnerAskPresentation.summaryParts`: a raised
+/// ask's reason line is a caption, and its question is not repeated here.
 struct OwnerAskHeaderCard: View {
     let ask: OwnerAsk
     var showDiff: (() -> Void)?
     var focusAction: (OwnerAskFocus) -> (() -> Void)? = { _ in nil }
 
     var body: some View {
-        if hasContent {
+        let summary = OwnerAskPresentation.summaryParts(for: ask)
+        if hasContent(summary) {
             VStack(alignment: .leading, spacing: 8) {
-                if !ask.summary.isEmpty {
-                    MarkdownView(text: ask.summary)
+                if !summary.body.isEmpty {
+                    MarkdownView(text: summary.body)
+                }
+                if let reason = summary.reason {
+                    Text(reason).font(.caption).foregroundStyle(.secondary)
                 }
                 if !ask.payload.focus.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -47,8 +53,8 @@ struct OwnerAskHeaderCard: View {
         }
     }
 
-    private var hasContent: Bool {
-        !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty || showDiff != nil
+    private func hasContent(_ summary: OwnerAskPresentation.SummaryParts) -> Bool {
+        !summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty || showDiff != nil
     }
 
     private var changesTitle: String {
