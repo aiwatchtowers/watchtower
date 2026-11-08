@@ -26,12 +26,22 @@ struct NowModel {
     /// Waiting to send and Not delivered; nil when neither shows.
     let outbox: NowOutboxRows?
 
-    /// `lastFlushStopped`: the session's last outbox flush stopped on a refusal (`OutboxBacklog`); the outbox's
-    /// rows and counts come from the snapshot's own `pending` rows, so they always agree with each other.
-    init(snapshot: WorkbenchReplicaSnapshot, linked: Bool, now: Date, lastFlushStopped: Bool = false, calendar: Calendar = .current) {
+    /// `backlog`: the session's outbox state (`OutboxBacklog`). Waiting to send and Not delivered take their rows
+    /// and counts from the snapshot's own `pending` rows, so they always agree with each other; the parked row
+    /// takes the parked mark and the `sent` count from the backlog, which needs no keys to read. `macName`: the
+    /// hub on screen (`NowHubName.of`, the banner's rule).
+    init(
+        snapshot: WorkbenchReplicaSnapshot,
+        linked: Bool,
+        now: Date,
+        backlog: OutboxBacklog = .empty,
+        macName: String = "",
+        calendar: Calendar = .current
+    ) {
         outbox = NowOutboxRows(
-            lastFlushStopped: lastFlushStopped, queued: OutboxItem.rows(snapshot.pending, .queued),
-            undelivered: OutboxItem.rows(snapshot.pending, .undelivered), snapshot: snapshot, now: now, calendar: calendar)
+            lastFlushStopped: backlog.lastFlushStopped, queued: OutboxItem.rows(snapshot.pending, .queued),
+            undelivered: OutboxItem.rows(snapshot.pending, .undelivered), snapshot: snapshot, now: now, calendar: calendar,
+            parked: backlog.parked.map { NowParkedRow(macName: macName, sent: $0.sent) })
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
         let openAsks = snapshot.openAsks()
@@ -68,9 +78,10 @@ struct NowModel {
     }
 }
 
-/// Now's outbox group (relay client mockup 5a, Ruling 12): **Waiting to send** with the count and the oldest
-/// queued actions, only while something is queued and the last flush stopped on a refusal; **Not delivered** with
-/// the count, a link to the list, while anything is listed there. Never orange.
+/// Now's outbox group (relay client mockup 5a, Ruling 12): the parked feed's row (S58) while the relay feed waits
+/// for the Mac's new keys; **Waiting to send** with the count and the oldest queued actions, only while something
+/// is queued and the last flush stopped on a refusal; **Not delivered** with the count, a link to the list, while
+/// anything is listed there. Never orange.
 struct NowOutboxRows: Equatable {
     static let queuedLimit = 3
 
@@ -83,6 +94,8 @@ struct NowOutboxRows: Equatable {
     let moreText: String?
     /// "Not delivered · 2"; nil: the row is hidden.
     let notDeliveredText: String?
+    /// The parked feed's row, above the rest; nil while the feed reads.
+    let parked: NowParkedRow?
 
     /// `queued` and `undelivered`: the ordered rows in those states, oldest first (`OutboxItem.rows`).
     init?(
@@ -91,10 +104,12 @@ struct NowOutboxRows: Equatable {
         undelivered: [OutboxItem],
         snapshot: WorkbenchReplicaSnapshot,
         now: Date,
-        calendar: Calendar
+        calendar: Calendar,
+        parked: NowParkedRow? = nil
     ) {
         let waiting = !items.isEmpty && lastFlushStopped
-        guard waiting || !undelivered.isEmpty else { return nil }
+        guard waiting || !undelivered.isEmpty || parked != nil else { return nil }
+        self.parked = parked
         waitingCount = waiting ? items.count : nil
         let format = RecordingsFormat(calendar: calendar, now: now)
         let shown = waiting ? Array(items.prefix(Self.queuedLimit)) : []
@@ -105,8 +120,45 @@ struct NowOutboxRows: Equatable {
     }
 
     var toneUses: [ToneUse] {
-        (waitingCount == nil ? [] : [ToneUse(element: "waiting to send count", tone: .secondary, role: .info)])
+        (parked.map { [$0.toneUse] } ?? [])
+            + (waitingCount == nil ? [] : [ToneUse(element: "waiting to send count", tone: .secondary, role: .info)])
             + (notDeliveredText == nil ? [] : [ToneUse(element: "not delivered row", tone: .red, role: .status)])
+    }
+}
+
+/// The parked feed's row (relay client Phase 5, S58, ask #1077): the relay feed met a record sealed with keys this
+/// phone does not hold yet and stopped reading after an hour. Written actions stay unanswered until the Mac sends
+/// the keys, and Waiting to send covers only queued ones, so this row says so. Its words hold whether the Mac is
+/// closed, online with its keys refused, or has cleared this phone. Secondary tone, never orange.
+struct NowParkedRow: Equatable {
+    static let advice = "If this lasts, open Watchtower on the Mac."
+
+    let title: String
+    let detail: String
+    let tone = PhoneTone.secondary
+
+    /// `macName`: the hub on screen ("your Mac" before it has one); `sent`: its actions written and not yet
+    /// answered. With none, the count sentences go.
+    init(macName: String, sent: Int) {
+        title = "Waiting for new keys from \(macName.isEmpty ? "your Mac" : macName)"
+        let count = switch sent {
+        case ...0: ""
+        case 1: "1 action has no answer yet. It finishes once it sends it. "
+        default: "\(sent) actions have no answer yet. They finish once it sends them. "
+        }
+        detail = count + Self.advice
+    }
+
+    var toneUse: ToneUse {
+        ToneUse(element: "parked feed row", tone: tone, role: .info)
+    }
+}
+
+/// The name Now gives the hub on screen, in its Relay banner and its parked row alike: the link's Mac name, else
+/// the switcher's (`HubSession.hubName`), else empty (each line has its own wording for no name).
+enum NowHubName {
+    static func of(links: [HubRow], hubID: String, hubName: String?) -> String {
+        links.first { $0.hubID == hubID }?.link.macName ?? hubName ?? ""
     }
 }
 

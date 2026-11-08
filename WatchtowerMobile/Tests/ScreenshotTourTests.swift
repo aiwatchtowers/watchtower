@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 import WatchtowerHostedRelay
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -35,6 +35,8 @@ final class ScreenshotTourTests: XCTestCase {
     /// `make mobile-shots SHOTS_ONLY=relay-phase4` runs `testTheRelayPhase4Shots` alone (a frame or two of a
     /// new screen in minutes, not the whole tour's half hour); the plain run is the whole tour, which covers them too.
     private static let onlyRelayPhase4 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase4"
+    /// `SHOTS_ONLY=relay-phase5` runs `testTheRelayPhase5Shots` alone, the same way.
+    private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
 
     func testTheRelayPhase4Shots() async throws {
         guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
@@ -50,8 +52,21 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(written.count, 3 * rows.count)
     }
 
+    func testTheRelayPhase5Shots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase5 else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=relay-phase5")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        let rows = try await captureParkedFeed(into: dir, linking: root.linking)
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
     func testTheTour() async throws {
-        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4 else {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4, !Self.onlyRelayPhase5 else {
             throw XCTSkip("Screenshot tour: run make mobile-shots")
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
@@ -70,8 +85,10 @@ final class ScreenshotTourTests: XCTestCase {
         let relayRows = try await captureRelayLinking(host: host)
         let onRelayRows = try await captureHubOnRelay(into: dir, linking: root.linking)
         let phase4Rows = try await captureRelayPhase4(host: host)
+        let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
-            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows, to: dir)
+            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
+            to: dir)
 
         let pngs = try FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
@@ -79,7 +96,7 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(
             pngs.count,
             2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count)
-                + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count)
+                + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count)
         )
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
@@ -683,6 +700,22 @@ final class ScreenshotTourTests: XCTestCase {
     private func outboxDemoEnv() async throws -> (AppEnvironment, HubSession) {
         let clock = MutableClock()
         let transport = RefusingTransport()
+        let (env, session) = try await bareOutboxEnv(transport: transport, clock: clock)
+        let now = Date()
+        try await DemoSeed.loadOutboxDemo(
+            outbox: session.outbox, now: now,
+            setClock: { clock.advance($0.timeIntervalSince(clock.now)) },
+            refuse: { await transport.refuse($0) })
+        try await poll(timeout: 20, {
+            let backlog = session.outboxBacklog
+            return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
+                && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
+        }, "the outbox demo state landed")
+        return (env, session)
+    }
+
+    /// A booted demo session over `transport`, its outbox empty.
+    private func bareOutboxEnv(transport: RefusingTransport, clock: MutableClock) async throws -> (AppEnvironment, HubSession) {
         let defaults = try makeDefaults()
         let session = try HubSession(
             transport: transport,
@@ -696,17 +729,37 @@ final class ScreenshotTourTests: XCTestCase {
         addTeardownBlock { @MainActor in session.stop() }
         try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
         try await session.outboxWork?.value(within: 60, "session.outboxWork")
-        let now = Date()
-        try await DemoSeed.loadOutboxDemo(
-            outbox: session.outbox, now: now,
-            setClock: { clock.advance($0.timeIntervalSince(clock.now)) },
-            refuse: { await transport.refuse($0) })
-        try await poll(timeout: 20, {
-            let backlog = session.outboxBacklog
-            return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
-                && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
-        }, "the outbox demo state landed")
         return (AppEnvironment.single(session, defaults: defaults), session)
+    }
+
+    /// S58, S58a, S58b2, S58c (relay client Phase 5, Task 16): Now with the relay feed parked waiting for the Mac's new
+    /// keys, with two, one and no sent actions, then with three waiting to send under it; each on its own demo session
+    /// (named as its link names it, as the chip does), light, dark and narrow. The tour writes the parked mark, as the feed would after its hour.
+    private func captureParkedFeed(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+        let frames: [(String, String, Int, Bool)] = [
+            ("S58", "now-parked-two-sent", 2, false),
+            ("S58a", "now-parked-one-sent", 1, false),
+            ("S58b2", "now-parked-none-sent", 0, false),
+            ("S58c", "now-parked-waiting-to-send", 2, true)
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (number, slug, sent, waiting) in frames {
+            let transport = RefusingTransport()
+            let (env, session) = try await bareOutboxEnv(transport: transport, clock: MutableClock())
+            try await DemoSeed.loadParkedDemo(outbox: session.outbox, sent: sent, waiting: waiting) { await transport.refuse($0) }
+            try session.store.markRelayFeedParked(at: Date())
+            try await poll(timeout: 20, {
+                let backlog = session.outboxBacklog
+                return backlog.parked?.sent == sent && backlog.queued == (waiting ? 3 : 0)
+                    && backlog.lastFlushStopped == waiting
+            }, "the parked demo state landed")
+            let host = ScreenshotHost(directory: dir, env: env, linking: linking)
+            try await host.captureThree("\(number)-\(slug)", NowView(), narrowScroll: nil)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "NowView, parked demo, light/dark/narrow"
+            ))
+        }
+        return rows
     }
 
     private func captureOutbox(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {

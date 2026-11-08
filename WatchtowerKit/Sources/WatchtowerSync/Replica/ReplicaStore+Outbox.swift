@@ -321,16 +321,17 @@ extension ReplicaStore {
         ))
     }
 
-    /// Waiting to send (`queued`) and Not delivered (`undelivered`) counts.
-    public func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
+    /// Waiting to send (`queued`), written and not yet answered (`sent`), and Not delivered (`undelivered`) counts.
+    public func outboxCounts(from db: Database) throws -> (queued: Int, sent: Int, undelivered: Int) {
         let row = try Row.fetchOne(
             db,
             sql: """
                 SELECT COALESCE(SUM(delivery = 'queued'), 0) AS queued,
+                       COALESCE(SUM(delivery = 'sent'), 0) AS sent,
                        COALESCE(SUM(delivery = 'undelivered'), 0) AS undelivered
                 FROM pending_actions
                 """)
-        return (row?["queued"] ?? 0, row?["undelivered"] ?? 0)
+        return (row?["queued"] ?? 0, row?["sent"] ?? 0, row?["undelivered"] ?? 0)
     }
 
     /// The one delete of an overlay row (feature Dismiss, the list's Dismiss All, Retry's old row). Refuses a row
@@ -509,7 +510,12 @@ extension ReplicaStore {
 
     /// When the relay feed parked (Now shows it); nil while it reads.
     public func relayFeedParkedSince() throws -> Date? {
-        try writer.read { db in try Self.metaDate(db, Self.relayFeedParkedSinceKey) }
+        try writer.read { db in try relayFeedParkedSince(from: db) }
+    }
+
+    /// The same mark read inside a caller's read, so an observation of the outbox counts follows it too.
+    public func relayFeedParkedSince(from db: Database) throws -> Date? {
+        try Self.metaDate(db, Self.relayFeedParkedSinceKey)
     }
 
     /// Marks the feed parked; an earlier mark stays.
