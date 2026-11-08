@@ -93,6 +93,9 @@ package final class AutomationsViewModel {
     /// The folder each new draft started from **+ New Artifact…** goes to on
     /// save, by the draft's context id (`showEditor` takes it from the New flow).
     package private(set) var newDraftRoutes: [String: InboxNewArtifactRoute] = [:]
+    /// The folder a template's install from **+ New Artifact…** goes to, by
+    /// `AutomationTemplatePanels.key` (`showTemplate` takes it from the New flow).
+    package private(set) var templateRoutes: [String: InboxNewArtifactRoute] = [:]
     /// A save landed but its route did not, by automation id: "Saved. The
     /// folder was not created: <reason>" with **Try Again**.
     package private(set) var routeFailures: [Int64: InboxRouteFailure] = [:]
@@ -394,8 +397,11 @@ package final class AutomationsViewModel {
         composerPrefill = nil
     }
 
-    /// Opens a template's panel; no row stays selected meanwhile.
-    package func showTemplate(name: String, scope: AutomationScopeChoice) {
+    /// Opens a template's panel; no row stays selected meanwhile. A New
+    /// flow passes its `route` (nil clears an earlier one): the copies the
+    /// install makes, or a draft its Adjust in Chat saves, are routed there.
+    package func showTemplate(name: String, scope: AutomationScopeChoice, route: InboxNewArtifactRoute? = nil) {
+        templateRoutes[AutomationTemplatePanels.key(template: name, scope: scope)] = route
         if selectedID != nil { expandedRuns = [] }
         selectedID = nil
         panel = .template(name: name, scope: scope)
@@ -549,6 +555,20 @@ package final class AutomationsViewModel {
         } else {
             routeFailures[automationID] = nil
         }
+    }
+
+    /// The folder template `name`'s panel in `scope` routes to, if any.
+    package func templateRoute(name: String, scope: AutomationScopeChoice) -> InboxNewArtifactRoute? {
+        templateRoutes[AutomationTemplatePanels.key(template: name, scope: scope)]
+    }
+
+    /// A template install made `ids`: each copy is routed to the folder its
+    /// New flow started in, one call each; a failure keeps **Try Again** on
+    /// that copy's card like a save's.
+    package func templateInstalled(name: String, scope: AutomationScopeChoice, ids: [Int64]) async {
+        guard let route = templateRoutes.removeValue(forKey: AutomationTemplatePanels.key(template: name, scope: scope))
+        else { return }
+        for id in ids { await routeSaved(id, route, reread: false) }
     }
 
     /// **Try Again** on "Saved. The folder was not created": re-reads the

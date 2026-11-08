@@ -29,6 +29,21 @@ extension AppState {
         }
     }
 
+    /// The Automations tab's template panels: an install re-reads the list
+    /// and the first copy's card, and its copies go to the Inbox folder of
+    /// the New flow it started from (**+ New Artifact…**).
+    func makeTemplatePanels(vm: AutomationsViewModel, cli: AutomationsCLI) -> AutomationTemplatePanels {
+        AutomationTemplatePanels { [weak vm] template, scope in
+            AutomationTemplatePanelModel(
+                template: template, scope: scope, cli: cli,
+                installed: { ids in await vm?.templateInstalled(name: template.name, scope: scope, ids: ids) }
+            ) { id in
+                vm?.refresh()
+                if let id { await vm?.loadDetail(id) }
+            }
+        }
+    }
+
     /// A saved automation's route to the Inbox folder it was made from
     /// (**+ New Artifact…**): through the folder menu at its read revision,
     /// after a re-read on **Try Again**. Nil when it landed.

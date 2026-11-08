@@ -1346,12 +1346,7 @@ final class AppState {
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
         wireInboxRoute(vm)
         automationEditorCenter = editorCenter
-        automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
-            AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
-                vm?.refresh()
-                if let id { await vm?.loadDetail(id) }
-            }
-        }
+        automationTemplatePanels = makeTemplatePanels(vm: vm, cli: cli)
     }
 
     /// The onboarding on screen was started from Settings: it can be

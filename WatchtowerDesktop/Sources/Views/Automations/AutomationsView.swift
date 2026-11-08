@@ -243,7 +243,8 @@ struct AutomationsView: View {
                 AutomationTemplatePanel(
                     model: model,
                     onAdjustInChat: { text in
-                        vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: text))
+                        vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: text),
+                                      route: vm.templateRoute(name: name, scope: scope))
                     },
                     onDone: { id in vm.templateFinished(name: name, scope: scope, firstID: id) }
                 )
@@ -352,7 +353,7 @@ struct AutomationsView: View {
                           composerPrefill: watchPrefill, route: flow.route)
         case let .template(name):
             guard hooks.startTemplate(name, scope) != nil else { return }
-            vm.showTemplate(name: name, scope: scope)
+            vm.showTemplate(name: name, scope: scope, route: flow.route)
         }
     }
 

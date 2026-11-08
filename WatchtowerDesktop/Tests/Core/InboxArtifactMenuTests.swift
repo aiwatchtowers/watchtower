@@ -476,6 +476,38 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertTrue(vm.newDraftRoutes.isEmpty)
     }
 
+    /// A template picked in a New flow from Release: every copy its install
+    /// makes is routed there, one call each.
+    func testTemplateFromAFolderRoutesEveryInstalledCopy() async {
+        wireRoute()
+        vm.showTemplate(name: "jira-state-report", scope: .personal,
+                        route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner, ids.builtin])
+        XCTAssertEqual(runner.invocations.map { $0.prefix(6) }, [
+            ["inbox", "folders", "route", String(ids.owner), "--folder", String(ids.release)],
+            ["inbox", "folders", "route", String(ids.builtin), "--folder", String(ids.release)]
+        ])
+        XCTAssertTrue(vm.routeFailures.isEmpty)
+        XCTAssertNil(vm.templateRoute(name: "jira-state-report", scope: .personal), "routed once")
+    }
+
+    func testTemplateFromTheRootSendsNoRoute() async {
+        wireRoute()
+        vm.showTemplate(name: "jira-state-report", scope: .personal)
+        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner])
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    /// A template's failed route shows the save's line and Try Again on the copy.
+    func testTemplateRouteFailureShowsTryAgain() async {
+        wireRoute()
+        runner.on("route") { _ in throw Self.failure("the Inbox menu changed (revision 8, expected 7)") }
+        vm.showTemplate(name: "jira-state-report", scope: .personal,
+                        route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner])
+        XCTAssertEqual(vm.routeFailures[ids.owner]?.reason, InboxFolderMenuModel.routeMenuChanged)
+    }
+
     func testNewArtifactRouteConflictShowsTryAgain() async {
         wireRoute()
         runner.on("route") { _ in throw Self.failure("the Inbox menu changed (revision 8, expected 7)") }
