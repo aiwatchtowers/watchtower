@@ -98,8 +98,9 @@ const (
 // origin: CloudKit only, every switch toward the relay rejected). Actions is
 // the processors' template: the switcher sets Transport and Switch per
 // transport. Publisher (optional) publishes on Front(); the switch holds it
-// under its own reason. Keyboxes is the link center's (each linked phone's
-// keybox payload, the bytes the data zone's keybox carries). Paying
+// under its own reason. KeyboxesAll is the link center's (each linked phone's
+// keybox payload with the epoch keys, even for a phone whose data-zone keybox
+// leaves them out: every transport_switched carries them). Paying
 // (optional) is which linked phones pay for the relay, by device id.
 // OldSideTimeout (0 = OldSideTimeout) bounds each old-side step. Clock
 // defaults to Actions.Clock, then time.Now.
@@ -109,7 +110,7 @@ type Config struct {
 	Relay, CloudKit transport.Transport
 	Actions         actions.Config
 	Publisher       *slices.Publisher
-	Keyboxes        func() ([]wire.Keybox, error)
+	KeyboxesAll     func() ([]wire.Keybox, error)
 	Paying          func(ctx context.Context) (map[string]bool, error)
 	// AnyPaying (optional) is whether any phone in the relay account pays,
 	// matched to a linked phone or not; an error is unknown (nopayer.go).
@@ -178,7 +179,7 @@ func New(c Config) (*Switcher, error) {
 	if c.CloudKit == nil && c.Relay == nil {
 		return nil, errors.New("switcher: no transport")
 	}
-	if c.Keyboxes == nil {
+	if c.KeyboxesAll == nil {
 		return nil, errors.New("switcher: no keyboxes")
 	}
 	if c.Clock == nil {

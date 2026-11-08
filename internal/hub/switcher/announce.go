@@ -193,7 +193,7 @@ func (s *Switcher) sealFor(k transport.Kind, device string, c wire.Control, epoc
 // commit and the old processor resumes, now on standby.
 func (s *Switcher) announce(r switchRecord) error {
 	old := r.Epoch - 1
-	boxes, err := s.c.Keyboxes()
+	boxes, err := s.c.KeyboxesAll()
 	if err != nil {
 		return fmt.Errorf("switcher: reading the keyboxes: %w", err)
 	}
@@ -387,7 +387,7 @@ func (s *Switcher) settleNoSwitch(r switchRecord) error {
 // the committed transport, the last switch's by and at, the current epoch,
 // its keybox sealed now; ok false for a phone with no keys.
 func (s *Switcher) whereItRuns(device string) (wire.Control, bool, error) {
-	boxes, err := s.c.Keyboxes()
+	boxes, err := s.c.KeyboxesAll()
 	if err != nil {
 		return wire.Control{}, false, err
 	}
