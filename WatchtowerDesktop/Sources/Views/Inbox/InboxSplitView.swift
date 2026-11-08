@@ -302,8 +302,8 @@ struct InboxSplitView<EmptyList: View>: View {
     }
 }
 
-/// The reading pane's width, shared by every `InboxSplitView`.
-private let inboxPaneWidth = PanelSplitWidth(key: "inbox.readingPaneWidth", range: 420...900, ideal: 560)
+/// The reading pane's width, shared by every `InboxSplitView` and the folder list.
+let inboxPaneWidth = PanelSplitWidth(key: "inbox.readingPaneWidth", range: 420...900, ideal: 560)
 
 /// The reaction cheat sheet, Learned Rules or Assistant Profile in the
 /// reading pane, under a title with a close button back to the card.

@@ -5,11 +5,12 @@
 > from @Vadym.
 >
 > AI assistant: when changing how the Inbox menu's folders are written,
-> deleted or routed, read this file first. Any proposed change that would
+> deleted or routed, or how Needs approval picks and draws its cards, read
+> this file first. Any proposed change that would
 > break a guard test or remove a contract must be raised as a question
 > before touching code.
 
-**Module:** `internal/inboxfolders/`
+**Module:** `internal/inboxfolders/`; Needs approval's cards: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/` (`NeedsApprovalSelection`, `InboxFolderEntries`, `InboxFolderMenuSnapshot`)
 **Last full audit:** 2026-11-06
 
 ## FOLDER-01 — Deleting a folder never deletes content
@@ -26,6 +27,24 @@
 
 **Locked since:** 2026-11-06
 
+## APPROVAL-01 — An open approval is always on screen, a closed one never
+
+**Status:** Enforced
+
+**Observable:** Needs approval draws every open approval — an `agent_actions` row that waits on the owner (`AgentActionQueries.awaitingOwnerClause`, the Inbox badge's own predicate) and every due reminder (`status='pending' AND remind_at <= now`) — read in the same one `ActionStripViewModel.refresh()` read as the folder. Each is drawn by the `needs-approval` recipe's card only while all four hold: the `approval-cards` feature is on and the built-in is not stopped (`disabled_reason` empty), its latest finished run succeeded, its living card `action:<id>` / `reminder:<id>` exists, and that card's `written_at` is at or after the approval's last change (an action's latest of `created_at`, `decided_at`, `applied_at`; a reminder's latest of `created_at`, `remind_at` — Go's `OpenApproval.ChangedAt`). Otherwise today's native card draws it (`AgentActionCardView`, `SaveAutomationProposalPane`, the reminder card), so an approval never waits on a run, a failed, stopped, capped (more than 50) or behind run never hides one, and a new one shows at once (native above the recipe's cards). The built-in's cards are drawn only through the open approvals they show: a card whose approval is closed (decided, applied, dismissed, done, gone) is drawn in no folder and counted in none, whatever the run did, even before the run removes it.
+
+**Test guards:**
+- Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_native_card_when_recipe_off`
+- Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_native_card_when_behind`
+- Guard: `WatchtowerDesktop/Tests/Core/Approval01Tests.swift::test_APPROVAL_01_closed_never_drawn`
+- Supporting: `WatchtowerDesktop/Tests/Core/NeedsApprovalSelectionTests.swift` (the four conditions, more than 50, mixed order, a closed approval's live artifact), `InboxFolderEntriesTests`, `ActionStripAutomationOutputTests::testRefreshIsAPureRead` (STRIP-02)
+
+**Why locked:** Approvals are the one place the assistant waits on the owner before it acts. If the recipe-drawn view could hide an open approval (off, failed, behind) the action would wait unseen; if it could show a closed one, the owner would approve or dismiss something already decided. Reading the records at render time, in the same read as the folder, and falling back to the native card keeps Needs approval exactly the set of open approvals whatever the built-in did.
+
+**Locked since:** 2026-11-08
+
 ## Changelog
+
+- 2026-11-08 (Inbox builder B Task 12, board #1400; owner approval in ask #451): APPROVAL-01 added — Needs approval's native fallback and render-time check (`NeedsApprovalSelection`, `InboxFolderEntries`, the `needs-approval` cards taken out of every folder's artifact list in `InboxFolderMenuSnapshot.read`). New guards `Approval01Tests` (three), supporting `NeedsApprovalSelectionTests`, `InboxFolderEntriesTests`.
 
 - 2026-11-06: file created with FOLDER-01, introduced by the Inbox builder's folders (sub-project B, board #1400; owner approval in ask #451).

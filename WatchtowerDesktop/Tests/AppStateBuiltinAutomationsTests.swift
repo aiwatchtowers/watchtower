@@ -14,6 +14,8 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
         private var states: [String: String]
         private(set) var calls: [[String]] = []
         var failSwitch: Error?
+        /// A switch of one of these ids fails; the others go through.
+        var failIDs: [String: Error] = [:]
 
         init(_ states: [String: String]) {
             self.states = states
@@ -24,6 +26,7 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
                 calls.append(args)
                 if args.count == 3, args[0] == "features", ["enable", "disable"].contains(args[1]) {
                     if let failSwitch { throw failSwitch }
+                    if let failure = failIDs[args[2]] { throw failure }
                     states[args[2]] = args[1] == "enable" ? "enabled" : "disabled"
                 }
                 let rows = states.keys.sorted().map { id in
@@ -93,6 +96,141 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
         let failed = await appState.setBuiltinEnabled(["briefing"], on: false)
         XCTAssertEqual(failed?.contains("config locked"), true)
         XCTAssertEqual(daemon.restarts, 0)
+    }
+
+    // MARK: - Turn On whose daemon restart fails (ask #503)
+
+    private struct RestartBoom: LocalizedError {
+        var errorDescription: String? { "the daemon did not stop in time" }
+    }
+
+    /// The feature is enabled, the restart throws: the returned reason is
+    /// the call's own, and the app-wide banner carries the restart's error
+    /// until a later restart succeeds.
+    func testEnableWithFailedRestartSetsDaemonBanner() async throws {
+        let runner = FeaturesRunner(["approval-cards": "disabled"])
+        let (appState, daemon) = make(runner)
+        daemon.running = true
+        daemon.restartError = RestartBoom()
+
+        let reason = await appState.setBuiltinEnabled(["approval-cards"], on: true)
+
+        XCTAssertEqual(reason, RestartBoom().localizedDescription)
+        XCTAssertEqual(appState.daemonStartFailure, AppState.daemonRestartFailureText(RestartBoom()))
+        XCTAssertEqual(runner.calls.filter { $0[1] != "list" }, [["features", "enable", "approval-cards"]])
+        XCTAssertEqual(daemon.restarts, 1)
+
+        daemon.restartError = nil
+        try await appState.restartOnChain(daemon)
+        XCTAssertNil(appState.daemonStartFailure, "a later successful restart clears the banner")
+    }
+
+    /// Two features: the first enables, the second's `features enable`
+    /// fails, the restart throws. The reason is the enable failure, the
+    /// banner the restart's error; neither borrows the other's text.
+    func testEnableFailureAndRestartFailureKeepTheirOwnTexts() async throws {
+        let runner = FeaturesRunner(["briefing": "disabled", "day-plan": "disabled"])
+        runner.failIDs["day-plan"] = CLIRunnerError.nonZeroExit(code: 1, stderr: "config locked")
+        let (appState, daemon) = make(runner)
+        daemon.running = true
+        daemon.restartError = RestartBoom()
+
+        let reason = await appState.setBuiltinEnabled(["briefing", "day-plan"], on: true)
+
+        let enableFailure = CLIRunnerError.nonZeroExit(code: 1, stderr: "config locked").localizedDescription
+        XCTAssertEqual(reason, enableFailure)
+        XCTAssertEqual(appState.daemonStartFailure, AppState.daemonRestartFailureText(RestartBoom()))
+        XCTAssertFalse(appState.daemonStartFailure?.contains("config locked") ?? true)
+        XCTAssertFalse(reason?.contains(RestartBoom().localizedDescription) ?? true)
+    }
+
+    /// Needs approval's note Turn On is the built-in card's own: exactly
+    /// `features enable approval-cards`, once, then one restart (off); with
+    /// the feature on, the stopped built-in's resume and no restart.
+    func testNeedsApprovalTurnOnNamesOnlyItsFeature() async {
+        let off = FeaturesRunner(["approval-cards": "disabled", "briefing": "disabled"])
+        let (offState, offDaemon) = make(off)
+        let offReason = await offState.turnOnNeedsApproval()
+        XCTAssertNil(offReason)
+        XCTAssertEqual(off.calls.filter { $0[1] != "list" }, [["features", "enable", "approval-cards"]])
+        XCTAssertEqual(offDaemon.restarts, 1)
+
+        let stopped = FeaturesRunner(["approval-cards": "enabled"])
+        let (stoppedState, stoppedDaemon) = make(stopped)
+        let stoppedReason = await stoppedState.turnOnNeedsApproval()
+        XCTAssertNil(stoppedReason)
+        XCTAssertEqual(stopped.calls.filter { $0[1] != "list" }, [["features", "enable", "approval-cards"]])
+        XCTAssertEqual(stoppedDaemon.restarts, 0)
+    }
+
+    /// Resuming a stopped built-in (its feature on) restarts nothing, so it
+    /// never sets the banner.
+    func testResumeStoppedSetsNoDaemonBanner() async {
+        let runner = FeaturesRunner(["approval-cards": "enabled"])
+        let (appState, daemon) = make(runner)
+        daemon.restartError = RestartBoom()
+
+        let reason = await appState.setBuiltinEnabled(["approval-cards"], on: true)
+
+        XCTAssertNil(reason)
+        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertNil(appState.daemonStartFailure)
+    }
+
+    /// The Automations tab's built-in card Turn On goes through the same
+    /// call, so a failed restart shows the app-wide banner there too.
+    func testBuiltinCardTurnOnFailedRestartShowsBannerInAutomationsTab() async throws {
+        let runner = FeaturesRunner(["approval-cards": "disabled"])
+        let (appState, daemon) = make(runner)
+        daemon.running = true
+        daemon.restartError = RestartBoom()
+        appState.selectedDestination = .automations
+        let card = try needsApprovalCard()
+
+        await card.setEnabled(true, appState.setBuiltinEnabled)
+
+        XCTAssertEqual(appState.selectedDestination, .automations)
+        XCTAssertEqual(appState.daemonBanner, .failed(AppState.daemonRestartFailureText(RestartBoom())))
+        XCTAssertEqual(card.actionError, RestartBoom().localizedDescription, "the card keeps its own line too")
+    }
+
+    /// The banner's **Retry** restarts the running daemon on the start
+    /// queue; a success clears the line.
+    func testBannerRetryRestartsAndClears() async {
+        let runner = FeaturesRunner(["approval-cards": "disabled"])
+        let (appState, daemon) = make(runner)
+        daemon.running = true
+        daemon.restartError = RestartBoom()
+        _ = await appState.setBuiltinEnabled(["approval-cards"], on: true)
+        XCTAssertNotNil(appState.daemonStartFailure)
+
+        daemon.restartError = nil
+        appState.startDaemonFromBanner()
+        await appState.daemonStartChain?.value
+
+        XCTAssertEqual(daemon.restarts, 2)
+        XCTAssertNil(appState.daemonStartFailure)
+    }
+
+    /// Needs approval's built-in card over `show --json` (the Go golden).
+    private func needsApprovalCard() throws -> BuiltinAutomationCardModel {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/automations/builtin/testdata/show_needs_approval.json")
+        let block = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        let detail: [String: Any] = [
+            "id": 7, "slug": "needs-approval", "scope": "personal", "path": "builtin:needs-approval",
+            "name": "Needs approval", "enabled": false, "runnable": true, "needs_confirmation": false,
+            "recipe_text": "---\nname: Needs approval\n---\n", "builtin": block
+        ]
+        let show = try JSONSerialization.data(withJSONObject: detail)
+        let automation = Automation(
+            id: 7, slug: "needs-approval", path: "builtin:needs-approval", name: "Needs approval",
+            triggerKind: "event", triggerSpecJSON: #"{"event":"approval"}"#, recipeText: "",
+            approvalHash: "h", confirmedHash: "h", enabled: false, origin: .builtin, builtinID: "needs-approval")
+        return BuiltinAutomationCardModel(automation: automation, cli: AutomationsCLI(runner: FakeCLIRunner(stdout: show)))
     }
 
     // MARK: - When save

@@ -29,7 +29,9 @@ enum InboxBuilderBShotFixtures {
                      "inbox-b-menu-changed", "inbox-b-menu-cli-unavailable", "inbox-b-menu-write-refused",
                      "inbox-b-menu-move-pending", "inbox-b-folder-delete-confirm"]
         return [
-            DesignShot(name: "inbox-b-menu-root", size: NSSize(width: 1180, height: 640)) { inboxRoot() }
+            DesignShot(name: "inbox-b-menu-root", size: NSSize(width: 1180, height: 640)) {
+                InboxFoldersShotFixtures.root()
+            }
         ] + names.map { name in
             DesignShot(name: name, size: NSSize(width: 260, height: 300)) {
                 do {
@@ -57,53 +59,6 @@ enum InboxBuilderBShotFixtures {
         AnyView(InboxFolderMenu(content: content)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .detailBackground())
-    }
-
-    /// The whole Inbox: the menu, the root's list, the selected artifact
-    /// under its header (b-01's main panel).
-    private static func inboxRoot() -> AnyView {
-        let rootMenu: InboxFolderMenuContent
-        do {
-            rootMenu = try InboxFolderMenuShotFixtures.content("inbox-b-menu-root")
-        } catch {
-            return DesignShotFixtures.failure(error)
-        }
-        return AnyView(VStack(spacing: 0) {
-            inboxHeader
-            Divider()
-            HStack(spacing: 0) {
-                InboxFolderMenu(content: rootMenu)
-                    .frame(width: PaneWidth.sideListIdeal)
-                Divider()
-                InboxFolderContentList(content: rootList(selection: "weekly"))
-                    .frame(width: 300)
-                Divider()
-                InboxCardColumn {
-                    VStack(alignment: .leading, spacing: Spacing.medium) {
-                        InboxArtifactHeader(title: "Weekly mail roundup", source: "Weekly mail roundup · Run #12 · 2 h ago",
-                                            menu: InboxArtifactMenuContent(folders: fullTree))
-                        Text("Three threads from example.com need an answer this week: the acme invoice, "
-                            + "the venue for the offsite and the contract renewal.")
-                            .font(.callout)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground())
-    }
-
-    /// The header today's Inbox keeps: its title and the `?`.
-    private static var inboxHeader: some View {
-        HStack {
-            Text("Inbox").font(.headline)
-            Spacer()
-            Button {} label: { Image(systemName: "questionmark.circle") }
-                .buttonStyle(.kitIcon(isOn: false))
-        }
-        .padding(.horizontal, Spacing.medium)
-        .padding(.vertical, Spacing.regular)
     }
 
     // MARK: - Folder lists
@@ -135,7 +90,7 @@ enum InboxBuilderBShotFixtures {
                 listColumn(InboxFolderListContent(folderKind: .owner, folderTitle: "Release acme 2.0"))
             },
             DesignShot(name: "inbox-b-approvals-empty", size: NSSize(width: 420, height: 240)) {
-                listColumn(InboxFolderListContent(folderKind: .approvals, folderTitle: "Needs approval"))
+                approvalsPane(Approvals(cards: []))
             }
         ]
     }
@@ -197,6 +152,7 @@ enum InboxBuilderBShotFixtures {
         ]
     }
 
+    /// The live `NeedsApprovalPane` (Task 12) over the fixture's cards.
     private static func approvalsPane(_ approvals: Approvals) -> AnyView {
         let count = approvals.cards.reduce(0) { total, card in
             if case let .recipe(rows) = card { return total + rows.count }
@@ -206,15 +162,7 @@ enum InboxBuilderBShotFixtures {
             if let banner = approvals.banner {
                 DaemonBannerView(banner: .failed(banner), onStart: {}, onOpenLogs: {}, onDismiss: {})
             }
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                HStack {
-                    Text("Needs approval · \(count)").font(.title3.weight(.semibold))
-                    Spacer()
-                    InboxMoreMenu(entries: InboxArtifactMenuContent.approvalsEntries(isEnabled: true)) { _ in }
-                }
-                if let note = approvals.note {
-                    NeedsApprovalNote(content: note)
-                }
+            NeedsApprovalPane(count: count, note: approvals.note) {
                 if approvals.notice {
                     nativeCard(.builtinNotice(BuiltinUpgradeNotice(
                         builtinID: "morning-brief", error: "your customised prompt was kept; the move stopped at "
@@ -224,7 +172,7 @@ enum InboxBuilderBShotFixtures {
                     approvalCard(card)
                 }
             }
-            .padding(Spacing.page)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .detailBackground())
@@ -516,11 +464,12 @@ enum InboxBuilderBShotFixtures {
             },
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
-                    InboxFolderListRowView(row: InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder",
-                                                                   summary: "1 to judge", detail: "updated 3 h ago"))
+                    InboxFolderListRowView(row: InboxFolderListRow(
+                        id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
+                        detail: "updated 3 h ago", menu: InboxFolderEntry.legacyIdeas.menuEntries))
                         .kitRow(isSelected: true)
                         .frame(width: 280)
-                    menuPanel("Idea finder ⋯", InboxArtifactMenuContent.ideaFinderEntries)
+                    menuPanel("Idea finder ⋯", InboxFolderEntry.legacyIdeas.menuEntries)
                 }
                 .padding(Spacing.page)
                 .frame(maxWidth: .infinity, alignment: .topLeading)

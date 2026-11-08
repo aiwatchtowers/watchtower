@@ -192,6 +192,40 @@ package enum InboxFolderQueries {
         }
     }
 
+    /// The `needs-approval` built-in as Needs approval's note and card
+    /// selection need it: stopped by the daemon (`disabled_reason`), and
+    /// its latest finished run and latest failed run — failed meaning any
+    /// finish but `succeeded` (a timed-out, over-budget or cancelled run
+    /// left its cards as stale as a failed one). No row (not indexed
+    /// yet, or a database without the automation tables) is `.absent`.
+    package static func needsApproval(_ db: Database) throws -> NeedsApprovalState {
+        do {
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT id, disabled_reason FROM automations WHERE builtin_id = ?",
+                arguments: [needsApprovalBuiltinID]) else { return .absent }
+            let automationID: Int64 = row["id"]
+            let disabledReason: String = row["disabled_reason"] ?? ""
+            let latest = try String.fetchOne(db, sql: """
+                SELECT status FROM automation_runs
+                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting')
+                ORDER BY id DESC LIMIT 1
+                """, arguments: [automationID])
+            let failedRun = try Int64.fetchOne(db, sql: """
+                SELECT id FROM automation_runs
+                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting', 'succeeded')
+                ORDER BY id DESC LIMIT 1
+                """, arguments: [automationID])
+            return NeedsApprovalState(
+                automationID: automationID, stopped: !disabledReason.isEmpty, lastRunFailed: latest.map { $0 != "succeeded" } ?? false,
+                latestFailedRunID: failedRun)
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return .absent
+        }
+    }
+
+    /// The `needs-approval` built-in's id (`builtin.Entry`, Go).
+    package static let needsApprovalBuiltinID = "needs-approval"
+
     /// The Messages legacy entry stands in for Waiting for me: see
     /// `WaitingForMeState.messagesStandIn`.
     package static func messagesStandIn(_ db: Database) throws -> Bool {

@@ -13,6 +13,9 @@ struct InboxFolderMenuColumn: View {
     /// A ⋯ press the menu does not carry out itself.
     var onCommand: (Int64, InboxMenuCommand) -> Void = { _, _ in }
     var onNewArtifact: () -> Void = {}
+    /// A folder picked; nil lets the model select it alone (the Inbox
+    /// passes `ActionStripViewModel.selectFolder`, which also resets the list).
+    var onSelect: ((Int64) -> Void)?
 
     var body: some View {
         InboxFolderMenu(content: model.content, onAction: handle)
@@ -20,7 +23,7 @@ struct InboxFolderMenuColumn: View {
 
     private func handle(_ action: InboxFolderMenuAction) {
         switch action {
-        case let .select(id): model.select(id)
+        case let .select(id): if let onSelect { onSelect(id) } else { model.select(id) }
         case let .toggleExpanded(id): model.toggleExpanded(id)
         case .newFolder: model.beginCreate(parent: nil)
         case .newArtifact: onNewArtifact()
