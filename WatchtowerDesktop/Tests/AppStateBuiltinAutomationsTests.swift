@@ -16,18 +16,31 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
         var failSwitch: Error?
         /// A switch of one of these ids fails; the others go through.
         var failIDs: [String: Error] = [:]
+        /// Runs once, during the first list read after a switch went
+        /// through (the feature manager's trailing reload).
+        var duringReloadAfterSwitch: (@MainActor () async -> Void)?
+        private var switched = false
 
         init(_ states: [String: String]) {
             self.states = states
         }
 
         func run(args: [String]) async throws -> Data {
-            try lock.withLock {
+            let hook: (@MainActor () async -> Void)? = lock.withLock {
+                guard switched, args.count > 1, args[1] == "list", let hook = duringReloadAfterSwitch else {
+                    return nil
+                }
+                duringReloadAfterSwitch = nil
+                return hook
+            }
+            if let hook { await hook() }
+            return try lock.withLock {
                 calls.append(args)
                 if args.count == 3, args[0] == "features", ["enable", "disable"].contains(args[1]) {
                     if let failSwitch { throw failSwitch }
                     if let failure = failIDs[args[2]] { throw failure }
                     states[args[2]] = args[1] == "enable" ? "enabled" : "disabled"
+                    switched = true
                 }
                 let rows = states.keys.sorted().map { id in
                     """
@@ -123,6 +136,28 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
         daemon.restartError = nil
         try await appState.restartOnChain(daemon)
         XCTAssertNil(appState.daemonStartFailure, "a later successful restart clears the banner")
+    }
+
+    /// The restart fails, then a newer restart succeeds while the feature
+    /// manager still reloads: the stale failure never comes back over the
+    /// cleared banner.
+    func testStaleRestartFailureNeverOverwritesANewerSuccess() async throws {
+        let runner = FeaturesRunner(["approval-cards": "disabled"])
+        let (appState, daemon) = make(runner)
+        daemon.running = true
+        daemon.restartError = RestartBoom()
+        runner.duringReloadAfterSwitch = {
+            XCTAssertEqual(appState.daemonStartFailure, AppState.daemonRestartFailureText(RestartBoom()),
+                           "the banner is up as soon as the restart failed")
+            daemon.restartError = nil
+            try? await appState.restartOnChain(daemon)
+        }
+
+        let reason = await appState.setBuiltinEnabled(["approval-cards"], on: true)
+
+        XCTAssertEqual(reason, RestartBoom().localizedDescription, "the call's own reason stays")
+        XCTAssertEqual(daemon.restarts, 2)
+        XCTAssertNil(appState.daemonStartFailure, "the newer success keeps the banner clear")
     }
 
     /// Two features: the first enables, the second's `features enable`

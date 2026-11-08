@@ -42,16 +42,17 @@ extension AppState {
             let busy = await featureManager.disableNow(featureIDs, restart: restart).busy
             return busy ? Self.featureChangesBusy : featureManager.loadError
         }
-        var restartError: (any Error)?
         let result = await featureManager.enableNow(featureIDs) {
             do {
                 try await self.restartOnChain(daemon)
             } catch {
-                restartError = error
+                // Set as the restart fails, not once `enableNow` returns: a
+                // newer restart that succeeds during its trailing reload
+                // clears the banner, and a late write would bring it back.
+                self.daemonStartFailure = Self.daemonRestartFailureText(error)
                 throw error
             }
         }
-        if let restartError { daemonStartFailure = Self.daemonRestartFailureText(restartError) }
         if result.busy { return Self.featureChangesBusy }
         if let error = featureManager.loadError { return error }
         if result.enabled.isEmpty, let first = featureIDs.first {
