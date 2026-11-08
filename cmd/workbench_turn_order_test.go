@@ -133,6 +133,14 @@ func TestInterruptedTurnEnd(t *testing.T) {
 	head := transcriptPrompt("go") + transcriptToolUse("toolu_A") + transcriptToolUse("toolu_B") + transcriptToolResult("toolu_A")
 	n := func(s string) int64 { return int64(len(s)) }
 	marker := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted]"}]}}` + "\n"
+	// What Claude Code writes as user entries inside a turn: a skill body
+	// (isMeta), injected context and hook output (only <system-reminder>
+	// blocks, as text or a text block), a compaction summary.
+	midTurn := head + `{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"skill body"}]}}` + "\n" +
+		`{"type":"user","message":{"role":"user","content":"<system-reminder>ctx</system-reminder>"}}` + "\n" +
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":" <system-reminder>hook</system-reminder>\n"}]}}` + "\n" +
+		`{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"summary"}}` + "\n" +
+		transcriptToolResult("toolu_B")
 	for _, tc := range []struct {
 		name          string
 		text, id      string
@@ -144,6 +152,8 @@ func TestInterruptedTurnEnd(t *testing.T) {
 		{"the next prompt", head + transcriptPrompt("next") + transcriptToolUse("toolu_C"), "toolu_B", 0, n(head), true, true},
 		{"the marker after the call's result", head + transcriptToolResult("toolu_B") + marker + transcriptPrompt("x"), "toolu_B", 0,
 			n(head + transcriptToolResult("toolu_B")), true, true},
+		{"mid-turn user entries are not the boundary: the marker is", midTurn + marker + transcriptPrompt("next"), "toolu_B", 0,
+			n(midTurn), true, true},
 		{"the call before from", head + transcriptPrompt("next"), "toolu_B", n(head), 0, false, true},
 		{"from mid-line skips that line", head, "toolu_B", n(transcriptPrompt("go")+transcriptToolUse("toolu_A")) + 3, 0, false, true},
 		{"not in the transcript", head, "toolu_Z", 0, 0, false, true},
