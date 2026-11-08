@@ -545,16 +545,27 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 			}
 		}
 	}
+	seed, err := SeedOf(d, ask)
+	if err != nil {
+		return err
+	}
 	loop, err := loopRound(d, ask.ID)
 	if err != nil {
 		return err
 	}
-	if loop != nil {
+	switch {
+	case seed != nil:
+		// Round 1 of a loop after the owner's Request changes: the owner's
+		// items are what this round's verdicts settle.
+		in.openItems(prev.ID, seed, nil, true)
+	case loop != nil:
 		if err := in.previousOpenItems(d, prev.ID, loop.Replies); err != nil {
 			return err
 		}
-	} else if err := in.previousFindings(d, prev.ID); err != nil {
-		return err
+	default:
+		if err := in.previousFindings(d, prev.ID); err != nil {
+			return err
+		}
 	}
 	if prev.Status != "answered" && prev.Status != "delivered" {
 		return nil
@@ -654,6 +665,17 @@ func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) 
 	if err != nil {
 		in.note("the author's replies left out: %v", err)
 	}
+	in.openItems(prevID, open, replies, false)
+	return nil
+}
+
+// openItems renders the open items a round's verdicts settle, with the
+// author's reply to each (a missing reply is fixed), one line each, and
+// makes their keys the ones a verdict may name (PrevOpenKeys). With owner,
+// the items are the owner's (SeedOf) and each line also says what the owner
+// asked for.
+func (in *inputs) openItems(prevID int64, open []AuthorItem, replies []Reply, owner bool) {
+	in.src.PrevOpenKeys = map[string]bool{}
 	replyOf := map[string]Reply{}
 	for _, rp := range replies {
 		replyOf[rp.Key] = rp
@@ -661,7 +683,11 @@ func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) 
 	var b strings.Builder
 	for _, it := range open {
 		in.src.PrevOpenKeys[it.Key] = true
-		fmt.Fprintf(&b, "[%s] %s: %s — author: ", oneLineText(it.Key), it.Kind, oneLineText(it.Text))
+		fmt.Fprintf(&b, "[%s] %s: %s — ", oneLineText(it.Key), it.Kind, oneLineText(it.Text))
+		if owner && strings.TrimSpace(it.Note) != "" {
+			b.WriteString("owner asked: " + oneLineText(it.Note) + " — ")
+		}
+		b.WriteString("author: ")
 		rp, ok := replyOf[it.Key]
 		switch {
 		case ok && rp.Reply == ReplyDisagree:
@@ -676,7 +702,6 @@ func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) 
 	if b.Len() > 0 {
 		in.add("previous_open_items ask:"+strconv.FormatInt(prevID, 10), b.String())
 	}
-	return nil
 }
 
 // previousFindings renders the previous round's stored reviewer result, when

@@ -188,3 +188,37 @@ func TestValidateAnswerZeroOptionsNeedsOther(t *testing.T) {
 		}
 	}
 }
+
+// A findings comment carries the mark key it came from; a margin comment and
+// an answer stored before the key existed leave it out.
+func TestComment_ItemKeyRoundTrips(t *testing.T) {
+	keyed := Comment{Body: "Fix it", Heading: "Behaviour", ItemKey: "bs:aaaaaaaaaaaa", Quote: "Muting lasts"}
+	js, err := json.Marshal(keyed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"body":"Fix it","heading":"Behaviour","item_key":"bs:aaaaaaaaaaaa","prefix":"","quote":"Muting lasts","suffix":""}`; string(js) != want {
+		t.Fatalf("keyed comment = %s, want %s", js, want)
+	}
+	margin, err := json.Marshal(Comment{Body: "Margin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(margin), "item_key") {
+		t.Fatalf("a margin comment carries no item_key: %s", margin)
+	}
+	old, err := ParseAnswer([]byte(`{"verdict":"changes","comments":[{"body":"Old","heading":"H","prefix":"","quote":"q","suffix":""}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old.Comments) != 1 || old.Comments[0].ItemKey != "" {
+		t.Fatalf("old answer decoded as %+v", old.Comments)
+	}
+	back, err := ParseAnswer([]byte(`{"verdict":"changes","comments":[` + string(js) + `]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Comments[0] != keyed {
+		t.Fatalf("round trip = %+v, want %+v", back.Comments[0], keyed)
+	}
+}

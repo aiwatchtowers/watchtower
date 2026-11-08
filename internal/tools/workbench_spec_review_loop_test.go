@@ -395,3 +395,94 @@ func TestAskOwner_ReRoundAfterShowNowIsVisible(t *testing.T) {
 		`{"kind":"review","title":"Review","doc_path":%q,"previous_ask_id":%d,"changes":"v2","reason":"r"}`, loopSpecPath, first))
 	assert.Equal(t, "", specRow(t, fx.d, askID(t, out)).Loop)
 }
+
+// ownerHadReview files a loop round, ends its loop for the owner and stores
+// the owner's answer.
+func ownerHadReview(t *testing.T, fx loopFixture, answer string) int64 {
+	t.Helper()
+	first := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	finishRound(t, fx.d, first)
+	_, err := fx.d.RevealSpecLoop(first, specreview.EndSettled, "", time.Now())
+	require.NoError(t, err)
+	answerAsk(t, fx.d, first, answer)
+	return first
+}
+
+func nextVersion(prev int64) string {
+	return fmt.Sprintf(`{"kind":"review","title":"Review","doc_path":%q,"previous_ask_id":%d,"changes":"v2","reason":"r"}`, loopSpecPath, prev)
+}
+
+// D8: after the owner's Request changes, the author's next version starts a
+// new hidden loop at round 1 under the open-ended rules.
+func TestSpecLoopStart_ChangesStartsNewLoop(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := ownerHadReview(t, fx, `{"verdict":"changes","comments":[{"body":"Fix it","heading":"Spec","prefix":"","quote":"Spec","suffix":""}]}`)
+
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", nextVersion(first))
+	assert.Equal(t, "author_loop", out["spec_review"])
+	r := specRow(t, fx.d, askID(t, out))
+	assert.Equal(t, "author", r.Loop)
+	assert.Equal(t, 1, r.Round)
+	assert.Equal(t, specreview.LoopRulesOpen, r.LoopRules)
+
+	prev, err := fx.d.GetOwnerAskByID(first)
+	require.NoError(t, err)
+	got, err := specLoopStart(fx.d, askOwnerArgs{Kind: "review", PreviousAskID: first}, prev, true)
+	require.NoError(t, err)
+	assert.Equal(t, &db.SpecLoopStart{Round: 1, LoopRules: specreview.LoopRulesOpen}, got)
+
+	// Replies still have no round to answer: the owner had the review.
+	_, err = proposeIn(t, fx.reg, fx.a, "ask_owner", reRound(first, `[{"key":"ag:1","reply":"fixed"}]`))
+	assert.Contains(t, refusal(t, err), "the owner has this review now")
+}
+
+// Approve (with or without fixes) keeps today's behaviour: no new review loop.
+func TestSpecLoopStart_ApprovedStaysClassic(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := ownerHadReview(t, fx, `{"verdict":"approved","comments":[{"body":"Small fix","heading":"Spec","prefix":"","quote":"Spec","suffix":""}]}`)
+	prev, err := fx.d.GetOwnerAskByID(first)
+	require.NoError(t, err)
+	got, err := specLoopStart(fx.d, askOwnerArgs{Kind: "review", PreviousAskID: first}, prev, true)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	out := mustApply(t, fx.reg, fx.a, "ask_owner", nextVersion(first))
+	assert.Equal(t, "", specRow(t, fx.d, askID(t, out)).Loop)
+}
+
+// The loop needs a session: without one the re-round after changes is a
+// visible review, as today.
+func TestSpecLoopStart_NoSessionStaysClassic(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	first := ownerHadReview(t, fx, `{"verdict":"changes"}`)
+	prev, err := fx.d.GetOwnerAskByID(first)
+	require.NoError(t, err)
+	got, err := specLoopStart(fx.d, askOwnerArgs{Kind: "review", PreviousAskID: first}, prev, false)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+
+	reg := askRegistryWith(t, fx.d, "", okLauncher)
+	out := mustApply(t, reg, fx.a, "ask_owner", nextVersion(first))
+	assert.Equal(t, "queued", out["spec_review"])
+	assert.Equal(t, "", specRow(t, fx.d, askID(t, out)).Loop)
+}
+
+// get_spec_review names no round cap: max_rounds is the fuse, and round 3 is
+// not "the last round".
+func TestGetSpecReview_HintHasNoRoundCap(t *testing.T) {
+	fx := newLoopFixture(t, okLauncher)
+	id := askID(t, mustApply(t, fx.reg, fx.a, "ask_owner", fmt.Sprintf(specReviewAsk, loopSpecPath)))
+	args := fmt.Sprintf(`{"ask_id":%d}`, id)
+	for _, status := range []string{"queued", "running", "done", "failed"} {
+		_, err := fx.d.Exec(`UPDATE spec_reviews SET round = 3, status = ?, open_items = ? WHERE ask_id = ?`, status, openItemsJSON, id)
+		require.NoError(t, err)
+		var v map[string]any
+		require.NoError(t, json.Unmarshal([]byte(callReadIn(t, fx.reg, fx.a, "get_spec_review", args)), &v))
+		assert.Equal(t, float64(3), v["round"])
+		assert.Equal(t, float64(8), v["max_rounds"])
+		hint, _ := v["hint"].(string)
+		assert.NotContains(t, strings.ToLower(hint), "last round", status)
+		assert.NotContains(t, hint, "of 3", status)
+		assert.NotContains(t, hint, "of 8", status)
+	}
+}
