@@ -150,6 +150,7 @@ final class ReviewerCenterTests: XCTestCase {
         h.cli.script(["start": roundJSON(folder: worktree.path), "context": #"{"ok":true,"items":[]}"#,
                       "diff": diffJSON(Array(files.keys).sorted())])
         await h.model.open()
+        await h.model.mapTask?.value
         XCTAssertEqual(Set(h.model.chapters.map(\.key)).count, 2, "two chapters, one file each")
 
         let place = SessionPlace.worktree(name: "registry", root: worktree,
