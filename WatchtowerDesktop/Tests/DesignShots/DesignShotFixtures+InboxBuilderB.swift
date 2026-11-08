@@ -215,7 +215,7 @@ enum InboxBuilderBShotFixtures {
             }
         } + [
             DesignShot(name: "inbox-b-waiting-not-run", size: NSSize(width: 980, height: 360)) { waitingNotRun() },
-            DesignShot(name: "inbox-b-waiting-empty", size: NSSize(width: 660, height: 0)) { waitingEmpty() }
+            DesignShot(name: "inbox-b-waiting-empty", size: NSSize(width: 660, height: 300)) { waitingEmpty() }
         ]
     }
 
@@ -296,21 +296,24 @@ enum InboxBuilderBShotFixtures {
         .detailBackground())
     }
 
-    /// Waiting for me with nothing open: its list block's own empty line.
+    /// Waiting for me with nothing open: its list block's own empty line,
+    /// in the wired reading pane with the built-in's ⋯ on its title row.
     private static func waitingEmpty() -> AnyView {
         let json = #"{"v":1,"blocks":[{"type":"list","rows":[],"empty":"Nobody is waiting on you"}]}"#
-        guard case let .document(document) = ArtifactDocument.decode(json) else {
+        guard case .document = ArtifactDocument.decode(json) else {
             XCTFail("the empty Waiting for me sample does not decode")
             return AnyView(Text("fixture failed"))
         }
-        return AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
-            InboxArtifactHeader(title: "Waiting for me", source: "Updated 6 min ago · after every sync",
-                                menu: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree))
-            ArtifactView(document: document, mode: .inbox)
-        }
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground())
+        let now = AutomationDates.parse("2026-11-06T12:00:00Z") ?? Date()
+        let card = AutomationOutputCard(
+            id: 21, automationID: 9, automationName: "Waiting for me", runID: 21, title: "Waiting for me",
+            body: "", priority: "normal", createdAt: now.addingTimeInterval(-360), blocksJSON: json,
+            outputKey: "waiting")
+        let menu = InboxArtifactMenuState(entries: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree).entries)
+        return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+            .withArtifactMenu(menu)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .detailBackground())
     }
 
     // MARK: - The ⋯ menus
