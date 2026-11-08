@@ -152,6 +152,14 @@ package enum ReviewMapPresentation {
         }
     }
 
+    /// A chapter the overview has no description of: it failed or the run did not reach it.
+    package static func notDescribed(_ state: ChapterRunState?) -> Bool {
+        switch state {
+        case .failed?, .notStarted?: true
+        default: false
+        }
+    }
+
     package static let notCoveredText = "Not described — not covered by the summary"
     package static let queuedText = "Queued — Retry runs after the current run"
     package static let notDescribedText = "Not described yet"

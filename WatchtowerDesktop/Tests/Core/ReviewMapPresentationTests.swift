@@ -111,6 +111,14 @@ final class ReviewMapPresentationTests: XCTestCase {
         XCTAssertFalse(clean.running)
     }
 
+    func testNotDescribedIsAFailedOrUnreachedChapter() {
+        XCTAssertTrue(Pres.notDescribed(.failed(text: "x", detail: nil)))
+        XCTAssertTrue(Pres.notDescribed(.notStarted))
+        for state: ChapterRunState? in [nil, .pending, .running, .queued, .ok, .cached] {
+            XCTAssertFalse(Pres.notDescribed(state), "\(String(describing: state))")
+        }
+    }
+
     func testNoCardBeforeARunOrOnASummaryFailure() {
         XCTAssertNil(Pres.progress(keys: ["a"], states: [:], summary: .pending, waiting: nil))
         XCTAssertNil(Pres.progress(keys: ["a"], states: ["a": .ok], summary: .failed(text: "s", detail: nil), waiting: nil))

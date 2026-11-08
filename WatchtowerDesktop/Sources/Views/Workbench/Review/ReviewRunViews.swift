@@ -199,7 +199,7 @@ struct ReviewChapterHeader: View {
         case let .failed(text, detail):
             ReviewFailureNotice(text: failureSentence(text), detail: detail) { model.retry(chapter: chapter.key) }
             Text(notDescribedNote(signals)).font(.caption).foregroundStyle(.secondary)
-        case .notDescribed:
+        case .notDescribed where model.notDescribed(chapter.key):
             Text(ReviewMapPresentation.notDescribedText).font(.callout).foregroundStyle(.secondary)
             Text(notDescribedNote(signals)).font(.caption).foregroundStyle(.secondary)
         default:

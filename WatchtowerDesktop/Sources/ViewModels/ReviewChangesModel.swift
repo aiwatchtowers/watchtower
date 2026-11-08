@@ -1073,6 +1073,14 @@ final class ReviewChangesModel {
         return ready.chapters.filter { !$0.isCollapsed }.map(\.key)
     }
 
+    /// The chapter has no description in this overview (business spec item 4).
+    /// After a whole run failed the last ready overview stands, out of date:
+    /// its text and risks are shown, not "not described".
+    func notDescribed(_ key: String) -> Bool {
+        if case .failed = overview { return false }
+        return ReviewMapPresentation.notDescribed(chapterStates[key])
+    }
+
     /// The summary's failure line (mockup frame 2c): how many chapters it can be remade from.
     var summaryFailedLine: String {
         let keys = describableKeys

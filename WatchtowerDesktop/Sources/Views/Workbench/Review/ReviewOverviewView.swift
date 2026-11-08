@@ -132,7 +132,7 @@ struct ReviewOverviewView<Extra: View>: View {
     @ViewBuilder private var notCovered: some View {
         if case .ready(let map) = model.map {
             let missing = map.chapters.filter { chapter in
-                !chapter.isCollapsed && ReviewChapterRisksView.notDescribed(model.chapterStates[chapter.key])
+                !chapter.isCollapsed && model.notDescribed(chapter.key)
             }
             if !missing.isEmpty {
                 Text("Not covered").font(.caption.weight(.semibold))
