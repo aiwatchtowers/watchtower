@@ -618,8 +618,15 @@ package final class AutomationsViewModel {
 
     private func spentKey(_ automationID: Int64) -> String { "\(workspace)|\(automationID)" }
 
+    /// Records the spent entry and drops this workspace's entries for
+    /// automations no longer in the list (none dropped before it is read).
     private func spend(_ suggestionKey: String, for automationID: Int64) {
         var spent = spentSuggestions
+        if !items.isEmpty {
+            let live = Set(items.map { spentKey($0.id) })
+            let prefix = workspace + "|"
+            spent = spent.filter { !$0.key.hasPrefix(prefix) || live.contains($0.key) }
+        }
         spent[spentKey(automationID)] = suggestionKey
         defaults.set(spent, forKey: Self.spentSuggestionsKey)
     }

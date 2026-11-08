@@ -248,6 +248,32 @@ final class AutomationSaveFolderTests: XCTestCase {
                                                 automationID: automation, suggestionKey: "entry-b"))
     }
 
+    /// Writing the store drops this workspace's entries for automations
+    /// that are gone; another workspace's entries stay.
+    func testSpendingPrunesRemovedAutomations() async throws {
+        let gone = try await pool.write { db in
+            try TestDatabase.insertAutomation(db, slug: "gone", name: "Gone")
+        }
+        let editor = editorCenter()
+        let other = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults,
+                                         workspace: "/acme/other")
+        other.refresh()
+        await other.routeEditorSave(key: gone, landed: gone, draftContextID: nil, editor: editor, route: nil,
+                                    spending: "other")
+        vm.refresh()
+        await vm.routeEditorSave(key: gone, landed: gone, draftContextID: nil, editor: editor, route: nil,
+                                 spending: "gone")
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automations SET removed_at = '2026-10-20T09:00:00Z' WHERE id = ?",
+                           arguments: [gone])
+        }
+        vm.refresh()
+        await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: editor,
+                                 route: nil, spending: "kept")
+        let stored = defaults.dictionary(forKey: AutomationsViewModel.spentSuggestionsKey) as? [String: String] ?? [:]
+        XCTAssertEqual(Set(stored.values), ["kept", "other"], "the removed automation's entry went: \(stored)")
+    }
+
     /// Only a press that saves spends, and only an entry that names a folder.
     func testOnlyASavingPressWithAFolderSpends() {
         let suggestion = AutomationFolderSuggestion(title: "Release")
