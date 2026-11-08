@@ -443,6 +443,23 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertTrue(editorOpened.isEmpty)
     }
 
+    /// Needs approval's ⋯ pressed on its menu row while the root is open:
+    /// the failure shows on that row; with Needs approval open, in its pane only.
+    func testApprovalsFailureFromTheMenuRowShowsOnTheRow() async {
+        builtinAnswer = "config locked"
+        let menu = model()
+        folderMenu.select(ids.approvals)
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertEqual(menu.approvalsError, "config locked")
+        XCTAssertNil(folderMenu.content.refusal, "the open pane shows it")
+
+        folderMenu.select(ids.root)
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertEqual(menu.approvalsError, "config locked")
+        XCTAssertEqual(folderMenu.content.refusal,
+                       InboxFolderMenuRefusal(folderID: ids.approvals, message: "config locked"))
+    }
+
     // MARK: - + New Artifact…
 
     /// The view model wired as the app wires it: the route through the

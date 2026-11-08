@@ -440,6 +440,13 @@ package final class InboxFolderMenuModel {
         return reason
     }
 
+    /// A row ⋯ press the caller carried out failed (Needs approval's, from
+    /// the menu while another folder is open): its reason on that row, like
+    /// the menu's own refusals.
+    package func showRefusal(_ message: String, on folderID: Int64) {
+        refusal = InboxFolderMenuRefusal(folderID: folderID, message: message)
+    }
+
     nonisolated package static let routeBusy = "another change to the Inbox menu is running — try again"
     nonisolated package static let routeNotRead = "the Inbox menu is not read yet — try again"
     nonisolated package static let routeMenuChanged = "the Inbox menu changed — it was reloaded, try again"

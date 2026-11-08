@@ -198,10 +198,20 @@ package final class InboxArtifactMenuModel {
     }
 
     /// Edit the Look…, Turn Off / Turn On (the built-in's own card, else its
-    /// feature directly), Run History.
-    package func performApprovals(_ command: InboxMenuCommand) async {
+    /// feature directly), Run History. Pressed on the folder menu's row
+    /// (`fromFolder`) while Needs approval is not the open folder, a failure
+    /// also shows on that row: its pane, where `approvalsError` is drawn, is
+    /// not on screen.
+    package func performApprovals(_ command: InboxMenuCommand, fromFolder folderID: Int64? = nil) async {
         guard !approvalsPressing else { return }
         approvalsError = nil
+        await runApprovals(command)
+        if let approvalsError, let folderID, folderMenu.selectedFolderID != folderID {
+            folderMenu.showRefusal(approvalsError, on: folderID)
+        }
+    }
+
+    private func runApprovals(_ command: InboxMenuCommand) async {
         let automation = approvalsAutomation
         switch command {
         case .editLook, .runHistory:

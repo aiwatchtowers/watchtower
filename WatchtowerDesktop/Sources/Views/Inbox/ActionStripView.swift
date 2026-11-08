@@ -289,7 +289,7 @@ struct ActionStripActionsView: View {
     /// A folder-menu ⋯ press the menu does not carry out: Needs approval's.
     private func folderMenuCommand(_ folderID: Int64, _ command: InboxMenuCommand) {
         guard vm.folderMenu.tree.folder(folderID)?.kind == .approvals, let artifactMenu else { return }
-        Task { await artifactMenu.performApprovals(command) }
+        Task { await artifactMenu.performApprovals(command, fromFolder: folderID) }
     }
 
     /// `card`'s ⋯ in the reading pane.
