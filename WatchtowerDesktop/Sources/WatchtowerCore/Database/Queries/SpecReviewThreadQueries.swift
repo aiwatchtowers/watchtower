@@ -28,6 +28,27 @@ package enum SpecReviewThreadQueries {
         return root ?? askID
     }
 
+    /// Every thread with a finished message along the review chain rooted
+    /// at `rootAskID` of `workbenchID`: its item key and its conversation's
+    /// title, oldest first. A screen finds the threads on items a re-run
+    /// dropped this way, marked or not.
+    package static func chainThreads(
+        _ db: Database, workbenchID: Int64, rootAskID: Int64
+    ) throws -> [(itemKey: String, title: String)] {
+        let prefix = SpecReviewThreadKey.contextID(workbenchID: workbenchID, rootAskID: rootAskID, itemKey: "")
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT c.context_id AS context_id, c.title AS title FROM chat_conversations c
+            WHERE c.context_type = ? AND substr(c.context_id, 1, length(?)) = ?
+              AND EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id
+                          AND m.role IN ('user', 'assistant') AND m.status = 'complete')
+            ORDER BY c.id
+            """, arguments: [SpecReviewThreadKey.contextType, prefix, prefix])
+        return rows.map { row in
+            let contextID: String = row["context_id"]
+            return (String(contextID.dropFirst(prefix.count)), row["title"] ?? "")
+        }
+    }
+
     /// The questions of these threads (conversation keys), oldest first.
     package static func questions(_ db: Database, threads: [String]) throws -> [SpecReviewQuestionRow] {
         guard !threads.isEmpty else { return [] }
@@ -60,12 +81,19 @@ package enum SpecReviewThreadQueries {
         return rows.compactMap { row in
             let key: String = row["item_key"]
             let json: String = row["finding"]
-            guard var finding = try? JSONDecoder().decode(SpecReviewProposedFinding.self, from: Data(json.utf8)) else {
+            let finding: SpecReviewProposedFinding
+            do {
+                finding = try JSONDecoder().decode(SpecReviewProposedFinding.self, from: Data(json.utf8))
+            } catch {
+                // Ids only in the log (FILES-01): the error may quote the row.
+                NSLog("SpecReviewThreadQueries: ask %lld: thread finding %@ does not decode, left out (%@)",
+                      askID, key, String(describing: type(of: error)))
                 return nil
             }
-            finding.key = key
-            finding.status = .added(key: key)
-            return finding
+            var added = finding
+            added.key = key
+            added.status = .added(key: key)
+            return added
         }
     }
 

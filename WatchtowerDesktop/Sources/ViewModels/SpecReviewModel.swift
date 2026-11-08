@@ -85,9 +85,11 @@ final class SpecReviewModel {
     private(set) var threadQuestions: [SpecReviewQuestionRow] = []
     /// Item key → the finished messages its thread holds on disk.
     private(set) var threadMessageCounts: [String: Int] = [:]
-    /// **Fix** on a card with a thread: the comment field, filled with the
-    /// thread's drafted conclusion unless the owner typed first.
-    private(set) var fixDrafts: [String: SpecReviewFixDraft] = [:]
+    /// Fix drafts when the screen has no thread center (tests, previews).
+    private var localFixDrafts: [String: SpecReviewFixDraft] = [:]
+    /// Threads along the review chain whose item a re-run dropped, marked or
+    /// not: readable under "From the previous run".
+    private(set) var orphanThreads: [SpecReviewOrphanThread] = []
     /// What **Add to review** made of a thread's proposed finding, by
     /// `proposalKey`: added, or Go's refusal.
     private(set) var proposalStatuses: [String: SpecReviewProposedFinding.Status] = [:]
@@ -267,7 +269,7 @@ final class SpecReviewModel {
                 try SpecReviewQueries.clearMark(db, askID: askID, key: key)
             }
             marks[key] = nil
-            fixDrafts[key] = nil
+            setFixDraft(key, nil)
         } catch {
             lastError = "Could not clear the mark: \(error.localizedDescription)"
         }
@@ -513,8 +515,11 @@ final class SpecReviewModel {
         }
     }
 
+    /// Why Send and Approve stop when a Fix comment could not be saved.
+    static let fixNotSavedMessage = "A Fix comment could not be saved, so nothing was sent. Try again."
+
     func send() async -> OwnerAsksViewModel.AnswerResult {
-        await flushFixDrafts()
+        guard await flushFixDrafts() else { return .invalid(Self.fixNotSavedMessage) }
         guard canSend else {
             return .invalid("Comment on a finding, or write a note, before requesting changes.")
         }
@@ -522,7 +527,7 @@ final class SpecReviewModel {
     }
 
     func approve() async -> OwnerAsksViewModel.AnswerResult {
-        await flushFixDrafts()
+        guard await flushFixDrafts() else { return .invalid(Self.fixNotSavedMessage) }
         return await asks.answer(ask, with: answer(verdict: .approved))
     }
 
@@ -549,6 +554,18 @@ final class SpecReviewModel {
 }
 
 /// **Fix**'s comment field on a card with a thread (spec 2026-11-08 §3).
+/// A thread on an item a re-run dropped: its key and the item's line (the
+/// conversation's title without its "Spec review: " prefix).
+struct SpecReviewOrphanThread: Equatable {
+    let key: String
+    let title: String
+
+    static func itemTitle(_ conversationTitle: String) -> String {
+        let prefix = "Spec review: "
+        return conversationTitle.hasPrefix(prefix) ? String(conversationTitle.dropFirst(prefix.count)) : conversationTitle
+    }
+}
+
 struct SpecReviewFixDraft: Equatable {
     var text = ""
     /// The owner typed: the conclusion no longer fills the field.
@@ -674,6 +691,13 @@ extension SpecReviewModel {
         !threadItemKeys.contains(key)
     }
 
+    /// Every key a thread on this screen may be about: the current items,
+    /// then the marked orphans and the threads on dropped items.
+    private var allThreadKeys: [String] {
+        var seen = Set<String>()
+        return (threadItemKeys + orphans.map(\.key) + orphanThreads.map(\.key)).filter { seen.insert($0).inserted }
+    }
+
     /// **Discuss** (or the folded line): the thread is drawn open, and on
     /// its first opening its conversation is found or created and the
     /// reviewer's data fetched (once; a failure shows **Retry**).
@@ -794,10 +818,24 @@ extension SpecReviewModel {
         }
     }
 
-    /// Reads the threads' questions and message counts for every item on
-    /// the screen.
+    /// Reads the threads on dropped items, then the threads' questions and
+    /// message counts for every item on the screen.
     func loadThreads() async {
-        let byContext = Dictionary(threadItemKeys.map { (threadContextID($0), $0) }) { first, _ in first }
+        let workbenchID = ask.projectID
+        let root = rootAskID
+        do {
+            let chain = try await dbPool.read { db in
+                try SpecReviewThreadQueries.chainThreads(db, workbenchID: workbenchID, rootAskID: root)
+            }
+            let current = Set(threadItemKeys).union(orphans.map(\.key))
+            let found = chain.filter { !current.contains($0.itemKey) }.map {
+                SpecReviewOrphanThread(key: $0.itemKey, title: SpecReviewOrphanThread.itemTitle($0.title))
+            }
+            if found != orphanThreads { orphanThreads = found }
+        } catch {
+            lastError = "Could not read the discussions: \(error.localizedDescription)"
+        }
+        let byContext = Dictionary(allThreadKeys.map { (threadContextID($0), $0) }) { first, _ in first }
         let contextIDs = Array(byContext.keys)
         do {
             let (questions, counts) = try await dbPool.read { db in
@@ -812,7 +850,7 @@ extension SpecReviewModel {
             lastError = "Could not read the discussions: \(error.localizedDescription)"
         }
         // A thread left open when the drawer closed opens again with it.
-        for key in threadItemKeys where threadStates[key] == nil && isThreadOpen(key) {
+        for key in allThreadKeys where threadStates[key] == nil && isThreadOpen(key) {
             openThread(key)
         }
     }
@@ -871,7 +909,7 @@ extension SpecReviewModel {
         let id = proposalKey(finding, thread: key)
         do {
             let added = try await cli.specReviewAddFinding(askID: ask.id, thread: threadContextID(key),
-                                                           block: finding.blockJSON())
+                                                           block: try finding.blockJSON())
             proposalStatuses[id] = .added(key: added)
             await load()
         } catch {
@@ -891,6 +929,29 @@ extension SpecReviewModel {
         (threadMessageCounts[key] ?? 0) > 0 || !(threadEngine(key)?.messages.isEmpty ?? true)
     }
 
+    /// **Fix** on a card with a thread: the comment field by item key,
+    /// filled with the thread's drafted conclusion unless the owner typed
+    /// first. Held by the app's thread center (by thread key) when there is
+    /// one, so closing or switching the drawer keeps the typed text and a
+    /// conclusion still drafting lands there.
+    var fixDrafts: [String: SpecReviewFixDraft] {
+        guard let threadCenter else { return localFixDrafts }
+        let prefix = threadContextID("")
+        var out: [String: SpecReviewFixDraft] = [:]
+        for (thread, draft) in threadCenter.fixDrafts where thread.hasPrefix(prefix) {
+            out[String(thread.dropFirst(prefix.count))] = draft
+        }
+        return out
+    }
+
+    private func setFixDraft(_ key: String, _ draft: SpecReviewFixDraft?) {
+        if let threadCenter {
+            threadCenter.fixDrafts[threadContextID(key)] = draft
+        } else {
+            localFixDrafts[key] = draft
+        }
+    }
+
     /// **Fix**: the `comment` mark at once. On a card with a thread, the
     /// comment field opens empty and the thread is asked for a conclusion
     /// (a hidden turn); it fills the field unless the owner typed first.
@@ -899,16 +960,18 @@ extension SpecReviewModel {
     func fix(key: String) async {
         await mark(key, .comment)
         guard marks[key]?.state == .comment, chats != nil, !isOrphanedItem(key), hasThread(key) else { return }
-        fixDrafts[key] = SpecReviewFixDraft()
+        setFixDraft(key, SpecReviewFixDraft())
         let conclusion = await withConclusionTimeout { [weak self] in await self?.draftConclusion(key) }
         guard var draft = fixDrafts[key] else { return }
         draft.isDrafting = false
         if let conclusion {
             if !draft.ownerTyped { draft.text = conclusion }
         } else {
+            NSLog("SpecReviewModel: ask %lld: no conclusion for %@ (failed, or none within %@)",
+                  ask.id, key, "\(conclusionTimeout)")
             draft.couldNotDraft = true
         }
-        fixDrafts[key] = draft
+        setFixDraft(key, draft)
     }
 
     /// The owner typed in the Fix comment field: a conclusion arriving
@@ -917,30 +980,42 @@ extension SpecReviewModel {
         guard var draft = fixDrafts[key], draft.text != text else { return }
         draft.text = text
         draft.ownerTyped = true
-        fixDrafts[key] = draft
+        setFixDraft(key, draft)
     }
 
     /// Saves the field as the comment mark's body; an empty field leaves
-    /// the plain Fix.
-    func saveFixDraft(_ key: String) async {
+    /// the plain Fix. The field closes only once the body is stored: a
+    /// failed write keeps the owner's words (and `lastError` says why).
+    /// Returns whether nothing is left to save.
+    @discardableResult
+    func saveFixDraft(_ key: String) async -> Bool {
         let body = fixDrafts[key]?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        fixDrafts[key] = nil
-        guard !body.isEmpty else { return }
+        guard !body.isEmpty else {
+            setFixDraft(key, nil)
+            return true
+        }
         await mark(key, .comment, body: body)
+        guard marks[key]?.state == .comment, marks[key]?.body == body else { return false }
+        setFixDraft(key, nil)
+        return true
     }
 
     /// Send and Approve: every open Fix field with words in it (the drafted
     /// conclusion or the owner's own) becomes its comment mark's body before
-    /// the answer is built; an empty one stays a plain Fix.
-    func flushFixDrafts() async {
+    /// the answer is built; an empty one stays a plain Fix. False when one
+    /// could not be saved: the answer must not go without it.
+    func flushFixDrafts() async -> Bool {
+        var saved = true
         for key in fixDrafts.keys.sorted() {
-            await saveFixDraft(key)
+            let stored = await saveFixDraft(key)
+            saved = saved && stored
         }
+        return saved
     }
 
     /// Closes the field: the plain Fix stays.
     func closeFixDraft(_ key: String) {
-        fixDrafts[key] = nil
+        setFixDraft(key, nil)
     }
 
     /// The conclusion, or nil when the turn failed, never started, or
@@ -960,6 +1035,11 @@ extension SpecReviewModel {
     /// Waits for a reply in flight, then runs the hidden turn and returns
     /// its text with any block taken out.
     private func draftConclusion(_ key: String) async -> String? {
+        let askID = ask.id
+        func failed(_ why: String) -> String? {
+            NSLog("SpecReviewModel: ask %lld: conclusion for %@: %@", askID, key, why)
+            return nil
+        }
         if threadStates[key]?.context == nil, threadStates[key]?.isOpening != true {
             threadStates[key, default: SpecReviewThreadState()].isOpening = true
             await prepareThread(key)
@@ -967,21 +1047,23 @@ extension SpecReviewModel {
         // Held weakly across the waits: a chat the center lets go ends the
         // wait (`nextOutcome`) instead of being kept alive by it.
         weak var engine = threadEngine(key)
-        guard let turns = threadStates[key]?.context?.turns, engine != nil else { return nil }
+        guard let turns = threadStates[key]?.context?.turns, engine != nil else {
+            return failed("the thread could not be opened")
+        }
         while engine?.isBusy == true { _ = await Self.nextOutcome(of: engine) }
-        guard let idle = engine else { return nil }
+        guard let idle = engine else { return failed("the thread's chat was let go") }
         turns.concluding = true
         idle.sendHidden(Self.conclusionPrompt)
         let accepted = idle.isBusy
         guard accepted else {
             turns.concluding = false
-            return nil
+            return failed("the thread did not take the turn")
         }
         let outcome = await Self.nextOutcome(of: engine)
         turns.concluding = false
-        guard case let .completed(_, result) = outcome else { return nil }
+        guard case let .completed(_, result) = outcome else { return failed("the turn ended with \(outcome)") }
         let text = SpecReviewThreadBlocks.parse(result.displayText, final: true).text
-        return text.isEmpty ? nil : text
+        return text.isEmpty ? failed("the reply was empty") : text
     }
 
     /// The outcome of the engine's next turn to end; `.notStarted` when no
@@ -1068,6 +1150,7 @@ extension SpecReviewModel {
         if let finding = row?.result?.findings.first(where: { $0.key == key }) { return finding.text }
         if let thesis = row?.result?.theses.first(where: { $0.key == key }) { return thesis.text }
         if let entry = row?.ledger.first(where: { $0.item.key == key }) { return entry.item.text }
+        if let orphan = orphanThreads.first(where: { $0.key == key }) { return orphan.title }
         return threadFindings.first { $0.key == key }?.headline ?? key
     }
 }

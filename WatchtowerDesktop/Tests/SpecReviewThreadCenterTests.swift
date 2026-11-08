@@ -231,9 +231,81 @@ final class SpecReviewThreadCenterTests: XCTestCase {
         let engine = try XCTUnwrap(make())
         await waitUntil { self.ai.calls.count == 1 }
         XCTAssertTrue(ai.calls[0].prompt.contains(SpecReviewThreadCenter.notAnsweredPrompt(questionID: id)))
-        await waitUntil { self.systemRows(engine).contains(SpecReviewThreadCenter.notAnsweredNotice) }
+        await waitUntil { self.systemRows(engine).contains(SpecReviewThreadCenter.notReachedNotice) }
+        XCTAssertFalse(systemRows(engine).contains(SpecReviewThreadCenter.notAnsweredNotice),
+                       "never typed this run: it may not have reached the author")
         await center.poll()
         XCTAssertEqual(delivery.lines.count, 1, "a closed question is never typed")
+    }
+
+    /// A question filed before a restart and never typed this run expires:
+    /// the thread says it may not have reached the author, once.
+    func testExpiredWithoutDeliveryThisRunMayNotHaveReachedTheAuthor() async throws {
+        let id = try await pool.write { [askID, item, thread] d in
+            try d.execute(sql: """
+                INSERT INTO spec_review_questions (ask_id, thread, item_key, question, state, created_at)
+                VALUES (?, ?, ?, 'Per user?', 'expired', '2026-11-08T10:00:00Z')
+                """, arguments: [askID, thread, item])
+            return d.lastInsertedRowID
+        }
+        let make = try await engineMaker(chats)
+        await center.register(thread: thread, engine: make)
+        let engine = try XCTUnwrap(make())
+        await waitUntil { self.ai.calls.count == 1 }
+        XCTAssertTrue(ai.calls[0].prompt.contains(SpecReviewThreadCenter.notAnsweredPrompt(questionID: id)))
+        await waitUntil { self.systemRows(engine).contains(SpecReviewThreadCenter.notReachedNotice) }
+        ai.emit(.text("Done."), .turnComplete("Done."), .done)
+        ai.finish()
+        await engine.finished()
+        await center.poll()
+        XCTAssertEqual(ai.calls.count, 1, "the follow-up goes once")
+    }
+
+    /// Typed without Return, or only copied: the thread tells the owner
+    /// what to do in the author's session.
+    func testTypedAndCopiedTellTheOwner() async throws {
+        let make = try await engineMaker(chats)
+        await center.register(thread: thread, engine: make)
+        delivery.answers = [.typed]
+        await askAuthor()
+        let engine = try XCTUnwrap(make())
+        await waitUntil { self.systemRows(engine).contains(SpecReviewThreadCenter.typedNotice) }
+
+        let id = try XCTUnwrap(center.questions[thread]?.first?.id)
+        try await setState(id, "answered", answer: "Per channel")
+        await center.poll()
+        await waitUntil { self.ai.calls.count == 1 }
+        ai.emit(.text("Done."), .turnComplete("Done."), .done)
+        ai.finish()
+        await engine.finished()
+        delivery.answers = [.copied]
+        await askAuthor("Calendar day?")
+        await waitUntil { self.systemRows(engine).contains(SpecReviewThreadCenter.copiedNotice) }
+    }
+
+    /// A refusal for a thread whose chat is not loaded is not lost: it
+    /// shows when the thread registers.
+    func testRefusalWithoutAChatShowsWhenTheThreadOpens() async throws {
+        cli.refusal = "a question is already open in this thread"
+        await askAuthor()
+        let make = try await engineMaker(chats)
+        await center.register(thread: thread, engine: make)
+        let engine = try XCTUnwrap(make())
+        await waitUntil { self.systemRows(engine).contains("a question is already open in this thread") }
+    }
+
+    /// A failed read of the questions is said in the thread, once per
+    /// streak of failures.
+    func testReadFailureIsSaidInTheThread() async throws {
+        let make = try await engineMaker(chats)
+        await center.register(thread: thread, engine: make)
+        await askAuthor()
+        try await pool.write { d in try d.execute(sql: "DROP TABLE spec_review_questions") }
+        await center.poll()
+        await center.poll()
+        let engine = try XCTUnwrap(make())
+        await waitUntil { self.systemRows(engine).contains { $0.hasPrefix("Couldn't read the questions to the author:") } }
+        XCTAssertEqual(systemRows(engine).filter { $0.hasPrefix("Couldn't read the questions") }.count, 1)
     }
 
     /// Go refuses a second open question in the thread: its words go to the

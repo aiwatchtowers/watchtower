@@ -17,7 +17,7 @@ struct SpecReviewLoopView: View {
         self.model = model
         // The owner's own items that the author fixed are shown, not folded
         // (spec 2026-11-08 §1: whether each of their items was fixed).
-        _fixesExpanded = State(initialValue: model.fixes.contains { $0.item.kind == SpecReviewLoop.ownerCommentKind })
+        _fixesExpanded = State(initialValue: model.fixes.contains { $0.item.isOwners })
     }
 
     var body: some View {

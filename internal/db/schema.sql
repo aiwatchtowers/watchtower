@@ -2815,7 +2815,7 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     PRIMARY KEY (ask_id, item_key)
 );
 
--- An author question from a spec review thread (00175); Go is the only
+-- An author question from a spec review thread (00178); Go is the only
 -- writer, every state change is a conditional update from 'open'.
 CREATE TABLE IF NOT EXISTS spec_review_questions (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2831,7 +2831,7 @@ CREATE TABLE IF NOT EXISTS spec_review_questions (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open';
 CREATE INDEX IF NOT EXISTS idx_spec_review_questions_ask ON spec_review_questions(ask_id);
 
--- A finding the owner added from a spec review thread (00175); Go writes it,
+-- A finding the owner added from a spec review thread (00178); Go writes it,
 -- a reviewer re-run never touches it. finding is the JSON.
 CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
     ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,

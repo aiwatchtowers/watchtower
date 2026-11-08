@@ -51,9 +51,13 @@ extension WorkbenchCLI: SpecReviewQuestionFiling {}
 /// - the 3 s poll of the questions, only while a thread has an open one;
 /// - once a question is answered, expired or gone, the thread's agent gets
 ///   one follow-up turn with a notice row ("The author answered (question
-///   #N): …" or "The author did not answer"); a follow-up already present
-///   as that row is never sent again, so a thread opened later picks up an
-///   answer that landed while the Desktop was closed.
+///   #N): …", "The author did not answer", or — when this app run never saw
+///   the question typed — "The question may not have reached the author");
+///   a follow-up already present as that row is never sent again, so a
+///   thread opened later picks up an answer that landed while the Desktop
+///   was closed;
+/// - the Fix comment fields drafted from a thread, by thread key, so closing
+///   or switching the drawer keeps them for the app run.
 ///
 /// Go writes the questions from another process, so GRDB observation never
 /// fires: the poll re-reads them.
@@ -62,6 +66,18 @@ extension WorkbenchCLI: SpecReviewQuestionFiling {}
 final class SpecReviewThreadCenter {
     nonisolated static let pollInterval: Duration = .seconds(3)
     nonisolated static let notAnsweredNotice = "The author did not answer"
+    /// An expired or gone question this app run never saw typed (filed
+    /// before a restart, or its session ended first): it may never have
+    /// reached the author.
+    nonisolated static let notReachedNotice = "The question may not have reached the author"
+    nonisolated static let typedNotice =
+        "The question to the author is typed into their session — press Return there to send it."
+    nonisolated static let copiedNotice =
+        "The question to the author is copied — paste it into their session and press Return."
+
+    nonisolated static func readFailedNotice(_ error: String) -> String {
+        "Couldn't read the questions to the author: \(error). Watchtower keeps trying."
+    }
 
     nonisolated static func answeredNotice(questionID: Int64, answer: String) -> String {
         "The author answered (question #\(questionID)): \(answer)"
@@ -82,6 +98,9 @@ final class SpecReviewThreadCenter {
     private(set) var openThreads: Set<String> = []
     /// Each polled thread's questions as last read, oldest first.
     private(set) var questions: [String: [SpecReviewQuestionRow]] = [:]
+    /// The Fix comment fields drafted from a thread, by thread key
+    /// (`SpecReviewModel.fixDrafts` reads its ask's).
+    var fixDrafts: [String: SpecReviewFixDraft] = [:]
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: any SpecReviewQuestionFiling
@@ -99,6 +118,10 @@ final class SpecReviewThreadCenter {
     @ObservationIgnored private var watched: Set<String> = []
     /// Questions whose follow-up this run handled.
     @ObservationIgnored private var followedUp: Set<Int64> = []
+    /// Questions this run saw typed (or copied) into the author's session.
+    @ObservationIgnored private var delivered: Set<Int64> = []
+    /// Lines for a thread whose chat is not loaded: shown when it registers.
+    @ObservationIgnored private var pendingNotices: [String: [String]] = [:]
     /// Threads with a question being filed.
     @ObservationIgnored private var filing: Set<String> = []
     /// A read error is logged once per streak of failures.
@@ -141,6 +164,9 @@ final class SpecReviewThreadCenter {
     func register(thread: String, engine: @escaping @MainActor () -> EmbeddedChatEngine?) async {
         engines[thread] = engine
         watched.insert(thread)
+        if let notices = pendingNotices.removeValue(forKey: thread) {
+            for notice in notices { tell(thread, notice) }
+        }
         await poll()
         startPolling()
     }
@@ -157,7 +183,7 @@ final class SpecReviewThreadCenter {
             id = try await cli.specReviewQuestion(askID: askID, itemKey: itemKey, question: question)
         } catch {
             NSLog("SpecReviewThread: ask %lld: filing a question failed: %@", askID, "\(error)")
-            engines[thread]?()?.appendLocal(role: "system", text: error.localizedDescription)
+            tell(thread, error.localizedDescription)
             return
         }
         watched.insert(thread)
@@ -188,8 +214,18 @@ final class SpecReviewThreadCenter {
             }
             switch await delivery.deliverSpecReviewQuestion(pending.line, questionID: pending.id,
                                                             sessionID: pending.sessionID) {
-            case .submitted, .typed, .copied:
+            case .submitted:
                 undelivered[pending.id] = nil
+                delivered.insert(pending.id)
+            case .typed:
+                // In the session, not sent: the owner presses Return.
+                undelivered[pending.id] = nil
+                delivered.insert(pending.id)
+                tell(pending.thread, Self.typedNotice)
+            case .copied:
+                undelivered[pending.id] = nil
+                delivered.insert(pending.id)
+                tell(pending.thread, Self.copiedNotice)
             case .held, .queued:
                 break
             case .noSession:
@@ -222,7 +258,8 @@ final class SpecReviewThreadCenter {
 
     // MARK: - Private
 
-    /// The watched threads' questions; nil when the read failed (logged).
+    /// The watched threads' questions; nil when the read failed: logged
+    /// and said in each watched thread once per streak of failures.
     private func read() async -> [SpecReviewQuestionRow]? {
         let threads = Array(watched.union(undelivered.values.map(\.thread)))
         guard !threads.isEmpty else { return [] }
@@ -231,9 +268,22 @@ final class SpecReviewThreadCenter {
             failing = false
             return rows
         } catch {
-            if !failing { NSLog("SpecReviewThread: read failed: %@", "\(error)") }
+            if !failing {
+                NSLog("SpecReviewThread: read failed: %@", "\(error)")
+                for thread in threads.sorted() { tell(thread, Self.readFailedNotice(error.localizedDescription)) }
+            }
             failing = true
             return nil
+        }
+    }
+
+    /// A line from Watchtower in the thread: in its chat when one is
+    /// loaded, else when the thread next registers.
+    private func tell(_ thread: String, _ notice: String) {
+        if let engine = engines[thread]?() {
+            engine.appendLocal(role: "system", text: notice)
+        } else {
+            pendingNotices[thread, default: []].append(notice)
         }
     }
 
@@ -264,13 +314,14 @@ final class SpecReviewThreadCenter {
             prompt = Self.answeredPrompt(questionID: row.id, answer: row.answer)
             alreadySent = notices.contains(notice)
         case .expired, .gone:
-            notice = Self.notAnsweredNotice
+            notice = delivered.contains(row.id) ? Self.notAnsweredNotice : Self.notReachedNotice
             prompt = Self.notAnsweredPrompt(questionID: row.id)
             // The notice names no question: the n-th unanswered one is sent
-            // when the thread holds fewer than n such rows.
+            // when the thread holds fewer than n such rows (of either wording).
             let unanswered = threadRows.filter { $0.state == .expired || $0.state == .gone }
             let index = unanswered.firstIndex { $0.id == row.id } ?? 0
-            alreadySent = index < notices.filter { $0 == notice }.count
+            let sent = notices.filter { $0 == Self.notAnsweredNotice || $0 == Self.notReachedNotice }.count
+            alreadySent = index < sent
         case .open, .unknown:
             return
         }

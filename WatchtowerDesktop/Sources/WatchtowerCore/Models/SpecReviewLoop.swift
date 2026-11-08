@@ -31,6 +31,10 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
     package var reply: Reply?
     /// Set when the finding was raised, kept through the loop.
     package var severity: SpecReviewSeverity?
+    /// The owner asked for it (Go `AuthorItem.Owner`): a comment of their
+    /// **Request changes**, a Fix on a finding or a finding added from a
+    /// thread, whatever its kind. False on rows written before the flag.
+    package var owner: Bool
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -42,10 +46,15 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
         round = try c.decodeIfPresent(Int.self, forKey: .round) ?? 0
         reply = try c.decodeIfPresent(Reply.self, forKey: .reply)
         severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
+        owner = try c.decodeIfPresent(Bool.self, forKey: .owner) ?? false
     }
 
+    /// The owner's own item: flagged by Go, or an `owner_comment` (always
+    /// the owner's, also on a row written before the flag).
+    package var isOwners: Bool { owner || kind == SpecReviewLoop.ownerCommentKind }
+
     private enum Keys: String, CodingKey {
-        case key, kind, text, note, round, reply, severity
+        case key, kind, text, note, round, reply, severity, owner
         case anchor = "where"
     }
 }
@@ -109,11 +118,12 @@ package enum SpecReviewLoop {
     /// does not repeat it.
     package static let stalledNote = "The reviewer and the author stopped making progress"
 
-    /// Whether the author fixed the owner's own item, in the owner's words;
-    /// nil for the reviewer's findings. Fixed = resolved after a `fixed`
-    /// reply, as `fixed` reads it.
+    /// Whether the author fixed the owner's own item (`isOwners`: a margin
+    /// comment, a Fix on any finding, an added thread finding), in the
+    /// owner's words; nil for the reviewer's findings. Fixed = resolved after
+    /// a `fixed` reply, as `fixed` reads it.
     package static func ownerItemLine(_ entry: SpecReviewLedgerEntry) -> String? {
-        guard entry.item.kind == ownerCommentKind else { return nil }
+        guard entry.item.isOwners else { return nil }
         let fixed = entry.verdict == "resolved" && !isDisagree(entry)
         return fixed ? "Your item — fixed by the author" : "Your item — still open"
     }

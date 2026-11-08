@@ -63,6 +63,15 @@ func init() {
 
 func runSpecReviewQuestion(cmd *cobra.Command, _ []string) error {
 	closing := cmd.Flags().Changed("close")
+	// Filing and closing a question are the Desktop's (AGENT-07): the
+	// session under review never files one to itself.
+	verb := "file a spec review question"
+	if closing {
+		verb = "close a spec review question"
+	}
+	if err := refuseUnderAgent(verb); err != nil {
+		return err
+	}
 	var question string
 	switch {
 	case closing:
@@ -191,6 +200,11 @@ var (
 var specReviewContextFeed = specReviewFeed
 
 func runSpecReviewAddFinding(cmd *cobra.Command, _ []string) error {
+	// A thread finding exists only after the owner presses Add to review
+	// (AGENT-07, ask #593): never from an agent's own shell.
+	if err := refuseUnderAgent("add a finding to a spec review"); err != nil {
+		return err
+	}
 	id, thread := specReviewAddFindingFlagAsk, strings.TrimSpace(specReviewAddFindingFlagThread)
 	wbID, rootID, _, ok := specreview.ParseThreadContextID(thread)
 	if !ok {
@@ -235,7 +249,7 @@ func runSpecReviewAddFinding(cmd *cobra.Command, _ []string) error {
 	}
 	owner, err := database.OwnerThreadLines(thread)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the owner's lines of thread %s: %w", thread, err)
 	}
 	f, err := specreview.ValidateThreadFinding(in, ask.DocSnapshot, t, owner)
 	if err != nil {
@@ -250,12 +264,36 @@ func runSpecReviewAddFinding(cmd *cobra.Command, _ []string) error {
 		AskID: id, ItemKey: f.Key, Thread: thread, Finding: string(js),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	})
-	// The same finding pressed twice: its key is already stored.
 	var se sqlcipher.Error
-	if err != nil && !(errors.As(err, &se) && se.ExtendedCode == sqlcipher.ErrConstraintPrimaryKey) {
-		return err
+	if errors.As(err, &se) && se.ExtendedCode == sqlcipher.ErrConstraintPrimaryKey {
+		// The key is the text and the where-quote: the same finding pressed
+		// twice prints its key; another finding with that key is refused.
+		same, cerr := sameThreadFinding(database, id, f.Key, string(js))
+		if cerr != nil {
+			return cerr
+		}
+		if !same {
+			return &exitCodeError{code: 3, err: errors.New("not added: the review already has a different finding with this text")}
+		}
+	} else if err != nil {
+		return fmt.Errorf("storing the finding on ask %d: %w", id, err)
 	}
 	return writeJSON(cmd.OutOrStdout(), map[string]string{"key": f.Key})
+}
+
+// sameThreadFinding reports whether ask askID's stored thread finding key
+// holds exactly js.
+func sameThreadFinding(database *db.DB, askID int64, key, js string) (bool, error) {
+	rows, err := database.ListSpecReviewThreadFindings(askID)
+	if err != nil {
+		return false, fmt.Errorf("reading the thread findings of ask %d: %w", askID, err)
+	}
+	for _, r := range rows {
+		if r.ItemKey == key {
+			return r.Finding == js, nil
+		}
+	}
+	return false, nil
 }
 
 func runSpecReviewThreadContext(cmd *cobra.Command, _ []string) error {
@@ -275,12 +313,16 @@ func runSpecReviewThreadContext(cmd *cobra.Command, _ []string) error {
 	}
 	id, item := specReviewThreadContextFlagAsk, strings.TrimSpace(specReviewThreadContextFlagItem)
 	out, err := specreview.ThreadContext(ctx, specreview.Deps{DB: database, Feed: specReviewContextFeed(database)}, id, item)
-	if errors.Is(err, specreview.ErrNoSuchItem) || errors.Is(err, db.ErrSpecReviewNotFound) {
+	switch {
+	case errors.Is(err, specreview.ErrNoSuchItem):
 		return &exitCodeError{code: 3, err: fmt.Errorf("ask %d: no such item %s", id, item)}
+	case errors.Is(err, db.ErrSpecReviewNotFound):
+		return &exitCodeError{code: 3, err: fmt.Errorf("ask %d has no spec review", id)}
+	case err != nil:
+		return fmt.Errorf("building the thread context of ask %d item %s: %w", id, item, err)
 	}
-	if err != nil {
-		return err
+	if _, err := io.WriteString(cmd.OutOrStdout(), out); err != nil {
+		return fmt.Errorf("writing the thread context: %w", err)
 	}
-	_, err = io.WriteString(cmd.OutOrStdout(), out)
-	return err
+	return nil
 }

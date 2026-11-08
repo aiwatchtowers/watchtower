@@ -83,6 +83,65 @@ final class SpecReviewThreadBlocksTests: XCTestCase {
     func testQuestionOverGoCapIsNoQuestion() {
         let long = String(repeating: "a", count: SpecReviewThreadBlocks.maxQuestionRunes + 1)
         let text = "x\n\n```watchtower-ask-author\n{\"question\": \"\(long)\"}\n```"
-        XCTAssertNil(SpecReviewThreadBlocks.parse(text, final: true).question)
+        let parsed = SpecReviewThreadBlocks.parse(text, final: true)
+        XCTAssertNil(parsed.question)
+        XCTAssertEqual(parsed.rejected, ["The assistant's question to the author could not be sent: longer than 1000 characters."])
+    }
+
+    /// Every invalid closed block says why, in reply order; a valid one and
+    /// a streaming reply say nothing.
+    func testInvalidBlocksAreRejectedWithAReason() {
+        let quote = #""quote": {"source": "document", "text": "Muting lasts a day."}"#
+        let text = """
+            It holds.
+
+            ```watchtower-ask-author
+            {"question": "  "}
+            ```
+
+            ```watchtower-finding
+            {"kind": "agreement", "title": "T", "text": "X", \(quote)}
+            ```
+
+            ```watchtower-finding
+            {"kind": "missing", "title": "T", "text": "X", "quote": {"source": "web", "text": "a"}}
+            ```
+
+            ```watchtower-ask-author
+            not json
+            ```
+
+            ```watchtower-finding
+            {"kind": "missing", "title": "T", "text": "X", \(quote)}
+            ```
+            """
+        let parsed = SpecReviewThreadBlocks.parse(text, final: true)
+        XCTAssertEqual(parsed.text, "It holds.")
+        XCTAssertNil(parsed.question)
+        XCTAssertEqual(parsed.finding?.kind, "missing")
+        XCTAssertEqual(parsed.rejected, [
+            "The assistant's question to the author could not be sent: the question is empty.",
+            "The assistant's proposed finding could not be shown: its kind \"agreement\" is not differs, missing, "
+                + "decided_alone or blind_spot.",
+            "The assistant's proposed finding could not be shown: its quote has no source (document or thread) or no words.",
+            "The assistant's question to the author could not be sent: its block is not valid JSON with a question."
+        ])
+        XCTAssertEqual(SpecReviewThreadBlocks.parse(text, final: false).rejected, [], "nothing is read while it streams")
+        XCTAssertEqual(SpecReviewThreadBlocks.parse("Plain.", final: true).rejected, [])
+    }
+
+    /// Go stores a thread finding's title and text trimmed and clipped to
+    /// 600 characters: the proposal still matches its stored row.
+    func testProposalMatchesItsStoredRowAfterGoTrimsAndClips() {
+        let quote = SpecReviewProposedFinding.Quote(source: "document", text: "Muting lasts a day.")
+        let long = String(repeating: "я", count: 700)
+        let proposal = SpecReviewProposedFinding(kind: "missing", severity: .major, title: "  Midnight \n",
+                                                 text: long, quote: quote)
+        var stored = SpecReviewProposedFinding(kind: "missing", severity: .major, title: "Midnight",
+                                               text: String(repeating: "я", count: 600), quote: quote)
+        stored.key = "tf:0123456789ab"
+        XCTAssertTrue(stored.isSameProposal(as: proposal))
+        stored.title = "Another"
+        XCTAssertFalse(stored.isSameProposal(as: proposal))
     }
 }

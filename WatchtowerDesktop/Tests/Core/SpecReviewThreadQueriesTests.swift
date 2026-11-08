@@ -194,4 +194,33 @@ final class SpecReviewThreadQueriesTests: XCTestCase {
             XCTAssertEqual(try SpecReviewThreadQueries.messageCounts(d, contextIDs: []), [:])
         }
     }
+
+    /// Every thread with a finished message along one chain: another
+    /// chain's, another workbench's, an empty one and a code question are
+    /// left out.
+    func testChainThreadsListsTheChainsThreads() throws {
+        try db.write { d in
+            func conversation(type: String, id: String, title: String, messages: [String]) throws {
+                try d.execute(sql: """
+                    INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at) VALUES (?, ?, ?, 0, 0)
+                    """, arguments: [title, type, id])
+                let conv = d.lastInsertedRowID
+                for status in messages {
+                    try d.execute(sql: """
+                        INSERT INTO chat_messages (conversation_id, role, text, created_at, status) VALUES (?, 'user', 't', 0, ?)
+                        """, arguments: [conv, status])
+                }
+            }
+            try conversation(type: "spec_review_thread", id: "1:7:ag:old", title: "Spec review: Old", messages: ["complete"])
+            try conversation(type: "spec_review_thread", id: "1:7:th:gone", title: "Spec review: Gone", messages: ["complete"])
+            try conversation(type: "spec_review_thread", id: "1:7:da:empty", title: "Spec review: Empty", messages: ["error"])
+            try conversation(type: "spec_review_thread", id: "1:70:ag:other", title: "Other chain", messages: ["complete"])
+            try conversation(type: "spec_review_thread", id: "2:7:ag:x", title: "Other workbench", messages: ["complete"])
+            try conversation(type: "code_question", id: "1:7:ag:cq", title: "Code", messages: ["complete"])
+
+            let threads = try SpecReviewThreadQueries.chainThreads(d, workbenchID: 1, rootAskID: 7)
+            XCTAssertEqual(threads.map(\.itemKey), ["ag:old", "th:gone"])
+            XCTAssertEqual(threads.map(\.title), ["Spec review: Old", "Spec review: Gone"])
+        }
+    }
 }

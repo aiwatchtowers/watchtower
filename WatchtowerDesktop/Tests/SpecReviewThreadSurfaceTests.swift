@@ -106,6 +106,32 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertEqual(notices, [SpecReviewThreadSurface.cannotReadFilesNotice])
     }
 
+    /// The row decides, not the name: claude with a row that reads no folder
+    /// runs without `--read-folder-ask` (the CLI would refuse the turn,
+    /// cmd/ai.go), its prompt says so, and the thread says so once.
+    func testANonOllamaProviderWithoutFolderReadingRunsFromTheDataAlone() async throws {
+        AIModelCatalog.shared.replaceProviders(ProviderCatalogFixture.providers().map { row in
+            var row = row
+            if row.id == "claude" { row.capabilities = ProviderCapabilities(tools: "watchtower", readFolder: "none") }
+            return row
+        })
+        let conv = try await conversation()
+        let spec = SpecReviewThreadSurface.spec(context: context(provider: .claude), conversationID: conv,
+                                                dbPool: dbManager.dbPool)
+        XCTAssertNil(spec.runOptions().readFolderAskID)
+        let ai = ScriptedAIService()
+        let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
+        await turn(engine, ai, "Why?", reply: "Because.")
+        await turn(engine, ai, "And?", reply: "That's all.")
+        XCTAssertEqual(ai.calls.map(\.readFolderAskID), [nil, nil])
+        XCTAssertNil(ai.calls.first?.readFolder)
+        let system = try XCTUnwrap(ai.calls.first?.systemPrompt)
+        XCTAssertTrue(system.contains("You cannot read any file"))
+        XCTAssertFalse(system.contains("Read, Grep, Glob and LS"))
+        let notices = engine.messages.filter { $0.message.role == "system" }.map(\.message.text)
+        XCTAssertEqual(notices, [SpecReviewThreadSurface.cannotReadFilesNotice])
+    }
+
     /// A read-only shell sandbox row (codex's) gets the folder and the
     /// sandbox wording for the reviewer's folder.
     func testAShellSandboxProviderReadsTheReviewersFolder() async throws {
@@ -172,5 +198,21 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertEqual(handed.first?.0, "Calendar day?")
         XCTAssertNil(handed.first?.1)
         XCTAssertEqual(engine.messages.last?.message.text, reply)
+    }
+
+    /// A block the agent got wrong is said in the thread, not dropped in
+    /// silence: nothing is handed over, the reason is a stored notice.
+    func testInvalidBlockIsANotice() async throws {
+        let conv = try await conversation()
+        var handed = 0
+        let spec = SpecReviewThreadSurface.spec(context: context { _, _ in handed += 1 },
+                                                conversationID: conv, dbPool: dbManager.dbPool)
+        let ai = ScriptedAIService()
+        let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
+        let long = String(repeating: "a", count: SpecReviewThreadBlocks.maxQuestionRunes + 1)
+        await turn(engine, ai, "Which day?", reply: "Only the author knows.\n\n```watchtower-ask-author\n{\"question\": \"\(long)\"}\n```")
+        XCTAssertEqual(handed, 0)
+        let notices = engine.messages.filter { $0.message.role == "system" }.map(\.message.text)
+        XCTAssertEqual(notices, ["The assistant's question to the author could not be sent: longer than 1000 characters."])
     }
 }

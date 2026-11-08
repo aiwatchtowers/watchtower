@@ -119,6 +119,11 @@ type AuthorItem struct {
 	// Severity is the level the reviewer gave when it raised the finding;
 	// a carried item keeps it.
 	Severity string `json:"severity,omitempty"`
+	// Owner marks an item the owner asked for (SeedOf: a comment of the
+	// Request changes answer, a Fix on a finding, an added thread
+	// finding); a carried item keeps it, so the loop screen says "Your
+	// item" whatever its kind.
+	Owner bool `json:"owner,omitempty"`
 }
 
 // LedgerEntry is a finding that left the author's list: resolved, disputed
@@ -284,7 +289,8 @@ func Reveal(d *db.DB, askID int64, end string, now time.Time) error {
 		}
 		// Round 1 of a loop after the owner's Request changes answers the
 		// owner's items, not the previous loop's.
-		seed, err := SeedOf(d, ask)
+		// Its notes reach the owner through the round's own inputs.
+		seed, _, err := SeedOf(d, ask)
 		if err != nil {
 			return err
 		}

@@ -717,3 +717,30 @@ func TestReveal_SeededRoundFailedShowsOwnerItems(t *testing.T) {
 	require.Len(t, ledger2, 3)
 	assert.Equal(t, "The fix was not checked: you opened the review before it was", ledger2[0].VerdictNote)
 }
+
+// Run hands NextRound the row's loop_rules: under LoopRulesOpen a round 2
+// that resolved none of the author's fixes stalls; under the legacy rules
+// the same round goes on, and its round 3 is the cap.
+func TestRun_AdvanceLoopUsesTheRowsLoopRules(t *testing.T) {
+	nothing := `{"summary":"Nothing resolved.","verdicts":[]}`
+	for _, c := range []struct {
+		name         string
+		rules, round int
+		loop, end    string
+	}{
+		{"open rules stall", LoopRulesOpen, 2, "owner", EndStalled},
+		{"legacy rules go on", LoopRulesLegacy, 2, "author", ""},
+		{"legacy rules cap at 3", LoopRulesLegacy, 3, "owner", EndCap},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFixture(t)
+			_, second := loopRound2(t, f, nil)
+			_, err := f.d.Exec(`UPDATE spec_reviews SET loop_rules = ?, round = ? WHERE ask_id = ?`, c.rules, c.round, second)
+			require.NoError(t, err)
+			require.NoError(t, Run(context.Background(), f.deps(&fakeAgent{out: nothing}), second))
+			row, _, _ := loopColumns(t, f.d, second)
+			assert.Equal(t, c.loop, row.Loop)
+			assert.Equal(t, c.end, row.LoopEnd)
+		})
+	}
+}

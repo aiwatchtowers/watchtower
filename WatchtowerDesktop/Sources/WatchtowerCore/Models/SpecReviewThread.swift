@@ -110,19 +110,35 @@ package struct SpecReviewProposedFinding: Decodable, Equatable, Sendable {
     /// The block as `add-finding` reads it on stdin (Go's
     /// `ThreadFindingInput`): `kind`, `severity`, `title`, `text`,
     /// `quote` `{source, text}` and `where` (null when none).
-    package func blockJSON() -> Data {
+    /// Throws when the block cannot be encoded: nothing is sent then.
+    package func blockJSON() throws -> Data {
         let block: [String: Any] = [
             "kind": kind, "severity": severity?.rawValue ?? "", "title": title, "text": text,
             "quote": ["source": quote.source, "text": quote.text],
             "where": anchor.map { ["heading": $0.heading, "quote": $0.quote] as Any } ?? NSNull()
         ]
-        return (try? JSONSerialization.data(withJSONObject: block, options: [.sortedKeys])) ?? Data("{}".utf8)
+        return try JSONSerialization.data(withJSONObject: block, options: [.sortedKeys])
     }
 
     /// The same finding as one the owner already added: Go's key is made
-    /// from the content, so the stored row shows this proposal as added.
+    /// from the content, and Go stores the title and text as `field` does
+    /// (trimmed, at most 600 characters), so both sides are compared that
+    /// way: a long or padded proposal still shows as added.
     package func isSameProposal(as other: Self) -> Bool {
-        kind == other.kind && title == other.title && text == other.text && quote == other.quote
+        kind == other.kind && Self.storedField(title) == Self.storedField(other.title)
+            && Self.storedField(text) == Self.storedField(other.text) && quote == other.quote
+    }
+
+    /// Go's `specreview.field`: trimmed, clipped to `maxFieldRunes` runes
+    /// (Unicode scalars), trimmed again.
+    package static let maxFieldRunes = 600
+
+    package static func storedField(_ s: String) -> String {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.unicodeScalars.count > maxFieldRunes else { return trimmed }
+        var view = String.UnicodeScalarView()
+        view.append(contentsOf: trimmed.unicodeScalars.prefix(maxFieldRunes))
+        return String(view).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     package init(

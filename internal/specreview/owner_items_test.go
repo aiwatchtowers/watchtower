@@ -92,7 +92,7 @@ func seedOf(t *testing.T, d *db.DB, askID int64) []AuthorItem {
 	t.Helper()
 	ask, err := d.GetOwnerAskByID(askID)
 	require.NoError(t, err)
-	seed, err := SeedOf(d, ask)
+	seed, _, err := SeedOf(d, ask)
 	require.NoError(t, err)
 	return seed
 }
@@ -108,14 +108,14 @@ func TestSeedOf_ChangesAnswerSeedsOwnerItems(t *testing.T) {
 
 	assert.Equal(t, AuthorItem{
 		Key: seedKey, Kind: KindBlindSpot, Text: "Muted threads", Note: "Name the threads",
-		Where: &Anchor{Heading: "Behaviour", Quote: seedQuote}, Round: 1, Severity: SeverityMinor,
+		Where: &Anchor{Heading: "Behaviour", Quote: seedQuote}, Round: 1, Severity: SeverityMinor, Owner: true,
 	}, seed[0])
 	assert.Equal(t, AuthorItem{
 		Key: marginKey, Kind: KindOwnerComment, Text: "Say what expires",
-		Where: &Anchor{Heading: "Behaviour", Quote: marginQuote}, Round: 1,
+		Where: &Anchor{Heading: "Behaviour", Quote: marginQuote}, Round: 1, Owner: true,
 	}, seed[1])
 	assert.Equal(t, AuthorItem{
-		Key: "tf:thread00000", Kind: KindBlindSpot, Text: "Expiry after a restart", Round: 1, Severity: SeverityMajor,
+		Key: "tf:thread00000", Kind: KindBlindSpot, Text: "Expiry after a restart", Round: 1, Severity: SeverityMajor, Owner: true,
 	}, seed[2])
 }
 
@@ -162,8 +162,15 @@ func TestSeedOf_UndecodableRowsGiveWhatTheyCan(t *testing.T) {
 	_, err = f.d.Exec(`UPDATE spec_review_thread_findings SET finding = '{broken' WHERE ask_id = ?`, first)
 	require.NoError(t, err)
 
-	seed := seedOf(t, f.d, second)
+	ask, err := f.d.GetOwnerAskByID(second)
+	require.NoError(t, err)
+	seed, notes, err := SeedOf(f.d, ask)
+	require.NoError(t, err)
 	require.Len(t, seed, 2)
+	assert.Len(t, notes, 4, "the findings, the ledger and each thread finding are named: %v", notes)
+	for _, n := range notes {
+		assert.Contains(t, n, "left out of the owner's items")
+	}
 	assert.Equal(t, [2]string{seedKey, KindOwnerComment}, [2]string{seed[0].Key, seed[0].Kind})
 	assert.Equal(t, "Name the threads", seed[0].Text)
 	assert.Equal(t, marginKey, seed[1].Key)
@@ -190,6 +197,28 @@ func TestSeedOf_PlainFixKeepsTheFinding(t *testing.T) {
 	require.Len(t, seed, 1)
 	assert.Equal(t, AuthorItem{
 		Key: seedKey, Kind: KindBlindSpot, Text: "Muted threads",
-		Where: &Anchor{Heading: "Behaviour", Quote: seedQuote}, Round: 1, Severity: SeverityMinor,
+		Where: &Anchor{Heading: "Behaviour", Quote: seedQuote}, Round: 1, Severity: SeverityMinor, Owner: true,
 	}, seed[0])
+}
+
+// An answer that does not decode is not Request changes: no seed, and the
+// round's notes say why instead of dropping it silently.
+func TestSeedOf_UndecodableAnswerIsANote(t *testing.T) {
+	f := newFixture(t)
+	first, second := seededChain(t, f, asks.VerdictChanges, runDoc, 1)
+	_, err := f.d.Exec(`UPDATE owner_asks SET answer = '{broken' WHERE id = ?`, first)
+	require.NoError(t, err)
+	ask, err := f.d.GetOwnerAskByID(second)
+	require.NoError(t, err)
+	seed, notes, err := SeedOf(f.d, ask)
+	require.NoError(t, err)
+	assert.Nil(t, seed)
+	require.Len(t, notes, 1)
+	assert.Contains(t, notes[0], "the answer on ask #")
+
+	prev, err := f.d.GetOwnerAskByID(first)
+	require.NoError(t, err)
+	changes, err := AnsweredChanges(prev)
+	assert.False(t, changes)
+	assert.Error(t, err)
 }

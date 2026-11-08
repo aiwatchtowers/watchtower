@@ -18,6 +18,9 @@ final class SpecReviewModelTests: XCTestCase {
     private let snapshot = "# Title\nIntro text\n## Behaviour\nMuting lasts twenty-four hours\n"
 
     override func setUpWithError() throws {
+        // Whether a thread reads the reviewer's folder is the provider's
+        // capability row.
+        ProviderCatalogFixture.seedShared()
         (pool, path) = try TestDatabase.createPool()
         defaults = try XCTUnwrap(UserDefaults(suiteName: "SpecReviewModelTests-\(UUID().uuidString)"))
         runner = FakeCLIRunner()
@@ -804,6 +807,82 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
     }
 
+    /// A Fix comment whose write fails stays in its field, and Send and
+    /// Approve stop instead of sending the answer without it.
+    func testFixDraftKeptAndAnswerStoppedWhenTheSaveFails() async throws {
+        let ai = ScriptedAIService()
+        let model = try await discussedModel(ai)
+        try await fillConclusion(model, ai)
+        try await pool.write { d in try d.execute(sql: "DROP TABLE spec_review_marks") }
+
+        let saved = await model.saveFixDraft("ag:2")
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.", "the owner's words are kept")
+        XCTAssertNotNil(model.lastError)
+
+        for result in [await model.send(), await model.approve()] {
+            guard case let .invalid(message) = result else { return XCTFail("expected a refusal, got \(result)") }
+            XCTAssertEqual(message, SpecReviewModel.fixNotSavedMessage)
+        }
+        let stored = try await storedAnswer()
+        XCTAssertEqual(stored, "", "nothing was sent")
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
+    }
+
+    /// The Fix field lives in the app's thread center: a conclusion still
+    /// drafting when the drawer closes lands there, and the reopened screen
+    /// shows it; typed words survive the same way.
+    func testFixDraftSurvivesClosingTheDrawer() async throws {
+        let ai = ScriptedAIService()
+        let pool = try XCTUnwrap(pool)
+        let threads = SpecReviewThreadCenter(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data("1".utf8))),
+                                             delivery: SessionLineDelivery(terminalCenter: nil), pollInterval: .seconds(3600))
+        defer { threads.stop() }
+        var first: SpecReviewModel? = try await discussedModel(ai, threads: threads)
+        let fixing = Task { [first] in await first?.fix(key: "ag:2") }
+        await waitUntil { ai.calls.count == 2 && first?.fixDrafts["ag:2"]?.isDrafting == true }
+        first = nil // the drawer closed: only the running Fix holds the old screen
+
+        let reopened = try await makeThreadModel(ai, threads: threads)
+        await reopened.load()
+        XCTAssertEqual(reopened.fixDrafts["ag:2"]?.isDrafting, true, "still drafting on the reopened screen")
+        ai.emit(.text("Make it per user."), .turnComplete("Make it per user."), .done)
+        ai.finish()
+        await fixing.value
+        XCTAssertEqual(reopened.fixDrafts["ag:2"]?.text, "Make it per user.")
+
+        reopened.editFixDraft("ag:2", text: "My own words")
+        let third = try await makeThreadModel(ai, threads: threads)
+        await third.load()
+        XCTAssertEqual(third.fixDrafts["ag:2"]?.text, "My own words")
+        let saved = await third.saveFixDraft("ag:2")
+        XCTAssertTrue(saved)
+        XCTAssertNil(reopened.fixDrafts["ag:2"])
+        XCTAssertEqual(third.marks["ag:2"]?.body, "My own words")
+    }
+
+    /// A thread on an item the re-run dropped is reachable whether or not
+    /// the owner marked it: under "From the previous run", read-only.
+    func testUnmarkedOrphanThreadIsListed() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        for (key, title) in [("bs:gone", "Threads stay muted"), ("ag:2", "Mute is per channel")] {
+            let conversation = try await SpecReviewThreadSurface.conversationID(
+                workbenchID: projectID, rootAskID: askID, itemKey: key, title: title, dbPool: pool)
+            try await pool.write { d in
+                try d.execute(sql: """
+                    INSERT INTO chat_messages (conversation_id, role, text, created_at, status) VALUES (?, 'user', 'Why?', 0, 'complete')
+                    """, arguments: [conversation])
+            }
+        }
+        let model = try await makeThreadModel(ScriptedAIService())
+        await model.load()
+        XCTAssertTrue(model.orphans.isEmpty, "nothing is marked")
+        XCTAssertEqual(model.orphanThreads, [SpecReviewOrphanThread(key: "bs:gone", title: "Threads stay muted")],
+                       "the current item's thread is not from the previous run")
+        XCTAssertEqual(model.threadContent("bs:gone").persistedMessageCount, 1, "its folded line counts it")
+        XCTAssertTrue(model.threadContent("bs:gone").isOrphaned)
+    }
+
     private func assertSentConclusion(verdict: OwnerAskAnswer.Verdict) async throws {
         let answer = try OwnerAskAnswer.decode(try await storedAnswer())
         XCTAssertEqual(answer.verdict, verdict)
@@ -1256,7 +1335,9 @@ final class SpecReviewModelTests: XCTestCase {
          {"key":"ow:3","kind":"owner_comment","text":"Name the setting","note":"","round":2,
           "verdict":"unsettled","verdict_note":"\(stalled)","settled":2},
          {"key":"bs:2","kind":"blind_spot","text":"No undo","note":"","round":1,
-          "reply":{"key":"bs:2","reply":"fixed","note":""},"verdict":"resolved","verdict_note":"ok","settled":1}]
+          "reply":{"key":"bs:2","reply":"fixed","note":""},"verdict":"resolved","verdict_note":"ok","settled":1},
+         {"key":"da:9","kind":"decided_alone","text":"Muted for a day","note":"midnight","round":1,"owner":true,
+          "reply":{"key":"da:9","reply":"fixed","note":""},"verdict":"resolved","verdict_note":"ok","settled":1}]
         """
         try await pool.write { d in
             try d.execute(sql: "UPDATE spec_reviews SET loop = 'owner', round = 2, ledger = ?, loop_end = 'stalled' WHERE ask_id = ?",
@@ -1267,8 +1348,9 @@ final class SpecReviewModelTests: XCTestCase {
         func line(_ key: String) -> String? {
             (model.fixes + model.disputes + model.unanswered).first { $0.item.key == key }.flatMap(SpecReviewLoop.ownerItemLine)
         }
-        XCTAssertEqual(model.fixes.map(\.item.key), ["ow:1", "bs:2"])
+        XCTAssertEqual(model.fixes.map(\.item.key), ["ow:1", "bs:2", "da:9"])
         XCTAssertEqual(line("ow:1"), "Your item — fixed by the author")
+        XCTAssertEqual(line("da:9"), "Your item — fixed by the author", "a Fix on a reviewer finding is the owner's item too")
         XCTAssertEqual(line("ow:2"), "Your item — still open")
         XCTAssertEqual(line("ow:3"), "Your item — still open")
         XCTAssertNil(line("bs:2"), "the reviewer's own finding has no such line")

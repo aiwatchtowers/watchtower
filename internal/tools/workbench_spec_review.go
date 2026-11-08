@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -125,7 +126,13 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 	start := &db.SpecLoopStart{Round: 1, LoopRules: specreview.LoopRulesOpen}
 	switch {
 	case row != nil && specreview.OwnerHas(row):
-		if !specreview.AnsweredChanges(prev) {
+		changes, err := specreview.AnsweredChanges(prev)
+		if err != nil {
+			// The owner sees a classic review instead of a hidden loop.
+			// Ids only in the log (FILES-01): the decode error may quote the answer.
+			log.Printf("ask_owner: the answer on ask #%d does not decode (%T): no loop", prev.ID, errors.Unwrap(err))
+		}
+		if !changes {
 			return nil, nil
 		}
 	case row != nil && row.Loop == "author":
