@@ -1,5 +1,20 @@
 import Foundation
 
+/// The conversation key of a spec review thread (Go
+/// `specreview.ThreadContextID`; `internal/specreview/testdata/thread_keys.json`
+/// is the shared fixture): `<workbench>:<root>:<key>`, where root is the
+/// first ask of the review chain, so a re-round's card with the same item
+/// key continues the same thread.
+package enum SpecReviewThreadKey {
+    /// `chat_conversations.context_type` of a thread (Go
+    /// `db.SpecReviewThreadContextType`).
+    package static let contextType = "spec_review_thread"
+
+    package static func contextID(workbenchID: Int64, rootAskID: Int64, itemKey: String) -> String {
+        "\(workbenchID):\(rootAskID):\(itemKey)"
+    }
+}
+
 /// A question a Discuss thread's agent put to the author (spec 2026-11-08
 /// §3; Go's `spec_review_questions`, written by Go only). `thread` is the
 /// thread's conversation key.
@@ -43,7 +58,9 @@ package struct SpecReviewQuestionRow: Equatable, Sendable, Identifiable {
 /// A finding a Discuss thread's agent proposes (the Swift mirror of Go's
 /// `ThreadFindingInput`, JSON `kind`, `severity`, `title`, `text`,
 /// `quote`, `where`). Nothing is added until the owner presses **Add to
-/// review**; Go validates the quotes and writes the row, or refuses.
+/// review**; Go validates the quotes and writes the row, or refuses. A
+/// stored one (`spec_review_thread_findings.finding`, Go's `ThreadFinding`)
+/// also carries its `key` and `chapter`.
 package struct SpecReviewProposedFinding: Decodable, Equatable, Sendable {
     /// Where the quote comes from: `document` or `thread` (the owner's own
     /// words in this thread).
@@ -80,7 +97,15 @@ package struct SpecReviewProposedFinding: Decodable, Equatable, Sendable {
     package var text: String
     package var quote: Quote
     package var anchor: SpecReviewResult.Anchor?
+    /// Set on a stored finding (`tf:…`); empty on a proposal.
+    package var key: String = ""
+    /// The chapter of its where-quote, set by Go on a stored finding; empty
+    /// (or unknown) lands it in Other.
+    package var chapter: String = ""
     package var status: Status = .proposed
+
+    /// The card's head line: the title, else the text.
+    package var headline: String { title.isEmpty ? text : title }
 
     package init(
         kind: String,
@@ -108,10 +133,12 @@ package struct SpecReviewProposedFinding: Decodable, Equatable, Sendable {
         text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
         quote = try c.decodeIfPresent(Quote.self, forKey: .quote) ?? Quote(source: "", text: "")
         anchor = try c.decodeIfPresent(SpecReviewResult.Anchor.self, forKey: .anchor)
+        key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
+        chapter = try c.decodeIfPresent(String.self, forKey: .chapter) ?? ""
     }
 
     private enum Keys: String, CodingKey {
-        case kind, severity, title, text, quote
+        case kind, severity, title, text, quote, key, chapter
         case anchor = "where"
     }
 }

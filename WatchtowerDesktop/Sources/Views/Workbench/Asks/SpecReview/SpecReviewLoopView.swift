@@ -17,7 +17,7 @@ struct SpecReviewLoopView: View {
         self.model = model
         // The owner's own items that the author fixed are shown, not folded
         // (spec 2026-11-08 §1: whether each of their items was fixed).
-        _fixesExpanded = State(initialValue: model.fixes.contains { $0.item.kind == "owner_comment" })
+        _fixesExpanded = State(initialValue: model.fixes.contains { $0.item.kind == SpecReviewLoop.ownerCommentKind })
     }
 
     var body: some View {
@@ -139,7 +139,7 @@ struct SpecReviewDisputeCard: View {
             if let status = SpecReviewPresentation.loopStatus(entry) {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
-            if let line = SpecReviewPresentation.ownerItemLine(entry, fixed: false) {
+            if let line = SpecReviewLoop.ownerItemLine(entry) {
                 Text(line).font(.caption.weight(.medium)).foregroundStyle(.secondary)
             }
             pick
@@ -262,7 +262,7 @@ struct SpecReviewFixRow: View {
                 .font(.caption)
                 .foregroundStyle(SpecReviewPresentation.authorReason(entry) == nil ? .tertiary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let line = SpecReviewPresentation.ownerItemLine(entry, fixed: true) {
+            if let line = SpecReviewLoop.ownerItemLine(entry) {
                 Text(line).font(.caption.weight(.medium)).foregroundStyle(.secondary)
             }
             if editing {
@@ -290,7 +290,7 @@ struct SpecReviewFixRow: View {
                                 .help("Send it back to the author with your comment")
                         case .discuss where threads != nil:
                             Button("Discuss") { thread = .shown }
-                                .buttonStyle(.kitQuiet)
+                                .buttonStyle(.kitSecondary)
                                 .help("Ask the assistant about this fix")
                         default:
                             EmptyView()

@@ -89,10 +89,24 @@ final class SpecReviewTests: XCTestCase {
         XCTAssertNil(r.theses[1].anchor)
     }
 
-    func testOldResultHasNoTheses() throws {
+    /// Go's golden result carries the summary since spec 2026-11-08 §4
+    /// (an old result without it: `testNullOrMissingBriefAndThesesReadEmpty`).
+    func testGoldenCarriesBriefAndTheses() throws {
         let r = try golden()
-        XCTAssertEqual(r.brief, "")
-        XCTAssertTrue(r.theses.isEmpty)
+        XCTAssertFalse(r.brief.isEmpty)
+        XCTAssertFalse(r.theses.isEmpty)
+        XCTAssertTrue(r.theses.allSatisfy { !$0.key.isEmpty && !$0.kind.isEmpty })
+    }
+
+    /// A result with `null` brief and theses, and one without the keys,
+    /// read as no summary.
+    func testNullOrMissingBriefAndThesesReadEmpty() throws {
+        for json in [#"{"summary":"s","brief":null,"theses":null}"#, #"{"summary":"s"}"#] {
+            let r = try JSONDecoder().decode(SpecReviewResult.self, from: Data(json.utf8))
+            XCTAssertEqual(r.brief, "", json)
+            XCTAssertTrue(r.theses.isEmpty, json)
+            XCTAssertEqual(r.summary, "s", json)
+        }
     }
 
     /// The Swift mirror of Go's `ThreadFindingInput`: a proposal starts

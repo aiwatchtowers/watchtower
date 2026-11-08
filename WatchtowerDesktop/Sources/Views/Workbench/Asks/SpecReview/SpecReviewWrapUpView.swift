@@ -13,13 +13,14 @@ struct SpecReviewWrapUpView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
-                ForEach(SpecReviewPresentation.wrapUpGroups(result)) { group in
+                let groups = SpecReviewPresentation.wrapUpGroups(result, threadFindings: model.threadFindings)
+                ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: Spacing.tight) {
                         SectionHeader(title: group.title, systemImage: icon(group.title), count: group.items.count)
                         ForEach(group.items) { itemRow($0) }
                     }
                 }
-                if SpecReviewPresentation.wrapUpGroups(result).isEmpty {
+                if groups.isEmpty {
                     Text("The reviewer raised no findings.").font(.callout).foregroundStyle(.secondary)
                 }
                 if !model.orphans.isEmpty { orphanList }
@@ -44,7 +45,7 @@ struct SpecReviewWrapUpView: View {
             model.phase = .chapters
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                markGlyph(mark)
+                markGlyph(mark, kind: model.cardKind(for: item.key))
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(item.text).font(.callout).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                     if mark?.state == .comment, let body = mark?.body, !body.isEmpty {
@@ -64,10 +65,12 @@ struct SpecReviewWrapUpView: View {
     }
 
     @ViewBuilder
-    private func markGlyph(_ mark: SpecReviewMark?) -> some View {
+    private func markGlyph(_ mark: SpecReviewMark?, kind: SpecReviewCardKind = .actionable) -> some View {
         switch mark?.state {
         case .ok:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Skip")
+            // Skip or Checked: the label the card itself shows.
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success)
+                .accessibilityLabel(SpecReviewPresentation.okLabel(kind))
         case .comment where mark?.body.isEmpty ?? true:
             Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.secondary).accessibilityLabel("Fix")
         case .comment:
@@ -118,6 +121,7 @@ struct SpecReviewWrapUpView: View {
         case "Decided alone": "person.fill.questionmark"
         case "Blind spots": "eye.slash"
         case "Concerns": "exclamationmark.bubble"
+        case "From discussion": "bubble.left.and.bubble.right"
         default: "circle.dashed"
         }
     }

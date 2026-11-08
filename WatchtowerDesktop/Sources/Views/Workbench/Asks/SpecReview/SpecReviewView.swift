@@ -284,6 +284,18 @@ enum SpecReviewPresentation {
         case let .agreement(f): agreementBadge(status: f.status)
         case .decidedAlone: Badge(title: "Decided alone", tint: .neutral)
         case .blindSpot: Badge(title: "Blind spot", tint: .neutral)
+        case let .fromDiscussion(f): threadFindingBadge(kind: f.kind)
+        }
+    }
+
+    /// A thread finding's kind chip (`differs`, `missing`, `decided_alone`,
+    /// `blind_spot`); one this build does not know reads "Finding".
+    static func threadFindingBadge(kind: String) -> Badge {
+        switch kind {
+        case "differs", "missing": agreementBadge(status: kind)
+        case "decided_alone": Badge(title: "Decided alone", tint: .neutral)
+        case "blind_spot": Badge(title: "Blind spot", tint: .neutral)
+        default: Badge(title: "Finding", tint: .neutral)
         }
     }
 
@@ -454,12 +466,15 @@ enum SpecReviewPresentation {
     }
 
     /// Why an unsettled card is still open: the loop-end note (the cap, a
-    /// fix not checked, Show Now); nil on a dispute or when it only repeats
-    /// the author's reason or the reviewer's argument.
+    /// fix not checked, Show Now); nil on a dispute, when it only repeats
+    /// the author's reason or the reviewer's argument, or when it is the
+    /// stalled loop's line (`SpecReviewLoop.endLine` says it once).
     static func loopStatus(_ entry: SpecReviewLedgerEntry) -> String? {
         guard entry.verdict == "unsettled" else { return nil }
         let note = entry.verdictNote.trimmingCharacters(in: .whitespacesAndNewlines)
         if note.isEmpty || note == authorReason(entry) || note == reviewerPosition(entry) { return nil }
+        // A stalled loop's line is the screen's end line, shown once above.
+        if note == SpecReviewLoop.stalledNote { return nil }
         return note
     }
 
@@ -494,8 +509,11 @@ enum SpecReviewPresentation {
 
     /// Wrap-up's lists, in order: As agreed, Differs, Missing, Other (an
     /// agreement status this build does not know), Decided alone, Blind
-    /// spots, Concerns (checks that raised one). Empty groups are left out.
-    static func wrapUpGroups(_ result: SpecReviewResult) -> [WrapUpGroup] {
+    /// spots, Concerns (checks that raised one), From discussion (findings
+    /// the owner added from a thread). Empty groups are left out.
+    static func wrapUpGroups(
+        _ result: SpecReviewResult, threadFindings: [SpecReviewProposedFinding] = []
+    ) -> [WrapUpGroup] {
         func agreements(_ pick: (String) -> Bool) -> [WrapUpItem] {
             result.agreements.filter { pick($0.status) }.map { WrapUpItem(key: $0.key, text: $0.text, chapter: $0.chapter) }
         }
@@ -513,6 +531,9 @@ enum SpecReviewPresentation {
             }),
             WrapUpGroup(title: "Concerns", items: result.checks.filter { $0.answer == "concern" }.map {
                 WrapUpItem(key: $0.key, text: $0.question, chapter: $0.chapter)
+            }),
+            WrapUpGroup(title: "From discussion", items: threadFindings.map {
+                WrapUpItem(key: $0.key, text: $0.headline, chapter: $0.chapter)
             })
         ]
         return groups.filter { !$0.items.isEmpty }
@@ -521,10 +542,14 @@ enum SpecReviewPresentation {
     // MARK: - Per-kind cards and the summary (spec 2026-11-08)
 
     /// What a chapter's finding card is, for its buttons: an agreement
-    /// the document matches has nothing to fix.
+    /// the document matches has nothing to fix; one added from a thread
+    /// wears **From discussion**.
     static func cardKind(for finding: SpecReviewChapterFinding) -> SpecReviewCardKind {
-        if case let .agreement(f) = finding, f.status == "as_agreed" { return .asAgreed }
-        return .actionable
+        switch finding {
+        case let .agreement(f) where f.status == "as_agreed": .asAgreed
+        case .fromDiscussion: .fromDiscussion
+        default: .actionable
+        }
     }
 
     /// A check's card: a concern is fixable, an answered one is something
@@ -546,21 +571,9 @@ enum SpecReviewPresentation {
 
     /// A proposed finding's neutral chip: "Proposed · <kind>".
     static func proposedBadge(_ finding: SpecReviewProposedFinding) -> Badge {
-        let kind: String? = switch finding.kind {
-        case "differs": "Differs"
-        case "missing": "Missing"
-        case "decided_alone": "Decided alone"
-        case "blind_spot": "Blind spot"
-        default: nil
-        }
-        return Badge(title: kind.map { "Proposed · \($0)" } ?? "Proposed", tint: .neutral)
-    }
-
-    /// The owner's own item in a loop seeded from **Request changes**:
-    /// whether the author fixed it; nil for the reviewer's findings.
-    static func ownerItemLine(_ entry: SpecReviewLedgerEntry, fixed: Bool) -> String? {
-        guard entry.item.kind == "owner_comment" else { return nil }
-        return fixed ? "Your item — fixed by the author" : "Your item — still open"
+        let known: Set = ["differs", "missing", "decided_alone", "blind_spot"]
+        guard known.contains(finding.kind) else { return Badge(title: "Proposed", tint: .neutral) }
+        return Badge(title: "Proposed · \(threadFindingBadge(kind: finding.kind).title)", tint: .neutral)
     }
 
     struct ThesisGroup: Equatable {
