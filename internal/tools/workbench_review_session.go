@@ -102,6 +102,16 @@ func (s ReviewSource) Read(ctx context.Context, repo *reviewdiff.Repo) (tree str
 	return tree, base, err
 }
 
+// Head is the commit the place's snapshot stands on (review_rounds.head_sha,
+// the big-branch map's lane walk): the tip's commit, else the folder's HEAD
+// ("" when HEAD is unborn), read through repo's hardened runner (REVIEW-05).
+func (s ReviewSource) Head(ctx context.Context, repo *reviewdiff.Repo) (string, error) {
+	if s.Tip != nil {
+		return s.Tip.Commit, nil
+	}
+	return repo.HeadCommit(ctx)
+}
+
 // ResolveReviewSource finds session sessionID's review place. The session's
 // target (terminal_sessions.target_id), or its nearest ancestor carrying
 // one, may name a task branch:

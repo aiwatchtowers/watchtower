@@ -31,6 +31,7 @@ type ReviewRound struct {
 	DeliveredAt   sql.NullString
 	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00155)
 	Branch        string // the branch a ReviewSourceBranch round reviews; "" for a folder round (00173)
+	HeadSHA       string // the commit the snapshot was taken at; "" for a round made before 00174 (no lanes)
 }
 
 // A sent round's outcome (review_rounds.outcome, 00155); an open round's is "".
@@ -51,12 +52,12 @@ type ReviewComment struct {
 }
 
 const reviewRoundCols = `id, project_id, session_id, source, folder_root, base_sha, base_label, tree_sha,
-	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome, branch`
+	prev_round_id, status, mode, phase, chapter_key, active_seconds, created_at, sent_at, delivered_at, outcome, branch, head_sha`
 
 func scanReviewRound(s interface{ Scan(...any) error }) (*ReviewRound, error) {
 	var r ReviewRound
 	err := s.Scan(&r.ID, &r.ProjectID, &r.SessionID, &r.Source, &r.FolderRoot, &r.BaseSHA, &r.BaseLabel,
-		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome, &r.Branch)
+		&r.TreeSHA, &r.PrevRoundID, &r.Status, &r.Mode, &r.Phase, &r.ChapterKey, &r.ActiveSeconds, &r.CreatedAt, &r.SentAt, &r.DeliveredAt, &r.Outcome, &r.Branch, &r.HeadSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -104,21 +105,26 @@ func (db *DB) CreateReviewRound(r ReviewRound) (int64, error) {
 		r.Mode = "quick"
 	}
 	res, err := db.Exec(`INSERT INTO review_rounds (project_id, session_id, source, folder_root, base_sha,
-		base_label, tree_sha, prev_round_id, mode, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ProjectID, r.SessionID, r.Source, r.FolderRoot, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.Mode, r.Branch)
+		base_label, tree_sha, prev_round_id, mode, branch, head_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ProjectID, r.SessionID, r.Source, r.FolderRoot, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.PrevRoundID, r.Mode, r.Branch, r.HeadSHA)
 	if err != nil {
 		return 0, fmt.Errorf("creating review round: %w", err)
 	}
 	return res.LastInsertId()
 }
 
-// UpdateReviewRoundTree moves an open round to a fresh snapshot (Refresh).
-func (db *DB) UpdateReviewRoundTree(id int64, tree string) error {
-	res, err := db.Exec(`UPDATE review_rounds SET tree_sha = ? WHERE id = ? AND status = 'open'`, tree, id)
+// UpdateReviewRoundTree moves an open round to a fresh snapshot (Refresh):
+// its tree and the commit head the snapshot was taken at.
+func (db *DB) UpdateReviewRoundTree(id int64, tree, head string) error {
+	res, err := db.Exec(`UPDATE review_rounds SET tree_sha = ?, head_sha = ? WHERE id = ? AND status = 'open'`, tree, head, id)
 	if err != nil {
 		return fmt.Errorf("refreshing review round %d: %w", id, err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("refreshing review round %d: %w", id, err)
+	}
+	if n != 1 {
 		return fmt.Errorf("review round %d: %w", id, ErrReviewRoundNotOpen)
 	}
 	return nil
@@ -134,15 +140,15 @@ const (
 )
 
 // RepointReviewRound writes an open round's place — folder, source, branch,
-// base and tree — when the session's place moved under it or a branch
+// base, tree and head — when the session's place moved under it or a branch
 // round's Refresh re-read its base (board #1012). The round keeps its id,
 // comments, Viewed marks and previous-round link (REVIEW-03: the previous
 // round's unresolved comments still carry); the Desktop re-places the
 // comments on the new diff as on a Refresh.
 func (db *DB) RepointReviewRound(r ReviewRound) error {
 	res, err := db.Exec(`UPDATE review_rounds SET folder_root = ?, source = ?, branch = ?, base_sha = ?, base_label = ?,
-		tree_sha = ? WHERE id = ? AND status = 'open'`,
-		r.FolderRoot, r.Source, r.Branch, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.ID)
+		tree_sha = ?, head_sha = ? WHERE id = ? AND status = 'open'`,
+		r.FolderRoot, r.Source, r.Branch, r.BaseSHA, r.BaseLabel, r.TreeSHA, r.HeadSHA, r.ID)
 	if err != nil {
 		return fmt.Errorf("moving review round %d: %w", r.ID, err)
 	}

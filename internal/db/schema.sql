@@ -3194,7 +3194,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   sent_at        TEXT,
   delivered_at   TEXT,
   outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), -- how the owner closed a sent round (00155)
-  branch         TEXT NOT NULL DEFAULT '' -- the branch a source='pr' round reviews; '' for a folder round (00173)
+  branch         TEXT NOT NULL DEFAULT '', -- the branch a source='pr' round reviews; '' for a folder round (00173)
+  head_sha       TEXT NOT NULL DEFAULT '' -- the commit the snapshot was taken at (rev-parse HEAD / the branch tip read); '' = a round made before 00174, no lane attribution
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
@@ -3266,6 +3267,18 @@ CREATE TABLE IF NOT EXISTS review_overviews (
   model       TEXT NOT NULL DEFAULT '',
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
+);
+
+-- One cached AI description per overview chapter (00174, board #1025):
+-- part_hash = sha256 of the chapter key, its files' (path, old blob, new blob),
+-- the agent's notes on them and the prompt id + version. Pruned after 30 days on write.
+CREATE TABLE IF NOT EXISTS review_overview_parts (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  part_hash  TEXT NOT NULL,
+  json       TEXT NOT NULL,
+  model      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, part_hash)
 );
 
 CREATE TABLE IF NOT EXISTS review_reverts (

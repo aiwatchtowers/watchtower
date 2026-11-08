@@ -58,7 +58,7 @@ func assertSentRoundState(t *testing.T, d *DB, pid, sid, id int64) {
 	if len(cs) != 1 || cs[0].Status != "sent" {
 		t.Fatalf("comments = %+v", cs)
 	}
-	if err := d.UpdateReviewRoundTree(id, "t2"); !errors.Is(err, ErrReviewRoundNotOpen) {
+	if err := d.UpdateReviewRoundTree(id, "t2", "h2"); !errors.Is(err, ErrReviewRoundNotOpen) {
 		t.Fatalf("tree update on a sent round: %v", err)
 	}
 	waiting, _ := d.ReviewRoundsWaiting(pid, sid)
@@ -506,5 +506,42 @@ func TestTicketBranchChain(t *testing.T) {
 	}
 	if got, err := d.TicketBranchChain(other, leaf); err != nil || len(got) != 0 {
 		t.Fatalf("chain on another workbench = %q, %v", got, err)
+	}
+}
+
+// head_sha (00174) is stored by create, Refresh and a move, and is empty on a
+// round made without one.
+func TestReviewRounds_HeadSHAStoredByCreateRefreshAndRepoint(t *testing.T) {
+	d := openTestDB(t)
+	pid, sid := seedReviewSession(t, d)
+	id, err := d.CreateReviewRound(ReviewRound{ProjectID: pid, SessionID: nullInt(sid), FolderRoot: "/tmp/wb-review",
+		BaseSHA: "b", TreeSHA: "t1", HeadSHA: "h1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetReviewRound(pid, id); got == nil || got.HeadSHA != "h1" {
+		t.Fatalf("after create: %+v", got)
+	}
+	if err := d.UpdateReviewRoundTree(id, "t2", "h2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetReviewRound(pid, id); got == nil || got.HeadSHA != "h2" || got.TreeSHA != "t2" {
+		t.Fatalf("after refresh: %+v", got)
+	}
+	if err := d.RepointReviewRound(ReviewRound{ID: id, FolderRoot: "/tmp/wb-review-wt", Source: ReviewSourceBranch,
+		Branch: "feature/x", BaseSHA: "b2", TreeSHA: "t3", HeadSHA: "h3"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := d.GetReviewRound(pid, id); got == nil || got.HeadSHA != "h3" || got.TreeSHA != "t3" {
+		t.Fatalf("after repoint: %+v", got)
+	}
+	// A round written without a head (as before 00174) reads ''.
+	res, err := d.Exec(`INSERT INTO review_rounds (project_id, folder_root, base_sha, tree_sha) VALUES (?, '/tmp/x', 'b', 't')`, pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, _ := res.LastInsertId()
+	if got, _ := d.GetReviewRound(pid, old); got == nil || got.HeadSHA != "" {
+		t.Fatalf("old round: %+v", got)
 	}
 }

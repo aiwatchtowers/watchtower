@@ -1742,7 +1742,7 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
   delivered_at   TEXT
-, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), branch TEXT NOT NULL DEFAULT '');
+, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), branch TEXT NOT NULL DEFAULT '', head_sha TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS review_comments (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id       INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
@@ -2373,6 +2373,14 @@ CREATE TABLE IF NOT EXISTS history_backfill_daily (
  day_from REAL NOT NULL,
  digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
  PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
+);
+CREATE TABLE IF NOT EXISTS review_overview_parts (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  part_hash  TEXT NOT NULL,
+  json       TEXT NOT NULL,
+  model      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, part_hash)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
