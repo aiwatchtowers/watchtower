@@ -93,6 +93,9 @@ public final class InMemoryPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     public func existingIdentity() throws -> DeviceIdentityKeys? { try store.existingIdentity() }
     public func hubLink(_ hubID: String) throws -> HubLinkKeys? { try store.hubLink(hubID) }
     public func saveHubLink(_ keys: HubLinkKeys) throws { try store.saveHubLink(keys) }
+    public func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
+        try store.updateHubLink(hubID, change)
+    }
     public func removeHubLink(_ hubID: String) throws { try store.removeHubLink(hubID) }
     public func hubSigningKey(_ hubID: String) throws -> Curve25519.Signing.PublicKey? { try store.hubSigningKey(hubID) }
     public func alertMaterial(_ hubID: String) throws -> AlertMaterial? { try store.alertMaterial(hubID) }

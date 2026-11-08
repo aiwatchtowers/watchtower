@@ -450,4 +450,131 @@ final class KeyStoreTests: XCTestCase {
         try store.deleteHubIdentity(hubID: "h")
         XCTAssertTrue(try store.hubIdentity(hubID: "h").created)
     }
+
+    // MARK: - Relay client Phase 5: ephemeral state on the link item
+
+    func testOldItemDecodesWithNoEphemeralState() throws {
+        let backend = FakeKeychainBackend()
+        // As a build before Phase 5 wrote it: no currentKX/offeredKX, no relayKeys on the epochs.
+        let old = """
+        {"hubID":"hub-1","hubSigningKey":"\(Data(repeating: 7, count: 32).base64EncodedString())",
+        "hubAgreementKey":"\(Data(repeating: 8, count: 32).base64EncodedString())",
+        "linkNonce":"\(Data(repeating: 9, count: 16).base64EncodedString())",
+        "epochs":[{"epoch":1,"dataKey":"\(Data(repeating: 0xD1, count: 32).base64EncodedString())",
+        "alertKey":"\(Data(repeating: 0xE1, count: 32).base64EncodedString())"}]}
+        """
+        backend.plant("hub.hub-1", Data(old.utf8), group: privateGroup)
+        let keys = try XCTUnwrap(makeStore(backend).hubLink("hub-1"))
+        XCTAssertNil(keys.currentKX)
+        XCTAssertNil(keys.offeredKX)
+        XCTAssertNil(keys.epochs.first?.relayKeys)
+        XCTAssertFalse(keys.hasEphemeralState)
+        // A link with no ephemeral state encodes as it always did: none of the new keys appear.
+        let encoded = try XCTUnwrap(String(bytes: try JSONEncoder().encode(keys), encoding: .utf8))
+        for name in ["currentKX", "offeredKX", "relayKeys"] { XCTAssertFalse(encoded.contains(name), name) }
+    }
+
+    func testUpdateHubLinkOnARemovedLinkWritesNothing() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        var called = false
+        XCTAssertNil(try store.updateHubLink("hub-1") { called = true; return $0 })
+        try store.saveHubLink(link())
+        try store.removeHubLink("hub-1")
+        let writes = backend.writes.count
+        XCTAssertNil(try store.updateHubLink("hub-1") { called = true; return $0.withOffer().0 })
+        XCTAssertFalse(called, "an unlink is never undone")
+        XCTAssertEqual(backend.writes.count, writes)
+        XCTAssertNil(try store.hubLink("hub-1"))
+    }
+
+    func testUpdateHubLinkRefusesAChangedHubID() throws {
+        let store = makeStore(FakeKeychainBackend())
+        try store.saveHubLink(link())
+        XCTAssertThrowsError(try store.updateHubLink("hub-1") { _ in
+            HubLinkKeys(hubID: "hub-2", hubSigningKey: Data(count: 32), hubAgreementKey: Data(count: 32), linkNonce: Data())
+        })
+        XCTAssertNil(try store.hubLink("hub-2"))
+    }
+
+    func testConcurrentUpdatesLoseNothing() throws {
+        let store = makeStore(FakeKeychainBackend())
+        try store.saveHubLink(link(epochs: []))
+        DispatchQueue.concurrentPerform(iterations: HubLinkKeys.maxEpochs) { index in
+            let number = UInt32(index + 1)
+            _ = try? store.updateHubLink("hub-1") { keys in
+                var copy = keys
+                copy.epochs.append(EpochKeys(
+                    epoch: number, dataKey: Data(repeating: UInt8(number), count: 32), alertKey: Data(repeating: 1, count: 32)))
+                copy.epochs.sort { $0.epoch < $1.epoch }
+                return copy
+            }
+        }
+        XCTAssertEqual(try store.hubLink("hub-1")?.epochs.map(\.epoch), (1...UInt32(HubLinkKeys.maxEpochs)).map { $0 })
+    }
+
+    func testAlertMaterialCarriesNoRelayKeysOrEphemerals() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        var keys = link()
+        keys.epochs[0].relayKeys = EpochRelayKeys(p2h: Data(repeating: 0x51, count: 32), h2p: Data(repeating: 0x52, count: 32))
+        let current = EphemeralKey.generate()
+        let offered = EphemeralKey.generate()
+        keys.currentKX = current
+        keys.offeredKX = offered
+        try store.saveHubLink(keys)
+        let alertWrite = try XCTUnwrap(backend.writes.last { $0.account == "alert.hub-1" })
+        let text = try XCTUnwrap(String(bytes: alertWrite.data, encoding: .utf8))
+        let pair = try XCTUnwrap(keys.epochs[0].relayKeys)
+        let meta = try XCTUnwrap(keys.metaKey)
+        for secret in [pair.p2h, pair.h2p, current.privateKey, offered.privateKey, keys.epochs[0].dataKey, meta] {
+            XCTAssertFalse(text.contains(secret.base64EncodedString()))
+            XCTAssertFalse(contains(alertWrite.data, secret))
+        }
+        for name in ["relayKeys", "currentKX", "offeredKX"] { XCTAssertFalse(text.contains(name), name) }
+        XCTAssertEqual(try store.alertMaterial("hub-1")?.epochs.map(\.relayKeys), [nil])
+        // The secret item keeps all of it.
+        XCTAssertEqual(try store.hubLink("hub-1"), keys)
+    }
+
+    func testRetentionDropsRelayKeysWithTheEpoch() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let backend = FakeKeychainBackend()
+        let store = KeychainPhoneKeyStore(backend: backend, privateGroup: privateGroup, alertGroup: alertGroup) { now }
+        let oldPair = EpochRelayKeys(p2h: Data(repeating: 0x61, count: 32), h2p: Data(repeating: 0x62, count: 32))
+        let newPair = EpochRelayKeys(p2h: Data(repeating: 0x63, count: 32), h2p: Data(repeating: 0x64, count: 32))
+        try store.saveHubLink(link(epochs: [
+            EpochKeys(epoch: 1, dataKey: Data(repeating: 1, count: 32), alertKey: Data(repeating: 2, count: 32),
+                      supersededAt: now.addingTimeInterval(-HubLinkKeys.previousEpochGrace - 1), relayKeys: oldPair),
+            EpochKeys(epoch: 2, dataKey: Data(repeating: 3, count: 32), alertKey: Data(repeating: 4, count: 32), relayKeys: newPair)
+        ]))
+        let item = try XCTUnwrap(backend.writes.last { $0.account == "hub.hub-1" }).data
+        let text = try XCTUnwrap(String(bytes: item, encoding: .utf8))
+        XCTAssertFalse(text.contains(oldPair.p2h.base64EncodedString()))
+        XCTAssertFalse(text.contains(oldPair.h2p.base64EncodedString()))
+        XCTAssertEqual(try store.hubLink("hub-1")?.epochs.map(\.relayKeys), [newPair])
+    }
+
+    func testKeychainSizeCheckCoversTheNewKeys() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        let good = link()
+        let real = EphemeralKey.generate()
+        var variants: [HubLinkKeys] = []
+        var v = good; v.epochs[0].relayKeys = EpochRelayKeys(p2h: Data(count: 31), h2p: Data(count: 32)); variants.append(v)
+        v = good; v.epochs[0].relayKeys = EpochRelayKeys(p2h: Data(count: 32), h2p: Data(count: 33)); variants.append(v)
+        v = good; v.currentKX = EphemeralKey(publicKey: real.publicKey, privateKey: Data(count: 31)); variants.append(v)
+        v = good; v.offeredKX = EphemeralKey(publicKey: Data(count: 16), privateKey: real.privateKey); variants.append(v)
+        // Halves that disagree: the transcript public would not be the agreement key's.
+        v = good; v.offeredKX = EphemeralKey(publicKey: real.publicKey, privateKey: EphemeralKey.generate().privateKey)
+        variants.append(v)
+        for bad in variants {
+            XCTAssertThrowsError(try store.saveHubLink(bad)) {
+                guard case .corrupt = $0 as? KeyStoreError else { return XCTFail("\($0)") }
+            }
+        }
+        XCTAssertTrue(backend.writes.isEmpty)
+        v = good; v.offeredKX = real; v.epochs[0].relayKeys = EpochRelayKeys(p2h: Data(count: 32), h2p: Data(count: 32))
+        XCTAssertNoThrow(try store.saveHubLink(v))
+    }
 }

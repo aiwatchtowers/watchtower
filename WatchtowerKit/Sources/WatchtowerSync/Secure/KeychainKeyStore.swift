@@ -99,19 +99,41 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     public func saveHubLink(_ keys: HubLinkKeys) throws {
-        let sizes = [keys.hubSigningKey, keys.hubAgreementKey] + (keys.metaKey.map { [$0] } ?? [])
-            + keys.epochs.flatMap { [$0.dataKey, $0.alertKey] }
+        try lock.withLock { _ = try writeHubLink(keys) }
+    }
+
+    public func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
+        try lock.withLock {
+            guard let current = try hubLink(hubID) else { return nil }
+            let changed = try change(current)
+            guard changed.hubID == hubID else { throw KeyStoreError.corrupt("a hub link update changed its hub id") }
+            guard changed != current else { return current }
+            return try writeHubLink(changed)
+        }
+    }
+
+    /// Checks every key, keeps `retained(now:)` and writes the three copies; returns what the secret item holds.
+    /// Callers hold `lock`.
+    private func writeHubLink(_ keys: HubLinkKeys) throws -> HubLinkKeys {
+        let ephemerals = [keys.currentKX, keys.offeredKX].compactMap { $0 }
+        var sizes: [Data] = [keys.hubSigningKey, keys.hubAgreementKey] + (keys.metaKey.map { [$0] } ?? [])
+        for epoch in keys.epochs {
+            sizes += [epoch.dataKey, epoch.alertKey]
+            if let pair = epoch.relayKeys { sizes += [pair.p2h, pair.h2p] }
+        }
+        for ephemeral in ephemerals { sizes += [ephemeral.publicKey, ephemeral.privateKey] }
         guard sizes.allSatisfy({ $0.count == 32 }) else { throw KeyStoreError.corrupt("a hub link key is not 32 bytes") }
-        // The NSE's alert material carries the same epochs, so it opens an alert sealed in any kept one.
+        for ephemeral in ephemerals { _ = try ephemeral.agreementKey() }
+        // The NSE's alert material carries the same epochs, so it opens an alert sealed in any kept one. Built field
+        // by field: no data key, no relay keys, no ephemeral key ever reaches the afterFirstUnlock copy.
         let trimmed = keys.retained(now: now())
         let alert = AlertMaterial(
             epochs: trimmed.epochs.map { EpochKeys(epoch: $0.epoch, dataKey: Data(), alertKey: $0.alertKey) },
             hubSigningKey: keys.hubSigningKey)
-        try lock.withLock {
-            try put(try JSONEncoder().encode(trimmed), "hub.\(keys.hubID)", .whenUnlocked)
-            try put(keys.hubSigningKey, "hubpub.\(keys.hubID)", .afterFirstUnlock)
-            try put(try JSONEncoder().encode(alert), "alert.\(keys.hubID)", .afterFirstUnlock, useAlertGroup: true)
-        }
+        try put(try JSONEncoder().encode(trimmed), "hub.\(keys.hubID)", .whenUnlocked)
+        try put(keys.hubSigningKey, "hubpub.\(keys.hubID)", .afterFirstUnlock)
+        try put(try JSONEncoder().encode(alert), "alert.\(keys.hubID)", .afterFirstUnlock, useAlertGroup: true)
+        return trimmed
     }
 
     public func removeHubLink(_ hubID: String) throws {
