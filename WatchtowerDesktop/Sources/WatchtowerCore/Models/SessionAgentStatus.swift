@@ -63,7 +63,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// from its rollout by the session probe (board #959).
     package var kind: String?
     /// Why the session host's rollout watch cannot read this working codex
-    /// row's rollout (migration 00173, Go writes): `missing`, `permission`,
+    /// row's rollout (migration 00174, Go writes): `missing`, `permission`,
     /// `compressed` or `unreadable`; nil = watched, or a database without
     /// the column.
     package var agentWatchIssue: String?

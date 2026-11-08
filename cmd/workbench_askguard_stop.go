@@ -49,9 +49,11 @@ const askGuardMessageLimit = 32 << 10
 // bytes.
 const askGuardCutMarker = "[earlier text cut]\n"
 
-// Clip bounds of the model's question and option labels (Part 4.3).
+// Clip bounds of the model's question, context and option labels (Part
+// 4.3; the context since classifier v5).
 const (
 	askGuardQuestionRunes = 300
+	askGuardContextRunes  = 600
 	askGuardLabelRunes    = 40
 	askGuardMaxOptions    = 4
 )
@@ -86,7 +88,14 @@ type askGuardVerdict struct {
 	ClosingSummary     bool
 	CompleteUnreported bool
 	Question           string
-	Options            []db.ChatQuestionOption
+	// Context is what the message gives the owner to answer a chat
+	// question (why the agent asks, what each answer changes, what it
+	// recommends); "" for any other request.
+	Context string
+	Options []db.ChatQuestionOption
+	// BadContext is set when the model's context was present but no JSON
+	// string (null included); it reads as none.
+	BadContext bool
 	// UnknownRequest is the model's request value when it was none of
 	// none/chat/full and so read as none ("" otherwise, or for an empty one,
 	// which also reads as none).
@@ -104,7 +113,10 @@ type askGuardModelOutput struct {
 	ClosingSummary     bool    `json:"closing_summary"`
 	CompleteUnreported bool    `json:"complete_unreported"`
 	Question           string  `json:"question"`
-	Options            []struct {
+	// Context is kept raw: a context that is no JSON string (null, an
+	// array) reads as none and never costs the verdict.
+	Context json.RawMessage `json:"context"`
+	Options []struct {
 		Label       string `json:"label"`
 		Recommended bool   `json:"recommended"`
 	} `json:"options"`
@@ -135,6 +147,11 @@ func decodeAskGuardVerdict(reply string) (askGuardVerdict, error) {
 		CompleteUnreported: out.CompleteUnreported,
 		Question:           out.Question,
 	}
+	if len(out.Context) > 0 {
+		if err := json.Unmarshal(out.Context, &v.Context); err != nil || out.Context[0] != '"' {
+			v.Context, v.BadContext = "", true
+		}
+	}
 	for _, o := range out.Options {
 		v.Options = append(v.Options, db.ChatQuestionOption{Label: o.Label, Recommended: o.Recommended})
 	}
@@ -146,9 +163,15 @@ func decodeAskGuardVerdict(reply string) (askGuardVerdict, error) {
 // duplicates (case-folded, after the clip) dropped, keeping the first and
 // OR-ing its recommended; the first 4 kept; a single remaining option
 // becomes none. An unknown request reads as none, and a chat request whose
-// question is empty as full. The options therefore number 0 or 2-4.
+// question is empty as full. The options therefore number 0 or 2-4. The
+// context goes on one line, clipped (a cut one ends with "…"), and is kept only on a chat request and
+// only when it says more than the question (not equal to it, case-folded).
 func normaliseAskGuardVerdict(v askGuardVerdict) askGuardVerdict {
 	v.Question = clipRunes(oneLine(v.Question), askGuardQuestionRunes)
+	v.Context = briefClip(v.Context, askGuardContextRunes) // one line; a cut ends with "…"
+	if strings.EqualFold(v.Context, v.Question) {
+		v.Context = ""
+	}
 	var opts []db.ChatQuestionOption
 	seen := map[string]int{}
 	for _, o := range v.Options {
@@ -181,6 +204,9 @@ func normaliseAskGuardVerdict(v askGuardVerdict) askGuardVerdict {
 		v.Request = request
 	default:
 		v.UnknownRequest, v.Request = v.Request, askRequestNone
+	}
+	if v.Request != askRequestChat {
+		v.Context = ""
 	}
 	return v
 }
@@ -434,7 +460,7 @@ func recordedQuestion(d stopDecision, v *askGuardVerdict, message string) db.Cha
 	case d.Full:
 		return db.ChatQuestion{Question: askGuardFullText(message), Level: asks.LevelFull}
 	}
-	return db.ChatQuestion{Question: v.Question, Options: v.Options}
+	return db.ChatQuestion{Question: v.Question, Context: v.Context, Options: v.Options}
 }
 
 // askGuardGeneratorFactory builds the classifier's model client; the seam
@@ -451,7 +477,7 @@ var askGuardGeneratorFactory = func(cfg *config.Config) digest.Generator {
 }
 
 // classifyAskGuard asks the light-tier model for the verdict on message,
-// within askGuardModelBudget. The system prompt is the embedded v4 text, not
+// within askGuardModelBudget. The system prompt is the embedded v5 text, not
 // a prompt-store entry: PROJ-13 pins it (a documented exception to the
 // DB-backed prompts rule, docs/features/workbench.md).
 func classifyAskGuard(parent context.Context, gen digest.Generator, message string) (askGuardVerdict, error) {
@@ -586,6 +612,9 @@ func askGuardVerdictFor(ctx context.Context, stderr io.Writer, cfg *config.Confi
 	}
 	if v.UnknownRequest != "" {
 		fmt.Fprintf(stderr, "watchtower: ask guard read the classifier's request %q as none\n", briefClip(v.UnknownRequest, 40))
+	}
+	if v.BadContext {
+		fmt.Fprintln(stderr, "watchtower: ask guard read the classifier's context, which is no string, as none")
 	}
 	return &v, true
 }

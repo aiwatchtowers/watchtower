@@ -534,7 +534,7 @@ func TestCodexWatch_StoreThatDoesNotOpenLeavesTheRunToTheBridge(t *testing.T) {
 	var mu sync.Mutex
 	path, _ := startHost(t, Options{
 		CodexWatch: func(string) (CodexWatchStore, error) {
-			return nil, errors.New("the database has no watch columns yet (migration 00173)")
+			return nil, errors.New("the database has no watch columns yet (migration 00174)")
 		},
 		Logf: func(format string, args ...any) {
 			mu.Lock()

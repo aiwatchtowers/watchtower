@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/asks"
+	"watchtower/internal/db"
 )
 
 // escalateGoldenDir holds one file per `workbench escalate-question`
@@ -70,4 +72,60 @@ func assertEscalateGolden(t *testing.T, file string, got []byte) {
 	want, err := os.ReadFile(path)
 	require.NoError(t, err, "run with -update to create it")
 	assert.Equal(t, string(want), string(got))
+}
+
+// escalateSummaryCase is one entry of summaries.json: the raised ask's
+// summary and title as escalatedAsk builds them for a reason (waited
+// minutes for a timeout), with what the Desktop drawer shows of it — body
+// in the bubble, reason_line as the caption (OwnerAskPresentation
+// .summaryParts reads the same file).
+type escalateSummaryCase struct {
+	Name       string `json:"name"`
+	Reason     string `json:"reason"`
+	WaitedMin  int    `json:"waited_min"`
+	Level      string `json:"level"`
+	Question   string `json:"question"`
+	Context    string `json:"context"`
+	Title      string `json:"title"`
+	Summary    string `json:"summary"`
+	ReasonLine string `json:"reason_line"`
+	Body       string `json:"body"`
+}
+
+func TestEscalateSummaryGolden(t *testing.T) {
+	full := "Please decide three things before I go on.\n\n" +
+		"1. Keep the old endpoint for one release, or drop it now?\n" +
+		"2. Rename the flag to --read-folder everywhere?\n\n" +
+		"3. Ship it behind the setting, off by default?"
+	chat := "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this " +
+		"workbench's sessions (terminal_session_worktrees)?"
+	context := "I found two places that read the folder; both assume one root. Extending them is a small change, " +
+		"and I recommend yes."
+	cases := []struct {
+		name, reason string
+		waited       time.Duration
+		q            db.ChatQuestion
+		body         string
+	}{
+		{"left_with_context", escalateReasonLeft, 0, db.ChatQuestion{Question: chat, Context: context}, context},
+		{"away_no_context", escalateReasonAway, 0, db.ChatQuestion{Question: chat}, ""},
+		{"timeout_0_with_context", escalateReasonTimeout, 30 * time.Second, db.ChatQuestion{Question: chat, Context: context}, context},
+		{"timeout_12_no_context", escalateReasonTimeout, 12*time.Minute + 40*time.Second, db.ChatQuestion{Question: chat}, ""},
+		{"full_timeout_12", escalateReasonTimeout, 12 * time.Minute, db.ChatQuestion{Question: full, Level: asks.LevelFull}, ""},
+		{"full_left", escalateReasonLeft, 0, db.ChatQuestion{Question: full, Level: asks.LevelFull}, ""},
+	}
+	out := make([]escalateSummaryCase, 0, len(cases))
+	for _, c := range cases {
+		line := escalateReasonLine(c.reason, c.waited)
+		out = append(out, escalateSummaryCase{
+			Name: c.name, Reason: c.reason, WaitedMin: int(c.waited / time.Minute), Level: c.q.Level,
+			Question: c.q.Question, Context: c.q.Context,
+			Title:      clipRunes(oneLine(c.q.Question), asks.MaxTitleRunes),
+			Summary:    escalatedSummary(c.q, line),
+			ReasonLine: line, Body: c.body,
+		})
+	}
+	var buf bytes.Buffer
+	require.NoError(t, writeJSON(&buf, out))
+	assertEscalateGolden(t, "summaries.json", buf.Bytes())
 }

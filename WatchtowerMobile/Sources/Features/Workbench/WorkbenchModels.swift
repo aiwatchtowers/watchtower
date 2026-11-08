@@ -59,6 +59,7 @@ struct SessionRowModel: Equatable, Identifiable {
             if let done = session.reportDone, let total = session.reportTotal {
                 report += " · \(done)/\(total)"
             }
+            if let merged = session.reportMergedText { report += " · \(merged)" }
             items.append(MetaItem(text: report, tone: .secondary, role: .info))
             if let pr = session.reportPRLine, !pr.isEmpty {
                 items.append(MetaItem(text: pr, tone: .secondary, role: .info))

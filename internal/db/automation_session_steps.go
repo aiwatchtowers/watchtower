@@ -119,7 +119,7 @@ type AutomationSessionStep struct {
 	Failed        bool // agent_failed_at is set
 	AgentError    string
 	// WatchIssue is agent_watch_issue while the session reads working: the
-	// Mac cannot watch it (migration 00173, N6); "" = watched or not working.
+	// Mac cannot watch it (migration 00174, N6); "" = watched or not working.
 	WatchIssue string
 }
 

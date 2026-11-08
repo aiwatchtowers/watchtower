@@ -269,7 +269,7 @@ func TestSessionProbe_CodexStaleCountReadsTheRollout(t *testing.T) {
 }
 
 // A host binary never migrates the file it watches: a real database from
-// before migration 00173 (no watch columns) is refused, and the file is
+// before migration 00174 (no watch columns) is refused, and the file is
 // left as it was, still without the columns and at the same goose version.
 // A missing file is refused without being created.
 func TestCodexWatch_PreWatchDatabaseIsRefusedAndNotMigrated(t *testing.T) {
@@ -279,7 +279,7 @@ func TestCodexWatch_PreWatchDatabaseIsRefusedAndNotMigrated(t *testing.T) {
 	for _, stmt := range []string{
 		`ALTER TABLE terminal_sessions DROP COLUMN agent_watch_issue_at`,
 		`ALTER TABLE terminal_sessions DROP COLUMN agent_watch_issue`,
-		`DELETE FROM goose_db_version WHERE version_id >= 173`,
+		`DELETE FROM goose_db_version WHERE version_id >= 174`,
 	} {
 		_, err := database.Exec(stmt)
 		require.NoError(t, err, stmt)
@@ -297,7 +297,7 @@ func TestCodexWatch_PreWatchDatabaseIsRefusedAndNotMigrated(t *testing.T) {
 		return v
 	}
 	before := gooseVersion()
-	require.Less(t, before, int64(173))
+	require.Less(t, before, int64(174))
 
 	store, err := openCodexWatchStore(path)
 	require.Error(t, err)

@@ -212,9 +212,10 @@ func claudeHookSpec(event, subcommand string) hookSpec {
 // the texts as the upgrade's fixtures): what recognises that prompt as ours.
 const askGuardMarkerTemplate = "[watchtower-workbench ask-guard <N>]"
 
-// AskGuardClassifier is the Stop ask guard's v4 classifier text (spec
-// 2026-10-10-owner-asks-v2 Part 4.4), the system prompt of the command
-// hook's light-tier model call; testdata/askguard_classifier_v4.golden pins
+// AskGuardClassifier is the Stop ask guard's v5 classifier text (spec
+// 2026-10-10-owner-asks-v2 Part 4.4; v5 adds a chat request's context and a
+// yes/no question's two answers), the system prompt of the command hook's
+// light-tier model call; testdata/askguard_classifier_v5.golden pins
 // it. PROJ-13 pins the text, so it is deliberately not an owner-editable
 // prompt in the prompt store.
 //

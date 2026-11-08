@@ -109,13 +109,15 @@ func TestTerminalSessionMatchesKitFixtureKeys(t *testing.T) {
 	insertAsk(t, r.d, project, askSeed{session: &session})
 	insertAsk(t, r.d, project, askSeed{session: &session, status: "answered", answer: "Yes"})
 	summary := func(_, id int64) (ReportSummary, bool) {
-		return ReportSummary{TargetID: &target, Done: 1, Total: 2, PRLine: "PR #175 open"}, id == session
+		return ReportSummary{TargetID: &target, Done: 1, Total: 2, Merged: 1, MergedStale: true, PRLine: "PR #175 open"},
+			id == session
 	}
 	p := payloads(t, r.source([]int64{session}, time.Time{}, summary))[session]
 	assertWireShape(t, p, kitFixture(t, "workbench/terminal_session.json"),
 		"title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
 		"finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
-		"report_total", "report_pr_line", "report_pr_line_clipped", "watch_issue", "watch_help")
+		"report_total", "report_merged", "report_merged_stale", "report_pr_line", "report_pr_line_clipped",
+		"watch_issue", "watch_help")
 	keys := allKeys(p)
 	for _, k := range neverPublishedKeys {
 		if keys[k] {
@@ -123,8 +125,35 @@ func TestTerminalSessionMatchesKitFixtureKeys(t *testing.T) {
 		}
 	}
 	if p["agent"] != "claude_code" || p["state_kind"] != "waiting_on_ask" || num(p["open_asks"]) != 1 ||
-		num(p["closed_asks"]) != 1 || p["live"] != true || num(p["report_done"]) != 1 || num(p["report_target_id"]) != target {
+		num(p["closed_asks"]) != 1 || p["live"] != true || num(p["report_done"]) != 1 || num(p["report_target_id"]) != target ||
+		num(p["report_merged"]) != 1 || p["report_merged_stale"] != true {
 		t.Errorf("payload = %v", p)
+	}
+}
+
+// Board #1008: report_merged is present with the summary (0 when none) and
+// report_merged_stale only when true, as the Desktop slice writes them; no
+// summary, no keys.
+func TestTerminalSessionMergedShareWire(t *testing.T) {
+	r := newSessionRig(t)
+	project := insertWorkbench(t, r.d, "acme", "/tmp/acme")
+	withSummary := insertSession(t, r.d, project, sessionSeed{})
+	without := insertSession(t, r.d, project, sessionSeed{})
+	summary := func(_, id int64) (ReportSummary, bool) {
+		return ReportSummary{Done: 1, Total: 2}, id == withSummary
+	}
+	ps := payloads(t, r.source([]int64{withSummary, without}, time.Time{}, summary))
+	p := ps[withSummary]
+	if v, ok := p["report_merged"]; !ok || num(v) != 0 {
+		t.Errorf("report_merged = %v, %v; want present, 0", v, ok)
+	}
+	if _, ok := p["report_merged_stale"]; ok {
+		t.Errorf("report_merged_stale present when checked: %v", p)
+	}
+	for _, k := range []string{"report_merged", "report_merged_stale"} {
+		if _, ok := ps[without][k]; ok {
+			t.Errorf("%s without a summary: %v", k, ps[without])
+		}
 	}
 }
 

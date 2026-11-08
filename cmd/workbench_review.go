@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -65,10 +66,14 @@ func init() {
 	workbenchCmd.AddCommand(workbenchReviewCmd)
 }
 
+// reviewRoundJSON: Source "session" reviews the folder's work tree, "pr" the
+// task branch's committed tip, read-only, named by Branch (board #1012).
 type reviewRoundJSON struct {
 	ID            int64  `json:"id"`
 	Status        string `json:"status"`
 	Mode          string `json:"mode"`
+	Source        string `json:"source"`
+	Branch        string `json:"branch"`
 	FolderRoot    string `json:"folder_root"`
 	BaseSHA       string `json:"base_sha"`
 	BaseLabel     string `json:"base_label"`
@@ -102,6 +107,9 @@ type reviewEnvelope struct {
 	OverviewCached   bool                      `json:"overview_cached,omitempty"`
 	Lessons          *[]reviewLessonJSON       `json:"lessons,omitempty"`
 	Written          string                    `json:"written,omitempty"`
+	// PlaceMissing (start): the session's worktree no longer exists; the
+	// open round stayed on the folder it was opened on (board #1012).
+	PlaceMissing bool `json:"place_missing,omitempty"`
 }
 
 type reviewRevertJSON struct {
@@ -151,7 +159,7 @@ func failReview(cmd *cobra.Command, err error) error {
 }
 
 func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (*reviewRoundJSON, error) {
-	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
+	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, Source: r.Source, Branch: r.Branch, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
 		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA, Phase: r.Phase, ChapterKey: r.ChapterKey,
 		ActiveSeconds: r.ActiveSeconds}
 	if r.PrevRoundID.Valid {
@@ -162,13 +170,16 @@ func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *d
 				return nil, err
 			}
 			out.PrevTreeSHA = prev.TreeSHA
-			out.PrevTreeLost = !exists
+			// A previous round of another place has no tree to diff since
+			// (board #1012): it reads as lost, while its comments still carry.
+			out.PrevTreeLost = !exists || !samePlace(prev, r)
 		}
 	}
 	return out, nil
 }
 
-// writeRound answers the round's envelope.
+// writeRound answers the round's envelope, labelled with the branch the
+// round itself stores.
 func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) error {
 	out, err := roundJSON(ctx, repo, database, r)
 	if err != nil {
@@ -191,46 +202,114 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if open == nil && reviewFlagRefresh {
 		return failReview(cmd, errNoOpenReviewRound)
 	}
-	var folder string
-	if open != nil {
-		folder = open.FolderRoot
-	} else if folder, err = tools.ReviewSessionFolder(ctx, database, p, reviewFlagSession); err != nil {
-		return failReview(cmd, err)
-	}
-	repo, err := reviewdiff.Open(folder, nil)
+	// The place is resolved on every start: an open round whose place moved
+	// (the agent went into the branch's worktree, or the folder left the
+	// task branch) is moved with it (board #1012).
+	src, repo, err := tools.ResolveReviewSource(ctx, database, p, reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	if open != nil && !reviewFlagRefresh {
+	if open != nil && src.FolderMissing {
+		if !folderExists(open.FolderRoot) {
+			// The round's own folder is gone (a worktree removed by the #535
+			// cleanup): the place is lost, not changed, so the round stays
+			// where it was and says so.
+			out, err := roundJSON(ctx, repo, database, open)
+			if err != nil {
+				return failReview(cmd, err)
+			}
+			return writeReview(cmd, reviewEnvelope{OK: true, Round: out, PlaceMissing: true})
+		}
+		// Only the agent's last directory inside it is gone: the round's
+		// folder is still the place.
+		if src, repo, err = tools.ReviewSourceIn(ctx, database, p, reviewFlagSession, open.FolderRoot); err != nil {
+			return failReview(cmd, err)
+		}
+	}
+	moved := open != nil && !atPlace(open, src)
+	if open != nil && !moved && src.Tip == nil {
+		// A folder round keeps its base on a Refresh, unless the branch it is
+		// measured against changed (the folder checked out the task branch,
+		// whose base is its parent's): that is a move of the base.
+		if moved, err = folderBaseMoved(ctx, repo, open, src); err != nil {
+			return failReview(cmd, err)
+		}
+	}
+	if open != nil && !moved && !reviewFlagRefresh {
 		return writeRound(ctx, cmd, repo, database, open)
 	}
-	tree, err := repo.Snapshot(ctx)
+	tree, base, err := src.Read(ctx, repo)
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	if open != nil {
+	switch {
+	case open == nil:
+		created, err := createReviewRound(database, p, src, tree, base)
+		if err != nil {
+			return failReview(cmd, err)
+		}
+		return writeRound(ctx, cmd, repo, database, created)
+	case moved || src.Tip != nil:
+		// A move, or a branch round's Refresh: its base moves with its
+		// branches, so both are re-read. The previous-round link stays, so
+		// its unresolved comments still carry (REVIEW-03); "Since round N"
+		// reads it as lost when it is of another place (roundRange).
+		from, placeMoved := open.Source, !atPlace(open, src)
+		open.FolderRoot, open.Source, open.Branch = src.Folder, src.Source(), src.Branch()
+		open.BaseSHA, open.BaseLabel, open.TreeSHA = base.SHA, base.Label, tree
+		if err := database.RepointReviewRound(*open); err != nil {
+			return failReview(cmd, err)
+		}
+		// Ids and sources only (FILES-01).
+		switch {
+		case placeMoved:
+			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d moved: %s → %s\n", open.ID, from, open.Source)
+		case moved:
+			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d base changed (%s)\n", open.ID, open.Source)
+		}
+	default:
 		if err := database.UpdateReviewRoundTree(open.ID, tree); err != nil {
 			return failReview(cmd, err)
 		}
 		open.TreeSHA = tree
-		return writeRound(ctx, cmd, repo, database, open)
 	}
-	created, err := createReviewRound(ctx, repo, database, p, folder, tree)
-	if err != nil {
-		return failReview(cmd, err)
-	}
-	return writeRound(ctx, cmd, repo, database, created)
+	return writeRound(ctx, cmd, repo, database, open)
 }
 
-// createReviewRound opens a new round on the snapshot tree, linked to the
-// session's last sent round.
-func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, p *db.Workbench, folder, tree string) (*db.ReviewRound, error) {
-	base, err := repo.Base(ctx)
+// folderExists reports whether dir is an existing directory.
+func folderExists(dir string) bool {
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
+// folderBaseMoved reports whether folder round r's base is measured against
+// another branch now: the base src would read carries another label. The
+// base commit alone moving (main gained commits) is not a move.
+func folderBaseMoved(ctx context.Context, repo *reviewdiff.Repo, r *db.ReviewRound, src tools.ReviewSource) (bool, error) {
+	base, err := repo.HeadBase(ctx, src.BaseBranch)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
+	return base.Label != r.BaseLabel, nil
+}
+
+// samePlace reports whether rounds a and b review the same place.
+func samePlace(a, b *db.ReviewRound) bool {
+	return a.FolderRoot == b.FolderRoot && a.Source == b.Source && a.Branch == b.Branch
+}
+
+// atPlace reports whether round r reviews src's place: the same folder,
+// source and branch (a ticket whose branch was renamed is another place).
+func atPlace(r *db.ReviewRound, src tools.ReviewSource) bool {
+	return r.FolderRoot == src.Folder && r.Source == src.Source() && r.Branch == src.Branch()
+}
+
+// createReviewRound opens a new round on the place's tree, linked to the
+// session's last sent round (whatever its place: its unresolved comments
+// carry, REVIEW-03).
+func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base) (*db.ReviewRound, error) {
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
-		FolderRoot: folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
+		Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
 	last, err := database.LastSentReviewRound(p.ID, reviewFlagSession)
 	if err != nil {
 		return nil, fmt.Errorf("last sent review round: %w", err)
@@ -247,7 +326,8 @@ func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.
 }
 
 // roundRange: from/to of the round's diff; since → the previous round's tree
-// when it still exists, else the base with lost=true. A done context is an
+// when it still exists and is of the same place (board #1012), else the base
+// with lost=true. A done context is an
 // error, never "lost".
 func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (from string, lost bool, err error) {
 	if !reviewFlagSince || !r.PrevRoundID.Valid {
@@ -256,6 +336,9 @@ func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *
 	prev, err := database.GetReviewRound(r.ProjectID, r.PrevRoundID.Int64)
 	if err != nil {
 		return r.BaseSHA, true, nil //nolint:nilerr // a missing previous round reads as lost, as a pruned tree does
+	}
+	if !samePlace(prev, r) {
+		return r.BaseSHA, true, nil
 	}
 	exists, err := repo.TreeExists(ctx, prev.TreeSHA)
 	if err != nil {

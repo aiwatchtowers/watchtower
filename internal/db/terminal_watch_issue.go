@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// Watch issues (migration 00173): why the session host's codex rollout watch
+// Watch issues (migration 00174): why the session host's codex rollout watch
 // cannot read a working codex row's rollout (spec 2026-11-05 §3.5). The class
 // only; never a path (FILES-01).
 const (

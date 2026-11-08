@@ -36,7 +36,7 @@ func openCodexWatchStore(dbPath string) (sessionhost.CodexWatchStore, error) {
 	}
 	if !ok {
 		_ = d.Close()
-		return nil, errors.New("the database has no watch columns yet (migration 00173)")
+		return nil, errors.New("the database has no watch columns yet (migration 00174)")
 	}
 	return &sessionhost.DBWatchStore{DB: d, Record: recordCodexPull}, nil
 }

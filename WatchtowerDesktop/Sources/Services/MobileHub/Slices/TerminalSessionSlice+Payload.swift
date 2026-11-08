@@ -35,6 +35,8 @@ extension TerminalSessionSlice {
             reportTargetID: summary?.targetID,
             reportDone: summary?.done,
             reportTotal: summary?.total,
+            reportMerged: summary?.merged,
+            reportMergedStale: summary?.mergedStale == true ? true : nil,
             reportPRLine: prLine?.text,
             reportPRLineClipped: prLine?.clipped,
             watchIssue: state.watchIssue,
