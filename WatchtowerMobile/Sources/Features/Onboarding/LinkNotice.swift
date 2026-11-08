@@ -30,11 +30,14 @@ enum LinkNotice: Equatable {
     case finishingInBackground(macName: String)
     /// A confirmed Relay link waits for the owner (its Settings → Macs row has Try Again and Cancel).
     case needsOwner(macName: String, reason: PromotedLink.Reason)
+    /// A relay-only link the relay kept refusing ended at its term (relay client Phase 5, Task 17, S60), with the wipe's
+    /// "Not sent" count.
+    case relayEnded(macName: String, notSent: Int)
 
     /// The notices about a Relay link have an OK button; the others a close or Scan button.
     var dismissTitle: String? {
         switch self {
-        case .macOnRelay, .finishingInBackground, .needsOwner: "OK"
+        case .macOnRelay, .finishingInBackground, .needsOwner, .relayEnded: "OK"
         case .removed, .stale, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan: nil
         }
     }
@@ -71,6 +74,9 @@ enum LinkNotice: Equatable {
             "\(macName) will finish linking in the background. \(Self.seeMacs)"
         case let .needsOwner(macName, reason):
             "\(reason.message(macName: macName)) \(Self.seeMacs)"
+        case let .relayEnded(macName, notSent):
+            "The link to \(macName) ended after 21 days without Relay. Link it again to see its data."
+                + (notSent > 0 ? " \(Self.notSentText(notSent))" : "")
         }
     }
 

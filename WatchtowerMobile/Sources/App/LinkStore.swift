@@ -62,6 +62,10 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// `slotLost` (`.slot`) with no other route; its `since` starts the link's term. Absent on every other link and
     /// in every link saved before it. One this build cannot read reads as absent.
     var relayRefused: RelayRefusedRecord?
+    /// The epoch of a move to iCloud this relay-only link read and could not follow (relay client Phase 5, Task 17,
+    /// S59); nil while none. It starts no term and clears only on a marker toward the relay in a later epoch. One this
+    /// build cannot read reads as absent.
+    var macMoved: UInt32?
 
     /// A `.relay` transport needs `relayMacDeviceID` (it is the route).
     init(
@@ -85,7 +89,8 @@ struct LinkRecord: Codable, Equatable, Sendable {
         relayUpgrade: RelayUpgradeRecord? = nil,
         transportRequest: TransportRequestRecord? = nil,
         hubOnRelayAt: Date? = nil,
-        relayRefused: RelayRefusedRecord? = nil
+        relayRefused: RelayRefusedRecord? = nil,
+        macMoved: UInt32? = nil
     ) {
         precondition(transport != .relay || relayMacDeviceID != nil, Self.relayWithoutMac)
         self.hubID = hubID
@@ -109,6 +114,7 @@ struct LinkRecord: Codable, Equatable, Sendable {
         self.transportRequest = transportRequest
         self.hubOnRelayAt = hubOnRelayAt
         self.relayRefused = relayRefused
+        self.macMoved = macMoved
     }
 
     /// A `.relay` link without its Mac's relay id does not decode: the row is
@@ -137,6 +143,7 @@ struct LinkRecord: Codable, Equatable, Sendable {
         transportRequest = try? container.decodeIfPresent(TransportRequestRecord.self, forKey: .transportRequest)
         hubOnRelayAt = try? container.decodeIfPresent(Date.self, forKey: .hubOnRelayAt)
         relayRefused = try? container.decodeIfPresent(RelayRefusedRecord.self, forKey: .relayRefused)
+        macMoved = try? container.decodeIfPresent(UInt32.self, forKey: .macMoved)
         if lacksRelayMac {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: Self.relayWithoutMac))
         }
@@ -169,12 +176,13 @@ struct LinkRecord: Codable, Equatable, Sendable {
         try container.encodeIfPresent(transportRequest, forKey: .transportRequest)
         try container.encodeIfPresent(hubOnRelayAt, forKey: .hubOnRelayAt)
         try container.encodeIfPresent(relayRefused, forKey: .relayRefused)
+        try container.encodeIfPresent(macMoved, forKey: .macMoved)
     }
 
     private enum CodingKeys: String, CodingKey {
         case hubID, macName, scope, ownerName, userRecordName, nonce, dataShareURL, relayShareURL, deviceID, linkedAt
         case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport, relayUpgrade
-        case transportRequest, hubOnRelayAt, relayRefused
+        case transportRequest, hubOnRelayAt, relayRefused, macMoved
     }
 
     private static let relayWithoutMac = "a relay link without its Mac's relay device id"
@@ -238,11 +246,21 @@ struct LinkRecord: Codable, Equatable, Sendable {
     }
 }
 
-/// Why and since when the relay refuses a relay-only link (relay client Phase 5): the link's term runs from `since`
-/// (Task 17 reads it; no merge clears it).
+/// Why and since when the relay refuses a relay-only link (relay client Phase 5): the link's term runs from `since`,
+/// fixed, and ends `RelayTerm.length` later (Task 17). Each answered account read clears it (paying, the Mac in a slot)
+/// or sets its cause; no merge clears it.
 struct RelayRefusedRecord: Codable, Equatable, Sendable {
     let since: Date
     var cause: RelayRefusal
+    /// The first answered read at the term that showed the refusal standing; a later one at least
+    /// `RelayTerm.secondReadAfter` after it ends the link. Kept across launches; cleared with the mark.
+    var termReadAt: Date?
+
+    init(since: Date, cause: RelayRefusal, termReadAt: Date? = nil) {
+        self.since = since
+        self.cause = cause
+        self.termReadAt = termReadAt
+    }
 }
 
 /// A link written to the Mac and not answered yet (spec §2.3 step 5). Kept

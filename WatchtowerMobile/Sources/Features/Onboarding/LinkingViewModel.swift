@@ -64,7 +64,15 @@ final class LinkingViewModel {
     func phaseElapsed() -> TimeInterval? {
         phaseStartedUptime.map { max(0, clock.uptime() - $0) }
     }
-    private(set) var notice: LinkNotice?
+    /// The notice the screens show: the first of `termNotices`, else the one notice every other flow sets.
+    var notice: LinkNotice? { termNotices.first ?? storedNotice }
+    /// The one notice of every flow but the term; `report` and the others overwrite it.
+    private(set) var storedNotice: LinkNotice?
+    /// The notices of links ended at their term (relay client Phase 5, Task 17, S60), oldest first, shown one at a
+    /// time: several links can end in one foreground, and each keeps its own reason and "Not sent" count. Only
+    /// `endAtTerm` appends and only `dismissNotice` removes, so no scan, link or stale notice clears one unread. In
+    /// memory, as every notice: a process killed with notices queued loses them (ask #1104).
+    private(set) var termNotices: [LinkNotice] = []
     /// The four-digit code of the running link (mobile E2E spec §2.3): the
     /// Mac shows the same one for this phone. SAS v2: it hashes the nonce the
     /// Mac drew after it accepted the hello, so it shows only once the waiting
@@ -173,16 +181,21 @@ final class LinkingViewModel {
         guard !isBusy else { return }
         // A report about the last link is read by now; stale stays until
         // the active hub's heartbeat clears it.
-        switch notice {
+        switch storedNotice {
         case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan, .macOnRelay, .finishingInBackground,
-             .needsOwner: notice = nil
+             .needsOwner, .relayEnded: storedNotice = nil
         case .stale, nil: break
         }
         phase = .scanning
     }
 
+    /// The notice on screen goes: the first queued term notice, else the stored one.
     func dismissNotice() {
-        notice = nil
+        if termNotices.isEmpty {
+            storedNotice = nil
+        } else {
+            termNotices.removeFirst()
+        }
     }
 
     /// Closes the scanner, a failure or the Linked screen (not a running
@@ -694,9 +707,9 @@ final class LinkingViewModel {
     /// A notice about another link's state no longer applies once a link completes; a report of what an unlink
     /// lost ("Not sent", a recording kept) stays.
     private func clearNoticeAfterLink() {
-        switch notice {
+        switch storedNotice {
         case .notSent, .recordingKept, .recordingsProblem: break
-        default: notice = nil
+        default: storedNotice = nil
         }
     }
 
@@ -901,7 +914,7 @@ final class LinkingViewModel {
             total.problem = total.problem ?? wipe.problem
         }
         if dropped {
-            notice = LinkNotice.after(total, otherwise: .encryptionReScan)
+            storedNotice = LinkNotice.after(total, otherwise: .encryptionReScan)
         }
     }
 
@@ -941,12 +954,20 @@ final class LinkingViewModel {
     /// once the farewell left the queue or was kept, `remove_slot`; a failure is kept for a retry at launch). An
     /// iCloud link whose upgrade to the relay got its slot (`add_slot`, Phase 3b Task 19) frees it the same way.
     /// Returns whether the slot is free (true for an iCloud link that holds none).
-    private func unlinkRow(_ row: HubRow) async -> Bool {
+    private func unlinkRow(_ row: HubRow, atTerm: Bool = false) async -> Bool {
         // The owner's removal also takes the hub's promoted entry this build cannot read (#1499), first: a kill
         // after it leaves the row to unlink again, and nothing a later build could resume.
         store.removeUnreadablePromoted(row.hubID)
         let wipe = await endLink(row, farewell: true, keepRecordings: true)
-        report(LinkNotice.after(wipe, macName: row.link.macName), removed: row.hubID)
+        let name = row.link.macName
+        if atTerm {
+            // Never `report`: it would overwrite a notice of another link ended in the same foreground.
+            if let found = LinkNotice.after(wipe, macName: name, otherwise: .relayEnded(macName: name, notSent: wipe.notSent)) {
+                termNotices.append(found)
+            }
+        } else {
+            report(LinkNotice.after(wipe, macName: name), removed: row.hubID)
+        }
         guard row.state == .linked, let mac = Self.slotToFree(row.link) else { return true }
         if wipe.farewellOut, case .hostedRelay = row.link.route {
             await pauseForTheFarewell(beforeFreeing: mac)
@@ -956,6 +977,16 @@ final class LinkingViewModel {
             }
         }
         return await removeRelaySlot(mac, keepOnFailure: true)
+    }
+
+    /// The link to `hubID` ends at its term (relay client Phase 5, Task 17, ask #1093): today's `unlinkRow`, the path
+    /// Forget takes. The farewell, then `remove_slot`, each kept and retried at launch when refused; the Keychain item
+    /// with every key, the replica's files and the Not delivered rows go, recordings stay, the row leaves Settings →
+    /// Macs. Its notice joins `termNotices` (S60). Nothing while a link flow is busy or the hub is already ending: the
+    /// next foreground asks again.
+    func endAtTerm(_ hubID: String) async {
+        guard !isBusy, let row = row(hubID), row.state == .linked, !ending.contains(hubID) else { return }
+        _ = await unlinkRow(row, atTerm: true)
     }
 
     /// The relay refuses the hub's mailbox read once the slot is gone, so a farewell that went out over the relay gets
@@ -1025,11 +1056,11 @@ final class LinkingViewModel {
     /// screen it goes with the removed one.
     private func report(_ found: LinkNotice?, removed hubID: String) {
         if let found {
-            notice = found
-        } else if case .stale = notice, let active = host?.activeHubID, active != hubID {
+            storedNotice = found
+        } else if case .stale = storedNotice, let active = host?.activeHubID, active != hubID {
             return
         } else {
-            notice = nil
+            storedNotice = nil
         }
     }
 
@@ -1044,7 +1075,7 @@ final class LinkingViewModel {
         await host.markRemovedByMac(hubID)
         ending.remove(hubID)
         refreshLinks()
-        notice = .removed(macName: row.link.macName)
+        storedNotice = .removed(macName: row.link.macName)
     }
 
     /// How long a kept farewell is sent again (#143): after it, the Mac is
@@ -1145,7 +1176,7 @@ final class LinkingViewModel {
         ending.subtract(rows.map(\.hubID))
         refreshLinks()
         if !isBusy { phase = .idle }
-        notice = LinkNotice.after(total)
+        storedNotice = LinkNotice.after(total)
     }
 
     /// How long a hub must go on without this phone's grant, across two
@@ -1221,11 +1252,11 @@ final class LinkingViewModel {
     /// Sets the stale notice, or clears it, unless a report of what a link
     /// lost is showing (that stays until read).
     private func setStaleNotice(_ stale: LinkNotice?) {
-        switch notice {
+        switch storedNotice {
         case .stale, nil:
-            notice = stale
+            storedNotice = stale
         case .removed, .notSent, .recordingKept, .recordingsProblem, .encryptionReScan, .macOnRelay, .finishingInBackground,
-             .needsOwner:
+             .needsOwner, .relayEnded:
             break
         }
     }
@@ -1414,7 +1445,7 @@ extension LinkingViewModel {
         } catch {
             // Kept in `pending`: the next launch's resume writes it again before any relay call.
             Self.logger.error("confirmed relay link not saved: it resumes at the next launch")
-            notice = .finishingInBackground(macName: record.macName)
+            storedNotice = .finishingInBackground(macName: record.macName)
             phase = .idle
             return
         }
@@ -1439,13 +1470,13 @@ extension LinkingViewModel {
             clearNoticeAfterLink()
             phase = .linked(macName: macName)
         case let .needsOwner(reason):
-            notice = .needsOwner(macName: macName, reason: reason)
+            storedNotice = .needsOwner(macName: macName, reason: reason)
             phase = .idle
         case .none where !resumer.isLive(hubID):
             // Cancelled meanwhile: nothing is left to finish.
             phase = .idle
         case .waiting, .none:
-            notice = .finishingInBackground(macName: macName)
+            storedNotice = .finishingInBackground(macName: macName)
             phase = .idle
         }
     }
@@ -1607,7 +1638,7 @@ extension LinkingViewModel {
         guard !(await canUseRelay()), self.row(hubID) != nil, !ending.contains(hubID) else { return }
         Self.logger.notice("a never-live iCloud link to a Mac on Relay ended")
         let wipe = await endLink(row, farewell: true, keepRecordings: true)
-        notice = LinkNotice.after(wipe, macName: row.link.macName, otherwise: .macOnRelay(macName: row.link.macName))
+        storedNotice = LinkNotice.after(wipe, macName: row.link.macName, otherwise: .macOnRelay(macName: row.link.macName))
     }
 
     // MARK: - The slots screen

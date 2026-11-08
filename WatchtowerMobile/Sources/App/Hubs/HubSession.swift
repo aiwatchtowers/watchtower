@@ -402,7 +402,7 @@ final class HubSession {
     /// routes. An iCloud-only link keeps today's bytes: its static keys exist for every epoch.
     @ObservationIgnored let resealsAcrossEpochs: Bool
     /// The phone has no relay key source for this hub (relay client Phase 5): the relay refused it (a lapse, a lost
-    /// slot) or its link carries `relayRefused`. While set, `SecureTransport.waitsForKeybox` is false, so a record
+    /// slot) or its link carries `relayRefused` or `macMoved`. While set, `SecureTransport.waitsForKeybox` is false, so a record
     /// waiting for a keybox stops the feed silently, with no parked mark. Read with no hop to the main actor.
     @ObservationIgnored private let noKeySource: OSAllocatedUnfairLock<Bool>
     /// A return to the foreground owes the relay feed a resume (it may have parked): taken by the next fetch, right
@@ -412,6 +412,13 @@ final class HubSession {
     /// rebuilt on it, so a session leaving the relay offers no more meanwhile; its `leftTransport` holds a fetched
     /// merge's reseal back until the left mailbox is drained. nil: the session's own route, nothing left.
     @ObservationIgnored var linkOnRow: (@MainActor () -> LinkRecord?)?
+    /// Saves the hub's registry row's link in one write (set by `AppRoot.wire`, the follower's `persistRoute`): the
+    /// term mark an answered account read sets or clears, and the term's first read. false when it was not written.
+    @ObservationIgnored var writeLinkOnRow: (@MainActor (LinkRecord) -> Bool)?
+    /// Answered account reads seen (`relayAccountAnswered`), and whether the last one showed paying with this Mac in a
+    /// slot: a lapse that such an answer overtook drops its mark (review M3).
+    @ObservationIgnored private var answersSeen = 0
+    @ObservationIgnored private var lastAnswerClears = false
     /// The uploader's pass after a raise (`keysMerged`): stale recordings re-armed and sent. Not awaited (tests wait).
     @ObservationIgnored private(set) var uploadKick: Task<Void, Never>?
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
@@ -1608,8 +1615,16 @@ final class HubSession {
     /// The relay refused this phone because its subscription ended (a `ENTITLEMENT_INACTIVE` answer, a move learned
     /// from the account state): `TransportFollowerPolicy.decide(.relayLapsed)` asks the hub for iCloud once, and a
     /// repeated notice re-sends the request a failed copy left behind.
+    /// A paying-with-slot answer that came while the lapse ran is newer than the refusal: the mark the lapse wrote goes
+    /// again (review M3), so a spurious lapse leaves no term, no S61 line and no stopped feed behind it.
     func lapseRelay() async {
+        let seen = answersSeen
         await transportRequester?.lapse()
+        guard answersSeen != seen, lastAnswerClears, var link = linkOnRow?(), link.relayRefused != nil else { return }
+        link.relayRefused = nil
+        guard writeLinkOnRow?(link) == true else { return }
+        Self.logger.notice("a lapse overtaken by a paying answer: its mark dropped")
+        await keySourceBack()
     }
 
     /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared, so
@@ -1618,9 +1633,60 @@ final class HubSession {
     /// stopped feed reads again.
     func lapseEnded() async {
         await transportRequester?.lapseEnded()
-        guard linkOnRow?()?.relayRefused == nil else { return }
+        await keySourceBack()
+    }
+
+    /// The key source is back once the link carries neither `relayRefused` nor `macMoved` (relay client Phase 5): the
+    /// flag goes and a stopped feed reads again. Nothing while a mark stands.
+    func keySourceBack() async {
+        let link = linkOnRow?()
+        guard link?.relayRefused == nil, link?.macMoved == nil else { return }
         noKeySource.withLock { $0 = false }
         await feed.resumeIfParked()
+    }
+
+    /// An answered account read (relay client Phase 5, Task 17, review M7): on a link the relay refuses, paying with
+    /// this Mac in a slot clears the term's mark (its first read with it), not paying makes the cause `.lapse`, paying
+    /// with the Mac in no slot `.slot`; `since` never moves. A link with no mark is untouched. Clearing it brings the key
+    /// source back (`waitsForKeybox`). The follower is the mark's other writer; both write on the main actor, each on the
+    /// row as it reads it then, so the last write wins and neither ever moves `since`.
+    func relayAccountAnswered(paying: Bool, macs: [String]) async {
+        answersSeen += 1
+        lastAnswerClears = paying && linkOnRow?()?.relayMacDeviceID.map(macs.contains) == true
+        guard var link = linkOnRow?(), var refused = link.relayRefused, let mac = link.relayMacDeviceID else { return }
+        if paying, macs.contains(mac) {
+            link.relayRefused = nil
+        } else {
+            refused.cause = paying ? .slot : .lapse
+            link.relayRefused = refused
+        }
+        guard link != linkOnRow?(), writeLinkOnRow?(link) == true else { return }
+        if link.relayRefused == nil { await keySourceBack() }
+    }
+
+    /// The link's term in the foreground (relay client Phase 5, Task 17, S60): once due (`RelayTerm.isDue`) and with no
+    /// recording held by this hub's recorder, `check` reads the account for this Mac (`RelayAccountCenter.termCheck`).
+    /// A refusal that stands is written as the term's first read and ends nothing; a later one at least
+    /// `RelayTerm.secondReadAfter` after it answers true: the caller ends the link. Anything else waits for a later
+    /// foreground; the first read stays on the row across launches.
+    func runTerm(
+        now: @MainActor () -> Date,
+        check: (_ mac: String, _ purchaseHolds: @escaping @MainActor () -> Bool) async -> RelayAccountCenter.TermAnswer
+    ) async -> Bool {
+        guard let link = linkOnRow?(), RelayTerm.isDue(link, now: now()), let mac = link.relayMacDeviceID else { return false }
+        guard !recorder.holdsMicrophoneOrScreen else { return false }
+        // Asked after the read, on the row as the read left it (review I1).
+        let holds: @MainActor () -> Bool = { [weak self] in self?.linkOnRow?().map(RelayTerm.purchaseHolds) ?? false }
+        guard await check(mac, holds) == .refusalStands else { return false }
+        // Read again after the account call: the read may have cleared the mark or changed its cause.
+        guard var fresh = linkOnRow?(), var refused = fresh.relayRefused else { return false }
+        guard let first = refused.termReadAt else {
+            refused.termReadAt = now()
+            fresh.relayRefused = refused
+            if writeLinkOnRow?(fresh) != true { Self.logger.error("the term's first read was not saved") }
+            return false
+        }
+        return now().timeIntervalSince(first) >= RelayTerm.secondReadAfter
     }
 
     /// The relay account answered with this hub's Mac in none of this phone's slots while it is on the relay (relay
@@ -1651,7 +1717,7 @@ final class HubSession {
     /// The no-key-source flag, wired into `secure`'s `waitsForKeybox` (false while set); set at start for a link the relay
     /// refuses.
     private static func keySourceFlag(_ link: LinkRecord?, _ secure: SecureTransport) -> OSAllocatedUnfairLock<Bool> {
-        let flag = OSAllocatedUnfairLock(initialState: link?.relayRefused != nil)
+        let flag = OSAllocatedUnfairLock(initialState: link?.relayRefused != nil || link?.macMoved != nil)
         secure.setWaitsForKeybox { !flag.withLock { $0 } }
         return flag
     }

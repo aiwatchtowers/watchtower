@@ -11,7 +11,17 @@ struct RelayBannerModel: Equatable {
         case switchToICloud, subscribe, restore, ok
         /// Opens the subscription screen, which says where a charged purchase stands.
         case confirmPurchase
+        /// S59: the phone left behind forgets the Mac (today's Forget, `LinkingViewModel.forget`).
+        case forget
     }
+
+    /// Where a refused link's term line shows (relay client Phase 5, Task 17, S61): the Relay banner on Now, Now's quiet
+    /// row for a Mac, or that Mac's row in Settings → Macs.
+    enum TermSurface: Equatable {
+        case banner, now, macs
+    }
+
+    static let forgetThisMac = "Forget This Mac"
 
     static let unavailableAfter: TimeInterval = 60
     static let offerAfter: TimeInterval = 600
@@ -25,6 +35,9 @@ struct RelayBannerModel: Equatable {
     let actions: [Action]
     let busy: Bool
     let toneUses: [ToneUse]
+    /// The banner speaks of a refused link's term itself (S59 or the needs-Relay banner of such a link), with its own
+    /// line or, by design, without one: Now's row for the Mac on screen shows only when it does not.
+    let speaksOfTerm: Bool
     private let macName: String
 
     private init(
@@ -33,8 +46,10 @@ struct RelayBannerModel: Equatable {
         secondLineTone: PhoneTone = .secondary,
         actions: [Action] = [],
         busy: Bool = false,
+        speaksOfTerm: Bool = false,
         macName: String
     ) {
+        self.speaksOfTerm = speaksOfTerm
         self.text = text
         self.secondLine = secondLine
         self.secondLineTone = secondLineTone
@@ -56,6 +71,7 @@ struct RelayBannerModel: Equatable {
         case .restore: RelayCardModel.restore
         case .ok: "OK"
         case .confirmPurchase: RelayCardModel.notConfirmedLine
+        case .forget: Self.forgetThisMac
         }
     }
 
@@ -76,7 +92,9 @@ struct RelayBannerModel: Equatable {
         pressRefusal: TransportRequestRefusal?,
         lastUpdate: Date?,
         macName: String,
-        now: Date
+        now: Date,
+        link: LinkRecord? = nil,
+        termHold: RelayTermHold = .none
     ) -> Self? {
         let onRelayLine = lastUpdate.map { lastUpdateLine($0, macName: macName, now: now) }
         guard case .available = availability else {
@@ -88,7 +106,15 @@ struct RelayBannerModel: Equatable {
             let goal = wasPaying ? "keep using" : "use"
             return Self(text: "Update Watchtower from the App Store to \(goal) Relay.", macName: macName)
         }
-        if relayOnly, let needs = needsRelay(phase, charged: unconfirmedPurchase, macName: macName) {
+        if let link, let gone = linkGone(link, termHold: termHold, macName: macName, now: now) {
+            return gone
+        }
+        let term = link.flatMap { termLine(for: $0, surface: .banner, now: now, heldPurchase: termHold) }
+        let held = termHold == .held && link.map(RelayTerm.purchaseHolds) == true
+        if relayOnly, let needs = needsRelay(
+            phase, charged: unconfirmedPurchase, macName: macName,
+            term: link?.relayRefused == nil ? nil : NeedsRelayTerm(line: term, held: held)
+        ) {
             return needs
         }
         let onRelay = isOnRelay(route)
@@ -124,22 +150,93 @@ struct RelayBannerModel: Equatable {
         return false
     }
 
+    /// A refused link's term on its needs-Relay banner (S61): the line, if any, and whether a held purchase gains
+    /// **Restore Purchases** on `.free` (ask #1104).
+    private struct NeedsRelayTerm {
+        let line: String?
+        let held: Bool
+    }
+
     /// S47, S53: no **OK**, as the hub gets nothing until the owner pays or unlinks. A phone that never had a subscription, or
-    /// has just been charged for one, is not told it ended.
-    private static func needsRelay(_ phase: RelayAccountCenter.Phase, charged: Bool, macName: String) -> Self? {
+    /// has just been charged for one, is not told it ended. On a link the relay refuses, the term's line goes under it (S61).
+    private static func needsRelay(_ phase: RelayAccountCenter.Phase, charged: Bool, macName: String, term: NeedsRelayTerm?) -> Self? {
         let needs = "\(macName) needs Relay."
+        let line = term?.line
+        let speaks = term != nil
         switch phase {
         case .moved:
-            return Self(text: "\(needs) \(RelayCardModel.movedLine)", actions: [.restore], macName: macName)
+            return Self(text: "\(needs) \(RelayCardModel.movedLine)", secondLine: line, actions: [.restore], speaksOfTerm: speaks, macName: macName)
         case .free where charged:
-            return Self(text: needs, actions: [.confirmPurchase], macName: macName)
-        case .free(ended: true):
-            return Self(text: "\(needs) \(RelayCardModel.endedLine)", actions: [.subscribe], macName: macName)
-        case .free(ended: false):
-            return Self(text: needs, actions: [.subscribe], macName: macName)
+            // A held purchase's line names Restore Purchases: its button goes beside it (ask #1104, review M1).
+            let actions: [Action] = term?.held == true ? [.confirmPurchase, .restore] : [.confirmPurchase]
+            return Self(text: needs, secondLine: line, actions: actions, speaksOfTerm: speaks, macName: macName)
+        case .free(let ended):
+            let text = ended ? "\(needs) \(RelayCardModel.endedLine)" : needs
+            let actions: [Action] = term?.held == true ? [.subscribe, .restore] : [.subscribe]
+            return Self(text: text, secondLine: line, actions: actions, speaksOfTerm: speaks, macName: macName)
         case .checking, .unknown, .paying:
             return nil
         }
+    }
+
+    /// S59 (ask #1081): the phone left behind. Its Mac is in none of this phone's slots while the subscription stands
+    /// (`relayRefused` `.slot`), or it read the Mac's move to iCloud (`macMoved`). Only a new link brings it back, so
+    /// it says that, with **Forget This Mac**; the term's line goes under it when the link has one. No purchase holds
+    /// either, so no held line.
+    private static func linkGone(_ link: LinkRecord, termHold: RelayTermHold, macName: String, now: Date) -> Self? {
+        guard link.transport == .relay, link.relayRefused?.cause == .slot || link.macMoved != nil else { return nil }
+        return Self(
+            text: "\(macName) can't be reached over Relay any more. Link this iPhone to it again.",
+            secondLine: termLine(for: link, surface: .banner, now: now, heldPurchase: termHold),
+            actions: [.forget], speaksOfTerm: true, macName: macName
+        )
+    }
+
+    /// The term's line for a link the relay refuses (relay client Phase 5, Task 17, S61), on `surface`, in the secondary
+    /// tone; nil for a link with no term (routed, never refused, or only moved). The date is `since` plus 21 days, fixed.
+    /// A held purchase replaces it on a needs-Relay link (the cause `.lapse` with no known move); past the date, a row the
+    /// relay refused for a reason not about the payment says why the link waits on Now's row and the Settings row, and
+    /// nothing on the banner, whose own words say where that purchase stands. "Restore Purchases" is named only beside
+    /// its button: on the banner.
+    static func termLine(for link: LinkRecord, surface: TermSurface, now: Date, heldPurchase: RelayTermHold) -> String? {
+        guard link.transport == .relay, let refused = link.relayRefused else { return nil }
+        let mac = link.macName
+        let needsRelay = RelayTerm.purchaseHolds(link)
+        if needsRelay, heldPurchase == .held {
+            let lead = "This iPhone paid, but Relay hasn't seen it."
+            switch surface {
+            case .banner: return "\(lead) Tap Restore Purchases to keep the link to \(mac)."
+            case .now: return "\(lead) \(seeMacs)"
+            case .macs: return "\(lead) \(openRelayCard)"
+            }
+        }
+        let goes = "Its history and unsent actions on this iPhone will go."
+        let date = RelayTerm.date(of: refused)
+        guard now >= date else {
+            return "If this stays as it is, the link to \(mac) ends on \(termDay(date)). \(goes)"
+        }
+        if needsRelay, heldPurchase == .refusedRow {
+            let lead = "This iPhone paid, but Relay hasn't accepted it. The link to \(mac) stays while that purchase is current."
+            switch surface {
+            case .banner: return nil
+            case .now: return "\(lead) \(seeMacs)"
+            case .macs: return "\(lead) \(openRelayCard)"
+            }
+        }
+        return "The link to \(mac) will end the next time this iPhone can confirm Relay still refuses it. \(goes)"
+    }
+
+    private static let seeMacs = "See Settings → Macs."
+    private static let openRelayCard = "Open the Relay card on this screen."
+
+    /// "December 14": the term's day, in the phone's calendar.
+    private static func termDay(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = .current
+        formatter.timeZone = Calendar.current.timeZone
+        formatter.dateFormat = "MMMM d"
+        return formatter.string(from: date)
     }
 
     /// S33, S34, and while this hub's route has not moved S41b and S34b: "back on iCloud" would be false until it does. Ended is
@@ -238,9 +335,16 @@ struct RelayBannerModel: Equatable {
 enum RelayBannerPress {
     @discardableResult
     static func run(
-        _ action: RelayBannerModel.Action, session: HubSession?, center: RelayAccountCenter?, open: () -> Void
+        _ action: RelayBannerModel.Action,
+        session: HubSession?,
+        center: RelayAccountCenter?,
+        open: () -> Void,
+        forget: () -> Void = {}
     ) -> Task<TransportRequestRefusal?, Never>? {
         switch action {
+        case .forget:
+            forget()
+            return nil
         case .subscribe, .confirmPurchase:
             open()
             return nil

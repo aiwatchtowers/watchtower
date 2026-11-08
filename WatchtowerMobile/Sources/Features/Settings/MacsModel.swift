@@ -28,6 +28,14 @@ enum MacsModel {
             removedByMac = item.removedByMac
         }
 
+        /// S59's **Forget This Mac** on Now (relay client Phase 5, Task 17): the Forget of a linked Mac.
+        init(forgetting hubID: String, name: String) {
+            action = .forget
+            self.hubID = hubID
+            self.name = name
+            removedByMac = false
+        }
+
         var id: String { "\(action)-\(hubID)" }
 
         var title: String {
