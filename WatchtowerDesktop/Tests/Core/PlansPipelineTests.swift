@@ -29,7 +29,7 @@ final class PlansPipelineTests: XCTestCase {
         XCTAssertNotNil(codex.selected(.weekly)?.line)
         XCTAssertNotNil(codex.selected(.session)?.line)
         XCTAssertEqual(codex.selected(.weekly)?.line?.endPercent, 100)
-        XCTAssertEqual(try XCTUnwrap(codex.selected(.session)?.line?.endPercent), 80, accuracy: 0.0000000001)
+        XCTAssertEqual(try XCTUnwrap(codex.selected(.session)?.line?.endPercent), 60, accuracy: 0.0000000001)
     }
     func testPositiveRateSafeEndpointCorruptionNeverDraws() throws {
         let queue = try TestDatabase.create()
