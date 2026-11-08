@@ -12,11 +12,13 @@ final class ReviewOverviewStreamTests: XCTestCase {
     private func label(_ event: ReviewStreamEvent) -> String {
         switch event {
         case .map(let map): "map:\(map.chapters.count)"
+        case .mapFailed: "mapFailed"
         case .waiting(let by): "waiting:\(by)"
         case .tick: "tick"
         case .chapter(let c): "chapter:\(c.key):\(c.state)"
         case let .summary(ok, _): "summary:\(ok)"
         case .final(let env): "final:\(env.ok)"
+        case .finalUnreadable: "finalUnreadable"
         }
     }
 
@@ -89,11 +91,68 @@ final class ReviewOverviewStreamTests: XCTestCase {
             #"{"event":"tick"}"#,
             #"{"event":"progress","n":3}"#,
             "not json",
-            #"{"event":"chapter","key":"dir:a","state":"thinking"}"#,
-            #"{"event":"chapter","key":"dir:a","state":"failed"}"#
+            #"{"event":"chapter","state":"ok"}"#
         ]
         let events = decoder.feed(Data((lines.joined(separator: "\n") + "\n").utf8))
-        XCTAssertEqual(events.map(label), ["tick", "tick", "tick", "tick", "tick"])
+        XCTAssertEqual(events.map(label), ["tick", "tick", "tick", "tick"])
+    }
+
+    /// A recognised but malformed chapter line is a failure the owner sees, never a tick.
+    func testMalformedChapterLinesFail() {
+        var decoder = ReviewOverviewStreamDecoder()
+        let generic = ReviewOverviewStreamDecoder.chapterFailedText
+        let lines = [
+            #"{"event":"chapter","key":"dir:a","state":"failed"}"#,
+            #"{"event":"chapter","key":"dir:b","state":"failed","error":"not an object"}"#,
+            #"{"event":"chapter","key":"dir:c","state":"thinking"}"#,
+            #"{"event":"chapter","key":"dir:d"}"#,
+            #"{"event":"chapter","key":"dir:e","state":"ok","what":"w","risks":[{"path":"a","level":"dire","why":"y"}]}"#,
+            #"{"event":"chapter","key":"dir:f","state":"cached","what":7}"#
+        ]
+        let events = decoder.feed(Data((lines.joined(separator: "\n") + "\n").utf8))
+        XCTAssertEqual(events.count, lines.count)
+        for (event, key) in zip(events, ["dir:a", "dir:b", "dir:c", "dir:d", "dir:e", "dir:f"]) {
+            guard case .chapter(let chapter) = event else { return XCTFail("\(key): not a chapter") }
+            XCTAssertEqual(chapter.key, key)
+            XCTAssertEqual(chapter.state, .failed(text: generic, detail: nil), key)
+            XCTAssertEqual(chapter.error, ReviewRunError(errorClass: "parse", text: generic), key)
+            XCTAssertNil(chapter.what, key)
+            XCTAssertEqual(chapter.risks, [], key)
+        }
+    }
+
+    func testEmptyDescriptionReadsAsNil() {
+        var decoder = ReviewOverviewStreamDecoder()
+        let events = decoder.feed(Data((#"{"event":"chapter","key":"dir:a","state":"ok","what":"","risks":null}"# + "\n").utf8))
+        guard case .chapter(let chapter) = events.first else { return XCTFail("not a chapter") }
+        XCTAssertEqual(chapter.state, .ok)
+        XCTAssertNil(chapter.what)
+        XCTAssertEqual(chapter.risks, [])
+    }
+
+    func testUnreadableMapAndEnvelopeAreFailures() {
+        var decoder = ReviewOverviewStreamDecoder()
+        let lines = [
+            #"{"event":"map","map":{"chapters":[{"key":"k"}]}}"#,
+            #"{"event":"map"}"#,
+            #"{"ok":true,"overview":{"summary":"s","risk":[{"path":"a","level":"dire","why":"y"}]}}"#
+        ]
+        let events = decoder.feed(Data((lines.joined(separator: "\n") + "\n").utf8))
+        XCTAssertEqual(events.map(label), ["mapFailed", "mapFailed", "finalUnreadable"])
+    }
+
+    func testMalformedSummaryFails() {
+        var decoder = ReviewOverviewStreamDecoder()
+        let lines = [
+            #"{"event":"summary","state":"failed"}"#,
+            #"{"event":"summary","state":"thinking"}"#
+        ]
+        let events = decoder.feed(Data((lines.joined(separator: "\n") + "\n").utf8))
+        XCTAssertEqual(events.map(label), ["summary:false", "summary:false"])
+        for event in events {
+            guard case let .summary(_, error) = event else { return XCTFail("not the summary") }
+            XCTAssertEqual(error, ReviewRunError(errorClass: "parse", text: ReviewOverviewStreamDecoder.summaryFailedText))
+        }
     }
 
     func testWaitingCachedNotStartedAndFailedSummary() {
