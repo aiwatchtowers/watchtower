@@ -11,6 +11,8 @@ public enum KeyStoreError: Error, Equatable {
     case missingEntitlement
     case corrupt(String)
     case unexpected(Int32)
+    /// A write to the store from inside an `updateHubLink` closure: refused, because the outer write would undo it.
+    case reentrantWrite
 }
 
 public protocol KeychainBackend: Sendable {
@@ -45,11 +47,10 @@ public struct EpochKeys: Codable, Equatable, Sendable {
     /// This epoch's `wt/relay/v2/` relay keys, derived from the keybox's `relay_kx` (relay client Phase 5); nil
     /// means the static `wt/relay/v1/` keys. Kept and dropped with the epoch; absent in an item from an older build.
     public var relayKeys: EpochRelayKeys?
-    /// When a static keybox first covered this epoch on a link with ephemeral state (the hub keys an epoch at
-    /// rotation and never again after a clear): no pair is ever derived for it after that, so an older keyed keybox
-    /// read late cannot bring a cleared pair back. Kept and dropped with the epoch, so at most `maxEpochs` marks.
-    /// nil (absent) otherwise.
-    public var relayKeysClearedAt: Date?
+    /// Set when a static keybox first covered this epoch on a link with ephemeral state (the hub keys an epoch at
+    /// rotation and never again after a clear): no pair is ever derived for it after that. Kept and dropped with the
+    /// epoch, so at most `maxEpochs` marks. nil (absent) otherwise.
+    public var relayKeysCleared: RelayKeysCleared?
 
     public init(
         epoch: UInt32,
@@ -57,14 +58,29 @@ public struct EpochKeys: Codable, Equatable, Sendable {
         alertKey: Data,
         supersededAt: Date? = nil,
         relayKeys: EpochRelayKeys? = nil,
-        relayKeysClearedAt: Date? = nil
+        relayKeysCleared: RelayKeysCleared? = nil
     ) {
         self.epoch = epoch
         self.dataKey = dataKey
         self.alertKey = alertKey
         self.supersededAt = supersededAt
         self.relayKeys = relayKeys
-        self.relayKeysClearedAt = relayKeysClearedAt
+        self.relayKeysCleared = relayKeysCleared
+    }
+}
+
+/// The mark a static keybox leaves on an epoch of an ephemeral link. `hubPub`/`devicePub` are the publics of the
+/// pair it dropped: a keyed keybox naming that pair again is an older one read late (skipped), any other pair is
+/// refused (F17). Both nil when the epoch held no pair, and then every keyed keybox for it is refused.
+public struct RelayKeysCleared: Codable, Equatable, Sendable {
+    public let at: Date
+    public let hubPub: Data?
+    public let devicePub: Data?
+
+    public init(at: Date, hubPub: Data? = nil, devicePub: Data? = nil) {
+        self.at = at
+        self.hubPub = hubPub
+        self.devicePub = devicePub
     }
 }
 
@@ -219,7 +235,8 @@ public protocol PhoneKeyStore: Sendable {
     /// Reads `hubID`'s link, applies `change` and saves the result as `saveHubLink` does, all under the store's
     /// lock, so concurrent writers lose nothing. Returns the stored link; nil, with `change` never called and
     /// nothing written, when there is no link (an unlink is never undone). `change` may read the identity on the
-    /// same thread (the Keychain store's lock is recursive) but must not write to the store.
+    /// same thread (the Keychain store's lock is recursive); a write to the store from it throws
+    /// `KeyStoreError.reentrantWrite`.
     func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys?
     func removeHubLink(_ hubID: String) throws
     /// afterFirstUnlock copy of the hub's public signing key: the replica verifies signatures while locked.

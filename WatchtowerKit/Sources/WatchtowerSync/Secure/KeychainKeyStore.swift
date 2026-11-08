@@ -11,6 +11,9 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     private let now: @Sendable () -> Date
     /// Recursive: `updateHubLink`'s closure may read the identity (`merging` needs it) on the same thread.
     private let lock = NSRecursiveLock()
+    /// true while an `updateHubLink` closure runs (read and written under `lock`): a write then throws
+    /// `.reentrantWrite`, so the outer write can never silently undo it (an unlink undone).
+    private var updatingHubLink = false
 
     /// `now` dates the epoch retention of `saveHubLink`.
     public init(
@@ -105,12 +108,18 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
     }
 
     public func saveHubLink(_ keys: HubLinkKeys) throws {
-        try lock.withLock { _ = try writeHubLink(keys) }
+        try lock.withLock {
+            guard !updatingHubLink else { throw KeyStoreError.reentrantWrite }
+            _ = try writeHubLink(keys)
+        }
     }
 
     public func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys? {
         try lock.withLock {
+            guard !updatingHubLink else { throw KeyStoreError.reentrantWrite }
             guard let current = try hubLink(hubID) else { return nil }
+            updatingHubLink = true
+            defer { updatingHubLink = false }
             let changed = try change(current)
             guard changed.hubID == hubID else { throw KeyStoreError.corrupt("a hub link update changed its hub id") }
             return try writeHubLink(changed)
@@ -126,6 +135,7 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
         for epoch in keys.epochs {
             sizes += [epoch.dataKey, epoch.alertKey]
             if let pair = epoch.relayKeys { sizes += [pair.p2h, pair.h2p, pair.hubPub, pair.devicePub] }
+            if let cleared = epoch.relayKeysCleared { sizes += [cleared.hubPub, cleared.devicePub].compactMap { $0 } }
         }
         for ephemeral in ephemerals { sizes += [ephemeral.publicKey, ephemeral.privateKey] }
         guard sizes.allSatisfy({ $0.count == 32 }) else { throw KeyStoreError.corrupt("a hub link key is not 32 bytes") }
@@ -144,6 +154,7 @@ public final class KeychainPhoneKeyStore: PhoneKeyStore, @unchecked Sendable {
 
     public func removeHubLink(_ hubID: String) throws {
         try lock.withLock {
+            guard !updatingHubLink else { throw KeyStoreError.reentrantWrite }
             try backend.delete(account: "hub.\(hubID)", group: privateGroup)
             try backend.delete(account: "hubpub.\(hubID)", group: privateGroup)
             try backend.delete(account: "alert.\(hubID)", group: alertGroup)

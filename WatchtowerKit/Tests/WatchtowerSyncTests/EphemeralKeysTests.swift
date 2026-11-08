@@ -280,15 +280,42 @@ final class EphemeralKeysTests: XCTestCase {
         XCTAssertEqual(again.keys, stale.keys)
     }
 
-    /// The same, when the static keybox is read first: the epoch is marked on a link with ephemeral state.
+    /// A static keybox read first marks the epoch with no pair: any keyed keybox for it is then refused, nothing
+    /// taken, so neither a late one nor a restored sidecar's keys it.
     func testAStaticKeyboxReadFirstMarksTheEpoch() throws {
         let offered = EphemeralKey.generate()
         let staticFirst = try merge(link(epochs: [epoch(1)], offered: offered), box(2, previous: 1))
-        let keyed = try merge(staticFirst.keys, box(2, relayKX: kx(.init(), offered.publicKey), previous: 1))
-        XCTAssertNil(keyed.keys.epochs.last?.relayKeys)
+        XCTAssertEqual(staticFirst.keys.epochs.last?.relayKeysCleared, RelayKeysCleared(at: now))
+        XCTAssertThrowsError(try merge(staticFirst.keys, box(2, relayKX: kx(.init(), offered.publicKey), previous: 1))) {
+            XCTAssertEqual($0 as? KeyboxKeysError, .unknownEphemeral)
+        }
         // A link with no ephemeral state gets no marks: its item encodes as before.
         let plain = try merge(link(epochs: [epoch(1)]), box(2, previous: 1))
-        XCTAssertTrue(plain.keys.epochs.allSatisfy { $0.relayKeysClearedAt == nil })
+        XCTAssertTrue(plain.keys.epochs.allSatisfy { $0.relayKeysCleared == nil })
+    }
+
+    /// M8: a cleared epoch keeps the dropped pair's publics. The same pair named again is skipped; another pair (a
+    /// restored sidecar keying that epoch afresh) is refused, and none of its keys are taken.
+    func testAClearedEpochSkipsItsOwnPairAndRefusesAnother() throws {
+        let offered = EphemeralKey.generate()
+        let hubEph = Curve25519.KeyAgreement.PrivateKey()
+        let first = try merge(link(epochs: [epoch(1)], offered: offered), box(2, relayKX: kx(hubEph, offered.publicKey), previous: 1))
+        let cleared = try merge(first.keys, box(2, previous: 1)).keys
+        let mark = try XCTUnwrap(cleared.epochs.last?.relayKeysCleared)
+        XCTAssertEqual(mark.hubPub, hubEph.publicKey.rawRepresentation)
+        XCTAssertEqual(mark.devicePub, offered.publicKey)
+
+        XCTAssertEqual(try merge(cleared, box(2, relayKX: kx(hubEph, offered.publicKey), previous: 1)).keys, cleared)
+
+        let store = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
+        try store.saveHubLink(cleared)
+        let restored = KeyboxKeys(
+            epoch: 2, dataKey: b64(Data(repeating: 0x5D, count: 32)), alertKey: b64(Data(repeating: 0x5E, count: 32)),
+            metaKey: b64(Data(repeating: 0x5F, count: 32)), relayKX: kx(.init(), offered.publicKey))
+        XCTAssertThrowsError(try store.updateHubLink(hubID) { keys in try self.merge(keys, restored).keys }) {
+            XCTAssertEqual($0 as? KeyboxKeysError, .unknownEphemeral)
+        }
+        XCTAssertEqual(try store.hubLink(hubID), cleared, "the restored hub's data keys are not taken")
     }
 
     func testALowOrderHubEphemeralLeavesTheEpochUnmerged() throws {

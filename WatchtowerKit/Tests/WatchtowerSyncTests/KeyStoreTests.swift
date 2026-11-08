@@ -529,6 +529,22 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertNil(try store.hubLink("hub-2"))
     }
 
+    /// M9: a write from inside the closure would be undone by the outer write (an unlink undone). It throws, the
+    /// update with it, and nothing changes; a read inside the closure is fine.
+    func testAWriteInsideTheUpdateClosureIsRefused() throws {
+        let store = makeStore(FakeKeychainBackend())
+        try store.saveHubLink(link())
+        for write in [{ try store.removeHubLink("hub-1") }, { try store.saveHubLink(self.link(epochs: [])) }] {
+            XCTAssertThrowsError(try store.updateHubLink("hub-1") { keys in
+                XCTAssertEqual(try store.hubLink("hub-1"), keys, "reads stay allowed")
+                try write()
+                return keys.withOffer().0
+            }) { XCTAssertEqual($0 as? KeyStoreError, .reentrantWrite) }
+            XCTAssertEqual(try store.hubLink("hub-1"), link(), "nothing written")
+        }
+        XCTAssertNotNil(try store.updateHubLink("hub-1") { $0 }, "the flag is cleared after a throw")
+    }
+
     func testConcurrentUpdatesLoseNothing() throws {
         let store = makeStore(FakeKeychainBackend())
         try store.saveHubLink(link(epochs: []))
@@ -561,7 +577,7 @@ final class KeyStoreTests: XCTestCase {
         let material = try JSONDecoder().decode(AlertMaterial.self, from: alertWrite.data)
         XCTAssertEqual(material.hubSigningKey, keys.hubSigningKey)
         XCTAssertEqual(material.epochs, [EpochKeys(epoch: 1, dataKey: Data(), alertKey: keys.epochs[0].alertKey)])
-        for name in ["relayKeys", "relayKeysClearedAt", "currentKX", "offeredKX", "metaKey", "privateKey"] {
+        for name in ["relayKeys", "relayKeysCleared", "currentKX", "offeredKX", "metaKey", "privateKey"] {
             XCTAssertFalse(text.contains(name), name)
         }
         // The secret item keeps all of it.

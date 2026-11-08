@@ -27,11 +27,11 @@ extension HubLinkKeys {
         if let previous = keys.previousEpoch, let data = keys.previousDataKey, let alert = keys.previousAlertKey {
             byEpoch[previous] = EpochKeys(
                 epoch: previous, dataKey: try Self.key(data), alertKey: try Self.key(alert),
-                relayKeys: byEpoch[previous]?.relayKeys, relayKeysClearedAt: byEpoch[previous]?.relayKeysClearedAt)
+                relayKeys: byEpoch[previous]?.relayKeys, relayKeysCleared: byEpoch[previous]?.relayKeysCleared)
         }
         byEpoch[keys.epoch] = EpochKeys(
             epoch: keys.epoch, dataKey: try Self.key(keys.dataKey), alertKey: try Self.key(keys.alertKey),
-            relayKeys: byEpoch[keys.epoch]?.relayKeys, relayKeysClearedAt: byEpoch[keys.epoch]?.relayKeysClearedAt)
+            relayKeys: byEpoch[keys.epoch]?.relayKeys, relayKeysCleared: byEpoch[keys.epoch]?.relayKeysCleared)
         var updated = self
         updated.metaKey = try Self.key(keys.metaKey)
         updated.epochs = Array(byEpoch.values.sorted { $0.epoch < $1.epoch }.suffix(Self.maxEpochs))
@@ -41,14 +41,16 @@ extension HubLinkKeys {
     /// This link with a keybox merged in (relay client Phase 5, "The scheme" step 5): its epochs as `adding` puts
     /// them, stamped as `stampingSuperseded(from:now:)` does; for the keybox's epoch and the previous one it
     /// carries:
-    /// - a `relay_kx` and no pair held: the pair is derived (pair presence is compared, not only epoch numbers),
-    ///   unless the epoch is marked `relayKeysClearedAt`, which stays static;
+    /// - a `relay_kx` and no pair held: the pair is derived (pair presence is compared, not only epoch numbers);
     /// - a `relay_kx` and a pair held: the same pair is a no-op; another pair is refused (F17, a restored sidecar);
-    /// - no `relay_kx`: a held pair is dropped, and on a link with ephemeral state the epoch is marked cleared.
+    /// - no `relay_kx`: a held pair is dropped, and on a link with ephemeral state the epoch is marked
+    ///   `relayKeysCleared` with the dropped pair's publics. A marked epoch stays static: a `relay_kx` naming the
+    ///   dropped pair is skipped (an older keybox read late), any other is refused.
     /// When the newest `relay_kx` names the offer, the offer becomes the current key and the older current key is
     /// erased. Throws `KeyboxKeysError.unknownEphemeral` when a pair has to be derived from a key this link does not
     /// hold or the keybox names another pair than the one held, `.badKey` for a malformed key, `KeyStoreError.corrupt` for a stored key that does not parse or whose halves
-    /// disagree, and `E2EError.allZeroSharedSecret` for a low-order hub key.
+    /// disagree. A low-order hub key throws as the agreement refuses it: CryptoKit's own `CryptoKitError`, unwrapped
+    /// (Apple platforms refuse the point before the all-zero check runs), or `E2EError.allZeroSharedSecret`.
     public func merging(
         _ keys: KeyboxKeys, identity: DeviceIdentityKeys, hubID: UUID, deviceID: UUID, now: Date
     ) throws -> KeyboxMerge {
@@ -61,21 +63,29 @@ extension HubLinkKeys {
         for (epoch, kx) in named {
             guard let index = merged.epochs.firstIndex(where: { $0.epoch == epoch }) else { continue }
             guard let kx else {
-                if merged.epochs[index].relayKeys != nil {
+                let dropped = merged.epochs[index].relayKeys
+                if dropped != nil {
                     merged.epochs[index].relayKeys = nil
                     if epoch == keys.epoch { droppedNewestPair = true }
                 }
-                if hasEphemeralState, merged.epochs[index].relayKeysClearedAt == nil {
-                    merged.epochs[index].relayKeysClearedAt = now
+                if hasEphemeralState, merged.epochs[index].relayKeysCleared == nil {
+                    merged.epochs[index].relayKeysCleared = RelayKeysCleared(
+                        at: now, hubPub: dropped?.hubPub, devicePub: dropped?.devicePub)
                 }
                 continue
             }
+            let named = (hub: try Self.ephemeralPublic(kx.hubPub), device: try Self.ephemeralPublic(kx.devicePub))
             if let held = merged.epochs[index].relayKeys {
-                guard try held.hubPub == Self.ephemeralPublic(kx.hubPub), try held.devicePub == Self.ephemeralPublic(kx.devicePub)
-                else { throw KeyboxKeysError.unknownEphemeral }
+                guard held.hubPub == named.hub, held.devicePub == named.device else { throw KeyboxKeysError.unknownEphemeral }
                 continue
             }
-            guard merged.epochs[index].relayKeysClearedAt == nil else { continue }
+            if let cleared = merged.epochs[index].relayKeysCleared {
+                // The pair it dropped, named again by an older keybox: skipped. Anything else: refused, nothing taken.
+                guard cleared.hubPub == named.hub, cleared.devicePub == named.device else {
+                    throw KeyboxKeysError.unknownEphemeral
+                }
+                continue
+            }
             merged.epochs[index].relayKeys = try relayPair(
                 kx, epoch: epoch, identity: identity, hubID: hubID, deviceID: deviceID)
         }
