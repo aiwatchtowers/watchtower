@@ -34,10 +34,7 @@ extension ProcessCLIRunner: CLIStreamingRunner {
 
 /// A streamed overview that ended without its envelope: killed, crashed, or
 /// cut mid-line (tech spec §3.5, Review Focus 5).
-struct ReviewStreamEnded: Error, Equatable {
-    let status: Int32
-    let partialLine: Bool
-}
+struct ReviewStreamEnded: Error {}
 
 /// Fires the stop of a run that may not have started yet: a stop asked for
 /// first is applied as soon as the run is there.
@@ -140,6 +137,8 @@ extension WorkbenchCLI {
             }
         }
         let status = await run.exit()
+        // An exit that is not 0 is logged even after the envelope (the outcome stays the envelope's).
+        if status != 0 { streamLog.notice("review overview stream: exit status \(status, privacy: .public)") }
         let partial = decoder.hasPartialLine
         if !decoder.unreadable.isEmpty || partial {
             let counts = decoder.unreadable.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
@@ -147,7 +146,7 @@ extension WorkbenchCLI {
                 "review overview stream: unreadable lines \(counts, privacy: .public), cut last line \(partial, privacy: .public)"
             )
         }
-        guard sawFinal else { throw ReviewStreamEnded(status: status, partialLine: partial) }
+        guard sawFinal else { throw ReviewStreamEnded() }
         continuation.finish()
     }
 }
