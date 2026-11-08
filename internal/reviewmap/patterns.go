@@ -35,8 +35,8 @@ func LoadPatterns(workbenchFolder string) Patterns {
 
 // ParsePatterns parses the file's text: "## Breaking", "## Significant" and
 // "## Can skip" headings (case-insensitive), each followed by "- <glob>"
-// lines. Every other non-empty line, an unknown heading (its globs are
-// dropped) and a bad glob become notes.
+// lines. Every other non-empty line, any other heading ("#", "###" or an
+// unknown "## "; its globs are dropped) and a bad glob become notes.
 func ParsePatterns(text string) Patterns {
 	var p Patterns
 	text = strings.TrimPrefix(text, "\ufeff")
@@ -47,18 +47,23 @@ func ParsePatterns(text string) Patterns {
 		line := strings.TrimSpace(raw)
 		switch {
 		case line == "":
-		case strings.HasPrefix(line, "## "):
-			name := strings.TrimSpace(line[3:])
-			cur, unknown = nil, false
-			switch strings.ToLower(name) {
-			case "breaking":
-				cur = &p.Breaking
-			case "significant":
-				cur = &p.Significant
-			case "can skip":
-				cur = &p.Skip
-			default:
-				unknown = true
+		case strings.HasPrefix(line, "#"):
+			// Any heading ends the current section; only the three "## "
+			// ones start a new one, so a "### Sub" never feeds its parent.
+			name := strings.TrimSpace(strings.TrimLeft(line, "#"))
+			cur = nil
+			if strings.HasPrefix(line, "## ") {
+				switch strings.ToLower(name) {
+				case "breaking":
+					cur = &p.Breaking
+				case "significant":
+					cur = &p.Significant
+				case "can skip":
+					cur = &p.Skip
+				}
+			}
+			unknown = cur == nil
+			if unknown {
 				p.Notes = append(p.Notes, fmt.Sprintf("%sline %d: unknown section %q", patternsNotePrefix, n, name))
 			}
 		case line == "-" || strings.HasPrefix(line, "- "):
@@ -90,8 +95,14 @@ func badPatternLine(n int) string {
 	return fmt.Sprintf(`%sline %d: not a "## Breaking|Significant|Can skip" heading or a "- glob"`, patternsNotePrefix, n)
 }
 
+// validGlob refuses a malformed segment and an empty, "." or ".." one (a
+// leading or trailing "/", "a//b", "./x"): no git path segment equals those,
+// so the glob could never match.
 func validGlob(glob string) bool {
 	for _, seg := range strings.Split(glob, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
 		if _, err := path.Match(seg, ""); err != nil {
 			return false
 		}

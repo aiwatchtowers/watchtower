@@ -26,11 +26,30 @@ func TestParsePatterns(t *testing.T) {
 		t.Errorf("Skip = %v", p.Skip)
 	}
 	wantNotes := []string{
-		`.watchtower/review-map.md: line 1: not a "## Breaking|Significant|Can skip" heading or a "- glob"`,
+		`.watchtower/review-map.md: line 1: unknown section "Review map"`,
 		`.watchtower/review-map.md: line 8: bad glob "[bad"`,
 		`.watchtower/review-map.md: line 11: empty glob`,
 		`.watchtower/review-map.md: line 12: unknown section "Other"`,
 		`.watchtower/review-map.md: line 14: not a "## Breaking|Significant|Can skip" heading or a "- glob"`,
+	}
+	if !slices.Equal(p.Notes, wantNotes) {
+		t.Errorf("Notes =\n%s\nwant\n%s", strings.Join(p.Notes, "\n"), strings.Join(wantNotes, "\n"))
+	}
+}
+
+func TestParsePatterns_NeverMatchingGlobsAndSubheadings(t *testing.T) {
+	p := ParsePatterns("## Breaking\n- a/**\n- /cmd/**\n- docs/\n- a//b\n- ./x/*.go\n- ../y\n" +
+		"### Sub\n- b/**\n")
+	if !slices.Equal(p.Breaking, []string{"a/**"}) {
+		t.Errorf("Breaking = %v, want only a/**", p.Breaking)
+	}
+	wantNotes := []string{
+		`.watchtower/review-map.md: line 3: bad glob "/cmd/**"`,
+		`.watchtower/review-map.md: line 4: bad glob "docs/"`,
+		`.watchtower/review-map.md: line 5: bad glob "a//b"`,
+		`.watchtower/review-map.md: line 6: bad glob "./x/*.go"`,
+		`.watchtower/review-map.md: line 7: bad glob "../y"`,
+		`.watchtower/review-map.md: line 8: unknown section "Sub"`,
 	}
 	if !slices.Equal(p.Notes, wantNotes) {
 		t.Errorf("Notes =\n%s\nwant\n%s", strings.Join(p.Notes, "\n"), strings.Join(wantNotes, "\n"))
