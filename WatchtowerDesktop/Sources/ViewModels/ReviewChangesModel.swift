@@ -177,6 +177,9 @@ final class ReviewChangesModel {
     // The map and the streamed overview (board #1025, tech spec §3.5, §3.7, §5).
     /// The round's map: chapters, levels and the file badges come from it.
     private(set) var map: MapState = .loading
+    /// The diff the map in `map` was built for: until it is the round's, the
+    /// chapters are the old map's over the new files and the selection stays.
+    @ObservationIgnored private var mapDiffKey: String?
     /// The map's load (on open, Refresh and `retryMap`); awaited by tests.
     @ObservationIgnored private(set) var mapTask: Task<Void, Never>?
     /// Per chapter key, how its description stands; absent = not asked for yet.
@@ -886,6 +889,7 @@ final class ReviewChangesModel {
             )
         }
         if let key = currentChapterKey, chapters.contains(where: { $0.key == key }) { return }
+        guard mapDiffKey == round?.diffKey else { return }
         currentChapterKey = chapters.first?.key
     }
 
@@ -1057,6 +1061,7 @@ final class ReviewChangesModel {
     /// Drops the overview, its states and the run (a new round, an empty diff).
     private func resetOverview() {
         stopRun()
+        dropQueue()
         overviewTask?.cancel()
         overview = .idle
         lastReadyOverview = nil
@@ -1081,6 +1086,7 @@ final class ReviewChangesModel {
         if let start, overviewAfterMap != .make { overviewAfterMap = start }
         guard hasChanges else {
             map = .ready(ReviewMap(chapters: [], files: []))
+            mapDiffKey = info.diffKey
             refreshChapters()
             startOverviewAfterMap()
             return
@@ -1101,8 +1107,16 @@ final class ReviewChangesModel {
         }
         guard !Task.isCancelled, round?.id == info.id, round?.diffKey == info.diffKey else { return }
         map = next
+        mapDiffKey = info.diffKey
         refreshChapters()
-        if case .ready = next { startOverviewAfterMap() }
+        if case .ready = next {
+            startOverviewAfterMap()
+        } else if run == nil {
+            // A run stopped for this map (a Refresh restart) leaves no spinner or running line behind.
+            if overview == .loading { overview = .idle }
+            for (key, state) in chapterStates where Self.unsettled(state) { chapterStates[key] = .notStarted }
+            if Self.unsettled(summaryState) { summaryState = .notStarted }
+        }
     }
 
     private func startOverviewAfterMap() {
@@ -1274,8 +1288,15 @@ final class ReviewChangesModel {
         silenceWatch?.cancel()
         overviewTask?.cancel()
         waitingFor = nil
+        dropQueue()
+    }
+
+    /// The queued Retries will not run: their lines go back to not started.
+    private func dropQueue() {
         queuedChapters = []
         summaryQueued = false
+        for (key, state) in chapterStates where state == .queued { chapterStates[key] = .notStarted }
+        if summaryState == .queued { summaryState = .notStarted }
     }
 
     /// The session is gone (deleted): its run is stopped, the map's and the
@@ -1315,6 +1336,7 @@ final class ReviewChangesModel {
             // A run on an earlier snapshot (an Undo lets it finish) never replaces this diff's map.
             if round?.diffKey == run?.diffKey {
                 map = .ready(ready)
+                mapDiffKey = run?.diffKey
                 refreshChapters()
             }
         case .mapFailed:
@@ -1364,8 +1386,7 @@ final class ReviewChangesModel {
     private func land(_ finished: OverviewRun, _ outcome: RunOutcome) {
         guard round?.id == finished.roundID else { return }
         guard round?.diffKey == finished.diffKey else {
-            queuedChapters = []
-            summaryQueued = false
+            dropQueue()
             if case .final(let env) = outcome, env.ok, let made = env.overview {
                 startOverview(earlier: made)
             } else {

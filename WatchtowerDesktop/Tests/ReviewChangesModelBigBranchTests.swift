@@ -314,6 +314,57 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .cached, "dir:pkg": .cached])
     }
 
+    /// A chapter whose files all changed between snapshots stays selected
+    /// while the new map loads, and is still selected once it is in.
+    func testRefreshKeepsTheSelectedChapterUntilTheNewMap() async throws {
+        let h = try harness()
+        let quick = { (tree: String) in self.deepStart(tree: tree).replacingOccurrences(of: #""mode":"deep""#, with: #""mode":"quick""#) }
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "overview": #"{"ok":true}"#])
+        h.cli.script("diff", [diffJSON(["cmd/x.go", "z/old.go"]), diffJSON(["cmd/x.go", "z/new.go"])])
+        h.cli.script("start", [quick("t7"), quick("u7")])
+        await h.model.open()
+        await h.model.mapTask?.value
+        try await h.model.selectChapter("dir:z")
+        XCTAssertEqual(h.model.currentChapterKey, "dir:z")
+        await h.model.refresh()
+        await h.model.mapTask?.value
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:z"])
+        XCTAssertEqual(h.model.currentChapterKey, "dir:z", "the old map over the new files never moved the selection")
+    }
+
+    /// A Refresh that stopped this session's run, then could not build the
+    /// map: no spinner and no running line are left without a process.
+    func testRestartWhoseMapFailsLeavesNoSpinner() async throws {
+        let h = try harness()
+        h.cli.script("map", [mapJSON(fromDiff: diffJSON(["cmd/x.go", "pkg/y.go"])), #"{"ok":false,"error":"git log failed"}"#])
+        await openDeep(h, trees: ["t7", "u7"])
+        let first = try await process(h, 0)
+        first.send(chapterLine("dir:cmd", "ok"))
+        await eventually("dir:cmd ok") { h.model.chapterStates["dir:cmd"] == .ok }
+        await h.model.refresh()
+        await h.model.mapTask?.value
+        await eventually("stopped") { first.stopCount == 1 }
+        XCTAssertEqual(h.model.map, .failed)
+        XCTAssertEqual(h.model.overview, .idle)
+        XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .ok, "dir:pkg": .notStarted])
+        XCTAssertEqual(h.model.summaryState, .notStarted)
+        XCTAssertEqual(h.cli.processes.count, 1)
+    }
+
+    /// A queued Retry dropped by a stop goes back to not started.
+    func testDroppedQueueLeavesNoQueuedLine() async throws {
+        let h = try harness()
+        await openDeep(h, trees: ["t7", "u7"])
+        let first = try await process(h, 0)
+        h.model.retry(chapter: "dir:pkg")
+        h.model.retrySummary()
+        XCTAssertEqual(h.model.chapterStates["dir:pkg"], .queued)
+        h.model.shutDown()
+        await eventually("stopped") { first.stopCount == 1 }
+        XCTAssertEqual(h.model.chapterStates["dir:pkg"], .notStarted)
+        XCTAssertEqual(h.model.summaryState, .notStarted)
+    }
+
     /// A refresh that finds the same snapshot (the window became key) leaves the run alone.
     func testRefreshOnTheSameTreeKeepsTheRun() async throws {
         let h = try harness()
