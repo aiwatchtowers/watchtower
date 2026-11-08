@@ -1077,7 +1077,8 @@ final class ReviewChangesModel {
     /// starts once it is in. An empty diff has an empty map and no CLI call.
     private func startMap(_ info: ReviewRoundInfo, then start: OverviewStart?) {
         mapTask?.cancel()
-        if let start { overviewAfterMap = start }
+        // A run already asked for (Make overview, a restart) is never lowered to the mode's.
+        if let start, overviewAfterMap != .make { overviewAfterMap = start }
         guard hasChanges else {
             map = .ready(ReviewMap(chapters: [], files: []))
             refreshChapters()
