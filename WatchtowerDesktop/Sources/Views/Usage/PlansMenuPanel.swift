@@ -76,7 +76,9 @@ struct PlansMenuPanel: View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             HStack(spacing: Spacing.regular) {
                 Text(quota.duration).font(.caption.weight(.semibold))
-                if quota.isSelected { Text(PlansPopupCopy.selected).font(.caption2).foregroundStyle(Tone.status("teal")) }
+                if quota.isSelected && showInMenuBar {
+                    Text(PlansPopupCopy.selected).font(.caption2).foregroundStyle(Tone.status("teal"))
+                }
                 Spacer(minLength: Spacing.small)
                 Text(quota.reset).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                 Text(quota.percent).font(.caption.weight(.semibold)).monospacedDigit()

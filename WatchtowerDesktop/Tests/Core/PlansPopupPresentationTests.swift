@@ -70,4 +70,20 @@ final class PlansPopupPresentationTests: XCTestCase {
         XCTAssertEqual(PlansPopupCopy.selected, "In menu bar")
         XCTAssertEqual(PlansPopupCopy.actions, "Watchtower actions")
     }
+
+    func testSafeForecastCopyIncludesReachingOneHundredAtReset() throws {
+        let reset = now.addingTimeInterval(3600)
+        let quota = PlanUsageLimit(key: "5:codex:primary:300", label: "5 hours", group: "session", percent: 50,
+                                   resetsAt: reset, severity: nil,
+                                   projection: PlanUsageProjection(state: "safe", hitAt: reset, ratePerHour: 50),
+                                   windowDurationMinutes: 300)
+        let line = PlanUsageLine(startAt: now, startPercent: 50, endAt: reset, endPercent: 100)
+        let samples = [PlanUsageSample(takenAt: now.addingTimeInterval(-900), percent: 37.5, resetsAt: reset),
+                       PlanUsageSample(takenAt: now, percent: 50, resetsAt: reset)]
+        let source = PlanUsageStatus(state: "ok", reason: "", plan: "Plus", fetchedAt: now, lastError: "",
+                                     limits: [quota], breakdown: [], provider: .codex,
+                                     plot: PlanUsagePlot(fetchedAt: now, limits: [quota.key: line]), history: [quota.key: samples])
+        XCTAssertEqual(try source.forecast(for: quota, now: now).line, line)
+        XCTAssertEqual(try PlansPresentation.limit(quota, status: source, now: now).forecast, "On track to last until reset")
+    }
 }

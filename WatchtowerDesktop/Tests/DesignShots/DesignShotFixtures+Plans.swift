@@ -109,7 +109,7 @@ enum PlansShotFixtures {
             }
         } + [
             DesignShot(name: "plans-menu-off", size: NSSize(width: 1120, height: 760)) { menuScreen(.filled, show: false) },
-            DesignShot(name: "plans-menu-narrow", size: NSSize(width: 620, height: 90)) { menuScreen(.filled, barOnly: true) }
+            DesignShot(name: "plans-menu-narrow", size: NSSize(width: 620, height: 760)) { menuScreen(.filled) }
         ]
     }
 
@@ -135,7 +135,9 @@ enum PlansShotFixtures {
                                      openPlans: {}, refresh: { _ in }, refreshAll: {}, actions: {
                         Button("Open Watchtower") {}
                         Button("Settings…") {}
-                    }).background(Surface.window, in: RoundedRectangle(cornerRadius: Radius.container))
+                    })
+                    .background(Surface.window, in: RoundedRectangle(cornerRadius: Radius.container))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.container).strokeBorder(Fill.hover, lineWidth: Stroke.hairline))
                 }
             }
             Spacer()
