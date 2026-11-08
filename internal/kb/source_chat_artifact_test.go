@@ -112,6 +112,15 @@ func TestChatArtifactSource_SkipsCodeQuestionChats(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, all)
 
+	// Branch review's reviewer thread is left out the same way (board #1025).
+	exec(t, d, `UPDATE chat_conversations SET context_type = 'review_reviewer', context_id = '4:feature/a' WHERE id = 5`)
+	all, err = src.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Empty(t, all)
+	keys, _, _, err = src.Changed(ctx, d, "", testNow())
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+
 	// Another context type (a target chat) is still indexed.
 	exec(t, d, `UPDATE chat_conversations SET context_type = 'target', context_id = '7' WHERE id = 5`)
 	all, err = src.Keys(ctx, d)
