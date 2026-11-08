@@ -30,7 +30,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     private static let keyboxPrefix = "keybox-"
     private static let grantPrefix = "\(SliceKind.deviceGrant.rawValue)-"
     private static let helloPrefix = "\(RelayRecordKind.hello.rawValue)-"
-    static let rolledBackReason = "rolledBack"
+    private static let rolledBackReason = "rolledBack"
     /// The reason of a relay record sealed in an epoch whose keys this phone will never hold (`epochKeysGone`).
     static let epochGoneReason = "epochGone"
     /// How long the phone's relay feed replays a batch held by an epoch above its newest (`epochKeysPending`), from

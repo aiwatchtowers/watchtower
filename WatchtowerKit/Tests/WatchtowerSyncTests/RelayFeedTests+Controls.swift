@@ -442,27 +442,6 @@ extension RelayFeedTests {
         }
     }
 
-    /// Relay client Phase 5: a merge reseals this phone's own rows and the transport it followed reads them first, so
-    /// the copies left behind read as rolled back. The drain deletes them with the rest; it keeps them only while the
-    /// device record stays.
-    func testADrainDeletesOlderCopiesOfRecordsAlreadyReadNewer() async throws {
-        for keeping in [false, true] {
-            let rig = try await OrderedRig.make()
-            _ = try await rig.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
-            _ = try await rig.outbox.flush()
-            let wire = try rig.wire(1)
-            let seen = InMemoryRollbackGuard()
-            try seen.record(wireName: wire, senderID: TestE2E.deviceID, epoch: 2, seq: 1)
-            let side = SecureTransport(inner: rig.recorder, keys: try TestE2E.phone(store: rig.keys), rollback: seen)
-
-            let outcome = try await rig.feed.drainMailbox(over: side, keepingDeviceRecord: keeping) { _ in true }
-
-            XCTAssertEqual(outcome, .drained, "keeping \(keeping)")
-            let left = try await rig.mailboxNames()
-            XCTAssertEqual(left, keeping ? [wire] : [], "keeping \(keeping)")
-        }
-    }
-
     /// An `applied` echo the drain settles fires `onActionApplied` once, as a poll does (review round 1, F9).
     func testADrainFiresOnActionAppliedForASettledEcho() async throws {
         let fired = expectation(description: "onActionApplied")

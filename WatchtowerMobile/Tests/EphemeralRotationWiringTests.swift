@@ -217,22 +217,27 @@ final class EphemeralRotationWiringTests: XCTestCase {
         XCTAssertEqual(cloudAcks.compactMap(\.nextKX), [], "none on iCloud")
     }
 
-    /// A relay link's switch keybox goes through the outbox's merge: own rows below the new epoch are moved into it,
-    /// so none can leave the list when retention drops their epoch.
-    func testASwitchKeyboxMergeMovesOwnRowsToTheNewEpoch() async throws {
+    /// Sim rule 13: a switch moves unechoed actions with the same bytes (its keybox merge drops no epoch here, so
+    /// it moves no row); the next fetched merge then reseals them into the newest epoch.
+    func testASwitchKeepsTheBytesAndALaterFetchedMergeReseals() async throws {
         let bed = try await Bed.make(self, on: .relay)
         let first = try await bed.orderedSession()
-        try await bed.sendTwoActions(first)
+        let envelopes = try await bed.sendTwoActions(first)
 
         try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .relay)
         let second = try await bed.fetchAndFollow(first)
-
-        let envelopes = try await second.store.reader.read { db in
-            try Data.fetchAll(db, sql: "SELECT payload FROM pending_actions WHERE action_seq IS NOT NULL ORDER BY action_seq")
-        }
-        XCTAssertEqual(envelopes.count, 2)
+        XCTAssertTrue(second.resealsAcrossEpochs, "a link that moved routes")
+        let onCloud = try await bed.cloudMailbox()
         for envelope in envelopes {
-            XCTAssertEqual(try Envelope.parse(envelope).header.epoch, 2)
+            XCTAssertTrue(onCloud.contains { $0.payload == envelope }, "the same bytes on CloudKit")
+        }
+        XCTAssertEqual(try ownEnvelopes(second), envelopes, "the rows keep their bytes")
+
+        await merge(bed, keybox(epoch: 3))
+        let after = try ownEnvelopes(second)
+        XCTAssertEqual(after.count, 2)
+        for envelope in after {
+            XCTAssertEqual(try Envelope.parse(envelope).header.epoch, 3, "moved by the fetched merge")
         }
     }
 
@@ -322,6 +327,13 @@ final class EphemeralRotationWiringTests: XCTestCase {
         LinkedDevice(
             deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0",
             scope: .private, userRecordName: "_owner-acme")
+    }
+
+    /// The ordered rows' envelopes, by seq.
+    private func ownEnvelopes(_ session: HubSession) throws -> [Data] {
+        try session.store.reader.read { db in
+            try Data.fetchAll(db, sql: "SELECT payload FROM pending_actions WHERE action_seq IS NOT NULL ORDER BY action_seq")
+        }
     }
 
     /// The stored offer's public key.

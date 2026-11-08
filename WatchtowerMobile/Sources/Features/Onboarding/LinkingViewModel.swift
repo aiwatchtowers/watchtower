@@ -767,7 +767,9 @@ final class LinkingViewModel {
     ///   CryptoKit refuses itself): logged once, nothing written, the link kept.
     /// - An unlink meanwhile: the store has no link, so nothing is written and nothing is reported.
     @discardableResult
-    private func mergeKeys(of keybox: Keybox, into link: LinkRecord) async -> Bool {
+    private func mergeKeys(
+        of keybox: Keybox, into link: LinkRecord, reseal: KeyboxMergeReseal = .belowNewest
+    ) async -> Bool {
         guard keybox.grant.hubID == link.hubID, keybox.grant.linked, keybox.grant.revoked != true,
               let boxKeys = keybox.keys, let host else { return false }
         let hubID = link.hubID
@@ -781,7 +783,7 @@ final class LinkingViewModel {
             if !stored.hasEphemeralState, Self.namedEpochs(boxKeys).isSubset(of: Set(stored.epochs.map(\.epoch))) {
                 return true
             }
-            guard let merged = try await host.mergeKeybox(boxKeys, hubID: hubID, now: clock.now()),
+            guard let merged = try await host.mergeKeybox(boxKeys, hubID: hubID, now: clock.now(), reseal: reseal),
                   let now = try keys.hubLink(hubID) else { return false }
             (before, merge, after) = (stored, merged, now)
         } catch KeyStoreError.locked, SecureTransportError.keysUnavailable {
@@ -826,7 +828,8 @@ final class LinkingViewModel {
     /// when the hub has no linked row or the keys could not be stored (the control is then read again).
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
         guard let row = row(hubID), row.state == .linked, !ending.contains(hubID) else { return false }
-        return await mergeKeys(of: keybox, into: row.link)
+        // A switch moves unechoed actions with the same bytes (sim rule 13): only rows of an epoch it drops move.
+        return await mergeKeys(of: keybox, into: row.link, reseal: .droppedEpochs)
     }
 
     /// The follower's clear on a follow to iCloud (relay client Phase 5, "Losing and regaining reader status"): both

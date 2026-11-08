@@ -987,9 +987,9 @@ extension AppRoot: LinkHost {
         }
     }
 
-    func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date) async throws -> KeyboxMerge? {
+    func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge? {
         guard let session = env.session(hubID) else { return nil }
-        return try await session.mergeKeybox(keys, now: now)
+        return try await session.mergeKeybox(keys, now: now, reseal: reseal)
     }
 
     func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async {

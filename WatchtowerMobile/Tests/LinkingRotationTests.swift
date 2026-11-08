@@ -147,6 +147,7 @@ final class LinkingRotationTests: XCTestCase {
 
         XCTAssertTrue(merged)
         XCTAssertEqual(host.mergeCalls, 1)
+        XCTAssertEqual(host.mergeReseals, [.droppedEpochs], "a switch moves only the rows of an epoch it drops")
         XCTAssertEqual(host.keyMergeRaised, [true])
         XCTAssertEqual(host.keyMergeDropped, [false])
     }

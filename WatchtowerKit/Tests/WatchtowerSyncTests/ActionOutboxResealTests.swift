@@ -159,6 +159,35 @@ final class ActionOutboxResealTests: XCTestCase {
             try phone.store.outboxRows([.sent]).first { $0.actionID == id }?.envelope, moved.envelope, "the same keybox again")
     }
 
+    /// A switch's keybox (`.droppedEpochs`) moves only the rows sealed in an epoch this merge drops; a row in a kept
+    /// epoch keeps its bytes (sim rule 13), and the next fetched merge moves it.
+    func testASwitchMergeThatDropsAnEpochResealsOnlyThatEpochsRows() async throws {
+        let phone = try await makePhone()
+        try await merge(phone, epoch: 1)
+        let old = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-41")
+        await phone.outbox.drain()
+        try mergeWithoutTheHook(phone, epoch: 2)
+        let kept = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        await phone.outbox.drain()
+        phone.advance(by: day)
+        try mergeWithoutTheHook(phone, epoch: 3)
+        let keptBefore = try XCTUnwrap(phone.store.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == kept })
+        XCTAssertEqual(try Envelope.parse(keptBefore.envelope).header.epoch, 2)
+
+        // Epoch 1 was superseded 7.5 days ago: the switch's merge drops it, epoch 2 (6.5 days) stays.
+        phone.advance(by: 6.5 * day)
+        let box = try keybox(phone, epoch: 4)
+        try await phone.outbox.mergeKeybox(box, into: phone.keys, hubID: hubID, now: phone.now, reseal: .droppedEpochs)
+
+        XCTAssertEqual(try phone.keys.hubLink(hubID)?.epochs.map(\.epoch), [2, 3, 4])
+        XCTAssertEqual(try epoch(of: try listed(phone, old), phone), 4, "the dropped epoch's row moved")
+        let keptAfter = try XCTUnwrap(phone.store.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == kept })
+        XCTAssertEqual(keptAfter.envelope, keptBefore.envelope, "the kept epoch's row keeps its bytes")
+
+        try await phone.outbox.mergeKeybox(box, into: phone.keys, hubID: hubID, now: phone.now)
+        XCTAssertEqual(try epoch(of: try listed(phone, kept), phone), 4, "a fetched merge of the same keybox moves the rest")
+    }
+
     /// N2: a link write that is no merge (`withOffer`) trims a previous epoch 7 days after it was superseded. The
     /// merge already moved the row to the newest, so it is still listed.
     func testANonMergeWriteAfterEightDaysKeepsTheRowListed() async throws {
@@ -191,7 +220,8 @@ final class ActionOutboxResealTests: XCTestCase {
         let merged = try link.merging(
             box, identity: TestE2E.deviceIdentity, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, now: phone.now)
         try await phone.outbox.stageOwnReseals(
-            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID)
+            from: link, to: merged.keys, only: nil, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID,
+            device: TestE2E.deviceID)
         _ = try phone.keys.updateHubLink(hubID) { _ in merged.keys }
         // Killed before the promote; another writer changes the row's bytes meanwhile.
         let other = Data(repeating: 7, count: 64)
@@ -226,7 +256,8 @@ final class ActionOutboxResealTests: XCTestCase {
 
         // Killed after the stage, before the save.
         try await phone.outbox.stageOwnReseals(
-            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID)
+            from: link, to: merged.keys, only: nil, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID,
+            device: TestE2E.deviceID)
         XCTAssertEqual(try phone.store.stagedReseals().count, 1)
         XCTAssertEqual(try phone.keys.hubLink(hubID), link, "the old keys")
         XCTAssertEqual(try phone.store.outboxRows([.undelivered]).first?.envelope, rowBefore.envelope, "the old row")
@@ -234,7 +265,8 @@ final class ActionOutboxResealTests: XCTestCase {
 
         // The re-run, killed after the save, before the promote.
         try await phone.outbox.stageOwnReseals(
-            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID)
+            from: link, to: merged.keys, only: nil, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID,
+            device: TestE2E.deviceID)
         XCTAssertEqual(try phone.store.stagedReseals().count, 1, "staged again, not twice")
         _ = try phone.keys.updateHubLink(hubID) { _ in merged.keys }
         XCTAssertEqual(try phone.store.outboxRows([.undelivered]).first?.envelope, rowBefore.envelope)

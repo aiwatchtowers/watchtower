@@ -295,8 +295,14 @@ final class FakeLinkHost: LinkHost {
 
     /// As the session's merge on a link that does not reseal (`HubSession.mergeKeybox`): `merging` inside one
     /// `updateHubLink` of `keys`; nil when no link is stored.
-    func mergeKeybox(_ keyboxKeys: KeyboxKeys, hubID: String, now: Date) async throws -> KeyboxMerge? {
+    /// The reseal each merge asked for, in call order.
+    private(set) var mergeReseals: [KeyboxMergeReseal] = []
+
+    func mergeKeybox(
+        _ keyboxKeys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal
+    ) async throws -> KeyboxMerge? {
         mergeCalls += 1
+        mergeReseals.append(reseal)
         while parksMerge {
             try? await Task.sleep(for: .milliseconds(5))
         }

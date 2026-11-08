@@ -56,16 +56,9 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertEqual(link.leftTransport, .relay)
         XCTAssertEqual(link.relayMacDeviceID, bed.mac.deviceID, "kept for a later switch back")
         XCTAssertEqual(second.route, .cloudKit(.private))
-        // A relay link's switch keybox goes through the outbox's merge (relay client Phase 5): the two actions, sealed
-        // in epoch 1, are resealed under the switch's epoch 2 with the same wire names, then sent on CloudKit.
         let onCloud = try await bed.cloudMailbox()
-        let names = try await second.store.reader.read { db in
-            try String.fetchAll(db, sql: "SELECT wire_name FROM pending_actions WHERE action_seq IS NOT NULL ORDER BY action_seq")
-        }
-        XCTAssertEqual(names.count, envelopes.count)
-        for name in names {
-            let record = try XCTUnwrap(onCloud.first { $0.recordName == name }, "sent on CloudKit")
-            XCTAssertEqual(try Envelope.parse(record.payload).header.epoch, 2)
+        for envelope in envelopes {
+            XCTAssertTrue(onCloud.contains { $0.payload == envelope }, "the same bytes on CloudKit")
         }
     }
 
@@ -615,7 +608,7 @@ final class Bed {
         defaults: UserDefaults,
         startsActive: Bool
     ) -> HubSessionFactory {
-        HubSessionFactory { _, hubID, route, device in
+        HubSessionFactory { row, hubID, route, device in
             try paths.prepare(hubID)
             let transport: any CloudSyncTransport & Sendable
             var store: TransportStore?
@@ -632,7 +625,8 @@ final class Bed {
             return try HubSession(
                 transport: transport, replicaPath: paths.replicaPath(hubID), backend: .live, transportStore: store,
                 hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), defaults: defaults,
-                recordingsDirectory: paths.recordingsDirectory(hubID), route: route, startsActive: startsActive, uploadRetriesAllowed: false,
+                recordingsDirectory: paths.recordingsDirectory(hubID), route: route, link: row?.link, startsActive: startsActive,
+                uploadRetriesAllowed: false,
                 sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
             )
         }

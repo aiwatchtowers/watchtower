@@ -1328,11 +1328,13 @@ final class HubSession {
     /// own rows readable when the merge drops their epoch; an iCloud-only link merges alone, its bytes unchanged
     /// (its static keys exist for every epoch, so no row leaves the list). nil when no link is stored (an unlink won:
     /// nothing written) or the session has no keys. Throws as the merge does, with nothing written. `now` stamps the
-    /// epoch the keybox supersedes (the link flow's clock).
-    func mergeKeybox(_ keys: KeyboxKeys, now at: Date) async throws -> KeyboxMerge? {
+    /// epoch the keybox supersedes (the link flow's clock). `reseal` picks the own rows moved: every row below the
+    /// newest (a fetched keybox), or only those of an epoch the merge drops (a switch's, which keeps sim rule 13's same
+    /// bytes for the rest).
+    func mergeKeybox(_ keys: KeyboxKeys, now at: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge? {
         guard let keyStore else { return nil }
         if resealsAcrossEpochs {
-            return try await outbox.mergeKeybox(keys, into: keyStore, hubID: hubID, now: at)
+            return try await outbox.mergeKeybox(keys, into: keyStore, hubID: hubID, now: at, reseal: reseal)
         }
         guard let hub = UUID(uuidString: hubID), let device = try keyStore.deviceID() else { return nil }
         let identity = try keyStore.identity()
