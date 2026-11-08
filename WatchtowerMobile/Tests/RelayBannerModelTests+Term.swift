@@ -170,6 +170,14 @@ final class RelayBannerTermTests: XCTestCase {
         XCTAssertEqual(try banner(Self.link(.lapse))?.actions, [.subscribe], "no held purchase, no Restore")
     }
 
+    /// Review M1: a charged `.free` card with a held purchase names Restore Purchases, so its button is there.
+    func testAChargedFreeCardWithAHeldPurchaseShowsRestore() throws {
+        let charged = try XCTUnwrap(try banner(Self.link(.lapse), hold: .held, unconfirmed: true))
+        XCTAssertEqual(charged.secondLine, Self.heldBanner)
+        XCTAssertEqual(charged.actions, [.confirmPurchase, .restore])
+        XCTAssertEqual(try banner(Self.link(.lapse), unconfirmed: true)?.actions, [.confirmPurchase], "no held purchase")
+    }
+
     func testRestorePurchasesIsNamedOnlyBesideItsButton() throws {
         let link = Self.link(.lapse)
         XCTAssertEqual(line(link, .now, hold: .held), Self.heldNow)

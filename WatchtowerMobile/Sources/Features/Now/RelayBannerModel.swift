@@ -167,7 +167,9 @@ struct RelayBannerModel: Equatable {
         case .moved:
             return Self(text: "\(needs) \(RelayCardModel.movedLine)", secondLine: line, actions: [.restore], speaksOfTerm: speaks, macName: macName)
         case .free where charged:
-            return Self(text: needs, secondLine: line, actions: [.confirmPurchase], speaksOfTerm: speaks, macName: macName)
+            // A held purchase's line names Restore Purchases: its button goes beside it (ask #1104, review M1).
+            let actions: [Action] = term?.held == true ? [.confirmPurchase, .restore] : [.confirmPurchase]
+            return Self(text: needs, secondLine: line, actions: actions, speaksOfTerm: speaks, macName: macName)
         case .free(let ended):
             let text = ended ? "\(needs) \(RelayCardModel.endedLine)" : needs
             let actions: [Action] = term?.held == true ? [.subscribe, .restore] : [.subscribe]

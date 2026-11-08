@@ -231,6 +231,9 @@ final class AppEnvironment {
     /// The scene phase, for every session: each pauses its safety poll
     /// while the app is not active and decides on the return whether to
     /// fetch (`HubSession.setActive`).
+    /// The scene is active now (`setActive(true)` was the last word): the relay term runs only then (review M2).
+    var isSceneActive: Bool { sceneActive == true }
+
     func setActive(_ active: Bool) {
         sceneActive = active
         for hubID in order {

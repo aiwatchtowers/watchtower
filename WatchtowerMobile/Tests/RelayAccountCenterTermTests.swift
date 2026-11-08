@@ -60,14 +60,14 @@ final class RelayAccountCenterTermTests: XCTestCase {
 
     func testOneRefusedReadStands() async throws {
         let rig = try await rig()
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(answer, .refusalStands)
     }
 
     func testAFailedReadWaits() async throws {
         let rig = try await rig()
         rig.bed.fake.failNext("getAccountState", with: .unspecified, times: 5)
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(answer, .wait)
     }
 
@@ -75,7 +75,7 @@ final class RelayAccountCenterTermTests: XCTestCase {
     func testAPaidPhoneWithAnUnsentRenewalKeepsItsLink() async throws {
         let rig = try await rig(claim: .holds)
         rig.bed.store.unfinishedResult = [rig.bed.row(token: rig.token, renewal: true)]
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(rig.bed.submitted.count, 1, "sent")
         XCTAssertEqual(answer, .refusalOver)
     }
@@ -84,7 +84,7 @@ final class RelayAccountCenterTermTests: XCTestCase {
         let rig = try await rig(claim: .holds)
         rig.bed.store.unfinishedResult = [rig.bed.row(token: rig.token, renewal: true)]
         rig.bed.fake.failNext("submitTransaction", with: .unspecified)
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(answer, .wait, "a send that did not reach the relay is a failed read")
     }
 
@@ -95,7 +95,7 @@ final class RelayAccountCenterTermTests: XCTestCase {
         rig.bed.fake.failNext("submitTransaction", with: .invalidTransaction)
         await rig.center.retryConfirm()
         XCTAssertEqual(rig.bed.submitted.count, 1, "refused once")
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(rig.bed.submitted.count, 2, "sent again past the refused set")
         XCTAssertEqual(answer, .refusalOver, "an entitled answer keeps the link")
     }
@@ -104,7 +104,7 @@ final class RelayAccountCenterTermTests: XCTestCase {
         let rig = try await rig(claim: .holds)
         rig.bed.store.unfinishedResult = [rig.bed.row(token: rig.token)]
         rig.bed.fake.failNext("submitTransaction", with: .invalidTransaction)
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(answer, .refusalStands)
     }
 
@@ -118,11 +118,11 @@ final class RelayAccountCenterTermTests: XCTestCase {
             } else {
                 rig.bed.fake.billingConfigured = false
             }
-            let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+            let answer = await rig.center.termCheck(mac: rig.mac) { true }
             XCTAssertEqual(answer, .wait, "\(String(describing: code))")
             XCTAssertFalse(rig.center.heldPurchase, "no held line")
             XCTAssertEqual(rig.center.termHold, .refusedRow)
-            let unheld = await rig.center.termCheck(mac: rig.mac, purchaseHolds: false)
+            let unheld = await rig.center.termCheck(mac: rig.mac) { false }
             XCTAssertEqual(unheld, .refusalStands, "a slot loss or a moved Mac is not held")
         }
     }
@@ -131,19 +131,19 @@ final class RelayAccountCenterTermTests: XCTestCase {
     func testAMovedAwayPhoneWithAHeldPurchaseWaits() async throws {
         let rig = try await rig(claim: .movedAway)
         rig.bed.store.unfinishedResult = [rig.bed.row(token: rig.token)]
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertTrue(rig.bed.submitted.isEmpty, "nothing sent")
         XCTAssertEqual(answer, .wait)
         XCTAssertTrue(rig.center.heldPurchase)
         XCTAssertEqual(rig.center.termHold, .held)
-        let unheld = await rig.center.termCheck(mac: rig.mac, purchaseHolds: false)
+        let unheld = await rig.center.termCheck(mac: rig.mac) { false }
         XCTAssertEqual(unheld, .refusalStands, "no purchase holds a slot loss")
     }
 
     func testAMovedAwayPhoneWithOnlyARenewalDoesNotWait() async throws {
         let rig = try await rig(claim: .movedAway)
         rig.bed.store.unfinishedResult = [rig.bed.row(token: rig.token, renewal: true)]
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(answer, .refusalStands)
         XCTAssertFalse(rig.center.heldPurchase)
     }
@@ -151,7 +151,7 @@ final class RelayAccountCenterTermTests: XCTestCase {
     func testAHeldPurchaseThatExpiredNoLongerHolds() async throws {
         let rig = try await rig(claim: .movedAway)
         rig.bed.store.unfinishedResult = [rig.bed.row(token: rig.token, expiresIn: -60)]
-        let answer = await rig.center.termCheck(mac: rig.mac, purchaseHolds: true)
+        let answer = await rig.center.termCheck(mac: rig.mac) { true }
         XCTAssertEqual(answer, .refusalStands)
         XCTAssertFalse(rig.center.heldPurchase)
     }
@@ -159,9 +159,9 @@ final class RelayAccountCenterTermTests: XCTestCase {
     func testPayingWithTheMacInNoSlotStands() async throws {
         let rig = try await rig()
         try await rig.bed.fake.setEntitlement(accountID: rig.token.uuidString.lowercased(), state: "active", for: .seconds(86_400))
-        let slotted = await rig.center.termCheck(mac: rig.mac, purchaseHolds: false)
+        let slotted = await rig.center.termCheck(mac: rig.mac) { false }
         XCTAssertEqual(slotted, .refusalOver)
-        let gone = await rig.center.termCheck(mac: "mac-gone", purchaseHolds: false)
+        let gone = await rig.center.termCheck(mac: "mac-gone") { false }
         XCTAssertEqual(gone, .refusalStands)
     }
 }

@@ -28,11 +28,13 @@ final class RelayTermWiringTests: XCTestCase {
     }
 
     /// A relay-only link, the phone paying with the Mac in its slot, the account center wired.
-    private func rig() async throws -> Rig {
-        let bed = try await Bed.make(self, on: .relay, hubTransports: ["relay"])
+    private func rig(farewellLive: Bool = false, secondRelayHub: String? = nil) async throws -> Rig {
+        let bed = try await Bed.make(
+            self, on: .relay, hubTransports: ["relay"], farewellLive: farewellLive, secondRelayHub: secondRelayHub)
         let session = try await bed.orderedSession()
         let store = FakeSubscriptionStore()
         bed.root.wireRelayAccount { store }
+        bed.root.env.setActive(true) // the scene is in the foreground (review M2)
         return Rig(bed: bed, session: session, store: store)
     }
 
@@ -41,6 +43,7 @@ final class RelayTermWiringTests: XCTestCase {
         rig.bed.root.env.relayAccount = nil
         try await rig.bed.relaunch(self)
         rig.bed.root.wireRelayAccount { rig.store }
+        rig.bed.root.env.setActive(true)
     }
 
     private func entitlement(_ bed: Bed, _ state: String) async throws {
@@ -197,14 +200,16 @@ final class RelayTermWiringTests: XCTestCase {
         _ = try await refused(rig)
         rig.bed.clock.advance(22 * day)
         await foreground(rig)
+        // The refusal withdrew both and listed them Not delivered: nothing is still waiting, so "Not sent" is 0, and
+        // the Not delivered rows go with the link.
+        XCTAssertEqual(try Bed.rows(rig.session, .undelivered).count, 2)
+        XCTAssertEqual(AppRoot.pendingActionCount(rig.session), 0)
         rig.bed.clock.advance(300)
         await foreground(rig)
         XCTAssertNil(try rig.bed.row(), "the row leaves Settings → Macs")
         XCTAssertNil(try rig.bed.keys.hubLink(hubID), "every key goes")
         XCTAssertNil(rig.bed.root.env.session(hubID))
-        guard case .relayEnded(macName: "Work Mac", _) = rig.bed.root.linking.notice else {
-            return XCTFail("S60: \(String(describing: rig.bed.root.linking.notice))")
-        }
+        XCTAssertEqual(rig.bed.root.linking.notice, .relayEnded(macName: "Work Mac", notSent: 0), "S60, with today's Not sent count")
     }
 
     func testAFailedReadKeepsTheTermDue() async throws {
@@ -347,5 +352,127 @@ final class RelayTermWiringTests: XCTestCase {
         XCTAssertNil(try rig.bed.keys.hubLink(hubID))
         XCTAssertTrue(rig.bed.root.pendingSlotRemovals().contains(rig.bed.mac.deviceID), "retried at launch")
         XCTAssertEqual(rig.bed.root.linking.phase, .idle, "it blocks nothing")
+    }
+
+    // MARK: - Fix round 1
+
+    /// Review I1: the read turns the `.slot` mark into `.lapse` (it shows the subscription ended) while this phone's own
+    /// purchase is held: the hold follows the fresh cause (ask #1100), so nothing ends and the first read stays.
+    func testAHeldPurchaseHoldsATermWhoseReadTurnsTheSlotIntoALapse() async throws {
+        let rig = try await rig()
+        let first = try rig.center
+        try await poll({ first.phase == .paying(grace: false, macs: [rig.bed.mac.deviceID]) }, "the first read")
+        try await entitlement(rig.bed, "expired")
+        try await poll({ first.phase == .free(ended: true) }, "the center read the expiry")
+        // This phone's own purchase, not a renewal, current in StoreKit; the claim moved away, so only a press sends it.
+        let accountID = try await rig.bed.fake.accountID(ofPhone: rig.bed.phone.deviceID)
+        let token = try XCTUnwrap(UUID(uuidString: accountID))
+        rig.store.unfinishedResult = [RelayTransaction(
+            id: 7, originalID: 1000, appAccountToken: token,
+            jws: FakeHostedRelay.fakeJWS(originalTransactionID: "1000", appAccountToken: token.uuidString, signedDate: Date()),
+            revoked: false, isRenewal: false, expiresAt: Date().addingTimeInterval(30 * day))]
+        rig.bed.defaults.set(false, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        rig.bed.root.env.relayAccount = nil
+        rig.bed.root.wireRelayAccount { rig.store }
+        let center = try rig.center
+        // The new center's first pass answers now, so the foreground below makes no pass of its own (one a minute) and
+        // the term's own read is the one that turns the mark.
+        await center.foreground()?.value
+        try await poll({ center.phase == .free(ended: true) && center.termHold == .held }, "the new center read and holds")
+        // The link lost its slot while paying (`.slot`) and had its first term read ten minutes ago.
+        let now = rig.bed.clock.now
+        guard var link = try rig.bed.row()?.link else { return XCTFail("no row") }
+        let firstRead = now.addingTimeInterval(-600)
+        link.relayRefused = RelayRefusedRecord(since: now.addingTimeInterval(-22 * day), cause: .slot, termReadAt: firstRead)
+        XCTAssertTrue(rig.bed.root.persistRoute(link))
+
+        await foreground(rig)
+
+        XCTAssertNotNil(try rig.bed.row(), "held: nothing ends")
+        XCTAssertEqual(try rig.bed.row()?.link.relayRefused?.cause, .lapse, "the term's read set the cause")
+        XCTAssertEqual(try termReadAt(rig), firstRead, "the first read is unchanged")
+        XCTAssertFalse(rig.bed.fake.log.map(FakeHostedRelay.name).contains("submitTransaction"), "nothing sent: only a press")
+    }
+
+    /// Review M2: a term found due after the person left the app waits for the next foreground.
+    func testATermDueAfterThePersonLeftWaits() async throws {
+        let rig = try await rig()
+        _ = try await refused(rig)
+        rig.bed.clock.advance(22 * day)
+        await foreground(rig)
+        let first = try termReadAt(rig)
+        rig.bed.clock.advance(300)
+        rig.bed.root.env.setActive(false)
+        await rig.bed.root.runRelayTerms()
+        XCTAssertNotNil(try rig.bed.row(), "nothing ends in the background")
+        XCTAssertEqual(try termReadAt(rig), first)
+        rig.bed.root.env.setActive(true)
+        await rig.bed.root.runRelayTerms()
+        XCTAssertNil(try rig.bed.row(), "the next foreground ends it")
+    }
+
+    /// Review M3: a paying-with-slot answer that overtakes a lapse in flight drops the mark that lapse wrote.
+    func testALapseOvertakenByAPayingAnswerLeavesNoMark() async throws {
+        let rig = try await rig()
+        let mac = rig.bed.mac.deviceID
+        let lapse = Task { await rig.session.lapseRelay() }
+        await Task.yield()
+        await rig.session.relayAccountAnswered(paying: true, macs: [mac])
+        await lapse.value
+        XCTAssertNil(try rig.bed.row()?.link.relayRefused)
+        XCTAssertTrue(rig.session.waitsForKeybox, "the key source stays")
+    }
+
+    /// Review M3: a superseded `syncThenLapse` does not lapse; the read that took over decides.
+    func testASupersededLapseReadDoesNotLapse() async throws {
+        let rig = try await rig()
+        let center = try rig.center
+        try await entitlement(rig.bed, "expired") // sends ENTITLEMENT_EXPIRED: the center's syncThenLapse
+        try await entitlement(rig.bed, "active")
+        await center.refresh()
+        try await poll({ center.phase == .paying(grace: false, macs: [rig.bed.mac.deviceID]) }, "paying")
+        await center.lapseEndsFinished()
+        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "no lapse marked a paying phone")
+    }
+
+    /// Review M4: two relay-only Macs whose terms end in one foreground each get their notice, one at a time.
+    func testTwoHubsEndingInOneForegroundEachGetTheirNotice() async throws {
+        let home = "40E00000-0000-4000-8000-000000000004"
+        let rig = try await rig(secondRelayHub: home)
+        let homeSession = try XCTUnwrap(rig.bed.root.env.session(home), "the second Mac's session")
+        let mark = try await refused(rig)
+        // The second Mac has no keys on the bed, so its follower cannot decide: its mark is written as the follower would.
+        var homeLink = try XCTUnwrap(try rig.bed.registry.row(home)?.link)
+        homeLink.relayRefused = RelayRefusedRecord(since: mark.since, cause: .lapse)
+        XCTAssertTrue(rig.bed.root.persistRoute(homeLink))
+        XCTAssertNotNil(homeSession)
+        rig.bed.clock.advance(22 * day)
+        await foreground(rig)
+        rig.bed.clock.advance(300)
+        await foreground(rig)
+        XCTAssertNil(try rig.bed.row())
+        XCTAssertNil(try rig.bed.registry.row(home))
+        XCTAssertEqual(rig.bed.root.linking.termNotices.count, 2)
+        guard case .relayEnded(macName: "Work Mac", _) = rig.bed.root.linking.notice else {
+            return XCTFail("first: \(String(describing: rig.bed.root.linking.notice))")
+        }
+        rig.bed.root.linking.dismissNotice()
+        XCTAssertEqual(rig.bed.root.linking.notice, .relayEnded(macName: "Home Mac", notSent: 0))
+    }
+
+    /// Review M4: the farewell the relay refuses (the phone does not pay) stays in the send queue, is kept across the
+    /// wipe, and is sent again at the next foreground, holding nothing back.
+    func testARefusedFarewellIsKeptAndRetriedAtTheTerm() async throws {
+        let rig = try await rig(farewellLive: true)
+        _ = try await refused(rig)
+        rig.bed.clock.advance(22 * day)
+        await foreground(rig)
+        rig.bed.clock.advance(300)
+        await foreground(rig)
+        XCTAssertNil(try rig.bed.row())
+        XCTAssertEqual(try rig.bed.registry.pendingFarewells().map(\.hubID), [hubID], "the refused farewell is kept")
+        await foreground(rig)
+        XCTAssertEqual(rig.bed.farewellResends, [hubID], "sent again at the next foreground")
+        XCTAssertEqual(try rig.bed.registry.pendingFarewells().map(\.hubID), [hubID], "refused again: still kept")
     }
 }

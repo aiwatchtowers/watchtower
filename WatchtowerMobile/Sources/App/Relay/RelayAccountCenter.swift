@@ -722,6 +722,8 @@ final class RelayAccountCenter {
     /// relay's word standing.
     private func syncThenLapse() async {
         let outcome = await synced { await sweep(answered: $0) }
+        // A newer read took over: its own answer lapses the Macs if it says so (review M3).
+        guard outcome != .superseded else { return }
         if outcome != .lapsed, !Self.isPaying(phase) { await lapseRelayMacs() }
     }
 
@@ -736,7 +738,9 @@ final class RelayAccountCenter {
     /// - not paying while `purchaseHolds` (a needs-Relay link) and a held purchase, or a row this send got refused with
     ///   `transferLimit`, `notImplemented` or `updateRequired`, is current: `.wait`;
     /// - else `.refusalStands`.
-    func termCheck(mac: String, purchaseHolds: Bool) async -> TermAnswer {
+    /// `purchaseHolds` is asked after the read (review I1): the read itself can turn a `.slot` mark into `.lapse`, and the
+    /// hold follows the cause the row has then (ask #1100).
+    func termCheck(mac: String, purchaseHolds: @MainActor () -> Bool) async -> TermAnswer {
         guard running else { return .wait }
         var sent = TermSend()
         let outcome = await synced { answered in
@@ -749,7 +753,7 @@ final class RelayAccountCenter {
         let paying = state.paying && !state.moved
         if paying, state.macs.contains(mac) { return .refusalOver }
         // An account id that could not be read leaves a held purchase unknown: nothing ends on it.
-        if purchaseHolds, !paying, sent.refusedRow || heldPurchase || !heldKnown { return .wait }
+        if !paying, sent.refusedRow || heldPurchase || !heldKnown, purchaseHolds() { return .wait }
         return .refusalStands
     }
 

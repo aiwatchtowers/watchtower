@@ -415,6 +415,10 @@ final class HubSession {
     /// Saves the hub's registry row's link in one write (set by `AppRoot.wire`, the follower's `persistRoute`): the
     /// term mark an answered account read sets or clears, and the term's first read. false when it was not written.
     @ObservationIgnored var writeLinkOnRow: (@MainActor (LinkRecord) -> Bool)?
+    /// Answered account reads seen (`relayAccountAnswered`), and whether the last one showed paying with this Mac in a
+    /// slot: a lapse that such an answer overtook drops its mark (review M3).
+    @ObservationIgnored private var answersSeen = 0
+    @ObservationIgnored private var lastAnswerClears = false
     /// The uploader's pass after a raise (`keysMerged`): stale recordings re-armed and sent. Not awaited (tests wait).
     @ObservationIgnored private(set) var uploadKick: Task<Void, Never>?
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
@@ -1611,8 +1615,16 @@ final class HubSession {
     /// The relay refused this phone because its subscription ended (a `ENTITLEMENT_INACTIVE` answer, a move learned
     /// from the account state): `TransportFollowerPolicy.decide(.relayLapsed)` asks the hub for iCloud once, and a
     /// repeated notice re-sends the request a failed copy left behind.
+    /// A paying-with-slot answer that came while the lapse ran is newer than the refusal: the mark the lapse wrote goes
+    /// again (review M3), so a spurious lapse leaves no term, no S61 line and no stopped feed behind it.
     func lapseRelay() async {
+        let seen = answersSeen
         await transportRequester?.lapse()
+        guard answersSeen != seen, lastAnswerClears, var link = linkOnRow?(), link.relayRefused != nil else { return }
+        link.relayRefused = nil
+        guard writeLinkOnRow?(link) == true else { return }
+        Self.logger.notice("a lapse overtaken by a paying answer: its mark dropped")
+        await keySourceBack()
     }
 
     /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared, so
@@ -1639,6 +1651,8 @@ final class HubSession {
     /// source back (`waitsForKeybox`). The follower is the mark's other writer; both write on the main actor, each on the
     /// row as it reads it then, so the last write wins and neither ever moves `since`.
     func relayAccountAnswered(paying: Bool, macs: [String]) async {
+        answersSeen += 1
+        lastAnswerClears = paying && linkOnRow?()?.relayMacDeviceID.map(macs.contains) == true
         guard var link = linkOnRow?(), var refused = link.relayRefused, let mac = link.relayMacDeviceID else { return }
         if paying, macs.contains(mac) {
             link.relayRefused = nil
@@ -1655,10 +1669,15 @@ final class HubSession {
     /// A refusal that stands is written as the term's first read and ends nothing; a later one at least
     /// `RelayTerm.secondReadAfter` after it answers true: the caller ends the link. Anything else waits for a later
     /// foreground; the first read stays on the row across launches.
-    func runTerm(now: @MainActor () -> Date, check: (_ mac: String, _ purchaseHolds: Bool) async -> RelayAccountCenter.TermAnswer) async -> Bool {
+    func runTerm(
+        now: @MainActor () -> Date,
+        check: (_ mac: String, _ purchaseHolds: @escaping @MainActor () -> Bool) async -> RelayAccountCenter.TermAnswer
+    ) async -> Bool {
         guard let link = linkOnRow?(), RelayTerm.isDue(link, now: now()), let mac = link.relayMacDeviceID else { return false }
         guard !recorder.holdsMicrophoneOrScreen else { return false }
-        guard await check(mac, RelayTerm.purchaseHolds(link)) == .refusalStands else { return false }
+        // Asked after the read, on the row as the read left it (review I1).
+        let holds: @MainActor () -> Bool = { [weak self] in self?.linkOnRow?().map(RelayTerm.purchaseHolds) ?? false }
+        guard await check(mac, holds) == .refusalStands else { return false }
         // Read again after the account call: the read may have cleared the mark or changed its cause.
         guard var fresh = linkOnRow?(), var refused = fresh.relayRefused else { return false }
         guard let first = refused.termReadAt else {
