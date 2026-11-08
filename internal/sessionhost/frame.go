@@ -92,6 +92,18 @@ type LaunchReq struct {
 	// Detach launches without binding this connection to the session (the
 	// hub never attaches; Desktop's pane does).
 	Detach bool `json:"detach,omitempty"`
+	// Watch asks the host to watch the agent's transcript (spec 2026-11-05
+	// §3.5); nil = not watched (an older app, a shell). Kept apart from
+	// Agent, which picks the typing profile.
+	Watch *WatchSpec `json:"watch,omitempty"`
+}
+
+// WatchSpec names what a launch's watch reads: the agent kind (one whose
+// sessionagent.Caps.RolloutWatch() is set) and the workspace database the row lives
+// in (never logged).
+type WatchSpec struct {
+	Agent    string `json:"agent"`
+	Database string `json:"database"`
 }
 
 // AttachReq attaches a client to a running session.
@@ -116,6 +128,10 @@ type SessionInfo struct {
 	Launch uint64 `json:"launch,omitempty"`
 	// Agent is the launch's LaunchReq.Agent.
 	Agent string `json:"agent,omitempty"`
+	// Watched: the host watches this run's transcript (its Watch store
+	// opened, spec 2026-11-05 §3.5), so the app's bridge poll leaves it
+	// alone. False from an older host and for every run it does not watch.
+	Watched bool `json:"watched,omitempty"`
 }
 
 // ListResp is the payload of a Listed frame.

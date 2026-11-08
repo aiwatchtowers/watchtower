@@ -14,6 +14,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     override func setUp() async throws {
         try await super.setUp()
+        // AGENT-04 reads the registry's kind from the shared catalog.
+        await MainActor.run { ProviderCatalogFixture.seedShared() }
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
     }
 
@@ -475,5 +477,37 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(reopened.engine === open.engine)
         XCTAssertEqual(reopened.draft.name, "Away")
         reopened.close()
+    }
+}
+
+extension AutomationEditorChatSurfaceTests {
+    /// AGENT-04: an editor chat opened before the catalog's first read is
+    /// draft-only; the read gives claude and codex their tools and leaves
+    /// ollama draft-only.
+    func testToolAccessDecidedAgainWhenTheCatalogLoads() async throws {
+        let automation = try makeAutomation()
+        defer { ProviderCatalogFixture.seedShared() }
+        for (provider, tools) in [("claude", true), ("codex", true), ("ollama", false)] {
+            AIModelCatalog.shared.replaceProviders([])
+            let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+            let center = EmbeddedChatCenter { spec, gate in makeSurfaceEngine(spec, dbPool: self.pool, ai: MockClaudeService(), gate: gate) }
+            let chat = AutomationEditorChat(
+                conversationID: conversationID, dbPool: pool,
+                toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
+                decideTools: { AutomationEditorChatSurface.toolsAvailable(provider: provider) },
+                center: center, cliRunner: FakeCLIRunner(), onSaved: { _ in },
+                makeSpec: { outcomes in
+                    AutomationEditorChatSurface.spec(automation: automation, provider: provider,
+                                                     conversationID: conversationID, dbPool: self.pool, outcomes: outcomes)
+                }
+            )
+            XCTAssertFalse(chat.toolsAvailable, "\(provider): draft-only before the catalog is read")
+            XCTAssertEqual(chat.engine.spec.toolAccess, .draftOnly)
+
+            ProviderCatalogFixture.seedShared()
+            XCTAssertEqual(chat.toolsAvailable, tools, provider)
+            XCTAssertEqual(chat.engine.spec.toolAccess, tools ? .actions(surface: "automation_editor") : .draftOnly, provider)
+            chat.close()
+        }
     }
 }

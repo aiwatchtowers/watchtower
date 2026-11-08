@@ -195,3 +195,25 @@ func TestCodexNamedModelQuotaRequiresSelectedModel(t *testing.T) {
 		_ = requireCategory(t, CodexModelMessageFailure(message, "gpt-5.6-sol", errors.New("diagnostic")), Unknown)
 	}
 }
+
+// A clean exit without a completion takes the category its stderr names when
+// a line is one of the narrow CLI diagnostics, else invalid_output; never
+// quota.
+func TestCleanExitFailure(t *testing.T) {
+	cases := []struct {
+		stderr string
+		want   ErrorCategory
+	}{
+		{"", InvalidOutput},
+		{"something unrelated", InvalidOutput},
+		{"Invalid API key · Please run /login", Auth},
+		{"warming up\nAPI Error: 401 {}", Auth},
+		{"API Error: 429 slow down", RateLimit},
+		{"Overloaded", Overload},
+		{"API Error: 403 forbidden", Policy},
+		{"usage limit reached", InvalidOutput},
+	}
+	for _, tc := range cases {
+		_ = requireCategory(t, CleanExitFailure("claude", tc.stderr, errors.New("diagnostic")), tc.want)
+	}
+}

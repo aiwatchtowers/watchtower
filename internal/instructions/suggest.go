@@ -13,10 +13,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -49,8 +49,11 @@ type FeedReader func(s db.RecentWorkbenchSession) ([]sessionfeed.Entry, error)
 // (Claude Code or Codex), the way `workbench session-feed` does.
 func NewFeedReader(ctx context.Context, d *db.DB, dirs sessionfeed.Dirs) FeedReader {
 	return func(s db.RecentWorkbenchSession) ([]sessionfeed.Entry, error) {
-		convs, err := sessionfeed.SessionConversations(ctx, d, s.ID, agentkind.Kind(s.Kind) == agentkind.Codex,
-			s.FolderPath, s.TranscriptPath, dirs)
+		a, ok := sessionagent.Of(s.Kind)
+		if !ok {
+			return nil, fmt.Errorf("session %d is not an agent session", s.ID)
+		}
+		convs, err := a.Conversations(ctx, d, s.ID, s.FolderPath, s.TranscriptPath, dirs)
 		if err != nil {
 			return nil, fmt.Errorf("session %d conversations: %w", s.ID, err)
 		}

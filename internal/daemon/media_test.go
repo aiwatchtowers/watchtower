@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/media"
 )
 
@@ -39,7 +40,7 @@ func (g *mediaTestGen) GenerateWithImage(context.Context, string, string, string
 	if g.fail {
 		return "", nil, errors.New("provider down")
 	}
-	return `{"title":"Chart","description":"The image shows a chart.","text":"","keys":[]}`, &digest.Usage{InputTokens: 4, OutputTokens: 2}, nil
+	return `{"title":"Chart","description":"The image shows a chart.","text":"","keys":[]}`, &digest.Usage{Tokens: llmusage.Tokens{Input: 4, Output: 2}}, nil
 }
 
 // mediaTestOpener serves one noise PNG for every item.

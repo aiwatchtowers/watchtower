@@ -38,13 +38,13 @@
 
 ## File map
 
-Go (lane A — loop rules): `internal/specreview/loop.go`, new `chain.go`, `drift.go`, `owner_items.go`; `validate.go`, `result.go`, `inputs.go`, `run.go`; `internal/db/spec_reviews.go`; migration `internal/db/migrations/00174_spec_review_loop_rules.sql`; `internal/tools/workbench_spec_review.go`; `internal/asks/answer.go` (`Comment.ItemKey`).
-Go (lane B — threads): migration `00175_spec_review_threads.sql`, new `internal/db/spec_review_threads.go`, `internal/db/chat_knowledge.go`, `internal/kb/source_chat_artifact.go`, `internal/db/workbenches.go`; new `internal/specreview/thread.go`; new `cmd/workbench_spec_review_thread.go`; new `internal/tools/workbench_spec_review_question.go`, `internal/tools/workbenches.go`; `internal/daemon/spec_review_sweep.go`; `internal/asks/line.go` + `testdata/spec_review_question_lines/`; `internal/devpack/workbenchskill/watchtower-workbench/SKILL.md`; `cmd/ai.go` (`--purpose`).
+Go (lane A — loop rules): `internal/specreview/loop.go`, new `chain.go`, `drift.go`, `owner_items.go`; `validate.go`, `result.go`, `inputs.go`, `run.go`; `internal/db/spec_reviews.go`; migration `internal/db/migrations/00177_spec_review_loop_rules.sql`; `internal/tools/workbench_spec_review.go`; `internal/asks/answer.go` (`Comment.ItemKey`).
+Go (lane B — threads): migration `00178_spec_review_threads.sql`, new `internal/db/spec_review_threads.go`, `internal/db/chat_knowledge.go`, `internal/kb/source_chat_artifact.go`, `internal/db/workbenches.go`; new `internal/specreview/thread.go`; new `cmd/workbench_spec_review_thread.go`; new `internal/tools/workbench_spec_review_question.go`, `internal/tools/workbenches.go`; `internal/daemon/spec_review_sweep.go`; `internal/asks/line.go` + `testdata/spec_review_question_lines/`; `internal/devpack/workbenchskill/watchtower-workbench/SKILL.md`; `cmd/ai.go` (`--purpose`).
 Go (lane C — summary): `internal/specreview/result.go`, `validate.go`, `testdata/result_keys.golden`; `internal/prompts/defaults.go`, `store.go`.
 Swift (lanes D/E): `WatchtowerCore/Models/SpecReview.swift`, `SpecReviewLoop.swift`, new `SpecReviewThread.swift`, new `SpecReviewCardActions.swift`; `WatchtowerCore/Database/Queries/` new `SpecReviewThreadQueries.swift`; `WatchtowerCore/Services/` new `SpecReviewThreadBlocks.swift`, `OwnerAskPrompt.swift`, `SpecReviewAnswer.swift`, `WatchtowerAIService.swift`, `Chat/Embedded/ChatSurfaceSpec.swift`, `LLMPurposeNames.swift`; `Services/ChatSurfaces/` new `SpecReviewThreadSurface.swift`; `Services/` new `SpecReviewThreadCenter.swift`, `SpecReviewLoopCenter.swift`, `SessionLineDelivery.swift`, `WorkbenchCLI.swift`; `ViewModels/SpecReviewModel.swift`; `Views/Workbench/Asks/SpecReview/` new `SpecReviewThreadView.swift`, `SpecReviewSummaryView.swift`, `SpecReviewFindingCard.swift`, `SpecReviewLoopView.swift`, `SpecReviewMeaningView.swift`; `Views/Workbench/Asks/OwnerAskStackSection.swift`; `Tests/DesignShots/DesignShotFixtures+SpecReview.swift`, `DesignShotCatalog.swift`.
 Docs (lane F): `docs/features/spec-review.md`, `docs/inventory/spec-review.md`, `docs/inventory/dev-surface.md`, `docs/guide/features/workbench/spec-review.md`, `CLAUDE.md`.
 
-Lanes: A = Tasks 1–4; B = Tasks 7–11; C = Task 6, then Task 5 (prompt, after A and C); D = Task 12; E = Tasks 13–15 (after the owner's review of Task 12); F = Task 16; gate = Task 17. Migrations are numbered up front (00174 lane A, 00175 lane B); the controller regenerates the schema golden and the Swift test schema once after merging both.
+Lanes: A = Tasks 1–4; B = Tasks 7–11; C = Task 6, then Task 5 (prompt, after A and C); D = Task 12; E = Tasks 13–15 (after the owner's review of Task 12); F = Task 16; gate = Task 17. Migrations are numbered up front (00174 lane A, 00175 lane B; renumbered to 00177 and 00178 when main took 00174–00176); the controller regenerates the schema golden and the Swift test schema once after merging both.
 
 ---
 
@@ -53,7 +53,7 @@ Lanes: A = Tasks 1–4; B = Tasks 7–11; C = Task 6, then Task 5 (prompt, after
 **Depends on:** none
 
 **Files:**
-- Create: `internal/db/migrations/00174_spec_review_loop_rules.sql`
+- Create: `internal/db/migrations/00177_spec_review_loop_rules.sql`
 - Modify: `internal/db/schema.sql`, `internal/db/spec_reviews.go`, `internal/specreview/loop.go`, `internal/specreview/run.go` (`advanceLoop`), `internal/tools/workbench_spec_review.go` (`specLoopStart`)
 - Test: `internal/specreview/loop_test.go`, `internal/db/spec_reviews_test.go`, `internal/tools/workbench_spec_review_loop_test.go`
 
@@ -69,7 +69,7 @@ Lanes: A = Tasks 1–4; B = Tasks 7–11; C = Task 6, then Task 5 (prompt, after
   - `TestNextRound_LegacyRulesCapAt3`: rules 0, round 3, open items with no held fix → `End == EndCap`, note `"Not settled in 3 rounds"`, never `EndStalled` (Review Focus 4).
   - Update the existing `TestNextRound_*` calls to the new signature with `rules: 0`; `TestNextRound_CapMovesOpenToUnsettled` keeps its assertions (SPECREVIEW-04 guard).
 - [ ] **Step 2: Run** `go test ./internal/specreview -run TestNextRound` — expect FAIL (signature / missing constants).
-- [ ] **Step 3: Migration + db.** `00174_spec_review_loop_rules.sql`: `ALTER TABLE spec_reviews ADD COLUMN loop_rules INTEGER NOT NULL DEFAULT 0;` (Down: drop column). Mirror in `schema.sql`. `QueueSpecReview` writes `loop.LoopRules` when `loop != nil`; `specReviewCols`/`scanSpecReview` read it. Test `TestQueueSpecReview_StoresLoopRules`.
+- [ ] **Step 3: Migration + db.** `00177_spec_review_loop_rules.sql`: `ALTER TABLE spec_reviews ADD COLUMN loop_rules INTEGER NOT NULL DEFAULT 0;` (Down: drop column). Mirror in `schema.sql`. `QueueSpecReview` writes `loop.LoopRules` when `loop != nil`; `specReviewCols`/`scanSpecReview` read it. Test `TestQueueSpecReview_StoresLoopRules`.
 - [ ] **Step 4: Implement `NextRound`** per the spec §1 continue rule: progress = some prev item whose reply came from `replies` with `Reply == fixed` and whose verdict is `resolved`. Order of ends: nothing open → `settled`; `round >= MaxRoundsFor(rules)` → `cap`; `rules >= LoopRulesOpen && round >= 2 && !progress` → `stalled` (open items to the ledger as `unsettled`; a `disagree` item's note is its reply note, else the stalled note); rules 0 never stalls and continues as today. `advanceLoop` passes `row.LoopRules`. `specLoopStart` sets `LoopRules` = the previous loop row's value when advancing a loop, else `LoopRulesOpen`, and compares `start.Round` with `MaxRoundsFor(LoopRules)`.
 - [ ] **Step 5: Run** `go test ./internal/specreview ./internal/db ./internal/tools` — expect PASS; `make lint-diff`.
 - [ ] **Step 6: Commit** `feat(spec-review): loop runs while fixes hold — stalled end, fuse of 8, old loops keep 3`.
@@ -189,7 +189,7 @@ Decisions this task fixes (spec §1 leaves the diff method open):
 **Depends on:** none
 
 **Files:**
-- Create: `internal/db/migrations/00175_spec_review_threads.sql`, `internal/db/spec_review_threads.go`
+- Create: `internal/db/migrations/00178_spec_review_threads.sql`, `internal/db/spec_review_threads.go`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist`), `internal/db/chat_knowledge.go`, `internal/kb/source_chat_artifact.go`, `internal/db/workbenches.go`
 - Test: `internal/db/spec_review_threads_test.go`, `internal/db/chat_knowledge_test.go`, `internal/db/workbenches_test.go`, `internal/tools/code_question_guard_test.go`, `internal/memory/code_question_guard_test.go`
 

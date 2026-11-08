@@ -1,0 +1,70 @@
+{
+  "providers": [
+    {
+      "id": "claude",
+      "display_name": "Claude",
+      "kind": "cli",
+      "capabilities": {
+        "tools": "watchtower+quick_connections",
+        "tool_events": true,
+        "text_stream": "token",
+        "usage": "split",
+        "cost_reported": true,
+        "images": true,
+        "pdfs": true,
+        "web_search": true,
+        "read_folder": "tools",
+        "turn_cap": "native",
+        "interrupt": "in_turn",
+        "warm_session": true,
+        "claude_ai_tools": true,
+        "reserve_peer": "codex",
+        "quota": true
+      }
+    },
+    {
+      "id": "codex",
+      "display_name": "Codex",
+      "kind": "cli",
+      "capabilities": {
+        "tools": "watchtower+quick_connections",
+        "tool_events": true,
+        "text_stream": "message",
+        "usage": "split",
+        "cost_reported": false,
+        "images": true,
+        "pdfs": false,
+        "web_search": true,
+        "read_folder": "shell_sandbox",
+        "turn_cap": "counted",
+        "interrupt": "kill_turn",
+        "warm_session": false,
+        "claude_ai_tools": false,
+        "reserve_peer": "claude",
+        "quota": true
+      }
+    },
+    {
+      "id": "ollama",
+      "display_name": "Ollama / Local",
+      "kind": "http",
+      "capabilities": {
+        "tools": "watchtower+quick_connections",
+        "tool_events": true,
+        "text_stream": "token",
+        "usage": "totals",
+        "cost_reported": false,
+        "images": false,
+        "pdfs": false,
+        "web_search": false,
+        "read_folder": "none",
+        "turn_cap": "native",
+        "interrupt": "kill_turn",
+        "warm_session": false,
+        "claude_ai_tools": false,
+        "reserve_peer": "",
+        "quota": false
+      }
+    }
+  ]
+}

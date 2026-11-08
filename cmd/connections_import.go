@@ -167,7 +167,6 @@ func runConnectionsImport(cmd *cobra.Command, names []string) error {
 	if connectionsImportFlagJSON {
 		return writeJSON(out, results)
 	}
-	warnIfProviderIgnoresConnections(errOut, cfg, strings.Join(names, ", "))
 	return nil
 }
 

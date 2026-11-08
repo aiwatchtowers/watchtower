@@ -1196,6 +1196,36 @@ verdict_value REAL,
 verdict_at TEXT NOT NULL DEFAULT ''
 )
 
+table	codex_plan_usage_samples
+CREATE TABLE codex_plan_usage_samples (
+scope TEXT NOT NULL CHECK (length(scope) = 64),
+limit_key TEXT NOT NULL,
+taken_at TEXT NOT NULL,
+percent REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+resets_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (scope, limit_key, taken_at)
+)
+
+table	codex_plan_usage_status
+CREATE TABLE codex_plan_usage_status (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+state TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+reason TEXT NOT NULL DEFAULT '',
+plan TEXT NOT NULL DEFAULT '',
+fetched_at TEXT,
+last_error TEXT NOT NULL DEFAULT '',
+last_error_at TEXT,
+limits_json TEXT NOT NULL DEFAULT '[]',
+breakdown_json TEXT NOT NULL DEFAULT '[]',
+updated_at TEXT NOT NULL,
+plot_json TEXT NOT NULL DEFAULT '{}',
+publication_proof TEXT NOT NULL DEFAULT '',
+scope TEXT NOT NULL DEFAULT '',
+identity_known INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+)
+
 table	custom_emojis
 CREATE TABLE custom_emojis (
 name TEXT PRIMARY KEY, -- Emoji shortcode (without colons)
@@ -2646,7 +2676,7 @@ last_error_at TEXT,
 limits_json TEXT NOT NULL DEFAULT '[]',
 breakdown_json TEXT NOT NULL DEFAULT '[]',
 updated_at TEXT NOT NULL
-)
+, plot_json TEXT NOT NULL DEFAULT '{}', publication_proof TEXT NOT NULL DEFAULT '')
 
 table	project_comments
 CREATE TABLE "project_comments" (
@@ -3117,7 +3147,7 @@ CREATE TABLE terminal_session_worktrees (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 root TEXT NOT NULL,
 branch TEXT NOT NULL DEFAULT '',
-first_at TEXT NOT NULL,
+first_at TEXT NOT NULL, last_at TEXT,
 PRIMARY KEY (session_id, root, branch)
 )
 
@@ -3147,7 +3177,8 @@ agent_background_at TEXT,
 chat_question TEXT,
 chat_question_at TEXT,
 agent_turns TEXT,
-agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT,
+agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
+CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -4632,6 +4663,30 @@ GROUP BY up.ancestor
 20	verdict_value	REAL	notnull=0	dflt=NULL	pk=0
 21	verdict_at	TEXT	notnull=1	dflt=''	pk=0
 
+## codex_plan_usage_samples
+0	scope	TEXT	notnull=1	dflt=NULL	pk=1
+1	limit_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	taken_at	TEXT	notnull=1	dflt=NULL	pk=3
+3	percent	REAL	notnull=1	dflt=NULL	pk=0
+4	resets_at	TEXT	notnull=1	dflt=''	pk=0
+
+## codex_plan_usage_status
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	state	TEXT	notnull=1	dflt=NULL	pk=0
+2	reason	TEXT	notnull=1	dflt=''	pk=0
+3	plan	TEXT	notnull=1	dflt=''	pk=0
+4	fetched_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	last_error	TEXT	notnull=1	dflt=''	pk=0
+6	last_error_at	TEXT	notnull=0	dflt=NULL	pk=0
+7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
+8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
+9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
+12	scope	TEXT	notnull=1	dflt=''	pk=0
+13	identity_known	INTEGER	notnull=1	dflt=0	pk=0
+14	ordinary_usage_allowed	INTEGER	notnull=0	dflt=NULL	pk=0
+
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1
 1	url	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5889,6 +5944,8 @@ GROUP BY up.ancestor
 7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
 8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
 9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
 
 ## project_comments
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6295,6 +6352,7 @@ GROUP BY up.ancestor
 1	root	TEXT	notnull=1	dflt=NULL	pk=2
 2	branch	TEXT	notnull=1	dflt=''	pk=3
 3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	last_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6330,6 +6388,8 @@ GROUP BY up.ancestor
 30	worktree_base	TEXT	notnull=0	dflt=NULL	pk=0
 31	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
 32	target_bound_at	TEXT	notnull=0	dflt=NULL	pk=0
+33	agent_watch_issue	TEXT	notnull=0	dflt=NULL	pk=0
+34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1

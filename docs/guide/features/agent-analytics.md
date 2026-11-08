@@ -1,6 +1,6 @@
 # Agent analytics
 
-Agent analytics reads the history of the Claude Code sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. The workbench page's **Analytics** view shows it (see [Session report and analytics](workbench/session-report.md#read-the-analytics-view)), and the `watchtower agents` commands print it.
+Agent analytics reads the history of the Claude Code and Codex sessions that ran in a workbench folder and totals their tokens, cost, tools and errors. It is for the person who wants to know what their agents cost and did. The workbench page's **Analytics** view shows it (see [Session report and analytics](workbench/session-report.md#read-the-analytics-view)), and the `watchtower agents` commands print it.
 
 ## Why use it
 
@@ -18,11 +18,22 @@ since: 0.24.0
 action: nav:projects
 -->
 
+<!-- learn
+id: agent-analytics-codex
+title: Count Codex sessions in Analytics
+text: With **Analytics** on, the Codex sessions a workbench starts count too: times, tokens, tool calls and failures.
+area: development
+level: next
+kind: feature
+since: 0.27.0
+action: nav:projects
+-->
+
 You turn analytics on per workbench. Watchtower then reads the transcript files Claude Code keeps under `~/.claude/projects/`, picks the ones that belong to the workbench folder (or one of its git worktrees, including worktrees that cleanup has removed) and stores one row per API call, tool call, skill and error in the local database. It copies no prompt or reply text, only counts and a pointer back to the file.
 
 Each API call counts once, even when a resumed or forked session replays it. The earliest session owns a replayed call.
 
-Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0 and is counted as estimated.
+Cost is computed when a call is stored, from a built-in price table. A model the table does not know costs 0; the totals show how many calls had **no price**.
 
 When the table changes, older rows are re-priced from their stored tokens. Claude Code's own cost figure is kept per session so you can compare.
 
@@ -30,7 +41,7 @@ Once on, the background daemon keeps the numbers current: each cycle it reads on
 
 Turning the feature on returns at once. The daemon then loads the history already on disk in the background, a little each cycle, and the **Analytics** view shows **Loading history — N files so far** until it is done. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
 
-Only Claude Code transcripts in `~/.claude` are read. Codex sessions are not.
+Codex sessions count too, but only the ones the workbench started: Watchtower reads the rollout file of each of the workbench's Codex sessions under `$CODEX_HOME/sessions` or `$CODEX_HOME/archived_sessions` (`~/.codex` by default), compressed or not, and only when it ran in the workbench folder or one of its worktrees. Other Codex rollouts are never opened. A Codex session has times, tokens, tool calls, failed commands and interrupts. Watchtower has no price for Codex models, so their tokens show with **no price**. Context and Skills say **Not measured for Codex sessions**, because a rollout does not record what loads before your first message.
 
 Besides counts, Watchtower stores sizes: how many bytes each tool result and each start-up part of a session held, how many tokens a compaction dropped, and a failure's class (for example "edit did not match"). It turns bytes into tokens with the ratio of the session's first call, so figures like "CLAUDE.md is 1,800 tokens" are estimates.
 
@@ -54,7 +65,8 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 
 - **`stats` shows `"enabled": false`.** Run `enable` first.
 - **No sessions.** Nothing in `~/.claude/projects/` matched the folder. Sessions run before the folder moved are not found.
-- **Cost is 0 for a model.** The price table does not know it yet. The calls are counted as estimated.
+- **Cost is 0 for a model.** The price table does not know it yet. The totals say how many calls had **no price**. Codex models have no price, so a Codex session always shows **no price**.
+- **A Codex session is missing.** Only sessions the workbench started are read, and only once Codex has reported the session (its first prompt). `scan --json` counts `codex_rollouts_missing` (no rollout file found) and `codex_outside_workbench` (the session ran outside the workbench folder). A Codex session's subagent threads are not counted yet.
 - **History not moved yet — restart the daemon or run watchtower agents scan.** Analytics from an older version still sit in the main database and moving them failed. Nothing loads until the move succeeds; the daemon retries it every cycle, and the daemon log says why it failed.
 - **A block says "Not measured yet for older sessions".** The session was stored before the sizes were recorded. Wait for the daemon's next cycles, or run `watchtower agents scan`; if the transcript is gone, those sessions stay unmeasured.
 - **Repeated reads look wrong.** A file read in pages counts as read many times, because the page range is not stored.

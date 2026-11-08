@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ChannelFilter provides options for filtering channel queries.
@@ -278,9 +279,15 @@ func scanChannels(rows *sql.Rows) ([]Channel, error) {
 	return channels, rows.Err()
 }
 
-// UnreadDigestChannelIDs returns distinct channel IDs that have unread channel-type digests.
-func (db *DB) UnreadDigestChannelIDs() ([]string, error) {
-	rows, err := db.Query(`SELECT DISTINCT channel_id FROM digests WHERE read_at IS NULL AND type = 'channel' AND channel_id != ''`)
+// UnreadDigestChannelIDs returns distinct channel IDs that have an unread
+// channel-type digest whose period ended at or after since. Older unread
+// digests are left out on purpose: the read-cursor pass that calls this costs
+// one Tier-3 conversations.info per channel, and a long unread tail would make
+// it minutes long every hour (#881). A zero since returns every age.
+func (db *DB) UnreadDigestChannelIDs(since time.Time) ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT channel_id FROM digests
+		WHERE read_at IS NULL AND type = 'channel' AND channel_id != '' AND period_to >= ?`,
+		float64(since.Unix()))
 	if err != nil {
 		return nil, err
 	}

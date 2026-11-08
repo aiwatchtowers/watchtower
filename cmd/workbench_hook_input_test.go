@@ -138,7 +138,7 @@ func TestParseHookEvent_ClaudeFixtureValues(t *testing.T) {
 	stop, err := parseHookEvent(agentkind.Claude, inputs[filepath.Join("testdata", "stop_background_tasks.json")])
 	require.NoError(t, err)
 	assert.Equal(t, "Stop", stop.Event)
-	assert.True(t, stop.BackgroundTasks.present)
+	assert.True(t, stop.BackgroundTasks.Present)
 	n, ok := backgroundAgents(stop.BackgroundTasks, nil, "")
 	assert.True(t, ok)
 	assert.Equal(t, int64(2), n)
@@ -146,8 +146,8 @@ func TestParseHookEvent_ClaudeFixtureValues(t *testing.T) {
 	failure, err := parseHookEvent(agentkind.Claude, inputs[filepath.Join("testdata", "stopfailure_rate_limit.json")])
 	require.NoError(t, err)
 	assert.Equal(t, "StopFailure", failure.Event)
-	require.NotNil(t, failure.agentFailure())
-	assert.Equal(t, "rate_limit", failure.agentFailure().Error)
+	require.NotNil(t, agentFailure(failure))
+	assert.Equal(t, "rate_limit", agentFailure(failure).Error)
 
 	note, err := parseHookEvent(agentkind.Claude, inputs["notification"])
 	require.NoError(t, err)
@@ -178,7 +178,9 @@ func codexHookFixture(t *testing.T, name string) []byte {
 	return raw
 }
 
-// codexFixtureWants is every Task 0 fixture's normalized event.
+// codexFixtureWants is every recorded codex hook payload's normalized event
+// (Task 0 and later captures). Spike records that are not hook input live in
+// testdata/codex_hooks/spikes/.
 var codexFixtureWants = map[string]hookEvent{
 	"session_start_startup": {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "startup", TranscriptPath: codexTUIRollout},
 	"session_start_resume":  {Cwd: codexCwd, Event: "SessionStart", SessionID: codexTUISession, Source: "resume", TranscriptPath: codexTUIRollout},
@@ -209,6 +211,14 @@ var codexFixtureWants = map[string]hookEvent{
 	"subagent_stop": {Cwd: codexCwd, Event: "SubagentStop", SessionID: codexExecSession, TurnID: "01a10000-0000-7000-8000-000000000009",
 		AgentID: codexSubagentID, AgentType: "default", LastAssistantMessage: "example", TranscriptPath: codexExecRollout},
 	"session_end": {Cwd: codexCwd, Event: "SessionEnd", SessionID: codexExecSession, TranscriptPath: codexExecRollout},
+	// Captured 2026-11-05 (codex 0.159.2, board #959): Esc during a turn.
+	"interrupt": {Cwd: codexCwd, Event: "Interrupt", SessionID: codexTUISession, TurnID: "01a10000-0000-7000-8000-000000000003",
+		TranscriptPath: codexTUIRollout},
+	// Captured 2026-11-05 (plan Task G7 spike (a)): a line pasted while a
+	// turn runs fires UserPromptSubmit inside that turn.
+	"user_prompt_submit_midturn": {Cwd: codexCwd, Event: "UserPromptSubmit", SessionID: codexTUISession,
+		TurnID:         "01a10000-0000-7000-8000-000000000003",
+		TranscriptPath: "/Users/example/.codex/sessions/2026/11/05/rollout-2026-11-05T15-00-11-01a10000-0000-7000-8000-000000000001.jsonl"},
 }
 
 func TestParseHookEvent_CodexFixtures(t *testing.T) {
@@ -232,7 +242,7 @@ func TestParseHookEvent_CodexFixtures(t *testing.T) {
 			}
 			ev.ToolInput = nil
 			assert.Equal(t, want, ev)
-			assert.False(t, ev.BackgroundTasks.present, "codex has no background_tasks")
+			assert.False(t, ev.BackgroundTasks.Present, "codex has no background_tasks")
 		})
 	}
 }
@@ -253,7 +263,7 @@ func TestParseHookEvent_CodexDropsClaudeOnlyFields(t *testing.T) {
 
 	claude, err := parseHookEvent(agentkind.Claude, []byte(raw))
 	require.NoError(t, err)
-	assert.True(t, claude.BackgroundTasks.present, "the same bytes as Claude Code's keep it")
+	assert.True(t, claude.BackgroundTasks.Present, "the same bytes as Claude Code's keep it")
 	assert.Equal(t, "permission_prompt", claude.NotificationType)
 }
 

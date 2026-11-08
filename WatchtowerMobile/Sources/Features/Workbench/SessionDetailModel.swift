@@ -48,7 +48,7 @@ struct SessionDetailModel {
             TargetChip(id: id, label: targetRecord.map { "#\(id) \($0.text)" } ?? "#\(id)")
         }
         branch = Self.branch(target: targetRecord, workbench: snapshot.workbench(session.workbenchID))
-        agentLine = "\(Self.agentName(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
+        agentLine = "\(Self.agentLabel(session.agent)) · \(CompactAge.string(from: session.createdAt, now: now))"
         self.report = report.map { SessionReportSection($0, finishSummary: session.finishSummary) }
 
         let milestones = (timeline?.milestones ?? []).sorted { $0.at > $1.at }
@@ -60,14 +60,18 @@ struct SessionDetailModel {
         timelineMoreText = (timeline?.milestonesMore).flatMap { $0 > 0 ? "\($0) earlier on your Mac" : nil }
     }
 
-    /// The agent's product name; an agent this build does not know shows its
-    /// raw wire value.
+    /// The agent's product name, from Go's agent kind registry (the Kit's
+    /// bundled `kinds`); an agent this build does not know shows its raw
+    /// wire value.
     static func agentName(_ agent: TerminalSessionState.Agent) -> String {
-        switch agent {
-        case .claudeCode: "Claude Code"
-        case .codexCLI: "Codex"
-        default: agent.rawValue
-        }
+        AgentSessionCapabilities.kind(wireAgent: agent.rawValue)?.displayName ?? agent.rawValue
+    }
+
+    /// The session line's agent (A7b): its name, and for an agent this
+    /// build does not know (a newer Mac's) that it is not supported here.
+    static func agentLabel(_ agent: TerminalSessionState.Agent) -> String {
+        if let known = AgentSessionCapabilities.kind(wireAgent: agent.rawValue) { return known.displayName }
+        return "\(agent.rawValue.isEmpty ? "Unknown agent" : agent.rawValue) (not supported by this version)"
     }
 
     private static func branch(target: WorkbenchTarget?, workbench: Workbench?) -> String? {
@@ -91,10 +95,11 @@ struct SessionDetailModel {
 
 /// The report card: progress segments, a short summary and the PRs.
 struct SessionReportSection: Equatable {
-    /// "2 / 7 targets".
+    /// "2 / 7 targets", "3 / 32 targets · 25 merged" with a merged share
+    /// (board #1017, worded as the Mac's report hero).
     let progressLabel: String
     let segments: [ProgressSegment]
-    /// "2 of 7 targets done, 1 in progress".
+    /// "2 of 7 targets done, 25 merged, 1 in progress".
     let accessibilityLabel: String
     /// The finish summary of a finished session; otherwise "Now: …" and
     /// "Next: …".
@@ -126,7 +131,8 @@ struct SessionReportSection: Equatable {
             (left, "to do", .secondary)
         ].filter { $0.amount > 0 }
 
-        progressLabel = "\(done) / \(total) targets"
+        let merged = report.progress.mergedText
+        progressLabel = "\(done) / \(total) targets" + (merged.map { " · \($0)" } ?? "")
         if total <= Self.maxSingleSegments {
             segments = runs.flatMap { run in
                 Array(repeating: (run.label, run.tone), count: run.amount)
@@ -138,7 +144,7 @@ struct SessionReportSection: Equatable {
                 ProgressSegment(id: index, label: "\(run.amount) \(run.label)", tone: run.tone, weight: run.amount)
             }
         }
-        accessibilityLabel = (["\(done) of \(total) targets done"]
+        accessibilityLabel = (["\(done) of \(total) targets done"] + [merged].compactMap { $0 }
             + runs.filter { !["done", "to do"].contains($0.label) }.map { "\($0.amount) \($0.label)" })
             .joined(separator: ", ")
 

@@ -1,0 +1,277 @@
+{
+  "busy": {
+    "schema_version": 1,
+    "requested_provider": "codex",
+    "refresh_requested": true,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "codex",
+        "ok": false,
+        "error": {
+          "code": "busy",
+          "message": "Plan usage: busy."
+        },
+        "refresh_outcome": "busy",
+        "status": null
+      }
+    ]
+  },
+  "disabled_refresh": {
+    "schema_version": 1,
+    "requested_provider": "all",
+    "refresh_requested": true,
+    "feature_enabled": false,
+    "providers": [
+      {
+        "provider": "claude",
+        "ok": false,
+        "error": {
+          "code": "feature_disabled",
+          "message": "Plan usage: feature_disabled."
+        },
+        "refresh_outcome": "disabled",
+        "status": null
+      },
+      {
+        "provider": "codex",
+        "ok": false,
+        "error": {
+          "code": "feature_disabled",
+          "message": "Plan usage: feature_disabled."
+        },
+        "refresh_outcome": "disabled",
+        "status": null
+      }
+    ]
+  },
+  "drawable": {
+    "schema_version": 1,
+    "requested_provider": "codex",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "codex",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": {
+          "state": "ok",
+          "reason": "",
+          "plan": "pro",
+          "fetched_at": "2026-11-02T09:00:00Z",
+          "updated_at": "2026-11-02T09:00:00Z",
+          "last_error": "",
+          "stale": false,
+          "history_available": true,
+          "ordinary_usage_allowed": false,
+          "limits": [
+            {
+              "key": "quota",
+              "label": "5 hours",
+              "group": "session",
+              "percent": 40,
+              "window_duration_minutes": 300,
+              "resets_at": "2026-11-02T10:00:00Z",
+              "projection": {
+                "state": "safe",
+                "hit_at": "2026-11-02T10:30:00Z",
+                "rate_per_hour": 40,
+                "drawable": true,
+                "unavailable_reason": null,
+                "line": {
+                  "start_at": "2026-11-02T09:00:00Z",
+                  "start_percent": 40,
+                  "end_at": "2026-11-02T10:00:00Z",
+                  "end_percent": 80
+                }
+              }
+            }
+          ],
+          "breakdown": []
+        }
+      }
+    ]
+  },
+  "empty": {
+    "schema_version": 1,
+    "requested_provider": "all",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "claude",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": null
+      },
+      {
+        "provider": "codex",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": null
+      }
+    ]
+  },
+  "partial": {
+    "schema_version": 1,
+    "requested_provider": "all",
+    "refresh_requested": true,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "claude",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "updated",
+        "status": null
+      },
+      {
+        "provider": "codex",
+        "ok": false,
+        "error": {
+          "code": "unsupported_auth",
+          "message": "Plan usage: unsupported_auth."
+        },
+        "refresh_outcome": "failed",
+        "status": null
+      }
+    ]
+  },
+  "read_failure": {
+    "schema_version": 1,
+    "requested_provider": "codex",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "codex",
+        "ok": false,
+        "error": {
+          "code": "storage",
+          "message": "Plan usage: storage."
+        },
+        "refresh_outcome": "not_requested",
+        "status": null
+      }
+    ]
+  },
+  "stale": {
+    "schema_version": 1,
+    "requested_provider": "codex",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "codex",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": {
+          "state": "ok",
+          "reason": "",
+          "plan": "pro",
+          "fetched_at": "2026-11-02T09:00:00Z",
+          "updated_at": "2026-11-02T09:00:00Z",
+          "last_error": "",
+          "stale": true,
+          "history_available": true,
+          "ordinary_usage_allowed": false,
+          "limits": [
+            {
+              "key": "quota",
+              "label": "5 hours",
+              "group": "session",
+              "percent": 40,
+              "window_duration_minutes": 300,
+              "resets_at": "2026-11-02T10:00:00Z",
+              "projection": {
+                "state": "safe",
+                "hit_at": "2026-11-02T10:30:00Z",
+                "rate_per_hour": 40,
+                "drawable": false,
+                "unavailable_reason": "stale",
+                "line": null
+              }
+            }
+          ],
+          "breakdown": []
+        }
+      }
+    ]
+  },
+  "unavailable_is_successful_read": {
+    "schema_version": 1,
+    "requested_provider": "claude",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "claude",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": {
+          "state": "unavailable",
+          "reason": "no_credentials",
+          "plan": "",
+          "fetched_at": null,
+          "updated_at": "2026-11-02T09:00:00Z",
+          "last_error": "Plan usage: no_credentials.",
+          "stale": true,
+          "history_available": false,
+          "ordinary_usage_allowed": null,
+          "limits": [],
+          "breakdown": []
+        }
+      }
+    ]
+  },
+  "unknown_identity": {
+    "schema_version": 1,
+    "requested_provider": "codex",
+    "refresh_requested": false,
+    "feature_enabled": true,
+    "providers": [
+      {
+        "provider": "codex",
+        "ok": true,
+        "error": null,
+        "refresh_outcome": "not_requested",
+        "status": {
+          "state": "ok",
+          "reason": "",
+          "plan": "pro",
+          "fetched_at": "2026-11-02T09:00:00Z",
+          "updated_at": "2026-11-02T09:00:00Z",
+          "last_error": "",
+          "stale": false,
+          "history_available": false,
+          "ordinary_usage_allowed": null,
+          "limits": [
+            {
+              "key": "quota",
+              "label": "5 hours",
+              "group": "session",
+              "percent": 7,
+              "window_duration_minutes": 300,
+              "resets_at": "2026-11-02T10:00:00Z",
+              "projection": {
+                "state": "collecting",
+                "hit_at": null,
+                "rate_per_hour": 0,
+                "drawable": false,
+                "unavailable_reason": "identity_unknown",
+                "line": null
+              }
+            }
+          ],
+          "breakdown": []
+        }
+      }
+    ]
+  }
+}

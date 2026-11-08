@@ -1,5 +1,10 @@
 import Foundation
 
+/// One event of an embedded chat's turn. `WatchtowerAIService` runs
+/// `ai query --events v2` and yields `.text` (append), `.toolStart`/`.toolEnd`
+/// (a tool call as a step), `.usage`, `.routing`, `.failure` and `.done`;
+/// `.turnComplete`, `.reset`, `.sessionID` and `.error` are the v1 shapes a
+/// test double may still yield, and every consumer still folds them.
 package enum StreamEvent {
     case text(String)         // streaming delta (append)
     case turnComplete(String) // full turn text (replace — only last turn shown)
@@ -11,6 +16,9 @@ package enum StreamEvent {
                               // `error` line, which exits 0)
     case failure(ChatSessionError)
     case routing(provider: String, model: String, metadata: ChatRoutingMetadata?)
+    case toolStart(ChatToolStart)
+    case toolEnd(ChatToolEnd)
+    case usage(ChatUsage)
     case done
 
     /// The pre-`.error` fold: an error line as visible `[Error] …` text. Kept

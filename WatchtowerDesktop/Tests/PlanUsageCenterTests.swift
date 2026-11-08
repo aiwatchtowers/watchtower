@@ -6,9 +6,14 @@ import WatchtowerTestSupport
 
 @MainActor
 final class PlanUsageCenterTests: XCTestCase {
-    final class StubRunner: CLIRunnerProtocol {
-        var calls: [[String]] = []
-        func run(args: [String]) async throws -> Data { calls.append(args); return Data() }
+    final class StubRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var recorded: [[String]] = []
+        var calls: [[String]] { lock.withLock { recorded } }
+        func run(args: [String]) async throws -> Data {
+            lock.withLock { recorded.append(args) }
+            return Data()
+        }
     }
 
     private var pool: DatabasePool!
@@ -52,12 +57,14 @@ final class PlanUsageCenterTests: XCTestCase {
         var seen: PlanUsageStatus?
         center.onStatus = { seen = $0 }
         await center.reload()
-        XCTAssertEqual(center.menuBarLabel(showText: true), "⚠︎ 5h 92% · 7d 59%")
+        XCTAssertEqual(center.menuBarLabel(showText: true), "⚠︎ Claude 5h 92% · 7d 59%")
         XCTAssertNil(center.menuBarLabel(showText: false))
         XCTAssertEqual(center.trayLines.count, 2)
         XCTAssertEqual(seen?.plan, "max")
         await center.refresh()
-        XCTAssertEqual(runner.calls, [["usage", "plan", "--now"]])
+        XCTAssertEqual(runner.calls.count, 2)
+        XCTAssertTrue(runner.calls.contains(["usage", "plans", "--json", "--now", "--provider", "claude"]))
+        XCTAssertTrue(runner.calls.contains(["usage", "plans", "--json", "--now", "--provider", "codex"]))
     }
 
     func testNoStatusYieldsNoLabelOrRows() async {
@@ -105,7 +112,7 @@ final class PlanUsageCenterTests: XCTestCase {
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T10:00:00Z"))
         let center = PlanUsageCenter(dbPool: pool, runner: nil, defaults: defaults) { now }
         await center.reload()
-        XCTAssertEqual(center.menuBarLabel(showText: true), "5h 4% · 7d 59%")
+        XCTAssertEqual(center.menuBarLabel(showText: true), "Claude 5h 4% · 7d 59%")
     }
 
     func testStaleStatusKeepsTextWithoutWarningMark() async throws {
@@ -113,7 +120,7 @@ final class PlanUsageCenterTests: XCTestCase {
         let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T10:00:00Z"))
         let center = PlanUsageCenter(dbPool: pool, runner: nil, defaults: defaults) { now }
         await center.reload()
-        XCTAssertEqual(center.menuBarLabel(showText: true), "5h 92% · 7d 59%")
+        XCTAssertEqual(center.menuBarLabel(showText: true), "Claude 5h 92% · 7d 59%")
     }
 
     func testNonOkStateWithoutLimitsShowsNoLabel() async throws {

@@ -1,0 +1,4 @@
+[
+  {"preferred_provider":"claude","enabled":true,"revision":"normalized-test-revision","providers":[{"provider":"claude","state":"available"},{"provider":"codex","state":"available"}]},
+  {"preferred_provider":"codex","enabled":true,"revision":"normalized-test-revision","providers":[{"provider":"codex","state":"available"},{"provider":"claude","state":"available"}]}
+]

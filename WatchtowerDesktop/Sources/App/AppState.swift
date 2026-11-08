@@ -243,9 +243,7 @@ final class AppState {
     /// The Meetings goal's download ahead of use (`autoDownloadTranscriptionModel`).
     @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
-    /// Provider/model registry from `watchtower ai models --json`, shared by
-    /// the chat model picker and Settings suggestions. Loaded lazily.
-    let aiModelCatalog = AIModelCatalog()
+    @ObservationIgnored var modelCatalogLaunchOverride: (@MainActor () async -> Void)? // tests: no CLI at launch
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
@@ -616,11 +614,12 @@ final class AppState {
         provider: String,
         panelDraftBox: PanelDraftBox,
         onSaved: @escaping (Int64?) -> Void,
-        makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
+        makeSpec: @escaping (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {
         AutomationEditorChat(
             conversationID: conversationID, dbPool: pool,
             toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
+            decideTools: { AutomationEditorChatSurface.toolsAvailable(provider: provider) },
             center: embeddedChatCenter, panelDraftBox: panelDraftBox, onSaved: onSaved, makeSpec: makeSpec
         )
     }
@@ -820,6 +819,7 @@ final class AppState {
             // the store copy may still be the stale one, and DaemonManager
             // caches whatever path it first resolves.
             daemonManager.startPolling()
+            loadModelCatalogAtLaunch()
             do {
                 let manager = try await migrateCompactOpen().get()
                 ambiguousWorkspaces = []
@@ -873,16 +873,6 @@ final class AppState {
         // the sidebar/navigation/banner read.
         wireFeatureVisibility()
         Task { await featureManager.load() }
-    }
-
-    /// Every successful Feature Manager load pushes the disabled set into
-    /// the visibility store and marks it loaded; a failed one changes nothing.
-    func wireFeatureVisibility() {
-        featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
-            featureVisibility.disabledFeatureIDs = ids
-            featureVisibility.isLoaded = true
-            self?.syncAutomationSessionCenter()
-        }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
@@ -1875,10 +1865,11 @@ final class AppState {
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.
-    private func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?) {
+    func initPlanUsage(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)?, notifier: (any PlanUsageNotifying)? = NotificationService.shared) {
         planUsageCenter?.stop()
-        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: NotificationService.shared)
+        let center = PlanUsageCenter(dbPool: dbPool, runner: cliRunner, notifier: notifier)
         planUsageCenter = center
+        syncPlanUsageFeatureState()
         center.start()
     }
 

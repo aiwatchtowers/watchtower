@@ -64,7 +64,9 @@ func TestCodexGeneratorRecords(t *testing.T) {
 	out, usage, _, err := g.Generate(llmusage.WithPurpose(context.Background(), "digest.channel"), "sys", "msg", "")
 	require.NoError(t, err)
 	require.Equal(t, "Generated text", out)
-	require.Equal(t, 100, usage.InputTokens, "the returned usage is unchanged")
+	require.Equal(t, 40, usage.InputTokens(), "claude's shape: input without the cached part")
+	require.Equal(t, 100, usage.TotalAPITokens(), "the whole input, cached part included")
+	require.Equal(t, 7, usage.OutputTokens())
 
 	got := calls.all()
 	require.Len(t, got, 1)
@@ -96,7 +98,7 @@ func TestCodexGeneratorRecordsFailure(t *testing.T) {
 
 func TestCodexClientQueryRecordsEstimatedWithoutUsage(t *testing.T) {
 	calls := captureCalls(t)
-	bin := fakeCodexScript(t, `{"type":"item.completed","item":{"type":"agent_message","text":"an answer of some length"}}`, "", 0)
+	bin := fakeCodexScript(t, `{"type":"item.completed","item":{"type":"agent_message","text":"an answer of some length"}}`+"\n"+`{"type":"turn.completed"}`, "", 0)
 
 	c := NewClient("gpt-x", "", bin)
 	textCh, errCh, sidCh := c.Query(context.Background(), "system prompt", "user message here", "")

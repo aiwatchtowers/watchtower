@@ -65,4 +65,99 @@ struct AIModelCatalogTests {
         #expect(output.providers[0].models == nil)
         #expect(output.providers[0].error == nil)
     }
+
+    @Test("A failed launch read is retried until it succeeds, and names its reason meanwhile")
+    func launchReadRetries() async throws {
+        let rows = sample
+        let calls = CallCounter()
+        let catalog = AIModelCatalog {
+            calls.bump() < 3 ? ProcessOutput(exitCode: 2, stdout: "", stderr: "boom")
+                : ProcessOutput(exitCode: 0, stdout: rows, stderr: "")
+        }
+        let seen = WaitLog()
+        await catalog.loadRetrying(retryDelays: [.seconds(1), .seconds(2), .seconds(3), .seconds(4)]) { delay in
+            await MainActor.run { seen.record(delay, reason: catalog.unreadReason) }
+        }
+        #expect(calls.count == 3)
+        #expect(seen.waits == [.seconds(1), .seconds(2)], "stops at the first success")
+        #expect(seen.reasons == [AIModelCatalog.unreadNotice, AIModelCatalog.unreadNotice])
+        #expect(catalog.isLoaded)
+        #expect(catalog.unreadReason == nil)
+        #expect(catalog.lastError == nil)
+    }
+
+    @Test("The retries are bounded; a read that never works keeps its honest reason")
+    func launchReadGivesUp() async {
+        let calls = CallCounter()
+        let catalog = AIModelCatalog { calls.bump(); return nil }
+        await catalog.loadRetrying(retryDelays: [.zero, .zero]) { _ in }
+        #expect(calls.count == 3)
+        #expect(catalog.lastError == "watchtower CLI not found")
+        #expect(catalog.unreadReason == AIModelCatalog.unreadNotice)
+    }
+
+    @Test("A cancelled wait ends the retries")
+    func launchReadStopsWhenCancelled() async {
+        let calls = CallCounter()
+        let catalog = AIModelCatalog { calls.bump(); return nil }
+        await catalog.loadRetrying(retryDelays: [.seconds(1), .seconds(1)]) { _ in throw CancellationError() }
+        #expect(calls.count == 1)
+    }
+
+    @Test("Rows from an earlier read are not unread: no reason after a later failure")
+    func laterFailureKeepsRows() async throws {
+        let rows = sample
+        let calls = CallCounter()
+        let catalog = AIModelCatalog {
+            calls.bump() == 1 ? ProcessOutput(exitCode: 0, stdout: rows, stderr: "") : nil
+        }
+        #expect(catalog.unreadReason == nil, "nothing failed before the first read")
+        await catalog.load()
+        await catalog.load()
+        #expect(catalog.lastError != nil)
+        #expect(catalog.isLoaded)
+        #expect(catalog.unreadReason == nil)
+    }
+
+    @Test("readInFlight waits for a running read and starts none")
+    func readInFlightWaits() async {
+        let calls = CallCounter()
+        let idle = AIModelCatalog { calls.bump(); return nil }
+        await idle.readInFlight()
+        #expect(calls.count < 1, "no read in flight: none started")
+
+        let rows = sample
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        let catalog = AIModelCatalog {
+            for await _ in gate { break }
+            return ProcessOutput(exitCode: 0, stdout: rows, stderr: "")
+        }
+        let running = Task { await catalog.load() }
+        while !catalog.isLoading { await Task.yield() }
+        open.yield()
+        await catalog.readInFlight()
+        #expect(catalog.isLoaded)
+        await running.value
+    }
+}
+
+/// Counts a fetch's calls across its `@Sendable` boundary.
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    /// The call's number, from 1.
+    @discardableResult
+    func bump() -> Int { lock.withLock { value += 1; return value } }
+}
+
+/// What `loadRetrying` showed at each wait.
+@MainActor
+private final class WaitLog {
+    private(set) var waits: [Duration] = []
+    private(set) var reasons: [String?] = []
+    func record(_ delay: Duration, reason: String?) {
+        waits.append(delay)
+        reasons.append(reason)
+    }
 }

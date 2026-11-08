@@ -46,10 +46,10 @@ func (g *routedTestLeaf) Generate(ctx context.Context, _, _, _ string) (string, 
 		err = &providers.Failure{Provider: g.provider, Category: providers.Quota}
 	}
 	if g.record {
-		c := llmusage.Call{Provider: g.provider, Model: "haiku", OK: err == nil, Estimated: g.usage == nil}
+		c := llmusage.Call{Provider: g.provider, Model: "haiku", OK: err == nil, Tokens: llmusage.Tokens{Estimated: g.usage == nil}}
 		if g.usage != nil {
-			c.Input = int64(g.usage.InputTokens)
-			c.Output = int64(g.usage.OutputTokens)
+			c.Input = int64(g.usage.InputTokens())
+			c.Output = int64(g.usage.OutputTokens())
 		}
 		llmusage.Record(ctx, c)
 	}
@@ -79,8 +79,8 @@ func routedSDKGenerator(t *testing.T, preferred, reserve *routedTestLeaf, knownB
 	}, providerrouting.GeneratorOptions{Router: &providerrouting.Router{Health: store, Allowed: func(string) error { return nil }}})
 }
 func routedLeaves(unknown bool) (*routedTestLeaf, *routedTestLeaf) {
-	p := &routedTestLeaf{provider: "claude", fail: true, usage: &digest.Usage{InputTokens: 200, OutputTokens: 5}, record: true}
-	r := &routedTestLeaf{provider: "codex", usage: &digest.Usage{InputTokens: 300, OutputTokens: 10}, record: true}
+	p := &routedTestLeaf{provider: "claude", fail: true, usage: &digest.Usage{Tokens: llmusage.Tokens{Input: 200, Output: 5}}, record: true}
+	r := &routedTestLeaf{provider: "codex", usage: &digest.Usage{Tokens: llmusage.Tokens{Input: 300, Output: 10}}, record: true}
 	if unknown {
 		p.usage = nil
 	}
@@ -229,7 +229,7 @@ func TestBuiltinRoutingOneStepAndLegacyUsage(t *testing.T) {
 func TestBuiltinRoutingParallelWorkersShareInputReservation(t *testing.T) {
 	p, r := routedLeaves(false)
 	p.fail = false
-	p.usage = &digest.Usage{InputTokens: 10, OutputTokens: 2}
+	p.usage = &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 2}}
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	p.after = func(ctx context.Context) {
@@ -288,7 +288,7 @@ func TestLLMRoutingUnknownSuccessIsEstimated(t *testing.T) {
 func TestLLMRoutingSchemaRetryUsesRemainingBudget(t *testing.T) {
 	p, r := routedLeaves(false)
 	p.fail = false
-	p.usage = &digest.Usage{InputTokens: 300, OutputTokens: 10}
+	p.usage = &digest.Usage{Tokens: llmusage.Tokens{Input: 300, Output: 10}}
 	p.replies = []string{"invalid"}
 	gen := routedSDKGenerator(t, p, r, false)
 	meter := automations.NewMeter(automations.Budget{Tokens: 400, Minutes: 5}, nil)

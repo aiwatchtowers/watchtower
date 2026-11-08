@@ -351,7 +351,7 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertFalse(rows.map(\.id).contains(shell.id), "a shell has no agent")
             XCTAssertEqual(rows[0], SessionAgentStateRow(
                 id: waiting.id, projectID: project, title: "Waiting", agentState: "waiting",
-                agentStateAt: "2026-10-03T12:34:56.789Z", workbenchName: "acme"
+                agentStateAt: "2026-10-03T12:34:56.789Z", workbenchName: "acme", kind: "claude"
             ))
             XCTAssertEqual(rows[0].stored, .waiting)
             XCTAssertNil(rows[1].agentState, "a NULL state reads as nil")
@@ -399,7 +399,7 @@ final class TerminalSessionQueriesTests: XCTestCase {
             XCTAssertEqual(rows[0], SessionAgentStateRow(
                 id: done.id, projectID: project, title: "Done", agentState: nil, agentStateAt: nil,
                 workbenchName: "acme", finishedAt: "2026-10-03T12:00:00.000Z", finishSummary: "Shipped",
-                openAsks: 2, oldestOpenAskID: askIDs["open"]?.first
+                openAsks: 2, oldestOpenAskID: askIDs["open"]?.first, kind: "claude"
             ), "only this session's open asks count; the oldest open one, not an older answered one")
             XCTAssertNil(rows[1].oldestOpenAskID, "no open ask, no oldest")
             XCTAssertEqual(rows[1].agentFailedAt, "2026-10-03T12:01:00.000Z")

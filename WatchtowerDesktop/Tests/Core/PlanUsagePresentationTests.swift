@@ -87,35 +87,8 @@ final class PlanUsagePresentationTests: XCTestCase {
         XCTAssertNil(PlanUsagePresentation.windowStart(key: "weekly_scoped:x", resetsAt: reset))
     }
 
-    func testProjectedEnd() {
-        let last = PlanUsageSample(takenAt: now, percent: 40, resetsAt: nil)
-        let hit = now.addingTimeInterval(3600)
-        let willHit = limit("session", 40, state: "will_hit", hitAt: hit)
-        XCTAssertEqual(PlanUsagePresentation.projectedEnd(willHit, last: last)?.at, hit)
-        XCTAssertEqual(PlanUsagePresentation.projectedEnd(willHit, last: last)?.percent, 100)
-
-        let safe = PlanUsageLimit(key: "session", label: "5-hour", group: "session", percent: 40,
-                                  resetsAt: now.addingTimeInterval(2 * 3600), severity: nil,
-                                  projection: PlanUsageProjection(state: "safe", hitAt: nil, ratePerHour: 10))
-        let end = PlanUsagePresentation.projectedEnd(safe, last: last)
-        XCTAssertEqual(end?.at, now.addingTimeInterval(2 * 3600))
-        XCTAssertEqual(end?.percent ?? 0, 60, accuracy: 0.001)
-
-        XCTAssertNil(PlanUsagePresentation.projectedEnd(limit("session", 40, state: "collecting"), last: last))
-        XCTAssertNil(PlanUsagePresentation.projectedEnd(limit("session", 40, state: "hit"), last: last))
-    }
-
-    func testProjectedEndClampsAndPercentText() {
-        let last = PlanUsageSample(takenAt: now, percent: 40, resetsAt: nil)
-        func safe(_ rate: Double) -> PlanUsageLimit {
-            PlanUsageLimit(key: "session", label: "5-hour", group: "session", percent: 40,
-                           resetsAt: now.addingTimeInterval(2 * 3600), severity: nil,
-                           projection: PlanUsageProjection(state: "safe", hitAt: nil, ratePerHour: rate))
-        }
-        XCTAssertEqual(PlanUsagePresentation.projectedEnd(safe(500), last: last)?.percent, 100)
-        XCTAssertEqual(PlanUsagePresentation.projectedEnd(safe(-500), last: last)?.percent, 0)
-        XCTAssertEqual(PlanUsagePresentation.percentText(41.6), "42 %")
-        XCTAssertEqual(PlanUsagePresentation.percentText(0), "0 %")
+    func testPercentText() {
+        XCTAssertEqual(PlanUsagePresentation.percentText(42.4), "42 %")
     }
 
     func testBannerTrimsTrailingDot() {

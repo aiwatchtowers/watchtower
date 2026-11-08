@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -24,7 +25,7 @@ func TestRecordSessionWorktree_InsertsOnceAndIgnoresRepeats(t *testing.T) {
 	if got, err := d.RecordSessionWorktree(ctx, nil, id, "/tmp/example/wt", "feat/y", ledgerAt); err != nil || !got {
 		t.Fatalf("a new branch in the same root = %v, %v; want recorded", got, err)
 	}
-	has, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "feat/x")
+	has, _, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "feat/x")
 	if err != nil || !has || full {
 		t.Fatalf("HasSessionWorktree = %v, %v, %v; want true, false, nil", has, full, err)
 	}
@@ -70,7 +71,7 @@ func TestRecordSessionWorktree_StopsAt64(t *testing.T) {
 	if len(rows) != MaxSessionWorktrees {
 		t.Fatalf("%d rows, want %d", len(rows), MaxSessionWorktrees)
 	}
-	if has, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/one-too-many", ""); err != nil || has || !full {
+	if has, _, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/one-too-many", ""); err != nil || has || !full {
 		t.Fatalf("HasSessionWorktree past the cap = %v, %v, %v; want false, true, nil", has, full, err)
 	}
 	other := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f")
@@ -161,7 +162,7 @@ func TestHasSessionWorktree_UsesAReadOnlyTx(t *testing.T) {
 	if err := d.SetReadOnly(); err != nil {
 		t.Fatal(err)
 	}
-	has, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "")
+	has, _, full, err := d.HasSessionWorktree(ctx, id, "/tmp/example/wt", "")
 	if err != nil || !has || full {
 		t.Fatalf("HasSessionWorktree on a query_only handle = %v, %v, %v; want true, false, nil", has, full, err)
 	}
@@ -270,5 +271,120 @@ func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
 	}
 	if got[1].ID != standalone || got[1].WorkbenchID != 0 || got[1].AgentCwd != "" || got[1].AgentStateAt != "" || got[1].Finished {
 		t.Fatalf("standalone row = %+v", got[1])
+	}
+}
+
+// Board #1018: a pair is stale only when its last sighting predates a
+// readable run mark; a touch moves last_at forward and never first_at.
+func TestSessionWorktree_StaleAgainstTheRunMarkAndTouch(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	const root, later, mark = "/tmp/example/wt", "2026-10-12T13:00:00.000Z", "2026-10-12T12:30:00.000Z"
+	if _, err := d.RecordSessionWorktree(ctx, nil, id, root, "", ledgerAt); err != nil {
+		t.Fatal(err)
+	}
+	setSince := func(turns string) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = ? WHERE id = ?`, turns, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := func() bool {
+		t.Helper()
+		has, stale, _, err := d.HasSessionWorktree(ctx, id, root, "")
+		if err != nil || !has {
+			t.Fatalf("HasSessionWorktree = %v, %v; want a recorded pair", has, err)
+		}
+		return stale
+	}
+	if stale() {
+		t.Fatal("no run mark: never stale")
+	}
+	for _, bad := range []string{`{"since": 5}`, `{"since": "yesterday"}`, `not json`} {
+		setSince(bad)
+		if stale() {
+			t.Fatalf("an unreadable run mark %s read as stale", bad)
+		}
+	}
+	setSince(`{"since":"` + ledgerAt + `"}`)
+	if stale() {
+		t.Fatal("seen at the run mark is this run's")
+	}
+	setSince(`{"since":"` + mark + `"}`)
+	if !stale() {
+		t.Fatal("seen before the run mark: stale")
+	}
+
+	if got, err := d.TouchSessionWorktree(ctx, id, root, "", later); err != nil || !got {
+		t.Fatalf("touch = %v, %v; want touched", got, err)
+	}
+	if stale() {
+		t.Fatal("touched in this run: not stale")
+	}
+	if got, err := d.TouchSessionWorktree(ctx, id, root, "", mark); err != nil || got {
+		t.Fatalf("an older touch = %v, %v; want left alone", got, err)
+	}
+	if got, err := d.TouchSessionWorktree(ctx, id, "/tmp/example/none", "", later); err != nil || got {
+		t.Fatalf("touching an unknown pair = %v, %v; want nothing", got, err)
+	}
+	var first, last string
+	if err := d.QueryRow(`SELECT first_at, last_at FROM terminal_session_worktrees WHERE session_id = ?`, id).
+		Scan(&first, &last); err != nil {
+		t.Fatal(err)
+	}
+	if first != ledgerAt || last != later {
+		t.Fatalf("first_at, last_at = %s, %s; want %s, %s", first, last, ledgerAt, later)
+	}
+}
+
+// Board #1018: a row from before migration 00174 has no last_at; its
+// first_at is its last sighting against the run mark, and a touch sets
+// last_at, keeping first_at.
+func TestSessionWorktree_UpgradedRowWithNoLastAt(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	const root, later = "/tmp/example/wt", "2026-10-12T13:00:00.000Z"
+	if _, err := d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, '', ?)`,
+		id, root, ledgerAt); err != nil {
+		t.Fatal(err)
+	}
+	setSince := func(since string) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = ? WHERE id = ?`, `{"since":"`+since+`"}`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := func() bool {
+		t.Helper()
+		has, stale, _, err := d.HasSessionWorktree(ctx, id, root, "")
+		if err != nil || !has {
+			t.Fatalf("HasSessionWorktree = %v, %v; want a recorded pair", has, err)
+		}
+		return stale
+	}
+	setSince(ledgerAt)
+	if stale() {
+		t.Fatal("first seen at the run mark: this run's")
+	}
+	setSince("2026-10-12T12:30:00.000Z")
+	if !stale() {
+		t.Fatal("first seen before the run mark, no last_at: stale")
+	}
+	if got, err := d.TouchSessionWorktree(ctx, id, root, "", later); err != nil || !got {
+		t.Fatalf("touch = %v, %v; want touched", got, err)
+	}
+	var first string
+	var last sql.NullString
+	if err := d.QueryRow(`SELECT first_at, last_at FROM terminal_session_worktrees WHERE session_id = ?`, id).
+		Scan(&first, &last); err != nil {
+		t.Fatal(err)
+	}
+	if first != ledgerAt || last.String != later {
+		t.Fatalf("first_at, last_at = %s, %v; want %s, %s", first, last, ledgerAt, later)
+	}
+	if stale() {
+		t.Fatal("touched in this run: not stale")
 	}
 }

@@ -1726,6 +1726,7 @@ func runJiraBoardsAnalyze(cmd *cobra.Command, args []string) error {
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
+	defer cancelAIChildOnSignal(cmd)()
 
 	analyzer := jira.NewBoardAnalyzer(client, database, aiProvider, account.ID)
 	analyzer.SetLanguage(cfg.Digest.Language)
@@ -2034,6 +2035,7 @@ func runJiraFieldsDiscover(cmd *cobra.Command, _ []string) error {
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
+	defer cancelAIChildOnSignal(cmd)()
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "Discovering custom fields from Jira API...")
@@ -2099,6 +2101,7 @@ func runJiraFieldsMap(cmd *cobra.Command, args []string) error {
 
 	applyProviderOverride(cfg)
 	aiProvider := newAIClient(cfg, cfg.DBPath())
+	defer cancelAIChildOnSignal(cmd)()
 
 	fd := jira.NewFieldDiscovery(client, database, aiProvider, account.ID)
 

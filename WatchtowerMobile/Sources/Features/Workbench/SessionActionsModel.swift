@@ -67,8 +67,8 @@ struct SessionActionsModel: Equatable {
         let stopping = inFlight.contains(SessionStarter.stopKey(session.id)) || stopRows.contains(where: \.isSending)
         canStop = session.live && !stopping
         let interrupting = inFlight.contains(SessionInputSender.interruptKey(session.id)) || interruptRows.contains(where: \.isSending)
-        // The hub interrupts Claude sessions only.
-        canInterrupt = session.live && session.agent == .claudeCode && session.stateKind == .working
+        // Only a session whose Esc the Mac takes from the phone (not Codex, ask #523).
+        canInterrupt = session.live && session.takesFromPhone.interrupt && session.stateKind == .working
             && typingRequested && grant?.typingAllowed == true
             && snapshot.pendingPermission(for: session.id) == nil
             && !interrupting

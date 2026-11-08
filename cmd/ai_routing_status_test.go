@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 	"watchtower/internal/config"
 
 	"github.com/stretchr/testify/require"
@@ -99,4 +100,47 @@ func TestRoutingStatusExplicitWorkspaceReadsThatDaemonOnly(t *testing.T) {
 	after, err := os.ReadFile(flagConfig)
 	require.NoError(t, err)
 	require.Equal(t, before, after, "workspace-scoped status never rewrites global configuration")
+}
+
+// Shared with ChatRoutingPresentationTests: these DTOs come from the real
+// command with a missing installation health store, not a successful recovery.
+func TestRoutingStatusFreshCommandMatchesDesktopContract(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/routing/fresh_status.json")
+	require.NoError(t, err)
+	var expected []json.RawMessage
+	require.NoError(t, json.Unmarshal(fixture, &expected))
+	for i, preferred := range []string{"claude", "codex"} {
+		t.Run(preferred, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			reserve := "codex"
+			if preferred == reserve {
+				reserve = "claude"
+			}
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "inference-started")
+			bin := filepath.Join(dir, "forbidden-provider")
+			require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0700))
+			cfg := filepath.Join(dir, "config.yaml")
+			data := []byte("claude_path: '" + bin + "'\ncodex_path: '" + bin + "'\nai: {provider: " + preferred + ", fallback: {enabled: true, provider: " + reserve + "}}\n")
+			require.NoError(t, os.WriteFile(cfg, data, 0600))
+			p := startCLI(t, "--config", cfg, "ai", "routing-status")
+			line, ok := p.next(t, 10*time.Second)
+			require.True(t, ok)
+			require.NoError(t, p.wait())
+			var dto map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &dto))
+			require.NotEmpty(t, dto["saved_version"])
+			require.NotEmpty(t, dto["revision"])
+			delete(dto, "saved_version")
+			dto["revision"] = "normalized-test-revision"
+			normalized, err := json.Marshal(dto)
+			require.NoError(t, err)
+			require.JSONEq(t, string(expected[i]), string(normalized))
+			_, err = os.Stat(marker)
+			require.ErrorIs(t, err, os.ErrNotExist)
+			after, err := os.ReadFile(cfg)
+			require.NoError(t, err)
+			require.Equal(t, data, after)
+		})
+	}
 }

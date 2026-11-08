@@ -283,6 +283,7 @@ case "$input" in
 *` + marker + `*) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"got:` + marker + `"}]}}\n' ;;
 *) printf '{"type":"assistant","message":{"content":[{"type":"text","text":"marker-missing"}]}}\n' ;;
 esac
+printf '{"type":"result","subtype":"success","result":""}\n'
 `
 	mockPath := writeMockClaude(t, script)
 
@@ -310,8 +311,8 @@ func TestQuerySync_Success(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Hello from Claude", result)
 	require.NotNil(t, usage)
-	assert.Equal(t, 10, usage.InputTokens)
-	assert.Equal(t, 5, usage.OutputTokens)
+	assert.Equal(t, 10, usage.InputTokens())
+	assert.Equal(t, 5, usage.OutputTokens())
 }
 
 func TestQuerySync_TrimsTrailingNewlines(t *testing.T) {
@@ -681,6 +682,7 @@ func TestQuery_IgnoresMalformedJSON(t *testing.T) {
 printf 'not json\n'
 printf '{"type":"assistant","message":{"content":[{"type":"text","text":"valid"}]}}\n'
 printf '{broken json\n'
+printf '{"type":"result","subtype":"success","result":""}\n'
 `
 	mockPath := writeMockClaude(t, script)
 
@@ -704,6 +706,7 @@ func TestQuery_SkipsEmptyLines(t *testing.T) {
 printf '\n'
 printf '{"type":"assistant","message":{"content":[{"type":"text","text":"data"}]}}\n'
 printf '\n'
+printf '{"type":"result","subtype":"success","result":""}\n'
 `
 	mockPath := writeMockClaude(t, script)
 
@@ -1040,7 +1043,7 @@ func TestQuerySync_LargeSystemPromptReachesCLIOverAPipe(t *testing.T) {
 func TestQuery_LargeSystemPromptReachesCLIOverAPipe(t *testing.T) {
 	const marker = "SYSPROMPT-MARKER-ai-04"
 	tmp := t.TempDir()
-	mockPath := writeMockClaude(t, promptStub(marker, `{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n`))
+	mockPath := writeMockClaude(t, promptStub(marker, `{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]}}\n{"type":"result","subtype":"success","result":""}\n`))
 	t.Setenv("TMPDIR", tmp)
 	c := NewClient("test-model", "", "")
 	c.claudeCmd = mockPath

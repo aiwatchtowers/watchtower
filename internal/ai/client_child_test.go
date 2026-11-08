@@ -155,12 +155,11 @@ func requireGroupGone(t *testing.T, pgid int) {
 	}, 10*time.Second, 50*time.Millisecond, "process group %d still alive", pgid)
 }
 
-func runGroupStub(t *testing.T, ctx context.Context, cancel context.CancelFunc, group bool) int {
+func runGroupStub(t *testing.T, ctx context.Context, cancel context.CancelFunc) int {
 	t.Helper()
 	script, pidFile := groupStub(t)
 	c := NewClient("m", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
-	c.SetProcessGroup(group)
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
@@ -182,7 +181,7 @@ func runGroupStub(t *testing.T, ctx context.Context, cancel context.CancelFunc, 
 func TestCLIAgent_ProcessGroupKilledOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	requireGroupGone(t, runGroupStub(t, ctx, cancel, true))
+	requireGroupGone(t, runGroupStub(t, ctx, cancel))
 }
 
 func TestCLIAgent_ProcessGroupKilledOnDeadline(t *testing.T) {
@@ -190,7 +189,7 @@ func TestCLIAgent_ProcessGroupKilledOnDeadline(t *testing.T) {
 	// the pid file exists before it fires; the kill still comes from the deadline.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	requireGroupGone(t, runGroupStub(t, ctx, nil, true))
+	requireGroupGone(t, runGroupStub(t, ctx, nil))
 }
 
 // A group that ignores SIGINT is SIGKILLed after GroupKillGrace, so the call
@@ -206,7 +205,6 @@ func TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace(t *testing.T) {
 	})
 	c := NewClient("m", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
-	c.SetProcessGroup(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -243,7 +241,6 @@ func TestCLIAgent_GroupReapedWhenWaitReturns(t *testing.T) {
 	})
 	c := NewClient("m", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
-	c.SetProcessGroup(true)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)

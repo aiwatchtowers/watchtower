@@ -9,8 +9,23 @@ struct TrayMenuView: View {
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
     @Environment(AppState.self) private var appState
+    @AppStorage(PlanUsageCenter.menuBarKey) private var showInMenuBar = true
 
     var body: some View {
+        TrayPopupContent(model: PlansPopupPresentation(screen: plansScreen), showInMenuBar: $showInMenuBar,
+                         openPlans: openPlans,
+                         refresh: { provider in Task { await appState.planUsageCenter?.refresh(provider) } },
+                         refreshAll: { Task { await appState.planUsageCenter?.refresh() } }, actions: {
+            applicationActions
+        })
+        // Refresh the existing app action state when the status item opens.
+        .onAppear {
+            appState.daemonManager.checkStatus()
+            appState.quickRunCenter?.reload()
+        }
+    }
+
+    private var applicationActions: some View {
         TrayMenuContent(
             isRunning: appState.daemonManager.isRunning,
             syncProgress: appState.daemonManager.syncProgress,
@@ -20,13 +35,9 @@ struct TrayMenuView: View {
             backfillLine: appState.planUsageCenter?.backfillLine,
             modelDownloads: appState.transcriptionModelProvisioner.downloads,
             retryModelDownloadAction: { key in appState.transcriptionModelProvisioner.retry(key) },
-            planUsageLines: appState.planUsageCenter?.trayLines ?? [],
-            planUsageAction: {
-                (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
-                ActivationPolicyDecision.becomeRegularAndActivate()
-                openWindow(id: TrayAppDelegate.mainWindowSceneID)
-                appState.selectedDestination = .usage
-                UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
+            planUsageAction: openPlans,
+            planUsageRefresh: { provider in
+                Task { await appState.planUsageCenter?.refresh(provider) }
             },
             updateVersion: appState.updateService.isUpdateAvailable
                 ? appState.updateService.availableVersion : nil,
@@ -79,12 +90,19 @@ struct TrayMenuView: View {
                 openSettings()
             }
         )
-        // The shared DaemonManager polls from AppState.initialize(); this only
-        // refreshes the line (and the automation rows) the moment the menu is opened.
-        .onAppear {
-            appState.daemonManager.checkStatus()
-            appState.quickRunCenter?.reload()
-        }
+    }
+
+    private var plansScreen: PlansScreenPresentation {
+        appState.planUsageCenter?.screenPresentation ??
+            PlansScreenPresentation(claude: nil, codex: nil, refreshing: Set(PlanUsageProvider.allCases), now: .now)
+    }
+
+    private func openPlans() {
+        (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
+        ActivationPolicyDecision.becomeRegularAndActivate()
+        openWindow(id: TrayAppDelegate.mainWindowSceneID)
+        appState.selectedDestination = .usage
+        UserDefaults.standard.set(UsageView.Tab.plan.rawValue, forKey: UsageView.selectedTabKey)
     }
 }
 
@@ -105,9 +123,10 @@ struct TrayMenuContent: View {
     /// Transcription-model downloads, running or failed (#744).
     var modelDownloads: [TranscriptionModelProvisioner.Download] = []
     var retryModelDownloadAction: (TranscriptionModelProvisioner.ModelKey) -> Void = { _ in }
-    /// Claude plan limit rows (session, weekly); empty hides them.
-    var planUsageLines: [String] = []
+    /// Provider state and current quota rows, including empty/loading/error states.
+    var planUsagePresentation: PlansMenuPresentation?
     var planUsageAction: () -> Void = {}
+    var planUsageRefresh: (PlanUsageProvider) -> Void = { _ in }
     /// Version of a found, not yet installed update; nil hides the item
     /// (always nil for builds without an update channel).
     let updateVersion: String?
@@ -162,8 +181,8 @@ struct TrayMenuContent: View {
                 Text("CLI store: \(cliStoreError)")
             }
             // One item per line: an NSMenu item carries a single title.
-            ForEach(Array(planUsageLines.enumerated()), id: \.offset) { _, line in
-                Button(line, action: planUsageAction)
+            if let planUsagePresentation {
+                PlansTrayRows(model: planUsagePresentation, openPlans: planUsageAction, refresh: planUsageRefresh)
             }
             ForEach(modelDownloads) { download in
                 Text(Self.modelDownloadText(download))

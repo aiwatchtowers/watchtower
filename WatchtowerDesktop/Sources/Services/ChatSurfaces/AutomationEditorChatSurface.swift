@@ -20,11 +20,18 @@ enum AutomationEditorChatSurface {
     static let draftContextType = "automation_draft"
     static let surface = AgentSurface.automationEditor.rawValue
     static let dryRunAgainText = "Dry run the draft again."
-    static let unavailableHelp = "Needs Claude or Codex"
+    /// Why the Chat segment is off: a provider without tools, or a catalog
+    /// that could not be read (then the provider may well be Claude).
+    @MainActor static func unavailableHelp(catalog: AIModelCatalog = .shared) -> String {
+        catalog.unreadReason ?? "Needs Claude or Codex"
+    }
     static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
-    static func toolsAvailable(provider: String?) -> Bool {
-        (provider ?? Constants.aiProviderID()) != "ollama"
+    /// AGENT-04 (ask #270): only a provider known to run as a CLI child (the
+    /// registry's `kind`) gets tools; a local HTTP server (runtime B), or a
+    /// catalog not read yet, leaves the editor chat draft-only.
+    @MainActor static func toolsAvailable(provider: String?) -> Bool {
+        AIModelCatalog.shared.isKnownCLI(provider ?? Constants.aiProviderID())
     }
 
     /// The automation's conversation, created on first use.
@@ -58,7 +65,7 @@ enum AutomationEditorChatSurface {
     /// `outcomes` renders the decisions since the previous owner message.
     /// `defaultPrompts`: a built-in's shipped prompts by name (`show`'s
     /// `builtin.default_prompts`), listed in the context block.
-    static func spec(
+    @MainActor static func spec(
         automation: Automation,
         defaultPrompts: [String: String] = [:],
         provider: String?,
@@ -95,7 +102,7 @@ enum AutomationEditorChatSurface {
     /// (`AppState.draftContextID`): no automation yet, so the CLI gets
     /// `--surface automation_editor` with no context. With a `workbench` the
     /// prompt names it and its `workbench_id`.
-    static func newSpec(
+    @MainActor static func newSpec(
         provider: String?,
         contextID: String,
         workbench: NewWorkbench?,
@@ -275,7 +282,9 @@ final class AutomationEditorChat {
     let engine: EmbeddedChatEngine
     let actionFeed: AgentActionFeed
     let conversationID: Int64
-    let toolsAvailable: Bool
+    /// AGENT-04's tool access; decided again when the catalog finishes a
+    /// read while `decideTools` is set (draft-only until it knows).
+    private(set) var toolsAvailable: Bool
     private(set) var draft: AutomationDraftPanelModel
     /// What to say once a `save_automation` of this chat landed while it
     /// was open (`SaveAutomationCardModel.appliedNote`); nil before.
@@ -292,22 +301,29 @@ final class AutomationEditorChat {
     @ObservationIgnored private let onSaved: (Int64?) -> Void
     @ObservationIgnored private var closed = false
     @ObservationIgnored private let panelDraftBox: PanelDraftBox
+    @ObservationIgnored private let decideTools: (@MainActor () -> Bool)?
+    @ObservationIgnored private var rebuildSpec: (() -> ChatSurfaceSpec)?
+    @ObservationIgnored private var catalogObserver: NSObjectProtocol?
 
-    /// `makeSpec` builds the surface's spec around this chat's feed.
+    /// `makeSpec` builds the surface's spec around this chat's feed (and
+    /// again, with the tool access it reads, after a catalog read when
+    /// `decideTools` is set).
     init(
         conversationID: Int64,
         dbPool: DatabasePool,
         toolsAvailable: Bool,
+        decideTools: (@MainActor () -> Bool)? = nil,
         center: EmbeddedChatCenter,
         cliRunner: CLIRunnerProtocol? = nil,
         panelDraftBox: PanelDraftBox = PanelDraftBox(),
         onSaved: @escaping (Int64?) -> Void,
-        makeSpec: (_ outcomes: @escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
+        makeSpec: @escaping (_ outcomes: @escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) {
         let feed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
         self.actionFeed = feed
         self.conversationID = conversationID
         self.toolsAvailable = toolsAvailable
+        self.decideTools = decideTools
         self.dbPool = dbPool
         self.center = center
         self.onSaved = onSaved
@@ -319,6 +335,23 @@ final class AutomationEditorChat {
         engine.onTurnFinished = { [weak self] _ in self?.turnFinished() }
         feed.onDecision = { [weak self] _, row in self?.decided(row) }
         feed.start(conversationID: conversationID)
+        guard decideTools != nil else { return }
+        rebuildSpec = { [weak feed] in makeSpec { floor in feed?.outcomesBlock(after: floor) } }
+        catalogObserver = NotificationCenter.default.addObserver(
+            forName: AIModelCatalog.didLoadNotification, object: AIModelCatalog.shared, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshToolAccess() }
+        }
+    }
+
+    /// The catalog finished a read: AGENT-04's tool access is decided again
+    /// and, when it changed, the engine's spec is rebuilt for the next turn.
+    func refreshToolAccess() {
+        guard !closed, let decideTools, let rebuildSpec else { return }
+        let now = decideTools()
+        guard now != toolsAvailable else { return }
+        toolsAvailable = now
+        engine.update(spec: rebuildSpec())
     }
 
     /// The panel went away: the engine stays in the center (a running turn
@@ -326,6 +359,8 @@ final class AutomationEditorChat {
     func close() {
         guard !closed else { return }
         closed = true
+        if let catalogObserver { NotificationCenter.default.removeObserver(catalogObserver) }
+        catalogObserver = nil
         actionFeed.stop()
         center.markHidden(engine.spec.key)
     }

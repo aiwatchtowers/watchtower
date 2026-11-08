@@ -2,13 +2,21 @@ package codex
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/logcanary"
 )
 
 // useRealVersionProbe restores the real `codex --version` probe for one
@@ -55,8 +63,9 @@ func TestParseCodexVersion(t *testing.T) {
 
 // The version gate (board #566): model_instructions_file only from
 // minInstructionsFileVersion on; an older codex, or one whose version
-// cannot be read, keeps the prompt off argv by the stdin layout. The probe
-// runs once per binary.
+// cannot be read, keeps the prompt off argv by the stdin layout. A read
+// version is probed once per binary; a failed probe is retried later
+// (TestInstructionsFileSupported_FailedProbeIsRetried).
 func TestInstructionsFileSupported_ByVersion(t *testing.T) {
 	useRealVersionProbe(t)
 	for version, want := range map[string]bool{
@@ -80,6 +89,36 @@ func TestInstructionsFileSupported_ByVersion(t *testing.T) {
 	if instructionsFileSupported(filepath.Join(t.TempDir(), "missing-codex")) {
 		t.Error("a codex that cannot be run must count as too old")
 	}
+}
+
+// A probe that fails (the binary cannot run, times out, prints garbage) is
+// not remembered for the process lifetime: within instructionsProbeRetry the
+// stdin layout stays without a new probe, after it the next run probes again
+// and a success is then kept for good (#669 follow-up: one slow probe at
+// daemon start moved every system prompt to stdin until a restart).
+func TestInstructionsFileSupported_FailedProbeIsRetried(t *testing.T) {
+	useRealVersionProbe(t)
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "codex")
+	count := filepath.Join(dir, "count")
+	// Fails its first --version, prints a good version from then on.
+	body := "#!/bin/sh\n[ \"$1\" = \"--version\" ] || exit 1\necho x >> '" + count + "'\n" +
+		"[ \"$(wc -l < '" + count + "' | tr -d ' ')\" = 1 ] && exit 1\necho 'codex-cli 0.150.0'\n"
+	require.NoError(t, os.WriteFile(bin, []byte(body), 0o755))
+	runs := func() int { b, _ := os.ReadFile(count); return strings.Count(string(b), "x") }
+
+	prev := instructionsProbeRetry
+	t.Cleanup(func() { instructionsProbeRetry = prev })
+	instructionsProbeRetry = time.Hour
+	assert.False(t, instructionsFileSupported(bin), "the failed probe falls back to stdin")
+	assert.False(t, instructionsFileSupported(bin), "within the retry window")
+	assert.Equal(t, 1, runs(), "no new probe inside the retry window")
+
+	instructionsProbeRetry = 0
+	assert.True(t, instructionsFileSupported(bin), "the retry after the window succeeds")
+	assert.Equal(t, 2, runs())
+	assert.True(t, instructionsFileSupported(bin))
+	assert.Equal(t, 2, runs(), "a success is cached")
 }
 
 // On a codex older than the gate the system prompt travels ahead of the
@@ -121,7 +160,7 @@ func TestQuerySync_OldCodexPromptsNeverReachArgv(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	body := `#!/bin/sh
 [ "$1" = "--version" ] && { echo "codex-cli 0.120.0"; exit 0; }
-reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'; exit 0; }
 case "$*" in *MARKER-old*|*model_instructions_file*) reply on-argv ;; esac
 input=$(cat)
 case "$input" in *` + sysMarker + `*` + userMarker + `*) reply ok ;; esac
@@ -197,10 +236,12 @@ echo $$ > "$WT_TEST_PID_FILE"
 file=""
 for a in "$@"; do case "$a" in model_instructions_file=*) file=${a#model_instructions_file=}; file=${file#\"}; file=${file%\"} ;; esac; done
 cat > /dev/null
-first=$(cat "$file"); second=$(cat "$file")
-reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
-case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
 echo '{"type":"thread.started","thread_id":"t"}'
+sleep 0.1
+first=$(cat "$file"); second=$(cat "$file")
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'; exit 0; }
+case "$first$second" in *` + marker + `*` + marker + `*) ;; *) reply unread ;; esac
+echo '{"type":"turn.started"}'
 sleep 0.5
 case "$(cat "$file" 2>/dev/null)" in *` + marker + `*) reply present ;; esac
 reply gone
@@ -211,13 +252,11 @@ reply gone
 	}{
 		{"client", func(ctx context.Context, script string) (string, error) {
 			c := NewClient("m", "", script)
-			c.SetProcessGroup(true)
 			out, _, err := c.QuerySync(ctx, "sys "+marker, "hi", "")
 			return out, err
 		}},
 		{"client stream", func(ctx context.Context, script string) (string, error) {
 			c := NewClient("m", "", script)
-			c.SetProcessGroup(true)
 			chunks, errs, sids := c.Query(ctx, "sys "+marker, "hi", "")
 			go func() {
 				for range sids {
@@ -276,4 +315,46 @@ reply gone
 			}
 		})
 	}
+}
+
+// Concurrent runs on one binary probe it once and log once, and a probe
+// that fails after another one succeeded never replaces the success.
+func TestInstructionsFileSupported_ConcurrentProbesOnce(t *testing.T) {
+	sink := logcanary.Capture(t)
+	prevProbe, prevRetry := probeCodexVersion, instructionsProbeRetry
+	t.Cleanup(func() { probeCodexVersion, instructionsProbeRetry = prevProbe, prevRetry })
+	bin := filepath.Join(t.TempDir(), "codex")
+
+	var probes atomic.Int32
+	// The first probe fails; every later one: the first succeeds, slowly,
+	// and the rest fail.
+	probeCodexVersion = func(string) ([3]int, error) {
+		n := probes.Add(1)
+		time.Sleep(50 * time.Millisecond)
+		if n == 2 {
+			return minInstructionsFileVersion, nil
+		}
+		return [3]int{}, errors.New("probe failed")
+	}
+	instructionsProbeRetry = time.Hour
+	run := func() []bool {
+		got := make([]bool, 8)
+		var wg sync.WaitGroup
+		for i := range got {
+			wg.Go(func() { got[i] = instructionsFileSupported(bin) })
+		}
+		wg.Wait()
+		return got
+	}
+
+	assert.Equal(t, make([]bool, 8), run(), "the failed first probe: stdin for all")
+	assert.Equal(t, int32(1), probes.Load(), "one probe for concurrent first calls")
+	assert.Equal(t, 1, strings.Count(sink.String(), "could not read the version"), "one log line")
+
+	instructionsProbeRetry = 0
+	assert.Equal(t, []bool{true, true, true, true, true, true, true, true}, run())
+	assert.Equal(t, int32(2), probes.Load(), "one retry probe for concurrent calls")
+	instructionsProbeRetry = time.Hour
+	assert.True(t, instructionsFileSupported(bin), "the success stays cached")
+	assert.Equal(t, int32(2), probes.Load())
 }

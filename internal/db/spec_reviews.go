@@ -187,6 +187,8 @@ func (db *DB) ClaimSpecReview(askID int64, pid int, now time.Time) (bool, error)
 // FinishSpecReview stores r's result as done, only while the row is running
 // under pid; any other state is a no-op. Loop, OpenItems, Ledger and LoopEnd
 // are written only while the row's loop is 'author'; an 'owner' row keeps them.
+// Exception: a successful retry of an empty first-round reviewer failure becomes
+// a plain review, clearing its stale failure banner without restarting the loop.
 // Findings is written by the first finish only (findings < 0): a re-run, a
 // --force start or a sweep relaunch replaces result but keeps the count of the
 // review as it first was (the coach's first-round metric).
@@ -196,8 +198,14 @@ func (db *DB) FinishSpecReview(askID int64, pid int, r SpecReview, now time.Time
 			findings = CASE WHEN findings < 0 THEN ? ELSE findings END,
 			open_items = CASE WHEN loop = 'author' THEN ? ELSE open_items END,
 			ledger = CASE WHEN loop = 'author' THEN ? ELSE ledger END,
-			loop_end = CASE WHEN loop = 'author' THEN ? ELSE loop_end END,
-			loop = CASE WHEN loop = 'author' THEN ? ELSE loop END
+			loop_end = CASE WHEN loop = 'author' THEN ?
+                WHEN loop = 'owner' AND loop_end = 'reviewer_failed' AND round = 1
+                    AND trim(ledger) IN ('', '[]') AND trim(open_items) IN ('', '[]') THEN ''
+                ELSE loop_end END,
+            loop = CASE WHEN loop = 'author' THEN ?
+                WHEN loop = 'owner' AND loop_end = 'reviewer_failed' AND round = 1
+                    AND trim(ledger) IN ('', '[]') AND trim(open_items) IN ('', '[]') THEN ''
+                ELSE loop END
 		WHERE ask_id = ? AND status = 'running' AND pid = ?`,
 		r.Result, r.Provider, r.Model, r.DocSHA, r.Dropped, specReviewTime(now), r.Findings,
 		r.OpenItems, r.Ledger, r.LoopEnd, r.Loop, askID, pid)

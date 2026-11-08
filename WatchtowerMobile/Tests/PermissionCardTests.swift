@@ -32,6 +32,10 @@ final class PermissionCardTests: XCTestCase {
         let approvalNotice: String?
     }
 
+    private func acmeSession(_ id: Int64, _ overrides: [String: Any]) throws -> TerminalSessionState {
+        try mirror(TerminalSessionState.self, DemoSeed.JSON.session(id, workbench: DemoSeed.acmeID, overrides))
+    }
+
     private func detail(
         _ snapshot: WorkbenchReplicaSnapshot,
         session sessionID: Int64 = 12,
@@ -178,6 +182,27 @@ final class PermissionCardTests: XCTestCase {
         XCTAssertEqual(codex.approvalNotice, "Needs approval on the Mac")
     }
 
+    /// The Mac's `phone` key decides the card, not the agent (U5): a Codex session the Mac takes no answer for
+    /// keeps the notice (ask #521), and so does a Claude session whose key says so.
+    func testTheMacsPhoneKeyDecidesTheCard() throws {
+        var snapshot = try snapshot([
+            permissionRequestJSON(7, session: 30), permissionRequestJSON(8, session: 31), permissionRequestJSON(9, session: 32)
+        ])
+        let codexRow: [String: Any] = ["input": true, "input_while_working": false, "permission_answer": false, "interrupt": false]
+        let claudeRow: [String: Any] = ["input": true, "input_while_working": true, "permission_answer": true, "interrupt": true]
+        let approval: [String: Any] = ["state_kind": "needs_approval", "state_caption": "Needs approval", "state_tone": "orange"]
+        snapshot.sessions += [
+            try acmeSession(30, approval.merging(["agent": "codex_cli", "phone": codexRow]) { $1 }),
+            try acmeSession(31, approval.merging(["phone": codexRow]) { $1 }),
+            try acmeSession(32, approval.merging(["phone": claudeRow]) { $1 })
+        ]
+
+        XCTAssertNil(try detail(snapshot, session: 30).permission)
+        XCTAssertEqual(try detail(snapshot, session: 30).approvalNotice, "Needs approval on the Mac")
+        XCTAssertNil(try detail(snapshot, session: 31).permission, "the key, not the agent")
+        XCTAssertNotNil(try detail(snapshot, session: 32).permission)
+    }
+
     func testInterruptOnlyWhileWorkingAndAllowedToType() throws {
         let replica = try snapshot([])
         let working = try XCTUnwrap(replica.session(10), "the demo's working session")
@@ -204,7 +229,13 @@ final class PermissionCardTests: XCTestCase {
         let codex = try mirror(TerminalSessionState.self, DemoSeed.JSON.session(31, workbench: DemoSeed.acmeID, [
             "agent": "codex_cli", "state_kind": "working", "state_caption": "Working", "state_tone": "green"
         ]))
-        XCTAssertFalse(actions(codex).canInterrupt, "the hub interrupts Claude sessions only")
+        XCTAssertFalse(actions(codex).canInterrupt, "an older Mac interrupts Claude sessions only")
+        let codexRow: [String: Any] = ["input": true, "input_while_working": false, "permission_answer": false, "interrupt": false]
+        let workingJSON: [String: Any] = ["state_kind": "working", "state_caption": "Working", "state_tone": "green"]
+        let macCodex = try acmeSession(31, workingJSON.merging(["agent": "codex_cli", "phone": codexRow]) { $1 })
+        XCTAssertFalse(actions(macCodex).canInterrupt, "the Mac takes no Esc for Codex (ask #523)")
+        let refusedClaude = try acmeSession(31, workingJSON.merging(["phone": codexRow]) { $1 })
+        XCTAssertFalse(actions(refusedClaude).canInterrupt, "the key, not the agent")
         let atPrompt = try snapshot([permissionRequestJSON(7, session: 10)])
         XCTAssertFalse(actions(working, in: atPrompt).canInterrupt, "at a prompt the phone offers Deny, never Esc")
         XCTAssertFalse(

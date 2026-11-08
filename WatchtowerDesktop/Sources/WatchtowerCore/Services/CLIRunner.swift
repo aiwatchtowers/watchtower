@@ -17,9 +17,31 @@ package protocol CLIRunnerProtocol {
     /// payload too large or too structured for argv, such as
     /// `workbench columns --set -`).
     func run(args: [String], stdin: Data) async throws -> Data
+    /// Commands with a partial-result envelope need stdout even on exit 1/3.
+    func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult
+}
+
+package struct CLICapturedResult: Sendable {
+    package let stdout: Data
+    package let exitCode: Int32
+    package let stderr: String
+
+    package init(stdout: Data, exitCode: Int32, stderr: String = "") {
+        self.stdout = stdout
+        self.exitCode = exitCode
+        self.stderr = stderr
+    }
 }
 
 extension CLIRunnerProtocol {
+    package func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult {
+        do {
+            let data = try await run(args: args, timeout: timeout)
+            return CLICapturedResult(stdout: data, exitCode: 0)
+        } catch let CLIRunnerError.nonZeroExit(code, stderr) {
+            return CLICapturedResult(stdout: Data(), exitCode: code, stderr: stderr)
+        }
+    }
     package func run(args: [String], timeout: TimeInterval) async throws -> Data {
         try await run(args: args)
     }
@@ -119,9 +141,9 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
 
     /// Creates a runner resolving the binary via `Constants.findCLIPath()`.
     /// Returns nil when the binary cannot be found.
-    package static func makeDefault() -> ProcessCLIRunner? {
+    package static func makeDefault() -> Self? {
         guard let path = Constants.findCLIPath() else { return nil }
-        return ProcessCLIRunner(binaryPath: path)
+        return Self(binaryPath: path)
     }
 
     package func run(args: [String]) async throws -> Data {
@@ -145,11 +167,31 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         try await run(args: args, environment: await Constants.resolvedEnvironmentAsync(), stdin: nil, timeout: timeout)
     }
 
+    package func capture(args: [String], timeout: TimeInterval) async throws -> CLICapturedResult {
+        try await capture(args: args, environment: await Constants.resolvedEnvironmentAsync(), timeout: timeout)
+    }
+
+    package func capture(
+        args: [String], environment: [String: String], timeout: TimeInterval
+    ) async throws -> CLICapturedResult {
+        try await capture(args: args, environment: environment, stdin: nil, timeout: timeout)
+    }
+
     /// The one launch path: `stdin` fed and closed when given, the child
     /// terminated after `timeout` seconds when given.
     private func run(
         args: [String], environment: [String: String], stdin: Data?, timeout: TimeInterval?
     ) async throws -> Data {
+        let result = try await capture(args: args, environment: environment, stdin: stdin, timeout: timeout)
+        if result.exitCode != 0 {
+            throw CLIRunnerError.nonZeroExit(code: result.exitCode, stderr: result.stderr)
+        }
+        return result.stdout
+    }
+
+    private func capture(
+        args: [String], environment: [String: String], stdin: Data?, timeout: TimeInterval?
+    ) async throws -> CLICapturedResult {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = args
@@ -211,12 +253,12 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if exitCode != 0 {
                 CLILog.failure(args: args, exitCode: exitCode, stderr: stderr)
-                throw CLIRunnerError.nonZeroExit(code: exitCode, stderr: stderr)
+            } else {
+                CLILog.warning(args: args, stderr: stderr)
             }
             // Exit 0 with stderr is a warning the child wanted heard; without
             // this it was read off the pipe and dropped on the floor.
-            CLILog.warning(args: args, stderr: stderr)
-            return stdoutData
+            return CLICapturedResult(stdout: stdoutData, exitCode: exitCode, stderr: stderr)
         } onCancel: {
             process.terminate()
         }

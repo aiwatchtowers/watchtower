@@ -402,3 +402,56 @@ func TestSpecReviewChain_CycleIsCapped(t *testing.T) {
 	assert.LessOrEqual(t, len(chain), specReviewChainMaxDepth+1)
 	assert.Equal(t, a2, chain[len(chain)-1])
 }
+
+func TestFinishSpecReview_RecoversOnlyEmptyFirstRoundFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		round             int
+		ledger, open, end string
+		recover           bool
+	}{
+		{"empty first failure", 1, "", "", "reviewer_failed", true},
+		{"empty json first failure", 1, "[]", "[]", "reviewer_failed", true},
+		{"later round", 2, "[]", "[]", "reviewer_failed", false},
+		{"existing ledger", 1, `[{"key":"finding"}]`, "[]", "reviewer_failed", false},
+		{"existing open items", 1, "[]", `[{"key":"finding"}]`, "reviewer_failed", false},
+		{"owner ended", 1, "[]", "[]", "owner", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			askID := newReviewAsk(t, d)
+			now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+			queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: tc.round})
+			ok, err := d.ClaimSpecReview(askID, 7, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.NoError(t, d.FailSpecReview(askID, 7, "transport failed", now))
+			ok, err = d.RevealSpecLoop(askID, tc.end, tc.ledger, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			// Seed an outstanding owner item for the preservation case.
+			_, err = d.Exec(`UPDATE spec_reviews SET open_items=? WHERE ask_id=?`, tc.open, askID)
+			require.NoError(t, err)
+			require.NoError(t, d.RequeueSpecReview(askID, true, now))
+			ok, err = d.ClaimSpecReview(askID, 8, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			result := `{"summary":"New findings after retry","checks":[{"text":"check"}]}`
+			require.NoError(t, d.FinishSpecReview(askID, 8, SpecReview{Result: result, Loop: "author", LoopEnd: "clean", OpenItems: "new", Ledger: "new"}, now))
+			got, err := d.GetSpecReview(askID)
+			require.NoError(t, err)
+			assert.Equal(t, "done", got.Status)
+			assert.Equal(t, result, got.Result)
+			assert.Empty(t, got.Reason)
+			assert.Equal(t, tc.ledger, got.Ledger)
+			assert.Equal(t, tc.open, got.OpenItems)
+			if tc.recover {
+				assert.Empty(t, got.Loop)
+				assert.Empty(t, got.LoopEnd)
+			} else {
+				assert.Equal(t, "owner", got.Loop)
+				assert.Equal(t, tc.end, got.LoopEnd)
+			}
+		})
+	}
+}

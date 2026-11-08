@@ -242,6 +242,53 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(session.reportMerged, 1)
         XCTAssertEqual(session.reportMergedStale, true)
         XCTAssertEqual(session.reportMergedText, "1 merged (unchecked)")
+        XCTAssertEqual(session.watchIssue, "compressed")
+        XCTAssertEqual(
+            session.watchHelp,
+            "This session's log is compressed, so Watchtower can't read it. Watching starts again with the next prompt."
+        )
+        XCTAssertEqual(
+            session.phone,
+            TerminalSessionState.PhoneCaps(input: true, inputWhileWorking: true, permissionAnswer: true, interrupt: true)
+        )
+    }
+
+    /// A record from a Mac older than the `phone` key still decodes, with
+    /// no key: the phone then keeps that Mac's rule.
+    func testTerminalSessionWithoutPhoneDecodes() throws {
+        var json = try object("terminal_session")
+        json.removeValue(forKey: "phone")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.phone)
+        XCTAssertEqual(session.id, 31)
+    }
+
+    /// The Kit's phone half of a capability row is the Mac's (U5): each
+    /// bundled row gives the Kit fixture `phone_caps.json`'s, the table Go's
+    /// `TestSessionAgent_PhoneCapsMatchKitFixture` and the Desktop hub's
+    /// `testSessionPublishesItsPhoneCaps` are pinned to.
+    func testPhoneCapsOfEachBundledRowMatchTheSharedFixture() throws {
+        let rows = try XCTUnwrap(try object("phone_caps")["agents"] as? [String: Any])
+        XCTAssertEqual(Set(rows.keys), Set(AgentSessionCapabilities.bundled.keys))
+        for (kind, row) in rows {
+            let want = try RelayCoder.makeDecoder().decode(
+                TerminalSessionState.PhoneCaps.self, from: try data(XCTUnwrap(row as? [String: Any]))
+            )
+            let caps = try XCTUnwrap(AgentSessionCapabilities.of(kind), kind)
+            XCTAssertEqual(TerminalSessionState.PhoneCaps(caps), want, kind)
+        }
+    }
+
+    /// A record from a Mac older than G5 has no `watch_issue`: it still
+    /// decodes, as watched.
+    func testTerminalSessionWithoutWatchIssueDecodes() throws {
+        var json = try object("terminal_session")
+        json.removeValue(forKey: "watch_issue")
+        json.removeValue(forKey: "watch_help")
+        let session = try TerminalSessionState.decode(payload: try data(json))
+        XCTAssertNil(session.watchIssue)
+        XCTAssertNil(session.watchHelp)
+        XCTAssertEqual(session.id, 31)
     }
 
     /// Board #1008: a payload from a Mac before the merged share decodes,
@@ -299,8 +346,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(request.summaryClipped)
         XCTAssertEqual(request.createdAt, t0)
         XCTAssertEqual(
-            ActionReason.allCases.suffix(3).map(\.rawValue),
-            ["not_pending", "not_working", "answer_on_mac"]
+            ActionReason.allCases.suffix(4).map(\.rawValue),
+            ["not_pending", "not_working", "answer_on_mac", "not_supported"]
         )
     }
 
@@ -454,7 +501,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(report.session.id, 31)
         XCTAssertEqual(report.session.targetID, 415)
         XCTAssertEqual(report.session.agentState, "stop")
-        XCTAssertEqual(report.progress, SessionReport.Progress(done: 1, total: 2))
+        XCTAssertEqual(report.progress, SessionReport.Progress(done: 1, total: 3, merged: 1))
+        XCTAssertEqual(report.progress.mergedText, "1 merged")
         XCTAssertEqual(report.onYou.map(\.id), [12])
         XCTAssertEqual(report.onYou.first?.targetID, 415)
         XCTAssertEqual(report.now.first?.branch, "feature/acme-export")
@@ -463,6 +511,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(report.onYouMore)
         XCTAssertEqual(report.phases.first?.targetID, 415)
         XCTAssertEqual(report.phases.first?.items.map(\.id), [416, 418])
+        XCTAssertEqual(report.phases.first?.merged, 1)
         XCTAssertEqual(report.phasesClipped, true)
         let pr = try XCTUnwrap(report.prs.first)
         XCTAssertEqual(pr.ref, "pr:175")
@@ -481,6 +530,36 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(report.progress, SessionReport.Progress(done: 0, total: 0))
         XCTAssertEqual(report.phases, [])
         XCTAssertNil(report.phasesClipped)
+    }
+
+    /// Board #1017: a report from a Mac before the merged share decodes as
+    /// nothing merged, in the progress and in every phase, with no text.
+    func testSessionReportWithoutTheMergedShareDecodes() throws {
+        var json = try object("session_report")
+        var progress = try XCTUnwrap(json["progress"] as? [String: Any])
+        progress["merged"] = nil
+        json["progress"] = progress
+        var phases = try XCTUnwrap(json["phases"] as? [[String: Any]])
+        phases[0]["merged"] = nil
+        json["phases"] = phases
+        let report = try SessionReport.decode(payload: try data(json))
+        XCTAssertEqual(report.progress, SessionReport.Progress(done: 1, total: 3, merged: 0))
+        XCTAssertNil(report.progress.mergedText)
+        XCTAssertEqual(report.phases.first?.merged, 0)
+        XCTAssertEqual(report.phases.first?.done, 1, "the rest of the phase decodes as before")
+    }
+
+    /// The report's merged share is worded from the same case file as the
+    /// session row and the Mac (`merged_share_cases.json`); the full report
+    /// has no unchecked mark, so the stale cases read as checked ones.
+    func testTheReportMergedTextMatchesTheSharedCases() throws {
+        let file = try XCTUnwrap(JSONSerialization.jsonObject(with: try fixture("merged_share_cases")) as? [String: Any])
+        let cases = try XCTUnwrap(file["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for item in cases where item["stale"] as? Bool != true {
+            let progress = SessionReport.Progress(done: 0, total: item["total"] as? Int ?? 0, merged: item["merged"] as? Int ?? 0)
+            XCTAssertEqual(progress.mergedText, item["text"] as? String, "\(item)")
+        }
     }
 
     func testSessionChatFixtureDecodes() throws {

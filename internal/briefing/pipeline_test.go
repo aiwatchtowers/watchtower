@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +25,7 @@ type mockGenerator struct {
 
 func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
 	m.calls++
-	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 func testDB(t *testing.T) *db.DB {
@@ -133,7 +134,7 @@ type capturingGenerator struct {
 
 func (m *capturingGenerator) Generate(_ context.Context, systemPrompt, _, _ string) (string, *digest.Usage, string, error) {
 	m.systemMsg = systemPrompt
-	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 func TestPipelineRunForDate_InjectsLearnedPreferences(t *testing.T) {

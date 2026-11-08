@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/ai"
 )
 
 func TestEventWriter_OneJSONLinePerEventUnderConcurrency(t *testing.T) {
@@ -81,4 +84,37 @@ func TestRoutingProtocolV2FixtureUnknownFieldsAndPrivateCause(t *testing.T) {
 	var future Event
 	require.NoError(t, json.Unmarshal([]byte(`{"type":"session_ready","routing_mode":"future_mode","future_field":true}`), &future))
 	require.Equal(t, "future_mode", future.RoutingMode)
+}
+
+// A session_ready names what the actual provider's transport offers: the
+// row of the provider that answers, a fallback route's included, so the
+// Desktop decides nothing from a name (spec §3.3).
+func TestSessionReady_CarriesActualProvidersCapabilities(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewEventWriter(&buf)
+	require.NoError(t, w.Emit(Event{Type: EventSessionReady, Provider: "claude", Model: "opus"}))
+	// The router picked the reserve: the routed session_ready.
+	for _, e := range ChunkEvents("t1", ai.StreamChunk{Routing: &ai.RoutingMetadata{Provider: "codex", Model: "m",
+		PreferredProvider: "claude", Mode: "preferred_reserve", Reason: "quota"}}) {
+		require.NoError(t, w.Emit(e))
+	}
+	require.NoError(t, w.Emit(Event{Type: EventTurnStart, TurnID: "t1"}))
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	require.Len(t, lines, 3)
+	var first, routed, other struct {
+		Capabilities *struct {
+			ReservePeer string `json:"reserve_peer"`
+			PDFs        bool   `json:"pdfs"`
+		} `json:"capabilities"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &first))
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &routed))
+	require.NoError(t, json.Unmarshal([]byte(lines[2]), &other))
+	require.NotNil(t, first.Capabilities)
+	assert.Equal(t, "codex", first.Capabilities.ReservePeer)
+	assert.True(t, first.Capabilities.PDFs)
+	require.NotNil(t, routed.Capabilities, "the fallback route carries its own row")
+	assert.Equal(t, "claude", routed.Capabilities.ReservePeer)
+	assert.False(t, routed.Capabilities.PDFs)
+	assert.Nil(t, other.Capabilities, "only session_ready carries the row")
 }

@@ -62,7 +62,7 @@ text: Press **Print…** on a document or HTML artifact; the print panel's **PDF
 area: assistant
 level: next
 kind: tip
-since: next
+since: 0.27.0
 action: nav:chat
 -->
 
@@ -80,7 +80,7 @@ text: On the Claude provider, ask to publish a page or doc to claude.ai; **Copy 
 area: assistant
 level: power
 kind: feature
-since: next
+since: 0.27.0
 action: nav:chat
 replaces: [artifacts-publish-claude-ai]
 changed: Pages and docs now stay in the app unless you ask for claude.ai.

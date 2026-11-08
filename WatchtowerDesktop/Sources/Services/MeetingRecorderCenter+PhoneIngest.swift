@@ -15,24 +15,29 @@ extension MeetingRecorderCenter {
     /// capture's best-effort row, a failure here throws. Returns the reserved
     /// audio URL; nothing exists there yet.
     ///
-    /// Call it on the main actor (as `ingestPhoneRecording` does); the
-    /// exclusive insert makes it safe against other reservers on any thread.
-    /// Internal (and `nonisolated`) only so the reservers' race is testable
-    /// off the main actor.
+    /// The name is picked through `claims` and held there until the insert
+    /// resolves, so a Desktop capture still starting (its name claimed, no
+    /// file or row yet) never shares its stem with an ingest, and a capture
+    /// starting while this insert is in flight moves past it. `nonisolated`:
+    /// the claims and the exclusive insert make it safe on any thread, and the
+    /// reservers' race is testable off the main actor.
     nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
         isPrivate: Bool,
         in directory: URL,
         store: PendingTranscriptStore,
+        claims: RecordingNameClaims,
         date: Date = Date()
     ) async throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var lost: Set<String> = []
         while true {
-            let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a") {
+            let audioURL = claims.claim(in: directory, date: date, fileExtension: "m4a") {
                 lost.contains($0) || isReserved($0, in: store)
             }
+            // Held across the insert; once it commits the row guards the name.
+            defer { claims.release(audioURL) }
             if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
                                        isPrivate: isPrivate, at: date) {
                 return audioURL

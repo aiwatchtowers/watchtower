@@ -105,7 +105,7 @@ struct WorkchatModel: Equatable {
         targetID = session.targetID
         stateLine = Self.stateLine(session, asOf: mac.asOf, now: now)
         banner = MacAwayBanner(mac, now: now)
-        finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session.agent).text)" }
+        finishNotice = finishDelivery.map { "Finish · \($0.resolved(for: session).text)" }
         entries = chat?.entries ?? []
         let asks = snapshot.asks
             .filter { $0.status == .open && $0.sessionID == session.id }

@@ -2733,6 +2733,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
+    agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
+    agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2799,7 +2801,7 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
     loop_end    TEXT NOT NULL DEFAULT '',
     findings    INTEGER NOT NULL DEFAULT -1, -- findings counted in result at the first finish (00162); -1 = not counted
-    loop_rules  INTEGER NOT NULL DEFAULT 0   -- author loop rules (00174): 0 = cap of 3 (2026-10-26), 2 = runs while fixes hold, fuse 8
+    loop_rules  INTEGER NOT NULL DEFAULT 0   -- author loop rules (00177): 0 = cap of 3 (2026-10-26), 2 = runs while fixes hold, fuse 8
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.
@@ -2908,12 +2910,14 @@ CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_sessi
 
 -- Worktrees and branches a workbench session's agents worked in (00111):
 -- one row per new (session, root, branch), written by the session-state hook
--- (at most 64 per session) and read by `workbench cleanup`. Go only.
+-- (at most 64 per session; last_at moved once per run it is seen in) and read
+-- by `workbench cleanup` and the Desktop's lanes count. Go only writes it.
 CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,             -- worktree root (the dir holding .git), symlink-resolved, absolute
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
+    last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
     PRIMARY KEY (session_id, root, branch)
 );
 
@@ -3158,8 +3162,39 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     last_error_at  TEXT,
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
-    updated_at     TEXT NOT NULL
+    updated_at     TEXT NOT NULL,
+    plot_json      TEXT NOT NULL DEFAULT '{}',
+    publication_proof TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    state                  TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+    reason                 TEXT NOT NULL DEFAULT '',
+    plan                   TEXT NOT NULL DEFAULT '',
+    fetched_at             TEXT,
+    last_error             TEXT NOT NULL DEFAULT '',
+    last_error_at          TEXT,
+    limits_json            TEXT NOT NULL DEFAULT '[]',
+    breakdown_json         TEXT NOT NULL DEFAULT '[]',
+    updated_at             TEXT NOT NULL,
+    plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
+    scope                  TEXT NOT NULL DEFAULT '',
+    identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+    ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+    CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+);
+
+CREATE TABLE IF NOT EXISTS codex_plan_usage_samples (
+    scope      TEXT NOT NULL CHECK (length(scope) = 64),
+    limit_key  TEXT NOT NULL,
+    taken_at   TEXT NOT NULL,
+    percent    REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+    resets_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (scope, limit_key, taken_at)
+);
+
 
 -- One row per built-in whose one-time move from the old pipeline settings
 -- ran (done) or failed (00150); attempts counts the tries.

@@ -131,14 +131,14 @@ final class WorkchatWiringTests: XCTestCase {
         try await outbox.applyEcho(echo)
 
         try await poll({ inputs.lineDeliveries[echo.id] != nil }, "the applied echo arrived")
-        XCTAssertEqual(inputs.lineDeliveries[echo.id]?.caption(for: .claudeCode), "Queued · the agent reads it at its next step")
-        XCTAssertEqual(SessionInputDelivery.submitted.caption(for: .claudeCode), "Sent")
+        XCTAssertEqual(inputs.lineDeliveries[echo.id]?.caption(for: try session(10)), "Queued · the agent reads it at its next step")
+        XCTAssertEqual(SessionInputDelivery.submitted.caption(for: try session(10)), "Sent")
         XCTAssertEqual(SessionInputModel.heldText(.agentBusy), "Queued · sends when the agent stops")
     }
 
-    /// The Mac takes phone lines and Finish for Claude sessions only (PROJ-16): a Codex session gets no composer,
-    /// and the bar says where to write instead.
-    func testCodexSessionHasNoComposer() throws {
+    /// A Mac older than the `phone` key takes phone lines and Finish for Claude sessions only (PROJ-16): its Codex
+    /// session gets no composer, and the bar says where to write instead.
+    func testAnOlderMacsCodexSessionHasNoComposer() throws {
         let replica = try snapshot()
         let claude = model(try session(10, ["state_kind": "working"]), replica)
         let codexSession = try session(10, ["state_kind": "working", "agent": "codex_cli"])
@@ -157,6 +157,32 @@ final class WorkchatWiringTests: XCTestCase {
         XCTAssertEqual(model(try session(15, ["live": false, "state_kind": "stopped"]), replica).composer, .hidden(nil))
     }
 
+    /// The Mac's `phone` key decides the composer and Finish, not the agent (U5): a Codex session the Mac takes
+    /// lines for gets both, even while it works (the Mac holds the line until the agent is idle, ask #523), and a
+    /// session whose key says no input gets neither, whatever its agent.
+    func testTheMacsPhoneKeyDecidesTheComposer() throws {
+        let replica = try snapshot()
+        let codexRow: [String: Any] = ["input": true, "input_while_working": false, "permission_answer": false, "interrupt": false]
+        let codexSession = try session(10, ["state_kind": "working", "agent": "codex_cli", "phone": codexRow])
+        XCTAssertEqual(model(codexSession, replica).composer, .ready)
+        let input = SessionInputModel(
+            session: codexSession, snapshot: replica, grant: grant(typing: true), typingRequested: true, delivered: nil, now: now
+        )
+        XCTAssertTrue(input.showsBar)
+        XCTAssertTrue(input.showsFinish)
+        XCTAssertEqual(model(codexSession, replica, typing: false).composer, .hidden(.waitingForMac))
+
+        let none: [String: Any] = ["input": false, "input_while_working": false, "permission_answer": false, "interrupt": false]
+        let refused = try session(10, ["state_kind": "working", "phone": none])
+        XCTAssertEqual(model(refused, replica).composer, .hidden(.macOnly(.claudeCode)))
+        XCTAssertEqual(SessionInputModel.TypingHint.macOnly(.claudeCode).text, "Write to this session on the Mac.")
+        XCTAssertFalse(
+            SessionInputModel(
+                session: refused, snapshot: replica, grant: grant(typing: true), typingRequested: true, delivered: nil, now: now
+            ).showsFinish
+        )
+    }
+
     func testAStaleHeartbeatShowsMacAsleepAndHoldsTheComposerCaption() throws {
         let lastSeen = now.addingTimeInterval(-2_400)
         let replica = try snapshot(heartbeatAt: lastSeen)
@@ -170,7 +196,7 @@ final class WorkchatWiringTests: XCTestCase {
         XCTAssertNil(model(try XCTUnwrap(replica.session(10)), try snapshot()).banner, "no banner while the Mac is online")
     }
 
-    func testQueuedCaptionOnlyForClaudeSessions() async throws {
+    func testQueuedCaptionOnlyForSessionsThatTakeALineWhileWorking() async throws {
         let store = try TestPhone.replica()
         let outbox = ActionOutbox(transport: try TestPhone.transport(), store: store, deviceID: DemoSeed.device.deviceID)
         let inputs = SessionInputSender.sending(through: outbox, store: store)
@@ -186,8 +212,13 @@ final class WorkchatWiringTests: XCTestCase {
 
         try await poll({ inputs.lineDeliveries[echo.id] != nil }, "the applied echo arrived")
         let delivery = try XCTUnwrap(inputs.lineDeliveries[echo.id])
-        XCTAssertEqual(delivery.caption(for: .claudeCode), "Queued · the agent reads it at its next step")
-        XCTAssertEqual(delivery.caption(for: .codexCLI), "Sent", "send while busy is Claude's only (PROJ-16)")
+        XCTAssertEqual(delivery.caption(for: try session(10)), "Queued · the agent reads it at its next step")
+        XCTAssertEqual(delivery.caption(for: try session(10, ["agent": "codex_cli"])), "Sent", "an older Mac's Codex session")
+        let codexRow: [String: Any] = ["input": true, "input_while_working": false, "permission_answer": false, "interrupt": false]
+        XCTAssertEqual(
+            delivery.caption(for: try session(10, ["agent": "codex_cli", "phone": codexRow])), "Sent",
+            "the Mac holds a Codex line until idle, so it never goes while busy (PROJ-16)"
+        )
     }
 
     func testAnAppliedFinishSaysWhereItWent() async throws {

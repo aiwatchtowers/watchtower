@@ -15,6 +15,7 @@ final class ChatSessionPoolTests: XCTestCase {
     private var pool: ChatSessionPool!
 
     override func setUpWithError() throws {
+        ProviderCatalogFixture.seedShared() // retiring follows the claude_ai_tools row
         (dbPool, path) = try TestDatabase.createPool()
         fakes = []
         maxAlive = 0

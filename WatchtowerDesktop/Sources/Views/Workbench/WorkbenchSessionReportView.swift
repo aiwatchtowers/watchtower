@@ -94,7 +94,7 @@ struct SessionReportAnalyticsLine: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text("Agent time \(AgentAnalyticsFormat.duration(row.activeMS)) · \(AgentAnalyticsFormat.cost(row.costUSD)) ·")
+            Text("Agent time \(AgentAnalyticsFormat.duration(row.activeMS)) · \(AgentAnalyticsFormat.sessionCost(row)) ·")
                 .foregroundStyle(.secondary)
             Button("Analytics", action: open)
                 .buttonStyle(.link)

@@ -285,8 +285,8 @@ var registry = []Feature{
 	},
 	{
 		ID:          "claude-plan-limits",
-		Title:       "Claude plan limits",
-		Description: "Shows how much of your Claude plan's 5-hour and weekly limits you have used — chats, Cowork and Claude Code together — and when you will hit them at your current pace. Reads the numbers with your Claude Code sign-in every 5 minutes; no AI, nothing else leaves your Mac.",
+		Title:       "Subscription plan limits",
+		Description: "Shows your Claude and Codex subscription limits, usage history and forecasts in Plans and the menu bar. Reads each subscription independently every 5 minutes using its existing sign-in; no AI calls. Claude can also warn before you run out.",
 		Tagline:     "Know before you hit the wall",
 		Benefits: []string{
 			"5-hour and weekly usage in the menu bar",

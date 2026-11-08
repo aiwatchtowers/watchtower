@@ -1,0 +1,228 @@
+// Package agentfiles lists the coding agents' transcript files on disk and
+// reads them line by line: the file layer under both the analytics importer
+// (internal/agentlog) and the session feed (internal/sessionfeed), so neither
+// imports the other.
+package agentfiles
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// TranscriptFile is one agent transcript found on disk: a Claude Code
+// transcript (Agent "") or a Codex rollout (Agent AgentCodex).
+type TranscriptFile struct {
+	Path, SessionUUID, AgentID string // AgentID "" for main files
+	Agent                      string // "" = Claude Code; "codex" = a codex rollout
+	Subagent                   bool
+	AgentType                  string // subagent meta; "" when unknown
+	Depth                      int    // subagent meta spawnDepth; 0 = unknown (no meta or no spawnDepth)
+	Finished                   *bool  // subagent meta; nil when absent
+	Size                       int64
+	MTime                      string
+}
+
+// Slug is Claude Code's project directory name for a cwd: every
+// non-alphanumeric byte becomes '-'.
+func Slug(path string) string {
+	b := []byte(path)
+	for i, c := range b {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+			b[i] = '-'
+		}
+	}
+	return string(b)
+}
+
+// CandidateDirs lists the directories under projectsDir whose name is the
+// slug of one of roots or starts with it plus '-' (subfolders, nested
+// worktrees). Symlinked entries are skipped (AGENTLOG-04).
+func CandidateDirs(projectsDir string, roots []string) ([]string, error) {
+	entries, err := os.ReadDir(projectsDir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 || !e.IsDir() {
+			continue
+		}
+		for _, r := range roots {
+			s := Slug(r)
+			if strings.EqualFold(e.Name(), s) || strings.HasPrefix(strings.ToLower(e.Name()), strings.ToLower(s)+"-") {
+				out = append(out, filepath.Join(projectsDir, e.Name()))
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// ListTranscripts returns the transcripts in dirs: <uuid>.jsonl main files
+// first, then <uuid>/subagents/agent-*.jsonl, so a parent session is always
+// stored before its subagents' replay check runs.
+func ListTranscripts(dirs []string) ([]TranscriptFile, error) {
+	var mains, subs []TranscriptFile
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			name := e.Name()
+			if !e.IsDir() && strings.HasSuffix(name, ".jsonl") {
+				if f, ok := StatTranscript(filepath.Join(dir, name)); ok {
+					f.SessionUUID = strings.TrimSuffix(name, ".jsonl")
+					mains = append(mains, f)
+				}
+				continue
+			}
+			if e.IsDir() {
+				subs = append(subs, listSubagentFiles(dir, name)...)
+			}
+		}
+	}
+	sort.Slice(mains, func(i, j int) bool { return mains[i].Path < mains[j].Path })
+	sort.Slice(subs, func(i, j int) bool { return subs[i].Path < subs[j].Path })
+	return append(mains, subs...), nil
+}
+
+// listSubagentFiles lists the agent-*.jsonl transcripts under
+// <dir>/<sessionDir>/subagents.
+func listSubagentFiles(dir, sessionDir string) []TranscriptFile {
+	subDir := filepath.Join(dir, sessionDir, "subagents")
+	if fi, err := os.Lstat(subDir); err != nil || !fi.IsDir() { // a symlinked dir is not followed (AGENTLOG-04)
+		return nil
+	}
+	subEntries, err := os.ReadDir(subDir)
+	if err != nil {
+		return nil
+	}
+	var out []TranscriptFile
+	for _, se := range subEntries {
+		sn := se.Name()
+		if se.Type()&os.ModeSymlink != 0 || se.IsDir() || !strings.HasPrefix(sn, "agent-") || !strings.HasSuffix(sn, ".jsonl") {
+			continue
+		}
+		if f, ok := StatTranscript(filepath.Join(subDir, sn)); ok {
+			f.SessionUUID, f.Subagent = sessionDir, true
+			f.AgentID = strings.TrimSuffix(strings.TrimPrefix(sn, "agent-"), ".jsonl")
+			f.AgentType, f.Depth, f.Finished = readSubagentMeta(filepath.Join(subDir, "agent-"+f.AgentID+".meta.json"))
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// readSubagentMeta reads agentType, spawnDepth and finished from the meta file
+// beside a subagent transcript. Only those three keys are decoded: the
+// description and the rest are never read into memory as fields (AGENTLOG-01).
+// A missing, special or invalid file gives zero values.
+func readSubagentMeta(path string) (agentType string, depth int, finished *bool) {
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxMetaBytes {
+		return "", 0, nil
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", 0, nil
+	}
+	var m struct {
+		AgentType  string `json:"agentType"`
+		SpawnDepth int    `json:"spawnDepth"`
+		Finished   *bool  `json:"finished"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return "", 0, nil
+	}
+	return m.AgentType, m.SpawnDepth, m.Finished
+}
+
+// maxMetaBytes bounds a subagent meta file; real ones are a few hundred bytes.
+const maxMetaBytes = 1 << 20
+
+// StatTranscript is the file at path as a TranscriptFile; false when it is
+// not a regular file (a symlink included: Lstat, AGENTLOG-04).
+func StatTranscript(path string) (TranscriptFile, bool) {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.Mode().IsRegular() {
+		return TranscriptFile{}, false
+	}
+	return TranscriptFile{Path: path, Size: fi.Size(), MTime: fi.ModTime().UTC().Format(time.RFC3339Nano)}, true
+}
+
+// worktreeListTimeout bounds `git worktree list`: it runs on every daemon
+// cycle before the scan budget applies, so a hung git must not stall sync.
+const worktreeListTimeout = 5 * time.Second
+
+// WorktreeRoots lists the folder's git worktrees other than the folder
+// itself; nil when the folder is not a repository or git fails or times out.
+func WorktreeRoots(ctx context.Context, folder string) []string {
+	ctx, cancel := context.WithTimeout(ctx, worktreeListTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", folder, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil
+	}
+	self := Resolved(folder)
+	var roots []string
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		if p, ok := strings.CutPrefix(sc.Text(), "worktree "); ok && !strings.EqualFold(Resolved(p), self) {
+			roots = append(roots, p)
+		}
+	}
+	return roots
+}
+
+// Resolved cleans a path and follows symlinks when it exists (git reports
+// real paths, e.g. /private/tmp on macOS).
+func Resolved(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return filepath.Clean(p)
+}
+
+// NextLine returns one '\n'-terminated line without the newline, the bytes
+// consumed, and complete=false when the input ended before a newline. A line
+// longer than limit comes back as nil (consumed and complete).
+func NextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
+	var buf []byte
+	var n int64
+	tooLong := false
+	for {
+		chunk, err := br.ReadSlice('\n')
+		n += int64(len(chunk))
+		if !tooLong {
+			buf = append(buf, chunk...)
+			if len(buf) > limit {
+				tooLong, buf = true, nil
+			}
+		}
+		if err == nil {
+			if tooLong {
+				return nil, n, true, nil
+			}
+			return buf[:len(buf)-1], n, true, nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return nil, n, false, err // EOF without newline: not consumed
+	}
+}

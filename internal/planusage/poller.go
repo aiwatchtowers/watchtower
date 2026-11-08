@@ -20,11 +20,11 @@ const (
 
 // Store is the slice of the database the poller uses.
 type Store interface {
-	InsertPlanUsageSamples([]db.PlanUsageSample) error
-	PlanUsageSamplesSince(string, time.Time) ([]db.PlanUsageSample, error)
-	PrunePlanUsageSamples(time.Time) (int64, error)
-	UpsertPlanUsageStatus(db.PlanUsageStatus) error
-	GetPlanUsageStatus() (*db.PlanUsageStatus, error)
+	InsertPlanUsageSamplesContext(context.Context, []db.PlanUsageSample) error
+	PlanUsageSamplesSinceContext(context.Context, string, time.Time) ([]db.PlanUsageSample, error)
+	PrunePlanUsageSamplesContext(context.Context, time.Time) (int64, error)
+	UpsertPlanUsageStatusContext(context.Context, db.PlanUsageStatus) error
+	GetPlanUsageStatusContext(context.Context) (*db.PlanUsageStatus, error)
 }
 
 // CredentialLoader reads Claude Code's OAuth credentials.
@@ -51,8 +51,17 @@ type Poller struct {
 // PollOnce reads credentials, fetches, stores samples + status with the
 // projection, prunes old samples, and returns the delay before the next poll.
 func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
+	previousFailures := p.failures
+	defer func() {
+		if ctx.Err() != nil {
+			p.failures = previousFailures
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return pollInterval, err
+	}
 	now := p.Now().UTC().Truncate(time.Second)
-	prev, err := p.Store.GetPlanUsageStatus()
+	prev, err := p.Store.GetPlanUsageStatusContext(ctx)
 	if err != nil {
 		return pollInterval, err
 	}
@@ -69,13 +78,13 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 		}
 		p.failures = 0
 		st.State, st.Reason = "unavailable", "no_credentials"
-		return pollInterval, p.save(st, err)
+		return pollInterval, p.save(ctx, st, err)
 	}
 	st.Plan = creds.Plan
 	if !creds.ExpiresAt.IsZero() && !creds.ExpiresAt.After(now) {
 		p.failures = 0
 		st.State, st.Reason = "stale", "token_expired"
-		return pollInterval, p.save(st, nil)
+		return pollInterval, p.save(ctx, st, nil)
 	}
 	body, err := p.Client.Fetch(ctx, creds.AccessToken)
 	if err != nil && ctx.Err() != nil {
@@ -84,7 +93,10 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 	if err == nil {
 		var u Usage
 		if u, err = parse(body); err == nil {
-			return pollInterval, p.storeUsage(now, st, u)
+			if ctx.Err() != nil {
+				return pollInterval, ctx.Err()
+			}
+			return pollInterval, p.storeUsage(ctx, now, st, u)
 		}
 		err = &parseError{err}
 	}
@@ -93,11 +105,11 @@ func (p *Poller) PollOnce(ctx context.Context) (time.Duration, error) {
 	if errors.As(err, &he) && he.Status == 401 {
 		p.failures = 0
 		st.State, st.Reason = "stale", "token_expired"
-		return pollInterval, p.fail(st, now, err)
+		return pollInterval, p.fail(ctx, st, now, err)
 	}
 	p.failures++
 	st.State, st.Reason = "error", reasonFor(err)
-	return backoff(p.failures), p.fail(st, now, err)
+	return backoff(p.failures), p.fail(ctx, st, now, err)
 }
 
 type parseError struct{ error }
@@ -125,7 +137,7 @@ func backoff(failures int) time.Duration {
 	return d
 }
 
-func (p *Poller) storeUsage(now time.Time, st db.PlanUsageStatus, u Usage) error {
+func (p *Poller) storeUsage(ctx context.Context, now time.Time, st db.PlanUsageStatus, u Usage) error {
 	samples := make([]db.PlanUsageSample, 0, len(u.Limits))
 	for _, l := range u.Limits {
 		s := db.PlanUsageSample{LimitKey: l.Key, TakenAt: now, Percent: l.Percent}
@@ -134,19 +146,30 @@ func (p *Poller) storeUsage(now time.Time, st db.PlanUsageStatus, u Usage) error
 		}
 		samples = append(samples, s)
 	}
-	if err := p.Store.InsertPlanUsageSamples(samples); err != nil {
+	if err := p.Store.InsertPlanUsageSamplesContext(ctx, samples); err != nil {
 		return err
 	}
 	for i, l := range u.Limits {
-		hist, err := p.Store.PlanUsageSamplesSince(l.Key, now.Add(-lookback(l.Group)))
+		hist, err := p.Store.PlanUsageSamplesSinceContext(ctx, l.Key, now.Add(-lookback(l.Group)))
 		if err != nil {
 			return err
 		}
 		u.Limits[i].Projection = project(now, l, hist)
 	}
+	windows := make([]WindowLimit, 0, len(u.Limits))
+	current := map[string]bool{}
+	for _, l := range u.Limits {
+		w := ClaudeWindowLimit(l)
+		windows = append(windows, w)
+		current[l.Key] = w.ResetsAt != nil
+	}
 	limits, err := json.Marshal(u.Limits)
 	if err != nil {
 		return fmt.Errorf("planusage: encode limits: %w", err)
+	}
+	plot, proof, err := buildPublication(now, windows, string(limits), true, current)
+	if err != nil {
+		return fmt.Errorf("planusage: build plot: %w", err)
 	}
 	breakdown, err := json.Marshal(nonNil(u.Breakdown))
 	if err != nil {
@@ -156,10 +179,11 @@ func (p *Poller) storeUsage(now time.Time, st db.PlanUsageStatus, u Usage) error
 	st.State, st.Reason, st.LastError, st.LastErrorAt = "ok", "", "", nil
 	st.FetchedAt = &now
 	st.LimitsJSON, st.BreakdownJSON = string(limits), string(breakdown)
-	if err := p.Store.UpsertPlanUsageStatus(st); err != nil {
+	st.PlotJSON, st.PublicationProof = plot, proof
+	if err := p.Store.UpsertPlanUsageStatusContext(ctx, st); err != nil {
 		return err
 	}
-	if _, err := p.Store.PrunePlanUsageSamples(now.Add(-retention)); err != nil {
+	if _, err := p.Store.PrunePlanUsageSamplesContext(ctx, now.Add(-retention)); err != nil {
 		p.Logger.Printf("plan usage: prune: %v", err)
 	}
 	return nil
@@ -172,21 +196,29 @@ func nonNil(rows []BreakdownRow) []BreakdownRow {
 	return rows
 }
 
-func (p *Poller) fail(st db.PlanUsageStatus, now time.Time, cause error) error {
+func (p *Poller) fail(ctx context.Context, st db.PlanUsageStatus, now time.Time, cause error) error {
 	st.LastError, st.LastErrorAt = cause.Error(), &now
-	return p.save(st, cause)
+	return p.save(ctx, st, cause)
 }
 
 // save writes st and returns cause; a write error always wins and never wraps cause.
-func (p *Poller) save(st db.PlanUsageStatus, cause error) error {
-	if err := p.Store.UpsertPlanUsageStatus(st); err != nil {
+func (p *Poller) save(ctx context.Context, st db.PlanUsageStatus, cause error) error {
+	if err := p.Store.UpsertPlanUsageStatusContext(ctx, st); err != nil {
 		if cause == nil {
 			return err
 		}
 		// Not joined: Run silences ErrNoCredentials, and a failed write must still be logged.
 		return fmt.Errorf("planusage: write status: %w (while handling: %v)", err, cause)
 	}
-	return cause
+	if cause != nil {
+		code := safeStoredReason(st.Reason)
+		var timeout interface{ Timeout() bool }
+		if errors.Is(cause, context.DeadlineExceeded) || errors.As(cause, &timeout) && timeout.Timeout() {
+			code = "timeout"
+		}
+		return &OperationError{Code: code, Cause: cause}
+	}
+	return nil
 }
 
 // Run polls until ctx ends: first after 10 s, then at PollOnce's delay.
@@ -209,7 +241,11 @@ func (p *Poller) Run(ctx context.Context) error {
 
 // MarkDisabled records that the feature is off, keeping the last numbers.
 func MarkDisabled(store Store, now time.Time) error {
-	prev, err := store.GetPlanUsageStatus()
+	return MarkDisabledContext(context.Background(), store, now)
+}
+
+func MarkDisabledContext(ctx context.Context, store Store, now time.Time) error {
+	prev, err := store.GetPlanUsageStatusContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -218,5 +254,5 @@ func MarkDisabled(store Store, now time.Time) error {
 		st = *prev
 	}
 	st.State, st.Reason, st.UpdatedAt = "disabled", "", now.UTC()
-	return store.UpsertPlanUsageStatus(st)
+	return store.UpsertPlanUsageStatusContext(ctx, st)
 }

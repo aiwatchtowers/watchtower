@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -139,7 +140,7 @@ func SessionChat(w handlers.ChatWatches, d *db.DB, o SessionChatOptions) *Sessio
 			dirs = defaultFeedDirs()
 		}
 		s.o.Fetch = func(ctx context.Context, id int64, toolUseID string) ([]sessionfeed.Entry, error) {
-			return sessionfeed.ReadSession(ctx, d, id, toolUseID, dirs)
+			return sessionagent.ReadSession(ctx, d, id, toolUseID, dirs)
 		}
 	}
 	return s

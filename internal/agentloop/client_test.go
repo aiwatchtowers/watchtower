@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/ollama"
 	"watchtower/internal/tools"
 )
@@ -97,5 +98,5 @@ func TestClient_QuerySyncSumsUsageAcrossRounds(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "answer", text)
 	require.NotNil(t, usage)
-	assert.Equal(t, ai.Usage{InputTokens: 30, OutputTokens: 7, TotalAPITokens: 37}, *usage)
+	assert.Equal(t, ai.Usage{Tokens: llmusage.Tokens{Input: 30, Output: 7}}, *usage)
 }

@@ -7,16 +7,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // DefaultBaseURL is the default Ollama API endpoint. Kept in sync with
@@ -29,7 +30,15 @@ type Client struct {
 	model   string
 	baseURL string
 	http    *http.Client
+
+	chatEvents bool // send the turn's usage as a final chunk (EmitToolEvents)
 }
+
+// EmitToolEvents switches on the protocol-v2 chat events Query can send.
+// Plain ollama runs no tools, so the only one is the turn's usage: one
+// ai.StreamChunk{Usage} after the text, when the server reported usage. Off
+// by default: a v1 consumer reads every chunk as text.
+func (c *Client) EmitToolEvents() { c.chatEvents = true }
 
 // NewClient creates a new Ollama AI client.
 // baseURL is the Ollama server address (e.g. "http://localhost:11434"); pass "" for default.
@@ -65,7 +74,7 @@ type streamOptions struct {
 func recordOllamaCall(ctx context.Context, model string, start time.Time, u *chatUsage, prompt, output string, ok bool) {
 	c := llmusage.Call{Provider: "ollama", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok}
 	if u != nil && (u.PromptTokens > 0 || u.CompletionTokens > 0) {
-		c.Input, c.Output = int64(u.PromptTokens), int64(u.CompletionTokens)
+		c.Tokens = u.tokens()
 	} else {
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}
@@ -120,6 +129,12 @@ type chatUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// tokens is the usage as a block. prompt_tokens has no cache split, so it
+// is all fresh input.
+func (u *chatUsage) tokens() llmusage.Tokens {
+	return llmusage.Tokens{Input: int64(u.PromptTokens), Output: int64(u.CompletionTokens)}
+}
+
 // chatError is the OpenAI-compatible inline error object. Deliberately no
 // "code" field: vLLM and llama.cpp send it as a JSON number ("code":400),
 // and formatChatError never reads it anyway — a string-typed field here
@@ -132,31 +147,9 @@ type chatError struct {
 	Type    string `json:"type,omitempty"`
 }
 
-// maxStreamErrorMessage caps a reported error's message the same way the
-// non-streaming HTTP-status path already caps its raw error body (1024
-// bytes, see QuerySync/Query below) — the server can otherwise attach
-// unbounded detail (e.g. a stack trace) to the message.
-const maxStreamErrorMessage = 1024
-
-// formatChatError renders a chatError into a bounded, rune-safe message —
-// never echoed past the cap, since it may carry arbitrary server-side detail.
-func formatChatError(e *chatError) string {
-	msg := strings.TrimSpace(e.Message)
-	if msg == "" {
-		msg = "ollama reported an error with no message"
-	}
-	if e.Type != "" {
-		msg = fmt.Sprintf("%s (%s)", msg, e.Type)
-	}
-	if len(msg) <= maxStreamErrorMessage {
-		return msg
-	}
-	cut := maxStreamErrorMessage
-	for cut > 0 && !utf8.RuneStart(msg[cut]) {
-		cut--
-	}
-	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
-}
+// formatChatError renders a chatError as the owner reads it: bounded,
+// rune-safe, never empty (providers.ServerErrorText, shared with runtime B).
+func formatChatError(e *chatError) string { return providers.ServerErrorText(e.Message, e.Type) }
 
 // buildMessages creates the message array from system prompt and user message.
 func buildMessages(systemPrompt, userMessage string) []chatMessage {
@@ -187,13 +180,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			StreamOptions: &streamOptions{IncludeUsage: true},
 		})
 		if err != nil {
-			errCh <- fmt.Errorf("marshaling request: %w", err)
+			errCh <- providers.WithFailure("ollama", providers.Unknown, fmt.Errorf("marshaling request: %w", err))
 			return
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
 		if err != nil {
-			errCh <- fmt.Errorf("creating request: %w", err)
+			errCh <- providers.WithFailure("ollama", providers.Unknown, fmt.Errorf("creating request: %w", err))
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -202,7 +195,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		resp, err := c.http.Do(req)
 		if err != nil {
 			recordOllamaCall(ctx, c.model, start, nil, systemPrompt+userMessage, "", false)
-			errCh <- fmt.Errorf("ollama request failed: %w", err)
+			errCh <- providers.OllamaRequestFailure(fmt.Errorf("ollama request failed: %w", err))
 			return
 		}
 		defer resp.Body.Close()
@@ -210,12 +203,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if resp.StatusCode != http.StatusOK {
 			recordOllamaCall(ctx, c.model, start, nil, systemPrompt+userMessage, "", false)
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			errCh <- logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
+			errCh <- statusFailure(resp.StatusCode, b)
 			return
 		}
 
 		usage, text, ok := streamSSE(ctx, resp.Body, textCh, errCh)
 		recordOllamaCall(ctx, c.model, start, usage, systemPrompt+userMessage, text, ok)
+		if ok && c.chatEvents && usage != nil {
+			// The answer is complete: a stop now drops the usage, nothing else.
+			select {
+			case textCh <- ai.StreamChunk{Usage: &ai.TurnUsage{Model: c.model, Tokens: usage.tokens()}}:
+			case <-ctx.Done():
+			}
+		}
 	}()
 
 	return textCh, errCh, sidCh
@@ -257,7 +257,8 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 			continue
 		}
 		if errObj := chunk.asError(); errObj != nil {
-			errCh <- fmt.Errorf("ollama stream error: %s", formatChatError(errObj))
+			msg := formatChatError(errObj)
+			errCh <- providers.OllamaFailure(0, msg, fmt.Errorf("ollama stream error: %s", msg))
 			return usage, out.String(), false
 		}
 		if chunk.Usage != nil {
@@ -276,13 +277,13 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 		select {
 		case textCh <- ai.StreamChunk{Text: chunk.Choices[0].Delta.Content}:
 		case <-ctx.Done():
-			errCh <- ctx.Err()
+			errCh <- providers.OllamaRequestFailure(ctx.Err())
 			return usage, out.String(), false
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		errCh <- fmt.Errorf("reading ollama stream: %w", err)
+		errCh <- providers.OllamaRequestFailure(fmt.Errorf("reading ollama stream: %w", err))
 		return usage, out.String(), false
 	}
 
@@ -291,7 +292,8 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 	// scanner.Err() is nil for a clean EOF, so this is the only signal left
 	// that the stream was cut short rather than completed.
 	if !sawTerminal {
-		errCh <- fmt.Errorf("ollama stream ended without [DONE] or a finish_reason (connection closed early)")
+		errCh <- providers.WithFailure("ollama", providers.Transport,
+			errors.New("ollama stream ended without [DONE] or a finish_reason (connection closed early)"))
 		return usage, out.String(), false
 	}
 	return usage, out.String(), true
@@ -305,12 +307,12 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		Stream:   false,
 	})
 	if err != nil {
-		return "", nil, fmt.Errorf("marshaling request: %w", err)
+		return "", nil, providers.WithFailure("ollama", providers.Unknown, fmt.Errorf("marshaling request: %w", err))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", nil, fmt.Errorf("creating request: %w", err)
+		return "", nil, providers.WithFailure("ollama", providers.Unknown, fmt.Errorf("creating request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -325,17 +327,17 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", nil, fmt.Errorf("ollama request failed: %w", err)
+		return "", nil, providers.OllamaRequestFailure(fmt.Errorf("ollama request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", nil, logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
+		return "", nil, statusFailure(resp.StatusCode, b)
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", nil, fmt.Errorf("decoding ollama response: %w", err)
+		return "", nil, providers.OllamaRequestFailure(fmt.Errorf("decoding ollama response: %w", err))
 	}
 
 	// A 200 response can still carry an inline error object with zero
@@ -343,11 +345,11 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	// report it directly instead of the generic "no choices" below, which
 	// would otherwise hide the real reason.
 	if errObj := result.asError(); errObj != nil {
-		return "", nil, fmt.Errorf("ollama returned an error: %s", formatChatError(errObj))
+		return "", nil, inlineFailure(errObj)
 	}
 
 	if len(result.Choices) == 0 {
-		return "", nil, fmt.Errorf("ollama returned no choices")
+		return "", nil, providers.WithFailure("ollama", providers.InvalidOutput, errors.New("ollama returned no choices"))
 	}
 
 	text = strings.TrimRight(result.Choices[0].Message.Content, "\n")
@@ -355,12 +357,22 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	var usage *ai.Usage
 	if result.Usage != nil {
-		usage = &ai.Usage{
-			InputTokens:    result.Usage.PromptTokens,
-			OutputTokens:   result.Usage.CompletionTokens,
-			TotalAPITokens: result.Usage.TotalTokens,
-		}
+		usage = &ai.Usage{Tokens: result.Usage.tokens()}
 	}
 
 	return text, usage, nil
+}
+
+// statusFailure is the typed failure of a non-200 answer: the status and
+// the first KiB of the body, which the owner reads in full (logredact.Full)
+// and every log sees fingerprinted.
+func statusFailure(status int, body []byte) error {
+	return providers.OllamaFailure(status, string(body),
+		logredact.Errorf("ollama returned HTTP %d: %s", status, logredact.Text(body)))
+}
+
+// inlineFailure is the typed failure of an error object a 200 answer carried.
+func inlineFailure(e *chatError) error {
+	msg := formatChatError(e)
+	return providers.OllamaFailure(0, msg, fmt.Errorf("ollama returned an error: %s", msg))
 }

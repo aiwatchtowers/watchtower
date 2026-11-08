@@ -15,7 +15,9 @@ import (
 	"strconv"
 	"strings"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/gitdir"
+	"watchtower/internal/sessionagent"
 )
 
 // ErrMalformedSettings means .claude/settings.local.json exists but is not
@@ -139,17 +141,14 @@ type hookSpec struct {
 	replacesMarkerPrompt bool
 }
 
+// The specs below are the claude session adapter's install rows
+// (sessionagent.Adapter.HookSpecs), picked by event and subcommand.
 var (
-	// sessionStartSpec: the brief. The timeout bounds it so a stuck DB can
-	// never stall a Claude Code session start (`workbench brief` itself
-	// always exits 0).
-	sessionStartSpec = hookSpec{event: "SessionStart", subcommand: "workbench brief --workbench",
-		legacySubcommand: "project brief --project", timeoutSec: 10}
+	// sessionStartSpec: the brief.
+	sessionStartSpec = claudeHookSpec("SessionStart", "workbench brief --workbench")
 	// stopSpec: the board drift check at the end of every agent turn
-	// (PROJ-07). `workbench check --stop-hook` bounds its own git work well
-	// under this timeout and always exits 0.
-	stopSpec = hookSpec{event: "Stop", subcommand: "workbench check --workbench",
-		legacySubcommand: "project check --project", flags: " --stop-hook", timeoutSec: 15}
+	// (PROJ-07).
+	stopSpec = claudeHookSpec("Stop", "workbench check --workbench")
 	// coreStateHookSpecs: the session state the Desktop shows for an
 	// embedded terminal (`workbench session-state` reads the event from its
 	// input, so one command line serves every state hook). Async, so a
@@ -174,34 +173,39 @@ var (
 		toolStartStateSpec, stateHookSpec("PostToolUseFailure"))
 	// toolStartStateSpec: the PreToolUse state hook, in its own group with
 	// matcher "*" so it fires for every tool — beside, never inside, the ask
-	// tool block's AskUserQuestion group (askToolBlockSpec).
-	toolStartStateSpec = withMatcher(stateHookSpec("PreToolUse"), "*")
-	// askGuardSpec: the Stop command hook that sends a request the agent left
-	// as plain text back to ask_owner unless the owner is there to answer it
-	// (spec 2026-10-10-owner-asks-v2 Part 4, PROJ-13). It replaces the v1–v3
-	// marker prompt hook (Part 4.8). `workbench ask-guard --stop` bounds its
-	// model call at 20 s, well under this timeout, and always exits 0.
-	askGuardSpec = hookSpec{event: "Stop", subcommand: "workbench ask-guard --workbench",
-		flags: " --stop", timeoutSec: 30, replacesMarkerPrompt: true}
+	// tool block's AskUserQuestion group (askToolBlockSpec). The matcher is
+	// the claude adapter's row.
+	toolStartStateSpec = stateHookSpec("PreToolUse")
+	// askGuardSpec: the Stop command hook of the ask guard (PROJ-13); it
+	// replaces the v1–v3 marker prompt hook (Part 4.8).
+	askGuardSpec = claudeHookSpec("Stop", "workbench ask-guard --workbench")
 	// askToolBlockSpec: the PreToolUse hook denying AskUserQuestion, so a
-	// question to the owner goes through ask_owner (§6.3). `workbench
-	// ask-guard` bounds its own DB wait well under this timeout and always
-	// exits 0.
-	askToolBlockSpec = hookSpec{event: "PreToolUse", subcommand: "workbench ask-guard --workbench",
-		flags: " --pre-tool-use", timeoutSec: 5, matcher: "AskUserQuestion"}
+	// question to the owner goes through ask_owner (§6.3).
+	askToolBlockSpec = claudeHookSpec("PreToolUse", "workbench ask-guard --workbench")
 	// permissionWaitSpec: the synchronous PermissionRequest hook that holds a
-	// permission dialog open for an answer from the phone (#517). Claude only;
-	// 86400 s holds past the 600 s default (probe on Claude Code 2.1.302).
+	// permission dialog open for an answer from the phone (#517). Claude only.
 	// Installed and removed with the state hooks but not one of them, so it
 	// does not count in HasStateHooks / HasCoreStateHooks; status reports it
 	// on its own (HasPermissionWaitHook).
-	permissionWaitSpec = hookSpec{event: "PermissionRequest", subcommand: "workbench permission-wait --workbench",
-		timeoutSec: 86400, matcher: "*"}
+	permissionWaitSpec = claudeHookSpec("PermissionRequest", "workbench permission-wait --workbench")
 	// ownedHookSpecs is every event the workbench install owns an entry in.
 	// installedStateSpecs: what InstallStateHooks writes and RemoveStateHooks takes out.
 	installedStateSpecs = append([]hookSpec{permissionWaitSpec}, stateHookSpecs...)
 	ownedHookSpecs      = append([]hookSpec{sessionStartSpec, stopSpec, askGuardSpec, askToolBlockSpec}, installedStateSpecs...)
 )
+
+// claudeHookSpec is the claude session adapter's install row of event with
+// subcommand; a row the adapter does not have is a programming error.
+func claudeHookSpec(event, subcommand string) hookSpec {
+	for _, h := range sessionagent.MustFor(agentkind.Claude).HookSpecs() {
+		if h.Event == event && h.Subcommand == subcommand {
+			return hookSpec{event: h.Event, subcommand: h.Subcommand, legacySubcommand: h.LegacySubcommand,
+				flags: h.Flags, timeoutSec: h.TimeoutSec, async: h.Async, matcher: h.Matcher,
+				replacesMarkerPrompt: h.ReplacesMarkerPrompt}
+		}
+	}
+	panic("devpack: the claude session adapter has no " + event + " hook running " + subcommand)
+}
 
 // askGuardMarkerTemplate opens the Stop prompt hook an install from before
 // the command hook wrote (v1–v3; testdata/askguard_prompt_v{1,2,3}.md keep
@@ -225,12 +229,7 @@ func askGuardMarker(workbenchID int64) string {
 }
 
 func stateHookSpec(event string) hookSpec {
-	return hookSpec{event: event, subcommand: "workbench session-state --workbench", timeoutSec: 5, async: true}
-}
-
-func withMatcher(spec hookSpec, matcher string) hookSpec {
-	spec.matcher = matcher
-	return spec
+	return claudeHookSpec(event, "workbench session-state --workbench")
 }
 
 // command is the hook's command line for bin and workbenchID. Claude Code

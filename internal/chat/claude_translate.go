@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
@@ -40,6 +43,8 @@ type claudeLine struct {
 	// APIKeySource is the init event's auth source: "none" under the
 	// claude.ai login (probe answer 9).
 	APIKeySource string `json:"apiKeySource"`
+	// Model is the init event's model.
+	Model string `json:"model"`
 }
 
 type claudeUsage struct {
@@ -126,6 +131,9 @@ type fedLine struct {
 	// the line has none).
 	init         bool
 	apiKeySource string
+	// lost are the tool_use ids a result line closed unread: their result
+	// was on a line the reader skipped (MarkLineSkipped).
+	lost []string
 }
 
 type pendingBlock struct {
@@ -165,12 +173,18 @@ type ClaudeTranslator struct {
 	childCost    float64
 	childOutputs map[string]int64
 	childSession string
+	// initModel is the model the child's last init named: the ledger label
+	// of a turn that failed before any message or model usage named one.
+	initModel string
 	// textTurn is the turn id that last emitted text; newMessage records that
 	// a new assistant message started since that text. Together they put a
 	// paragraph break between the text of separate assistant messages of one
 	// turn (text, tool call, more text) instead of gluing them together.
 	textTurn   string
 	newMessage bool
+	// lineSkipped records that the reader skipped a line of the running
+	// turn (over its cap): the result then closes the calls left open.
+	lineSkipped bool
 }
 
 // NewClaudeTranslator returns a translator stamping events with turnID().
@@ -185,6 +199,38 @@ func (t *ClaudeTranslator) MarkInterrupted() {
 	t.mu.Lock()
 	t.interrupted = true
 	t.mu.Unlock()
+}
+
+// MarkLineSkipped records that the reader skipped a line of the running
+// turn: it may have held a tool's result, so the turn's result line closes
+// every call still open (a failed step with a reason, CHAT-02) instead of
+// leaving it running.
+func (t *ClaudeTranslator) MarkLineSkipped() {
+	t.mu.Lock()
+	t.lineSkipped = true
+	t.mu.Unlock()
+}
+
+// lostResultSummary is the step summary of a call whose result was on a
+// skipped line.
+const lostResultSummary = "claude's report of this tool's result could not be read"
+
+// closeLost ends every call still open after a skipped line: a failed
+// tool_end each (in id order), and their ids for the gate.
+func (t *ClaudeTranslator) closeLost() ([]Event, []string) {
+	if !t.lineSkipped {
+		return nil, nil
+	}
+	t.lineSkipped = false
+	ids := slices.Sorted(maps.Keys(t.calls))
+	events := make([]Event, 0, len(ids))
+	for _, id := range ids {
+		delete(t.calls, id)
+		ok := false
+		events = append(events, Event{Type: EventToolEnd, TurnID: t.turnID(), ID: id, OK: &ok, Summary: lostResultSummary})
+	}
+	clear(t.hidden)
+	return events, ids
 }
 
 // SessionID is the most recent Claude session id seen on any line.
@@ -255,12 +301,16 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 		}
 		f.events, f.results = t.toolResults(m)
 	case "result":
-		f.events = t.result(l)
 		c := t.usageCall(l)
+		f.events, f.lost = t.closeLost()
+		f.events = append(f.events, t.result(l, c.Tokens)...)
 		call = &c
 	case "system":
 		if l.Subtype == "init" {
 			f.init, f.apiKeySource = true, l.APIKeySource
+			if l.Model != "" {
+				t.initModel = l.Model
+			}
 			// A warm child repeats its init before every turn with the same
 			// session id; only a new session (a respawned child) starts
 			// the cumulative cost and model usage over.
@@ -279,8 +329,8 @@ func (t *ClaudeTranslator) translate(line []byte) (fedLine, *llmusage.Call, erro
 // modelUsage add up over its life while usage is the turn's own, so the
 // turn's cost is the growth of the total since the previous result; a total
 // that shrank belongs to a new child, whose whole total is this turn's. Its
-// model is the stream's, else the one whose output grew most. It starts the
-// next turn's clock.
+// model is the stream's, else the one whose output grew most, else the
+// init's. It starts the next turn's clock.
 func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	outs := llmusage.ModelOutputs(l.ModelUsage)
 	grown := make(map[string]int64, len(outs))
@@ -295,13 +345,20 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	}
 	model := t.model
 	if model == "" {
-		model = llmusage.ModelFromOutputs(grown, "")
+		model = llmusage.ModelFromOutputs(grown, t.initModel)
 	}
 	c := llmusage.Call{
 		Provider:   "claude",
 		Model:      model,
 		DurationMS: time.Since(t.turnStart).Milliseconds(),
 		OK:         l.Subtype == "success" && !l.IsError,
+	}
+	if u := l.Usage; u != nil {
+		c.Tokens = llmusage.ClaudeTokens(u.InputTokens, u.CacheRead, u.CacheCreation,
+			u.CacheCreationTTL.FiveMin, u.CacheCreationTTL.OneHour, u.OutputTokens)
+	} else {
+		c.Estimated = true
+		c.Output = llmusage.EstimateTokens(l.Result)
 	}
 	if l.CostUSD > 0 {
 		cost := l.CostUSD - t.childCost
@@ -317,15 +374,6 @@ func (t *ClaudeTranslator) usageCall(l claudeLine) llmusage.Call {
 	if len(outs) > 0 {
 		t.childOutputs = outs
 	}
-	u := l.Usage
-	if u == nil {
-		c.Estimated = true
-		c.Output = llmusage.EstimateTokens(l.Result)
-		return c
-	}
-	c.Input, c.CacheRead, c.Output = int64(u.InputTokens), int64(u.CacheRead), int64(u.OutputTokens)
-	c.CacheWrite5m, c.CacheWrite1h = llmusage.SplitCacheWrites(int64(u.CacheCreation),
-		int64(u.CacheCreationTTL.FiveMin), int64(u.CacheCreationTTL.OneHour))
 	return c
 }
 
@@ -391,7 +439,7 @@ func (t *ClaudeTranslator) toolStart(b *pendingBlock) []Event {
 	if b == nil || b.kind != "tool_use" {
 		return nil
 	}
-	if claudeInternalTools[b.name] {
+	if ai.IsClaudeInternalTool(b.name) {
 		t.hidden[b.id] = true
 		return nil
 	}
@@ -413,7 +461,7 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult)
 			delete(t.hidden, c.ToolUseID)
 			continue
 		}
-		text := toolResultText(c.Content)
+		text := ai.ToolResultText(c.Content)
 		call := t.calls[c.ToolUseID]
 		delete(t.calls, c.ToolUseID)
 		ok := !c.IsError
@@ -438,15 +486,18 @@ func (t *ClaudeTranslator) toolResults(m *claudeMessage) ([]Event, []toolResult)
 	return out, results
 }
 
-func (t *ClaudeTranslator) result(l claudeLine) []Event {
+// result ends the turn: its usage event (the split from tokens, the ledger
+// call's numbers, when the line carries usage), then turn_done or error.
+func (t *ClaudeTranslator) result(l claudeLine, tokens llmusage.Tokens) []Event {
 	turnID := t.turnID()
 	interrupted := t.interrupted
 	t.interrupted = false
 	t.textTurn = "" // the turn is over: its successor starts without a break
-	usage := Event{Type: EventUsage, TurnID: turnID, Model: t.model}
+	// A line without a usage object leaves the counts unset (CHAT-01 stores
+	// none) but still carries the turn's cost, flagged as estimated.
+	usage := Event{Type: EventUsage, TurnID: turnID, Model: t.model, CostUSD: tokens.ReportedCostUSD, Estimated: true}
 	if l.Usage != nil {
-		usage.TokensIn = l.Usage.InputTokens + l.Usage.CacheRead + l.Usage.CacheCreation
-		usage.TokensOut = l.Usage.OutputTokens
+		usage = usageEvent(turnID, t.model, tokens)
 	}
 	switch {
 	case l.Subtype == "success" && !l.IsError:
@@ -603,12 +654,6 @@ func artifactID(s string) string {
 	return seg
 }
 
-// claudeInternalTools are Claude Code's own plumbing tools (ToolSearch loads
-// deferred MCP tool schemas). They are not steps the owner asked for, so they
-// never surface as tool_start/tool_end. They stay allowed: hiding ToolSearch
-// would leave the deferred watchtower tools unloadable.
-var claudeInternalTools = map[string]bool{"ToolSearch": true}
-
 // displayToolName strips the built-in server prefix and renders an external
 // MCP tool as server:tool (spec §1.1).
 func displayToolName(raw string) string {
@@ -636,32 +681,6 @@ func toolArgs(s string) json.RawMessage {
 	}
 	b, _ := json.Marshal(map[string]string{"_raw": s})
 	return b
-}
-
-// toolResultText flattens a tool_result's content: a string, or the text
-// parts of a content-block array.
-func toolResultText(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err != nil {
-		return ""
-	}
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Type == "text" {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
 }
 
 var httpStatusRe = regexp.MustCompile(`\b(401|403|429|529)\b`)
@@ -697,12 +716,16 @@ func containsAny(s string, subs ...string) bool {
 	return false
 }
 
-// clearInterrupted drops a pending interrupt mark. Called when a turn starts:
-// a child killed after an interrupt never delivers the result that consumes
-// the mark, and a stale mark would turn the next turn's error into
-// "interrupted".
-func (t *ClaudeTranslator) clearInterrupted() {
+// startTurn drops what an earlier turn left pending. Called when a turn
+// starts: a child killed after an interrupt never delivers the result that
+// consumes the mark, and a stale mark would turn the next turn's error into
+// "interrupted"; a child killed while a tool ran leaves its call open, which
+// a later skipped line must not close under the new turn's id (CHAT-02).
+func (t *ClaudeTranslator) startTurn() {
 	t.mu.Lock()
 	t.interrupted = false
+	t.lineSkipped = false
+	clear(t.calls)
+	clear(t.hidden)
 	t.mu.Unlock()
 }

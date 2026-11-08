@@ -3,7 +3,7 @@ package sessionfeed
 import (
 	"context"
 
-	"watchtower/internal/agentlog"
+	"watchtower/internal/agentfiles"
 	"watchtower/internal/db"
 )
 
@@ -29,7 +29,7 @@ func SessionConversations(ctx context.Context, d *db.DB, id int64, codex bool, f
 		}
 		return convs, nil
 	}
-	roots := append([]string{folder}, agentlog.WorktreeRoots(ctx, folder)...)
+	roots := append([]string{folder}, agentfiles.WorktreeRoots(ctx, folder)...)
 	ids := make([]string, 0, len(ledger))
 	for _, l := range ledger {
 		ids = append(ids, l.AgentSessionID)
