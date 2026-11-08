@@ -7,20 +7,19 @@ import WatchtowerCore
 /// What one Discuss thread runs on (spec 2026-11-08 §3), gathered when the
 /// thread opens: the item, the reviewer's data for it (`watchtower workbench
 /// spec-review thread-context`, fetched once and held here for the system
-/// prompt), the folder the reviewer read and the configured provider.
+/// prompt) and the configured provider. The folder the agent reads is the
+/// CLI's to find (`ai query --read-folder-ask <askID>`).
 struct SpecReviewThreadContext {
     let workbenchID: Int64
     /// The first ask of the review chain: a re-round's card with the same
     /// item key continues the same thread.
     let rootAskID: Int64
-    /// The ask on screen, whose review the data describes.
+    /// The ask on screen, whose review the data describes; the CLI reads
+    /// the folder its reviewer read.
     let askID: Int64
     let itemKey: String
     /// The `thread-context` output: fenced data blocks.
     let data: String
-    /// Where the reviewer read: the session's recorded worktree when it is a
-    /// directory, else the workbench folder; nil when there is none.
-    let folder: String?
     /// The configured provider, at its strong tier.
     let provider: AIProvider
     /// The item is gone after a re-run (not in the current result, ledger,
@@ -48,9 +47,11 @@ struct SpecReviewThreadContext {
 ///   'spec_review_thread'` and `context_id = '<workbench>:<root>:<key>'`
 ///   (`SpecReviewThreadKey`, Go's `ThreadContextID`): Go's `add-finding`
 ///   reads the owner's rows of it to check a thread quote.
-/// - The configured provider at its strong tier, `--read-folder` on the
-///   reviewer's folder (none on ollama, which is told so once), and
-///   `--purpose spec_review.discuss` for the usage ledger.
+/// - The configured provider at its strong tier, `--read-folder-ask
+///   <askID>` (the CLI resolves the folder the reviewer read: the session's
+///   worktree when recorded, else the workbench folder; none on ollama,
+///   which is told so once), and `--purpose spec_review.discuss` for the
+///   usage ledger.
 /// - A reply's blocks stay in the stored text, so a proposal still shows
 ///   after the drawer or the app was closed; the thread view strips them
 ///   when it renders (`SpecReviewThreadBlocks`).
@@ -71,25 +72,11 @@ enum SpecReviewThreadSurface {
             title: "Spec review: \(String(title.prefix(60)))")
     }
 
-    /// The folder the reviewer read (Go's `specreview.readFolder`): the
-    /// session's recorded working directory when it is still a directory,
-    /// else the workbench folder when it is one; nil when neither is.
-    static func readFolder(
-        sessionCwd: String?, workbenchFolder: String?, isDirectory: (String) -> Bool = Self.isDirectory
-    ) -> String? {
-        [sessionCwd, workbenchFolder].lazy.compactMap { $0 }.first { !$0.isEmpty && isDirectory($0) }
-    }
-
-    nonisolated static func isDirectory(_ path: String) -> Bool {
-        var directory: ObjCBool = false
-        return FileManager.default.fileExists(atPath: path, isDirectory: &directory) && directory.boolValue
-    }
-
     static func spec(context: SpecReviewThreadContext, conversationID: Int64, dbPool: DatabasePool) -> ChatSurfaceSpec {
         let readsFiles = context.provider != .ollama
         let runOptions = { @MainActor () -> ChatRunOptions in
-            ChatRunOptions(provider: context.provider.rawValue, readFolder: readsFiles ? context.folder : nil,
-                           purpose: purpose)
+            ChatRunOptions(provider: context.provider.rawValue, purpose: purpose,
+                           readFolderAskID: readsFiles ? context.askID : nil)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: context.contextID, conversationID: conversationID),
@@ -136,7 +123,7 @@ enum SpecReviewThreadSurface {
     // MARK: - System prompt
 
     static func buildSystemPrompt(context: SpecReviewThreadContext) -> String {
-        let reading = context.provider == .ollama || context.folder == nil
+        let reading = context.provider == .ollama
             ? """
             You cannot read any file, run commands or reach the web: answer from the review's data below only, and \
             say so when the answer needs code you have not been shown.

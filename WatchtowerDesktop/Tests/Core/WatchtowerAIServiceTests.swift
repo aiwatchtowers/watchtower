@@ -40,6 +40,17 @@ final class WatchtowerAIServiceTests: XCTestCase {
         }
     }
 
+    func testBuildArgsReadFolderAsk() {
+        let args = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil, readFolderAskID: 42)
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--read-folder-ask", "42"])
+        let both = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil,
+                                                 readFolder: "/work/acme", readFolderAskID: 42)
+        XCTAssertFalse(both.contains("--read-folder-ask"), "never with --read-folder: the CLI refuses the pair")
+        XCTAssertTrue(both.contains("--read-folder"))
+        let none = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil)
+        XCTAssertFalse(none.contains("--read-folder-ask"))
+    }
+
     func testBuildArgsOmitsProviderFlagWhenNil() {
         let args = WatchtowerAIService.buildArgs(
             dbPath: nil,

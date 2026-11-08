@@ -42,7 +42,9 @@ package protocol AIServiceProtocol: Sendable {
     /// without a folder. `ownerInstructions` is the bare `--owner-instructions`
     /// flag (the CLI adds the owner's chat instructions to the system prompt;
     /// it carries no content). `purpose` is `--purpose`, the usage ledger's
-    /// tag for the run's calls (nil = none).
+    /// tag for the run's calls (nil = none). `readFolderAskID` is
+    /// `--read-folder-ask N`: the CLI reads the folder review ask N's reviewer
+    /// read (never with `readFolder`).
     func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -53,7 +55,8 @@ package protocol AIServiceProtocol: Sendable {
         toolMode: ChatToolMode?,
         readFolder: String?,
         ownerInstructions: Bool,
-        purpose: String?
+        purpose: String?,
+        readFolderAskID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -78,7 +81,8 @@ extension AIServiceProtocol {
             toolMode: toolMode,
             readFolder: readFolder,
             ownerInstructions: false,
-            purpose: nil
+            purpose: nil,
+            readFolderAskID: nil
         )
     }
 
@@ -93,7 +97,8 @@ extension AIServiceProtocol {
         toolMode: ChatToolMode?,
         readFolder: String?,
         ownerInstructions: Bool,
-        purpose: String?
+        purpose: String?,
+        readFolderAskID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,

@@ -18,7 +18,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
                model: model, provider: provider, toolMode: toolMode, readFolder: nil,
-               ownerInstructions: false, purpose: nil)
+               ownerInstructions: false, purpose: nil, readFolderAskID: nil)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -32,7 +32,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         toolMode: ChatToolMode?,
         readFolder: String?,
         ownerInstructions: Bool,
-        purpose: String?
+        purpose: String?,
+        readFolderAskID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
@@ -51,6 +52,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         readFolder: readFolder,
                         ownerInstructions: ownerInstructions,
                         purpose: purpose,
+                        readFolderAskID: readFolderAskID,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -122,7 +124,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// the CLI refuses the pair. `ownerInstructions` adds the bare
     /// `--owner-instructions` flag (no content: the CLI reads the texts).
     /// `purpose` adds `--purpose P`, the usage ledger's tag for the run's
-    /// calls (the CLI refuses a value it does not know).
+    /// calls (the CLI refuses a value it does not know). `readFolderAskID`
+    /// adds `--read-folder-ask N` instead of `--read-folder`: the CLI reads
+    /// the folder review ask N's reviewer read (a spec review thread); the
+    /// two never go together, `readFolder` wins.
     package static func buildArgs(
         dbPath: String?,
         model: String?,
@@ -130,7 +135,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         toolMode: ChatToolMode?,
         readFolder: String? = nil,
         ownerInstructions: Bool = false,
-        purpose: String? = nil
+        purpose: String? = nil,
+        readFolderAskID: Int64? = nil
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin"]
 
@@ -148,6 +154,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         if let readFolder, !readFolder.isEmpty {
             args += ["--read-folder", readFolder]
+        } else if let readFolderAskID {
+            args += ["--read-folder-ask", String(readFolderAskID)]
         }
         if ownerInstructions {
             args.append("--owner-instructions")
@@ -205,6 +213,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         readFolder: String?,
         ownerInstructions: Bool,
         purpose: String?,
+        readFolderAskID: Int64?,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -217,7 +226,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             toolMode: toolMode,
             readFolder: readFolder,
             ownerInstructions: ownerInstructions,
-            purpose: purpose
+            purpose: purpose,
+            readFolderAskID: readFolderAskID
         )
 
         let process = Process()

@@ -734,7 +734,8 @@ final class SpecReviewModelTests: XCTestCase {
         let call = try XCTUnwrap(ai.calls.first)
         XCTAssertNil(call.toolMode, "draft-only (AGENT-04)")
         XCTAssertEqual(call.purpose, "spec_review.discuss")
-        XCTAssertEqual(call.readFolder, NSTemporaryDirectory(), "no session: the workbench folder")
+        XCTAssertNil(call.readFolder)
+        XCTAssertEqual(call.readFolderAskID, askID, "the CLI reads the folder this ask's reviewer read")
         XCTAssertTrue(try XCTUnwrap(call.systemPrompt).contains("Muting lasts twenty-four hours"))
 
         let id = askID

@@ -69,21 +69,6 @@ package enum SpecReviewThreadQueries {
         }
     }
 
-    /// What a thread's agent may read, as Go's reviewer picks it
-    /// (`specreview.readFolder`): the ask's session's recorded working
-    /// directory (its worktree; nil when unknown or the session is gone) and
-    /// the workbench folder (nil when the workbench is gone). The caller
-    /// checks which one is still a directory.
-    package static func readFolders(
-        _ db: Database, sessionID: Int64?, workbenchID: Int64
-    ) throws -> (sessionCwd: String?, workbenchFolder: String?) {
-        let cwd = try sessionID.flatMap {
-            try String.fetchOne(db, sql: "SELECT agent_cwd FROM terminal_sessions WHERE id = ?", arguments: [$0])
-        }
-        let folder = try String.fetchOne(db, sql: "SELECT folder_path FROM projects WHERE id = ?", arguments: [workbenchID])
-        return (cwd, folder)
-    }
-
     /// Thread key → its owner's and assistant's finished messages; a key
     /// with no conversation (or no message yet) is absent.
     package static func messageCounts(_ db: Database, contextIDs: [String]) throws -> [String: Int] {

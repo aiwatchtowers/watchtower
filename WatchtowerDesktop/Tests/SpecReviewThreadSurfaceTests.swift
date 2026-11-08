@@ -31,7 +31,7 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         onReply: @escaping @MainActor (String?, SpecReviewProposedFinding?) -> Void = { _, _ in }
     ) -> SpecReviewThreadContext {
         SpecReviewThreadContext(workbenchID: 3, rootAskID: 7, askID: 9, itemKey: "da:abc",
-                                data: "```document\nMuting lasts a day.\n```", folder: "/work/acme",
+                                data: "```document\nMuting lasts a day.\n```",
                                 provider: provider, isOrphaned: { orphaned }, onReply: onReply)
     }
 
@@ -60,8 +60,8 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertTrue(spec.ownerInstructions)
         XCTAssertEqual(spec.key, EmbeddedChatKey(contextType: "spec_review_thread", contextID: "3:7:da:abc",
                                                  conversationID: conv))
-        XCTAssertEqual(spec.runOptions(), ChatRunOptions(provider: "claude", readFolder: "/work/acme",
-                                                         purpose: "spec_review.discuss"))
+        XCTAssertEqual(spec.runOptions(), ChatRunOptions(provider: "claude", purpose: "spec_review.discuss",
+                                                         readFolderAskID: 9))
 
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
@@ -69,7 +69,8 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         let call = try XCTUnwrap(ai.calls.first)
         XCTAssertNil(call.toolMode, "draft-only (AGENT-04)")
         XCTAssertEqual(call.purpose, "spec_review.discuss")
-        XCTAssertEqual(call.readFolder, "/work/acme")
+        XCTAssertNil(call.readFolder, "the CLI finds the reviewer's folder")
+        XCTAssertEqual(call.readFolderAskID, 9)
         XCTAssertNil(call.model, "the provider's strong tier")
         let system = try XCTUnwrap(call.systemPrompt)
         XCTAssertTrue(system.contains("You did not write this item"))
@@ -86,6 +87,7 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         let conv = try await conversation()
         let spec = SpecReviewThreadSurface.spec(context: context(provider: .ollama), conversationID: conv,
                                                 dbPool: dbManager.dbPool)
+        XCTAssertNil(spec.runOptions().readFolderAskID)
         XCTAssertNil(spec.runOptions().readFolder)
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
@@ -93,20 +95,6 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         await turn(engine, ai, "And?", reply: "That's all.")
         let notices = engine.messages.filter { $0.message.role == "system" }.map(\.message.text)
         XCTAssertEqual(notices, [SpecReviewThreadSurface.cannotReadFilesNotice])
-    }
-
-    /// Where the reviewer read: the session's worktree while it is a
-    /// directory, else the workbench folder.
-    func testReadFolderPrefersTheSessionsWorktree() {
-        let dirs: Set<String> = ["/work/acme", "/work/acme-wt"]
-        let isDir = { dirs.contains($0) }
-        XCTAssertEqual(SpecReviewThreadSurface.readFolder(sessionCwd: "/work/acme-wt", workbenchFolder: "/work/acme",
-                                                          isDirectory: isDir), "/work/acme-wt")
-        XCTAssertEqual(SpecReviewThreadSurface.readFolder(sessionCwd: "/gone", workbenchFolder: "/work/acme",
-                                                          isDirectory: isDir), "/work/acme")
-        XCTAssertEqual(SpecReviewThreadSurface.readFolder(sessionCwd: nil, workbenchFolder: "/work/acme",
-                                                          isDirectory: isDir), "/work/acme")
-        XCTAssertNil(SpecReviewThreadSurface.readFolder(sessionCwd: "", workbenchFolder: "/gone", isDirectory: isDir))
     }
 
     func testOrphanRefusesNewTurns() async throws {

@@ -597,7 +597,6 @@ extension SpecReviewModel {
 
     private func prepareThread(_ key: String) async {
         let askID = ask.id
-        let sessionID = ask.sessionID
         let workbenchID = ask.projectID
         do {
             let conversationID = try await SpecReviewThreadSurface.conversationID(
@@ -605,13 +604,8 @@ extension SpecReviewModel {
             // An orphaned item's thread only shows what it holds: nothing to fetch.
             let orphaned = isOrphanedItem(key)
             let data = orphaned ? "" : try await cli.specReviewThreadContext(askID: askID, itemKey: key)
-            let folders = try await dbPool.read { db in
-                try SpecReviewThreadQueries.readFolders(db, sessionID: sessionID, workbenchID: workbenchID)
-            }
             let context = SpecReviewThreadContext(
                 workbenchID: workbenchID, rootAskID: rootAskID, askID: askID, itemKey: key, data: data,
-                folder: SpecReviewThreadSurface.readFolder(sessionCwd: folders.sessionCwd,
-                                                           workbenchFolder: folders.workbenchFolder),
                 provider: configuredProvider(),
                 // The chat outlives this screen in the app's center: once the
                 // screen is gone, the item stands as it was when opened.

@@ -138,6 +138,34 @@ final class SpecReviewThreadQueriesTests: XCTestCase {
         }
     }
 
+    /// A thread's conversation is no main chat: the Chats panel, its title
+    /// search and the full-text search never list it (they read
+    /// `context_type IS NULL`).
+    func testThreadConversationsStayOutOfTheChatsList() throws {
+        try db.write { d in
+            var ids: [Int64] = []
+            for type in [nil, "spec_review_thread"] as [String?] {
+                try d.execute(sql: """
+                    INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+                    VALUES ('Mute plan', ?, ?, 0, 0)
+                    """, arguments: [type, type.map { _ in "1:1:ag:1" }])
+                let id = d.lastInsertedRowID
+                try d.execute(sql: """
+                    INSERT INTO chat_messages (conversation_id, role, text, created_at, status)
+                    VALUES (?, 'user', 'Mute the channel', 0, 'complete')
+                    """, arguments: [id])
+                try d.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?",
+                              arguments: [d.lastInsertedRowID, id])
+                ids.append(id)
+            }
+            let main = ids[0]
+            XCTAssertEqual(try ChatConversationQueries.fetchStandalone(d).map(\.id), [main])
+            XCTAssertEqual(try ChatConversationQueries.search(d, query: "Mute").map(\.id), [main])
+            XCTAssertEqual(Set(try ChatSearchQueries.search(d, query: "Mute").map(\.conversationID)), [main])
+            XCTAssertEqual(try ChatHistoryQueries.panelRows(d, projectID: nil).map(\.conversation.id), [main])
+        }
+    }
+
     func testMessageCountsByThreadKey() throws {
         try db.write { d in
             func conversation(type: String?, id: String) throws -> Int64 {
