@@ -1,10 +1,10 @@
 -- +goose Up
--- Big-branch review (board #1025): one cached AI description per chapter of
--- the overview, keyed by the chapter's content hash (its key, its files'
--- blobs, its own agent notes, the prompt version), so a Refresh redoes only
--- the chapters whose files changed. Rows older than 30 days are pruned on
--- write.
-CREATE TABLE IF NOT EXISTS review_overview_parts (
+-- Big-branch review (board #1025): one cached AI description per overview
+-- chapter, so a Refresh redoes only the chapters whose files changed.
+-- part_hash = sha256 of the chapter key, its files' (path, old blob, new blob),
+-- the agent's notes on them and the prompt id + version. Pruned after 30 days
+-- on write.
+CREATE TABLE review_overview_parts (
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   part_hash  TEXT NOT NULL,
   json       TEXT NOT NULL,
