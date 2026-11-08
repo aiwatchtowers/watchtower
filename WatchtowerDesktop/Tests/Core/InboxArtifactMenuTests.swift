@@ -458,6 +458,23 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertNil(vm.routeFailures[ids.owner])
     }
 
+    /// The route goes last: the draft row left, the chat moved and the
+    /// card opened before the route call is sent.
+    func testNewArtifactRouteIsSentAfterTheCardOpened() async {
+        wireRoute()
+        vm.showNew(AutomationNewFlow(route: InboxNewArtifactRoute(folderID: ids.release, title: "Release")))
+        vm.showEditor(.newDraft(contextID: "draft-e", scope: .personal, startText: nil),
+                      route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        var routeCallsWhenOpened: Int?
+        await vm.draftSaved(contextID: "draft-e", conversationID: 79, automationID: ids.owner) {
+            routeCallsWhenOpened = self.runner.invocations.count
+            self.vm.showCard(self.ids.owner)
+        }
+        XCTAssertEqual(routeCallsWhenOpened, 0, "the card opened before the route call")
+        XCTAssertEqual(runner.invocations.filter { $0.contains("route") }.count, 1)
+        XCTAssertEqual(vm.panel, .card(ids.owner))
+    }
+
     func testNewArtifactFromRootSendsNoRoute() async {
         wireRoute()
         XCTAssertNil(InboxArtifactMenuModel.newArtifactRoute(folderMenu.tree, selected: ids.root))

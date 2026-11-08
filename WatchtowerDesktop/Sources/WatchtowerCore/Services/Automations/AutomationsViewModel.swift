@@ -522,14 +522,17 @@ package final class AutomationsViewModel {
     /// 2026-10-24 §4): its row leaves the list and its cached drafts go at
     /// once, with the editor's draft; once the draft's chat engine is idle
     /// and let go of, its conversation becomes the automation's editor chat
-    /// (ask #528). The selection is the caller's: this never empties the panel.
-    package func draftSaved(contextID: String, conversationID: Int64, automationID: Int64) async {
+    /// (ask #528). The selection is the caller's: this never empties the
+    /// panel; `opened` (the caller opening the saved card) runs once the
+    /// draft is gone and its chat moved. A **+ New Artifact…** draft's route
+    /// is sent last, so it never holds the save up.
+    package func draftSaved(
+        contextID: String, conversationID: Int64, automationID: Int64, opened: @MainActor () -> Void = {}
+    ) async {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
-        if let route = newDraftRoutes.removeValue(forKey: contextID) {
-            await routeSaved(automationID, route, reread: false)
-        }
+        let route = newDraftRoutes.removeValue(forKey: contextID)
         await removeDraftCache(conversationID)
         draftRows.removeAll { $0.conversationID == conversationID }
         let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
@@ -545,6 +548,8 @@ package final class AutomationsViewModel {
         }
         // The turn waited for may have drafted again.
         await removeDraftCache(conversationID)
+        opened()
+        if let route { await routeSaved(automationID, route, reread: false) }
     }
 
     /// Sends the saved automation's route; a failure keeps the folder for
