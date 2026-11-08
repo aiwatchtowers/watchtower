@@ -193,6 +193,44 @@ final class AutomationSaveFolderTests: XCTestCase {
                        InboxNewArtifactRoute(folderID: release, title: "Release"), "a new ask counts")
     }
 
+    /// A suggestion whose line was hidden because the automation already
+    /// sits in that folder is spent by the save all the same: after the
+    /// owner's Move to Folder, a later save with no new `draft_automation`
+    /// never moves it back.
+    func testSuggestionAlreadyCarriedOutIsSpentBySave() async throws {
+        let suggestion = AutomationFolderSuggestion(title: "Release")
+        let entry = "2026-10-14T12:00:00Z:c1"
+        let release = release
+        vm.inboxFolderTree = { [weak self] in self?.treeRouting(to: release) }
+        let shown = vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                       suggestionKey: entry)
+        XCTAssertNil(shown, "already there: no line")
+        let spending = AutomationsViewModel.suggestionSpentBySave(saves: true, suggestion: suggestion,
+                                                                  suggestionKey: entry)
+        XCTAssertEqual(spending, entry)
+        await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: editorCenter(),
+                                 route: shown, spending: spending)
+        XCTAssertTrue(routeCalls.isEmpty)
+
+        let acme = acme
+        vm.inboxFolderTree = { [weak self] in self?.treeRouting(to: acme) }
+        XCTAssertNil(vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                        suggestionKey: entry), "the owner's move stands")
+        await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: editorCenter(),
+                                 route: nil, spending: nil)
+        XCTAssertTrue(routeCalls.isEmpty, "the next save never moves it back")
+    }
+
+    /// Only a press that saves spends, and only an entry that names a folder.
+    func testOnlyASavingPressWithAFolderSpends() {
+        let suggestion = AutomationFolderSuggestion(title: "Release")
+        XCTAssertNil(AutomationsViewModel.suggestionSpentBySave(saves: false, suggestion: suggestion,
+                                                                suggestionKey: "k"))
+        XCTAssertNil(AutomationsViewModel.suggestionSpentBySave(saves: true, suggestion: nil, suggestionKey: "k"))
+        XCTAssertNil(AutomationsViewModel.suggestionSpentBySave(saves: true, suggestion: suggestion,
+                                                                suggestionKey: nil))
+    }
+
     func testNoLineWhenAlreadyInThatFolder() {
         let release = release
         vm.inboxFolderTree = { [weak self] in self?.treeRouting(to: release) }

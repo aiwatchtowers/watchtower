@@ -526,7 +526,10 @@ struct AutomationEditorPanel: View {
         let editor = editor
         let vm = vm
         let route = action.saves ? placement : nil
-        let suggestionKey = route == nil ? nil : chat?.draft.entry?.suggestionKey
+        let entry = chat?.draft.entry
+        let suggestionKey = AutomationsViewModel.suggestionSpentBySave(
+            saves: action.saves, suggestion: entry?.folder, suggestionKey: entry?.suggestionKey
+        )
         if let newDraftContextID { vm.setPressRoute(route, forDraft: newDraftContextID) }
         if let turnOnBuiltin {
             // A built-in: the save never touches on/off (its feature keys).
