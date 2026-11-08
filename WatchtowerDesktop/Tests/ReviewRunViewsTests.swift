@@ -80,24 +80,4 @@ final class ReviewRunViewsTests: XCTestCase {
         let notice = ReviewFailureNotice(text: sentence, detail: nil) {}
         XCTAssertThrowsError(try notice.inspect().find(button: "Provider's message"))
     }
-
-    /// A later round's Since view lists part of the map: the counter and Next
-    /// see only the listed chapters.
-    func testCounterAndNextSeeOnlyTheChaptersInView() {
-        func chapter(_ key: String, _ paths: [String]) -> ReviewMap.Chapter {
-            ReviewMap.Chapter(key: key, title: key, level: .breaking, core: false, paths: paths, changedLines: 1,
-                              lane: nil, targetId: nil, jiraKey: nil, signalsSummary: [:])
-        }
-        func file(_ path: String, _ key: String) -> ReviewMap.File {
-            ReviewMap.File(path: path, chapter: key, level: .breaking, signals: [], lane: nil, also: [])
-        }
-        let map = ReviewMap(
-            chapters: [chapter("hidden", ["h.go"]), chapter("shown", ["s.go", "h2.go"])],
-            files: [file("h.go", "hidden"), file("s.go", "shown"), file("h2.go", "shown")]
-        )
-        let visible = ReviewChapterListView.visible(map, chapters: ["shown"], paths: ["s.go"])
-        XCTAssertEqual(visible.chapters.map(\.key), ["shown"])
-        XCTAssertEqual(visible.files.map(\.path), ["s.go"])
-        XCTAssertEqual(ReviewChapterList.next(map: visible) { _ in false }, "shown", "never the hidden chapter")
-    }
 }

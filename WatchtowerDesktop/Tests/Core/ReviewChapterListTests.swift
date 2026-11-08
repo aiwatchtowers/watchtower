@@ -62,4 +62,17 @@ final class ReviewChapterListTests: XCTestCase {
         XCTAssertFalse(ReviewChapterList.showsList(map([])))
         XCTAssertTrue(ReviewChapterList.showsList(map([chapter("dir:a", .normal, ["a/1"]), chapter("dir:b", .normal, ["b/1"])])))
     }
+
+    /// A later round's Since view lists part of the map: the counter and Next
+    /// see only its chapters, each with only its files in the view.
+    func testInViewCutsTheMapToTheListedChapters() {
+        let full = map([chapter("dir:hidden", .breaking, ["h.go"]), chapter("dir:shown", .breaking, ["s.go", "out.go"])])
+        let cut = ReviewChapterList.inView(full, paths: ["s.go"])
+        XCTAssertEqual(cut.chapters.map(\.key), ["dir:shown"])
+        XCTAssertEqual(cut.chapters.first?.paths, ["s.go"])
+        XCTAssertEqual(cut.files.map(\.path), ["s.go"])
+        XCTAssertEqual(ReviewChapterList.next(map: cut) { _ in false }, "dir:shown", "never the hidden chapter")
+        XCTAssertNil(ReviewChapterList.next(map: cut) { $0 == "s.go" }, "a file outside the view keeps nothing open")
+        XCTAssertEqual(ReviewChapterList.counter(map: cut) { _ in false }.files, 1)
+    }
 }

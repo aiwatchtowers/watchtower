@@ -37,12 +37,12 @@ struct ReviewChapterListView: View {
     private func list(_ map: ReviewMap) -> some View {
         // The view's chapters by map key: a chapter with none of its files in this view is absent.
         let inView = Dictionary(model.chapters.map { ($0.key, $0) }) { first, _ in first }
-        let visible = Self.visible(map, chapters: Set(inView.keys), paths: Set(model.files.map(\.path)))
+        let visible = ReviewChapterList.inView(map, paths: Set(model.files.map(\.path)))
         return List {
             ReviewRunCard(model: model).chapterListRow()
             counter(visible).chapterListRow()
             ForEach(ReviewChapterList.sections(visible)) { section in
-                sectionHeader(section, shown: section.chapters).chapterListRow()
+                sectionHeader(section).chapterListRow()
                 if !isFolded(section) {
                     ForEach(section.chapters) { mapChapter in
                         if let chapter = inView[mapChapter.key] {
@@ -65,15 +65,6 @@ struct ReviewChapterListView: View {
         .panelSurface()
     }
 
-    /// The map cut to this view (a later round's Since shows part of it): the
-    /// counter and Next never point at a chapter that is not listed.
-    static func visible(_ map: ReviewMap, chapters: Set<String>, paths: Set<String>) -> ReviewMap {
-        ReviewMap(
-            chapters: map.chapters.filter { chapters.contains($0.key) }, files: map.files.filter { paths.contains($0.path) },
-            lanes: map.lanes, lanesPartial: map.lanesPartial, diffTruncated: map.diffTruncated, notes: map.notes
-        )
-    }
-
     private func files(of chapter: ReviewChapter) -> [ReviewDiffFile] {
         chapter.paths.compactMap { path in model.files.first { $0.path == path } }
     }
@@ -84,13 +75,10 @@ struct ReviewChapterListView: View {
 
     /// `11 chapters / 396 files left` and Next: the next chapter in danger order.
     private func counter(_ map: ReviewMap) -> some View {
-        // A file outside this view cannot be read here: it does not hold a chapter open.
-        let inView = Set(map.files.map(\.path))
-        let isViewed = { (path: String) in !inView.contains(path) || model.isViewed(path) }
-        let left = ReviewChapterList.counter(map: map, isViewed: isViewed)
+        let left = ReviewChapterList.counter(map: map) { model.isViewed($0) }
         // The next chapter after the one open: its files count as read here.
         let open = Set(map.chapters.first { $0.key == model.currentChapterKey }?.paths ?? [])
-        let next = ReviewChapterList.next(map: map) { open.contains($0) || isViewed($0) }
+        let next = ReviewChapterList.next(map: map) { open.contains($0) || model.isViewed($0) }
         return HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Text(ReviewMapPresentation.counterLine(chapters: left.chapters, files: left.files))
                 .font(.caption.monospacedDigit().weight(.semibold))
@@ -108,7 +96,8 @@ struct ReviewChapterListView: View {
         .padding(.horizontal, Spacing.small)
     }
 
-    private func sectionHeader(_ section: ReviewChapterList.Section, shown: [ReviewMap.Chapter]) -> some View {
+    private func sectionHeader(_ section: ReviewChapterList.Section) -> some View {
+        let shown = section.chapters
         let isFolded = isFolded(section)
         return Button {
             withAnimation(Motion.toggle) { folded[section.kind] = !isFolded }
