@@ -319,6 +319,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	var pub *slices.Publisher
 	h.center = link.NewCenter(link.Config{
 		Store: st, Keys: h.kr, Opener: opener, Host: hostInfo(o, name, authPub), Clock: o.Clock,
+		KeysInZone: h.keysInZone,
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
 			h.devicesChanged(kinds)

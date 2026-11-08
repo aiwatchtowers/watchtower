@@ -91,7 +91,7 @@ func (h *hubRuntime) newSwitcher(ac actions.Config) error {
 // alert pushes' switch hook.
 func (h *hubRuntime) switcherConfig(ac actions.Config) switcher.Config {
 	c := switcher.Config{
-		Store: h.st, Keys: h.kr, CloudKit: h.ck, Relay: h.rel, Actions: ac, Keyboxes: h.center.Keyboxes,
+		Store: h.st, Keys: h.kr, CloudKit: h.ck, Relay: h.rel, Actions: ac, KeyboxesAll: h.center.KeyboxesAll,
 		Clock: h.sup.o.Clock, OnSwitched: h.switchedTo,
 	}
 	if h.acct != nil {

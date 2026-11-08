@@ -28,8 +28,8 @@ func TestSwitchToICloudRemovesServingNobodyAtTheAnnounce(t *testing.T) {
 	}
 	w.advance(time.Hour)
 	w.rebuild(func(c *switcher.Config) {
-		keyboxes := c.Keyboxes
-		c.Keyboxes = func() ([]wire.Keybox, error) {
+		keyboxes := c.KeyboxesAll
+		c.KeyboxesAll = func() ([]wire.Keybox, error) {
 			// An answered read on the relay inside the step 3→4 window.
 			if err := w.st.SetMeta(state.MetaServingNobodySince, "1800000000"); err != nil {
 				t.Fatal(err)
@@ -73,7 +73,7 @@ func TestUnlinkInsideASwitchTakesTheTargetsOnRelay(t *testing.T) {
 			from := w.sw.Active().Kind()
 			// The announce fails: the record keeps its epoch, not done.
 			w.rebuild(func(c *switcher.Config) {
-				c.Keyboxes = func() ([]wire.Keybox, error) { return nil, errBoom }
+				c.KeyboxesAll = func() ([]wire.Keybox, error) { return nil, errBoom }
 			})
 			if err := w.sw.Request(w.ctx, from, ph.ID().String(), target, ""); err != nil {
 				t.Fatal(err)

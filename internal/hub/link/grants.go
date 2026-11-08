@@ -25,10 +25,11 @@ func (c *Center) Grants() ([]wire.DeviceGrant, error) {
 	return out, nil
 }
 
-// Keyboxes is the device_grant slice (the Swift DeviceGrantSlice), one keybox
-// per phone the hub answers, sealed later to that phone's key under
-// keybox-<id>: every linked phone (never capped, newest link first; only a
-// phone linked through a confirmed hello carries the epoch keys), then the
+// Keyboxes is the device_grant slice (the Swift DeviceGrantSlice), what the
+// data zone carries: one keybox per phone the hub answers, sealed later to
+// that phone's key under keybox-<id>: every linked phone (never capped,
+// newest link first; only a phone linked through a confirmed hello carries
+// the epoch keys, and only while Config.KeysInZone says yes for it), then the
 // waiting requests (awaiting_confirmation, confirm_nonce, link_code_tag),
 // the refusals younger than RefusalLifetime and the revoked phones younger
 // than RevokedLifetime, each newest first, filling what is left of
@@ -38,7 +39,15 @@ func (c *Center) Grants() ([]wire.DeviceGrant, error) {
 // read, so an Unlink (which rotates) never lands between them: a phone read
 // as linked gets the keys of the epoch it was linked under, never the one
 // that removes it.
-func (c *Center) Keyboxes() ([]wire.Keybox, error) {
+func (c *Center) Keyboxes() ([]wire.Keybox, error) { return c.keyboxes(false) }
+
+// KeyboxesAll is Keyboxes with the epoch keys for every phone linked through
+// a confirmed hello, whatever Config.KeysInZone says: what a transport_switched
+// notice and a pairing slot carry (relay client Phase 5).
+func (c *Center) KeyboxesAll() ([]wire.Keybox, error) { return c.keyboxes(true) }
+
+// keyboxes is Keyboxes; all fills the keys whatever KeysInZone says.
+func (c *Center) keyboxes(all bool) ([]wire.Keybox, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.now()
@@ -90,6 +99,13 @@ func (c *Center) Keyboxes() ([]wire.Keybox, error) {
 	if keyed {
 		for i := range linked {
 			if linked[i].Keys == nil {
+				continue
+			}
+			if !all && c.keysInZone != nil && !c.keysInZone(linked[i].Grant.DeviceID) {
+				// Not a reader of this zone (a free or lapsed phone on the
+				// relay): the grant without keys, which the phone's merge
+				// ignores. Never a static keybox in their place.
+				linked[i].Keys = nil
 				continue
 			}
 			// Each phone's own: relay_kx names its relay-key pair (Phase 5).

@@ -186,7 +186,9 @@ func (c *Center) writePairKeyboxes(ctx context.Context, t transport.Transport, z
 	if len(devices) == 0 {
 		return nil
 	}
-	boxes, err := c.Keyboxes()
+	// The pairing slot is the phone's way into the link, not the data zone:
+	// its keybox carries the keys whatever KeysInZone says.
+	boxes, err := c.KeyboxesAll()
 	if err != nil {
 		return err
 	}
