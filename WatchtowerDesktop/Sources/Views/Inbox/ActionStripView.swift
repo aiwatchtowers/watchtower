@@ -469,7 +469,7 @@ struct ActionStripActionsView: View {
     private var rowHooks: ArtifactRefHooks {
         let handler = rowHandler
         return InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches,
-                             sessionHoldsCall: { sessionHoldsCall?($0) ?? false },
+                             sessionHoldsCall: { sessionHoldsCall?($0) ?? false }, ideasAvailable: ideas != nil,
                              onCommand: onCardAction) { ref, press in
             Task { await handler.press(press, on: ref) }
         }.hooks

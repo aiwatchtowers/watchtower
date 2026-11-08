@@ -252,6 +252,27 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(some.nativeKinds(ref), [.open, .chat, .agent])
     }
 
+    /// An idea row without its `IdeasViewModel` draws its verdicts disabled, not dead.
+    func testIdeaVerdictsDisabledWithoutIdeasViewModel() {
+        let content = InboxRowActionsContent(kind: .idea(kind: .idea, status: .active, awaitsVerdict: true),
+                                             writesUnavailable: true)
+        for button in InboxRowActionsContent.ideaButtons(kind: .idea, status: .active, awaitsVerdict: true) {
+            XCTAssertTrue(content.isOff(button.press), "\(button)")
+        }
+        XCTAssertFalse(content.isOff(.open), "the row still opens its card")
+    }
+
+    func testIdeaRowWritesUnavailableFollowsIdeasViewModel() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertIdea(db, status: "proposed") }
+        let vm = await strip()
+        var hooks = hooks(vm)
+        hooks.ideasAvailable = false
+        let ref = InboxRef(kind: .idea, id: id)
+        XCTAssertEqual(hooks.content(ref, .inbox)?.writesUnavailable, true)
+        hooks.ideasAvailable = true
+        XCTAssertEqual(hooks.content(ref, .inbox)?.writesUnavailable, false)
+    }
+
     func testDuplicatesSuppressedPerKind() {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.inboxItem), [.open, .chat, .agent])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.track), [.target])

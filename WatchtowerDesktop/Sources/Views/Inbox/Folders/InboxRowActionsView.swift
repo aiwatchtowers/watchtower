@@ -73,7 +73,7 @@ struct InboxRowActionsView: View {
             ForEach(InboxRowActionsContent.ideaButtons(kind: kind, status: status, awaitsVerdict: awaitsVerdict),
                     id: \.self) { button in
                 ideaButton(button)
-                    .disabled(content.isOff(.approve)) // every idea verdict writes
+                    .disabled(content.isOff(button.press))
             }
         case .reminder:
             Button("Done") { onPress(.done) }.disabled(content.isOff(.done))

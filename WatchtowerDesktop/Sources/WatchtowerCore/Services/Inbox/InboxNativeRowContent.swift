@@ -102,6 +102,18 @@ package struct InboxRowActionsContent: Equatable {
     /// One of an idea row's buttons.
     package enum IdeaButton: Equatable, Sendable {
         case approve, makeTask, notNow, reject, activate, drop
+
+        /// The press it makes (Not now's moment is picked in its menu).
+        package var press: InboxRowPress {
+            switch self {
+            case .approve: .approve
+            case .makeTask: .makeTask
+            case .notNow: .notNow(until: "")
+            case .reject: .reject
+            case .activate: .activate
+            case .drop: .drop
+            }
+        }
     }
 
     package let kind: Kind
@@ -112,15 +124,20 @@ package struct InboxRowActionsContent: Equatable {
     /// No `watchtower` binary: the row's writes are drawn disabled and the
     /// footer says why; what only opens or navigates stays.
     package var cliMissing: Bool
+    /// What would carry the row's writes is not there yet (an idea's
+    /// `IdeasViewModel`): its writes are drawn disabled, never dead.
+    package var writesUnavailable: Bool
 
     package init(
-        kind: Kind, state: State = .idle, reply: Reply? = nil, isPreview: Bool = false, cliMissing: Bool = false
+        kind: Kind, state: State = .idle, reply: Reply? = nil, isPreview: Bool = false, cliMissing: Bool = false,
+        writesUnavailable: Bool = false
     ) {
         self.kind = kind
         self.state = state
         self.reply = reply
         self.isPreview = isPreview
         self.cliMissing = cliMissing
+        self.writesUnavailable = writesUnavailable
     }
 
     package var isBusy: Bool { state == .busy }
@@ -128,8 +145,9 @@ package struct InboxRowActionsContent: Equatable {
     /// The footer's line while the CLI is missing (the folder menu's words).
     package static let cliMissingMessage = InboxFoldersCLIError.cliUnavailable.localizedDescription
 
-    /// Whether `press` is drawn disabled for the missing CLI.
-    package func isOff(_ press: InboxRowPress) -> Bool { cliMissing && press.writes }
+    /// Whether `press` is drawn disabled: a write while the CLI is missing
+    /// or the row's writes are unavailable.
+    package func isOff(_ press: InboxRowPress) -> Bool { (cliMissing || writesUnavailable) && press.writes }
 
     /// `IdeaActionBar`'s verdict buttons, without its Merge, delete and a
     /// decision's Supersede / Reverse (the full pane opens on a press of

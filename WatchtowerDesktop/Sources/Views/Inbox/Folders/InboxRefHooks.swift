@@ -13,6 +13,9 @@ struct InboxRefHooks {
     var workbenches: [Workbench] = []
     /// `AgentActionCardView.sessionHoldsCall` for a proposal (a connector call).
     var sessionHoldsCall: (AgentAction) -> Bool = { _ in false }
+    /// The idea verdicts' `IdeasViewModel` is there; without it an idea
+    /// row's buttons are drawn disabled.
+    var ideasAvailable = true
     var onCommand: (InboxCardCommand) -> Void = { _ in }
     var onPress: (InboxRef, InboxRowPress) -> Void = { _, _ in }
 
@@ -93,7 +96,8 @@ struct InboxRefHooks {
     func content(_ ref: InboxRef, _ mode: ArtifactRenderMode) -> InboxRowActionsContent? {
         guard let kind = kind(ref) else { return nil }
         return InboxRowActionsContent(kind: kind, state: state(ref), isPreview: mode == .preview,
-                                      cliMissing: mode != .preview && vm.folderMenu.isCLIMissing)
+                                      cliMissing: mode != .preview && vm.folderMenu.isCLIMissing,
+                                      writesUnavailable: ref.kind == .idea && !ideasAvailable)
     }
 
     private func kind(_ ref: InboxRef) -> InboxRowActionsContent.Kind? {
