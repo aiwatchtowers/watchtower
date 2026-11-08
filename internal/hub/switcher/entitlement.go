@@ -282,6 +282,11 @@ func (s *Switcher) lapse(ctx context.Context, device string, req *lapseRequest) 
 		return err
 	}
 	id := canonical(dev.ID)
+	// queueLapse cleared the keys; a clear that failed there is done here, before any read, and a failure leaves
+	// the lapse undecided for the next Step (nothing is left to clear otherwise: SetKXOffer refuses throughout).
+	if err := s.clearKeys(id); err != nil {
+		return err
+	}
 	onRelay := s.activeKind() == transport.KindRelay && s.heading() == transport.KindRelay
 	others, unreadable := false, false
 	if onRelay {

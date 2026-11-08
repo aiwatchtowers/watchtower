@@ -165,5 +165,11 @@ func (s *Switcher) ReaderLost(device string) error {
 	if err := s.clearKeys(canonical(dev.ID)); err != nil {
 		return err
 	}
-	return s.owe(dev.ID, true)
+	if err := s.owe(dev.ID, true); err != nil {
+		return err
+	}
+	// Once more after the lapsed mark: an epoch_ack read between the first clear and the mark (no lapse_pending
+	// names this phone) may have stored an offer, which a rotation would derive from. From the mark on SetKXOffer
+	// refuses, so this clear is the last.
+	return s.clearKeys(canonical(dev.ID))
 }
