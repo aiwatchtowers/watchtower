@@ -3,10 +3,12 @@ import Foundation
 
 // MARK: - Own rows across a keybox merge (relay client Phase 5, Task 8 fix round 1b)
 //
-// A merge can drop epochs (`saveHubLink` keeps `retained(now:)`): a phone back after weeks jumps many epochs in one
-// merge. This phone's own `pending_actions` rows sealed in an epoch the merge drops would then never open again, and
-// a Not delivered row would leave the list while it still counts. So, before the save, each such row is resealed for
-// display under the merged newest epoch, with the keys the phone holds before the merge drops them.
+// A link write can drop epochs (`saveHubLink` and `updateHubLink` keep `retained(now:)`): a phone back after weeks
+// jumps many epochs in one merge, and a write that is no merge (`withOffer`) drops a previous epoch 7 days after it was
+// superseded. This phone's own `pending_actions` rows sealed in a dropped epoch would never open again, and a Not
+// delivered row would leave the list while it still counts. So at every merge, before the save, every own row sealed
+// in an epoch below the merged newest is resealed under the newest, with the keys the phone holds before the merge;
+// the newest epoch is never trimmed.
 //
 // Crash-safe order, on the outbox chain:
 // 1. promote what an earlier, interrupted run staged (its epoch is held now);
@@ -37,7 +39,7 @@ extension ActionOutbox {
             let identity = try keys.identity()
             try promoteStagedReseals(link: link, identity: identity, hub: hub, device: device)
             let merge = try link.merging(keybox, identity: identity, hubID: hub, deviceID: device, now: now)
-            try await stageOwnReseals(from: link, to: merge.keys, identity: identity, hub: hub, device: device, now: now)
+            try await stageOwnReseals(from: link, to: merge.keys, identity: identity, hub: hub, device: device)
             var saved: KeyboxMerge?
             guard let stored = try keys.updateHubLink(hubID, { current in
                 let merged = try current.merging(keybox, identity: identity, hubID: hub, deviceID: device, now: now)
@@ -51,22 +53,20 @@ extension ActionOutbox {
         }
     }
 
-    /// Step 2: every own row whose epoch's key `link` holds but `merged` will not after retention is opened with the
-    /// held key and sealed under `merged`'s newest epoch, with a fresh envelope seq; the new envelopes are staged.
+    /// Step 2: every own row sealed in an epoch below `merged`'s newest, any state, is opened with the key `link`
+    /// holds and sealed under `merged`'s newest epoch, with a fresh envelope seq; the new envelopes are staged. Every
+    /// row then sits in the newest epoch, which no link write ever trims (retention also runs on writes that are no
+    /// merge, `withOffer` say, and drops a previous epoch 7 days after it was superseded).
     func stageOwnReseals(
-        from link: HubLinkKeys, to merged: HubLinkKeys, identity: DeviceIdentityKeys, hub: UUID, device: UUID, now: Date
+        from link: HubLinkKeys, to merged: HubLinkKeys, identity: DeviceIdentityKeys, hub: UUID, device: UUID
     ) async throws {
         guard let target = merged.epochs.last?.epoch,
               let targetKey = try merged.ownRelayKey(epoch: target, identity: identity, hub: hub, device: device)
         else { return }
-        // Retention as the save will run it, an hour ahead: a row of an epoch about to expire is moved too (the
-        // promote lists only rows whose key really went).
-        let kept = merged.retained(now: now.addingTimeInterval(3600))
         var staged: [StagedReseal] = []
         for row in try store.ownSealedRows() {
             guard let header = try? Envelope.parse(row.envelope).header, header.envelopeClass == .relayToHub,
                   header.senderID == device, header.epoch < target,
-                  try kept.ownRelayKey(epoch: header.epoch, identity: identity, hub: hub, device: device) == nil,
                   let oldKey = try link.ownRelayKey(epoch: header.epoch, identity: identity, hub: hub, device: device)
             else { continue }
             let context = EnvelopeContext(zone: .relay, wireName: row.wireName)

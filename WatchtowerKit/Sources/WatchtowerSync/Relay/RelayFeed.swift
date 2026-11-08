@@ -77,8 +77,9 @@ public enum DesktopReachability: Equatable, Sendable {
 /// `relay_feed_parked_since` tells Now. Nothing is skipped: every record is read
 /// in order once the keys come. While `SecureTransport.waitsForKeybox` is false
 /// (no key source) it stops at once, with no mark. A batch read with no pending
-/// record ends the wait and the mark; a resume alone keeps the mark, and a
-/// locked keychain restarts the wait (locked hours never count). A hub record in an epoch the phone will
+/// record ends the wait and the mark; a resume alone keeps the mark. Hours the
+/// keychain stays locked count toward the cap, as the plan's hour from the first
+/// sighting does (F26: a phone locked between uses still parks and Now says so). A hub record in an epoch the phone will
 /// never hold is dropped (`epochGone`) and, once per batch, every unechoed
 /// action is queued again (`requeueUnechoedAfterDrop`), so a lost echo or a
 /// lost `resend_from` is recovered.
@@ -207,11 +208,6 @@ public actor RelayFeed {
             (batch, epochGone) = try await transport.relayChanges(since: since)
         } catch SecureTransportError.epochKeysPending {
             try waitForKeybox(resumesAtStart: resumesAtStart)
-            throw SecureTransportError.keysUnavailable
-        } catch SecureTransportError.keysUnavailable {
-            // A locked keychain: the hours it stays locked do not count against the wait (an overnight lock must not
-            // park the feed at the first read after unlock). The next pending read starts the hour again.
-            try store.resetRelayWait()
             throw SecureTransportError.keysUnavailable
         }
         try store.endRelayWait()

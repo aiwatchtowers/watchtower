@@ -213,8 +213,9 @@ extension RelayFeedTests {
         XCTAssertEqual(try r.rig.store.relayFeedParkedSince(), mark, "Now keeps the row while the actions still wait")
     }
 
-    /// M3: the hours a locked keychain blocks every read do not count against the cap.
-    func testALockedKeychainDoesNotCountAgainstTheWait() async throws {
+    /// F26/F38: the hour runs from the first sighting, locked hours included. A phone locked and woken in the
+    /// background in the middle of the wait keeps its sighting, and the first read after unlock past the hour parks.
+    func testALockedThenWokenPhoneParksAfterTheHour() async throws {
         let r = try await rotation(epochs: [1])
         r.hubSeals(in: 2)
         try await r.rig.hub.writeControl(await r.rig.hub.control(.transportSwitchRejected))
@@ -222,14 +223,17 @@ extension RelayFeedTests {
         XCTAssertEqual(try r.rig.store.relayWaitSince(), OrderedRig.base)
 
         r.rig.keys.isLocked = true
-        r.advance(by: 8 * 3_600)
+        r.advance(by: 1_800)
         await r.pollWaiting()
-        XCTAssertNil(try r.rig.store.relayWaitSince(), "a lock restarts the wait")
+        XCTAssertEqual(try r.rig.store.relayWaitSince(), OrderedRig.base, "a locked background cycle keeps the sighting")
+        XCTAssertNil(try r.rig.store.relayFeedParkedSince())
+        r.advance(by: 1_800)
         r.rig.keys.isLocked = false
         await r.pollWaiting()
 
-        XCTAssertNil(try r.rig.store.relayFeedParkedSince(), "the first read after unlock does not park")
-        XCTAssertEqual(try r.rig.store.relayWaitSince(), OrderedRig.base.addingTimeInterval(8 * 3_600))
+        XCTAssertEqual(
+            try r.rig.store.relayFeedParkedSince(), OrderedRig.base.addingTimeInterval(SecureTransport.keyboxWaitCap),
+            "parked: Now shows S58")
     }
 
     /// Blocks the key-source check until released, telling when the feed reached it.

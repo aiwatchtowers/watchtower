@@ -97,8 +97,19 @@ final class ActionOutboxResealTests: XCTestCase {
         XCTAssertTrue(try phone.store.stagedReseals().isEmpty)
     }
 
-    /// F7 with a phone back after 8+ rotations: one merge jumps many epochs and drops the row's epoch. The row is
-    /// resealed first, so it is listed, Not delivered, and never sent.
+    /// The raise to `epoch` through a plain link write, as a merge from before the hook did: rows stay where they are.
+    private func mergeWithoutTheHook(_ phone: Phone, epoch: UInt32) throws {
+        let box = try keybox(phone, epoch: epoch)
+        _ = try phone.keys.updateHubLink(hubID) { link in
+            try link.merging(
+                box, identity: TestE2E.deviceIdentity, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, now: phone.now
+            ).keys
+        }
+    }
+
+    /// F7 with a phone back after 8+ rotations: one merge jumps many epochs and drops the epoch of a row nothing moved
+    /// (sealed before the last raise, which ran without the hook). The row is resealed first, so it is listed, Not
+    /// delivered, and never sent.
     func testAnF7ReturnShowsTheRowNotDeliveredAndListed() async throws {
         let phone = try await makePhone()
         try await merge(phone, epoch: 1)
@@ -106,7 +117,7 @@ final class ActionOutboxResealTests: XCTestCase {
         _ = try await phone.outbox.flush()
         XCTAssertEqual(try listed(phone, id)?.delivery, .sent)
         phone.advance(by: 7 * day)
-        try await merge(phone, epoch: 2)
+        try mergeWithoutTheHook(phone, epoch: 2)
         let writes = await phone.recorder.conditionalSaves.count
 
         // Away for ten weeks: the first merge on return jumps to epoch 12.
@@ -128,20 +139,72 @@ final class ActionOutboxResealTests: XCTestCase {
             "never sent")
     }
 
-    /// A row still in an epoch the merge keeps is not touched.
-    func testARowInAKeptEpochKeepsItsBytes() async throws {
+    /// A row in an epoch the merge keeps moves to the newest and keeps its state (still sendable: its old key is
+    /// held); a row already in the newest keeps its bytes.
+    func testARowInAKeptEpochMovesToTheNewestAndStaysSent() async throws {
         let phone = try await makePhone()
         try await merge(phone, epoch: 1)
         let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
         _ = try await phone.outbox.flush()
-        let before = try XCTUnwrap(phone.store.outboxRows([.sent]).first { $0.actionID == id })
 
+        phone.advance(by: day)
+        let box = try keybox(phone, epoch: 2)
+        try await phone.outbox.mergeKeybox(box, into: phone.keys, hubID: hubID, now: phone.now)
+
+        let moved = try XCTUnwrap(phone.store.outboxRows([.sent]).first { $0.actionID == id })
+        XCTAssertEqual(moved.epoch, 2)
+        XCTAssertEqual(try Envelope.parse(moved.envelope).header.epoch, 2)
+        try await phone.outbox.mergeKeybox(box, into: phone.keys, hubID: hubID, now: phone.now)
+        XCTAssertEqual(
+            try phone.store.outboxRows([.sent]).first { $0.actionID == id }?.envelope, moved.envelope, "the same keybox again")
+    }
+
+    /// N2: a link write that is no merge (`withOffer`) trims a previous epoch 7 days after it was superseded. The
+    /// merge already moved the row to the newest, so it is still listed.
+    func testANonMergeWriteAfterEightDaysKeepsTheRowListed() async throws {
+        let phone = try await makePhone()
+        try await merge(phone, epoch: 1)
+        let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        await phone.outbox.drain()
+        try phone.store.markUndelivered(actionIDs: [id], reason: .refused, message: "Not delivered to your Mac.")
         phone.advance(by: day)
         try await merge(phone, epoch: 2)
 
-        let after = try XCTUnwrap(phone.store.outboxRows([.sent]).first { $0.actionID == id })
-        XCTAssertEqual(after.envelope, before.envelope)
-        XCTAssertEqual(after.delivery, .sent)
+        phone.advance(by: 8 * day)
+        _ = try phone.keys.updateHubLink(hubID) { $0.withOffer().0 }
+
+        XCTAssertEqual(try phone.keys.hubLink(hubID)?.epochs.map(\.epoch), [2], "epoch 1 is trimmed")
+        XCTAssertEqual(try listed(phone, id)?.delivery, .undelivered, "still listed")
+    }
+
+    /// N3: a row whose bytes changed between the save and the promote is neither swapped nor listed Not delivered.
+    func testTheNotDeliveredListingMatchesTheStagedEnvelope() async throws {
+        let phone = try await makePhone()
+        try await merge(phone, epoch: 1)
+        let id = try await phone.outbox.enqueue(kind: .targetDone, entityRecordName: "target-42")
+        _ = try await phone.outbox.flush()
+        phone.advance(by: 7 * day)
+        try mergeWithoutTheHook(phone, epoch: 2)
+        phone.advance(by: 70 * day)
+        let box = try keybox(phone, epoch: 12)
+        let link = try XCTUnwrap(phone.keys.hubLink(hubID))
+        let merged = try link.merging(
+            box, identity: TestE2E.deviceIdentity, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, now: phone.now)
+        try await phone.outbox.stageOwnReseals(
+            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID)
+        _ = try phone.keys.updateHubLink(hubID) { _ in merged.keys }
+        // Killed before the promote; another writer changes the row's bytes meanwhile.
+        let other = Data(repeating: 7, count: 64)
+        try await phone.store.writer.write { db in
+            try db.execute(sql: "UPDATE pending_actions SET payload = ? WHERE action_id = ?", arguments: [other, id])
+        }
+
+        try await phone.outbox.mergeKeybox(box, into: phone.keys, hubID: hubID, now: phone.now)
+
+        let row = try XCTUnwrap(phone.store.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == id })
+        XCTAssertEqual(row.delivery, .sent, "not listed under bytes it never staged")
+        XCTAssertEqual(row.envelope, other)
+        XCTAssertTrue(try phone.store.stagedReseals().isEmpty)
     }
 
     /// A kill after the stage leaves the old keys and the old rows; a kill after the save leaves the stage, which the
@@ -163,8 +226,7 @@ final class ActionOutboxResealTests: XCTestCase {
 
         // Killed after the stage, before the save.
         try await phone.outbox.stageOwnReseals(
-            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID,
-            now: phone.now)
+            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID)
         XCTAssertEqual(try phone.store.stagedReseals().count, 1)
         XCTAssertEqual(try phone.keys.hubLink(hubID), link, "the old keys")
         XCTAssertEqual(try phone.store.outboxRows([.undelivered]).first?.envelope, rowBefore.envelope, "the old row")
@@ -172,8 +234,7 @@ final class ActionOutboxResealTests: XCTestCase {
 
         // The re-run, killed after the save, before the promote.
         try await phone.outbox.stageOwnReseals(
-            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID,
-            now: phone.now)
+            from: link, to: merged.keys, identity: TestE2E.deviceIdentity, hub: TestE2E.hubID, device: TestE2E.deviceID)
         XCTAssertEqual(try phone.store.stagedReseals().count, 1, "staged again, not twice")
         _ = try phone.keys.updateHubLink(hubID) { _ in merged.keys }
         XCTAssertEqual(try phone.store.outboxRows([.undelivered]).first?.envelope, rowBefore.envelope)

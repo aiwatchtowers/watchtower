@@ -464,8 +464,9 @@ extension ReplicaStore {
     }
 
     /// Applies `reseals` in one transaction: each row still holding its old envelope takes the new one (its `epoch`
-    /// column too, when it has one; its state stays); the ids in `undeliver` that are `queued` or `sent` are listed
-    /// Not delivered (`refused`, `message`); the applied ones leave the stage.
+    /// column too, when it has one; its state stays); of those swapped, the ids in `undeliver` that are `queued` or
+    /// `sent` are listed Not delivered (`refused`, `message`): a row whose bytes changed since the stage is left
+    /// alone; the applied ones leave the stage.
     func promoteReseals(_ reseals: [StagedReseal], undeliver: Set<String>, message: String) throws {
         guard !reseals.isEmpty else { return }
         try writer.write { db in
@@ -476,7 +477,7 @@ extension ReplicaStore {
                         WHERE action_id = ? AND payload = ?
                         """,
                     arguments: [reseal.payload, Int64(reseal.epoch), reseal.actionID, reseal.oldPayload])
-                if undeliver.contains(reseal.actionID) {
+                if undeliver.contains(reseal.actionID), db.changesCount > 0 {
                     try db.execute(
                         sql: """
                             UPDATE pending_actions
@@ -517,13 +518,6 @@ extension ReplicaStore {
             guard try Self.metaDate(db, Self.relayFeedParkedSinceKey) == nil else { return }
             try Self.setMeta(db, Self.relayFeedParkedSinceKey, String(date.timeIntervalSince1970))
         }
-    }
-
-    /// A locked keychain: the wait's first sighting goes (the parked mark stays), so locked hours never count against
-    /// the cap. Writes nothing when no wait is recorded (the feed calls it on every locked cycle).
-    func resetRelayWait() throws {
-        guard try relayWaitSince() != nil else { return }
-        try writer.write { db in try Self.deleteMeta(db, Self.relayWaitSinceKey) }
     }
 
     /// A batch was read with no pending epoch: the wait and the parked mark both end, in one transaction. Writes
