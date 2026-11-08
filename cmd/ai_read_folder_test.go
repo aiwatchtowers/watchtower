@@ -270,3 +270,16 @@ func TestAIQueryReadFolderAsk_Refusals(t *testing.T) {
 		})
 	}
 }
+
+// resolveReviewReadFolder hands the provider the symlink-resolved path (the
+// stub's `pwd -P` cannot tell a link from its target).
+func TestResolveReviewReadFolder_ResolvesASymlinkedCwd(t *testing.T) {
+	f := newReadFolderFixture(t)
+	worktree, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	link := filepath.Join(t.TempDir(), "moved")
+	require.NoError(t, os.Symlink(worktree, link))
+	got, err := resolveReviewReadFolder(f.dbPath, f.addAsk(t, "review", "spec", true, link))
+	require.NoError(t, err)
+	assert.Equal(t, worktree, got)
+}
