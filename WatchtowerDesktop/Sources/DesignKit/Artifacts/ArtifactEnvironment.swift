@@ -18,15 +18,25 @@ public struct ArtifactRefHooks {
     public var nativeActions: (ArtifactRef, ArtifactRenderMode) -> AnyView?
     /// The recipe's row actions of these kinds are not drawn on that row.
     public var nativeKinds: (ArtifactRef) -> Set<ArtifactActionKind>
+    /// Drawn under the row, full width: a failed press's line with
+    /// **Retry**, B's Reply composer. Nil draws nothing.
+    public var nativeFooter: (ArtifactRef, ArtifactRenderMode) -> AnyView?
+    /// A press on the row itself in `.inbox` (an idea opens its full card);
+    /// nil leaves the row's own `link`, if any.
+    public var open: (ArtifactRef) -> (() -> Void)?
 
     public init(
         isOpen: @escaping (ArtifactRef) -> Bool = { _ in true },
         nativeActions: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
-        nativeKinds: @escaping (ArtifactRef) -> Set<ArtifactActionKind> = { _ in [] }
+        nativeKinds: @escaping (ArtifactRef) -> Set<ArtifactActionKind> = { _ in [] },
+        nativeFooter: @escaping (ArtifactRef, ArtifactRenderMode) -> AnyView? = { _, _ in nil },
+        open: @escaping (ArtifactRef) -> (() -> Void)? = { _ in nil }
     ) {
         self.isOpen = isOpen
         self.nativeActions = nativeActions
         self.nativeKinds = nativeKinds
+        self.nativeFooter = nativeFooter
+        self.open = open
     }
 }
 

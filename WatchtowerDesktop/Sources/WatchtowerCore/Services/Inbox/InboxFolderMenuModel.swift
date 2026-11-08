@@ -74,7 +74,11 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
             artifacts = artifacts.mapValues { $0.filter { $0.automationID != approvalsID } }
         }
         let refs = InboxFolderCounts.refs(of: artifacts)
-        let refState = try InboxRefState.read(db, refs: Array(refs.values.joined()), nowUTC: nowUTC)
+        // Needs approval's cards are read too: their `action`/`reminder`
+        // rows draw only while the record is open (the row hooks' `isOpen`).
+        let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
+        let refState = try InboxRefState.read(
+            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
         let legacy = try ActionStripViewModel.legacyCounts(
             db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
         let counts = InboxFolderCounts.counts(

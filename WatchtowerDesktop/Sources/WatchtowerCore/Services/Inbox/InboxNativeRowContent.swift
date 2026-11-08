@@ -120,3 +120,39 @@ package struct InboxRowActionsContent: Equatable {
         }
     }
 }
+
+/// A press on a row's native actions (`InboxRowActionsView`).
+package enum InboxRowPress: Equatable, Sendable {
+    case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent
+    case stopWatching, makeTask, goToTarget, deleteTrack
+    case approve, reject, edit, retry, dismiss, notNow(until: String), activate, drop
+    case snoozeHour
+    /// **Retry** under a failed press: repeats it.
+    case retryFailedPress
+    case replyChanged(String), proposeReply, cancelReply
+}
+
+/// A row's failed press (spec "Native row actions", Failure): the message
+/// shown under the row and the press its **Retry** repeats.
+package struct InboxRowFailure: Equatable, Sendable {
+    package let message: String
+    package let press: InboxRowPress
+
+    package init(message: String, press: InboxRowPress) {
+        self.message = message
+        self.press = press
+    }
+}
+
+package extension InboxRef {
+    /// The strip's key for this ref's record: its busy flag and row error.
+    var selection: InboxSelection {
+        switch kind {
+        case .inboxItem: .message(Int(id))
+        case .track: .track(Int(id))
+        case .idea: .idea(Int(id))
+        case .reminder: .reminder(id)
+        case .action: .proposal(id)
+        }
+    }
+}

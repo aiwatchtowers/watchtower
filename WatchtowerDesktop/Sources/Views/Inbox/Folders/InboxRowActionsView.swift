@@ -1,19 +1,8 @@
 import SwiftUI
 import WatchtowerCore
 
-/// A press on a row's native actions.
-enum InboxRowPress: Equatable {
-    case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent
-    case stopWatching, makeTask, goToTarget, deleteTrack
-    case approve, reject, edit, retry, dismiss, notNow(until: String), activate, drop
-    case snoozeHour
-    /// **Retry** under a failed press: repeats it.
-    case retryFailedPress
-    case replyChanged(String), proposeReply, cancelReply
-}
-
-/// The trailing buttons of a row with a `ref` (plan Task 1: no wiring; Task
-/// 13 hands them to A's `ArtifactRefHooks.nativeActions`).
+/// The trailing buttons of a row with a `ref`, drawn through A's
+/// `ArtifactRefHooks.nativeActions` (`InboxRefHooks`).
 struct InboxRowActionsView: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
