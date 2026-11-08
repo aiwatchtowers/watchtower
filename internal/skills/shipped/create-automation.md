@@ -829,7 +829,8 @@ if (res.exit_code !== 0) {
    pass `folder: {title, parent_slug}` to `draft_automation`: an existing
    folder's exact title and `parent_slug` to reuse it, or a new title with
    the slug of the folder it goes in (leave `parent_slug` out for the top
-   level). Never propose a near-duplicate of a folder that exists. Pass the
+   level; a slug that is not in the list also puts it at the top level, and
+   the line names that parent). Never propose a near-duplicate of a folder that exists. Pass the
    same `folder` on every later `draft_automation` call: only the newest
    draft's folder is shown. In the Automations panel the draft column's
    Changed row then ends with "Folder: Release" or "New folder: Release, in

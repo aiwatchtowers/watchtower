@@ -61,7 +61,7 @@ func (e *DraftCacheEntry) UnmarshalJSON(data []byte) error {
 // "New folder: <title>, in <parent>", and routes the saved automation to it.
 type FolderSuggestion struct {
 	Title      string `json:"title" jsonschema:"the folder's title, 1 to 60 characters on one line; an existing folder's title reuses it"`
-	ParentSlug string `json:"parent_slug,omitempty" jsonschema:"the slug of the folder it sits in, from list_inbox_folders; omit for the top level"`
+	ParentSlug string `json:"parent_slug,omitempty" jsonschema:"the slug of the folder it sits in, from list_inbox_folders; omit for the top level (an unknown slug is the top level too)"`
 }
 
 // clean checks a suggestion the chat sent: a title a folder may have (it is

@@ -30,7 +30,7 @@ func NewListInboxFolders() *Tool {
 		Description: "List the owner's Inbox folders in menu order: title, slug, parent_slug (\"\" for the root, " +
 			"slug \"inbox\") and hidden (the owner hid it or a folder above it). Read it before suggesting a " +
 			"folder in draft_automation's folder argument: reuse an existing folder's title and parent_slug " +
-			"rather than proposing a near-duplicate.",
+			"rather than proposing a near-duplicate. An unknown parent_slug puts a new folder at the root.",
 		InputSchema: mustSchema[struct{}]("list_inbox_folders"),
 		Access:      AccessRead,
 		Surfaces:    []string{AutomationEditorSurface},
