@@ -58,6 +58,26 @@ final class KeyboxTests: XCTestCase {
         XCTAssertEqual(decoded, keybox)
     }
 
+    /// The ephemeral relay key pairs (Phase 5) travel as `relay_kx` / `previous_relay_kx`, and a keybox of a hub
+    /// that predates them decodes with both nil.
+    func testRelayKXRoundTripsAndAnOldKeyboxDecodesWithout() throws {
+        let withKX = KeyboxKeys(
+            epoch: 4, dataKey: "a", alertKey: "b", metaKey: "c", previousEpoch: 3, previousDataKey: "d",
+            previousAlertKey: "e", relayKX: KeyboxRelayKX(hubPub: "h1", devicePub: "d1"),
+            previousRelayKX: KeyboxRelayKX(hubPub: "h0", devicePub: "d0"))
+        let encoded = try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: withKX))
+        let json = try XCTUnwrap(String(data: encoded, encoding: .utf8))
+        XCTAssertTrue(json.contains(#""relay_kx":{"device_pub":"d1","hub_pub":"h1"}"#), json)
+        XCTAssertTrue(json.contains(#""previous_relay_kx":{"device_pub":"d0","hub_pub":"h0"}"#), json)
+        XCTAssertEqual(try RelayCoder.makeDecoder().decode(Keybox.self, from: encoded).keys, withKX)
+
+        let old = try RelayCoder.makeEncoder().encode(Keybox(grant: grant, keys: keys))
+        XCTAssertFalse(try XCTUnwrap(String(data: old, encoding: .utf8)).contains("relay_kx"))
+        let decoded = try XCTUnwrap(try RelayCoder.makeDecoder().decode(Keybox.self, from: old).keys)
+        XCTAssertNil(decoded.relayKX)
+        XCTAssertNil(decoded.previousRelayKX)
+    }
+
     func testGrantStatesTravelAsOptionalFlags() throws {
         let waiting = DeviceGrant(
             deviceID: "d", hubID: "h", name: "n", scope: .shared, linked: false, typingAllowed: false,

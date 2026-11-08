@@ -47,6 +47,8 @@ type fixture struct {
 	UploadEcho        []contractCase `json:"upload_echo"`
 	TransportSwitched []contractCase `json:"transport_switched"`
 	SwitchRejected    []contractCase `json:"transport_switch_rejected"`
+	EpochAck          []contractCase `json:"epoch_ack"`
+	Keybox            []contractCase `json:"keybox"`
 	DevicePayload     []struct {
 		Name          string          `json:"name"`
 		RelayAuthSeed string          `json:"relay_auth_seed"`
@@ -68,6 +70,15 @@ type contractCase struct {
 	JSON   json.RawMessage `json:"json"`
 	Expect json.RawMessage `json:"expect"`
 	Kit    map[string]any  `json:"kit"`
+}
+
+// names lists the cases' names in fixture order.
+func names(cs []contractCase) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Name)
+	}
+	return out
 }
 
 // recordingsOffered is the phone's reading (protocol §9): recording is
@@ -223,13 +234,6 @@ func TestHubContractFixture_RecordingSwitch(t *testing.T) {
 	require.NoError(t, err)
 	var f fixture
 	require.NoError(t, json.Unmarshal(raw, &f))
-	names := func(cs []contractCase) []string {
-		var out []string
-		for _, c := range cs {
-			out = append(out, c.Name)
-		}
-		return out
-	}
 	require.ElementsMatch(t, []string{"capabilities_on", "capabilities_off", "capabilities_absent",
 		"capabilities_unknown_value", "unknown_capability_key"}, names(f.Heartbeat))
 	require.ElementsMatch(t, []string{"failed_not_supported", "failed_expired", "received",
@@ -430,5 +434,96 @@ func TestDevicePayloadCases(t *testing.T) {
 	for _, n := range []string{"with_proven_relay_id", "without_relay_id", "invalid_relay_id_reads_as_none",
 		"wrong_key", "bad_signature", "other_hub", "work_alerts_off"} {
 		require.True(t, names[n], "missing case %s", n)
+	}
+}
+
+// TestHubContractFixture_EpochAckOffer pins epoch_ack with and without the
+// phone's next relay key offer (next_kx, unpadded base64url of 32 bytes).
+func TestHubContractFixture_EpochAckOffer(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	require.Equal(t, []string{"epoch_ack_with_offer", "epoch_ack_without_offer"}, names(f.EpochAck))
+	for _, c := range f.EpochAck {
+		t.Run(c.Name, func(t *testing.T) {
+			var ctl wire.Control
+			require.NoError(t, json.Unmarshal(c.JSON, &ctl))
+			out, err := wire.Marshal(ctl)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's bytes")
+			require.Equal(t, wire.ControlEpochAck, ctl.Kind)
+			require.InDelta(t, c.Kit["epoch"], float64(*ctl.Epoch), 0)
+			if c.Kit["next_kx"] == nil {
+				require.Nil(t, ctl.NextKX)
+				return
+			}
+			require.Equal(t, c.Kit["next_kx"], *ctl.NextKX)
+			pub, err := base64.RawURLEncoding.DecodeString(*ctl.NextKX)
+			require.NoError(t, err, "unpadded base64url")
+			require.Len(t, pub, 32)
+		})
+	}
+}
+
+// TestEpochAckOfferUnknownToOlderHubDecodes pins that a control decoder
+// without next_kx (an older hub's wire.Control) and today's decoder both
+// read an epoch_ack carrying fields they do not know: the offer costs an older
+// hub nothing. json.Unmarshal into wire.Control is the hub's real decode path
+// for a phone control (internal/hub/actions decodes, used by readControl and
+// the standby reader); a stricter decoder there (DisallowUnknownFields) would
+// drop every Phase 5 epoch_ack and must not be added.
+func TestEpochAckOfferUnknownToOlderHubDecodes(t *testing.T) {
+	payload := []byte(`{"device_id":"BBBBBBBB-0000-4000-8000-000000000002","epoch":3,` +
+		`"future_field":{"x":1},"hub_id":"AAAAAAAA-0000-4000-8000-000000000001",` +
+		`"id":"DDDDDDDD-0000-4000-8000-000000000004","kind":"epoch_ack",` +
+		`"next_kx":"ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"}`)
+	var older struct {
+		ID       string  `json:"id"`
+		Kind     string  `json:"kind"`
+		DeviceID *string `json:"device_id,omitempty"`
+		HubID    *string `json:"hub_id,omitempty"`
+		Epoch    *uint32 `json:"epoch,omitempty"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &older))
+	require.Equal(t, wire.ControlEpochAck, older.Kind)
+	require.Equal(t, uint32(3), *older.Epoch)
+
+	var ctl wire.Control
+	require.NoError(t, json.Unmarshal(payload, &ctl), "the unknown future_field is ignored")
+	require.Equal(t, uint32(3), *ctl.Epoch)
+	require.NotNil(t, ctl.NextKX)
+}
+
+// TestHubContractFixture_KeyboxRelayKX pins the keybox's relay_kx and
+// previous_relay_kx, and that an old-shape keybox decodes with both nil.
+func TestHubContractFixture_KeyboxRelayKX(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	require.Equal(t, []string{"keybox_with_relay_kx", "keybox_old_shape"}, names(f.Keybox))
+	pair := func(t *testing.T, want any, got *wire.KeyboxRelayKX) {
+		t.Helper()
+		if want == nil {
+			require.Nil(t, got)
+			return
+		}
+		require.NotNil(t, got)
+		w := want.(map[string]any)
+		require.Equal(t, w["hub_pub"], got.HubPub)
+		require.Equal(t, w["device_pub"], got.DevicePub)
+	}
+	for _, c := range f.Keybox {
+		t.Run(c.Name, func(t *testing.T) {
+			var kb wire.Keybox
+			require.NoError(t, json.Unmarshal(c.JSON, &kb))
+			out, err := wire.Marshal(kb)
+			require.NoError(t, err)
+			require.Equal(t, compact(t, c.Expect), string(out), "Go writes the fixture's bytes")
+			require.NotNil(t, kb.Keys)
+			pair(t, c.Kit["relay_kx"], kb.Keys.RelayKX)
+			pair(t, c.Kit["previous_relay_kx"], kb.Keys.PreviousRelayKX)
+		})
 	}
 }

@@ -76,6 +76,9 @@ Suite 1 only: X25519, Ed25519, HKDF-SHA256, ChaCha20-Poly1305, HPKE RFC 9180 `DH
 | `K_data[e]`, `K_alert[e]` | hub + linked phones | data-lane content, ask alerts, per epoch `e` |
 | `dev_sig` (Ed25519), `dev_kx` (X25519) | phone | signs hellos; receives keyboxes; derives relay keys |
 | relay key `K_relay[dir, e]` | hub + one phone | `HKDF-SHA256(X25519(hub_kx, dev_kx), salt: link_nonce, info: "wt/relay/v1/" ‖ p2h\|h2p ‖ 0x00 ‖ hub_id(16) ‖ device_id(16) ‖ epoch u32 BE)` |
+| `dev_eph` (X25519, relay client Phase 5) | phone | offered in `epoch_ack.next_kx` (§7.6); its private half is erased once a newer one is in use |
+| `hub_eph` (X25519, relay client Phase 5) | hub, one rotation | drawn per phone at a rotation, used for both directions, then cleared; its public half travels in the keybox `relay_kx.hub_pub` (§5.4) |
+| ephemeral relay key `K_relay[dir, e]` (relay client Phase 5) | hub + one phone that offered | `HKDF-SHA256(X25519(hub_eph, dev_eph) ‖ X25519(hub_kx, dev_kx), salt: link_nonce, info: "wt/relay/v2/" ‖ p2h\|h2p ‖ 0x00 ‖ hub_id(16) ‖ device_id(16) ‖ epoch u32 BE ‖ hub_eph_pub(32) ‖ dev_eph_pub(32))`; an all-zero X25519 secret is refused on either side. Used for an epoch whose keybox names the pair; else the `wt/relay/v1/` key. Vector: `Fixtures/e2e/kdf.json` `ephemeralRelayKeys` (Go `secure.EphemeralRelayKey`, Kit `KeyDerivation.ephemeralRelayKey`) |
 
 - **Epochs.** A new epoch on a phone's removal, on the cap (90 days or 2^28 seqs) and, with the relay, on every transport switch (RC §9). The previous epoch's relay-lane envelopes are accepted for 7 days — for every rotation, transport-switch epochs included (ask #843: sim rule 14's "no longer than 14 days" is not used; the hub may retire an epoch earlier once every phone acked a newer one and nothing sealed in it is held); the hub publishes the window again under `e+1`.
 - **Sequence numbers.** Each sender draws envelope `seq` (u64, from 1) from a crash-safe allocator; `0` means "none". Envelope `seq` is the rollback counter only; it is not an action order (§7.5).
@@ -172,7 +175,7 @@ The hub draws `confirm_nonce` (32 random bytes) only after it accepted the hello
 
 ### 5.4 The keybox and `device_grant`
 
-The hub answers each phone with one keybox `keybox-<DEVICE_ID>` = `{grant: DeviceGrant, keys?: KeyboxKeys}`. Keys are present only for a linked phone the owner confirmed under a code still valid at that moment. `KeyboxKeys` = `{epoch, data_key, alert_key, meta_key, previous_epoch?, previous_data_key?, previous_alert_key?}` (base64url, 32 bytes). At most 20 keybox records: every linked phone, then waiting requests, refusals (1 h) and revoked phones (7 days), each newest first.
+The hub answers each phone with one keybox `keybox-<DEVICE_ID>` = `{grant: DeviceGrant, keys?: KeyboxKeys}`. Keys are present only for a linked phone the owner confirmed under a code still valid at that moment. `KeyboxKeys` = `{epoch, data_key, alert_key, meta_key, previous_epoch?, previous_data_key?, previous_alert_key?, relay_kx?, previous_relay_kx?}` (base64url, 32 bytes). `relay_kx` = `{hub_pub, device_pub}` (unpadded base64url of 32 bytes each, relay client Phase 5) names the ephemeral pair of this epoch's `wt/relay/v2/` relay keys (§4.2): `hub_pub` is the hub's `hub_eph`, `device_pub` the offer it answers, by which the phone finds its private half; `previous_relay_kx` is the same for `previous_epoch`. Both are absent for a phone that offered nothing and from a hub that predates them, and then the static `wt/relay/v1/` keys apply; a keybox without them decodes on both sides (fixture `keybox`). At most 20 keybox records: every linked phone, then waiting requests, refusals (1 h) and revoked phones (7 days), each newest first.
 
 | `DeviceGrant` key | Type | Meaning |
 |---|---|---|
@@ -383,7 +386,7 @@ Plain name `c-<uuid>`, frame kind `control`, sealed like an action in the sender
 |---|---|---|---|
 | `resend_from` | hub → phone | `seq` | Go hub writes |
 | `skip_to` | phone → hub | `seq` | Go hub reads; phone Proposed |
-| `epoch_ack` | phone → hub | `epoch` (newest hub epoch the phone holds; never lowered) | Go hub records it; an old epoch retires once every phone acked a newer one and no held action is sealed in it, 7 days at most (sim rule 14, ask #843; Go hub phase 3 Task 20) |
+| `epoch_ack` | phone → hub | `epoch` (newest hub epoch the phone holds; never lowered), `next_kx?` (relay client Phase 5: the phone's offered `dev_eph` public key, unpadded base64url of 32 bytes, for its next relay keys; absent when it offers none; a hub that predates it ignores the key; fixture `epoch_ack`) | Go hub records it; an old epoch retires once every phone acked a newer one and no held action is sealed in it, 7 days at most (sim rule 14, ask #843; Go hub phase 3 Task 20) |
 | `transport_switch` | phone → hub | `target` (`relay`\|`cloudkit`), `reason?` (`entitlement_expired` on a lapse and on a subscription move: the hub knows no other, and a plain request would take a Mac away from another paying phone; relay client Phase 4, Open decision 6, ask #1038) | Go hub answers it (relay client Phase 3b); phone sends it since Phase 3b (toward the relay) and Phase 4 (toward CloudKit, both transports, one id) |
 | `transport_switched` | hub → phone | `target, epoch, by, at, keybox` (the new epoch's keybox) | Proposed |
 | `transport_switch_rejected` | hub → phone | `reason`, `retry_after_s` | Go hub writes |

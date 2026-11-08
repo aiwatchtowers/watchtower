@@ -1533,5 +1533,163 @@
         "session_timeline"
       ]
     }
+  ],
+  "epoch_ack": [
+    {
+      "name": "epoch_ack_with_offer",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack",
+        "next_kx": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack",
+        "next_kx": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+      },
+      "kit": {
+        "epoch": 3,
+        "next_kx": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+      }
+    },
+    {
+      "name": "epoch_ack_without_offer",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack"
+      },
+      "kit": {
+        "epoch": 3,
+        "next_kx": null
+      }
+    }
+  ],
+  "keybox": [
+    {
+      "name": "keybox_with_relay_kx",
+      "json": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_epoch": 3,
+          "previous_relay_kx": {
+            "device_pub": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+            "hub_pub": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+          },
+          "relay_kx": {
+            "device_pub": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+            "hub_pub": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+          }
+        }
+      },
+      "expect": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_epoch": 3,
+          "previous_relay_kx": {
+            "device_pub": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+            "hub_pub": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+          },
+          "relay_kx": {
+            "device_pub": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+            "hub_pub": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+          }
+        }
+      },
+      "kit": {
+        "relay_kx": {
+          "device_pub": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+          "hub_pub": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+        },
+        "previous_relay_kx": {
+          "device_pub": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+          "hub_pub": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+        }
+      }
+    },
+    {
+      "name": "keybox_old_shape",
+      "json": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        }
+      },
+      "expect": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        }
+      },
+      "kit": {
+        "relay_kx": null,
+        "previous_relay_kx": null
+      }
+    }
   ]
 }
