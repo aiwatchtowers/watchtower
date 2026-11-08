@@ -74,7 +74,7 @@ package enum IdeaQueries {
     package static let knowledgeVisibleSQL =
         "NOT (chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped'))"
 
-    /// The Inbox's Ideas filter: ideas, notes and decisions except the merged
+    /// The Inbox's Idea finder list: ideas, notes and decisions except the merged
     /// ones (F15 — decisions are informational there), newest update first.
     /// No limit (F1).
     package static func fetchInboxRegistry(_ db: Database) throws -> [Idea] {
