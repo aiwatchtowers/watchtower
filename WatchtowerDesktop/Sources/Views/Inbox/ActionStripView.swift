@@ -428,6 +428,14 @@ struct ActionStripActionsView: View {
         )
         // swiftlint:enable trailing_closure
         .accessibilityIdentifier(showsInlineCheatSheet ? "actionStrip.cheatSheet" : "inbox.folderList")
+        .task(id: listedArtifacts.map(\.automationID)) { await artifactMenu?.prepare(listedArtifacts) }
+    }
+
+    /// The artifacts the folder's list shows (their rows' context menus).
+    private var listedArtifacts: [AutomationOutputCard] {
+        vm.folderEntries.compactMap { entry in
+            if case let .artifact(card) = entry { card } else { nil }
+        }
     }
 
     /// Under the empty root: why it is empty without an owner (OWNER-02),

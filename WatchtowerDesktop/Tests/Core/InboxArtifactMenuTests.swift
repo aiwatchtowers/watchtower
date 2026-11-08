@@ -190,6 +190,16 @@ final class InboxArtifactMenuTests: XCTestCase {
                        "Needs approval's automation is never moved")
     }
 
+    /// A folder list's rows prepared together (the row context menu's way
+    /// in): a built-in never opened offers Run Now, one `show` per automation.
+    func testListPrepareOffersRunNowForABuiltinNeverOpened() async {
+        let menu = model()
+        XCTAssertFalse(commands(menu.content(for: card(ids.builtin)).entries).contains("Run Now"))
+        await menu.prepare([card(ids.builtin), card(ids.builtin, id: 950), card(ids.owner)])
+        XCTAssertTrue(commands(menu.content(for: card(ids.builtin)).entries).contains("Run Now"))
+        XCTAssertEqual(runner.invocations.filter { $0.count > 1 && $0[1] == "show" }.count, 1)
+    }
+
     func testMoveToFolderListsTheTreeWithTheRouteChecked() async throws {
         let (owner, release) = (ids.owner, ids.release)
         try await pool.write { db in try InboxFolderFixtures.route(db, automation: owner, folder: release) }

@@ -104,6 +104,13 @@ package final class InboxArtifactMenuModel {
         await builtin.load()
     }
 
+    /// A folder list's artifacts: each built-in reads its `show` once, so a
+    /// row's context menu offers Run Now before its reading pane opened.
+    package func prepare(_ cards: [AutomationOutputCard]) async {
+        var seen: Set<Int64> = []
+        for card in cards where seen.insert(card.automationID).inserted { await prepare(card) }
+    }
+
     /// The entries are off: the tab's model is not built, the automation is
     /// not indexed, or a call on it runs (here or from the Automations tab).
     package func isDisabled(_ card: AutomationOutputCard) -> Bool {
