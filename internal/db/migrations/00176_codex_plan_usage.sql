@@ -1,5 +1,6 @@
 -- +goose Up
 ALTER TABLE plan_usage_status ADD COLUMN plot_json TEXT NOT NULL DEFAULT '{}';
+ALTER TABLE plan_usage_status ADD COLUMN publication_proof TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE codex_plan_usage_status (
     id                     INTEGER PRIMARY KEY CHECK (id = 1),
@@ -13,6 +14,7 @@ CREATE TABLE codex_plan_usage_status (
     breakdown_json         TEXT NOT NULL DEFAULT '[]',
     updated_at             TEXT NOT NULL,
     plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
     scope                  TEXT NOT NULL DEFAULT '',
     identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
     ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
@@ -31,4 +33,5 @@ CREATE TABLE codex_plan_usage_samples (
 -- +goose Down
 DROP TABLE codex_plan_usage_samples;
 DROP TABLE codex_plan_usage_status;
+ALTER TABLE plan_usage_status DROP COLUMN publication_proof;
 ALTER TABLE plan_usage_status DROP COLUMN plot_json;

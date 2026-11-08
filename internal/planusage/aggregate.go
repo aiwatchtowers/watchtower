@@ -150,7 +150,8 @@ func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (
 			out.HistoryAvailable = out.HistoryAvailable || hasSample
 		}
 		projection, err := EvaluateProjection(ProjectionContext{Now: now, FeatureEnabled: enabled, State: st.State, FetchedAt: st.FetchedAt,
-			IdentityRequired: source.identityRequired, IdentityKnown: known, HasCurrentSample: hasSample}, l, plot.Limits[l.Key])
+			IdentityRequired: source.identityRequired, IdentityKnown: known, HasCurrentSample: hasSample,
+			InvalidPublication: st.PublicationProof == "" || st.PublicationProof != publicationDigest(st.LimitsJSON, st.PlotJSON)}, l, plot.Limits[l.Key])
 		if err != nil {
 			return nil, err
 		}

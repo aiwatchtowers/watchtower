@@ -163,13 +163,13 @@ func (p *Poller) storeUsage(ctx context.Context, now time.Time, st db.PlanUsageS
 		windows = append(windows, w)
 		current[l.Key] = w.ResetsAt != nil
 	}
-	plot, err := BuildPlot(now, windows, true, current)
-	if err != nil {
-		return fmt.Errorf("planusage: build plot: %w", err)
-	}
 	limits, err := json.Marshal(u.Limits)
 	if err != nil {
 		return fmt.Errorf("planusage: encode limits: %w", err)
+	}
+	plot, proof, err := buildPublication(now, windows, string(limits), true, current)
+	if err != nil {
+		return fmt.Errorf("planusage: build plot: %w", err)
 	}
 	breakdown, err := json.Marshal(nonNil(u.Breakdown))
 	if err != nil {
@@ -179,7 +179,7 @@ func (p *Poller) storeUsage(ctx context.Context, now time.Time, st db.PlanUsageS
 	st.State, st.Reason, st.LastError, st.LastErrorAt = "ok", "", "", nil
 	st.FetchedAt = &now
 	st.LimitsJSON, st.BreakdownJSON = string(limits), string(breakdown)
-	st.PlotJSON = plot
+	st.PlotJSON, st.PublicationProof = plot, proof
 	if err := p.Store.UpsertPlanUsageStatusContext(ctx, st); err != nil {
 		return err
 	}

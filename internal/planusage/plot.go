@@ -48,13 +48,14 @@ type PublicProjection struct {
 
 // ProjectionContext supplies read-time eligibility, without fitting a new rate.
 type ProjectionContext struct {
-	Now              time.Time
-	FeatureEnabled   bool
-	State            string
-	FetchedAt        *time.Time
-	IdentityRequired bool
-	IdentityKnown    bool
-	HasCurrentSample bool
+	Now                time.Time
+	FeatureEnabled     bool
+	State              string
+	FetchedAt          *time.Time
+	IdentityRequired   bool
+	IdentityKnown      bool
+	HasCurrentSample   bool
+	InvalidPublication bool
 }
 
 func finite(n float64) bool       { return !math.IsNaN(n) && !math.IsInf(n, 0) }
@@ -234,7 +235,7 @@ func EvaluateProjection(c ProjectionContext, l WindowLimit, candidate *Line) (Pu
 		reason = "endpoints_unavailable"
 	default:
 		expected := expectedLine(*c.FetchedAt, l)
-		if expected == nil || !candidate.EndAt.Equal(expected.EndAt) || math.Abs(candidate.EndPercent-expected.EndPercent) > 1e-8 {
+		if c.InvalidPublication || expected == nil || !candidate.EndAt.Equal(expected.EndAt) || math.Abs(candidate.EndPercent-expected.EndPercent) > 1e-8 {
 			reason = "invalid_projection"
 		}
 	}

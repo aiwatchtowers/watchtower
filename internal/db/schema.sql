@@ -3135,7 +3135,8 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL,
-    plot_json     TEXT NOT NULL DEFAULT '{}'
+    plot_json      TEXT NOT NULL DEFAULT '{}',
+    publication_proof TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
@@ -3150,6 +3151,7 @@ CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
     breakdown_json         TEXT NOT NULL DEFAULT '[]',
     updated_at             TEXT NOT NULL,
     plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
     scope                  TEXT NOT NULL DEFAULT '',
     identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
     ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),

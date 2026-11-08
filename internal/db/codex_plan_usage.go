@@ -41,15 +41,15 @@ func upsertCodexStatus(ctx context.Context, q planExecer, s CodexPlanUsageStatus
 	}
 	_, err := q.ExecContext(ctx, `INSERT INTO codex_plan_usage_status
 		(id, state, reason, plan, fetched_at, last_error, last_error_at, limits_json,
-		 breakdown_json, updated_at, plot_json, scope, identity_known, ordinary_usage_allowed)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 breakdown_json, updated_at, plot_json, scope, identity_known, ordinary_usage_allowed, publication_proof)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET state=excluded.state, reason=excluded.reason, plan=excluded.plan,
 		fetched_at=excluded.fetched_at, last_error=excluded.last_error, last_error_at=excluded.last_error_at,
 		limits_json=excluded.limits_json, breakdown_json=excluded.breakdown_json, updated_at=excluded.updated_at,
 		plot_json=excluded.plot_json, scope=excluded.scope, identity_known=excluded.identity_known,
-		ordinary_usage_allowed=excluded.ordinary_usage_allowed`,
+		ordinary_usage_allowed=excluded.ordinary_usage_allowed, publication_proof=excluded.publication_proof`,
 		s.State, s.Reason, s.Plan, planNullTime(s.FetchedAt), s.LastError, planNullTime(s.LastErrorAt),
-		s.LimitsJSON, s.BreakdownJSON, planTime(s.UpdatedAt), s.PlotJSON, s.Scope, s.IdentityKnown, s.OrdinaryUsageAllowed)
+		s.LimitsJSON, s.BreakdownJSON, planTime(s.UpdatedAt), s.PlotJSON, s.Scope, s.IdentityKnown, s.OrdinaryUsageAllowed, s.PublicationProof)
 	if err != nil {
 		return fmt.Errorf("codex plan usage: upsert status: %w", err)
 	}
@@ -136,10 +136,10 @@ func (db *DB) GetCodexPlanUsageStatusContext(ctx context.Context) (*CodexPlanUsa
 	var updated string
 	var ordinary sql.NullBool
 	err := db.QueryRowContext(ctx, `SELECT state, reason, plan, fetched_at, last_error, last_error_at,
-		limits_json, breakdown_json, updated_at, plot_json, scope, identity_known, ordinary_usage_allowed
+		limits_json, breakdown_json, updated_at, plot_json, scope, identity_known, ordinary_usage_allowed, publication_proof
 		FROM codex_plan_usage_status WHERE id=1`).Scan(&s.State, &s.Reason, &s.Plan, &fetched,
 		&s.LastError, &lastErrorAt, &s.LimitsJSON, &s.BreakdownJSON, &updated, &s.PlotJSON,
-		&s.Scope, &s.IdentityKnown, &ordinary)
+		&s.Scope, &s.IdentityKnown, &ordinary, &s.PublicationProof)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

@@ -104,6 +104,7 @@ func TestCodexPipeline_RawRPCToSharedDesktopFixture(t *testing.T) {
 			"updated_at": row.UpdatedAt, "last_error": row.LastError, "identity_known": row.IdentityKnown,
 			"ordinary_usage_allowed": row.OrdinaryUsageAllowed,
 			"limits":                 json.RawMessage(row.LimitsJSON), "plot_json": json.RawMessage(row.PlotJSON),
+			"limits_json": row.LimitsJSON, "plot_json_raw": row.PlotJSON, "publication_proof": row.PublicationProof,
 		},
 		"samples": samples, "envelope": envelope,
 	}

@@ -26,6 +26,7 @@ type PlanUsageStatus struct {
 	LastErrorAt               *time.Time
 	LimitsJSON, BreakdownJSON string
 	PlotJSON                  string
+	PublicationProof          string `json:"-"`
 	UpdatedAt                 time.Time
 }
 
@@ -138,13 +139,13 @@ func (db *DB) UpsertPlanUsageStatusContext(ctx context.Context, s PlanUsageStatu
 		s.PlotJSON = "{}"
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO plan_usage_status
-		(id, state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		(id, state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json, publication_proof)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET state=excluded.state, reason=excluded.reason, plan=excluded.plan,
 		fetched_at=excluded.fetched_at, last_error=excluded.last_error, last_error_at=excluded.last_error_at,
-		limits_json=excluded.limits_json, breakdown_json=excluded.breakdown_json, updated_at=excluded.updated_at, plot_json=excluded.plot_json`,
+		limits_json=excluded.limits_json, breakdown_json=excluded.breakdown_json, updated_at=excluded.updated_at, plot_json=excluded.plot_json, publication_proof=excluded.publication_proof`,
 		s.State, s.Reason, s.Plan, planNullTime(s.FetchedAt), s.LastError, planNullTime(s.LastErrorAt),
-		s.LimitsJSON, s.BreakdownJSON, planTime(s.UpdatedAt), s.PlotJSON)
+		s.LimitsJSON, s.BreakdownJSON, planTime(s.UpdatedAt), s.PlotJSON, s.PublicationProof)
 	if err != nil {
 		return fmt.Errorf("plan usage status: upsert: %w", err)
 	}
@@ -166,8 +167,8 @@ func (db *DB) GetPlanUsageStatusContext(ctx context.Context) (*PlanUsageStatus, 
 	var s PlanUsageStatus
 	var fetched, lastErrAt sql.NullString
 	var updated string
-	err := db.QueryRowContext(ctx, `SELECT state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json
-		FROM plan_usage_status WHERE id = 1`).Scan(&s.State, &s.Reason, &s.Plan, &fetched, &s.LastError, &lastErrAt, &s.LimitsJSON, &s.BreakdownJSON, &updated, &s.PlotJSON)
+	err := db.QueryRowContext(ctx, `SELECT state, reason, plan, fetched_at, last_error, last_error_at, limits_json, breakdown_json, updated_at, plot_json, publication_proof
+		FROM plan_usage_status WHERE id = 1`).Scan(&s.State, &s.Reason, &s.Plan, &fetched, &s.LastError, &lastErrAt, &s.LimitsJSON, &s.BreakdownJSON, &updated, &s.PlotJSON, &s.PublicationProof)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

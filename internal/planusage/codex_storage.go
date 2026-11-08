@@ -105,16 +105,16 @@ func StoreCodexUsageContext(ctx context.Context, store CodexStore, now time.Time
 		}
 		limits[i].Projection = ProjectWindow(now, l, history)
 	}
-	plot, err := BuildPlot(now, limits, snapshot.IdentityKnown, current)
-	if err != nil {
-		return err
-	}
 	encoded, err := json.Marshal(limits)
 	if err != nil {
 		return fmt.Errorf("codex plan usage: encode limits: %w", err)
 	}
+	plot, proof, err := buildPublication(now, limits, string(encoded), snapshot.IdentityKnown, current)
+	if err != nil {
+		return err
+	}
 	st := db.CodexPlanUsageStatus{PlanUsageStatus: db.PlanUsageStatus{State: "ok", Plan: snapshot.PlanType,
-		FetchedAt: &now, UpdatedAt: now, LimitsJSON: string(encoded), BreakdownJSON: "[]", PlotJSON: plot},
+		FetchedAt: &now, UpdatedAt: now, LimitsJSON: string(encoded), BreakdownJSON: "[]", PlotJSON: plot, PublicationProof: proof},
 		Scope: snapshot.Scope, IdentityKnown: snapshot.IdentityKnown, OrdinaryUsageAllowed: snapshot.OrdinaryUsageAllowed}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -148,6 +148,7 @@ func StoreCodexFailureContext(ctx context.Context, store CodexStore, now time.Ti
 	}
 	if !snapshot.IdentityKnown || previous == nil || snapshot.Scope != previous.Scope {
 		st.Scope, st.IdentityKnown, st.OrdinaryUsageAllowed = "", false, nil
+		st.PublicationProof = ""
 		// Raw retained fields stay private; readers explicitly suppress them
 		// while identity is unconfirmed. No prior account becomes current.
 	} else {
