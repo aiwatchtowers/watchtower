@@ -36,6 +36,26 @@ final class AgentKindRegistryTests: XCTestCase {
         )
     }
 
+    /// Go's registry list (`kinds`, agentkind's order): each kind's product
+    /// name and phone wire value are the Swift adapter's, in the same order
+    /// (the menus list `AgentKind.allCases`). A key missing from a row fails.
+    func testEachKindsNamesMatchGosRegistry() throws {
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: Self.goFixture)) as? [String: Any]
+        let kinds = try XCTUnwrap(raw?["kinds"] as? [[String: Any]], "agent_capabilities.json has no kinds list")
+        let goOrder = try kinds.map { try XCTUnwrap($0["kind"] as? String, "a kinds row without kind") }
+        XCTAssertEqual(goOrder, AgentKind.allCases.map(\.rawValue),
+                       "AgentKind's cases must follow Go's agentkind registry order (kinds in agent_capabilities.json)")
+        XCTAssertEqual(Set(goOrder), Set(try Self.goRows().keys), "every registry kind has a capability row and back")
+        for row in kinds {
+            let id = row["kind"] as? String ?? "?"
+            guard let kind = AgentKind(rawValue: id) else { continue } // the order check above names it
+            XCTAssertEqual(try XCTUnwrap(row["display_name"] as? String, "\(id): no display_name"), kind.displayName,
+                           "\(id): AgentKind.displayName must be Go's agentkind display name")
+            XCTAssertEqual(try XCTUnwrap(row["wire_agent"] as? String, "\(id): no wire_agent"), kind.session.wireAgent,
+                           "\(id): the Swift adapter's wireAgent must be Go's Adapter.WireAgent")
+        }
+    }
+
     /// Every kind's adapter serves that kind, so the registry is one lookup.
     func testEveryKindHasItsOwnAdapter() {
         for kind in AgentKind.allCases {

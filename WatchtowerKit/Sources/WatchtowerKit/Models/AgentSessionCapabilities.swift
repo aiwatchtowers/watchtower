@@ -62,8 +62,29 @@ public struct AgentSessionCapabilities: Decodable, Equatable, Sendable {
     /// A failed or interrupted turn is read from the transcript, not a hook.
     public var rolloutWatch: Bool { failureSignal == "pull" }
 
-    /// The fixture's rows by agent kind (`terminal_sessions.kind`).
+    /// One entry of Go's agent kind registry (`agentkind`, the fixture's
+    /// `kinds`, in its order): every key is required, so a row Go grows
+    /// without the Kit fails the decode and the Kit test.
+    public struct Kind: Decodable, Equatable, Sendable {
+        /// `terminal_sessions.kind`.
+        public let kind: String
+        /// The workbench comments' `agent_label`.
+        public let label: String
+        /// The agent's product name.
+        public let displayName: String
+        /// The `terminal_session` record's `agent` (`TerminalSessionState.Agent`).
+        public let wireAgent: String
+
+        enum CodingKeys: String, CodingKey {
+            case kind, label
+            case displayName = "display_name"
+            case wireAgent = "wire_agent"
+        }
+    }
+
+    /// The fixture: the registry list and the rows by agent kind (`terminal_sessions.kind`).
     public struct Table: Decodable, Sendable {
+        public let kinds: [Kind]
         public let agents: [String: AgentSessionCapabilities]
     }
 
@@ -72,23 +93,33 @@ public struct AgentSessionCapabilities: Decodable, Equatable, Sendable {
         try JSONDecoder().decode(Table.self, from: data)
     }
 
-    /// The bundled rows; empty — every agent reads as offering nothing — when
-    /// the resource is missing or does not decode, which a debug build stops
-    /// on (the Kit test fails on either).
-    public static let bundled: [String: Self] = {
+    /// The bundled fixture; empty — every agent reads as unknown and offering
+    /// nothing — when the resource is missing or does not decode, which a
+    /// debug build stops on (the Kit test fails on either).
+    private static let bundledTable: Table = {
         do {
             guard let url = Bundle.module.url(forResource: "agent_capabilities", withExtension: "json") else {
                 assertionFailure("agent_capabilities.json is not bundled")
-                return [:]
+                return Table(kinds: [], agents: [:])
             }
-            return try decode(Data(contentsOf: url)).agents
+            return try decode(Data(contentsOf: url))
         } catch {
             assertionFailure("agent_capabilities.json does not decode: \(error)")
-            return [:]
+            return Table(kinds: [], agents: [:])
         }
     }()
+
+    /// The bundled rows by agent kind.
+    public static var bundled: [String: Self] { bundledTable.agents }
+
+    /// The bundled registry list, in Go's order.
+    public static var bundledKinds: [Kind] { bundledTable.kinds }
 
     /// `kind`'s row (a stored `terminal_sessions.kind`); nil for a kind that
     /// is not an agent.
     public static func of(_ kind: String) -> Self? { bundled[kind] }
+
+    /// The registry entry of a record's wire agent; nil for an agent this
+    /// build does not know (a newer Mac's).
+    public static func kind(wireAgent: String) -> Kind? { bundledKinds.first { $0.wireAgent == wireAgent } }
 }

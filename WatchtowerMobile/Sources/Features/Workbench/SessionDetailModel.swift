@@ -60,20 +60,17 @@ struct SessionDetailModel {
         timelineMoreText = (timeline?.milestonesMore).flatMap { $0 > 0 ? "\($0) earlier on your Mac" : nil }
     }
 
-    /// The agent's product name; an agent this build does not know shows its
-    /// raw wire value.
+    /// The agent's product name, from Go's agent kind registry (the Kit's
+    /// bundled `kinds`); an agent this build does not know shows its raw
+    /// wire value.
     static func agentName(_ agent: TerminalSessionState.Agent) -> String {
-        switch agent {
-        case .claudeCode: "Claude Code"
-        case .codexCLI: "Codex"
-        default: agent.rawValue
-        }
+        AgentSessionCapabilities.kind(wireAgent: agent.rawValue)?.displayName ?? agent.rawValue
     }
 
     /// The session line's agent (A7b): its name, and for an agent this
     /// build does not know (a newer Mac's) that it is not supported here.
     static func agentLabel(_ agent: TerminalSessionState.Agent) -> String {
-        guard !TerminalSessionState.Agent.knownValues.contains(agent) else { return agentName(agent) }
+        if let known = AgentSessionCapabilities.kind(wireAgent: agent.rawValue) { return known.displayName }
         return "\(agent.rawValue.isEmpty ? "Unknown agent" : agent.rawValue) (not supported by this version)"
     }
 

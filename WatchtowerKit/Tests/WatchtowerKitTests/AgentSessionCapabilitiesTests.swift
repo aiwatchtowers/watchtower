@@ -64,6 +64,27 @@ final class AgentSessionCapabilitiesTests: XCTestCase {
                           + "copy internal/sessionagent/agent_capabilities.json into the Kit's Resources")
     }
 
+    /// A7b: Go's registry list (`kinds`) reaches the phone. The wire agents
+    /// this build knows are exactly its `wire_agent`s, in its order, and each
+    /// names its product; a key missing from a row fails the decode.
+    func testTheRegistryListIsTheWireAgentsTheKitKnows() throws {
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: Self.goFixture)) as? [String: Any]
+        let rows = try XCTUnwrap(raw?["kinds"] as? [[String: Any]], "agent_capabilities.json has no kinds list")
+        for row in rows {
+            XCTAssertEqual(Set(row.keys), ["kind", "label", "display_name", "wire_agent"], "\(row["kind"] ?? "?")")
+        }
+        let kinds = AgentSessionCapabilities.bundledKinds
+        XCTAssertEqual(kinds.map(\.kind), rows.compactMap { $0["kind"] as? String })
+        XCTAssertEqual(Set(kinds.map(\.kind)), Set(AgentSessionCapabilities.bundled.keys),
+                       "every registry kind has a capability row and back")
+        XCTAssertEqual(TerminalSessionState.Agent.knownValues.map(\.rawValue), kinds.map(\.wireAgent),
+                       "TerminalSessionState.Agent.knownValues must be Go's wire agents (kinds[].wire_agent), in order")
+        XCTAssertEqual(AgentSessionCapabilities.kind(wireAgent: "codex_cli")?.displayName, "Codex")
+        XCTAssertNil(AgentSessionCapabilities.kind(wireAgent: "gemini_cli"))
+        XCTAssertThrowsError(try AgentSessionCapabilities.decode(Data(#"{"agents":{}}"#.utf8)),
+                             "a fixture without the kinds list does not decode")
+    }
+
     /// Every key of every row is decoded: a key Go adds without the Kit fails.
     func testEveryFixtureKeyIsDecoded() throws {
         let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: Self.goFixture)) as? [String: Any]
