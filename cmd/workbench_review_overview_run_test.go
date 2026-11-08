@@ -411,3 +411,15 @@ func TestWorkbenchReviewOverview_EnvelopeStopsTheTicks(t *testing.T) {
 	assert.True(t, stopped, "the ticker still ran when the envelope was written")
 	assert.Equal(t, "{\"ok\":true}\n", out.String())
 }
+
+// A cached row that does not decode is not complete for --continue.
+func TestWorkbenchReviewOverview_CachedIncomplete(t *testing.T) {
+	got, readable := cachedIncomplete(`{"incomplete":["dir:a"]}`)
+	assert.Equal(t, []string{"dir:a"}, got)
+	assert.True(t, readable)
+	got, readable = cachedIncomplete(`{"summary":"old row"}`)
+	assert.Equal(t, []string{}, got)
+	assert.True(t, readable, "a row cached before incomplete existed is complete")
+	_, readable = cachedIncomplete(`{not json`)
+	assert.False(t, readable)
+}

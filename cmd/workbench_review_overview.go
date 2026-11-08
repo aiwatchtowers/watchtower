@@ -264,9 +264,9 @@ func answerReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJ
 		if err != nil {
 			return failReview(cmd, err)
 		}
-		incomplete := cachedIncomplete(js)
+		incomplete, readable := cachedIncomplete(js)
 		switch {
-		case ok && (!reviewFlagContinue || len(incomplete) == 0):
+		case ok && (!reviewFlagContinue || (readable && len(incomplete) == 0)):
 			return writeReview(cmd, reviewEnvelope{OK: true, Overview: json.RawMessage(js), OverviewCached: true, Incomplete: &incomplete})
 		case !ok && reviewFlagCachedOnly:
 			return writeReview(cmd, reviewEnvelope{OK: true})
@@ -279,16 +279,19 @@ func answerReviewOverview(ctx context.Context, cmd *cobra.Command, job overviewJ
 }
 
 // cachedIncomplete is a cached overview's incomplete list; an overview
-// cached before it existed is complete.
-func cachedIncomplete(js string) []string {
+// cached before it existed is complete. readable false: the row does not
+// decode, so --continue runs instead of answering it.
+func cachedIncomplete(js string) (incomplete []string, readable bool) {
 	var o struct {
 		Incomplete []string `json:"incomplete"`
 	}
-	_ = json.Unmarshal([]byte(js), &o)
-	if o.Incomplete == nil {
-		return []string{}
+	if err := json.Unmarshal([]byte(js), &o); err != nil {
+		return []string{}, false
 	}
-	return o.Incomplete
+	if o.Incomplete == nil {
+		return []string{}, true
+	}
+	return o.Incomplete, true
 }
 
 // runReviewOverview runs the model (reviewai.Run writes the parts and the
