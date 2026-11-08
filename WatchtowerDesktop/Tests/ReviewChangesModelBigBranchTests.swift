@@ -337,6 +337,9 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         run.send(#"{"event":"waiting"}"#)
         await eventually("waiting") { h.model.waitingFor != nil }
         XCTAssertEqual(h.model.waitingText, "Another run is describing this branch — chapters appear as it finishes them")
+        XCTAssertEqual(ReviewChangesModel.waitingText(by: "desktop"),
+                       "Branch review is describing this branch — chapters appear as it finishes them")
+        XCTAssertEqual(ReviewChangesModel.waitingText(by: "cli"), ReviewChangesModel.waitingText(by: ""))
         run.send(Self.overviewEnvelope)
         run.finish()
         await h.settle()
@@ -350,7 +353,7 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         let run = try await process(h, 0)
         run.send(#"{"event":"waiting","by":"agent"}"#)
         run.send(#"{"ok":false,"error":"Another overview of this branch is still running.","error_class":"busy"}"#)
-        run.finish(status: 1)
+        run.finish(status: 0) // the envelope's class is the signal, not the exit (Task 8)
         await h.settle()
         XCTAssertEqual(h.model.overview, .failed("Another overview of this branch is still running."))
         XCTAssertNil(h.model.waitingFor)

@@ -978,10 +978,13 @@ final class ReviewChangesModel {
     static let streamUnreadableMessage = "The overview's answer could not be read."
 
     /// The progress card's line while another run holds the branch (tech spec §5).
+    /// A caller Go did not record (a rare race) reads as another run.
     static func waitingText(by caller: String) -> String {
-        caller == "agent"
-            ? "The agent is describing this branch — chapters appear as it finishes them"
-            : "Another run is describing this branch — chapters appear as it finishes them"
+        switch caller {
+        case "agent": "The agent is describing this branch — chapters appear as it finishes them"
+        case "desktop": "Branch review is describing this branch — chapters appear as it finishes them"
+        default: "Another run is describing this branch — chapters appear as it finishes them"
+        }
     }
 
     var waitingText: String? { waitingFor.map(Self.waitingText) }
