@@ -18,6 +18,9 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
     /// Runs inside `stop()` before it returns or throws: what the owner does
     /// while Stop is still finalizing the file.
     var duringStop: (() async -> Void)?
+    /// Runs inside `start(to:)` after the URL is recorded: what happens while
+    /// the capture is still starting (a real recorder awaits permissions here).
+    var duringStart: (() async -> Void)?
 
     private(set) var startCalls = 0
     private(set) var stopCalls = 0
@@ -49,6 +52,7 @@ final class FakeRecorder: AudioRecording, @unchecked Sendable {
     func start(to url: URL) async throws {
         startCalls += 1
         lastStartURL = url
+        await duringStart?()
         if let startError { throw startError }
     }
 

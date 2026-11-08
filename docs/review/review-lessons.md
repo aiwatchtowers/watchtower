@@ -2771,3 +2771,12 @@ Entry format:
 - weak-dimension: 7 in round 1 (timing-only guard, `ElementsMatch` where order was the contract); both fixed before the verdict.
 - rule-gap (candidate, dim 7): *a complexity fix is guarded by a counted, clock-free assertion of the operation it removes (calls, walks, queries), mutation-checked by removing the fix; a wall-clock bound is at most a secondary check.* Also: an order-preserving refactor upgrades the test's `ElementsMatch` to `Equal` against output captured from the old code.
 - outcome: TBD
+
+## 2026-11-08 — fix/1298-phone-ingest-name-race (#1298: `RecordingNameClaims` held by `startRecording` across `recorder.start` + `beginPending` and by `reservePhoneRecording` across its exclusive insert; racing test driven through `FakeRecorder.duringStart`; 6 files +167/−29; panel: prosecutor (3 minors) + codex (0); pr-review-toolkit specialists unavailable; judge verified 75fa291b0 by reading, no runs) — verdict: changes-needed
+
+- contested (F1, raised minor → held major): `docs/features/meeting-transcriber.md` still says the ingest reservation is "done on the main actor, so it is serialised with `startRecording`'s `.caf` pick". That is the false invariant that caused #1298. The code comments were rewritten, but the feature note, which CLAUDE.md tells everyone to read before touching the area, was not. **When a fix disproves an invariant, grep the feature note and inventory for the old claim, not only the doc comments in the diff.** [8]
+- false-positive: F3 (lock held during `isReserved` GRDB reads) went down to nit. `startRecording` already ran those reads synchronously on the main actor before the fix, the lock adds at most one ingest's few-ms pick, and checking and claiming under one lock is the point of the fix. F2 (shared-claims concurrency test cannot fail on a claims bug) went down to nit: it is true (exclusive insert + `lost` retry already give distinct names), but the test is harmless and the race that matters is covered by the deterministic `duringStart` test. [4/7]
+- miss: none late. Codex returned nothing, so the prosecutor was the only lane that read the docs.
+- weak-dimension: 8 (docs), and only one lane looked at it.
+- rule-gap (candidate, dim 7): *a race fix replaces an `async let` timing test with a seam that suspends the first writer at the exact point the bug needs (here `duringStart`), and the PR records that the test fails on the old code.* This PR did both, and both are worth keeping as the pattern.
+- outcome: TBD
