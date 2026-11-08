@@ -459,23 +459,34 @@ struct ActionStripActionsView: View {
             trackCard: { track in InboxCardColumn { InboxCardPlaceholder(track: track, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0).padding(Spacing.page) }
         )
-        .refHooks(rowHooks)
-        return inApprovals ? pane.stackedInApprovals() : pane
+        let host = InboxRefHooks.replyHost(item)
+        let handler = rowHandler(replyHost: host)
+        let refHooks = refHooks(handler)
+        let withHooks = pane
+            .refHooks(refHooks.hooks)
+            .messageReply({ refHooks.messageReply($0) }, onPress: { id, press in
+                Self.dispatch(press, on: InboxRef(kind: .inboxItem, id: Int64(id)), handler)
+            })
+        return inApprovals ? withHooks.stackedInApprovals() : withHooks
     }
 
     // MARK: - Native row actions
 
     /// The native actions on an artifact's rows with a `ref`.
-    private var rowHooks: ArtifactRefHooks {
-        let handler = rowHandler
-        return InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches, onCommand: onCardAction) { ref, press in
-            Task { await handler.press(press, on: ref) }
-        }.hooks
+    private func refHooks(_ handler: InboxRowActionHandler) -> InboxRefHooks {
+        InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches, onCommand: onCardAction) { ref, press in
+            Self.dispatch(press, on: ref, handler)
+        }
     }
 
-    private var rowHandler: InboxRowActionHandler {
-        // Labeled: with several closures a trailing one would be ambiguous.
-        // swiftlint:disable trailing_closure
+    /// The Reply composer's own presses at once (keystrokes keep their
+    /// order); every other press in a task.
+    private static func dispatch(_ press: InboxRowPress, on ref: InboxRef, _ handler: InboxRowActionHandler) {
+        guard !handler.pressNow(press, on: ref) else { return }
+        Task { await handler.press(press, on: ref) }
+    }
+
+    private func rowHandler(replyHost: String) -> InboxRowActionHandler {
         InboxRowActionHandler(
             vm: vm,
             ideas: ideas,
@@ -485,9 +496,9 @@ struct ActionStripActionsView: View {
             onIdeaMadeTask: onGoToTarget,
             onEditAction: { editingActions.insert($0) },
             navScreens: navScreens,
-            now: { now ?? Date() }
+            now: { now ?? Date() },
+            replyHost: replyHost
         )
-        // swiftlint:enable trailing_closure
     }
 
     private func done(_ id: InboxSelection) {

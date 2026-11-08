@@ -21,6 +21,13 @@ struct InboxMessagePane: View {
     var navScreens: Set<String> = []
     /// The moment the source line's time is told from.
     var now = Date()
+    /// Reply from this card while the Messages entry stands in for Waiting
+    /// for me (inbox builder B): **Reply…** when the item has a write path,
+    /// and under the buttons its composer or "Reply waiting for approval".
+    /// Nil: today's card, no Reply.
+    var reply: InboxRowActionsContent?
+    /// A press of Reply…, the composer's typing, Propose Reply or Cancel.
+    var onReplyPress: (InboxRowPress) -> Void = { _ in }
 
     /// Snooze ▾'s choices and their `watchtower inbox snooze` durations (R5).
     static let snoozeChoices: [(label: String, duration: String)] = [
@@ -60,6 +67,10 @@ struct InboxMessagePane: View {
                 isWriting: isWriting,
                 onCommand: onCommand
             ) {
+                if let reply, reply.hasReply {
+                    Button("Reply…") { onReplyPress(.reply) }
+                        .disabled(reply.reply != nil)
+                }
                 Button("Done", action: onDone)
                 Button("Hide", action: onHide)
                 Menu("Snooze") {
@@ -71,6 +82,9 @@ struct InboxMessagePane: View {
                 .fixedSize()
             }
             .padding(.top, Spacing.small)
+            if let reply, reply.hasReply, reply.reply != nil {
+                InboxRowActionsFooter(content: reply, onPress: onReplyPress)
+            }
         }
     }
 

@@ -1,8 +1,9 @@
 import AppKit
+import GRDB
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 
 /// Inbox builder B (plan Task 1): every state of the folder menu, the
 /// folder list, Needs approval, Waiting for me, the native row actions, the
@@ -257,7 +258,8 @@ enum InboxBuilderBShotFixtures {
     }
 
     /// Before Waiting for me's first run: the root lists the Messages legacy
-    /// entry in its place, and its message card has Reply… like a row.
+    /// entry in its place, and its message card (`InboxMessagePane`) has
+    /// Reply… like a row.
     private static func waitingNotRun() -> AnyView {
         let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
             InboxFolderListRow(id: "messages", kind: .legacy, title: "Messages", summary: "4 waiting",
@@ -265,20 +267,21 @@ enum InboxBuilderBShotFixtures {
             InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
                                detail: "Your day · Fri 6 Nov", unread: true)
         ], selection: "messages")
-        let actions = pingActions()
+        let now = Date()
+        let values: [String: (any DatabaseValueConvertible)?] = [
+            "id": 1, "trigger_type": "mention", "snippet": "Can you check the checklist?", "channel_id": "1:C001",
+            "permalink": "https://acme.slack.com/archives/C001/p1700000000000100",
+            "why_matters": "Colleague A needs it before the release tag.",
+            "created_at": ISO8601DateFormatter().string(from: now.addingTimeInterval(-2 * 86400))
+        ]
+        let row = HomeFeedInboxRow(item: InboxItem(row: Row(values)), stamp: now.addingTimeInterval(-2 * 86400),
+                                   who: "Colleague A", whereText: "#acme-release")
         return AnyView(HStack(spacing: 0) {
             InboxFolderContentList(content: list).frame(width: 300)
             Divider()
             InboxCardColumn {
-                VStack(alignment: .leading, spacing: Spacing.medium) {
-                    Text("Colleague A · #acme-release · 2 days ago").font(.caption).foregroundStyle(.secondary)
-                    Text("Can you check the checklist?").font(.title3.weight(.semibold))
-                    HStack {
-                        InboxRowActionsView(content: actions)
-                        Spacer()
-                    }
-                    InboxRowActionsFooter(content: actions)
-                }
+                InboxMessagePane(row: row, onDone: {}, onHide: {}, onSnooze: { _ in }, onCommand: { _ in },
+                                 navScreens: [], now: now, reply: pingActions())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

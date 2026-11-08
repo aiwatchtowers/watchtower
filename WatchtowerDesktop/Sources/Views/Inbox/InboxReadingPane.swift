@@ -46,6 +46,9 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// The native row actions of an artifact's rows with a `ref`
     /// (`refHooks(_:)`, `InboxRefHooks`); the default draws none.
     private(set) var rowHooks = ArtifactRefHooks()
+    /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
+    private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
+    private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
 
     init(
         item: InboxListItem?,
@@ -99,6 +102,18 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         return pane
     }
 
+    /// This pane with Reply on a message card: `content` (nil: none) and
+    /// its presses by `inbox_items` id.
+    func messageReply(
+        _ content: @escaping (HomeFeedInboxRow) -> InboxRowActionsContent?,
+        onPress: @escaping (Int, InboxRowPress) -> Void
+    ) -> Self {
+        var pane = self
+        pane.messageReplyContent = content
+        pane.onMessageReplyPress = onPress
+        return pane
+    }
+
     /// This pane with `hooks` on an artifact's rows with a `ref`.
     func refHooks(_ hooks: ArtifactRefHooks) -> Self {
         var pane = self
@@ -136,7 +151,9 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
             column {
                 InboxMessagePane(row: row, isWriting: isWriting, onDone: onDone, onHide: onDismiss,
                                  onSnooze: onSnooze, onCommand: onCommand, workbenches: workbenches,
-                                 navScreens: navScreens, now: now)
+                                 navScreens: navScreens, now: now, reply: messageReplyContent(row)) {
+                    onMessageReplyPress(row.item.id, $0)
+                }
             }
         case .builtinNotice(let notice):
             column { builtinNotice(notice) }

@@ -98,6 +98,12 @@ package struct InboxRowActionsContent: Equatable {
 
     package var isBusy: Bool { state == .busy }
 
+    /// A ping with **Reply…** (a Slack, Jira or Linear item).
+    package var hasReply: Bool {
+        if case let .inboxItem(_, _, canReply, _) = kind { return canReply }
+        return false
+    }
+
     /// `IdeaActionBar`'s verdict buttons, without its Merge, delete and a
     /// decision's Supersede / Reverse (the full pane opens on a press of
     /// the row): awaiting a verdict → Approve, Make a Task (ideas), Not now

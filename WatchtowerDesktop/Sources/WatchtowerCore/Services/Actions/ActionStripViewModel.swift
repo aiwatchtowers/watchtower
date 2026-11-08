@@ -81,6 +81,10 @@ package final class ActionStripViewModel {
     /// (it clears only `lastError`). A proposal's failures live in
     /// `actionFeed.rowErrors`.
     package private(set) var rowErrors: [InboxSelection: InboxRowFailure] = [:]
+    /// The open Reply composers by `inbox_items` id (Reply from a row): the
+    /// text typed and the last refusal. Kept across refresh and navigation,
+    /// dropped once the reply is proposed, on Cancel, or with its row.
+    package private(set) var replyDrafts: [Int: InboxReplyDraft] = [:]
     /// Called once a `refresh()` read is done (the 30 s poll and every
     /// press included): the sidebar's Inbox badge counts the same rows, and
     /// its observation never sees the daemon's writes, so AppState refreshes
@@ -813,6 +817,82 @@ package final class ActionStripViewModel {
         }
     }
 
+    // MARK: - Reply from a row
+
+    /// What sits under item `itemID`'s row for Reply: "Reply waiting for
+    /// approval" while its reply is open in Needs approval, else its
+    /// composer while one is open, else nothing.
+    package func replyState(_ itemID: Int) -> InboxRowActionsContent.Reply? {
+        if replyWaiting(itemID) { return .waiting }
+        return replyDrafts[itemID].map { .composing(text: $0.text, error: $0.error) }
+    }
+
+    /// Item `itemID` has a Reply open (pending, approved or executing) in
+    /// the last read: one reply per item at a time.
+    package func replyWaiting(_ itemID: Int) -> Bool {
+        feed.proposals.contains { InboxReplyPolicy.isOpenReply($0, itemID: itemID) }
+    }
+
+    /// **Reply…**: opens the composer under the row (nothing written).
+    package func startReply(_ itemID: Int) {
+        guard replyDrafts[itemID] == nil, !replyWaiting(itemID) else { return }
+        replyDrafts[itemID] = InboxReplyDraft()
+    }
+
+    package func editReply(_ itemID: Int, text: String) {
+        replyDrafts[itemID]?.text = text
+    }
+
+    /// Cancel or Esc: the composer closes, nothing proposed.
+    package func cancelReply(_ itemID: Int) {
+        replyDrafts[itemID] = nil
+    }
+
+    /// **Propose Reply**: `watchtower actions propose --tool <reply tool>
+    /// --surface inbox --context inbox_item:<id>` without `--approve` — a
+    /// pending proposal that waits for the owner's Approve in Needs
+    /// approval; the Desktop writes nothing and sends nothing. `host` is the
+    /// title of what the row is on, for the reason ("Reply from <host>").
+    /// One press per row at a time (the row is busy meanwhile). A refusal
+    /// keeps the composer open with the CLI's message; never retried.
+    package func proposeReply(_ itemID: Int, text: String, host: String) async {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty, replyDrafts[itemID] != nil,
+              let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
+              let tool = InboxReplyPolicy.tool(for: item),
+              let args = InboxReplyPolicy.args(for: item, text: body, host: host) else { return }
+        let runner = cliRunner
+        await pendingWrites.run(CardKey.card(.message(itemID))) {
+            replyDrafts[itemID]?.error = nil
+            guard let runner = runner ?? ProcessCLIRunner.makeDefault() else {
+                replyDrafts[itemID]?.error = HomeFeedActionError.cliUnavailable.localizedDescription
+                return
+            }
+            let failure: String?
+            do {
+                let data = try await runner.run(
+                    args: InboxReplyPolicy.arguments(itemID: itemID, tool: tool, args: args),
+                    timeout: HomeFeedActionError.cliTimeout)
+                failure = Self.proposeFailure(data)
+            } catch {
+                failure = Self.replyRefusal(AutomationsViewModel.message(for: error))
+            }
+            if failure == nil { replyDrafts[itemID] = nil }
+            await refresh()
+            if let failure { replyDrafts[itemID]?.error = failure }
+        }
+    }
+
+    /// The failure an exit-0 `actions propose --json` answer carries: an
+    /// envelope `error`, `ok` false, or an answer that is not the envelope.
+    nonisolated static func proposeFailure(_ data: Data) -> String? {
+        guard let env = try? JSONDecoder().decode(AgentActionFeed.Envelope.self, from: data) else {
+            return "Unexpected answer from watchtower"
+        }
+        if let error = env.error, !error.isEmpty { return error }
+        return env.ok ? nil : "The reply was not proposed."
+    }
+
     /// Done on an output card: writes `done_at` only, at the version drawn.
     /// The card leaves the strip only once the write landed; a card
     /// rewritten under the view (its hash moved) changes nothing and is
@@ -969,10 +1049,14 @@ package final class ActionStripViewModel {
         }
     }
 
-    /// A row error whose record is no longer shown goes with its row.
+    /// A row error or Reply draft whose record is no longer shown goes with its row.
     private func dropLeftRowErrors() {
-        guard !rowErrors.isEmpty else { return }
-        rowErrors = rowErrors.filter { item, _ in isOpenRecord(item) }
+        if !rowErrors.isEmpty {
+            rowErrors = rowErrors.filter { item, _ in isOpenRecord(item) }
+        }
+        if !replyDrafts.isEmpty {
+            replyDrafts = replyDrafts.filter { id, _ in isOpenRecord(.message(id)) }
+        }
     }
 
     /// The last read still lists `item`'s record.
