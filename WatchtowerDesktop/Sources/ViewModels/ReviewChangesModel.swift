@@ -1267,6 +1267,15 @@ final class ReviewChangesModel {
         summaryQueued = false
     }
 
+    /// The session is gone (deleted): its run is stopped, the map's and the
+    /// overview's tasks are cancelled and nothing is followed up.
+    func shutDown() {
+        overviewAfterMap = nil
+        stopRun()
+        mapTask?.cancel()
+        overviewTask?.cancel()
+    }
+
     private func consume(_ stream: AsyncThrowingStream<ReviewStreamEvent, Error>, runID: UUID) async {
         var outcome: RunOutcome?
         do {

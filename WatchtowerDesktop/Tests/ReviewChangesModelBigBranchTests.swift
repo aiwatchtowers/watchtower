@@ -431,6 +431,24 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
 
     // MARK: - Navigation
 
+    /// A deleted session's model is dropped and its run stopped with it.
+    func testForgettingTheSessionStopsItsRun() async throws {
+        let h = try harness()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "review-bigbranch-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: h.db, cli: WorkbenchCLI(runner: h.cli), defaults: defaults)
+        let model = try XCTUnwrap(vm.reviewModel(sessionID: h.sessionID, projectID: h.projectID))
+        model.streamClock = clock
+        h.cli.script(["context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(["cmd/x.go", "pkg/y.go"]), "start": deepStart()])
+        await model.open()
+        await model.mapTask?.value
+        let run = try await process(h, 0)
+        model.retry(chapter: "dir:pkg")
+        vm.forgetProcessState(h.sessionID)
+        await eventually("stopped with the session") { run.stopCount == 1 }
+        await model.overviewTask?.value
+        XCTAssertEqual(h.cli.processes.count, 1, "nothing is followed up")
+    }
+
     /// The run belongs to the session's model, kept by the workbench across
     /// navigation: leaving the pane and coming back finds it still going.
     func testRunSurvivesLeavingThePaneAndComingBack() async throws {
