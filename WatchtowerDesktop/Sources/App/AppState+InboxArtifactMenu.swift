@@ -18,6 +18,15 @@ extension AppState {
         ))
     }
 
+    /// **+ New Artifact…**'s save routes through `routeSavedAutomation`;
+    /// its nil (landed) stays nil — only a gone app state is "not ready".
+    func wireInboxRoute(_ vm: AutomationsViewModel) {
+        vm.routeSavedAutomation = { [weak self] automationID, folderID, reread in
+            guard let self else { return Self.inboxMenuNotReady }
+            return await routeSavedAutomation(automationID, to: folderID, reread: reread)
+        }
+    }
+
     /// A saved automation's route to the Inbox folder it was made from
     /// (**+ New Artifact…**): through the folder menu at its read revision,
     /// after a re-read on **Try Again**. Nil when it landed.

@@ -1344,7 +1344,7 @@ final class AppState {
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
-        vm.routeSavedAutomation = { [weak self] in await self?.routeSavedAutomation($0, to: $1, reread: $2) ?? Self.inboxMenuNotReady }
+        wireInboxRoute(vm)
         automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
@@ -1745,7 +1745,7 @@ final class AppState {
         reactionDictionaryViewModel = vm
     }
 
-    func initActionStrip(dbPool: DatabasePool) {
+    func initActionStrip(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)? = nil) {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
@@ -1754,7 +1754,7 @@ final class AppState {
             cli: AutomationsCLI(runner: runner),
             direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
-        let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
+        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
