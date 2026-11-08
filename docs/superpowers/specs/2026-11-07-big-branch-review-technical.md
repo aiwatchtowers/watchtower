@@ -411,5 +411,11 @@ the model and never waits (§3.7).
 - Lane attribution reads commit subjects only, not bodies or trailers.
 - Squash-merged lanes leave no lane merge; their tags (if any) are the only signal.
 - `api_removed` is line-based and misses a removed exported name split over several lines.
+- `api_removed` keys a declaration by its bare name: Swift `init`/`subscript` overloads share
+  one key, Go methods of different receivers collide, `<<T` in a generic operator reads as
+  `<`, and exported names inside grouped `const (`/`var (`/`type (` blocks and removed struct
+  fields are not detected.
+- In `.watchtower/review-map.md` a glob without `/` matches a top-level file only (`**/` for
+  any depth); a path matching both a danger section and **Can skip** takes the danger level.
 - The summary of a multi-batch branch judges coverage from chapter descriptions, not the
   diff; it may say `partial` where a full read would say `done` (the agent can hand over).
