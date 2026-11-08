@@ -122,7 +122,7 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 }
 
 // Spec 2026-10-03-workbench-session-report Part 5: the skill teaches
-// finishing a session (pack v3); the marker is now v19 (v4: spec 2026-10-08,
+// finishing a session (pack v3); the marker is now v20 (v4: spec 2026-10-08,
 // Working a target / Working a group; v5: board #499, in_progress from the
 // first prompt; v6: spec 2026-10-10-owner-asks-v2 Part 7, Asking the owner;
 // v7: spec 2026-10-12-codex-workbench-agent §6.5, both agents' tool spellings;
@@ -137,12 +137,13 @@ func TestWorkbenchSkill_AsksReplaceDocuments(t *testing.T) {
 // review round tells the agent to finish the branch; v16: ask #576, the
 // AI descriptions of images and fetched pages in search hits are data; v17:
 // spec 2026-10-25 spec review, doc_type and the independent reviewer; v18:
-// spec 2026-10-26 the author loop; v19: board #1352, set_session_target).
+// spec 2026-10-26 the author loop; v19: board #1352, set_session_target; v20: spec 2026-11-08,
+// answer_review_question and the thread question line).
 func TestWorkbenchSkill_TeachesFinishingASession(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
-	if !strings.Contains(content, "\n"+MarkerKey+": v19\n") {
-		t.Fatalf("the skill must carry %s: v19", MarkerKey)
+	if !strings.Contains(content, "\n"+MarkerKey+": v20\n") {
+		t.Fatalf("the skill must carry %s: v20", MarkerKey)
 	}
 	start := strings.Index(content, "## Finishing a session")
 	if start < 0 {
@@ -252,11 +253,11 @@ func TestWorkbenchSkill_AskingTheOwnerTeachesLevelsAndDiscipline(t *testing.T) {
 	}
 }
 
-// DEV-04 across every previous version (v1..v18 → v19): a copy we wrote
+// DEV-04 across every previous version (v1..v19 → v20): a copy we wrote
 // and the owner never touched is upgraded; an edited one is kept,
 // byte-identical, as drifted.
 func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *testing.T) {
-	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md", "watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md", "watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md", "watchtower-workbench-v17.md", "watchtower-workbench-v18.md"} {
+	for _, fixture := range []string{"watchtower-workbench-v1.md", "watchtower-workbench-v2.md", "watchtower-workbench-v3.md", "watchtower-workbench-v4.md", "watchtower-workbench-v5.md", "watchtower-workbench-v6.md", "watchtower-workbench-v7.md", "watchtower-workbench-v8.md", "watchtower-workbench-v9.md", "watchtower-workbench-v10.md", "watchtower-workbench-v11.md", "watchtower-workbench-v12.md", "watchtower-workbench-v13.md", "watchtower-workbench-v14.md", "watchtower-workbench-v15.md", "watchtower-workbench-v16.md", "watchtower-workbench-v17.md", "watchtower-workbench-v18.md", "watchtower-workbench-v19.md"} {
 		prev, err := os.ReadFile(filepath.Join("testdata", fixture))
 		if err != nil {
 			t.Fatal(err)
@@ -297,14 +298,14 @@ func TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne(t *
 
 // assertUpgradeLayout checks spec §4.3: an unedited copy gets the preset
 // beside the current core; an edited single file (before v10) keeps its
-// layout, no preset; an edited split core (v10 … v18) still gets it.
+// layout, no preset; an edited split core (v10 … v19) still gets it.
 func assertUpgradeLayout(t *testing.T, fixture, folder string, want State, rep WorkbenchInstallReport) {
 	t.Helper()
 	splitCore := fixture == "watchtower-workbench-v10.md" || fixture == "watchtower-workbench-v11.md" ||
 		fixture == "watchtower-workbench-v12.md" || fixture == "watchtower-workbench-v13.md" ||
 		fixture == "watchtower-workbench-v14.md" || fixture == "watchtower-workbench-v15.md" ||
 		fixture == "watchtower-workbench-v16.md" || fixture == "watchtower-workbench-v17.md" ||
-		fixture == "watchtower-workbench-v18.md"
+		fixture == "watchtower-workbench-v18.md" || fixture == "watchtower-workbench-v19.md"
 	if want == StateUpdated || splitCore {
 		if rep.Flow.State != StateInstalled || rep.SingleFileLayout {
 			t.Fatalf("%s %s: flow %+v single=%v, want the preset installed", want, fixture, rep.Flow, rep.SingleFileLayout)
@@ -868,6 +869,19 @@ func TestWorkbenchSkill_TeachesTheSpecReviewAuthorLoop(t *testing.T) {
 func TestWorkbenchSkill_TeachesSetSessionTarget(t *testing.T) {
 	_, core := WorkbenchSkill()
 	for _, want := range []string{"`set_session_target`", "moves to a new group"} {
+		if !strings.Contains(string(core), want) {
+			t.Errorf("the core skill lacks %q", want)
+		}
+	}
+}
+
+// Pack v20 (spec 2026-11-08): the owner's review thread may ask the author a
+// question; the author answers that one question with answer_review_question.
+func TestWorkbenchSkill_TeachesAnswerReviewQuestion(t *testing.T) {
+	_, core := WorkbenchSkill()
+	for _, want := range []string{"`answer_review_question`",
+		"`Owner's thread on spec review ask #N asks you: <question> — answer with answer_review_question <id>.`",
+		"Answer only that question", "then carry on"} {
 		if !strings.Contains(string(core), want) {
 			t.Errorf("the core skill lacks %q", want)
 		}
