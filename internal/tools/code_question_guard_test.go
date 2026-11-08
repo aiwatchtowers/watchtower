@@ -15,10 +15,12 @@ import (
 // Questions tab. No model-facing Go tool — the registry here, the MCP
 // server, the knowledge index — reads the chat tables, except the readers
 // listed in chatTableReaders, so none can list or search those
-// conversations. A new tool that reads them must keep them out
-// (`context_type IS NULL`, or an allow-list without `code_question`) and
-// extend this guard with a behavioural test before it is let through here:
-// an entry in chatTableReaders naming that test.
+// conversations. The same holds for a spec review thread
+// (`spec_review_thread`, spec 2026-11-08 §3): it stays in its card. A new
+// tool that reads the chat tables must keep both out (`context_type IS
+// NULL`, or an allow-list without either) and extend this guard with
+// behavioural tests before it is let through here: an entry in
+// chatTableReaders naming those tests.
 func TestCodeQuestionGuard_NoGoToolReadsChatHistory(t *testing.T) {
 	seen := map[string]bool{}
 	scans := [][]string{guardedSingleFiles}
@@ -66,10 +68,10 @@ var guardedSingleFiles = []string{
 }
 
 // chatTableReader is a reviewed Go reader of the chat tables: its source
-// filters `code_question` conversations out, and test (a func in
-// testFile) proves it behaviourally.
+// filters `code_question` and `spec_review_thread` conversations out, and
+// test and threadTest (funcs in testFile) prove it behaviourally.
 type chatTableReader struct {
-	testFile, test string
+	testFile, test, threadTest string
 }
 
 // chatTableReaders are the Go files let through the guard, each with the
@@ -77,30 +79,37 @@ type chatTableReader struct {
 var chatTableReaders = map[string]chatTableReader{
 	// Kept chat artifacts in the knowledge index (chat knowledge, 2026-10-24).
 	filepath.Join("..", "kb", "source_chat_artifact.go"): {
-		testFile: filepath.Join("..", "kb", "source_chat_artifact_test.go"),
-		test:     "TestChatArtifactSource_SkipsCodeQuestionChats",
+		testFile:   filepath.Join("..", "kb", "source_chat_artifact_test.go"),
+		test:       "TestChatArtifactSource_SkipsCodeQuestionChats",
+		threadTest: "TestChatArtifactSource_SkipsSpecReviewThreads",
 	},
 	// The ideas consolidator's chat turns (chat knowledge, 2026-10-24).
 	filepath.Join("..", "db", "chat_knowledge.go"): {
-		testFile: filepath.Join("..", "db", "chat_knowledge_test.go"),
-		test:     "TestListChatTurnsForIdeas",
+		testFile:   filepath.Join("..", "db", "chat_knowledge_test.go"),
+		test:       "TestListChatTurnsForIdeas",
+		threadTest: "TestListChatTurnsForIdeas_SkipsSpecReviewThreads",
 	},
 }
 
-// checkChatTableReader: a listed reader still names the code_question
-// filter in its SQL, and its behavioural test still exists.
+// checkChatTableReader: a listed reader still names the code_question and
+// spec_review_thread filters in its SQL, and its behavioural tests still exist.
 func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTableReader) {
 	t.Helper()
 	if !strings.Contains(string(src), "'code_question'") {
 		t.Errorf("%s reads the chat tables but no longer filters 'code_question' conversations", file)
+	}
+	if !strings.Contains(string(src), "'spec_review_thread'") {
+		t.Errorf("%s reads the chat tables but does not filter 'spec_review_thread' conversations", file)
 	}
 	testSrc, err := os.ReadFile(reader.testFile)
 	if err != nil {
 		t.Errorf("%s: its behavioural test file: %v", file, err)
 		return
 	}
-	if !strings.Contains(string(testSrc), "func "+reader.test+"(t *testing.T)") {
-		t.Errorf("%s: behavioural test %s is missing from %s", file, reader.test, reader.testFile)
+	for _, test := range []string{reader.test, reader.threadTest} {
+		if !strings.Contains(string(testSrc), "func "+test+"(t *testing.T)") {
+			t.Errorf("%s: behavioural test %s is missing from %s", file, test, reader.testFile)
+		}
 	}
 }
 
