@@ -467,7 +467,8 @@ Desktop (phase 2) and the reviewer chat (phase 3) follow.
   answers `busy` at once.
 - **Finish gate** (§4, `internal/tools/workbench_finish_gate.go`): unchanged in what it checks —
   every `source: session` item `done`; lane items never gate, an `incomplete` overview counts,
-  an overview whose every chapter is Can skip passes. It builds no map and never runs the model;
+  and a Can-skip-only change (its overview assembled, every item `not_found`) is refused like any
+  other until a handover ask. It finds the overview without the lane map and never runs the model;
   the missing-overview refusal adds "Re-run it; only the missing chapters are redone." and, when
   the session's diff packs into more than one batch, to run the command in the background. Skill
   pack v20 says the same and that `busy` means Branch review is describing the branch — run

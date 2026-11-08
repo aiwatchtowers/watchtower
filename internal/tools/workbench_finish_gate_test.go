@@ -265,16 +265,25 @@ func TestProj14_OnlySessionItemsGate(t *testing.T) {
 	mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
 }
 
-// Carry-over (Task 9): an overview whose every chapter is "Can skip" (a
-// lock-file-only change) has nothing to check, whatever its coverage says.
-func TestProj14_OnlySkippableOverviewPasses(t *testing.T) {
+// A change of only "Can skip" files (a lock-file bump) gets an assembled
+// overview with every item not_found: PROJ-14 is not relaxed for it — the
+// gate refuses as for any not_found item, and a handover ask passes.
+func TestProj14_OnlySkippableOverviewNeedsAHandover(t *testing.T) {
 	fx, wb, session, reg := repoSession(t)
 	linkIntent(t, fx.d, wb, session, 1)
 	putOverview(t, fx.d, wb, session, reviewai.Overview{
+		Summary:  "Only files that can be skipped changed.",
 		Chapters: []reviewai.Chapter{{Key: "collapsed", Title: "Can skip", Paths: []string{"b.go"}}},
 		Coverage: []reviewai.Coverage{{Index: 1, Item: "goal 1", Status: "not_found", Source: reviewai.SourceSession}},
 	})
-	mustApply(t, reg, wb, "finish_session", `{"summary":"Lock file bumped.","reason":"r"}`)
+	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Lock file bumped.","reason":"r"}`)
+	msg := refusal(t, err)
+	assert.Contains(t, msg, "1. [not_found] goal 1")
+	assert.NotContains(t, msg, "no AI overview yet")
+	assertNotFinished(t, fx.d, session, 0)
+
+	id := askID(t, mustApply(t, reg, wb, "ask_owner", questionAskTitled("Only the lock file changed")))
+	mustApply(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"Lock file bumped.","handover_ask_id":%d,"reason":"r"}`, id))
 }
 
 // A new note changes the intent the overview was made for: it is asked again.

@@ -211,9 +211,6 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if err := json.Unmarshal([]byte(js), &ov); err != nil {
 		return fmt.Errorf("finish check: reading the cached overview: %w", err)
 	}
-	if ov.OnlySkippable() {
-		return nil // only "Can skip" files changed: nothing to check
-	}
 	open := uncoveredItems(in.Intent, ov.Coverage)
 	if len(open) > 0 {
 		return &ValidationError{Msg: "the reviewer's AI overview of your changes does not see all of the work done:\n" +
