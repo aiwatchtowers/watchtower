@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -534,6 +535,11 @@ func TestReviewOverview_SessionFormReadsTheBranchTip(t *testing.T) {
 	assert.Equal(t, "the folder on main has uncommitted changes the reviewer does not read (it reads task branch feature "+
 		"at its last commit) — commit them on feature or move the folder onto it, then try again", dirty["error"])
 	assert.Zero(t, g.calls, "no overview of a tree that leaves the folder's work out")
+
+	// The map shows the tip all the same (it used to dereference a nil repo).
+	m := reviewJSON(t, wb, "map", "--session", itoa(s))
+	require.Equal(t, true, m["ok"], "%v", m)
+	assert.Contains(t, fmt.Sprint(m["map"]), "feature.txt")
 
 	reviewGit(t, repo, "checkout", "--", "README.md")
 	out := reviewJSON(t, wb, "overview", "--session", itoa(s))

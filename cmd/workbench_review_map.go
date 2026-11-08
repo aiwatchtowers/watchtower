@@ -85,14 +85,12 @@ func roundReviewPlace(ctx context.Context, repo *reviewdiff.Repo, r *db.ReviewRo
 // round: the folder's snapshot at its HEAD now, or the task branch's tip
 // (board #1013) at its commit. dirty is the refusal of a branch-tip place
 // whose folder has uncommitted changes the reviewer would not read ("" =
-// none).
+// none); the place is filled either way, so a caller that shows the tip
+// regardless (the map) can.
 func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (pl reviewPlace, dirty string, err error) {
 	snap, err := tools.SnapshotReviewSession(ctx, d, p, sessionID)
 	if err != nil {
 		return reviewPlace{}, "", err
-	}
-	if snap.FolderDirty {
-		return reviewPlace{}, snap.DirtyFolderRefusal(), nil
 	}
 	branch := snap.Branch
 	if branch == "" {
@@ -100,8 +98,11 @@ func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 			return reviewPlace{}, "", err
 		}
 	}
+	if snap.FolderDirty {
+		dirty = snap.DirtyFolderRefusal()
+	}
 	return reviewPlace{Repo: snap.Repo, Tree: snap.Tree, Base: snap.Base, Head: snap.Head, HeadBranch: branch, SessionID: sessionID,
-		Folder: snap.Folder}, "", nil
+		Folder: snap.Folder}, dirty, nil
 }
 
 // BuildReviewMap reads the place's diff, the session's agent chapters, the
