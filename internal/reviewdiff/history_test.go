@@ -183,3 +183,26 @@ func TestParseCommitFiles_MalformedHeaderIsAnError(t *testing.T) {
 		t.Fatal("a malformed header parsed")
 	}
 }
+
+func TestHeadCommitAndDefaultTip(t *testing.T) {
+	dir := newRepo(t)
+	r := openRepo(t, dir)
+	ctx := context.Background()
+	head, err := r.HeadCommit(ctx)
+	if err != nil || head != strings.TrimSpace(gitIn(t, dir, "rev-parse", "HEAD")) {
+		t.Fatalf("HeadCommit = %q, %v", head, err)
+	}
+	if tip, err := r.DefaultTip(ctx); err != nil || tip != "refs/heads/main" {
+		t.Fatalf("DefaultTip = %q, %v", tip, err)
+	}
+
+	unborn := t.TempDir()
+	gitIn(t, unborn, "init", "-q", "-b", "main")
+	u := openRepo(t, unborn)
+	if head, err := u.HeadCommit(ctx); err != nil || head != "" {
+		t.Fatalf("unborn HeadCommit = %q, %v", head, err)
+	}
+	if tip, err := u.DefaultTip(ctx); err != nil || tip != "" {
+		t.Fatalf("unborn DefaultTip = %q, %v", tip, err)
+	}
+}

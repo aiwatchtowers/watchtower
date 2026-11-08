@@ -131,6 +131,17 @@ func (r *Repo) defaultRefs(ctx context.Context) ([]string, error) {
 	return refs, nil
 }
 
+// DefaultTip is the ref of the default branch as Base finds it (origin's
+// first, e.g. "refs/remotes/origin/main"); "" when none exists. The
+// big-branch map skips a merge of its history as a base sync.
+func (r *Repo) DefaultTip(ctx context.Context) (string, error) {
+	refs, err := r.defaultRefs(ctx)
+	if err != nil || len(refs) == 0 {
+		return "", err
+	}
+	return refs[0], nil
+}
+
 // DefaultBranch is the name of the default branch as Base finds it — the
 // first of origin/HEAD's target, main and master that exists on origin or
 // locally; "" when none does.
