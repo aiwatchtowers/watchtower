@@ -30,6 +30,10 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all)
     }
 
+    func testProviderFallbackShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("provider-") })
+    }
+
     func testSessionCapsShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter {
             ["workchat-hold-caption", "settings-notifications-idle-caption"].contains($0.name)

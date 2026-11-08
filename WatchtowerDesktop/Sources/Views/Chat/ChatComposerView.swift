@@ -91,7 +91,7 @@ struct ChatComposerView: View {
                     Text(missing).font(.caption).foregroundStyle(.secondary)
                 }
                 if let preview = presentation.preview {
-                    ChatRoutingStatusView(preview: preview, actionEnabled: !chatVM.isBusy,
+                    ChatRoutingStatusView(preview: preview, nativeToolsNotice: presentation.nativeToolsNotice, actionEnabled: !chatVM.isBusy,
                                           onAction: routingAction(for: preview))
                 }
                 if let error = chatVM.routingStatusError {

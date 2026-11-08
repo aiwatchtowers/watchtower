@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -206,4 +208,48 @@ func TestAIModels_JSONCarriesCapabilities(t *testing.T) {
 	want, err := os.ReadFile(file)
 	require.NoError(t, err, "run with -update to write the Desktop fixture")
 	assert.Equal(t, string(want), string(got), "the Desktop fixture is stale: run with -update")
+}
+
+// Drive Cobra's real inherited pre-run, not only runAIModels: Settings catalog
+// reads must preserve the file instance that daemon application binds to.
+func TestAIModelsCommandPreservesLegacySavedFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/models" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"data":[{"id":"owned-local-model"}]}`))
+	}))
+	defer server.Close()
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	original := []byte("# preserve this saved file\ndb: {schema_format: 0}\nai: {provider: claude, ollama_url: '" + server.URL + "'}\n")
+	require.NoError(t, os.WriteFile(cfg, original, 0600))
+	before, err := os.Stat(cfg)
+	require.NoError(t, err)
+	p := startCLI(t, "--config", cfg, "ai", "models", "--json")
+	var lines []string
+	for line := range p.lines {
+		lines = append(lines, line)
+	}
+	require.NoError(t, p.wait())
+	line := strings.Join(lines, "\n")
+	require.True(t, json.Valid([]byte(line)), line)
+	require.Contains(t, line, "owned-local-model")
+	var catalog struct {
+		ActiveProvider string `json:"active_provider"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(line), &catalog))
+	require.Equal(t, "claude", catalog.ActiveProvider)
+	require.Equal(t, int32(1), requests.Load())
+	after, err := os.Stat(cfg)
+	require.NoError(t, err)
+	data, err := os.ReadFile(cfg)
+	require.NoError(t, err)
+	require.Equal(t, string(original), string(data))
+	require.True(t, os.SameFile(before, after), "metadata cannot invalidate saved_version by atomic rewrite")
+	require.True(t, before.ModTime().Equal(after.ModTime()))
+	require.Equal(t, before.Size(), after.Size())
+	require.False(t, strings.Contains(p.stderr.String(), "schema"), p.stderr.String())
 }

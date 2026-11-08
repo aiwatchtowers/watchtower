@@ -2772,6 +2772,16 @@ Entry format:
 - rule-gap (candidate, dim 7): *a complexity fix is guarded by a counted, clock-free assertion of the operation it removes (calls, walks, queries), mutation-checked by removing the fix; a wall-clock bound is at most a secondary check.* Also: an order-preserving refactor upgrades the test's `ElementsMatch` to `Equal` against output captured from the old code.
 - outcome: TBD
 
+
+## 2026-11-08 — feature/provider-fallback-final-1494 — verdict: approve
+
+- contested: automatic native-tool offering versus a required capability. Owner ask #971 explicitly permits omitting the former on a quota preflight; required attachments, policy, pins and native identifiers keep their independent gates. The actual reserve prompt, MCP arguments and persisted notice are checked together, rather than treating the UI copy as proof of backend capability. [6/8/9]
+- false-positive: fresh local health as proof that background work has returned. Missing quota evidence permits a later attempt, but proves no completed job; the shared actual-command DTO and production presentation test now enforce that distinction in both directions. [6/7]
+- miss: no new confirmed defect in the final three builtin review lanes. External Codex transmission had been refused by automatic approval and was not retried; specialist APIs were unavailable. This verdict uses the documented builtin substitute and does not claim those unavailable reviews ran. [7/9]
+- weak-dimension: verification provenance needs care when a long integration crosses unrelated main changes. Full gates apply to their recorded source; byte-preservation plus scoped merge checks justify unchanged coverage, rather than silently relabeling an earlier run as a new-head run. [7/8]
+- rule-gap: distinguish a permitted failure mode from its unobserved trigger. The unchanged cache and process-reaping assertions passed the single full retry; diagnostic reproduction does not establish that memory pressure or a live descendant caused the original failures. Git feature compatibility is likewise tested with exact semantic batches and fixed probe costs, preserving main's already-landed fix. [7/8]
+- outcome: TBD
+
 ## 2026-11-08 — fix/1298-phone-ingest-name-race (#1298: `RecordingNameClaims` held by `startRecording` across `recorder.start` + `beginPending` and by `reservePhoneRecording` across its exclusive insert; racing test driven through `FakeRecorder.duringStart`; 6 files +167/−29; panel: prosecutor (3 minors) + codex (0); pr-review-toolkit specialists unavailable; judge verified 75fa291b0 by reading, no runs) — verdict: changes-needed
 
 - contested (F1, raised minor → held major): `docs/features/meeting-transcriber.md` still says the ingest reservation is "done on the main actor, so it is serialised with `startRecording`'s `.caf` pick". That is the false invariant that caused #1298. The code comments were rewritten, but the feature note, which CLAUDE.md tells everyone to read before touching the area, was not. **When a fix disproves an invariant, grep the feature note and inventory for the old claim, not only the doc comments in the diff.** [8]

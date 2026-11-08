@@ -992,58 +992,100 @@ final class TargetChatViewModelTests: XCTestCase {
     /// an approved action is target activity even before the follow-up turn runs.
     func testApproveNotifiesTargetActivity() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService())
+        let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        addTeardownBlock { @MainActor in
+            chat.onTargetActivity = nil
+            mock.release()
+            chat.stop()
+            await chat.engine.finished()
+        }
+        let followUpEnded = expectation(description: "follow-up turn reports its own target activity")
         var notifications = 0
-        chat.onTargetActivity = { notifications += 1 }
+        chat.onTargetActivity = {
+            notifications += 1
+            if notifications == 2 { followUpEnded.fulfill() }
+        }
 
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
-        await chat.engine.finished()
+        await chat.engine.started()
+        XCTAssertTrue(chat.isStreaming, "the follow-up is held before completion")
 
-        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
+        mock.release()
+        await fulfillment(of: [followUpEnded], timeout: 5)
+        await chat.engine.finished()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
     }
 
     /// A failed action is activity too — the screen must not keep showing a step
     /// derived from a state the chat has since tried to change.
     func testApproveNotifiesTargetActivityEvenWhenTheActionFails() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService())
+        let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        addTeardownBlock { @MainActor in
+            chat.onTargetActivity = nil
+            mock.release()
+            chat.stop()
+            await chat.engine.finished()
+        }
+        let followUpEnded = expectation(description: "follow-up turn reports its own target activity")
         var notifications = 0
-        chat.onTargetActivity = { notifications += 1 }
+        chat.onTargetActivity = {
+            notifications += 1
+            if notifications == 2 { followUpEnded.fulfill() }
+        }
 
         // No status at all — the executor rejects it.
         let action = ProposedAction(type: .updateStatus, reason: "r", status: nil)
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
-        await chat.engine.finished()
+        await chat.engine.started()
+        XCTAssertTrue(chat.isStreaming, "the follow-up is held before completion")
 
         if case .failed = chat.actionCards.first?.state {} else {
             XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
         }
-        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
+        mock.release()
+        await fulfillment(of: [followUpEnded], timeout: 5)
+        await chat.engine.finished()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
     }
 
     /// Approve-all applies a batch in one pass, so it notifies once, not per card.
     func testApproveAllNotifiesTargetActivityOnce() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService())
+        let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        addTeardownBlock { @MainActor in
+            chat.onTargetActivity = nil
+            mock.release()
+            chat.stop()
+            await chat.engine.finished()
+        }
+        let followUpEnded = expectation(description: "follow-up turn reports its own target activity")
         var notifications = 0
-        chat.onTargetActivity = { notifications += 1 }
+        chat.onTargetActivity = {
+            notifications += 1
+            if notifications == 2 { followUpEnded.fulfill() }
+        }
 
         chat.actionCards = [
             TargetActionCard(messageID: UUID(),
@@ -1054,9 +1096,15 @@ final class TargetChatViewModelTests: XCTestCase {
                              state: .pending)
         ]
         await chat.approveAll()
-        await chat.engine.finished()
+        await chat.engine.started()
+        XCTAssertTrue(chat.isStreaming, "the follow-up is held before completion")
 
-        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
+        mock.release()
+        await fulfillment(of: [followUpEnded], timeout: 5)
+        await chat.engine.finished()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
     }
 
     /// A plain chat turn mutates nothing, but it is still work on the target —

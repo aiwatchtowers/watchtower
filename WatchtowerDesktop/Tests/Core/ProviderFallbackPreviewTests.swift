@@ -50,6 +50,9 @@ final class ProviderFallbackPreviewTests: XCTestCase {
         XCTAssertEqual(preview.actualProvider, "Claude")
         XCTAssertEqual(preview.copy.action, "Use Codex")
         XCTAssertTrue(preview.copy.detail.contains("This chat stays with Claude until you switch"))
+        XCTAssertEqual(preview.copy.title, "Codex can be tried")
+        XCTAssertTrue(preview.copy.detail.contains("No local quota block is currently recorded for Codex"))
+        XCTAssertFalse(preview.copy.detail.contains("Background tasks have returned"))
     }
 
     func testBusyStatesCannotOfferASecondAttempt() {
