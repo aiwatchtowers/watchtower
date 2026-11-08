@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,6 +10,18 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 )
+
+// TestLLMTRANSPORT01_WiringCoversRegistry: cmd's half of the factory wires
+// every registered provider and no other, in both directions, so wiringFor
+// never panics on a registered id (docs/features/adding-a-harness.md).
+func TestLLMTRANSPORT01_WiringCoversRegistry(t *testing.T) {
+	if err := providers.CheckRegistryRows("cmd/transport_wiring.go's wirings", slices.Collect(maps.Keys(wirings))); err != nil {
+		t.Error(err)
+	}
+	if err := transport.CheckConstructors(); err != nil {
+		t.Error(err)
+	}
+}
 
 // TestTransportWiring_EveryRegistryIDHasConstructors pins the one factory
 // (spec 2026-11-05 §3.4): every registry provider has a transport row and a

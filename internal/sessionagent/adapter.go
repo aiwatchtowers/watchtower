@@ -8,7 +8,10 @@ package sessionagent
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"watchtower/internal/agentkind"
@@ -157,9 +160,56 @@ const (
 	ProbeGone    = "gone"    // no registry entry, or its process is dead or its pid reused
 )
 
-var adapters = map[Kind]Adapter{
-	agentkind.Claude: claudeAdapter{},
-	agentkind.Codex:  codexAdapter{},
+// adapterList is every session adapter: one per agentkind registry entry
+// (checkAdapters at start, TestSessionAgent_AdaptersMatchAgentKindRegistry).
+var adapterList = []Adapter{claudeAdapter{}, codexAdapter{}}
+
+// adapters is adapterList by kind; ordered is it in agentkind's order. A
+// mismatch with agentkind's registry panics at start, naming what is
+// missing, so it never surfaces later in a surprising place.
+var adapters, ordered = func() (map[Kind]Adapter, []Adapter) {
+	if err := checkAdapters(agentkind.All(), adapterList); err != nil {
+		panic("sessionagent: " + err.Error())
+	}
+	byKind := make(map[Kind]Adapter, len(adapterList))
+	for _, a := range adapterList {
+		byKind[a.Kind()] = a
+	}
+	out := make([]Adapter, 0, len(adapterList))
+	for _, k := range agentkind.All() {
+		out = append(out, byKind[k])
+	}
+	return byKind, out
+}()
+
+// checkAdapters reports every registered kind without an adapter, every
+// adapter of no registered kind and every kind served twice.
+func checkAdapters(kinds []Kind, list []Adapter) error {
+	registered := map[Kind]bool{}
+	for _, k := range kinds {
+		registered[k] = true
+	}
+	served := map[Kind]bool{}
+	var problems []string
+	for _, a := range list {
+		k := a.Kind()
+		switch {
+		case served[k]:
+			problems = append(problems, fmt.Sprintf("two session adapters for agent kind %q", k))
+		case !registered[k]:
+			problems = append(problems, fmt.Sprintf("session adapter %q serves no registered agent kind (add it to agentkind's registry)", k))
+		}
+		served[k] = true
+	}
+	for _, k := range kinds {
+		if !served[k] {
+			problems = append(problems, fmt.Sprintf("agent kind %q has no session adapter (add one to sessionagent's adapterList)", k))
+		}
+	}
+	if len(problems) > 0 {
+		return errors.New(strings.Join(problems, "; "))
+	}
+	return nil
 }
 
 // For is the adapter of kind k; false for a value that is no agent kind
@@ -169,9 +219,11 @@ func For(k Kind) (Adapter, bool) {
 	return a, ok
 }
 
-// MustFor is the adapter of agent kind k, for a caller that names a kind
-// constant; a kind with no adapter is a programming error and panics with
-// its name.
+// MustFor is the adapter of agent kind k, only for a caller that names a
+// kind constant: a kind with no adapter is a programming error, which
+// checkAdapters already refuses at start, and panics with its name. A kind
+// read at runtime goes through For or Of and refuses with
+// agentkind.Unsupported.
 func MustFor(k Kind) Adapter {
 	a, ok := For(k)
 	if !ok {
@@ -207,5 +259,5 @@ func RolloutWatchKinds() []string {
 	return kinds
 }
 
-// All is every adapter, in agentkind order (Claude Code, Codex).
-func All() []Adapter { return []Adapter{claudeAdapter{}, codexAdapter{}} }
+// All is every adapter, in agentkind's registry order.
+func All() []Adapter { return append([]Adapter(nil), ordered...) }

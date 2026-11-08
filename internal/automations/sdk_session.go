@@ -171,8 +171,8 @@ func (r *sessionCall) parseOptional(opts map[string]any) error {
 	var ok bool
 	if a, has := opts["agent"]; has {
 		s, _ := a.(string)
-		if _, ok := agentkind.Parse(s); !ok {
-			return validationf("session(): agent must be %q or %q", agentkind.Claude, agentkind.Codex)
+		if _, err := agentkind.ParseOrRefuse(s); err != nil {
+			return validationf("session(): %v", err)
 		}
 		r.agent = s
 	}

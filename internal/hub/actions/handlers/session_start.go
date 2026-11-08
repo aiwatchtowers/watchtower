@@ -155,11 +155,11 @@ func (h *Handlers) launch(ctx context.Context, req StartRequest) actions.Outcome
 	case err == nil:
 		return applied(map[string]any{"session_id": res.SessionID, "stage": "starting"})
 	case errors.As(err, &missing):
-		// A value that is no agent kind reads as Claude Code's (the
-		// Desktop's `session.kind.agent ?? .claude`).
+		// A value that is no agent kind of this version is refused as such,
+		// never read as another agent's.
 		agent, ok := sessionagent.Of(missing.Agent)
 		if !ok {
-			agent = sessionagent.MustFor(agentkind.Claude)
+			return failed(reasonNotSupported, agentkind.Unsupported(missing.Agent).Error())
 		}
 		return failed(agent.NotFoundReason(), agent.NotFoundMessage())
 	case errors.Is(err, ErrStartNotOnBoard):

@@ -36,20 +36,26 @@ type transportWiring struct {
 	newAgentClient func(agentClientWiring) (ai.Provider, func(), error)
 }
 
+// wirings is every registry provider's cmd wiring, by id. It covers the
+// registry exactly (TestLLMTRANSPORT01_WiringCoversRegistry), so wiringFor
+// never meets a registered provider it cannot wire.
+var wirings = map[string]transportWiring{
+	"claude": {newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient},
+	"codex":  {newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient},
+	"ollama": {newChatBackend: newRuntimeBChatBackend},
+}
+
 // wiringFor is provider id's wiring. An unknown or empty id is the default
 // provider's, as providers.ByID resolves it; a registry provider with no
-// case here is a bug, which panics rather than run another transport.
+// row is a bug the completeness test catches, and panics here rather than
+// run another transport.
 func wiringFor(id string) transportWiring {
-	switch p := providers.ByID(id).ID; p {
-	case "claude":
-		return transportWiring{newChatBackend: newClaudeChatBackend, newAgentClient: newClaudeAgentClient}
-	case "codex":
-		return transportWiring{newChatBackend: newCodexChatBackend, newAgentClient: newCodexAgentClient}
-	case "ollama":
-		return transportWiring{newChatBackend: newRuntimeBChatBackend}
-	default:
+	p := providers.ByID(id).ID
+	w, ok := wirings[p]
+	if !ok {
 		panic("transport wiring: no constructors for provider " + p)
 	}
+	return w
 }
 
 // quickConnectionEnv is the environment a provider's child carries the

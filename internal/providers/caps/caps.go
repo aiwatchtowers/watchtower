@@ -6,6 +6,11 @@
 // and the chat's session_ready carry it to the Desktop.
 package caps
 
+import (
+	"maps"
+	"slices"
+)
+
 // Values of the string fields.
 const (
 	ToolsNone = "none"
@@ -70,6 +75,10 @@ func For(id string) (Capabilities, bool) {
 	c, ok := table[id]
 	return c, ok
 }
+
+// IDs is every provider id with a row, sorted: the completeness guard
+// checks it against the provider registry in both directions.
+func IDs() []string { return slices.Sorted(maps.Keys(table)) }
 
 // HasTools reports whether the transport runs the watchtower tools.
 func (c Capabilities) HasTools() bool { return c.Tools != "" && c.Tools != ToolsNone }

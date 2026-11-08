@@ -71,6 +71,11 @@ type sessionAgent struct {
 	// hooks returns the installed hook commands per event for the
 	// workbench folder dir.
 	hooks func(t *testing.T, dir string, workbenchID int64) map[string][]string
+	// installed returns every hook command per event devpack installs for
+	// the agent (the ask guard included, which hooks leaves out because it
+	// calls a model): TestLLMTRANSPORT01_SessionHarnessComplete checks each
+	// of the adapter's HookSpecs is among them.
+	installed func(t *testing.T, dir string, workbenchID int64) map[string][]string
 	// events maps an intent to the hook events it fires, each with the
 	// payload fixture it starts from ("" = a minimal payload) and fields
 	// to set.
@@ -165,21 +170,32 @@ type sessionResult struct {
 	Stderr    []string
 }
 
+// installClaudeHooks installs the claude workbench hooks the session cells
+// fire (the brief, the drift check, the state hooks) and returns them.
+func installClaudeHooks(t *testing.T, dir string, wb int64) map[string][]string {
+	for _, install := range []func() (bool, error){
+		func() (bool, error) {
+			return devpack.InstallSessionStartHook(dir, devpack.WorkbenchHookCommand(bins.watchtower, wb), wb)
+		},
+		func() (bool, error) {
+			return devpack.InstallStopHook(dir, devpack.WorkbenchStopHookCommand(bins.watchtower, wb), wb)
+		},
+		func() (bool, error) { return devpack.InstallStateHooks(dir, bins.watchtower, wb) },
+	} {
+		if _, err := install(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return claudeSettingsHooks(t, filepath.Join(dir, ".claude", "settings.local.json"))
+}
+
 var claudeSession = &sessionAgent{
-	kind: "claude",
-	hooks: func(t *testing.T, dir string, wb int64) map[string][]string {
-		for _, install := range []func() (bool, error){
-			func() (bool, error) {
-				return devpack.InstallSessionStartHook(dir, devpack.WorkbenchHookCommand(bins.watchtower, wb), wb)
-			},
-			func() (bool, error) {
-				return devpack.InstallStopHook(dir, devpack.WorkbenchStopHookCommand(bins.watchtower, wb), wb)
-			},
-			func() (bool, error) { return devpack.InstallStateHooks(dir, bins.watchtower, wb) },
-		} {
-			if _, err := install(); err != nil {
-				t.Fatal(err)
-			}
+	kind:  "claude",
+	hooks: installClaudeHooks,
+	installed: func(t *testing.T, dir string, wb int64) map[string][]string {
+		installClaudeHooks(t, dir, wb)
+		if _, err := devpack.InstallAskGuardHooks(dir, bins.watchtower, wb); err != nil {
+			t.Fatal(err)
 		}
 		return claudeSettingsHooks(t, filepath.Join(dir, ".claude", "settings.local.json"))
 	},
@@ -214,6 +230,13 @@ var codexSession = &sessionAgent{
 			if strings.Contains(h.Command, "ask-guard") {
 				continue // the ask guard calls a model; it records no state
 			}
+			out[h.Event] = append(out[h.Event], h.Command)
+		}
+		return out
+	},
+	installed: func(*testing.T, string, int64) map[string][]string {
+		out := map[string][]string{}
+		for _, h := range devpack.CodexHookSet(bins.watchtower) {
 			out[h.Event] = append(out[h.Event], h.Command)
 		}
 		return out

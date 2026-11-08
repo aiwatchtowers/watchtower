@@ -17,12 +17,6 @@ cmd/generator.go | connectionServer | "http" | 1 | permanent: a Quick Connection
 cmd/integrate_workbench.go | execCommandRunner | "claude" | 1 | permanent: resolves the claude binary for `claude mcp add` (install plumbing, no model call)
 cmd/workbench_brief_session.go | applySessionStart | agentkind.Claude | 1 | permanent: identity check, a Claude Code hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
 cmd/workbench_hook_row.go | resolveCodexHookRow | agentkind.Codex | 1 | permanent: identity check, a Codex hook acts on its own agent's row only (a nested run of another agent inherits the terminal env var)
-internal/agentkind/kind.go | Kind.DisplayName | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
-internal/agentkind/kind.go | Kind.DisplayName | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
-internal/agentkind/kind.go | Kind.Label | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
-internal/agentkind/kind.go | Kind.Label | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
-internal/agentkind/kind.go | Parse | agentkind.Claude | 1 | permanent: the agent kinds' own definition: parsing and display names
-internal/agentkind/kind.go | Parse | agentkind.Codex | 1 | permanent: the agent kinds' own definition: parsing and display names
 internal/config/ai_routing.go | KnownAIProvider | "claude" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/config/ai_routing.go | KnownAIProvider | "codex" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)
 internal/config/ai_routing.go | KnownAIProvider | "ollama" | 1 | permanent: validates a stored provider id against the known set (config/database decoder)

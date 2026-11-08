@@ -1,0 +1,67 @@
+# Adding a harness
+
+A harness is either an **LLM transport** (a provider Watchtower calls for
+text, tools and chat: today claude, codex, ollama) or a **Workbench session
+agent** (a coding agent a terminal session runs: today Claude Code and
+Codex CLI). Each starts from one registry entry. The checklist below is
+short on purpose: its executable form is the completeness tests, which
+name the harness and exactly what it lacks (`harness X: …`), in both
+directions — a registered harness missing a piece, and a row somewhere
+that names no registered harness. Run them after each step:
+
+```sh
+go test ./internal/agentkind ./internal/sessionagent ./internal/providers/...
+go test ./internal/transporttest -run 'TestLLMTRANSPORT01|TestTransportSuite'
+go test ./cmd -run TestLLMTRANSPORT01
+```
+
+The contract behind them is LLMTRANSPORT-01
+([docs/inventory/llm-transport.md](../inventory/llm-transport.md)): consumers
+decide by capability, never by name, so a new harness needs no consumer
+change beyond its capability row.
+
+## A Workbench session agent
+
+1. **Register the kind** in `internal/agentkind`'s `registry`: kind (the
+   `terminal_sessions.kind` value), label (`agent_label` of its comments)
+   and display name. `Parse`, `SQLKinds`, `Choices` and every refusal text
+   follow.
+2. **Write the adapter** (`sessionagent.Adapter`) and add it to
+   `adapterList`. A kind with no adapter, or an adapter of no kind, panics
+   at start with its name.
+3. **Capabilities**: a row in `internal/sessionagent/agent_capabilities.json`
+   (its `kinds` list and its `agents` row) copied byte for byte to
+   `WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json`,
+   and the phone half in `WatchtowerKit/Tests/Fixtures/workbench/phone_caps.json`.
+   Declare `analytics: false` until an importer reads its transcript.
+4. **Signals**: hook specs (`HookSpecs`) that devpack installs, or a
+   pull-only signal (`Watch`).
+5. **Start**: a launch command, a not-found reason and message, and a wire
+   value for the phone.
+6. **Schema**: the kind in `terminal_sessions.kind`'s CHECK (a migration
+   rebuilds the table; follow the `add-migration` skill).
+7. **Provider**: an LLM provider of the same id (policy and
+   `workbench.default_agent` treat agent kinds as providers).
+8. **Contract suite**: a session row in `internal/transporttest` (`adapters`
+   with `Session`, including `installed`), then
+   `go test ./internal/transporttest -update`. Every session scenario
+   resolves to pass, unsupported (asserted, never skipped) or an open gap.
+9. **Swift**: the Desktop's `AgentKind` and session adapter
+   (`WatchtowerCore/SessionAgent/`) and the Kit's twins, pinned to the same
+   fixtures by their own tests.
+
+## An LLM transport
+
+1. **Register the provider** in `internal/providers`' `registry`.
+2. **Capabilities**: its row in `internal/providers/caps`.
+3. **Factory**: constructors in `internal/providers/transport`
+   (`constructors`) and cmd's wiring in `cmd/transport_wiring.go`
+   (`wirings`).
+4. **Failures**: a classifier that types its failures
+   (`providers.Failure` categories, each mapped by `chat.CodeForFailure`);
+   the suite's `fail-*` cells prove it.
+5. **Policy**: the organization policy's `AllowedAIProviders` knows the id
+   (`internal/policy`, with its Swift twin over `policy_cases.json`).
+6. **Contract suite**: suite rows (`adapters` in `internal/transporttest`)
+   whose levels together cover every LLM scenario at batch, stream and
+   chat, then `-update` the golden.

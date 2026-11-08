@@ -50,7 +50,7 @@ func init() {
 	ensure.Flags().StringVar(&workbenchWorktreeFlagBranch, "branch", "", "its wt/… branch")
 	for _, c := range []*cobra.Command{create, ensure} {
 		c.Flags().StringVar(&workbenchWorktreeFlagAgent, "agent", "",
-			"the agent the worktree is for (claude or codex): claude skips codex's install; empty installs both")
+			"the agent the worktree is for ("+agentkind.Choices("or")+"): one without launch hooks (claude) skips codex's install; empty installs both")
 	}
 	workbenchCmd.AddCommand(workbenchWorktreeCmd)
 }
@@ -74,14 +74,14 @@ func worktreeTarget(ctx context.Context) (id int64, o workbenchgit.Options, refu
 	return id, o, refused, detail, nil
 }
 
-// worktreeAgent is --agent: "" (both integrations), claude or codex.
+// worktreeAgent is --agent: "" (every integration) or an agent kind.
 func worktreeAgent() (agentkind.Kind, error) {
 	if workbenchWorktreeFlagAgent == "" {
 		return "", nil
 	}
 	k, ok := agentkind.Parse(workbenchWorktreeFlagAgent)
 	if !ok {
-		return "", fmt.Errorf("--agent must be claude or codex, got %q", workbenchWorktreeFlagAgent)
+		return "", fmt.Errorf("--agent must be %s, got %q", agentkind.Choices("or"), workbenchWorktreeFlagAgent)
 	}
 	return k, nil
 }
