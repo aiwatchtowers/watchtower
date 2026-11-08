@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Diff reviewer, agent and AI layer (migration 00128, plan 3): the agent's
@@ -99,6 +100,89 @@ func (db *DB) PutReviewOverview(projectID int64, tree, base, intentHash, js, mod
 	if _, err := db.Exec(`INSERT OR REPLACE INTO review_overviews (project_id, tree_sha, base_sha, intent_hash, json, model)
 		VALUES (?, ?, ?, ?, ?, ?)`, projectID, tree, base, intentHash, js, model); err != nil {
 		return fmt.Errorf("caching review overview: %w", err)
+	}
+	return nil
+}
+
+// ReviewOverviewPart is one chapter's cached AI description (00174, board
+// #1025), keyed by the chapter's content hash.
+type ReviewOverviewPart struct {
+	ProjectID         int64
+	Hash, JSON, Model string
+	CreatedAt         time.Time
+}
+
+// reviewOverviewPartTTL is how long a chapter description stays cached.
+const reviewOverviewPartTTL = 30 * 24 * time.Hour
+
+const reviewOverviewPartStamp = "2006-01-02T15:04:05Z"
+
+// ReviewOverviewParts reads the cached descriptions of workbench projectID
+// among hashes; a hash without a row is absent from the map.
+func (db *DB) ReviewOverviewParts(projectID int64, hashes []string) (map[string]ReviewOverviewPart, error) {
+	out := make(map[string]ReviewOverviewPart, len(hashes))
+	const chunk = 500
+	for start := 0; start < len(hashes); start += chunk {
+		part := hashes[start:min(start+chunk, len(hashes))]
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")
+		args := make([]any, 0, len(part)+1)
+		args = append(args, projectID)
+		for _, h := range part {
+			args = append(args, h)
+		}
+		rows, err := db.Query(`SELECT part_hash, json, model, created_at FROM review_overview_parts
+			WHERE project_id = ? AND part_hash IN (`+marks+`)`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("reading review overview parts: %w", err)
+		}
+		if err := scanReviewOverviewParts(rows, projectID, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func scanReviewOverviewParts(rows *sql.Rows, projectID int64, out map[string]ReviewOverviewPart) error {
+	defer rows.Close()
+	for rows.Next() {
+		p := ReviewOverviewPart{ProjectID: projectID}
+		var created string
+		if err := rows.Scan(&p.Hash, &p.JSON, &p.Model, &created); err != nil {
+			return fmt.Errorf("reading review overview parts: %w", err)
+		}
+		at, err := time.Parse(reviewOverviewPartStamp, created)
+		if err != nil {
+			return fmt.Errorf("reading review overview parts: created_at: %w", err)
+		}
+		p.CreatedAt = at
+		out[p.Hash] = p
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reading review overview parts: %w", err)
+	}
+	return nil
+}
+
+// PutReviewOverviewPart caches one chapter description, replacing a row under
+// the same hash, and prunes the workbench's rows older than 30 days in the
+// same short transaction.
+func (db *DB) PutReviewOverviewPart(p ReviewOverviewPart, now time.Time) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("caching review overview part: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // a committed tx makes this a no-op
+	cutoff := now.Add(-reviewOverviewPartTTL).UTC().Format(reviewOverviewPartStamp)
+	if _, err := tx.Exec(`DELETE FROM review_overview_parts WHERE project_id = ? AND created_at < ?`,
+		p.ProjectID, cutoff); err != nil {
+		return fmt.Errorf("pruning review overview parts: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT OR REPLACE INTO review_overview_parts (project_id, part_hash, json, model, created_at)
+		VALUES (?, ?, ?, ?, ?)`, p.ProjectID, p.Hash, p.JSON, p.Model, now.UTC().Format(reviewOverviewPartStamp)); err != nil {
+		return fmt.Errorf("caching review overview part: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("caching review overview part: %w", err)
 	}
 	return nil
 }
