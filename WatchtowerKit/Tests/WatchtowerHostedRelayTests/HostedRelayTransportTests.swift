@@ -1235,4 +1235,75 @@ class HostedRelayTransportTests: HostedRelayScenarioCase {
             XCTAssertEqual(HostedRelayTransport.secureBlobURL(url, origin: origin), allowed, "\(string) under \(origin.string)")
         }
     }
+
+    // MARK: - The traffic meter (debug only)
+
+    #if DEBUG
+    func testTheMeterCountsPagesDownloadsAndWakes() async throws {
+        let (mac, phone) = try await hub()
+        let attachment = try await macUpload(mac, dataZone(mac), Data(repeating: 7, count: 1000))
+        _ = try await macSave(mac, dataZone(mac), "report", attachmentID: attachment)
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+
+        try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false)
+        let meter = await transport.traffic
+        XCTAssertEqual(meter.pages, 2, "one page per zone")
+        XCTAssertGreaterThan(meter.bytes, 0, "the pages' bytes are counted")
+        XCTAssertEqual(meter.downloads, 1)
+        XCTAssertEqual(meter.downloadBytes, 1000)
+        XCTAssertEqual(meter.wakes, 1)
+
+        // A second wake over nothing new: two more pages, no download, one more wake.
+        try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false)
+        let again = await transport.traffic
+        XCTAssertEqual(again.pages, 4)
+        XCTAssertEqual(again.downloads, 1)
+        XCTAssertEqual(again.wakes, 2)
+    }
+
+    func testTheMeterLineHoldsNumbersOnly() async throws {
+        let (mac, phone) = try await hub()
+        _ = try await macSave(mac, dataZone(mac), "secret-record-name")
+        let store = try TransportStore.inMemory()
+        let (transport, _) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false)
+
+        let line = await transport.traffic.line
+        XCTAssertFalse(line.contains("secret-record-name"))
+        XCTAssertFalse(line.contains(phone.deviceID))
+        XCTAssertFalse(line.contains(mac.deviceID))
+        let template = line.replacingOccurrences(of: "[0-9]+", with: "N", options: .regularExpression)
+        XCTAssertEqual(template, "relay traffic: pages N, bytes N, downloads N, download bytes N, wakes N")
+        var fixed = RelayTrafficMeter()
+        fixed.recordPage(bytes: 120)
+        fixed.recordDownload(bytes: 30)
+        fixed.recordWake()
+        XCTAssertEqual(fixed.line, "relay traffic: pages 1, bytes 120, downloads 1, download bytes 30, wakes 1")
+    }
+
+    /// A stopped (here: update-required) feed throws before any request, so it adds no page, download or wake.
+    func testAStoppedFeedAddsNoPages() async throws {
+        let (mac, phone) = try await hub()
+        _ = try await macSave(mac, dataZone(mac), "a")
+        let store = try TransportStore.inMemory()
+        let (transport, log) = try await makeTransport(phone, mac: mac, store: store)
+        try await transport.pull()
+        let before = await transport.traffic
+        XCTAssertGreaterThan(before.pages, 0)
+
+        try await transport.save([mailboxRecord("queued")])
+        try relay.expireSessions(of: phone.deviceID)
+        try relay.failNext("login", with: .attestationRequired)
+        await transport.sendNow()
+        await waitForRelayEvent(log, .attestation(.updateRequired))
+        do {
+            try await transport.pull()
+            XCTFail("a stopped transport pulled")
+        } catch {}
+        try await transport.fetchForPush(since: Self.stamp, grace: 0, pollOnFallback: false)
+        let after = await transport.traffic
+        XCTAssertEqual(after, before)
+    }
+    #endif
 }

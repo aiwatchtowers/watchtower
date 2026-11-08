@@ -58,6 +58,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     var loginNotBefore: Date?
     /// Whether the last op reached the relay (`reachabilityKnown` false before any).
     var reachable = false
+    /// The debug meter of this transport's relay traffic and wakes (a no-op in Release).
+    var traffic = RelayTrafficMeter()
     var reachabilityKnown = false
 
     /// The pull in flight and the zones it still owes (`HostedRelayTransport+Pull.swift`).
@@ -242,6 +244,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// throttle does).
     public func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool) async throws {
         guard held() == nil else { return }
+        traffic.recordWake()
+        defer { traffic.logPass(to: Self.logger) }
         try await pull()
     }
 
