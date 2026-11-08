@@ -1,8 +1,8 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// The map wire shape, pinned by the Go golden `cmd/testdata/review-map.json` on
-/// feature/1025-p1 (copied byte for byte into `Fixtures/review-map.json`).
+/// The map wire shape, pinned by the Go golden `cmd/testdata/review-map.golden.json`
+/// (copied byte for byte into `Fixtures/review-map.json`; a Go test keeps them equal).
 final class ReviewMapTests: XCTestCase {
     static func fixture(_ name: String) throws -> Data {
         let url = URL(fileURLWithPath: #filePath)

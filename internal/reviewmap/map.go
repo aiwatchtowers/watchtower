@@ -139,7 +139,8 @@ func Build(in Input) Map {
 
 // buildChapters makes the chapters in build order, without levels or
 // signals. Agent and "dir:" chapters are the Desktop's, byte for byte
-// (testdata/chapters_golden.json, shared with a Swift test).
+// (testdata/chapters_golden.json, recorded from the Swift builder before it
+// was removed).
 func buildChapters(in Input) []Chapter {
 	lines := map[string]int{}    // noise costs no reading time
 	rawLines := map[string]int{} // what the "Can skip" chapter shows

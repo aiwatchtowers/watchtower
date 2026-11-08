@@ -2,7 +2,7 @@ import XCTest
 @testable import WatchtowerCore
 
 /// The streamed overview, pinned by the Go golden `cmd/testdata/review-overview-stream.jsonl`
-/// on feature/1025-p1 (copied byte for byte into `Fixtures/review-overview-stream.jsonl`).
+/// (copied byte for byte into `Fixtures/review-overview-stream.jsonl`).
 final class ReviewOverviewStreamTests: XCTestCase {
     private func golden() throws -> Data {
         try ReviewMapTests.fixture("review-overview-stream.jsonl")
