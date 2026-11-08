@@ -166,7 +166,7 @@ func TestHubStatusJSONKeys(t *testing.T) {
 	// Off, relay is absent (no runtime facts) and the lists are empty.
 	assert.ElementsMatch(t, []string{"state", "reason", "hub_id", "relay_device_id", "transport", "impl", "dir", "phones", "recordings", "host", "mode",
 		"adoption", "bridge", "identity", "switched_at", "switched_by", "name", "cloudkit", "off_delete", "transcriber",
-		"paying_phones", "mailbox_full_phones"}, hubKeysOf(m))
+		"paying_phones", "mailbox_full_phones", "epoch", "epoch_age_days"}, hubKeysOf(m))
 	assert.Nil(t, m["paying_phones"], "no hub runs: who pays is unknown")
 	assert.Equal(t, []any{}, m["mailbox_full_phones"])
 	od, ok := m["off_delete"].(map[string]any)
@@ -422,7 +422,7 @@ func TestHubPhonesJSONKeys(t *testing.T) {
 	require.Len(t, list, 1)
 	assert.ElementsMatch(t, []string{"device_id", "name", "scope", "linked_at", "typing_allowed", "typing_requested",
 		"permissions_allowed", "permissions_requested", "start_sessions_allowed", "start_sessions_granted", "ordered",
-		"last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts"}, hubKeysOf(list[0]))
+		"last_applied_action_seq", "transport", "paying", "undelivered", "mailbox_full", "alerts", "keys"}, hubKeysOf(list[0]))
 	assert.Equal(t, id, list[0]["device_id"])
 	// No hub runs: paying is null; nothing held, no flag, no alert yet.
 	assert.Nil(t, list[0]["paying"])
