@@ -127,6 +127,34 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:pkg", "collapsed"])
     }
 
+    /// The reviewer's brief reads the map: its chapters in reading order with
+    /// the danger level, "Can skip" included, and the chapter open in Deep.
+    func testReviewerMapInputReadsTheMap() async throws {
+        let h = try harness()
+        h.cli.script("map", [
+            mapJSON([(key: "dir:pkg", paths: ["pkg/y.go"], level: "breaking"),
+                     (key: "collapsed", paths: ["cmd/x.go"], level: "normal")])
+        ])
+        await openDeep(h)
+        let input = h.model.reviewerMapInput
+        XCTAssertEqual(input.chapters, [
+            ReviewerMapInput.Chapter(key: "dir:pkg", title: "pkg", level: "breaking", paths: ["pkg/y.go"]),
+            ReviewerMapInput.Chapter(key: "collapsed", title: "Can skip", level: "normal", paths: ["cmd/x.go"])
+        ])
+        XCTAssertEqual(input.openChapterKey, "dir:pkg")
+        XCTAssertEqual(input.summary, "", "no overview yet")
+    }
+
+    /// Without a map the brief falls back to the pane's chapters (none) and
+    /// the overview's summary.
+    func testReviewerMapInputWithoutAMap() async throws {
+        let h = try harness()
+        h.cli.script("map", [#"{"ok":false,"error":"git log failed"}"#])
+        await openDeep(h)
+        XCTAssertEqual(h.model.map, .failed)
+        XCTAssertEqual(h.model.reviewerMapInput, ReviewerMapInput(chapters: [], summary: "", openChapterKey: nil))
+    }
+
     /// No map (an error, bad JSON, no answer in 60 s): the file list stays,
     /// no chapters, no overview; Retry builds it and starts the overview.
     func testMapFailureKeepsTheFilesAndRetryRebuildsIt() async throws {

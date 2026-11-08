@@ -3,16 +3,15 @@ import Foundation
 /// What the reviewer's per-turn brief is built from (board #1025, tech spec
 /// §6): the round's chapters in reading order, the summary and the chapter
 /// open on screen. A value of its own, so the reviewer does not depend on
-/// where chapters come from — today `ReviewChangesModel`'s chapters and
-/// overview fill it (`ReviewChangesModel.reviewerMapInput`); the map of
-/// phases 1–2 (`ReviewMap`, with chapter danger levels) fills it once the
-/// branches meet.
+/// where chapters come from: `ReviewChangesModel.reviewerMapInput` fills it
+/// from the round's `ReviewMap` (chapter danger levels) and the overview.
 package struct ReviewerMapInput: Equatable, Sendable {
     package struct Chapter: Equatable, Sendable {
         package let key: String
         package let title: String
         /// The chapter's danger as one word (`breaking`, `significant`,
-        /// `normal`; today the overview's highest risk); "" = not known.
+        /// `normal` from the map; before the map is in, the overview's
+        /// highest risk); "" = not known.
         package let level: String
         package let paths: [String]
 
