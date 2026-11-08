@@ -341,6 +341,8 @@ final class AppState {
     /// Dashboard action strip (pending agent-action proposals + due reminders)
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
+    /// The Inbox's ⋯ menus; a press outlives the screen.
+    private(set) var inboxArtifactMenu: InboxArtifactMenuModel?
 
     /// Workbench tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
@@ -1344,13 +1346,9 @@ final class AppState {
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
         vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
+        wireInboxRoute(vm)
         automationEditorCenter = editorCenter
-        automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
-            AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
-                vm?.refresh()
-                if let id { await vm?.loadDetail(id) }
-            }
-        }
+        automationTemplatePanels = makeTemplatePanels(vm: vm, cli: cli)
     }
 
     /// The onboarding on screen was started from Settings: it can be
@@ -1744,7 +1742,7 @@ final class AppState {
         reactionDictionaryViewModel = vm
     }
 
-    func initActionStrip(dbPool: DatabasePool) {
+    func initActionStrip(dbPool: DatabasePool, cliRunner: (any CLIRunnerProtocol)? = nil) {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
@@ -1753,7 +1751,7 @@ final class AppState {
             cli: AutomationsCLI(runner: runner),
             direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
-        let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
+        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
@@ -1765,6 +1763,7 @@ final class AppState {
         vm.disabledFeatures = featureVisibility.disabledFeatureIDs
         Task { await vm.refresh() }
         actionStripViewModel = vm
+        inboxArtifactMenu = makeInboxArtifactMenu(strip: vm)
     }
 
     /// Not `private`: tests build the VM on a test pool (the
