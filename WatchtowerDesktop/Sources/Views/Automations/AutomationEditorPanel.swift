@@ -505,7 +505,15 @@ struct AutomationEditorPanel: View {
     /// The Inbox folder the save puts the cards in: the chat's newest
     /// suggestion, else a new draft's **+ New Artifact…** folder.
     private var placement: InboxNewArtifactRoute? {
-        vm.editorPlacement(suggestion: chat?.draft.entry?.folder, draftContextID: newDraftContextID)
+        let entry = chat?.draft.entry
+        return vm.editorPlacement(suggestion: entry?.folder, draftContextID: newDraftContextID,
+                                  automationID: existingID, suggestionKey: entry?.suggestionKey)
+    }
+
+    /// The saved automation being edited; nil for a new draft.
+    private var existingID: Int64? {
+        if case let .existing(id, _) = target { return id }
+        return nil
     }
 
     /// The owner's press: saves or confirms the bytes the column shows,
@@ -518,6 +526,7 @@ struct AutomationEditorPanel: View {
         let editor = editor
         let vm = vm
         let route = action.saves ? placement : nil
+        let suggestionKey = route == nil ? nil : chat?.draft.entry?.suggestionKey
         if let newDraftContextID { vm.setPressRoute(route, forDraft: newDraftContextID) }
         if let turnOnBuiltin {
             // A built-in: the save never touches on/off (its feature keys).
@@ -527,7 +536,8 @@ struct AutomationEditorPanel: View {
                     return
                 }
                 let landed = await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
-                await vm.routeEditorSave(key: key, landed: landed, draftContextID: nil, editor: editor, route: route)
+                await vm.routeEditorSave(key: key, landed: landed, draftContextID: nil, editor: editor, route: route,
+                                         spending: suggestionKey)
                 if action == .saveAndTurnOn, editor.saving[key] == .done { await turnOnBuiltin() }
             }
             return
@@ -549,7 +559,7 @@ struct AutomationEditorPanel: View {
                 landed = await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
             }
             await vm.routeEditorSave(key: key, landed: landed, draftContextID: draftContextID, editor: editor,
-                                     route: route)
+                                     route: route, spending: suggestionKey)
         }
     }
 

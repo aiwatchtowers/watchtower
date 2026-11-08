@@ -44,6 +44,7 @@ final class AutomationSaveFolderTests: XCTestCase {
     private var release: Int64 = 0
     private var acme: Int64 = 0
     private var automation: Int64 = 0
+    private var defaults: UserDefaults!
 
     override func setUp() async throws {
         (pool, path) = try TestDatabase.createPool()
@@ -58,8 +59,8 @@ final class AutomationSaveFolderTests: XCTestCase {
         (root, release, acme, automation) = ids
         runner = SaveFolderRunner()
         runner.on("route") { _ in Data(Self.routeJSON(revision: 8).utf8) }
-        vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: UserDefaults(
-            suiteName: "AutomationSaveFolderTests.\(UUID().uuidString)") ?? .standard)
+        defaults = UserDefaults(suiteName: "AutomationSaveFolderTests.\(UUID().uuidString)") ?? .standard
+        vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults)
         let runner = self.runner
         folderMenu = InboxFolderMenuModel(dbPool: pool) { runner }
         await folderMenu.reload()
@@ -156,6 +157,48 @@ final class AutomationSaveFolderTests: XCTestCase {
                                            draftContextID: "draft-a")
         XCTAssertEqual(placement, InboxNewArtifactRoute(folderID: acme, title: "Acme"),
                        "the chat's newest word wins; an existing title is reused, ignoring case")
+    }
+
+    /// The tree as read, with automation `automation` routed to `folder`.
+    private func treeRouting(to folder: Int64) -> InboxFolderTree {
+        InboxFolderTree(revision: folderMenu.tree.revision, folders: folderMenu.tree.folders,
+                        routes: [automation: folder])
+    }
+
+    /// A suggestion an earlier save already carried out is spent: moved
+    /// elsewhere since by the owner, the automation is never moved back by a
+    /// later save with no new `draft_automation` — not after a restart either.
+    /// A new entry asking for the same folder counts again.
+    func testSpentSuggestionNeverMovesTheAutomationBack() async throws {
+        let suggestion = AutomationFolderSuggestion(title: "Release")
+        let entry = "2026-10-14T12:00:00Z:c1"
+        let shown = vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                       suggestionKey: entry)
+        XCTAssertEqual(shown, InboxNewArtifactRoute(folderID: release, title: "Release"))
+        await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: editorCenter(),
+                                 route: shown, spending: entry)
+        XCTAssertEqual(routeCalls.count, 1)
+
+        let acme = acme
+        vm.inboxFolderTree = { [weak self] in self?.treeRouting(to: acme) }
+        XCTAssertNil(vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                        suggestionKey: entry), "the owner's move stands")
+        let restarted = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults)
+        restarted.inboxFolderTree = vm.inboxFolderTree
+        XCTAssertNil(restarted.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                               suggestionKey: entry), "spent across a restart")
+        XCTAssertEqual(vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                          suggestionKey: "2026-10-20T09:00:00Z:c2"),
+                       InboxNewArtifactRoute(folderID: release, title: "Release"), "a new ask counts")
+    }
+
+    func testNoLineWhenAlreadyInThatFolder() {
+        let release = release
+        vm.inboxFolderTree = { [weak self] in self?.treeRouting(to: release) }
+        XCTAssertNil(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "release"), draftContextID: nil,
+                                        automationID: automation, suggestionKey: "k"))
+        XCTAssertNotNil(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "Acme"), draftContextID: nil,
+                                           automationID: automation, suggestionKey: "k"))
     }
 
     func testSuggestionResolvesAgainstTheTree() {

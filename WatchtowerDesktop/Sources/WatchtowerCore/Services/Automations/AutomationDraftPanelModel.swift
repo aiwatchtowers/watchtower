@@ -120,6 +120,13 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
     /// owner's own Dry run of the same text.
     package var at: Date? { AutomationDates.parse(atText) }
 
+    /// This entry's identity for its folder suggestion (when it was written
+    /// and the text it drafted): a save that carried the suggestion out
+    /// spends it, and the next `draft_automation` makes a new one.
+    package var suggestionKey: String {
+        (atText ?? "") + ":" + AutomationDraftColumnModel.contentHash(recipeText)
+    }
+
     enum CodingKeys: String, CodingKey {
         case recipeText = "recipe_text", result, error, atText = "at", folder
     }

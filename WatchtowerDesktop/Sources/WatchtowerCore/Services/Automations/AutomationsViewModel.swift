@@ -63,6 +63,9 @@ package final class AutomationsViewModel {
     /// A selection made before its row was loaded; the next refresh reveals its group.
     private var pendingRevealID: Int64?
     nonisolated package static let collapsedSectionsKey = "automations.collapsedSections"
+    /// Automation id → the chat entry (`AutomationDraftEntry.suggestionKey`)
+    /// whose folder suggestion a landed save already carried out.
+    nonisolated package static let spentSuggestionsKey = "automations.spentFolderSuggestions"
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
     /// What the right panel shows: the empty state, a card, the New flow, a
@@ -566,15 +569,36 @@ package final class AutomationsViewModel {
 
     // MARK: - The editor's folder line
 
-    /// The folder the editor's save puts automation `key`'s cards in (its
-    /// Changed row's last line): the chat's newest suggestion, resolved
-    /// against the Inbox menu (a root-only tree before it is read), else the
-    /// folder a new draft's **+ New Artifact…** started from; nil for none.
+    /// The folder the editor's save puts the cards in (its Changed row's
+    /// last line): the chat's newest suggestion, resolved against the Inbox
+    /// menu (a root-only tree before it is read), else the folder a new
+    /// draft's **+ New Artifact…** started from; nil for none. For a saved
+    /// automation (`automationID`) a suggestion an earlier save carried out
+    /// (`suggestionKey` spent) counts no more — the owner may have moved it
+    /// since — and none is shown for the folder it is already routed to.
     package func editorPlacement(
-        suggestion: AutomationFolderSuggestion?, draftContextID: String?
+        suggestion: AutomationFolderSuggestion?,
+        draftContextID: String?,
+        automationID: Int64? = nil,
+        suggestionKey: String? = nil
     ) -> InboxNewArtifactRoute? {
-        if let suggestion { return suggestion.route(in: inboxFolderTree() ?? .rootOnly) }
-        return draftContextID.flatMap { newDraftRoutes[$0] }
+        guard let suggestion else { return draftContextID.flatMap { newDraftRoutes[$0] } }
+        let tree = inboxFolderTree() ?? .rootOnly
+        guard let automationID else { return suggestion.route(in: tree) }
+        if let suggestionKey, spentSuggestions[String(automationID)] == suggestionKey { return nil }
+        let route = suggestion.route(in: tree)
+        if case let .existing(folderID) = route.destination, tree.routes[automationID] == folderID { return nil }
+        return route
+    }
+
+    private var spentSuggestions: [String: String] {
+        defaults.dictionary(forKey: Self.spentSuggestionsKey) as? [String: String] ?? [:]
+    }
+
+    private func spend(_ suggestionKey: String, for automationID: Int64) {
+        var spent = spentSuggestions
+        spent[String(automationID)] = suggestionKey
+        defaults.set(spent, forKey: Self.spentSuggestionsKey)
     }
 
     /// Before a new draft's save press: the folder its line shows goes with
@@ -586,7 +610,8 @@ package final class AutomationsViewModel {
     /// After the editor's save press: `landed` is the automation this
     /// press's save wrote (`AutomationEditorCenter.commit`), nil when it
     /// saved nothing — then nothing is routed, whatever an earlier press
-    /// left behind. A saved automation goes to the folder its line showed.
+    /// left behind. A saved automation goes to the folder its line showed,
+    /// and the chat entry it came from (`suggestionKey`) is spent.
     /// A new draft's route (the press's, else its New flow's) waits for
     /// `draftSaved` when the save finished (`.done`); a save that landed
     /// short of that (not turned on, auto not kept) is routed now, so a
@@ -596,10 +621,13 @@ package final class AutomationsViewModel {
         landed: Int64?,
         draftContextID: String?,
         editor: AutomationEditorCenter,
-        route: InboxNewArtifactRoute?
+        route: InboxNewArtifactRoute?,
+        spending suggestionKey: String? = nil
     ) async {
         guard let landed else { return }
         guard let draftContextID else {
+            // Spent even when the route fails: Try Again keeps it.
+            if let suggestionKey { spend(suggestionKey, for: landed) }
             if let route { await routeSaved(landed, route, reread: false) }
             return
         }
