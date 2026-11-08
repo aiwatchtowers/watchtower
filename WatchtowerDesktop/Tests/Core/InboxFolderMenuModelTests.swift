@@ -342,6 +342,24 @@ final class InboxFolderMenuModelTests: XCTestCase {
         XCTAssertTrue(cli.invocations.isEmpty, "a stale drag moves nothing")
     }
 
+    func testADragOverTheMenuStaysAliveAndOnlyTimeOutsideCounts() async throws {
+        let cli = answering()
+        let model = InboxFolderMenuModel(dbPool: pool, runner: { cli }, dragLifetime: .milliseconds(300))
+        await model.reload()
+        let over = InboxFolderDrop(targetID: ids.release, placement: .into)
+
+        model.beginDrag(ids.team)
+        for _ in 0..<12 { // 600 ms over the menu, twice the lifetime
+            model.dragOver(over)
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(model.draggedID, ids.team, "each move over the menu re-arms the lifetime")
+
+        model.dragOver(nil) // the pointer leaves the menu; the clock restarts once more
+        try await Task.sleep(for: .milliseconds(1200))
+        XCTAssertNil(model.draggedID, "forgotten once it stayed away a whole lifetime")
+    }
+
     func testDropPastTheDepthLimitIsRefusedLocally() async {
         let cli = answering()
         let model = await model(cli)

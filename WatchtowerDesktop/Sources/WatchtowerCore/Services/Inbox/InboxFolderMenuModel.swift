@@ -81,7 +81,7 @@ package final class InboxFolderMenuModel {
     /// next drag).
     private let noteLifetime: Duration
     /// A drag SwiftUI never reports as ended (it was cancelled outside the
-    /// menu) is forgotten after this long.
+    /// menu) is forgotten after this long away from the menu.
     private let dragLifetime: Duration
 
     package init(
@@ -418,6 +418,12 @@ package final class InboxFolderMenuModel {
         if note == .menuChanged { note = nil }
         refusal = nil
         draggedID = id
+        armDragLifetime(id)
+    }
+
+    /// (Re)starts the clock that forgets a drag nobody reports as ended. Each
+    /// move over the menu re-arms it, so only time spent outside counts.
+    private func armDragLifetime(_ id: Int64) {
         dragTask?.cancel()
         let lifetime = dragLifetime
         dragTask = Task { [weak self] in
@@ -430,6 +436,7 @@ package final class InboxFolderMenuModel {
     /// The drag is over `drop`: its indicator, only where the drop is allowed.
     /// Written only on a change: SwiftUI calls this on every pointer move.
     package func dragOver(_ drop: InboxFolderDrop?) {
+        if let draggedID { armDragLifetime(draggedID) }
         var allowed: InboxFolderDrop?
         if let draggedID, let drop, canDrop(draggedID, onto: drop) { allowed = drop }
         if dropIndicator != allowed { dropIndicator = allowed }
