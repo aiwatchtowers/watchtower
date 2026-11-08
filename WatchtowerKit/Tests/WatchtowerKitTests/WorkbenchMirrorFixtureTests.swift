@@ -501,7 +501,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(report.session.id, 31)
         XCTAssertEqual(report.session.targetID, 415)
         XCTAssertEqual(report.session.agentState, "stop")
-        XCTAssertEqual(report.progress, SessionReport.Progress(done: 1, total: 2))
+        XCTAssertEqual(report.progress, SessionReport.Progress(done: 1, total: 3, merged: 1))
+        XCTAssertEqual(report.progress.mergedText, "1 merged")
         XCTAssertEqual(report.onYou.map(\.id), [12])
         XCTAssertEqual(report.onYou.first?.targetID, 415)
         XCTAssertEqual(report.now.first?.branch, "feature/acme-export")
@@ -510,6 +511,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(report.onYouMore)
         XCTAssertEqual(report.phases.first?.targetID, 415)
         XCTAssertEqual(report.phases.first?.items.map(\.id), [416, 418])
+        XCTAssertEqual(report.phases.first?.merged, 1)
         XCTAssertEqual(report.phasesClipped, true)
         let pr = try XCTUnwrap(report.prs.first)
         XCTAssertEqual(pr.ref, "pr:175")
@@ -528,6 +530,36 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(report.progress, SessionReport.Progress(done: 0, total: 0))
         XCTAssertEqual(report.phases, [])
         XCTAssertNil(report.phasesClipped)
+    }
+
+    /// Board #1017: a report from a Mac before the merged share decodes as
+    /// nothing merged, in the progress and in every phase, with no text.
+    func testSessionReportWithoutTheMergedShareDecodes() throws {
+        var json = try object("session_report")
+        var progress = try XCTUnwrap(json["progress"] as? [String: Any])
+        progress["merged"] = nil
+        json["progress"] = progress
+        var phases = try XCTUnwrap(json["phases"] as? [[String: Any]])
+        phases[0]["merged"] = nil
+        json["phases"] = phases
+        let report = try SessionReport.decode(payload: try data(json))
+        XCTAssertEqual(report.progress, SessionReport.Progress(done: 1, total: 3, merged: 0))
+        XCTAssertNil(report.progress.mergedText)
+        XCTAssertEqual(report.phases.first?.merged, 0)
+        XCTAssertEqual(report.phases.first?.done, 1, "the rest of the phase decodes as before")
+    }
+
+    /// The report's merged share is worded from the same case file as the
+    /// session row and the Mac (`merged_share_cases.json`); the full report
+    /// has no unchecked mark, so the stale cases read as checked ones.
+    func testTheReportMergedTextMatchesTheSharedCases() throws {
+        let file = try XCTUnwrap(JSONSerialization.jsonObject(with: try fixture("merged_share_cases")) as? [String: Any])
+        let cases = try XCTUnwrap(file["cases"] as? [[String: Any]])
+        XCTAssertFalse(cases.isEmpty)
+        for item in cases where item["stale"] as? Bool != true {
+            let progress = SessionReport.Progress(done: 0, total: item["total"] as? Int ?? 0, merged: item["merged"] as? Int ?? 0)
+            XCTAssertEqual(progress.mergedText, item["text"] as? String, "\(item)")
+        }
     }
 
     func testSessionChatFixtureDecodes() throws {

@@ -2733,7 +2733,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
-    agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00174, Go only); NULL = watched; the next hook event clears it
+    agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
@@ -2882,12 +2882,14 @@ CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_sessi
 
 -- Worktrees and branches a workbench session's agents worked in (00111):
 -- one row per new (session, root, branch), written by the session-state hook
--- (at most 64 per session) and read by `workbench cleanup`. Go only.
+-- (at most 64 per session; last_at moved once per run it is seen in) and read
+-- by `workbench cleanup` and the Desktop's lanes count. Go only writes it.
 CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,             -- worktree root (the dir holding .git), symlink-resolved, absolute
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
+    last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
     PRIMARY KEY (session_id, root, branch)
 );
 

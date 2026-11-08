@@ -182,18 +182,9 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
 
 extension TerminalSessionState {
     /// The report line's merged share, worded as the Mac's session row
-    /// (`SessionReportPresentation.rowCaption`, board #986/#1008): "25
-    /// merged", "25 merged (unchecked)" when the merge ref could not be
-    /// checked, "merged not checked" when none is known; nil when nothing is
-    /// merged and the check ran, or no task is in scope.
+    /// (`SessionReportPresentation.rowCaption`, board #986/#1008) through
+    /// `MergedShareText`.
     public var reportMergedText: String? {
-        guard let total = reportTotal, total > 0 else { return nil }
-        let merged = reportMerged ?? 0
-        switch (merged > 0, reportMergedStale == true) {
-        case (true, false): return "\(merged) merged"
-        case (true, true): return "\(merged) merged (unchecked)"
-        case (false, true): return "merged not checked"
-        case (false, false): return nil
-        }
+        MergedShareText.text(merged: reportMerged ?? 0, total: reportTotal ?? 0, stale: reportMergedStale == true)
     }
 }

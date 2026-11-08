@@ -53,7 +53,7 @@ func watchIssueOf(t *testing.T, d *DB, row int64) (issue, at sql.NullString) {
 	return issue, at
 }
 
-func TestMigration00174_AddsNullableColumns(t *testing.T) {
+func TestMigration00175_AddsNullableColumns(t *testing.T) {
 	d := openTestDB(t)
 	row, _ := seedCodexWatchRow(t, d, "codex", "working")
 	issue, at := watchIssueOf(t, d, row)
@@ -63,7 +63,7 @@ func TestMigration00174_AddsNullableColumns(t *testing.T) {
 	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_watch_issue = 'bogus' WHERE id = ?`, row); err == nil {
 		t.Fatal("agent_watch_issue took a value outside missing/permission/compressed/unreadable")
 	}
-	if err := gooseDownTo(d.DB, "migrations", 173); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 174); err != nil {
 		t.Fatal(err)
 	}
 	ok, err := d.HasColumns("terminal_sessions", "agent_watch_issue")

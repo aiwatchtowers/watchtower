@@ -70,19 +70,21 @@ package enum SessionTargetBranch: Equatable, Sendable {
 /// symlink-resolved spelling are the caller's, read off the main actor.
 package enum SessionLanes {
     /// One ledger row: a symlink-resolved worktree root and when the hooks
-    /// first saw it (`agent_state_at` layout).
+    /// last saw it in a run (`last_at`, else `first_at`; `agent_state_at`
+    /// layout). The hooks move `last_at` once per run that sees the row
+    /// again (board #1018), so a lane a later run reuses counts in it.
     package struct Record: Equatable, Sendable {
         package let root: String
-        package let firstAt: String
+        package let seenAt: String
 
-        package init(root: String, firstAt: String) {
+        package init(root: String, seenAt: String) {
             self.root = root
-            self.firstAt = firstAt
+            self.seenAt = seenAt
         }
     }
 
-    /// The distinct roots, sorted, that were first seen at or after
-    /// `runStart` (the row's run mark; none without a readable one), that
+    /// The distinct roots, sorted, that were last seen at or after `runStart`
+    /// (the row's run mark; none without a readable one), that
     /// still exist, and that are not the agent's own checkout: a ledger root
     /// is a worktree's top level, so a root holding the workbench folder is
     /// the main checkout and a root holding the place's folder (a worktree
@@ -113,7 +115,7 @@ package enum SessionLanes {
         guard let start = runStart.flatMap(SessionAgentStatus.parseStamp) else { return [] }
         var roots: Set<String> = []
         for record in records {
-            guard let seen = SessionAgentStatus.parseStamp(record.firstAt), seen >= start else { continue }
+            guard let seen = SessionAgentStatus.parseStamp(record.seenAt), seen >= start else { continue }
             let root = normalized(record.root)
             guard !held.contains(where: { isWithin($0, root) }) else { continue }
             roots.insert(root)

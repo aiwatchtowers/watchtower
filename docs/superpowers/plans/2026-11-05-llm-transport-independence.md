@@ -25,7 +25,7 @@
   - Lint: `make lint-diff`.
   - The controller runs the full gate once per wave: `make test`, `make test-swift` (which includes the Kit), `make lint-all`, `go test ./cmd/...`, plus `make kit-test` and `make mobile-test` in every wave whose merged diff touches `WatchtowerKit/` or `WatchtowerMobile/`. By the lane tables that is wave 1 (G7), wave 2 (G5) and wave 4 (A5); wave 3 runs them too if A2 or A3 end up touching either tree.
 - **Guards.** New or extended guards keep the house prefix: `TestAuto08_…`, `TestProj11_…`, `TestFeed01_…`, `TestAgentlog04_…`, `TestLLMTRANSPORT01_…`, and `testLLMTRANSPORT01…` in Swift. No existing guard is relaxed. A contract's amendment lands in `docs/inventory/<file>.md` in the same task, with a changelog line citing the ask.
-- **Migration.** Only G5 adds one: the next free number (`00173_terminal_session_watch_issue.sql` at writing time; renumbered to 00174 when main took 00173), with Up/Down. It is mirrored in `schema.sql`, and the golden and Swift test schema are regenerated with `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
+- **Migration.** Only G5 adds one: the next free number (`00173_terminal_session_watch_issue.sql` at writing time; renumbered to 00175 when main took 00173 and 00174), with Up/Down. It is mirrored in `schema.sql`, and the golden and Swift test schema are regenerated with `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
 - **Fixtures.** Recorded fixtures are scrubbed by `scrub_fixtures.py`: zero UUIDs, `/work`, `example.com`, no account or path. A hand-made line carries `"synthetic": true`, and leak-check must pass. Nothing is ever copied from the owner's `~/.codex` or `~/.claude`; they may be read for structure only.
 - **Processes in tests.** Every fake CLI's process group is killed and waited for in `t.Cleanup`, including on the timeout path. A test that creates git repositories calls `gittest.DisableBackgroundGit()` in `TestMain`.
 - **No polling turns.** Run long commands to a log file with an explicit `echo "exit=$?"`.
@@ -229,7 +229,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
 
 **Files:**
 - Create:
-  - `internal/db/migrations/00174_terminal_session_watch_issue.sql` (`agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable'))`, `agent_watch_issue_at TEXT`);
+  - `internal/db/migrations/00175_terminal_session_watch_issue.sql` (`agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable'))`, `agent_watch_issue_at TEXT`);
   - `internal/sessionhost/codexwatch.go` and its test.
 - Modify:
   - Go: `internal/db/schema.sql`, the golden and Swift test schema (regenerated), `internal/db/terminal_sessions.go` (set and clear, only over `working` codex rows), `internal/sessionfeed/codex_turn.go` (a typed reason instead of "not failed"), `cmd/workbench_session_state.go` (any hook event clears the issue), `cmd/workbench_session_probe.go`, `internal/db/automation_session_steps.go:125`, `internal/automations/sdk_session.go`;
@@ -266,7 +266,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
     - `TestProj11_WatchIssueLogLineCarriesNoPath` (FILES-01 canary);
     - `TestCodexWatch_HostAdoptionRearms` (PROJ-20 adoption);
     - `TestProj11_HostAndBridgeReportSameFailureOnce` (the session host's watch and the Desktop bridge's probe both report the same rollout failure; exactly one write, through `recordAgentState(…, onlyFrom: working)` with the same `agent_state_at` stamp taken from the rollout line; the second report writes nothing);
-    - `TestMigration00174_AddsNullableColumns`.
+    - `TestMigration00175_AddsNullableColumns`.
   - Automations:
     - `TestSessionWait_NotWatchedEndsAtOnceWithReason` (default, no option: `{status:"not_watched", reason}` at the issue's write, journalled, one run-log line with the reason);
     - `TestSessionWait_FailureBeforeWatchIssueEndsWithError`;
@@ -282,7 +282,7 @@ After each wave, A6's baseline shrinks by the hits that wave removed, as part of
   - Kit:
     - `WorkbenchMirrorFixtureTests` decodes `watchIssue`, and an older-shape fixture without the key still decodes.
 - [ ] **Step 2:**
-  - `go test ./internal/sessionhost ./internal/sessionfeed ./internal/db ./internal/automations ./internal/hub/slices/sources -run 'CodexWatch|Proj11|Migration00174|SessionWait|Templates_|TerminalSession|EveryStateKind'`
+  - `go test ./internal/sessionhost ./internal/sessionfeed ./internal/db ./internal/automations ./internal/hub/slices/sources -run 'CodexWatch|Proj11|Migration00175|SessionWait|Templates_|TerminalSession|EveryStateKind'`
   - `go test ./cmd -run 'TestProj11_|SessionProbe'`
   - `make test-swift FILTER='TerminalSessionSliceTests|SessionAgentStatusTests|SessionBackgroundProberTests'`
   - `make kit-test FILTER=WorkbenchMirrorFixtureTests`

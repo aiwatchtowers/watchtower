@@ -142,8 +142,9 @@ package enum TerminalSessionQueries {
     /// What workbench `projectID`'s sessions work on (board #987), by
     /// session id: the targets their agents linked (`terminal_session_targets`,
     /// PROJ-14), the worktrees their agents worked in (`terminal_session_worktrees`,
-    /// migration 00111) and the run start they are judged against
-    /// (`agent_turns`' `since`, as `fetchAgentCwds` reads it). A session
+    /// migration 00111) with each one's last sighting (`last_at`, 00174, else
+    /// `first_at`) and the run start they are judged against (`agent_turns`'
+    /// `since`, as `fetchAgentCwds` reads it). A session
     /// with neither a link nor a worktree is left out. Read-only: Go writes
     /// all three.
     package static func fetchWorkLinks(_ db: Database, projectID: Int64) throws -> [Int64: SessionWorkLinks] {
@@ -157,16 +158,16 @@ package enum TerminalSessionQueries {
             links[row["session_id"], default: SessionWorkLinks()].linkedTargetIDs.append(row["target_id"])
         }
         let worktrees = try Row.fetchAll(db, sql: """
-            SELECT w.session_id, w.root, w.first_at,
+            SELECT w.session_id, w.root, COALESCE(w.last_at, w.first_at) AS seen_at,
                    CASE WHEN json_valid(s.agent_turns) AND json_type(s.agent_turns, '$.since') = 'text'
                         THEN json_extract(s.agent_turns, '$.since') END AS run_start
             FROM terminal_session_worktrees w
             JOIN terminal_sessions s ON s.id = w.session_id
-            WHERE s.project_id = ? ORDER BY w.session_id, w.first_at, w.root
+            WHERE s.project_id = ? ORDER BY w.session_id, seen_at, w.root
             """, arguments: [projectID])
         for row in worktrees {
             let id: Int64 = row["session_id"]
-            links[id, default: SessionWorkLinks()].worktrees.append(SessionLanes.Record(root: row["root"], firstAt: row["first_at"]))
+            links[id, default: SessionWorkLinks()].worktrees.append(SessionLanes.Record(root: row["root"], seenAt: row["seen_at"]))
             links[id]?.runStart = row["run_start"]
         }
         return links

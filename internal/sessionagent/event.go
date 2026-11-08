@@ -81,8 +81,9 @@ func (ev Event) SubagentToolStart() bool {
 // InterruptedTool says the event is a PostToolUseFailure of a tool the owner
 // interrupted (Esc). No Stop follows an interrupt, so a main-thread one
 // records the turn's end itself — `waiting`, over `working` or `approval`,
-// under a tool result's turn order (board #988) — and a subagent's records
-// nothing.
+// under the time order and the turn end it checked (board #988), and with
+// it the turn end (board #1019: cmd's writeAgentState, interruptTurnEnd) —
+// and a subagent's records nothing.
 func (ev Event) InterruptedTool() bool {
 	return ev.Event == "PostToolUseFailure" && ev.IsInterrupt
 }
