@@ -427,8 +427,11 @@ final class InboxArtifactMenuTests: XCTestCase {
         }
     }
 
+    /// A fresh draft started from the New panel on screen (its route, as
+    /// `AutomationsView.continueNew` passes it), then saved.
     private func saveNewDraft(contextID: String, as automationID: Int64) async {
-        vm.showEditor(.newDraft(contextID: contextID, scope: .personal, startText: nil))
+        let route: InboxNewArtifactRoute? = if case let .new(flow) = vm.panel { flow.route } else { nil }
+        vm.showEditor(.newDraft(contextID: contextID, scope: .personal, startText: nil), route: route)
         await vm.draftSaved(contextID: contextID, conversationID: 77, automationID: automationID)
     }
 
@@ -460,6 +463,17 @@ final class InboxArtifactMenuTests: XCTestCase {
         vm.select(nil) // the New flow left before a draft started
         await saveNewDraft(contextID: "draft-c", as: ids.owner)
         XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    /// + New Artifact… from Release, then an older draft row opened
+    /// instead of a fresh start: its save sends no route.
+    func testResumedDraftFromTheNewPanelSendsNoRoute() async {
+        wireRoute()
+        vm.showNew(AutomationNewFlow(route: InboxNewArtifactRoute(folderID: ids.release, title: "Release")))
+        vm.showEditor(.newDraft(contextID: "older-draft", scope: .personal, startText: nil))
+        await vm.draftSaved(contextID: "older-draft", conversationID: 78, automationID: ids.owner)
+        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertTrue(vm.newDraftRoutes.isEmpty)
     }
 
     func testNewArtifactRouteConflictShowsTryAgain() async {

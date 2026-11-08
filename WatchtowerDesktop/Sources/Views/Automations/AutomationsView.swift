@@ -346,10 +346,10 @@ struct AutomationsView: View {
         switch start {
         case .words:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
-                          composerPrefill: flow.composerPrefill)
+                          composerPrefill: flow.composerPrefill, route: flow.route)
         case .watch:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
-                          composerPrefill: watchPrefill)
+                          composerPrefill: watchPrefill, route: flow.route)
         case let .template(name):
             guard hooks.startTemplate(name, scope) != nil else { return }
             vm.showTemplate(name: name, scope: scope)

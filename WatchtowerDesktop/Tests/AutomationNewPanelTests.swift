@@ -40,4 +40,18 @@ final class AutomationNewPanelTests: XCTestCase {
         XCTAssertEqual(vm.panel, .editor(.newDraft(contextID: "draft-1", scope: .personal, startText: nil)))
         XCTAssertEqual(vm.composerPrefill, "Watch for ")
     }
+
+    /// Continue in a New flow from an Inbox folder: the fresh draft it
+    /// starts carries the folder, for words and watch alike.
+    func testContinueCarriesTheFlowsRouteToItsFreshDraft() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: FakeCLIRunner()))
+        let route = InboxNewArtifactRoute(folderID: 3, title: "Release")
+
+        AutomationsView.continueNew(AutomationNewFlow(route: route), scope: .personal, start: .words, vm: vm,
+                                    hooks: Self.hooks)
+
+        XCTAssertEqual(vm.newDraftRoutes, ["draft-1": route])
+    }
 }

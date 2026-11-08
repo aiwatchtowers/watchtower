@@ -412,13 +412,14 @@ package final class AutomationsViewModel {
 
     /// Opens the editor: an edit keeps its row selected, a new draft selects
     /// none (its draft row, if any, shows as selected). `composerPrefill`
-    /// goes into the editor chat's empty composer once.
-    package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
+    /// goes into the editor chat's empty composer once. `route` is the
+    /// Inbox folder of the fresh draft a New flow just started (its save
+    /// routes it there); a resumed draft is opened without one.
+    package func showEditor(
+        _ target: AutomationEditorTarget, composerPrefill: String? = nil, route: InboxNewArtifactRoute? = nil
+    ) {
         let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
-        // The New flow's folder goes with the draft it continues to.
-        if case let .new(flow) = panel, let route = flow.route, case let .newDraft(contextID, _, _) = target {
-            newDraftRoutes[contextID] = route
-        }
+        if let route, case let .newDraft(contextID, _, _) = target { newDraftRoutes[contextID] = route }
         if id != selectedID { expandedRuns = [] }
         selectedID = id
         panel = .editor(target)
