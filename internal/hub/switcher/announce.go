@@ -273,6 +273,13 @@ func (s *Switcher) announce(r switchRecord) error {
 		if err := state.SetMetaTx(tx, MetaTransport, string(r.Target)); err != nil {
 			return err
 		}
+		if r.Target != transport.KindRelay {
+			// Never outlives the relay: an answered read between the
+			// rotation (which removed it) and now may have written it back.
+			if err := state.DeleteMetaTx(tx, state.MetaServingNobodySince); err != nil {
+				return err
+			}
+		}
 		if err := s.oweMarkersTx(tx, r, owed); err != nil {
 			return err
 		}

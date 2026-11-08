@@ -119,7 +119,8 @@ type Keyring struct {
 	now func() time.Time
 	seq *secure.SeqAllocator
 
-	// mu guards relay and unusable; relay material is only read under it.
+	// mu guards relay, unusable and checkpointOwed; relay material is only read
+	// under it.
 	mu       sync.Mutex
 	relay    map[secure.ID]*relayMaterial
 	unusable map[secure.ID]string // last unusable row logged per device
@@ -129,6 +130,9 @@ type Keyring struct {
 	// is held (SetHeld). Both are set once, before the hub runs.
 	relayRule func(*sql.Tx) (bool, error)
 	held      func() bool
+
+	// checkpointOwed (under mu): an erasure's checkpoint has not completed.
+	checkpointOwed bool
 }
 
 // relayMaterial is one phone's relay inputs, checked once, and the keys
@@ -159,9 +163,9 @@ func (m *relayMaterial) wipe() {
 // in the rotation's own transaction (the cadence, the on_relay mark, the
 // derivation): a hub without a switcher (headless) passes its transport's
 // kind, so a stale hub_meta.transport is ignored (the processor's rule,
-// actions.onRelayTx). Unset, hub_meta.transport decides, and a sidecar without
-// that key goes by whether its current epoch began on the relay (an offline
-// unlink of a headless hub). Called once, before the hub runs.
+// actions.onRelayTx). Unset (a desktop hub, an offline unlink), the current
+// epoch's on_relay decides, hub_meta.transport only for an epoch from before
+// it existed (onRelayTx). Called once, before the hub runs.
 func (k *Keyring) SetRelayRule(rule func(*sql.Tx) (bool, error)) { k.relayRule = rule }
 
 // SetHeld sets the hub's held state (paused or unvouched on the relay): while
@@ -169,24 +173,29 @@ func (k *Keyring) SetRelayRule(rule func(*sql.Tx) (bool, error)) { k.relayRule =
 // published. Called once, before the hub runs.
 func (k *Keyring) SetHeld(held func() bool) { k.held = held }
 
-// onRelayTx is the relay rule in tx.
+// onRelayTx is the relay rule in tx. Unset (SetRelayRule), the current
+// epoch's on_relay decides: every transport change begins an epoch toward its
+// target, so after a switch's rotation the current epoch already says where
+// the hub runs, while hub_meta.transport changes only at its announce (an
+// unlink in between must not mark an iCloud epoch as a relay one, ask #1066).
+// hub_meta.transport decides only for a current epoch from before sidecar
+// migration 00016 (on_relay NULL).
 func (k *Keyring) onRelayTx(tx *sql.Tx) (bool, error) {
 	if k.relayRule != nil {
 		return k.relayRule(tx)
+	}
+	epochs, err := state.EpochsTx(tx)
+	if err != nil {
+		return false, err
+	}
+	if n := len(epochs); n > 0 && epochs[n-1].OnRelay != nil {
+		return *epochs[n-1].OnRelay, nil
 	}
 	v, ok, err := state.MetaTx(tx, state.MetaTransport)
 	if err != nil {
 		return false, err
 	}
-	if ok {
-		return v == transportRelay, nil
-	}
-	epochs, err := state.EpochsTx(tx)
-	if err != nil || len(epochs) == 0 {
-		return false, err
-	}
-	on := epochs[len(epochs)-1].OnRelay
-	return on != nil && *on, nil
+	return ok && v == transportRelay, nil
 }
 
 // transportRelay is hub_meta.transport's value for the relay (transport.KindRelay).
@@ -636,9 +645,23 @@ func (k *Keyring) AckedEpochRetained(dev state.Device) (uint32, error) {
 // a phone that offered a relay key, its acked epoch while retained (a keybox
 // for a newer one may not have reached it, and its keys for that one cannot be
 // derived without it); else 0, the current epoch, today's sealing.
+//
+// Only while the current epoch holds relay keys for the phone: with none, the
+// current epoch is static for it and it can open it. That keeps an ack read
+// after the rotation (the keybox reached the phone first, and an echo was
+// sealed in the current epoch) from moving a later overwrite of that echo back
+// to the acked epoch, which the phone's rollback guard (epoch first) would
+// drop as older.
 func (k *Keyring) PhoneEpoch(dev state.Device) (uint32, error) {
 	if dev.KXOffer == nil {
 		return 0, nil
+	}
+	current, err := k.CurrentEpoch()
+	if err != nil {
+		return 0, err
+	}
+	if _, ok, err := k.st.EpochRelayKeys(current, dev.ID); err != nil || !ok {
+		return 0, err
 	}
 	return k.AckedEpochRetained(dev)
 }
@@ -1276,6 +1299,7 @@ func (k *Keyring) EraseExpired() (int, error) {
 		}
 	}
 	if len(expired) == 0 {
+		k.checkpointIfOwed()
 		return 0, nil
 	}
 	if err := secureDeleteTx(k.st, context.Background(), func(tx *sql.Tx) error {
@@ -1290,10 +1314,31 @@ func (k *Keyring) EraseExpired() (int, error) {
 	}
 	k.forgetEpochs(expired)
 	log.Printf("hub: %d relay epoch(s) erased at the end of their retention", len(expired))
-	if err := checkpointStore(k.st); err != nil {
-		log.Printf("hub: the hub state was not checkpointed after an erasure")
-	}
+	k.mu.Lock()
+	k.checkpointOwed = true
+	k.mu.Unlock()
+	k.checkpointIfOwed()
 	return len(expired), nil
+}
+
+// checkpointIfOwed runs the wal_checkpoint(TRUNCATE) an erasure owes, until
+// one completes: a reader blocking it (busy) or an error leaves it owed for the
+// next housekeeping, so the erased pages do not stay in the log. In memory: a
+// restart owes nothing, and the next start's checkpoints copy the log anyway.
+func (k *Keyring) checkpointIfOwed() {
+	k.mu.Lock()
+	owed := k.checkpointOwed
+	k.mu.Unlock()
+	if !owed {
+		return
+	}
+	if err := checkpointStore(k.st); err != nil {
+		log.Printf("hub: the hub state was not checkpointed after an erasure: retried at the next housekeeping")
+		return
+	}
+	k.mu.Lock()
+	k.checkpointOwed = false
+	k.mu.Unlock()
 }
 
 // forgetEpochs drops every cached relay key of the given epochs.

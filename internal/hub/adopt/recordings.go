@@ -130,7 +130,14 @@ func (r *run) importRecordings() error {
 	if c.AudioLeft > 0 {
 		log.Printf("hub adopt: %d recordings' audio left where it was", c.AudioLeft)
 	}
-	return st.Checkpoint()
+	if err := st.Checkpoint(); errors.Is(err, state.ErrCheckpointBusy) {
+		// As before Checkpoint reported busy: adoption goes on, and the next
+		// checkpoint copies the log.
+		log.Printf("hub adopt: the checkpoint was blocked by a reader")
+	} else if err != nil {
+		return err
+	}
+	return nil
 }
 
 // jobOf maps one Swift row; ok is false for a row that is not imported (an

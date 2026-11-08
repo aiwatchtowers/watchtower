@@ -7,12 +7,15 @@ import (
 	"testing"
 )
 
-const stagingTag = "relaystaging"
+const (
+	stagingTag    = "relaystaging"
+	stagingTarget = "hub-staging"
+)
 
 // TestNoReleasePathSetsRelayStaging: the relaystaging tag (a 10-minute epoch,
 // 30-minute retention) appears only on the Makefile's hub-staging target;
 // no script and no workflow, release.yml above all (it builds with its own
-// -tags), sets it (ask #1077).
+// -tags), sets it or runs that target (ask #1077).
 func TestNoReleasePathSetsRelayStaging(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
 	makefile, err := os.ReadFile(filepath.Join(root, "Makefile"))
@@ -31,7 +34,7 @@ func TestNoReleasePathSetsRelayStaging(t *testing.T) {
 		if !strings.Contains(line, stagingTag) || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			continue
 		}
-		if target != "hub-staging" || !strings.HasPrefix(line, "\t") {
+		if target != stagingTarget || !strings.HasPrefix(line, "\t") {
 			t.Fatalf("Makefile:%d sets %s outside the hub-staging recipe: %q", i+1, stagingTag, line)
 		}
 		found = true
@@ -55,8 +58,10 @@ func TestNoReleasePathSetsRelayStaging(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(b), stagingTag) {
-			t.Fatalf("%s mentions %s: no release path may set it", f, stagingTag)
+		for _, word := range []string{stagingTag, stagingTarget} {
+			if strings.Contains(string(b), word) {
+				t.Fatalf("%s mentions %s: no release path may build the staging hub", f, word)
+			}
 		}
 	}
 }

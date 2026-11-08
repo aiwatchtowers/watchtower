@@ -118,6 +118,13 @@ type Phone struct {
 
 	// EchoEpochs is the epoch each action's last echo read was sealed in.
 	EchoEpochs map[uint64]uint32
+	// Guard, when set, is the Kit's rollback guard on hub records
+	// (RollbackGuard.swift): per wire name the newest (epoch, seq) opened,
+	// epoch first; an older version is dropped unhandled and listed in
+	// RolledBack.
+	Guard      bool
+	RolledBack []string
+	seen       map[string][2]uint64
 
 	// dataKeys is K_data per epoch the phone was given (Keep, Follow:
 	// switch.go); cursors is the mailbox cursor per record store left (Use).
@@ -466,6 +473,9 @@ func (p *Phone) Sync() (int, error) {
 			f, err := p.open(rec.Name, rec.Envelope)
 			if err != nil {
 				continue // the phone's own records
+			}
+			if p.Guard && p.rolledBack(rec) {
+				continue
 			}
 			n++
 			switch f.Kind {

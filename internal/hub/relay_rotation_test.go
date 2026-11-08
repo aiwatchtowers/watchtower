@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
@@ -231,19 +232,47 @@ func TestNoRotationWithNoReaderOnAnsweredList(t *testing.T) {
 	r.rotateIfDue(false)
 }
 
+// A hub write into a phone's mailbox refused ENTITLEMENT_INACTIVE or
+// FORBIDDEN (a refusal, not an account read) leaves the mark alone, so the
+// age rotation still runs.
 func TestRefusalAloneDoesNotSetServingNobody(t *testing.T) {
-	r := newRelayKeysRig(t, "relay")
-	h := &hubRuntime{st: r.st, kr: r.kr}
 	for _, refusal := range []error{transport.ErrEntitlementInactive, transport.ErrForbidden} {
-		if _, err := h.followed(nil, refusal); !errors.Is(err, refusal) {
-			t.Fatal(err)
-		}
+		t.Run(errClass(refusal), func(t *testing.T) {
+			r := newRelayKeysRig(t, "relay")
+			ph := r.phone()
+			d := actions.NewDispatcher()
+			applied := 0
+			d.Register("test_noop", func(context.Context, actions.Request) actions.Outcome {
+				applied++
+				return actions.Outcome{Status: wire.StatusApplied}
+			}, actions.KindOptions{})
+			proc := actions.NewProcessor(actions.Config{
+				Store: r.st, Transport: r.tr, Sealer: secure.NewSealer(r.kr), Opener: secure.NewOpener(r.kr, r.kr),
+				Keys: r.kr, Dispatcher: d, HubRelayID: "hubrelay", Clock: r.clock,
+			})
+			if _, err := ph.Act("test_noop"); err != nil {
+				t.Fatal(err)
+			}
+			r.tr.RefuseWrites(ph.Zone(), refusal)
+			if _, err := proc.Pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if applied != 1 {
+				t.Fatalf("applied %d, want 1", applied)
+			}
+			if _, err := ph.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			if len(ph.Echoes) != 0 {
+				t.Fatal("the echo was written: the refusal did not happen")
+			}
+			if _, ok := r.mark(); ok {
+				t.Fatal("a refused write set relay_serving_nobody_since")
+			}
+			r.advance(week)
+			r.rotateIfDue(true)
+		})
 	}
-	if _, ok := r.mark(); ok {
-		t.Fatal("a refusal set relay_serving_nobody_since")
-	}
-	r.advance(week)
-	r.rotateIfDue(true)
 }
 
 func TestFailedReadLeavesServingNobodyAsItWas(t *testing.T) {
@@ -284,6 +313,20 @@ func TestLeavingTheRelayClearsServingNobody(t *testing.T) {
 	r.read()
 	if _, ok := r.mark(); ok {
 		t.Fatal("a read on iCloud set the mark")
+	}
+}
+
+// Between a switch's rotation toward iCloud and its announce,
+// hub_meta.transport still says relay but the current epoch is iCloud's: an
+// answered read writes no mark then (the keyring's relay rule).
+func TestReadInsideASwitchToICloudWritesNoMark(t *testing.T) {
+	r := newRelayKeysRig(t, "relay")
+	if err := r.kr.RotateToward(identity.ReasonTransportSwitch, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	r.read()
+	if _, ok := r.mark(); ok {
+		t.Fatal("a read inside the switch window set the mark")
 	}
 }
 

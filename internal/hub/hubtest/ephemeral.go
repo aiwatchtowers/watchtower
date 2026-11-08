@@ -153,3 +153,22 @@ func (p *Phone) noteEchoEpoch(f secure.InnerFrame, epoch uint32) {
 	}
 	p.EchoEpochs[*a.ActionSeq] = epoch
 }
+
+// rolledBack is the guard's check of an opened hub record: true (and listed)
+// when an older version than one already opened at its name; else the
+// version is recorded.
+func (p *Phone) rolledBack(rec transport.Stored) bool {
+	h, err := secure.ParseHeader(rec.Envelope)
+	if err != nil {
+		return false
+	}
+	if p.seen == nil {
+		p.seen = map[string][2]uint64{}
+	}
+	if last, ok := p.seen[rec.Name]; ok && secure.CompareVersion(uint32(last[0]), last[1], h.Epoch, h.Seq) == secure.Older {
+		p.RolledBack = append(p.RolledBack, rec.Name)
+		return true
+	}
+	p.seen[rec.Name] = [2]uint64{uint64(h.Epoch), h.Seq}
+	return false
+}

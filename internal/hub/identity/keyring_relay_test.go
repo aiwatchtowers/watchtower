@@ -584,10 +584,17 @@ func TestRotationWritesOnRelay(t *testing.T) {
 	if err := k.RotateToward(ReasonTransportSwitch, true, nil); err != nil { // 4: toward the relay
 		t.Fatal(err)
 	}
-	if err := k.Rotate(ReasonManual); err != nil { // 5: meta says cloudkit
+	if err := k.Rotate(ReasonManual); err != nil { // 5: meta still says cloudkit (inside the switch): epoch 4's
 		t.Fatal(err)
 	}
-	want := map[uint32]bool{2: true, 3: false, 4: true, 5: false}
+	setTransport(t, st, "relay")
+	if err := k.RotateToward(ReasonTransportSwitch, false, nil); err != nil { // 6: toward iCloud
+		t.Fatal(err)
+	}
+	if err := k.Rotate(ReasonUnlink); err != nil { // 7: meta still says relay: epoch 6's
+		t.Fatal(err)
+	}
+	want := map[uint32]bool{2: true, 3: false, 4: true, 5: true, 6: false, 7: false}
 	for e, on := range want {
 		if got := epochAt(t, st, e).OnRelay; got == nil || *got != on {
 			t.Fatalf("epoch %d on_relay %v, want %v", e, got, on)
@@ -595,6 +602,16 @@ func TestRotationWritesOnRelay(t *testing.T) {
 	}
 	if epochAt(t, st, 1).OnRelay != nil {
 		t.Fatal("epoch 1 got an on_relay value")
+	}
+	// A pre-00016 current epoch (on_relay NULL): hub_meta.transport decides.
+	st2 := openStore(t)
+	k2 := newKeyring(t, st2, newClock())
+	setTransport(t, st2, "relay")
+	if err := k2.Rotate(ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	if on := epochAt(t, st2, 2).OnRelay; on == nil || !*on {
+		t.Fatal("a NULL current epoch did not fall back to hub_meta.transport")
 	}
 }
 
@@ -762,9 +779,21 @@ func TestPhoneEpochIsTheAckedEpochWhileRetained(t *testing.T) {
 	if e, _ := k.AckedEpochRetained(dev()); e != 1 {
 		t.Fatalf("acked retained %d, want 1", e)
 	}
+	// An offer read after the rotation: epoch 2 is static for the phone, so
+	// it is sealed in (no move back to epoch 1).
 	p.offer(t, st, 1)
-	if e, _ := k.PhoneEpoch(dev()); e != 1 {
-		t.Fatalf("an offered phone's epoch %d, want 1", e)
+	if e, _ := k.PhoneEpoch(dev()); e != 0 {
+		t.Fatalf("an offer with no keys in the current epoch: %d, want 0", e)
+	}
+	// The next rotation derives its keys: the acked epoch while retained.
+	if err := st.WithTx(context.Background(), func(tx *sql.Tx) error { return state.AckEpoch(tx, p.id.String(), 2) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := k.Rotate(ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := k.PhoneEpoch(dev()); e != 2 {
+		t.Fatalf("an offered phone's epoch %d, want 2", e)
 	}
 	c.advance(PreviousEpochGrace)
 	if e, _ := k.PhoneEpoch(dev()); e != 0 {
@@ -819,5 +848,40 @@ func TestNoEraseNoPragmaNoCheckpoint(t *testing.T) {
 				t.Fatal("a second erasure issued pragmas again")
 			}
 		})
+	}
+}
+
+// A checkpoint that did not complete (busy, or an error) is owed: the next
+// erasure pass retries it, with nothing new to erase, until one completes.
+func TestACheckpointNotDoneIsRetried(t *testing.T) {
+	sd, cp := countingErasure(t)
+	fail := 1
+	inner := checkpointStore
+	checkpointStore = func(st *state.Store) error {
+		if fail > 0 {
+			fail--
+			*cp++
+			return errors.New("busy")
+		}
+		return inner(st)
+	}
+	st := openStore(t)
+	c := newClock()
+	k := newKeyring(t, st, c)
+	setTransport(t, st, "relay")
+	for range 2 {
+		if err := k.Rotate(ReasonManual); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.advance(2 * PreviousEpochGrace)
+	if n, err := k.EraseExpired(); err != nil || n != 1 || *sd != 1 || *cp != 1 {
+		t.Fatalf("EraseExpired = %d, %v: %d secure_delete, %d checkpoints", n, err, *sd, *cp)
+	}
+	if n, err := k.EraseExpired(); err != nil || n != 0 || *sd != 1 || *cp != 2 {
+		t.Fatalf("the owed checkpoint: %d, %v: %d secure_delete, %d checkpoints; want a retry", n, err, *sd, *cp)
+	}
+	if n, _ := k.EraseExpired(); n != 0 || *cp != 2 {
+		t.Fatalf("%d checkpoints after one completed, want no more", *cp)
 	}
 }
