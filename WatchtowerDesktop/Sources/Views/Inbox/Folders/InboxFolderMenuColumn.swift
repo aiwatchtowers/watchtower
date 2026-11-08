@@ -33,6 +33,7 @@ struct InboxFolderMenuColumn: View {
         case let .beginDrag(id): model.beginDrag(id)
         case let .dragOver(drop): model.dragOver(drop)
         case let .drop(dragged, drop): Task { await model.drop(dragged, onto: drop) }
+        case .endDrag: model.endDrag()
         }
     }
 

@@ -20,6 +20,9 @@ enum InboxFolderMenuAction: Equatable {
     case dragOver(InboxFolderDrop?)
     /// The drop of the folder its drag carried.
     case drop(dragged: Int64, InboxFolderDrop)
+    /// A drop that moves nothing: the drag ends at once (`draggedID` and the
+    /// indicator clear).
+    case endDrag
 }
 
 /// The Inbox's first column (spec "The Inbox screen" 1): the root and its
@@ -345,7 +348,8 @@ private struct FolderDragModifier: ViewModifier {
     }
 }
 
-private struct FolderDropDelegate: DropDelegate {
+/// Internal (not private) so `InboxFolderDropTests` can check `action(for:)`.
+struct FolderDropDelegate: DropDelegate {
     let rowID: Int64
     /// The folder of the live drag; nil = none, so nothing drops.
     let draggedID: Int64?
@@ -375,18 +379,33 @@ private struct FolderDropDelegate: DropDelegate {
     }
 
     /// Accepted only where the model allows it, and only for the folder the
-    /// live drag carries: the id in the drop must be `draggedID`.
+    /// live drag carries: the id in the drop must be `draggedID`. Every exit
+    /// that moves nothing ends the drag.
     func performDrop(info: DropInfo) -> Bool {
         let drop = drop(info)
         guard let draggedID, indicator == drop,
-              let provider = info.itemProviders(for: [.inboxFolder]).first else { return false }
+              let provider = info.itemProviders(for: [.inboxFolder]).first else {
+            onAction(.endDrag)
+            return false
+        }
         let onAction = onAction
         provider.loadDataRepresentation(forTypeIdentifier: UTType.inboxFolder.identifier) { data, _ in
-            guard let data, let text = String(bytes: data, encoding: .utf8), let id = Int64(text),
-                  id == draggedID else { return }
-            DispatchQueue.main.async { onAction(.drop(dragged: id, drop)) }
+            let action = Self.action(for: data, draggedID: draggedID, drop: drop)
+            DispatchQueue.main.async { onAction(action) }
         }
         return true
+    }
+
+    /// What a drop's loaded data asks for: the move of the live drag's
+    /// folder, or — no data, not an id, another folder — the drag's end.
+    nonisolated static func action(
+        for data: Data?,
+        draggedID: Int64,
+        drop: InboxFolderDrop
+    ) -> InboxFolderMenuAction {
+        guard let data, let text = String(bytes: data, encoding: .utf8), let id = Int64(text),
+              id == draggedID else { return .endDrag }
+        return .drop(dragged: id, drop)
     }
 }
 

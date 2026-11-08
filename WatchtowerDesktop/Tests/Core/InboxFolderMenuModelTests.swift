@@ -312,6 +312,22 @@ final class InboxFolderMenuModelTests: XCTestCase {
         XCTAssertTrue(cli.invocations.isEmpty, "a drag that ended moves nothing")
     }
 
+    func testEndDragClearsTheDragAndItsIndicatorAtOnce() async {
+        let cli = answering()
+        let model = await model(cli)
+        model.beginDrag(ids.team)
+        model.dragOver(InboxFolderDrop(targetID: ids.release, placement: .into))
+        XCTAssertNotNil(model.dropIndicator)
+
+        model.endDrag() // a drop that moved nothing
+
+        XCTAssertNil(model.draggedID)
+        XCTAssertNil(model.content.dropIndicator)
+        XCTAssertNil(model.content.draggedID, "no row takes a drop any more")
+        await model.drop(ids.team, onto: InboxFolderDrop(targetID: ids.release, placement: .into))
+        XCTAssertTrue(cli.invocations.isEmpty)
+    }
+
     func testAForgottenDragIsClearedAfterItsLifetime() async throws {
         let cli = answering()
         let model = InboxFolderMenuModel(dbPool: pool, runner: { cli }, dragLifetime: .milliseconds(20))
