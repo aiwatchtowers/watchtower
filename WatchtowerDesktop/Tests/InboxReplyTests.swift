@@ -270,6 +270,33 @@ final class InboxReplyTests: XCTestCase {
         XCTAssertNil(vm.replyDrafts[Int(id)], "the draft goes with its row")
     }
 
+    /// A propose that timed out may still have landed: once the read shows
+    /// that reply waiting, the old draft goes, and never comes back with its
+    /// error after the reply is approved and sent.
+    func testDraftGoesOnceItsReplyIsWaiting() async throws {
+        let id = try await slackItem()
+        let vm = await strip(FakeCLIRunner(error: CancellationError()))
+        let handler = InboxRowActionHandler(vm: vm)
+        type("On it", on: id, handler)
+        await handler.press(.proposeReply, on: InboxRef(kind: .inboxItem, id: id))
+        XCTAssertNotNil(vm.replyDrafts[Int(id)]?.error, "the timeout stays in the composer")
+
+        let action = try await pool.write { db in
+            try TestDatabase.insertAgentAction(
+                db, tool: "send_slack_message", external: true, surface: "inbox",
+                contextType: "inbox_item", contextID: String(id), status: "pending")
+        }
+        await vm.refresh()
+        XCTAssertEqual(vm.replyState(Int(id)), .waiting)
+        XCTAssertNil(vm.replyDrafts[Int(id)], "the reply that landed replaces the draft")
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'applied' WHERE id = ?", arguments: [action])
+        }
+        await vm.refresh()
+        XCTAssertNil(vm.replyState(Int(id)), "no stale composer once the reply was sent")
+    }
+
     // MARK: - The host
 
     func testReplyReasonNamesHost() {

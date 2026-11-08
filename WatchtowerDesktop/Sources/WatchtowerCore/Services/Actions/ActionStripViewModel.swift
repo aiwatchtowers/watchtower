@@ -1070,7 +1070,10 @@ package final class ActionStripViewModel {
             rowErrors = rowErrors.filter { item, _ in isOpenRecord(item) }
         }
         if !replyDrafts.isEmpty {
-            replyDrafts = replyDrafts.filter { id, _ in isOpenRecord(.message(id)) }
+            // A draft whose reply now waits in Needs approval goes too (a
+            // propose that timed out may have landed): it never comes back
+            // with its old error once that reply is decided.
+            replyDrafts = replyDrafts.filter { id, _ in isOpenRecord(.message(id)) && !replyWaiting(id) }
         }
     }
 
