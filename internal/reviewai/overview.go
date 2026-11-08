@@ -263,13 +263,9 @@ func (p *Pipeline) Overview(ctx context.Context, in Input) (Overview, error) {
 		return Overview{}, errors.New("no chapter has a diff the AI can read")
 	}
 	descs := NotShown(m, in.Diff)
-	intent := in.Intent
-	if intent == nil {
-		intent = []IntentItem{} // non-nil: the one full call makes the summary
-	}
 	var sum Summary
 	if len(batches) == 1 {
-		d, s, err := p.DescribeBatch(ctx, batches[0], intent, in.Notes)
+		d, s, err := p.DescribeBatch(ctx, batches[0], true, in.Intent, in.Notes)
 		if err != nil {
 			return Overview{}, err
 		}
@@ -277,14 +273,14 @@ func (p *Pipeline) Overview(ctx context.Context, in Input) (Overview, error) {
 		sum = *s
 	} else {
 		for _, b := range batches {
-			d, _, err := p.DescribeBatch(ctx, b, nil, in.Notes)
+			d, _, err := p.DescribeBatch(ctx, b, false, nil, in.Notes)
 			if err != nil {
 				return Overview{}, err
 			}
 			maps.Copy(descs, d)
 		}
 		var err error
-		if sum, err = p.Summarize(ctx, SummaryInput{Intent: intent, Map: m, Described: descs}); err != nil {
+		if sum, err = p.Summarize(ctx, SummaryInput{Intent: in.Intent, Map: m, Described: descs}); err != nil {
 			return Overview{}, err
 		}
 	}

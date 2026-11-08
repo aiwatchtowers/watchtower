@@ -166,13 +166,29 @@ func TestDescribeBatch_UsesPromptStore(t *testing.T) {
 	require.NoError(t, store.Seed())
 	require.NoError(t, store.Update(prompts.ReviewChapters, "custom chapters template", "test"))
 	p.SetPromptStore(store)
-	descs, sum, err := p.DescribeBatch(context.Background(), okBatch(t), nil, nil)
+	descs, sum, err := p.DescribeBatch(context.Background(), okBatch(t), false, []IntentItem{{Text: "ignored"}}, nil)
 	require.NoError(t, err)
 	assert.Nil(t, sum)
 	assert.Len(t, descs, 1)
 	assert.Equal(t, "custom chapters template", g.systems[0])
 	assert.Equal(t, prompts.ReviewChapters, g.sources[0])
 	assert.NotContains(t, g.users[0], "=== INTENT ===")
+	assert.NotContains(t, g.users[0], "ignored")
+}
+
+// The mode is the explicit flag: a full call with no intent at all is
+// still the one full call and returns a summary.
+func TestDescribeBatch_FullWithNilIntent(t *testing.T) {
+	raw, err := os.ReadFile("testdata/overview_ok.json")
+	require.NoError(t, err)
+	g := &countGen{out: map[string]string{prompts.ReviewOverview: string(raw)}}
+	descs, sum, err := New(g).DescribeBatch(context.Background(), okBatch(t), true, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, sum)
+	assert.Empty(t, sum.Coverage)
+	assert.NotEmpty(t, descs)
+	assert.Equal(t, prompts.ReviewOverview, g.sources[0])
+	assert.Contains(t, g.users[0], "(none given)")
 }
 
 func TestIntentHash_ChangesWithANote(t *testing.T) {

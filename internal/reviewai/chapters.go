@@ -33,14 +33,14 @@ type ChapterDesc struct {
 	Risks []Risk `json:"risks"`
 }
 
-// DescribeBatch makes one batch call. With intent nil it is a batch of a
-// multi-batch run: prompt review.chapters, descriptions only. With intent
-// non-nil (even empty) it is the one full call of a single-batch run:
-// prompt review.overview, which also returns the summary. notes are the
-// agent's notes; only line notes on the batch's files are sent. No write
-// transaction is open around the call.
-func (p *Pipeline) DescribeBatch(ctx context.Context, b Batch, intent []IntentItem, notes []db.ReviewNote) (map[string]ChapterDesc, *Summary, error) {
-	if intent == nil {
+// DescribeBatch makes one batch call. With full false it is a batch of a
+// multi-batch run: prompt review.chapters, descriptions only, intent
+// ignored. With full true it is the one full call of a single-batch run:
+// prompt review.overview, which also returns the summary of intent. notes
+// are the agent's notes; only line notes on the batch's files are sent. No
+// write transaction is open around the call.
+func (p *Pipeline) DescribeBatch(ctx context.Context, b Batch, full bool, intent []IntentItem, notes []db.ReviewNote) (map[string]ChapterDesc, *Summary, error) {
+	if !full {
 		raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, chaptersSource), p.getPrompt(prompts.ReviewChapters), BuildChaptersUser(b, notes), "")
 		if err != nil {
 			return nil, nil, err
