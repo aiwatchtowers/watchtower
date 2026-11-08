@@ -176,8 +176,9 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 // checkOverviewGate is gate 2: with a diff, the cached overview of the
 // session's folder as it stands, with a done coverage entry for every intent
 // item of the session. The overview is found by the session's items alone
-// (reviewai.IntentHash leaves lane items out), so the gate builds no map and
-// the overview's lane coverage never gates (tech spec §4). A folder outside git has no diff to check, nor has the workbench
+// (reviewai.IntentHash leaves lane items out), so the gate needs no lane map
+// and the overview's lane coverage never gates (tech spec §4); only a missing
+// overview packs the diff once, for the big-branch hint. A folder outside git has no diff to check, nor has the workbench
 // folder once the session left a worktree of its own (leftItsWorktree); any
 // other git failure refuses.
 func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
@@ -205,7 +206,7 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 		return fmt.Errorf("finish check: %w", err)
 	}
 	if !ok {
-		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session, bigBranch(gitCtx, p, snap))}
+		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session, bigBranch(gitCtx, p.FolderPath, snap))}
 	}
 	var ov reviewai.Overview
 	if err := json.Unmarshal([]byte(js), &ov); err != nil {
@@ -237,14 +238,15 @@ func missingOverviewRefusal(workbenchID, session int64, big bool) string {
 // bigBranch: the overview of the session's changes takes more than one
 // batch — the map's shown lines exceed reviewai.MaxBatchLines — so the
 // agent's run should go to the background. One git diff and a map without
-// the history walk (lanes only regroup the same lines), inside the gate's
-// budget; it is only a hint, so a diff that cannot be read gives none.
-func bigBranch(ctx context.Context, p *db.Workbench, snap ReviewSnapshot) bool {
+// the history walk, inside the gate's budget. Lanes regroup the same lines,
+// so near MaxBatchLines the run's batch count can differ: it is only a hint,
+// and a diff that cannot be read gives none.
+func bigBranch(ctx context.Context, folder string, snap ReviewSnapshot) bool {
 	d, err := snap.Repo.Diff(ctx, snap.Base, snap.Tree)
 	if err != nil {
 		return false
 	}
-	m := reviewmap.Build(reviewmap.Input{Diff: d, Patterns: reviewmap.LoadPatterns(p.FolderPath)})
+	m := reviewmap.Build(reviewmap.Input{Diff: d, Patterns: reviewmap.LoadPatterns(folder)})
 	return len(reviewai.Pack(m, d, nil)) > 1
 }
 
