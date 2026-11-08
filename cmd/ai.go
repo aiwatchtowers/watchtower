@@ -631,10 +631,10 @@ func resolveReadFolder(dbPath string) (string, error) {
 
 // isRegisteredSessionWorktree reports whether dir (absolute, symlinks
 // resolved) is, exactly, a worktree root a session of some workbench
-// recorded in terminal_session_worktrees and a work tree of that
-// workbench folder's own repository (the same common git dir). A root a
-// session recorded in another repository — its agent cd'd there — is not
-// the workbench's. Owner, ask #560; spec 2026-10-02 §9.1 amendment.
+// recorded in terminal_session_worktrees and a linked work tree of that
+// workbench folder's own repository (linkedWorktreeOf). A root a session
+// recorded in another repository — its agent cd'd there — is not the
+// workbench's. Owner, ask #560; spec 2026-10-02 §9.1 amendment.
 func isRegisteredSessionWorktree(database *db.DB, dir string) (bool, error) {
 	workbenches, err := database.ListWorkbenches()
 	if err != nil {
@@ -646,26 +646,48 @@ func isRegisteredSessionWorktree(database *db.DB, dir string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		if _, ok := roots[dir]; ok && sameRepository(dir, wb.FolderPath) {
+		if _, ok := roots[dir]; ok && linkedWorktreeOf(dir, wb.FolderPath) {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// sameRepository reports whether root — a work tree root holding its own
-// ".git" — and the work tree holding folder share one common git dir. Any
-// unreadable or missing git entry is false (fail closed).
-func sameRepository(root, folder string) bool {
-	rootGit, found, err := gitdir.GitDirAt(root)
+// linkedWorktreeOf reports whether root (a real path) is a linked work tree
+// (`git worktree add`) of the repository holding folder, checked from files
+// the way git links them: the admin dir root/.git names has a "gitdir"
+// back-pointer whose real path is root/.git itself (a pointer at another
+// work tree's admin dir fails it, and so does a ".git" symlink: its real
+// path is elsewhere) and a "commondir" (a main checkout's git dir has none —
+// a main checkout is never a session worktree here, the workbench folder
+// itself is accepted on its own — nor has a forged pointer at it); and its
+// common dir is folder's. Anything missing or unreadable is false (fail
+// closed).
+func linkedWorktreeOf(root, folder string) bool {
+	dotGit := filepath.Join(root, ".git")
+	admin, found, err := gitdir.GitDirAt(root)
 	if err != nil || !found {
+		return false
+	}
+	if admin, err = filepath.EvalSymlinks(admin); err != nil {
+		return false
+	}
+	back, err := gitdir.WorktreeBackPointer(admin)
+	if err != nil {
+		return false
+	}
+	if back, err = filepath.EvalSymlinks(back); err != nil || back != dotGit {
+		return false
+	}
+	common, err := gitdir.CommonDir(admin)
+	if err != nil || common == admin {
 		return false
 	}
 	_, folderGit, found, err := gitdir.FindWorkTree(folder)
 	if err != nil || !found {
 		return false
 	}
-	a, errA := realCommonDir(rootGit)
+	a, errA := filepath.EvalSymlinks(common)
 	b, errB := realCommonDir(folderGit)
 	return errA == nil && errB == nil && a == b
 }

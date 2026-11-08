@@ -201,6 +201,7 @@ func readFolderWorktree(t *testing.T, gitDir, name string) string {
 	require.NoError(t, os.MkdirAll(admin, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/"+name+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(admin, "commondir"), []byte("../..\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(admin, "gitdir"), []byte(filepath.Join(dir, ".git")+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+admin+"\n"), 0o644))
 	return dir
 }
@@ -259,7 +260,12 @@ func TestAIQueryReadFolder_AcceptsARegisteredSessionWorktree(t *testing.T) {
 // Everything else stays refused: a worktree no session recorded, a
 // recorded root that is no worktree of the workbench's repository (another
 // workbench's), a folder inside a recorded worktree (named directly or
-// through a symlink), and a sibling of one.
+// through a symlink), a sibling of one, a recorded root later replaced by a
+// symlink, a recorded main checkout of the workbench's repository (the
+// workbench bound to a subfolder of it), and recorded folders an agent
+// dressed up as worktrees of the workbench's repository: a ".git" file
+// pointing at its git dir, one reusing another worktree's admin dir, and a
+// ".git" symlink to its git dir.
 func TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree(t *testing.T) {
 	f := newReadFolderFixture(t)
 	gitDir := readFolderRepo(t, f.folder)
@@ -286,12 +292,55 @@ func TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree(t *testing.T) {
 	sibling := filepath.Join(filepath.Dir(wt), "sibling")
 	require.NoError(t, os.Mkdir(sibling, 0o755))
 
+	replaced := readFolderWorktree(t, gitDir, "replaced")
+	f.recordWorktree(t, f.folder, replaced)
+	require.NoError(t, os.RemoveAll(replaced))
+	require.NoError(t, os.Symlink(unrecorded, replaced))
+
+	// A workbench bound to a subfolder of a repository; a session of it
+	// recorded the repository root (its main checkout).
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	readFolderRepo(t, repoRoot)
+	app := filepath.Join(repoRoot, "app")
+	require.NoError(t, os.Mkdir(app, 0o755))
+	database, err = db.Open(f.dbPath)
+	require.NoError(t, err)
+	_, err = database.CreateWorkbench("gamma", app)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	f.recordWorktree(t, app, repoRoot)
+
+	plant := func(name, gitEntry string, symlink bool) string {
+		base, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		dir := filepath.Join(base, name)
+		require.NoError(t, os.Mkdir(dir, 0o755))
+		if symlink {
+			require.NoError(t, os.Symlink(gitEntry, filepath.Join(dir, ".git")))
+		} else {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".git"), []byte("gitdir: "+gitEntry+"\n"), 0o644))
+		}
+		f.recordWorktree(t, f.folder, dir)
+		return dir
+	}
+	atGitDir := plant("at-git-dir", gitDir, false)
+	// ...with a back-pointer forged in the git dir too: no commondir.
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "gitdir"), []byte(filepath.Join(atGitDir, ".git")+"\n"), 0o644))
+	reusedAdmin := plant("reused-admin", filepath.Join(gitDir, "worktrees", "feature"), false)
+	symlinked := plant("symlinked", gitDir, true)
+
 	for name, dir := range map[string]string{
-		"unrecorded worktree":            unrecorded,
-		"another workbench's worktree":   foreign,
-		"folder inside a worktree":       sub,
-		"symlink into a worktree":        linkIn,
-		"sibling of a recorded worktree": sibling,
+		"recorded root replaced by a symlink": replaced,
+		"recorded main checkout":              repoRoot,
+		"forged pointer at the git dir":       atGitDir,
+		"forged pointer at another admin dir": reusedAdmin,
+		"git dir symlinked into a folder":     symlinked,
+		"unrecorded worktree":                 unrecorded,
+		"another workbench's worktree":        foreign,
+		"folder inside a worktree":            sub,
+		"symlink into a worktree":             linkIn,
+		"sibling of a recorded worktree":      sibling,
 	} {
 		t.Run(name, func(t *testing.T) {
 			code, stdout, stderr := f.run(t, "--read-folder", dir)
