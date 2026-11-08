@@ -247,7 +247,7 @@ func TestResolveFolderIgnoresCaseOnMacOS(t *testing.T) {
 
 	got = resolve(t, Options{Folder: caseFlipped(t, app)}, wtB)
 	assert.Equal(t, ScopeWorktree, got.Scope)
-	assert.True(t, samePath(filepath.Join(wtB, "app"), got.Root), "the subfolder maps across a case difference: %s", got.Root)
+	assert.True(t, SamePath(filepath.Join(wtB, "app"), got.Root), "the subfolder maps across a case difference: %s", got.Root)
 }
 
 func TestResolveFolderSkipsPrunableAndBareEntries(t *testing.T) {

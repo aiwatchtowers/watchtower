@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/ollama"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/workbenchgit"
 
 	"github.com/spf13/cobra"
 )
@@ -619,79 +620,103 @@ func resolveReadFolder(dbPath string) (string, error) {
 	if !errors.Is(err, db.ErrWorkbenchNotFound) {
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
-	ok, err := isRegisteredSessionWorktree(database, resolved)
-	if err != nil {
-		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
-	}
-	if !ok {
-		return "", usageError("--read-folder %s: not a workbench folder or one of its session worktrees", aiFlagReadFolder)
+	if err := checkSessionWorktree(database, resolved); err != nil {
+		return "", usageError("--read-folder %s: not a workbench folder or one of its session worktrees: %v", aiFlagReadFolder, err)
 	}
 	return resolved, nil
 }
 
-// isRegisteredSessionWorktree reports whether dir (absolute, symlinks
-// resolved) is, exactly, a worktree root a session of some workbench
-// recorded in terminal_session_worktrees and a linked work tree of that
-// workbench folder's own repository (linkedWorktreeOf). A root a session
-// recorded in another repository — its agent cd'd there — is not the
-// workbench's. Owner, ask #560; spec 2026-10-02 §9.1 amendment.
-func isRegisteredSessionWorktree(database *db.DB, dir string) (bool, error) {
+// checkSessionWorktree is nil when dir (absolute, symlinks resolved) is a
+// worktree root a session of some workbench recorded in
+// terminal_session_worktrees — compared the way the file system does
+// (workbenchgit.SamePath: case-insensitive on APFS) — and a linked work tree
+// of that workbench folder's own repository (linkedWorktreeOf). Otherwise
+// the error names why: not recorded, not a linked worktree, another
+// repository, or unreadable. A root a session recorded in another
+// repository — its agent cd'd there — is not the workbench's. Owner, ask
+// #560; spec 2026-10-02 §9.1 amendment.
+func checkSessionWorktree(database *db.DB, dir string) error {
 	workbenches, err := database.ListWorkbenches()
 	if err != nil {
-		return false, err
+		return err
 	}
 	ctx := context.Background()
+	refusal := errors.New("not recorded by any workbench session")
 	for _, wb := range workbenches {
 		roots, err := database.WorkbenchSessionWorktrees(ctx, wb.ID)
 		if err != nil {
-			return false, err
+			return err
 		}
-		if _, ok := roots[dir]; ok && linkedWorktreeOf(dir, wb.FolderPath) {
-			return true, nil
+		for root := range roots {
+			if !workbenchgit.SamePath(root, dir) {
+				continue
+			}
+			if refusal = linkedWorktreeOf(dir, wb.FolderPath); refusal == nil {
+				return nil
+			}
 		}
 	}
-	return false, nil
+	return refusal
 }
 
-// linkedWorktreeOf reports whether root (a real path) is a linked work tree
+// linkedWorktreeOf is nil when root (a real path) is a linked work tree
 // (`git worktree add`) of the repository holding folder, checked from files
-// the way git links them: the admin dir root/.git names has a "gitdir"
-// back-pointer whose real path is root/.git itself (a pointer at another
-// work tree's admin dir fails it, and so does a ".git" symlink: its real
-// path is elsewhere), sits where git puts it — in its common dir's
-// "worktrees" (a main checkout's git dir, which has no "commondir", and an
-// admin dir forged outside the repository do not; a main checkout is never
-// a session worktree here, the workbench folder itself is accepted on its
-// own) —, and its common dir is folder's. Anything missing or unreadable is
-// false (fail closed). An agent that can write into the repository's git
-// dir can still register any folder as a worktree, as `git worktree add`
-// does; that is the residual the ledger already carries.
-func linkedWorktreeOf(root, folder string) bool {
+// the way `git worktree list` trusts them: root/.git is a regular file (not
+// a directory — a main checkout is never a session worktree here, the
+// workbench folder itself is accepted on its own — and not a symlink); the
+// admin dir its "gitdir:" names sits in its common dir's "worktrees" (not
+// forged elsewhere, not the repository's git dir itself); the admin dir's
+// own "gitdir" back-pointer resolves to root/.git (a pointer at another
+// work tree's admin dir fails it); and the common dir is folder's.
+// Anything missing or malformed is refused (fail closed). An agent that can
+// write into the repository's git dir can still register any folder as a
+// worktree, as `git worktree add` does; that is the residual the ledger
+// already carries.
+func linkedWorktreeOf(root, folder string) error {
 	dotGit := filepath.Join(root, ".git")
-	admin, found, err := gitdir.GitDirAt(root)
-	if err != nil || !found {
-		return false
+	info, err := os.Lstat(dotGit)
+	if err != nil {
+		return fmt.Errorf("unreadable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("not a linked worktree: its .git is not a gitdir file")
+	}
+	admin, _, err := gitdir.GitDirAt(root)
+	if err != nil {
+		return fmt.Errorf("unreadable: %w", err)
 	}
 	if admin, err = filepath.EvalSymlinks(admin); err != nil {
-		return false
+		return fmt.Errorf("unreadable: %w", err)
+	}
+	common, err := realCommonDir(admin)
+	if err != nil {
+		return fmt.Errorf("unreadable: %w", err)
+	}
+	if !workbenchgit.SamePath(filepath.Dir(admin), filepath.Join(common, "worktrees")) {
+		return errors.New("not a linked worktree: its git dir is not in its repository's worktrees")
 	}
 	back, err := gitdir.WorktreeBackPointer(admin)
 	if err != nil {
-		return false
+		return fmt.Errorf("unreadable: %w", err)
 	}
-	if back, err = filepath.EvalSymlinks(back); err != nil || back != dotGit {
-		return false
-	}
-	common, err := realCommonDir(admin)
-	if err != nil || filepath.Dir(admin) != filepath.Join(common, "worktrees") {
-		return false
+	if back, err = filepath.EvalSymlinks(back); err != nil || !workbenchgit.SamePath(back, dotGit) {
+		return errors.New("not a linked worktree: git links its git dir to another folder")
 	}
 	_, folderGit, found, err := gitdir.FindWorkTree(folder)
-	if err != nil || !found {
-		return false
+	if err != nil {
+		return fmt.Errorf("unreadable workbench folder: %w", err)
+	}
+	if !found {
+		return errors.New("a worktree of another repository: the workbench folder is in none")
 	}
 	folderCommon, err := realCommonDir(folderGit)
-	return err == nil && common == folderCommon
+	if err != nil {
+		return fmt.Errorf("unreadable workbench folder: %w", err)
+	}
+	if !workbenchgit.SamePath(common, folderCommon) {
+		return errors.New("a worktree of another repository")
+	}
+	return nil
 }
 
 // realCommonDir is gitDir's common git dir with symlinks resolved.
