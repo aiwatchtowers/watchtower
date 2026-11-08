@@ -100,7 +100,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
         var context = withReadiness(.needsDigests)
         context.isTurningOn = { $0 == "slack-digests" }
         context.perform = { performed = $0 }
-        let waiting = TabEmptyState(copyKey: InboxFilter.tracks.emptyCopyKey, context: context) {}
+        let waiting = TabEmptyState(copyKey: InboxLegacyList.tracks.emptyCopyKey, context: context) {}
         XCTAssertNoThrow(try waiting.inspect().find(text: "Needs Slack Digests"))
         let button = try waiting.inspect().find(button: "Turn on Slack Digests")
         XCTAssertTrue(button.isDisabled(), "progress is keyed by slack-digests")
@@ -109,7 +109,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
         context = withReadiness(.scheduled(.nextCycle(minutes: 15)))
         context.turnOnError = { $0 == "slack-digests" ? "boom" : nil }
         context.perform = { performed = $0 }
-        let failed = TabEmptyState(copyKey: InboxFilter.tracks.emptyCopyKey, context: context) {}
+        let failed = TabEmptyState(copyKey: InboxLegacyList.tracks.emptyCopyKey, context: context) {}
         XCTAssertNoThrow(try failed.inspect().find(text: "boom"))
         try failed.inspect().find(button: "Try again").tap()
         XCTAssertEqual(performed, .turnOn(featureID: "slack-digests"))

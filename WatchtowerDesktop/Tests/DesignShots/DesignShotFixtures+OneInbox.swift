@@ -5,11 +5,12 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The one Inbox (C1): every kind of card under the filter bar — today's
-/// day card, a custom track and an extracted one, ideas and a decision, a
-/// message and an automation card — over one fixed moment (2026-10-21
-/// 12:00 UTC) handed to the view model's clock and the list, so Today,
-/// Earlier and the day labels never move with the real date.
+/// The one Inbox (C1) since its filters went (inbox builder B): today's day
+/// card in the root, and the root's legacy lists — a custom track and an
+/// extracted one, ideas and a decision, a message — each opened through the
+/// view model's own route (`open(folder:select:)`), over one fixed moment
+/// (2026-10-21 12:00 UTC) handed to the view model's clock and the list, so
+/// Today, Earlier and the day labels never move with the real date.
 @MainActor
 enum OneInboxShotFixtures {
     private static var manager: DatabaseManager?
@@ -32,8 +33,8 @@ enum OneInboxShotFixtures {
 
     /// What a shot opens, and which rows its database holds.
     struct Scene {
-        var filter: InboxFilter = .all
-        var select: (Seeded) -> InboxSelection? = { _ in nil }
+        /// What the route opens; nil = the root with nothing open.
+        var route: (Seeded) -> InboxRoute.Entry? = { _ in nil }
         var withToday = true
         var showsStopped = false
         var dayRow: InboxDayPlanRow?
@@ -71,32 +72,30 @@ enum OneInboxShotFixtures {
 
     // MARK: - Shots
 
-    static func all() -> AnyView { inbox(Scene { _ in .day(today) }) }
-    static func filterDay() -> AnyView { inbox(Scene(filter: .day) { _ in .day(yesterday) }) }
-    static func dayCard() -> AnyView { inbox(Scene(filter: .day) { _ in .day(today) }) }
+    static func dayCard() -> AnyView { inbox(Scene { _ in .card(.day(today)) }) }
     static func dayCardRegenerate() -> AnyView {
-        inbox(Scene(filter: .day, select: { _ in .day(today) }, dayRow: .regenerate))
+        inbox(Scene(route: { _ in .card(.day(today)) }, dayRow: .regenerate))
     }
     static func dayCardEmpty() -> AnyView {
-        inbox(Scene(filter: .day, select: { _ in .day(today) }, withToday: false))
+        inbox(Scene(route: { _ in .card(.day(today)) }, withToday: false))
     }
-    static func trackCard() -> AnyView { inbox(Scene(filter: .tracks) { .track($0.customTrack) }) }
+    static func trackCard() -> AnyView { inbox(Scene { .card(.track($0.customTrack)) }) }
     static func trackCard(_ watch: WatchScene) -> AnyView {
-        inbox(Scene(filter: .tracks, select: { .track($0.customTrack) }, watch: watch))
+        inbox(Scene(route: { .card(.track($0.customTrack)) }, watch: watch))
     }
     static func tracksStopped() -> AnyView {
-        inbox(Scene(filter: .tracks, select: { .track($0.stoppedTrack) }, showsStopped: true))
+        inbox(Scene(route: { .card(.track($0.stoppedTrack)) }, showsStopped: true))
     }
-    static func ideaCard() -> AnyView { inbox(Scene(filter: .ideas) { .idea($0.proposedIdea) }) }
-    static func decisionCard() -> AnyView { inbox(Scene(filter: .ideas) { .idea($0.decision) }) }
-    static func chatDecisionCard() -> AnyView { inbox(Scene(filter: .ideas, chatDecision: true)) }
+    static func ideaCard() -> AnyView { inbox(Scene { .card(.idea($0.proposedIdea)) }) }
+    static func decisionCard() -> AnyView { inbox(Scene { .card(.idea($0.decision)) }) }
+    static func chatDecisionCard() -> AnyView { inbox(Scene(chatDecision: true)) }
     static func ideasNew() -> AnyView {
-        inbox(Scene(filter: .ideas, select: { .idea($0.proposedIdea) }, ideasRow: .newIdea))
+        inbox(Scene(route: { .card(.idea($0.proposedIdea)) }, ideasRow: .newIdea))
     }
-    static func messageCard() -> AnyView { inbox(Scene(filter: .messages) { .message($0.message) }) }
+    static func messageCard() -> AnyView { inbox(Scene { .card(.message($0.message)) }) }
     static func cheatSheet() -> AnyView { inbox(Scene(aux: .reactionCommands)) }
     static func builtinNotice() -> AnyView {
-        inbox(Scene(select: { _ in .builtinNotice("morning-brief") }, builtinNotice: true))
+        inbox(Scene(route: { _ in .card(.builtinNotice("morning-brief")) }, builtinNotice: true))
     }
 
     /// Today's day card alone at the reading pane's narrowest (420 pt).
@@ -156,10 +155,8 @@ enum OneInboxShotFixtures {
             let vm = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner(),
                                           customTrackControls: controls, defaults: defaults, clock: { clock })
             // swiftlint:enable trailing_closure
-            vm.filter = scene.filter
             vm.showsStopped = scene.showsStopped
-            refreshed(vm)
-            vm.selection = chatDecision.map { .idea($0) } ?? scene.select(seeded)
+            opened(vm, chatDecision.map { .card(.idea($0)) } ?? scene.route(seeded))
             let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
             let ideas = IdeasViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
             let appState = AppState()
@@ -191,7 +188,7 @@ enum OneInboxShotFixtures {
         _ card: InboxDayCard, manager: DatabaseManager, plan: DayPlanViewModel, row: InboxDayPlanRow?
     ) -> InboxDayPane {
         var pane = InboxDayPane(card: card, today: today, plan: plan, owner: owner,
-                                onDone: {}, onCommand: { _ in }, onOpenSource: { _ in })
+                                onCommand: { _ in }, onOpenSource: { _ in })
         pane.briefing = BriefingViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
         pane.emptyState = EmptyStateContext(readiness: { _ in .ready }, briefingHour: 8)
         pane.initialRow = row
@@ -349,11 +346,12 @@ enum OneInboxShotFixtures {
 
     /// The shot renders at once, so the Inbox's async read is waited for
     /// here by running the main run loop (the test-side `spin` precedent).
-    private static func refreshed(_ vm: ActionStripViewModel) {
+    /// The route opened as a link would open it, run to its end.
+    private static func opened(_ vm: ActionStripViewModel, _ route: InboxRoute.Entry?) {
         final class Flag { var done = false }
         let flag = Flag()
         Task { @MainActor in
-            await vm.refresh()
+            await vm.open(folder: nil, select: route)
             flag.done = true
         }
         let deadline = Date().addingTimeInterval(5)

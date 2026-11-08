@@ -232,13 +232,8 @@ enum DesignShotCatalog {
             DesignShot(name: "inbox-message-pane", size: NSSize(width: 1180, height: 720)) {
                 InboxShotFixtures.messagePane()
             },
-            // The one Inbox (C1): every kind under the filter bar, at a fixed moment.
-            DesignShot(name: "inbox-all", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.all()
-            },
-            DesignShot(name: "inbox-filter-day", size: NSSize(width: 1180, height: 720)) {
-                OneInboxShotFixtures.filterDay()
-            },
+            // The one Inbox (C1) without its filters (inbox builder B): today's
+            // day card in the root and the root's legacy lists, at a fixed moment.
             DesignShot(name: "inbox-day-card", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.dayCard()
             },
@@ -266,7 +261,7 @@ enum DesignShotCatalog {
             DesignShot(name: "inbox-message-card", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.messageCard()
             },
-            DesignShot(name: "inbox-filter-ideas-new", size: NSSize(width: 1180, height: 720)) {
+            DesignShot(name: "inbox-ideas-new", size: NSSize(width: 1180, height: 720)) {
                 OneInboxShotFixtures.ideasNew()
             },
             DesignShot(name: "inbox-cheat-sheet", size: NSSize(width: 1180, height: 720)) {

@@ -27,8 +27,8 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
     }
 
     /// A legacy entry whose pane is today's list (Track my threads, Idea
-    /// finder, Messages): the filter that list is.
-    package var legacyList: InboxFilter? {
+    /// finder, Messages): that list.
+    package var legacyList: InboxLegacyList? {
         switch self {
         case .legacyTracks: .tracks
         case .legacyIdeas: .ideas
@@ -37,19 +37,18 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// The id of the legacy entry whose list is `list`.
-    package static func legacyID(_ list: InboxFilter) -> String? {
+    /// The legacy entry whose list is `list`.
+    package static func legacy(_ list: InboxLegacyList) -> Self {
         switch list {
-        case .tracks: Self.legacyTracks.id
-        case .ideas: Self.legacyIdeas.id
-        case .messages: Self.legacyMessages.id
-        case .all, .day, .automations: nil
+        case .tracks: .legacyTracks
+        case .ideas: .legacyIdeas
+        case .messages: .legacyMessages
         }
     }
 
     /// The entry's own ⋯ (and context menu): only the Idea finder has one
-    /// here, **Find Ideas in Past Messages…**, moved from the Ideas filter's
-    /// menu. An artifact's ⋯ is its automation's (Task 14).
+    /// here, **Find Ideas in Past Messages…**, moved from the old Ideas
+    /// filter's menu. An artifact's ⋯ is its automation's (Task 14).
     package var menuEntries: [InboxMenuEntry] {
         self == .legacyIdeas ? InboxArtifactMenuContent.ideaFinderEntries : []
     }
@@ -64,7 +63,6 @@ package enum InboxFolderEntries {
         package var folders: InboxFolderMenuSnapshot
         /// The `approval-cards` feature is on.
         package var approvalsOn: Bool
-        package var dayDone: String?
         /// The day the owner has open (`yyyy-MM-dd`): listed while it is
         /// selected even once read, so it does not vanish while being read.
         package var selectedDay: String?
@@ -75,7 +73,6 @@ package enum InboxFolderEntries {
             feed: InboxFeedSnapshot,
             folders: InboxFolderMenuSnapshot,
             approvalsOn: Bool = true,
-            dayDone: String? = nil,
             selectedDay: String? = nil,
             now: Date,
             calendar: Calendar = .current
@@ -83,7 +80,6 @@ package enum InboxFolderEntries {
             self.feed = feed
             self.folders = folders
             self.approvalsOn = approvalsOn
-            self.dayDone = dayDone
             self.selectedDay = selectedDay
             self.now = now
             self.calendar = calendar
@@ -163,18 +159,11 @@ package enum InboxFolderEntries {
         return out
     }
 
-    /// The day cards the All list showed (today's, the unread ones, and
-    /// today's placeholder while the owner is known), one entry per date,
-    /// plus the selected day while it is open (`Inputs.selectedDay`).
+    /// The root's day cards (`InboxListBuilder.rootDays`), one entry per
+    /// date, plus the selected day while it is open (`Inputs.selectedDay`).
     private static func days(_ inputs: Inputs) -> [InboxDayCard] {
         let today = HomeFeedBuilder.dayString(inputs.now, calendar: inputs.calendar)
-        let sections = InboxListBuilder.sections(
-            inputs.feed, filter: .all, dayDone: inputs.dayDone, today: today, now: inputs.now,
-            calendar: inputs.calendar, placeholdsToday: true)
-        var days: [InboxDayCard] = sections.flatMap(\.items).compactMap { item in
-            if case let .day(card) = item { return card }
-            return nil
-        }
+        var days = InboxListBuilder.rootDays(inputs.feed, today: today, now: inputs.now, calendar: inputs.calendar)
         if let selected = inputs.selectedDay, !days.contains(where: { $0.date == selected }),
            let card = inputs.feed.days.first(where: { $0.date == selected }) {
             days.append(card)

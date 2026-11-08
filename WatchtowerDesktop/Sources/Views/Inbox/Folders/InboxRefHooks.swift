@@ -318,14 +318,14 @@ struct InboxRowActionHandler {
             if let target = track.linkedTargetID { onGoToTarget(target) }
         case .deleteTrack:
             // Its inline confirmation lives on the track's card.
-            await vm.open(.tracks, select: .track(id))
+            await vm.open(folder: nil, select: .card(.track(id)))
         default: break
         }
     }
 
     private func idea(_ press: InboxRowPress, id: Int) async {
         if press == .open {
-            await vm.open(.ideas, select: .idea(id))
+            await vm.open(folder: nil, select: .card(.idea(id)))
             return
         }
         guard let ideas, let idea = vm.feed.ideas.first(where: { $0.id == id }) else { return }

@@ -19,7 +19,6 @@
   "sends": [
     "One Waiting for me list in your Inbox"
   ],
-  "result_filter": "messages",
   "default_folder": "inbox",
   "parameters": [],
   "feature_ids": [
