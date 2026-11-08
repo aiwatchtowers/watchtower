@@ -244,7 +244,9 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	// Read after the snapshot: a commit made in between is in the tree too.
+	// Read after the snapshot, so a commit made in between still names the
+	// tree's committed files; it may also hold edits made after the
+	// snapshot, harmless as lanes only label files already in the diff.
 	head, err := src.Head(ctx, repo)
 	if err != nil {
 		return failReview(cmd, err)
