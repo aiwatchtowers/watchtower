@@ -45,9 +45,14 @@ struct ReviewOverviewView<Extra: View>: View {
         case let .ready(overview):
             if case let .failed(text, detail) = model.summaryState {
                 // The summary failed, the chapters stay (mockup frame 2c): its own Retry.
-                ReviewFailureNotice(text: text, lines: [model.summaryFailedLine, ReviewMapPresentation.summaryRetryNote], detail: detail) { model.retrySummary() }
+                ReviewFailureNotice(text: text, lines: [model.summaryFailedLine, ReviewMapPresentation.summaryRetryNote],
+                                    detail: detail) { model.retrySummary() }
+            }
+            if case .failed = model.summaryState, overview.summary.isEmpty {
+                // No summary to show under the notice.
                 if style == .compact { extra() }
             } else {
+                // A follow-up run (a Retry, Describe N remaining) that failed keeps the summary it had.
                 switch style {
                 case .full: full(overview)
                 case .compact: compact(overview)
