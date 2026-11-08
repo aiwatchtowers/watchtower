@@ -419,6 +419,11 @@ the model and never waits (§3.7).
   one key, Go methods of different receivers collide, `<<T` in a generic operator reads as
   `<`, and exported names inside grouped `const (`/`var (`/`type (` blocks and removed struct
   fields are not detected.
+- A folder round's head branch (used for the `into` rule on the top lane and for Jira keys in
+  the branch name) is the folder's branch at the time of the map, not stored with `head_sha`;
+  a branch renamed after the round only changes those labels.
+- With no default branch found (a trunk/develop-only repo), base syncs cannot be told from
+  lanes: the map keeps the attribution, sets `lanes_partial` and says so in a note.
 - Go compares paths byte for byte, Swift by canonical equivalence: a path not in NFC (for
   example committed from Linux) may fall into another `dir:x#N` part than the Swift builder
   put it in, and an agent chapter path written in another normalization is dropped.
