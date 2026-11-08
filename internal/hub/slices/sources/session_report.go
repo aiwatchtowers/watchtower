@@ -764,8 +764,9 @@ type reportSession struct {
 
 // reportCount is the report's progress. Merged (board #986, published
 // since #1017) counts tasks not done whose branch is merged into their
-// parent's; always sent, 0 when none, which is also what the phone reads
-// from a Mac that sends no merged key.
+// parent's. This hub always sends the key (0 when none); the phone's
+// decoder treats it as optional and reads a missing key — an older Mac's
+// slice — as 0.
 type reportCount struct {
 	Done   int `json:"done"`
 	Total  int `json:"total"`
