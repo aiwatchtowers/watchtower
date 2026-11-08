@@ -34,9 +34,11 @@ since: 0.26.0
 action: nav:projects
 -->
 
-For a spec or a plan the agent works on, the ask stays hidden while the reviewer and the agent go back and forth. The reviewer's findings go straight to the agent, which either fixes the document or disagrees with a reason. The reviewer then checks the new version. The loop runs at most three reviewer rounds. The session row shows **Spec review: round 2 of 3** meanwhile, and nothing reaches your notifications.
+For a spec or a plan the agent works on, the ask stays hidden while the reviewer and the agent go back and forth. The reviewer's findings go straight to the agent, which either fixes the document or disagrees with a reason. The reviewer then checks the new version, and the loop goes on while the agent's fixes hold up. The session row shows **Spec review: round 2** meanwhile, and nothing reaches your notifications.
 
-The ask appears when nothing is left for the agent: every finding is fixed or disputed. It also appears at once if the reviewer fails or cannot start, the session is gone, or the agent does not answer a round within 30 minutes. Findings the agent never answered (for example, new findings of the last round) are listed under **Not answered by the author** with the reviewer's reason: press **Fix** to send one to the agent, or **Skip**. **Disputed** keeps only the findings the two sides argued over, each with both arguments.
+The reviewer cannot keep the loop alive with new nitpicks. From the second round a new finding must be about text that changed, from the third it must be **Major** or **Blocker**, and nothing already settled (fixed, skipped by you, or dismissed) comes back.
+
+The ask appears when nothing is left for the agent: every finding is fixed or disputed. It also appears when the two **stopped making progress**: a round in which none of the agent's fixes held up (it only disputed, or the reviewer found its fixes missing) ends the loop, and the open findings come to you. A loop still going after 8 rounds stops too, and says so. It also appears at once if the reviewer fails or cannot start, the session is gone, or the agent does not answer a round within 30 minutes. Findings the agent never answered (for example, new findings of the last round) are listed under **Not answered by the author** with the reviewer's reason: press **Fix** to send one to the agent, or **Skip**. **Disputed** keeps only the findings the two sides argued over, each with both arguments.
 
 The agent files a plan for review only after you answered its spec: a plan filed while the spec's ask is still open is refused.
 
@@ -74,14 +76,14 @@ action: nav:projects
 
 You open one ask. **Disputed** comes first: each card shows the finding, the reviewer's position and the agent's reason. Press **Reviewer is right** to make the agent fix it, or **Author is right** to keep the document; a comment is optional. Below it, **Fixed by the author** is folded: every finding the agent fixed on its own, with its note and round, so you can see what changed. **Reopen** turns one into a dispute. Findings the agent never answered sit under **Not answered by the author**, each with **Fix** or **Skip**.
 
-In **Chapters** you can also press **Fix** or **Comment** on any finding. Press **Request changes** at the bottom of the drawer for a new review round: the agent fixes your picks, comments and note and files the document again. **Approve** with comments means "fix these and go on": the agent applies them without another review. A dispute you left open counts as **Author is right**. After an early end, approving with unanswered findings asks once. On the iPhone the one-line summary reads, for example, "Reviewer and author disagree on 2 · 1 not answered · 5 fixed by the author".
+In **Chapters** you can also press **Fix**, **Skip** or **Discuss** on any finding. Press **Request changes** at the bottom of the drawer for a new review round: the agent fixes your picks, comments and note and files the document again. For a session's spec or plan, the reviewer checks those fixes with the agent first, and the next ask marks each of your items **Your item — fixed by the author** or **Your item — still open**. **Approve** with comments means "fix these and go on": the agent applies them without another review. A dispute you left open counts as **Author is right**. After an early end, approving with unanswered findings asks once. On the iPhone the one-line summary reads, for example, "Reviewer and author disagree on 2 · 1 not answered · 5 fixed by the author".
 
 ### The review without a loop
 
 Open the review ask. The drawer shows three steps.
 
-1. **Meaning.** The ask's own summary, the points to look at, what changed since the last round and any questions the agent asked (answer them here). Then your idea next to the document's goal with a verdict, a spec's Decisions list (a plan has none: its agreements come from its spec), counts and a summary. On a later round it also shows which of your earlier comments are resolved.
-2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**, most serious first. The coloured chip is how much it matters: red **Blocker**, orange **Major**, grey **Minor**. Press **Fix** when the reviewer is right and the finding should go to the author as it is, **Fine as is** when the document is right as written, or **Comment** to tell the author what to change in your own words. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
+1. **Meaning.** **In short** first: what the document builds and why, then its key points by kind, each open to **Discuss** (see [Discussing a spec review](spec-review-discuss.md)). Then the ask's own summary, the points to look at, what changed since the last round and any questions the agent asked (answer them here). Then your idea next to the document's goal with a verdict, a spec's Decisions list (a plan has none: its agreements come from its spec), counts and a summary. On a later round it also shows which of your earlier comments are resolved.
+2. **Chapters.** Each section of the document, with the reviewer's findings as cards: **As agreed**, **Differs**, **Missing**, **Decided alone** and **Blind spot**, most serious first. The coloured chip is how much it matters: red **Blocker**, orange **Major**, grey **Minor**. Press **Fix** when the reviewer is right and the finding should go to the author as it is, **Skip** when the document is right as written, **Discuss** to ask about it, or **Not useful** for noise. An **As agreed** card has nothing to fix, and a check to verify gets **Checked**. When the reviewer ran checks on a chapter, its **Checklist** sits under the cards. Mark the chapter **Viewed** when you are done with it.
 3. **Wrap-up.** Everything you marked, **From the previous run** (with the finding each comment was about), and a note for the author.
 
 **Request changes** and **Approve** stay at the bottom of the drawer on every step (⌘⇧↩ and ⌘↩). **Request changes** returns your comments, the margin ones under **Read the spec** included; it stays off until you mark a finding **Fix**, comment or write a note, and shows how many comments go; **Approve** accepts the document. If items are still unmarked, approving asks once.
@@ -97,10 +99,11 @@ The spec screen opens only for open asks. A closed ask shows the classic read-on
 - **No findings yet.** While the reviewer works, the drawer shows its progress with **Read the spec**, and the findings open there when it is done. If you opened the ask before the reviewer started, you stay in the classic view and a banner offers the findings when they are ready.
 - **Only the classic view, with a reason above it.** The reviewer failed or was skipped. Press **Run reviewer** to start it.
 - **Nothing about the code.** With Ollama the reviewer cannot read files, so it judges from the document and the conversation alone, and says so.
-- **On the iPhone** you see a one-line reviewer summary above the classic review. The findings screen is on the Mac.
+- **"The reviewer and the author stopped making progress".** The agent stopped fixing: it disputed the rest, or its fixes did not hold. Decide them yourself, or **Discuss** one.
+- **On the iPhone** you see a one-line reviewer summary above the classic review. The findings screen and threads are on the Mac.
 
 ## Related
 
-- [Asks](asks.md), [Workbench overview](README.md)
+- [Discussing a spec review](spec-review-discuss.md), [Asks](asks.md), [Workbench overview](README.md)
 
 For developers: [docs/features/spec-review.md](../../../features/spec-review.md)
