@@ -47,22 +47,28 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    behind a disclosure; the log file gets only the error class and counts, never names or
    text (FILES-01). Finished chapters are cached and survive Retry, relaunch and Refresh;
    only chapters whose code changed are redone.
-   **One run at a time per branch folder.** The Desktop and the agent's finish check never
-   describe the same branch at once: a second run waits for the first, shows "The agent is
-   describing this branch — chapters appear as it finishes them" (or "Branch review is…"
-   for the agent), fills in each chapter the moment the first run caches it, and then calls
-   the model only for what is still missing — nothing is described twice. A Retry pressed
-   while a run is going does not start a second run: the chapter shows **Queued** and is
-   redone right after the run ends (several Retries go in one follow-up run, with one
-   summary after them). Refresh while the Desktop's own run is going stops it (finished
-   chapters are kept) and starts on the new state of the branch; Refresh while the agent's
-   run is going rebuilds the chapters and file list at once, but the overview keeps waiting
-   for the agent's run — the Desktop never stops the agent's process. Waiting does not eat
-   a run's own time limit; it is capped at 50 min (above any run's 45-min ceiling, so it ends
-   only if the other run is stuck). If the cap is hit, the Desktop's progress card says
-   "Another overview of this branch is still running" with **Retry**, and the agent's finish
-   check refuses with the same sentence plus "try again later, or hand over with an ask" —
-   the agent can still finish with a handover ask, as in item 4.
+   **One run at a time per branch folder.** Branch review and the agent never describe the
+   same branch at once, and nothing is described twice.
+   - *The agent* makes the overview with a shell command (the finish check itself only
+     reads what is cached, as today, and never waits). If Branch review is describing the
+     branch at that moment, the command answers at once — "Branch review is describing this
+     branch now; run this again when it finishes, what it describes is kept" — and never
+     waits, so it cannot hang a session. If the agent's command is cut off (its shell's time
+     limit on a big branch), the chapters it finished are kept and a re-run continues; the
+     skill pack tells the agent to run it in the background on a big branch.
+   - *Branch review* waits when the agent's run is going: it shows "The agent is describing
+     this branch — chapters appear as it finishes them", fills in each chapter the moment
+     the agent's run caches it, and then calls the model only for what is still missing.
+     Waiting does not eat its own time limit; it is capped at 50 min (above any run's
+     45-min ceiling, so it ends only if the other run is stuck), after which the progress
+     card says "Another overview of this branch is still running" with **Retry**.
+   - A Retry pressed while a run is going does not start a second run: the chapter shows
+     **Queued** and is redone right after the run ends (several Retries go in one follow-up
+     run, with one summary after them).
+   - Refresh while Branch review's own run is going stops it (finished chapters are kept)
+     and starts on the new state of the branch; Refresh while the agent's run is going
+     rebuilds the chapters and file list at once and keeps waiting — Branch review never
+     stops the agent's process.
 4. **Checked against the goal.** A short summary on top checks the whole branch against the
    intent of its ticket(s) — the session's ticket and every lane's ticket found on the board
    or in Jira: done, partial, not found, and what was done outside the goal. The agent's
@@ -163,14 +169,15 @@ Each item above has its check; the timing and size checks run on a synthetic bra
    them. Described chapters survive a relaunch and Refresh; after an edit to one file only its
    chapter is redone. The log file gets only the error class and counts (a FILES-01 canary
    test); the provider's text is behind the disclosure.
-   **One run at a time:** with the agent's run going, the Desktop's run waits, fills in its
+   **One run at a time:** with the agent's run going, Branch review waits, fills in its
    chapters as they are cached and then makes calls only for what is missing (a test counts
-   model calls: none twice); Retry during a run shows **Queued** and runs after it; Refresh
-   during the Desktop's own run stops it and keeps finished chapters; Refresh during the
-   agent's run rebuilds the chapters and keeps waiting; a wait past its 50-min cap shows
-   "Another overview of this branch is still running" with Retry on the Desktop and makes the
-   finish check refuse with that sentence (a test with a stub holder that never releases and
-   a shortened cap).
+   model calls: none twice); with Branch review's run going, the agent's command answers
+   "busy" at once (no wait); an agent's run killed midway keeps its finished chapters and a
+   re-run continues; Retry during a run shows **Queued** and runs after it; Refresh during
+   Branch review's own run stops it and keeps finished chapters; Refresh during the agent's
+   run rebuilds the chapters and keeps waiting; a wait past its 50-min cap shows "Another
+   overview of this branch is still running" with Retry (a test with a stub holder that
+   never releases and a shortened cap).
 4. **Goal check.** The summary's coverage lists the session's ticket items and every lane
    ticket's items; the agent's finish check fails only on the session's own items. A chapter
    that fails on every try still gets a summary with that chapter under **Not covered** (its
@@ -236,6 +243,10 @@ error states. REVIEW-01 changes only as listed above; REVIEW-02..05 unchanged.
 - One overview run per branch folder at a time; a second waits and reuses what the first
   caches, a Retry during a run is queued — agent's call, after ask #569 asked whether two
   runs or a Retry can interleave.
+- Only Branch review waits for another run (capped at 50 min, the wait outside its own
+  time limit); the agent's command never waits and answers "busy" at once, so a shell or
+  MCP time limit can never hang a session; Refresh never stops the agent's run — agent's
+  call, after the spec reviewer's rounds on ask #588/#589.
 - The reviewer shares the agent chat panel's place with a **Reviewer | Author** switch —
   agent's call (mockup), written into item 8 after ask #569.
 

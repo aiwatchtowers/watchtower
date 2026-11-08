@@ -264,16 +264,21 @@ logs carry the class, the chapter's index and counts only (FILES-01).
 
 ### 3.7 One run at a time
 
-- Every model-calling form (the full run, `--continue`, `--chapter`, `--summary`; also the
-  finish gate's `--session`) holds an exclusive lock for its whole run:
+- Every model-calling form (the full run, `--continue`, `--chapter`, `--summary`, with
+  `--round` or `--session`) holds an exclusive lock for its whole run:
   `fsutil.LockFile` on `<workspace>/locks/review-overview-<project>-<sha256(real path of
   the snapshot folder)[:16]>.lock` (the workspace, never the repository — REVIEW-01 is
   untouched). The key is the folder, not the tree: the agent's and the Desktop's snapshots
   of a branch being edited differ, yet share most part rows. The kernel drops the lock with
   its holder; `--cached-only` and `review map` take none.
 - The holder writes `{"by":"desktop|agent|cli","started_at":…}` into the lock file
-  (`--caller desktop` from the Desktop, `agent` from the finish gate, `cli` by default).
-- A run that finds the lock held does not call the model. It waits (`LockFile` with its own
+  (`--caller desktop` from the Desktop; `agent` when the agent marker is set; `cli` otherwise).
+- **Only the streamed form waits** (`--stream`, the Desktop). Every other form that finds
+  the lock held answers at once with class `busy`, exit 1, and "<Branch review|Another run>
+  is describing this branch now; run this again when it finishes — what it describes is
+  kept." It never waits, so neither a shell time limit nor an MCP call can hang on it.
+  `finish_session` never runs the overview: it reads the cached one, as today (§4).
+- A streamed run that finds the lock held does not call the model. It waits (`LockFile` with its own
   ctx: `LockWaitCap` = 50 min, above the 45-min run ceiling; the wait does not count into the
   run's ceiling, which starts when the lock is taken), and while waiting
   it re-reads its chapters' part rows every 5 s: with `--stream` it prints
@@ -282,8 +287,11 @@ logs carry the class, the chapter's index and counts only (FILES-01).
   for chapters still without one — the first run's work is never redone (same `part_hash`
   ⇒ same row). A lock wait that hits `LockWaitCap` ends as class `busy` with
   "Another overview of this branch is still running." — the Desktop shows it on the progress
-  card with Retry; the finish gate refuses with it plus "Try again later, or hand over with
-  an ask." (`handover_ask_id` passes the gate as today).
+  card with Retry.
+- An agent's run killed midway (its shell's time limit) leaves every finished chapter's part
+  row; a re-run describes only the rest. The skill pack (version bump) and the
+  missing-overview refusal tell the agent to run the command in the background when the
+  branch is big (the map's shown lines > one batch).
 - The Desktop starts at most one overview process per session. **Retry** of a chapter (or of
   the summary) while it runs sets that chapter `queued`; when the process ends, one
   follow-up run is started with every queued key (`--chapter` is repeatable; the summary is
@@ -304,7 +312,8 @@ logs carry the class, the chapter's index and counts only (FILES-01).
 assembled overview as today (an `incomplete` one counts; its coverage already caps items
 whose work it could not see); a missing one refuses with today's text plus "Re-run it; only
 the missing chapters are redone."
-The agent's form (`--session`) runs the same packing.
+The agent's form (`--session`) runs the same packing; `finish_session` itself never runs
+the model and never waits (§3.7).
 
 ## 5. Desktop (phase 2)
 
@@ -378,8 +387,9 @@ The agent's form (`--session`) runs the same packing.
 - One run at a time: two processes on one folder with a stub generator that counts calls —
   the second waits, streams `waiting` and the first run's chapters as `cached`, and makes
   calls only for the rest (no `part_hash` called twice); the lock is released when the holder
-  is killed; a holder that never releases with a shortened `LockWaitCap` → `busy`, the Desktop
-  card text and the finish gate's refusal (and `handover_ask_id` still passes). Desktop: Retry during a run → `queued` → one follow-up `--chapter` run with all
+  is killed; a holder that never releases with a shortened `LockWaitCap` → `busy` and the Desktop
+  card text; a non-streamed run against a held lock returns `busy` at once (no wait); a run
+  killed after two of four batches keeps two parts and a re-run calls only for the rest. Desktop: Retry during a run → `queued` → one follow-up `--chapter` run with all
   queued keys; Refresh during a run → the process is terminated and parts kept.
 - Budgets: the §3.2 table for 1, 4 and 20 batches (pure function).
 - FILES-01 canary over a failing chapter run (no title, path or provider text in the log).
