@@ -212,7 +212,7 @@ func TestAttribute_SyntheticBranch(t *testing.T) {
 		"d/plan.go":           "T3",
 		"d/board.go":          "#1234",
 		"d/scope.go":          "review",
-		"d/ff.go":             "feature/c", // named by `into`
+		"c/c1.go":             "feature/c", // the fast-forward merge's first-parent side
 	}
 	if !reflect.DeepEqual(a.FileLane, wantLane) {
 		t.Errorf("FileLane:\n got %v\nwant %v", a.FileLane, wantLane)
@@ -224,13 +224,13 @@ func TestAttribute_SyntheticBranch(t *testing.T) {
 	if !reflect.DeepEqual(a.Also, wantAlso) {
 		t.Errorf("Also:\n got %v\nwant %v", a.Also, wantAlso)
 	}
-	for _, unlaned := range []string{"m/main.go", "d/abc8.go", "d/xyz.go", "d/noboard.go", "d/plain.go", "c/c1.go", "u.go", "README.md"} {
+	for _, unlaned := range []string{"m/main.go", "d/abc8.go", "d/xyz.go", "d/noboard.go", "d/plain.go", "d/ff.go", "u.go", "README.md"} {
 		if l, ok := a.FileLane[unlaned]; ok {
 			t.Errorf("%s has lane %q, want none", unlaned, l)
 		}
 	}
 	if _, ok := a.Lanes["feature/big"]; ok {
-		t.Error("the fast-forward merge was named by its source, not by `into`")
+		t.Error("the fast-forward merge made the walked branch a lane of itself")
 	}
 	if _, ok := a.Lanes["main"]; ok {
 		t.Error("a base sync became a lane")
@@ -303,7 +303,7 @@ func TestAttribute_DoneContextIsAnError(t *testing.T) {
 func TestAttribute_BoundsLeaveTheRestUnlaned(t *testing.T) {
 	r, mainTip := bigBranch(t)
 	base := r.git("merge-base", "HEAD", "main")
-	// Four commits of the top walk (the fast-forward merge, "c work",
+	// Four commits of the top walk (the fast-forward merge, "big moves on",
 	// "plain", the scoped commit) spend the bound before any lane is read.
 	a, err := attribute(context.Background(), r.open(), base, r.rev("HEAD"), "feature/big", mainTip,
 		newFakeTitles(), time.Minute, 4, maxWalkLanes)
@@ -329,7 +329,7 @@ func TestAttribute_BoundsLeaveTheRestUnlaned(t *testing.T) {
 	if a.FileLane["a/x.go"] != "feature/a" {
 		t.Errorf("the first lane is walked: %v", a.FileLane)
 	}
-	for _, f := range []string{"n/n1.go", "b/z.go", "d/ff.go"} {
+	for _, f := range []string{"n/n1.go", "b/z.go", "c/c1.go"} {
 		if l, ok := a.FileLane[f]; ok {
 			t.Errorf("%s has lane %q past the lane bound", f, l)
 		}
@@ -339,23 +339,101 @@ func TestAttribute_BoundsLeaveTheRestUnlaned(t *testing.T) {
 	}
 }
 
-func TestMergeLaneName(t *testing.T) {
-	for _, c := range []struct{ subject, walked, want string }{
-		{"Merge pull request #57 from acme/feature/x-y", "", "feature/x-y"},
-		{"Merge branch 'feature/a'", "", "feature/a"},
-		{"Merge branch 'feature/a' into feature/big", "feature/big", "feature/a"},
-		{"Merge branch 'feature/big' into feature/c", "feature/big", "feature/c"},
+func TestParseMerge(t *testing.T) {
+	for _, c := range []struct{ subject, source, into string }{
+		{"Merge pull request #57 from acme/feature/x-y", "feature/x-y", ""},
+		{"Merge branch 'feature/a'", "feature/a", ""},
+		{"Merge branch 'feature/a' into feature/big", "feature/a", "feature/big"},
 		{"Merge branch 'feature/big' into 'feature/c'", "feature/big", "feature/c"},
-		{"Merge branch 'feature/big'", "feature/big", "feature/big"},
-		{"Merge remote-tracking branch 'origin/lane/t1'", "", "lane/t1"},
-		{"Merge origin/lane/t2: conflicts resolved", "", "lane/t2"},
-		{"Merge lane/t3 into feature", "", "lane/t3"},
-		{"Merged everything", "", "?"},
-		{"fix: things", "", "?"},
+		{"Merge remote-tracking branch 'origin/lane/t1'", "lane/t1", ""},
+		{"Merge origin/lane/t2: conflicts resolved", "lane/t2", ""},
+		{"Merge lane/t3 into feature", "lane/t3", ""},
+		{"Merged everything", "?", ""},
+		{"fix: things", "?", ""},
 	} {
-		if got := mergeLaneName(c.subject, c.walked); got != c.want {
-			t.Errorf("mergeLaneName(%q, %q) = %q, want %q", c.subject, c.walked, got, c.want)
+		if source, into := parseMerge(c.subject); source != c.source || into != c.into {
+			t.Errorf("parseMerge(%q) = %q, %q; want %q, %q", c.subject, source, into, c.source, c.into)
 		}
+	}
+}
+
+func TestFFInto(t *testing.T) {
+	for _, c := range []struct {
+		subject, walked, into string
+		ok                    bool
+	}{
+		{"Merge branch 'feature/big' into feature/c", "feature/big", "feature/c", true},
+		{"Merge branch 'feature/big' into 'feature/c'", "feature/big", "feature/c", true},
+		{"Merge branch 'feature/a' into feature/big", "feature/big", "", false},
+		{"Merge branch 'feature/big'", "feature/big", "", false},
+		{"Merge branch 'feature/big' into feature/big", "feature/big", "", false},
+		{"Merge branch 'feature/big' into feature/c", "", "", false},
+	} {
+		into, ok := ffInto(c.subject, c.walked)
+		if ok != c.ok || (ok && into != c.into) {
+			t.Errorf("ffInto(%q, %q) = %q, %v; want %q, %v", c.subject, c.walked, into, ok, c.into, c.ok)
+		}
+	}
+}
+
+// ffLane builds, on the current branch l (already checked out, named
+// lname), the history of the team lead's case: l gets l1; c forks from l1
+// and gets c1, c2; l gets l2; c merges l as M "Merge branch 'l' into 'c'";
+// l fast-forwards to M; l gets l3. dir prefixes the file names.
+func ffLane(r *laneRepo, lname, cname, dir string) {
+	r.t.Helper()
+	r.commit("l1", dir+"/l1.go")
+	r.checkout("-b", cname)
+	r.commit("c1", dir+"/c1.go")
+	r.commit("c2", dir+"/c2.go")
+	r.checkout(lname)
+	r.commit("l2", dir+"/l2.go")
+	r.checkout(cname)
+	r.merge(lname, "Merge branch '"+lname+"' into '"+cname+"'")
+	r.checkout(lname)
+	r.git("merge", "-q", "--ff-only", cname)
+	r.commit("l3", dir+"/l3.go")
+}
+
+func TestAttribute_FastForwardIntoMerge(t *testing.T) {
+	// On the top branch: c's work is lane c, l's own untagged commits are
+	// direct commits of the top (no lane).
+	r := newLaneRepo(t)
+	r.checkout("-b", "feature/l")
+	ffLane(r, "feature/l", "feature/c", "top")
+	a, err := Attribute(context.Background(), r.open(), r.rev("main"), r.rev("HEAD"), "feature/l", r.rev("main"),
+		newFakeTitles(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"top/c1.go": "feature/c", "top/c2.go": "feature/c"}
+	if !reflect.DeepEqual(a.FileLane, want) || a.Partial {
+		t.Errorf("top: FileLane = %v (partial %v), want %v", a.FileLane, a.Partial, want)
+	}
+	if _, ok := a.Lanes["feature/l"]; ok {
+		t.Error("the walked branch became a lane of itself")
+	}
+
+	// One level down, inside a nested lane merged into the top: the nested
+	// lane is an integration lane, so its own untagged commits are its own.
+	r = newLaneRepo(t)
+	r.checkout("-b", "feature/top")
+	r.commit("top work", "top.go")
+	r.checkout("-b", "feature/n")
+	ffLane(r, "feature/n", "feature/nc", "n")
+	r.checkout("feature/top")
+	r.merge("feature/n", "Merge branch 'feature/n' into feature/top")
+	a, err = Attribute(context.Background(), r.open(), r.rev("main"), r.rev("HEAD"), "feature/top", r.rev("main"),
+		newFakeTitles(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = map[string]string{
+		"n/c1.go": "feature/nc", "n/c2.go": "feature/nc",
+		"n/l1.go": "feature/n", "n/l2.go": "feature/n", "n/l3.go": "feature/n",
+	}
+	if !reflect.DeepEqual(a.FileLane, want) || a.Partial {
+		t.Errorf("nested: FileLane = %v (partial %v), want %v", a.FileLane, a.Partial, want)
 	}
 }
 

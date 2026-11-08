@@ -146,25 +146,105 @@ func (w *walker) excludeWith(revs ...string) []string {
 	return revs
 }
 
-// walk reads one first-parent walk and records its direct commits oldest
-// first, recursing into each lane merge before the commits after it, so
-// records come in an order where a later commit is never read earlier.
+// segment is one stretch of a lane's first-parent walk, newest first. A
+// segment that ends at a fast-forward merge carries the lane it brings in
+// (ff), read between the older segment and this one.
+type segment struct {
+	commits []reviewdiff.Commit
+	merges  []string // lane name per lane merge, "" otherwise
+	sync    []bool
+	files   map[string][]string
+	ff      *ffMerge
+}
+
+// ffMerge is a merge of the walked lane into lane name, made on that lane,
+// to which the walked lane then fast-forwarded: the commits reachable from
+// first and not from second are that lane's work, and the walked lane's
+// own history goes on from second.
+type ffMerge struct {
+	name, first, second string
+}
+
+// walk reads one lane's first-parent history and records its direct
+// commits oldest first, recursing into each lane merge before the commits
+// after it, so a later commit is never recorded before an earlier one. A
+// fast-forward merge (ffInto) splits the walk: the history behind its
+// first parent is walked as the `into` lane and the walk goes on from its
+// second parent — one FirstParentWalk per segment.
 func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude []string) error {
-	if w.commitsLeft <= 0 {
-		w.partial = true
-		return nil
+	if lane.top {
+		lane.integration = true
 	}
+	var segs []segment
+	for tip != "" {
+		if w.commitsLeft <= 0 {
+			w.partial = true
+			break
+		}
+		seg, next, err := w.readSegment(ctx, lane, tip, exclude)
+		if err != nil {
+			return err
+		}
+		segs = append(segs, seg)
+		tip = next
+	}
+	for s := len(segs) - 1; s >= 0; s-- {
+		seg := segs[s]
+		if seg.ff != nil {
+			if err := w.walkLane(ctx, seg.ff.name, seg.ff.first, w.excludeWith(seg.ff.second)); err != nil {
+				return err
+			}
+		}
+		for i := len(seg.commits) - 1; i >= 0; i-- {
+			c := seg.commits[i]
+			switch {
+			case seg.sync[i]:
+			case seg.merges[i] != "":
+				if err := w.walkLane(ctx, seg.merges[i], c.Parents[1], w.excludeWith(c.Parents[0])); err != nil {
+					return err
+				}
+			case len(c.Parents) < 2:
+				w.seq++
+				w.records = append(w.records, record{seq: w.seq, lane: lane, subject: c.Subject, files: seg.files[c.SHA]})
+			}
+		}
+	}
+	return nil
+}
+
+// readSegment reads tip's first-parent history up to the first
+// fast-forward merge (or the bounds) and classifies its merges; next is
+// where the lane's walk goes on ("" = done).
+func (w *walker) readSegment(ctx context.Context, lane *walkLane, tip string, exclude []string) (segment, string, error) {
 	commits, err := w.repo.FirstParentWalk(ctx, tip, exclude, w.commitsLeft+1)
 	if err != nil {
-		return err
+		return segment{}, "", err
+	}
+	var seg segment
+	next := ""
+	for i, c := range commits {
+		if i == w.commitsLeft {
+			break
+		}
+		if len(c.Parents) < 2 {
+			continue
+		}
+		if into, ok := ffInto(c.Subject, lane.branch); ok {
+			seg.ff = &ffMerge{name: into, first: c.Parents[0], second: c.Parents[1]}
+			next = c.Parents[1]
+			lane.integration = true
+			commits = commits[:i]
+			w.commitsLeft-- // the merge itself
+			break
+		}
 	}
 	if len(commits) > w.commitsLeft {
 		commits, w.partial = commits[:w.commitsLeft], true
 	}
 	w.commitsLeft -= len(commits)
-
-	merges := make([]string, len(commits)) // lane name per lane merge, "" otherwise
-	isSync := make([]bool, len(commits))
+	seg.commits = commits
+	seg.merges = make([]string, len(commits))
+	seg.sync = make([]bool, len(commits))
 	direct := 0
 	for i, c := range commits {
 		if len(c.Parents) < 2 {
@@ -174,46 +254,34 @@ func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude [
 		if w.defaultTip != "" {
 			sync, err := w.repo.IsAncestor(ctx, c.Parents[1], w.defaultTip)
 			if err != nil {
-				return err
+				return segment{}, "", err
 			}
 			if sync {
-				isSync[i] = true
+				seg.sync[i] = true
 				continue
 			}
 		}
-		merges[i] = mergeLaneName(c.Subject, lane.branch)
+		seg.merges[i], _ = parseMerge(c.Subject)
 		lane.integration = true
 	}
-	if lane.top {
-		lane.integration = true
-	}
-	var files map[string][]string
 	if direct > 0 {
-		if files, err = w.repo.CommitFiles(ctx, tip, exclude, direct); err != nil {
-			return err
+		if seg.files, err = w.repo.CommitFiles(ctx, tip, exclude, direct); err != nil {
+			return segment{}, "", err
 		}
 	}
-	for i := len(commits) - 1; i >= 0; i-- {
-		c := commits[i]
-		switch {
-		case isSync[i]:
-		case merges[i] != "":
-			if w.lanesLeft <= 0 {
-				w.partial = true
-				continue
-			}
-			w.lanesLeft--
-			child := &walkLane{name: merges[i], branch: mergeBranch(merges[i])}
-			w.lanes = append(w.lanes, child)
-			if err := w.walk(ctx, child, c.Parents[1], w.excludeWith(c.Parents[0])); err != nil {
-				return err
-			}
-		case len(c.Parents) < 2:
-			w.seq++
-			w.records = append(w.records, record{seq: w.seq, lane: lane, subject: c.Subject, files: files[c.SHA]})
-		}
+	return seg, next, nil
+}
+
+// walkLane walks a merged lane, within the lane bound.
+func (w *walker) walkLane(ctx context.Context, name, tip string, exclude []string) error {
+	if w.lanesLeft <= 0 {
+		w.partial = true
+		return nil
 	}
-	return nil
+	w.lanesLeft--
+	child := &walkLane{name: name, branch: mergeBranch(name)}
+	w.lanes = append(w.lanes, child)
+	return w.walk(ctx, child, tip, exclude)
 }
 
 func mergeBranch(name string) string {
@@ -373,24 +441,30 @@ var (
 	scopeRe    = regexp.MustCompile(`^\w+\(([^)]+)\)!?:`)
 )
 
-// mergeLaneName is the lane a merge's subject names (§2.1): the source
-// branch, or the `into` target when the source is the walked lane's own
-// branch (the walked branch fast-forwarded to a merge made on that lane);
-// "?" when the subject names no branch.
-func mergeLaneName(subject, walked string) string {
+// parseMerge reads a merge's subject (§2.1): the merged branch ("?" when
+// the subject names none) and the `into` target when it names one.
+func parseMerge(subject string) (source, into string) {
 	if m := mergePRRe.FindStringSubmatch(subject); m != nil {
-		return m[1]
+		return m[1], ""
 	}
 	if m := mergeBranchRe.FindStringSubmatch(subject); m != nil {
-		if walked != "" && m[1] == walked && m[2] != "" {
-			return m[2]
-		}
-		return m[1]
+		return m[1], m[2]
 	}
 	if m := mergeBareRe.FindStringSubmatch(subject); m != nil {
-		return m[1]
+		return m[1], ""
 	}
-	return unparsedLane
+	return unparsedLane, ""
+}
+
+// ffInto reports a fast-forward merge on the walk of branch walked: a
+// merge of walked into another branch, made on that branch, which walked
+// then fast-forwarded to. into is that branch.
+func ffInto(subject, walked string) (into string, ok bool) {
+	if walked == "" {
+		return "", false
+	}
+	source, into := parseMerge(subject)
+	return into, source == walked && into != "" && into != walked
 }
 
 // commitTag is a direct commit's tag on an integration lane, first match
