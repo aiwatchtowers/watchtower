@@ -9,6 +9,7 @@ struct KDFVectors: Codable, Equatable {
     var recordNames: [String: String]
     var sas: String
     var linkCodeTag: String
+    var ephemeralRelayKeys: EphemeralRelayVectors
 
     init(keys k: E2EFixtureKeys) throws {
         deviceID = k.deviceID.uuidString
@@ -31,6 +32,27 @@ struct KDFVectors: Codable, Equatable {
         ]
         sas = k.sas()
         linkCodeTag = KeyDerivation.linkCodeTag(linkNonce: k.linkNonce)
+        ephemeralRelayKeys = try EphemeralRelayVectors(keys: k)
+    }
+}
+
+/// The `wt/relay/v2/` keys of the fixture's ephemeral pair, with the two ephemeral public keys, as hex.
+struct EphemeralRelayVectors: Codable, Equatable {
+    var hubEphemeralPublic: String
+    var deviceEphemeralPublic: String
+    var keys: [String: String]
+
+    init(keys k: E2EFixtureKeys) throws {
+        hubEphemeralPublic = k.hubEph.publicKey.rawRepresentation.hexString
+        deviceEphemeralPublic = k.devEph.publicKey.rawRepresentation.hexString
+        var derived = [String: String]()
+        for epoch: UInt32 in [1, 2] {
+            for direction in RelayDirection.allCases {
+                derived["\(direction.rawValue)/\(epoch)"] = try k.ephemeralRelayKey(direction, epoch)
+                    .withUnsafeBytes { Data($0) }.hexString
+            }
+        }
+        keys = derived
     }
 }
 
@@ -49,6 +71,51 @@ final class E2EKeyDerivationTests: XCTestCase {
         XCTAssertEqual(try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 1), try key(k.devKX, k.hubKX.publicKey, .phoneToHub, 1))
         XCTAssertNotEqual(try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 1), try key(k.hubKX, k.devKX.publicKey, .hubToPhone, 1))
         XCTAssertNotEqual(try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 1), try key(k.hubKX, k.devKX.publicKey, .phoneToHub, 2))
+    }
+
+    /// The frozen `ephemeralRelayKeys` block of `kdf.json`, which the Go hub reads too.
+    func testEphemeralRelayKeyVector() throws {
+        let k = try E2EFixtureKeys()
+        let url = E2EFixtures.directory.appendingPathComponent("kdf.json")
+        let frozen = try JSONDecoder().decode(KDFVectors.self, from: Data(contentsOf: url)).ephemeralRelayKeys
+        XCTAssertEqual(try EphemeralRelayVectors(keys: k), frozen)
+        XCTAssertEqual(Set(frozen.keys.keys), ["p2h/1", "h2p/1", "p2h/2", "h2p/2"])
+    }
+
+    func testEphemeralRelayKeysAgreeAndBindEveryInput() throws {
+        let k = try E2EFixtureKeys()
+        let base = try k.ephemeralRelayKey(.phoneToHub, 1)
+        XCTAssertEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, phoneSide: true))
+        XCTAssertNotEqual(base, try KeyDerivation.relayKey(
+            agreementPrivate: k.hubKX, peerPublic: k.devKX.publicKey, linkNonce: k.linkNonce,
+            hubID: k.hubID, deviceID: k.deviceID, epoch: 1, direction: .phoneToHub))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.hubToPhone, 1))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 2))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, hubEph: .init()))
+        XCTAssertNotEqual(base, try k.ephemeralRelayKey(.phoneToHub, 1, devEph: .init()))
+    }
+
+    /// u = 0 is a low-order point: X25519 with it is all zero, on the ephemeral half or the static half.
+    func testEphemeralRelayKeyRefusesAnAllZeroSharedSecret() throws {
+        let k = try E2EFixtureKeys()
+        let zero = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: Data(count: 32))
+        func derive(
+            peerEphemeral: Curve25519.KeyAgreement.PublicKey,
+            peerStatic: Curve25519.KeyAgreement.PublicKey,
+            hubEphemeralPublic: Data? = nil
+        ) throws -> SymmetricKey {
+            try KeyDerivation.ephemeralRelayKey(
+                ownEphemeral: k.hubEph, peerEphemeral: peerEphemeral, ownStatic: k.hubKX, peerStatic: peerStatic,
+                hubEphemeralPublic: hubEphemeralPublic ?? k.hubEph.publicKey.rawRepresentation,
+                deviceEphemeralPublic: peerEphemeral.rawRepresentation,
+                linkNonce: k.linkNonce, hubID: k.hubID, deviceID: k.deviceID, epoch: 1, direction: .phoneToHub)
+        }
+        XCTAssertThrowsError(try derive(peerEphemeral: zero, peerStatic: k.devKX.publicKey))
+        XCTAssertThrowsError(try derive(peerEphemeral: k.devEph.publicKey, peerStatic: zero))
+        // The transcript's ephemeral publics are 32 bytes each.
+        XCTAssertThrowsError(try derive(
+            peerEphemeral: k.devEph.publicKey, peerStatic: k.devKX.publicKey,
+            hubEphemeralPublic: k.hubEph.publicKey.rawRepresentation.prefix(31)))
     }
 
     func testRecordNameIs26Base32CharactersAndBindsZoneKindAndID() {

@@ -80,7 +80,7 @@ type ActionRequest struct {
 // §4.2, sim rules 9-12; relay client spec §5). Fields by kind:
 //
 //	resend_from, skip_to           Seq
-//	epoch_ack                      Epoch
+//	epoch_ack                      Epoch (NextKX: the phone's offered relay key)
 //	transport_switch               Target (phone -> hub; Reason on entitlement_expired)
 //	transport_switched             Target, Epoch, By, At, Keybox (the new epoch's sealed keybox)
 //	transport_switch_rejected      Reason, RetryAfterS
@@ -106,6 +106,11 @@ type Control struct {
 	Reason *string `json:"reason,omitempty"`
 	// RetryAfterS is whole seconds (the relay proto's retry_after_s).
 	RetryAfterS *uint32 `json:"retry_after_s,omitempty"`
+	// NextKX, inside epoch_ack, is the phone's offered ephemeral X25519
+	// public key for its next relay keys (relay client Phase 5), unpadded
+	// base64url of 32 bytes. Absent from a phone that offers none; a hub that
+	// predates it ignores the key.
+	NextKX *string `json:"next_kx,omitempty"`
 }
 
 // Marker is the transport marker's payload for a transport_switched c
@@ -214,6 +219,21 @@ type KeyboxKeys struct {
 	PreviousEpoch    *uint32 `json:"previous_epoch,omitempty"`
 	PreviousDataKey  *string `json:"previous_data_key,omitempty"`
 	PreviousAlertKey *string `json:"previous_alert_key,omitempty"`
+	// RelayKX names the ephemeral pair of this epoch's wt/relay/v2/ relay
+	// keys; nil means the static wt/relay/v1/ keys (a phone with no offer, or
+	// a hub that predates Phase 5).
+	RelayKX *KeyboxRelayKX `json:"relay_kx,omitempty"`
+	// PreviousRelayKX is RelayKX of PreviousEpoch.
+	PreviousRelayKX *KeyboxRelayKX `json:"previous_relay_kx,omitempty"`
+}
+
+// KeyboxRelayKX is the ephemeral pair of one epoch's relay keys: the hub's
+// drawn hub_eph public and the phone's offered dev_eph public it answers,
+// unpadded base64url of 32 bytes each. The phone finds its private half by
+// DevicePub.
+type KeyboxRelayKX struct {
+	HubPub    string `json:"hub_pub"`
+	DevicePub string `json:"device_pub"`
 }
 
 // Keybox is the plain payload of a keybox: the grant plus, once the owner

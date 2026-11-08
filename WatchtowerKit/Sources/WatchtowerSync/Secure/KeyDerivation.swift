@@ -31,6 +31,56 @@ public enum KeyDerivation {
         return shared.hkdfDerivedSymmetricKey(using: SHA256.self, salt: linkNonce, sharedInfo: info, outputByteCount: 32)
     }
 
+    /// Bytes of each ephemeral public key in the `wt/relay/v2/` transcript.
+    public static let ephemeralPublicKeyLength = 32
+
+    /// The weekly relay key of a phone that offered an ephemeral key (`wt/relay/v2/`, relay client Phase 5):
+    /// ikm = X25519(hub_eph, dev_eph) ‖ X25519(hub_kx, dev_kx), salt = linkNonce,
+    /// info = "wt/relay/v2/" ‖ dir ‖ 0x00 ‖ hub_id(16) ‖ device_id(16) ‖ epoch u32 BE ‖ hub_eph_pub(32)
+    ///   ‖ dev_eph_pub(32); HKDF-SHA256, 32 bytes. Either side passes its own private halves and the peer's publics;
+    /// the two ephemeral publics always go hub first. An all-zero shared secret is refused.
+    /// The parameters mirror the Go hub's `secure.EphemeralRelayKey` one for one.
+    public static func ephemeralRelayKey( // swiftlint:disable:this function_parameter_count
+        ownEphemeral: Curve25519.KeyAgreement.PrivateKey,
+        peerEphemeral: Curve25519.KeyAgreement.PublicKey,
+        ownStatic: Curve25519.KeyAgreement.PrivateKey,
+        peerStatic: Curve25519.KeyAgreement.PublicKey,
+        hubEphemeralPublic: Data,
+        deviceEphemeralPublic: Data,
+        linkNonce: Data,
+        hubID: UUID,
+        deviceID: UUID,
+        epoch: UInt32,
+        direction: RelayDirection
+    ) throws -> SymmetricKey {
+        guard hubEphemeralPublic.count == ephemeralPublicKeyLength,
+              deviceEphemeralPublic.count == ephemeralPublicKeyLength
+        else { throw E2EError.badEphemeralPublicKey }
+        var ikm = try sharedSecretBytes(ownEphemeral, peerEphemeral)
+        var staticShared = try sharedSecretBytes(ownStatic, peerStatic)
+        ikm.append(staticShared)
+        staticShared.resetBytes(in: 0 ..< staticShared.count)
+        defer { ikm.resetBytes(in: 0 ..< ikm.count) }
+        var info = Data("wt/relay/v2/\(direction.rawValue)".utf8)
+        info.append(0)
+        info.append(WireBytes.bytes(of: hubID))
+        info.append(WireBytes.bytes(of: deviceID))
+        WireBytes.append(epoch, to: &info)
+        info.append(hubEphemeralPublic)
+        info.append(deviceEphemeralPublic)
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: ikm), salt: linkNonce, info: info, outputByteCount: 32)
+    }
+
+    /// The raw X25519 secret; the all-zero one (a low-order peer key) throws.
+    private static func sharedSecretBytes(
+        _ own: Curve25519.KeyAgreement.PrivateKey, _ peer: Curve25519.KeyAgreement.PublicKey
+    ) throws -> Data {
+        let shared = try own.sharedSecretFromKeyAgreement(with: peer).withUnsafeBytes { Data($0) }
+        guard shared.contains(where: { $0 != 0 }) else { throw E2EError.allZeroSharedSecret }
+        return shared
+    }
+
     /// base32(HMAC-SHA256(K_meta, "wt/name/v1" ‖ zone u8 ‖ kind_len u8 ‖ kind ‖ id utf8)[0..<16]),
     /// 26 lowercase characters. Kinds longer than 255 bytes do not exist; they are clamped, not trapped.
     public static func recordName(metaKey: SymmetricKey, zone: CloudZoneID, kind: String, id: String) -> String {

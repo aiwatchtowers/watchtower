@@ -115,6 +115,41 @@ final class HubContractFixtureTests: XCTestCase {
         XCTAssertEqual(decoded.kind.rawValue, "future_control")
     }
 
+    /// `epoch_ack` with and without the phone's next relay key offer (`next_kx`), byte-compatible with Go.
+    func testEpochAckCasesCarryTheOptionalOffer() throws {
+        let cases = try XCTUnwrap(load()["epoch_ack"])
+        XCTAssertEqual(cases.compactMap { $0["name"] as? String }, ["epoch_ack_with_offer", "epoch_ack_without_offer"])
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let control = try RelayCoder.makeDecoder().decode(ControlPayload.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            XCTAssertEqual(control.kind, .epochAck, name)
+            XCTAssertEqual(control.epoch, (kit["epoch"] as? NSNumber)?.uint32Value, name)
+            XCTAssertEqual(control.nextKX, kit["next_kx"] as? String, name)
+            try assertSameJSON(RelayCoder.makeEncoder().encode(control), try XCTUnwrap(fixtureCase["expect"]), name)
+        }
+    }
+
+    /// A keybox with `relay_kx` and `previous_relay_kx`, and an old-shape keybox that decodes with both nil.
+    func testKeyboxCasesCarryTheOptionalRelayKX() throws {
+        let cases = try XCTUnwrap(load()["keybox"])
+        XCTAssertEqual(cases.compactMap { $0["name"] as? String }, ["keybox_with_relay_kx", "keybox_old_shape"])
+        func pair(_ value: Any?) -> KeyboxRelayKX? {
+            guard let object = value as? [String: String], let hub = object["hub_pub"], let device = object["device_pub"]
+            else { return nil }
+            return KeyboxRelayKX(hubPub: hub, devicePub: device)
+        }
+        for fixtureCase in cases {
+            let name = try XCTUnwrap(fixtureCase["name"] as? String)
+            let keybox = try RelayCoder.makeDecoder().decode(Keybox.self, from: bytes(try XCTUnwrap(fixtureCase["json"])))
+            let kit = try XCTUnwrap(fixtureCase["kit"] as? [String: Any], name)
+            let keys = try XCTUnwrap(keybox.keys, name)
+            XCTAssertEqual(keys.relayKX, pair(kit["relay_kx"]), name)
+            XCTAssertEqual(keys.previousRelayKX, pair(kit["previous_relay_kx"]), name)
+            try assertSameJSON(RelayCoder.makeEncoder().encode(keybox), try XCTUnwrap(fixtureCase["expect"]), name)
+        }
+    }
+
     private func linkCase(_ name: String) throws -> [String: Any] {
         let cases = try XCTUnwrap(load()["link_payload"])
         return try XCTUnwrap(cases.first { $0["name"] as? String == name }, name)
