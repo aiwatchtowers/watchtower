@@ -306,6 +306,29 @@ func TestRun_ChaptersRedoesOnlyThose(t *testing.T) {
 	assert.Equal(t, StateCached, states[keys[1][0]].State)
 }
 
+// --chapter: a chapter neither redone nor cached gets a not_started event,
+// so a card left from an earlier run is told it has no description.
+func TestRun_ChaptersUndescribedOthersNotStarted(t *testing.T) {
+	d := dirsDiff(20)
+	m := dirsMap(d)
+	keys := batchKeysOf(Pack(m, d, nil))
+	store := newMemStore()
+	_, err := fastPipeline(&keyGen{fail: map[string]bool{keys[0][0]: true}}).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
+	require.NoError(t, err)
+
+	ev := &events{}
+	o, err := fastPipeline(&keyGen{}).Run(context.Background(), store, m, d, nil, nil,
+		RunOptions{Chapters: []string{keys[1][0]}, Emit: ev.emit})
+	require.NoError(t, err)
+	states := ev.chapterStates()
+	for _, k := range keys[0] {
+		assert.Equal(t, StateNotStarted, states[k].State, k)
+	}
+	assert.Equal(t, StateOK, states[keys[1][0]].State)
+	assert.Equal(t, StateCached, states[keys[2][0]].State)
+	assert.ElementsMatch(t, keys[0], o.Incomplete)
+}
+
 // --summary needs every part; with them it makes only the summary call.
 func TestRun_SummaryOnly(t *testing.T) {
 	d := dirsDiff(12)

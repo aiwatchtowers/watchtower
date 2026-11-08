@@ -277,11 +277,14 @@ func (r *run) plan(units []unit, single bool) ([]unit, error) {
 		redo[u.ch.Key] = true
 	}
 	for _, ch := range r.m.Chapters {
+		_, packable := r.hashes[ch.Key]
 		if desc, ok := cached[ch.Key]; ok && !redo[ch.Key] {
 			r.descs[ch.Key] = desc
 			r.opt.Emit(chapterEvent(StateCached, desc))
 		} else if desc, ok := r.descs[ch.Key]; ok { // not shown: described without a call
 			r.opt.Emit(chapterEvent(StateOK, desc))
+		} else if packable && !redo[ch.Key] { // the --chapter form left it undescribed
+			r.opt.Emit(Event{Event: "chapter", Key: ch.Key, State: StateNotStarted})
 		}
 	}
 	return todo, nil
