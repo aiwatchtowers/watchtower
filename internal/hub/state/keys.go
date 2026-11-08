@@ -114,6 +114,15 @@ func InsertEpoch(tx *sql.Tx, e Epoch) error {
 	return nil
 }
 
+// StampEpochOnRelay sets epoch's on_relay to onRelay when it has none, in the
+// caller's transaction; a stamped row is left as it is.
+func StampEpochOnRelay(tx *sql.Tx, epoch uint32, onRelay bool) error {
+	if _, err := tx.Exec(`UPDATE hub_epochs SET on_relay = ? WHERE epoch = ? AND on_relay IS NULL`, onRelay, int64(epoch)); err != nil {
+		return fmt.Errorf("stamping an epoch's on_relay: %w", err)
+	}
+	return nil
+}
+
 // RetireEpoch stamps epoch as retired at at, its relay-lane keys accepted
 // until after.
 func RetireEpoch(tx *sql.Tx, epoch uint32, at, after time.Time) error {

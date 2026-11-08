@@ -361,6 +361,13 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		tr := h.tr
 		h.kr.SetRelayRule(func(*sql.Tx) (bool, error) { return tr.Kind() == transport.KindRelay, nil })
 	}
+	// The rule is known now (the switcher stored its transport): a current
+	// epoch with no on_relay (a new sidecar's epoch 1) takes the hub's, so it
+	// is erased at its retention end on the relay and an offline unlink reads
+	// it (a headless sidecar has no hub_meta.transport).
+	if err := h.kr.StampCurrentEpoch(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
+	}
 	h.kr.SetHeld(h.isHeld)
 	sweepTemps(o, st)
 	if o.DB != nil {

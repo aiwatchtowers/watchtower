@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/hub/transport/memfake"
 	"watchtower/internal/hub/transport/relay/relayv1"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/policy/policytest"
 )
 
 // The hub's side of the weekly relay keys (relay client Phase 5): the
@@ -333,6 +334,26 @@ func TestReadInsideASwitchToICloudWritesNoMark(t *testing.T) {
 	}
 }
 
+// A switch to iCloud that commits between the read's plain decision (on the
+// relay, nobody served) and its write transaction leaves no mark: "on the
+// relay" is decided again under the write lock.
+func TestSwitchToICloudBetweenReadAndWriteLeavesNoMark(t *testing.T) {
+	r := newRelayKeysRig(t, "relay")
+	if err := r.kr.RotateToward(identity.ReasonTransportSwitch, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	servingNobodyBeforeWrite = func() {
+		if err := r.kr.RotateToward(identity.ReasonTransportSwitch, false, nil); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { servingNobodyBeforeWrite = nil })
+	r.read()
+	if _, ok := r.mark(); ok {
+		t.Fatal("a read that began on the relay set the mark after the switch to iCloud committed")
+	}
+}
+
 func TestRestartWithNoReaderMetaDoesNotRotate(t *testing.T) {
 	r := newRelayKeysRig(t, "relay")
 	r.read()
@@ -546,5 +567,63 @@ func TestStuckRotationLogsOncePerDay(t *testing.T) {
 	cn.check(c.kr, c.st, c.clock())
 	if buf.Len() != 0 {
 		t.Fatalf("a cloudkit hub logged: %q", buf.String())
+	}
+}
+
+// A headless hub's start stamps its sidecar's epoch 1 from its transport (a
+// headless hub never writes hub_meta.transport): an unlink run later with no
+// hub running then rotates on the relay too, keeping the other phones' offers.
+func TestOfflineUnlinkOnAHeadlessSidecarStaysOnTheRelay(t *testing.T) {
+	policytest.Set(t, nil)
+	dir := shortDir(t)
+	setMeta(t, dir, state.MetaEnabled, "1")
+	h := newRig(t, dir)
+	h.start(h.options())
+	h.waitState(StateRunning, "")
+	if err := h.stop(); err != nil {
+		t.Fatal(err)
+	}
+	gone := linkPhoneDirectly(t, dir)
+	kept := linkPhoneDirectly(t, dir)
+	st, err := state.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, ok, err := st.Meta(state.MetaTransport); err != nil || ok {
+		t.Fatalf("a headless hub wrote hub_meta.transport (%v, %v)", ok, err)
+	}
+	for _, ph := range []*hubtest.Phone{gone, kept} {
+		if _, err := ph.Offer(); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.WithTx(context.Background(), func(tx *sql.Tx) error {
+			_, err := state.SetKXOffer(tx, ph.ID().String(), ph.Offered(), 1)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := UnlinkOffline(dir, st, gone.ID().String(), nil); err != nil {
+		t.Fatal(err)
+	}
+	epochs, err := st.Epochs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(epochs) != 2 {
+		t.Fatalf("%d epochs after the unlink, want 2", len(epochs))
+	}
+	for _, e := range epochs {
+		if e.OnRelay == nil || !*e.OnRelay {
+			t.Fatalf("epoch %d on_relay %v, want true (the headless hub runs on the relay)", e.Epoch, e.OnRelay)
+		}
+	}
+	devs, err := st.Devices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devs) != 1 || devs[0].KXOffer == nil {
+		t.Fatalf("the remaining phone lost its offer in the offline unlink: %+v", devs)
 	}
 }
