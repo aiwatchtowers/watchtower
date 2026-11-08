@@ -37,10 +37,43 @@ package enum AutomationScopeChoice: Hashable, Sendable {
 package struct AutomationNewFlow: Equatable, Sendable {
     package var fixedScope: AutomationScopeChoice?
     package var composerPrefill: String?
+    /// **+ New Artifact…** from an Inbox folder: the folder the saved
+    /// automation is routed to; nil (the root, or any other way in) sends
+    /// no route.
+    package var route: InboxNewArtifactRoute?
 
-    package init(fixedScope: AutomationScopeChoice? = nil, composerPrefill: String? = nil) {
+    package init(
+        fixedScope: AutomationScopeChoice? = nil,
+        composerPrefill: String? = nil,
+        route: InboxNewArtifactRoute? = nil
+    ) {
         self.fixedScope = fixedScope
         self.composerPrefill = composerPrefill
+        self.route = route
+    }
+}
+
+/// The Inbox folder a new automation goes to once saved (its id, and its
+/// title for the lines that name it).
+package struct InboxNewArtifactRoute: Equatable, Hashable, Sendable {
+    package let folderID: Int64
+    package let title: String
+
+    package init(folderID: Int64, title: String) {
+        self.folderID = folderID
+        self.title = title
+    }
+}
+
+/// A saved automation whose route did not land: the folder it was meant
+/// for and why ("Saved. The folder was not created: <reason>").
+package struct InboxRouteFailure: Equatable, Sendable {
+    package let route: InboxNewArtifactRoute
+    package let reason: String
+
+    package init(route: InboxNewArtifactRoute, reason: String) {
+        self.route = route
+        self.reason = reason
     }
 }
 

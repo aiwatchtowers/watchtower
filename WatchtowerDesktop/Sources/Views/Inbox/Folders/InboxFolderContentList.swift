@@ -12,8 +12,11 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
     var onSelect: (String?) -> Void = { _ in }
     /// The empty root's and an empty owner folder's **New Artifact…**.
     var onNewArtifact: () -> Void = {}
-    /// A row's own ⋯ press (the Idea finder's Find Ideas in Past Messages…).
+    /// A row's own ⋯ press (the Idea finder's Find Ideas in Past Messages…),
+    /// or a press in an artifact row's context menu.
     var onMenu: (String, InboxMenuCommand) -> Void = { _, _ in }
+    /// An artifact row's context menu: its artifact ⋯ (spec "Menus").
+    var contextMenu: (InboxFolderListRow) -> [InboxMenuEntry] = { _ in [] }
     /// The empty state's readiness line and actions.
     var emptyState: EmptyStateContext = .neutral
     let emptyExtra: EmptyExtra
@@ -23,6 +26,7 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
         onSelect: @escaping (String?) -> Void = { _ in },
         onNewArtifact: @escaping () -> Void = {},
         onMenu: @escaping (String, InboxMenuCommand) -> Void = { _, _ in },
+        contextMenu: @escaping (InboxFolderListRow) -> [InboxMenuEntry] = { _ in [] },
         emptyState: EmptyStateContext = .neutral,
         @ViewBuilder emptyExtra: () -> EmptyExtra
     ) {
@@ -30,6 +34,7 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
         self.onSelect = onSelect
         self.onNewArtifact = onNewArtifact
         self.onMenu = onMenu
+        self.contextMenu = contextMenu
         self.emptyState = emptyState
         self.emptyExtra = emptyExtra()
     }
@@ -59,7 +64,7 @@ struct InboxFolderContentList<EmptyExtra: View>: View {
                         .selectionDisabled()
                         .listRowSeparator(.hidden)
                     ForEach(content.rows) { row in
-                        InboxFolderListRowView(row: row) { onMenu(row.id, $0) }
+                        InboxFolderListRowView(row: row, contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
                             .tag(Optional(row.id))
                             .listRowSeparator(.hidden)
                     }
@@ -89,7 +94,9 @@ extension InboxFolderContentList where EmptyExtra == EmptyView {
 /// line under it.
 struct InboxFolderListRowView: View {
     let row: InboxFolderListRow
-    /// A press in the row's own ⋯ (`row.menu`).
+    /// The context menu when the row has no ⋯ of its own (an artifact's ⋯).
+    var contextEntries: [InboxMenuEntry] = []
+    /// A press in the row's own ⋯ (`row.menu`) or its context menu.
     var onMenu: (InboxMenuCommand) -> Void = { _ in }
 
     var body: some View {
@@ -126,7 +133,8 @@ struct InboxFolderListRowView: View {
         .padding(.vertical, Spacing.small)
         .accessibilityElement(children: row.menu.isEmpty ? .combine : .contain)
         .contextMenu {
-            if !row.menu.isEmpty { InboxMenuItems(entries: row.menu, onCommand: onMenu) }
+            let entries = row.menu.isEmpty ? contextEntries : row.menu
+            if !entries.isEmpty { InboxMenuItems(entries: entries, onCommand: onMenu) }
         }
     }
 }

@@ -179,6 +179,23 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
         XCTAssertFalse(reason?.contains(RestartBoom().localizedDescription) ?? true)
     }
 
+    /// Needs approval's ⋯ Turn Off through the app's own hook (B Task 14):
+    /// the feature write landed, so the menu shows no failure.
+    func testNeedsApprovalMenuTurnOffThroughTheAppIsNoFailure() async throws {
+        let runner = FeaturesRunner(["approval-cards": "enabled"])
+        let (appState, daemon) = make(runner)
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        appState.initActionStrip(dbPool: pool)
+        let menu = try XCTUnwrap(appState.inboxArtifactMenu)
+
+        await menu.performApprovals(.turnOff)
+
+        XCTAssertNil(menu.approvalsError)
+        XCTAssertEqual(runner.calls.filter { $0[1] != "list" }, [["features", "disable", "approval-cards"]])
+        XCTAssertEqual(daemon.restarts, 1)
+    }
+
     /// Needs approval's note Turn On is the built-in card's own: exactly
     /// `features enable approval-cards`, once, then one restart (off); with
     /// the feature on, the stopped built-in's resume and no restart.

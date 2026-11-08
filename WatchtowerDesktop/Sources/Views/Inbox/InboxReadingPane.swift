@@ -46,6 +46,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// The native row actions of an artifact's rows with a `ref`
     /// (`refHooks(_:)`, `InboxRefHooks`); the default draws none.
     private(set) var rowHooks = ArtifactRefHooks()
+    /// An automation card's ⋯ on its title row (`withArtifactMenu(_:)`).
+    private(set) var artifactMenu: InboxArtifactMenuState?
 
     init(
         item: InboxListItem?,
@@ -103,6 +105,14 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     func refHooks(_ hooks: ArtifactRefHooks) -> Self {
         var pane = self
         pane.rowHooks = hooks
+        return pane
+    }
+
+    /// This pane with the artifact ⋯ on an automation card's title row, and
+    /// a failed press's text under it.
+    func withArtifactMenu(_ menu: InboxArtifactMenuState?) -> Self {
+        var pane = self
+        pane.artifactMenu = menu
         return pane
     }
 
@@ -176,6 +186,18 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                 if card.priority == "high" {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
+                if let artifactMenu, !inApprovals {
+                    Spacer(minLength: Spacing.regular)
+                    InboxArtifactMenuButton(menu: artifactMenu)
+                }
+            }
+            if let error = artifactMenu?.error, !inApprovals {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Tone.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("inbox.artifactMenuError")
             }
             switch InboxCardLayout.of(card) {
             case .markdown:

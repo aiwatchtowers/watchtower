@@ -430,30 +430,65 @@ package final class InboxFolderMenuModel {
         if wasSelected, let parent { select(parent) }
     }
 
+    /// Sends automation `automationID`'s artifacts to folder `folderID`
+    /// (the artifact ⋯'s Move to Folder ▸, a save from **+ New Artifact…**):
+    /// one `route` at the read revision, never retried. Nil when it landed
+    /// (the tree re-read); else the reason, for the caller to show on its
+    /// own line — the menu shows only what concerns the menu (a lost race's
+    /// note, the missing CLI).
+    package func route(_ automationID: Int64, to folderID: Int64) async -> String? {
+        guard !isBusy else { return Self.routeBusy }
+        guard tree.revision >= 1 else { return Self.routeNotRead }
+        var reason: String?
+        await write(row: nil, onFailure: { error in
+            reason = error == .menuChanged ? Self.routeMenuChanged : (error.errorDescription ?? "")
+        }, { cli, revision in
+            _ = try await cli.route(automationID: automationID, to: .folder(folderID), expectRevision: revision)
+        })
+        return reason
+    }
+
+    /// A row ⋯ press the caller carried out failed (Needs approval's, from
+    /// the menu while another folder is open): its reason on that row, like
+    /// the menu's own refusals.
+    package func showRefusal(_ message: String, on folderID: Int64) {
+        refusal = InboxFolderMenuRefusal(folderID: folderID, message: message)
+    }
+
+    nonisolated package static let routeBusy = "another change to the Inbox menu is running — try again"
+    nonisolated package static let routeNotRead = "the Inbox menu is not read yet — try again"
+    nonisolated package static let routeMenuChanged = "the Inbox menu changed — it was reloaded, try again"
+
     /// One write at the read revision. Returns whether it landed. Never
     /// retried: a lost race re-reads once and sets the note; a refusal
     /// leaves the tree as it is; an undecodable answer may have landed, so
-    /// it re-reads and keeps the message.
+    /// it re-reads and keeps the message. With `onFailure` the refusal is
+    /// the caller's to show, not the menu's.
     @discardableResult
     private func write(
         row: Int64?,
         fromDraft: Bool = false,
+        onFailure: ((InboxFoldersCLIError) -> Void)? = nil,
         _ call: @escaping (InboxFoldersCLI, Int64) async throws -> Void
     ) async -> Bool {
         guard !isBusy, tree.revision >= 1 else { return false }
         guard let runner = runner() else {
             cliMissing = true
             setNote(.cliUnavailable)
+            onFailure?(.cliUnavailable)
             return false
         }
         cliMissing = false
         isBusy = true
-        refusal = nil
+        // A caller-shown write (a route) leaves the menu's own line alone.
+        if onFailure == nil { refusal = nil }
         defer { isBusy = false }
         do {
             try await call(InboxFoldersCLI(runner: runner), tree.revision)
         } catch {
-            await failed(InboxFoldersCLI.map(error), row: row, fromDraft: fromDraft)
+            let mapped = InboxFoldersCLI.map(error)
+            await failed(mapped, row: row, fromDraft: fromDraft, menuShowsRefusal: onFailure == nil)
+            onFailure?(mapped)
             return false
         }
         if fromDraft { draft = nil }
@@ -461,12 +496,15 @@ package final class InboxFolderMenuModel {
         return true
     }
 
-    private func failed(_ error: InboxFoldersCLIError, row: Int64?, fromDraft: Bool) async {
+    private func failed(
+        _ error: InboxFoldersCLIError, row: Int64?, fromDraft: Bool, menuShowsRefusal: Bool = true
+    ) async {
         switch error {
         case .menuChanged:
             await reload()
             setNote(.menuChanged)
         case let .refused(message):
+            guard menuShowsRefusal else { return }
             if fromDraft, draft != nil {
                 draft?.error = message
             } else {
@@ -478,6 +516,7 @@ package final class InboxFolderMenuModel {
         case .unexpectedAnswer:
             if fromDraft { draft = nil }
             await reload()
+            guard menuShowsRefusal else { return }
             refusal = InboxFolderMenuRefusal(folderID: row, message: error.errorDescription ?? "")
         }
     }
