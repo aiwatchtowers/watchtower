@@ -152,6 +152,55 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertEqual(vm.entrySelection, "ideas", "the entry stays selected in its folder")
     }
 
+    /// An artifact in the root, with `extra` below it.
+    private func rootWithArtifact(_ extra: @escaping (Database) throws -> Void) async throws
+        -> (vm: ActionStripViewModel, pool: DatabasePool, card: Int64) {
+        let pool = try pool()
+        let ids = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            let owner = try TestDatabase.insertAutomation(db, slug: "weekly", name: "Weekly mail roundup")
+            let run = try TestDatabase.insertAutomationRun(db, automationID: owner)
+            let card = try TestDatabase.insertAutomationOutput(
+                db, automationID: owner, runID: run, title: "Weekly mail roundup", createdAt: "2026-11-06T09:59:00Z")
+            try extra(db)
+            return (root: folders.root, card: card)
+        }
+        let vm = await read(pool, folder: ids.root)
+        await vm.selectEntry("artifact:\(ids.card)")
+        return (vm, pool, ids.card)
+    }
+
+    /// The selected artifact leaves and Idea finder is next: its list opens
+    /// as a click on it opens it.
+    func testSelectionMovingToALegacyEntryOpensItsList() async throws {
+        let inbox = try await rootWithArtifact { try TestDatabase.insertIdea($0, updatedAt: "2026-11-06T08:00:00Z") }
+        XCTAssertEqual(inbox.vm.folderEntries.map(\.id), ["artifact:\(inbox.card)", "ideas"])
+
+        await inbox.vm.markOutputDone(inbox.card)
+
+        XCTAssertEqual(inbox.vm.entrySelection, "ideas")
+        XCTAssertEqual(inbox.vm.legacyList, .ideas, "the pane shows the Ideas list, not \"Select a card\"")
+        XCTAssertEqual(inbox.vm.filter, .ideas)
+    }
+
+    /// The selected artifact leaves and a day is next: the day is selected
+    /// as a click selects it, its briefing's read mark written.
+    func testSelectionMovingToADaySelectsItAndMarksItRead() async throws {
+        let today = HomeFeedBuilder.dayString(NeedsApprovalFixtures.now, calendar: .current)
+        let inbox = try await rootWithArtifact { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U001")
+            try TestDatabase.insertBriefing(db, userID: "1:U001", date: today)
+        }
+        XCTAssertEqual(inbox.vm.folderEntries.map(\.id).sorted(), ["artifact:\(inbox.card)", "day:\(today)"])
+
+        await inbox.vm.markOutputDone(inbox.card)
+
+        XCTAssertEqual(inbox.vm.entrySelection, "day:\(today)")
+        XCTAssertEqual(inbox.vm.selection, .day(today))
+        let readAt = try await inbox.pool.read { try String.fetchOne($0, sql: "SELECT read_at FROM briefings") }
+        XCTAssertNotNil(readAt, "the day's read mark is written, as a click writes it")
+    }
+
     /// The folder read fails: the previous tree and entries stay, with
     /// today's strip-wide error line.
     func testFolderReadFailureKeepsPreviousTree() async throws {

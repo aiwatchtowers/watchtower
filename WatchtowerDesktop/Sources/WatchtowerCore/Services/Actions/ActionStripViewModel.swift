@@ -216,7 +216,8 @@ package final class ActionStripViewModel {
     /// reaction phase's last check), inside one read off the main thread. The
     /// only thing that can surface a row a subprocess (CLI action commands,
     /// the daemon's phases, an automation run) wrote. Reads only (STRIP-02).
-    /// A selected card that is gone now gives way to the next row still listed.
+    /// A selected card that is gone now gives way to the next row still listed;
+    /// a selected folder entry to the next entry, opened as a click opens it.
     ///
     /// Calls never overlap: a call while a read is under way waits for it and
     /// then for one more read, so every caller returns after a read that
@@ -236,6 +237,10 @@ package final class ActionStripViewModel {
         }
         refreshTask = task
         await task.value
+        if let opening = pendingEntryOpening {
+            pendingEntryOpening = nil
+            if selection == opening { await select(opening) }
+        }
         await onFeedRefreshed?()
     }
 
@@ -330,18 +335,37 @@ package final class ActionStripViewModel {
     /// Opens an entry: an artifact or a day writes its read mark on opening
     /// (`select`); a legacy list opens today's list for it.
     package func selectEntry(_ id: String?) async {
+        guard let opening = showEntry(id) else { return }
+        await select(opening)
+    }
+
+    /// `selectEntry` without its read mark: selects the entry, opens a
+    /// legacy entry's list, and returns the card whose opening `select`
+    /// still has to write (an artifact or a day), else nil.
+    private func showEntry(_ id: String?) -> InboxSelection? {
         entrySelection = id
-        guard let entry = selectedEntry else { return }
+        guard let entry = selectedEntry else { return nil }
         if let list = entry.legacyList {
             openLegacy(list)
-            return
+            return nil
         }
         switch entry {
-        case let .artifact(card): await select(.output(card.id))
-        case let .legacyDay(card): await select(.day(card.date))
-        case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice: selection = nil
+        case let .artifact(card):
+            selection = .output(card.id)
+            return .output(card.id)
+        case let .legacyDay(card):
+            selection = .day(card.date)
+            return .day(card.date)
+        case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice:
+            selection = nil
+            return nil
         }
     }
+
+    /// The entry `keepEntryListed` moved to inside a read, opened (its read
+    /// mark written) once the read is over: a write inside the read would
+    /// wait on the read's own refresh.
+    private var pendingEntryOpening: InboxSelection?
 
     /// Opens today's list for a legacy entry (its filter's list and pane).
     package func openLegacy(_ list: InboxFilter) {
@@ -374,8 +398,9 @@ package final class ActionStripViewModel {
             return
         }
         let below = before[(index + 1)...].first(where: listed.contains)
-        entrySelection = below ?? before[..<index].last(where: listed.contains)
-        if case let .artifact(card)? = selectedEntry { selection = .output(card.id) }
+        // The same path as a click: a legacy entry's list opens, an
+        // artifact or a day is selected and its read mark follows the read.
+        pendingEntryOpening = showEntry(below ?? before[..<index].last(where: listed.contains))
     }
 
     // MARK: - Needs approval's note
