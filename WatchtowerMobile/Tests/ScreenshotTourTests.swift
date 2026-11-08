@@ -750,7 +750,7 @@ final class ScreenshotTourTests: XCTestCase {
             try session.store.markRelayFeedParked(at: Date())
             try await poll(timeout: 20, {
                 let backlog = session.outboxBacklog
-                return backlog.feedParkedSince != nil && backlog.sent == sent && backlog.queued == (waiting ? 3 : 0)
+                return backlog.parked?.sent == sent && backlog.queued == (waiting ? 3 : 0)
                     && backlog.lastFlushStopped == waiting
             }, "the parked demo state landed")
             let host = ScreenshotHost(directory: dir, env: env, linking: linking)

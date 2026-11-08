@@ -34,8 +34,7 @@ struct NowView: View {
 
     /// The hub on screen, named as its Relay banner names it.
     private var macName: String {
-        let session = env.activeSession
-        return linking.links.first { $0.hubID == session.hubID }?.link.macName ?? session.hubName ?? ""
+        NowHubName.of(links: linking.links, hubID: env.activeSession.hubID, hubName: env.activeSession.hubName)
     }
 
     var body: some View {
@@ -253,7 +252,7 @@ private struct NowRelayBanner: View {
             wasPaying: center?.wasPaying ?? false, route: session.route, relayOnly: relayOnly(link, session),
             hubOnRelayAt: link?.hubOnRelayAt, unansweredSince: session.relayUnansweredSince, request: link?.transportRequest,
             pressRefusal: refused[session.hubID], lastUpdate: session.heartbeat?.updatedAt,
-            macName: link?.macName ?? session.hubName ?? "", now: now
+            macName: NowHubName.of(links: linking.links, hubID: session.hubID, hubName: session.hubName), now: now
         )
     }
 

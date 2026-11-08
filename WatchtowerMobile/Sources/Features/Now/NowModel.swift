@@ -29,7 +29,7 @@ struct NowModel {
     /// `backlog`: the session's outbox state (`OutboxBacklog`). Waiting to send and Not delivered take their rows
     /// and counts from the snapshot's own `pending` rows, so they always agree with each other; the parked row
     /// takes the parked mark and the `sent` count from the backlog, which needs no keys to read. `macName`: the
-    /// hub on screen, as its banner names it.
+    /// hub on screen (`NowHubName.of`, the banner's rule).
     init(
         snapshot: WorkbenchReplicaSnapshot,
         linked: Bool,
@@ -41,7 +41,7 @@ struct NowModel {
         outbox = NowOutboxRows(
             lastFlushStopped: backlog.lastFlushStopped, queued: OutboxItem.rows(snapshot.pending, .queued),
             undelivered: OutboxItem.rows(snapshot.pending, .undelivered), snapshot: snapshot, now: now, calendar: calendar,
-            parked: backlog.feedParkedSince == nil ? nil : NowParkedRow(macName: macName, sent: backlog.sent))
+            parked: backlog.parked.map { NowParkedRow(macName: macName, sent: $0.sent) })
         mac = .of(heartbeat: snapshot.heartbeat?.updatedAt, linked: linked, now: now)
         chip = MacStatusChipModel(macName: snapshot.heartbeat?.macName ?? "", state: mac.chipState(linked: linked), now: now)
         let openAsks = snapshot.openAsks()
@@ -151,6 +151,14 @@ struct NowParkedRow: Equatable {
 
     var toneUse: ToneUse {
         ToneUse(element: "parked feed row", tone: tone, role: .info)
+    }
+}
+
+/// The name Now gives the hub on screen, in its Relay banner and its parked row alike: the link's Mac name, else
+/// the switcher's (`HubSession.hubName`), else empty (each line has its own wording for no name).
+enum NowHubName {
+    static func of(links: [HubRow], hubID: String, hubName: String?) -> String {
+        links.first { $0.hubID == hubID }?.link.macName ?? hubName ?? ""
     }
 }
 

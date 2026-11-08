@@ -86,6 +86,13 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
         try await poll({ env.outboxBacklog == .empty }, "nothing waits, and the last flush went through")
+
+        // A parked feed (relay client Phase 5, S58) brings the written action into the session's backlog, and a
+        // read with no pending record takes it out again.
+        try env.store.markRelayFeedParked(at: Date())
+        try await poll({ env.outboxBacklog.parked?.sent == 1 }, "the session's backlog carries the parked feed")
+        try env.store.endRelayWait()
+        try await poll({ env.outboxBacklog == .empty }, "the merge ends it")
     }
 
     /// Every fetch sweeps (not only the boot's): a phone that stays up still withdraws an action the Mac never

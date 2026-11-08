@@ -199,7 +199,7 @@ final class NowWiringTests: XCTestCase {
         XCTAssertNil(
             NowModel(
                 snapshot: try demoSnapshot(now: now), linked: true, now: now,
-                backlog: OutboxBacklog(queued: 3, sent: 0, undelivered: 0, lastFlushStopped: true, feedParkedSince: nil)
+                backlog: OutboxBacklog(queued: 3, undelivered: 0, lastFlushStopped: true, parked: nil)
             ).outbox,
             "a snapshot without ordered rows (today's path) shows neither")
     }
@@ -318,6 +318,28 @@ final class NowWiringTests: XCTestCase {
         XCTAssertEqual(rows.parked?.toneUse, ToneUse(element: "parked feed row", tone: .secondary, role: .info))
         XCTAssertTrue(rows.toneUses.contains { $0.element == "parked feed row" && $0.tone == .secondary && $0.role == .info })
         XCTAssertFalse(rows.toneUses.contains { $0.tone == .orange })
+    }
+
+    /// Written actions alone are no backlog: an empty backlog still means nothing waits (Phase 1's meaning).
+    func testSentRowsCountOnlyWhileParked() async throws {
+        let store = try await replica(sent: 2, parked: false)
+        var backlog = OutboxBacklog.empty
+        backlog.apply(try await store.reader.read { try OutboxBacklog.Counts.read(store, $0) })
+        XCTAssertEqual(backlog, .empty)
+        try store.markRelayFeedParked(at: now)
+        backlog.apply(try await store.reader.read { try OutboxBacklog.Counts.read(store, $0) })
+        XCTAssertEqual(backlog.parked, OutboxBacklog.Parked(since: now, sent: 2))
+    }
+
+    /// The banner and the parked row name the hub on screen by one rule: its link's Mac name, else the switcher's.
+    func testTheRowAndTheBannerShareTheMacName() {
+        let record = LinkRecord(
+            hubID: "work", macName: "Work Mac", scope: .private, ownerName: "", userRecordName: "", nonce: "work",
+            dataShareURL: nil, relayShareURL: nil, deviceID: DemoSeed.device.deviceID, linkedAt: now)
+        let rows = [HubRow(link: record, flavor: nil, sortOrder: 0, state: .linked, linkedOn: now)]
+        XCTAssertEqual(NowHubName.of(links: rows, hubID: "work", hubName: "Work Mac (2)"), "Work Mac")
+        XCTAssertEqual(NowHubName.of(links: rows, hubID: "home", hubName: "Home Mac"), "Home Mac")
+        XCTAssertEqual(NowHubName.of(links: [], hubID: "home", hubName: nil), "")
     }
 
     func testParkedAndWaitingToSendShowTogether() throws {
