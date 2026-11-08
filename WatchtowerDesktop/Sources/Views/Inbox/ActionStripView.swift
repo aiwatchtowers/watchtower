@@ -459,14 +459,11 @@ struct ActionStripActionsView: View {
             trackCard: { track in InboxCardColumn { InboxCardPlaceholder(track: track, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0).padding(Spacing.page) }
         )
-        let host = InboxRefHooks.replyHost(item)
-        let handler = rowHandler(replyHost: host)
+        let handler = rowHandler(replyHost: InboxRefHooks.replyHost(item))
         let refHooks = refHooks(handler)
         let withHooks = pane
             .refHooks(refHooks.hooks)
-            .messageReply({ refHooks.messageReply($0) }, onPress: { id, press in
-                Self.dispatch(press, on: InboxRef(kind: .inboxItem, id: Int64(id)), handler)
-            })
+            .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
         return inApprovals ? withHooks.stackedInApprovals() : withHooks
     }
 
@@ -481,6 +478,11 @@ struct ActionStripActionsView: View {
                       onCommand: onCardAction,
                       onPress: { ref, press in Self.dispatch(press, on: ref, handler) })
         // swiftlint:enable trailing_closure
+    }
+
+    /// A message card's Reply presses, by `inbox_items` id.
+    private static func messageReplyPress(_ handler: InboxRowActionHandler) -> (Int, InboxRowPress) -> Void {
+        { id, press in dispatch(press, on: InboxRef(kind: .inboxItem, id: Int64(id)), handler) }
     }
 
     /// The Reply composer's own presses at once (keystrokes keep their
@@ -595,7 +597,10 @@ struct ActionStripActionsView: View {
 
     /// Today's list for a legacy entry, with its own reading pane.
     private func legacySplit(_ list: InboxFilter) -> some View {
-        InboxSplitView(
+        // The Messages entry's card has Reply while it stands in for Waiting for me.
+        let handler = rowHandler(replyHost: InboxRefHooks.replyHost(nil))
+        let refHooks = refHooks(handler)
+        return InboxSplitView(
             vm: vm,
             proposalCard: card,
             saveProposal: saveProposal,
@@ -625,6 +630,7 @@ struct ActionStripActionsView: View {
             TabEmptyState(copyKey: list.emptyCopyKey, context: emptyState)
                 .accessibilityIdentifier("inbox.emptyFilter")
         }
+        .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
     }
 
     // MARK: - The panes the header and the menu open
