@@ -268,7 +268,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d base changed (%s)\n", open.ID, open.Source)
 		}
 	default:
-		if err := database.UpdateReviewRoundTree(open.ID, tree); err != nil {
+		if err := database.UpdateReviewRoundTree(open.ID, tree, open.HeadSHA); err != nil {
 			return failReview(cmd, err)
 		}
 		open.TreeSHA = tree
