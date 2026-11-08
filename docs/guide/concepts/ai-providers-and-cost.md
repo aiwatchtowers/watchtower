@@ -59,7 +59,7 @@ changed: The reserve is set up in Settings now, and chats and automations can us
 area: setup
 level: power
 kind: tip
-since: next
+since: 0.27.0
 action: hotkey:settings
 -->
 

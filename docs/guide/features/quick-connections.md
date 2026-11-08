@@ -16,7 +16,7 @@ text: With **Ollama / Local** as the provider, the main chat can call your Quick
 area: assistant
 level: power
 kind: tip
-since: next
+since: 0.27.0
 action: nav:connections
 -->
 

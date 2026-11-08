@@ -60,7 +60,7 @@ text: The line under a session names the task's branch, such as **⎇ feature/lo
 area: development
 level: next
 kind: tip
-since: next
+since: 0.27.0
 action: nav:projects
 -->
 

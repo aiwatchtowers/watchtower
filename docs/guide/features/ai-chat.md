@@ -28,7 +28,7 @@ changed: New chats follow your preferred provider and move to the reserve at its
 area: assistant
 level: next
 kind: tip
-since: next
+since: 0.27.0
 action: nav:chat
 -->
 
@@ -39,7 +39,7 @@ text: On Claude or Codex, ask about public docs, products or news; the pages sho
 area: assistant
 level: next
 kind: feature
-since: next
+since: 0.27.0
 action: chat:What changed in the latest macOS release?
 -->
 
@@ -111,7 +111,7 @@ text: On Codex, attach a screenshot or photo to a message and ask about it; PDFs
 area: assistant
 level: next
 kind: tip
-since: next
+since: 0.27.0
 action: nav:chat
 -->
 

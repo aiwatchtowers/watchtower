@@ -25,7 +25,7 @@ text: With **Analytics** on, the Codex sessions a workbench starts count too: ti
 area: development
 level: next
 kind: feature
-since: next
+since: 0.27.0
 action: nav:projects
 -->
 
