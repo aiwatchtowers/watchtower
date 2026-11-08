@@ -106,6 +106,32 @@ final class SpecReviewThreadSurfaceTests: XCTestCase {
         XCTAssertEqual(notices, [SpecReviewThreadSurface.cannotReadFilesNotice])
     }
 
+    /// The row decides, not the name: claude with a row that reads no folder
+    /// runs without `--read-folder-ask` (the CLI would refuse the turn,
+    /// cmd/ai.go), its prompt says so, and the thread says so once.
+    func testANonOllamaProviderWithoutFolderReadingRunsFromTheDataAlone() async throws {
+        AIModelCatalog.shared.replaceProviders(ProviderCatalogFixture.providers().map { row in
+            var row = row
+            if row.id == "claude" { row.capabilities = ProviderCapabilities(tools: "watchtower", readFolder: "none") }
+            return row
+        })
+        let conv = try await conversation()
+        let spec = SpecReviewThreadSurface.spec(context: context(provider: .claude), conversationID: conv,
+                                                dbPool: dbManager.dbPool)
+        XCTAssertNil(spec.runOptions().readFolderAskID)
+        let ai = ScriptedAIService()
+        let engine = makeSurfaceEngine(spec, dbPool: dbManager.dbPool, ai: ai)
+        await turn(engine, ai, "Why?", reply: "Because.")
+        await turn(engine, ai, "And?", reply: "That's all.")
+        XCTAssertEqual(ai.calls.map(\.readFolderAskID), [nil, nil])
+        XCTAssertNil(ai.calls.first?.readFolder)
+        let system = try XCTUnwrap(ai.calls.first?.systemPrompt)
+        XCTAssertTrue(system.contains("You cannot read any file"))
+        XCTAssertFalse(system.contains("Read, Grep, Glob and LS"))
+        let notices = engine.messages.filter { $0.message.role == "system" }.map(\.message.text)
+        XCTAssertEqual(notices, [SpecReviewThreadSurface.cannotReadFilesNotice])
+    }
+
     /// A read-only shell sandbox row (codex's) gets the folder and the
     /// sandbox wording for the reviewer's folder.
     func testAShellSandboxProviderReadsTheReviewersFolder() async throws {
