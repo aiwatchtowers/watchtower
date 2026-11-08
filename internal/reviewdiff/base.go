@@ -146,9 +146,9 @@ func (r *Repo) DefaultTip(ctx context.Context) (string, error) {
 // first of origin/HEAD's target, main and master that exists on origin or
 // locally; "" when none does.
 func (r *Repo) DefaultBranch(ctx context.Context) (string, error) {
-	refs, err := r.defaultRefs(ctx)
-	if err != nil || len(refs) == 0 {
+	tip, err := r.DefaultTip(ctx)
+	if err != nil || tip == "" {
 		return "", err
 	}
-	return strings.TrimPrefix(refLabel(refs[0]), "origin/"), nil
+	return strings.TrimPrefix(refLabel(tip), "origin/"), nil
 }
