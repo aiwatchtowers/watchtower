@@ -79,20 +79,18 @@ package final class InboxArtifactMenuModel {
 
     /// The artifact ⋯ of `card`: a built-in has no Delete…, Needs
     /// approval's automation no Move to Folder, a built-in without Run Now
-    /// none; Turn Off / Turn On follows `enabled`.
+    /// none; Turn Off / Turn On follows `enabled` — a built-in's from its
+    /// `show` (its features), as the tab's card reads it.
     package func content(for card: AutomationOutputCard) -> InboxArtifactMenuContent {
         let automation = automation(card.automationID)
         let builtin = automation?.isBuiltin ?? false
-        let offersRunNow = if builtin, let automation {
-            hooks.automations()?.builtinCard(automation).detail?.runNow ?? false
-        } else {
-            true
-        }
+        let detail = automation.flatMap { builtin ? hooks.automations()?.builtinCard($0).detail : nil }
+        let offersRunNow = builtin ? detail?.runNow ?? false : true
         return InboxArtifactMenuContent(
             isBuiltin: builtin,
             offersRunNow: offersRunNow,
             movable: automation?.builtinID != InboxFolderQueries.needsApprovalBuiltinID,
-            isEnabled: automation?.enabled ?? true,
+            isEnabled: detail?.enabled ?? automation?.enabled ?? true,
             folders: folderMenu.content.rows,
             currentFolderID: folderMenu.tree.routes[card.automationID])
     }

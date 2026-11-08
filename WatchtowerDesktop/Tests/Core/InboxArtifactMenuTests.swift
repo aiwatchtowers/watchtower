@@ -101,7 +101,7 @@ final class InboxArtifactMenuTests: XCTestCase {
             return Data(("{\"id\":\(id),\"slug\":\"\(slug)\",\"scope\":\"personal\",\"path\":\"builtin:\(slug)\","
                 + "\"name\":\"\(slug)\",\"enabled\":true,\"runnable\":true,\"needs_confirmation\":false,"
                 + "\"recipe_text\":\"\",\"builtin\":{\"id\":\"\(slug)\",\"feature_ids\":\(features),"
-                + "\"run_now\":\(id == ids.builtin)}}").utf8)
+                + "\"enabled\":true,\"run_now\":\(id == ids.builtin)}}").utf8)
         }
         runner.on("run") { _ in Data(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#.utf8) }
         runner.on("route") { _ in
@@ -198,6 +198,24 @@ final class InboxArtifactMenuTests: XCTestCase {
         await menu.prepare([card(ids.builtin), card(ids.builtin, id: 950), card(ids.owner)])
         XCTAssertTrue(commands(menu.content(for: card(ids.builtin)).entries).contains("Run Now"))
         XCTAssertEqual(runner.invocations.filter { $0.count > 1 && $0[1] == "show" }.count, 1)
+    }
+
+    /// A built-in whose features are off (`show`'s `builtin.enabled`) while
+    /// its row still reads on: the ⋯ offers Turn On, as the tab's card does.
+    func testBuiltinTurnTitleFollowsItsShowNotTheRow() async {
+        let builtin = ids.builtin
+        runner.on("show") { _ in
+            Data(("{\"id\":\(builtin),\"slug\":\"track-my-threads\",\"scope\":\"personal\","
+                + "\"path\":\"builtin:track-my-threads\",\"name\":\"track-my-threads\",\"enabled\":true,"
+                + "\"runnable\":true,\"needs_confirmation\":false,\"recipe_text\":\"\",\"builtin\":{"
+                + "\"id\":\"track-my-threads\",\"feature_ids\":[\"tracks\"],\"enabled\":false,\"run_now\":true}}").utf8)
+        }
+        let menu = model()
+        XCTAssertEqual(menu.automation(ids.builtin)?.enabled, true, "the row still reads on")
+        await menu.prepare(card(ids.builtin))
+        let titles = commands(menu.content(for: card(ids.builtin)).entries)
+        XCTAssertTrue(titles.contains("Turn On"))
+        XCTAssertFalse(titles.contains("Turn Off"))
     }
 
     func testMoveToFolderListsTheTreeWithTheRouteChecked() async throws {
