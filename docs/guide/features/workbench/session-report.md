@@ -9,6 +9,16 @@ Three agents ran overnight. The progress line under each session name, the **Rep
 ## How it works
 
 ### The session report
+<!-- learn
+id: session-report-merged-share
+title: Count tasks already merged
+text: The progress line counts tasks whose branch is already merged above them apart, such as "3/32 · 25 merged".
+area: development
+level: next
+kind: tip
+since: next
+action: nav:projects
+-->
 
 Under the caption, Watchtower shows a progress line once it has read the report: for example "#314 · 14/15 · PR #147 open" for the target the session works on, its done tasks and its pull requests. The line refreshes every 15 seconds while the Workbench tab is on screen. If a refresh fails, the last line stays with "· stale" at the end.
 

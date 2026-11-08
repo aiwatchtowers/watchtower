@@ -53,6 +53,16 @@ In the title row's **…** menu, **Worktree Setup Command…** sets one shell co
 A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session. A session resumes in its worktree on a branch its own agent switched to there, including a detached HEAD, once Watchtower has seen the agent on it. If the worktree is on a branch the session never used, for example after you switched it by hand, the row says to start a new session.
 
 ### What the session line shows
+<!-- learn
+id: worktrees-session-line-branch
+title: See a session's branch and lanes
+text: The line under a session names the task's branch, such as **⎇ feature/login · 3 lanes**; hover for the folders.
+area: development
+level: next
+kind: tip
+since: next
+action: nav:projects
+-->
 
 The line under a session shows where its agent works: **main folder · main**, **⑂ name · branch** in a git worktree, or **worktree removed**. Until Watchtower knows the place, it shows the main folder and counts no lanes.
 
