@@ -174,6 +174,10 @@ package final class InboxFolderMenuModel {
     /// before the first read, or a database without the folder tables).
     package var isReadOnly: Bool { cliMissing || isBusy || tree.revision < 1 }
 
+    /// No `watchtower` binary at the last read: the menu's and the rows'
+    /// writes are off (plan "Failure paths").
+    package var isCLIMissing: Bool { cliMissing }
+
     /// The folder the Inbox shows (the root when none is selected).
     package var selectedFolderID: Int64 { selection ?? tree.root.id }
 

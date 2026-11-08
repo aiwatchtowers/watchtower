@@ -474,9 +474,13 @@ struct ActionStripActionsView: View {
 
     /// The native actions on an artifact's rows with a `ref`.
     private func refHooks(_ handler: InboxRowActionHandler) -> InboxRefHooks {
-        InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches, onCommand: onCardAction) { ref, press in
-            Self.dispatch(press, on: ref, handler)
-        }
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches,
+                      sessionHoldsCall: { sessionHoldsCall?($0) ?? false }, ideasAvailable: ideas != nil,
+                      onCommand: onCardAction,
+                      onPress: { ref, press in Self.dispatch(press, on: ref, handler) })
+        // swiftlint:enable trailing_closure
     }
 
     /// The Reply composer's own presses at once (keystrokes keep their
@@ -495,6 +499,8 @@ struct ActionStripActionsView: View {
             onGoToTarget: onGoToTarget,
             onIdeaMadeTask: onGoToTarget,
             onEditAction: { editingActions.insert($0) },
+            onOpenSaveDraft: onOpenSaveDraft,
+            sessionHoldsCall: { sessionHoldsCall?($0) ?? false },
             navScreens: navScreens,
             now: { now ?? Date() },
             replyHost: replyHost

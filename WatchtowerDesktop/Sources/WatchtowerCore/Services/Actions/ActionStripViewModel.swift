@@ -132,13 +132,16 @@ package final class ActionStripViewModel {
     package let actionFeed: AgentActionFeed
 
     /// `customTrackControls` nil = C1's direct writes (`DirectCustomTrackControls`).
+    /// `findCLI` is how the folder menu (and so the rows' writes) finds the
+    /// binary when `cliRunner` is nil; tests pass `{ nil }` for a missing one.
     package init(
         dbPool: DatabasePool,
         cliRunner: CLIRunnerProtocol? = nil,
         customTrackControls: (any CustomTrackControlling)? = nil,
         defaults: UserDefaults = .standard,
         automationsWake: (() async throws -> Void)? = nil,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        findCLI: @escaping @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
     ) {
         self.dbPool = dbPool
         self.clock = clock
@@ -150,7 +153,7 @@ package final class ActionStripViewModel {
         self.dayDone = defaults.string(forKey: Self.dayDoneKey)
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
-            dbPool: dbPool, runner: { cliRunner ?? ProcessCLIRunner.makeDefault() }, clock: clock)
+            dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
     }
 
     /// The Inbox sidebar badge: the sum of the counts of every folder the
@@ -651,23 +654,26 @@ package final class ActionStripViewModel {
     }
 
     /// Done on a reminder: a direct GRDB write (STRIP-02), then `inbox
-    /// approvals changed` so Needs approval's recipe redraws (STRIP-03).
+    /// approvals changed` so Needs approval's recipe redraws (STRIP-03) —
+    /// after the press settles, so the CLI process never holds the row busy.
     package func markReminderDone(_ id: Int64) async {
-        // Labeled: `onFailure` before it also takes a closure.
-        // swiftlint:disable trailing_closure
-        await write(.card(.reminder(id)), { try ReminderQueries.markDone($0, id: id) },
-                    press: .done, onSuccess: { await self.reminderChanged(id) })
-        // swiftlint:enable trailing_closure
+        guard await write(.card(.reminder(id)), { try ReminderQueries.markDone($0, id: id) }, press: .done)
+        else { return }
+        await reminderChanged(id)
     }
 
     /// Snooze on a reminder (Snooze 1h is the only one the cards offer).
     package func snoozeReminder(_ id: Int64, until: String) async {
-        await write(.card(.reminder(id)), { try ReminderQueries.snooze($0, id: id, until: until) },
-                    press: .snoozeHour, onFailure: { error in
+        // Labeled: `change` before it also takes a closure.
+        // swiftlint:disable trailing_closure
+        let snoozed = await write(.card(.reminder(id)), { try ReminderQueries.snooze($0, id: id, until: until) },
+                                  press: .snoozeHour, onFailure: { error in
             // A reminder deleted elsewhere leaves the strip; `refresh` clears
             // `lastError`, so the reason is set after it.
             if error is RowNotFoundError { await self.refresh() }
-        }, onSuccess: { await self.reminderChanged(id) })
+        })
+        // swiftlint:enable trailing_closure
+        if snoozed { await reminderChanged(id) }
     }
 
     /// `watchtower inbox approvals changed --ref reminder:<id>`: queues one
@@ -1004,30 +1010,32 @@ package final class ActionStripViewModel {
     /// One write per card: a second press while it waits does nothing.
     /// `press` is a row's native press: its failure is also kept on the row
     /// (`rowErrors`), except a vanished record's, which leaves quietly.
+    /// True when the write landed (false too for a press that did not run).
+    @discardableResult
     private func write(
         _ key: CardKey,
         _ change: @escaping @Sendable (Database) throws -> Void,
         press: InboxRowPress? = nil,
-        onFailure: (Error) async -> Void = { _ in },
-        onSuccess: () async -> Void = {}
-    ) async {
+        onFailure: (Error) async -> Void = { _ in }
+    ) async -> Bool {
         let pool = dbPool
-        await pendingWrites.run(key) {
+        return await pendingWrites.run(key) {
             lastError = nil
             let item: InboxSelection? = if press != nil, case let .card(item) = key { item } else { nil }
             if let item { rowErrors[item] = nil }
             do {
                 try await pool.write(change)
                 await refresh()
-                await onSuccess()
+                return true
             } catch {
                 await onFailure(error)
                 lastError = error.localizedDescription
                 if let item, let press, !(error is RowNotFoundError) {
                     rowErrors[item] = InboxRowFailure(message: error.localizedDescription, press: press)
                 }
+                return false
             }
-        }
+        } ?? false
     }
 
     /// A row's press whose write lives outside the strip (an idea verdict

@@ -4,6 +4,8 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 import DesignKit
+import SwiftUI
+import ViewInspector
 
 /// Reply from a row (inbox builder B Task 18, asks #445 and #451): which
 /// items have Reply…, the one `actions propose` call a press makes (never
@@ -281,6 +283,25 @@ final class InboxReplyTests: XCTestCase {
         try await waitingForMe(runStatus: "succeeded")
         let vm = await strip()
         XCTAssertNil(try messageReply(vm, id), "the stand-in left; Reply is on Waiting for me's rows")
+    }
+
+    /// No `watchtower` binary: the stand-in card's Reply… is off like a row's, and says why.
+    func testStandInReplyFollowsTheMissingCLIRule() async throws {
+        let id = try await slackItem()
+        try await waitingForMe(runStatus: nil)
+        // Labeled: a trailing closure would bind to `automationsWake`.
+        // swiftlint:disable:next trailing_closure
+        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
+        await vm.refresh()
+        let reply = try XCTUnwrap(try messageReply(vm, id))
+        XCTAssertTrue(reply.isOff(.reply))
+        XCTAssertTrue(reply.showsCLIMissingLine)
+
+        let row = try XCTUnwrap(vm.feed.messages.first { Int64($0.item.id) == id })
+        let card = InboxMessagePane(row: row, onDone: {}, onHide: {}, onSnooze: { _ in }, onCommand: { _ in },
+                                    reply: reply)
+        XCTAssertTrue(try card.inspect().find(button: "Reply…").isDisabled())
+        XCTAssertNoThrow(try card.inspect().find(text: InboxRowActionsContent.cliMissingMessage))
     }
 
     func testStandInCardHasNoReplyForMail() async throws {

@@ -124,16 +124,274 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(hooks(vm).content(InboxRef(kind: .reminder, id: id), .inbox)?.kind, .reminder)
     }
 
-    func testActionDrawsApproveOrRetryByStatus() async throws {
-        let (pending, failed) = try await pool.write { db in
-            (try TestDatabase.insertAgentAction(db, turnID: "a", status: "pending"),
-             try TestDatabase.insertAgentAction(db, turnID: "b", status: "failed", error: "archived"))
+    /// The row's buttons for one proposal row, as the Inbox reads it.
+    private func actionButtons(
+        tool: String = "create_target",
+        argsJSON: String = #"{"text":"Call colleague A"}"#,
+        status: String = "pending",
+        error: String = "",
+        sessionHolds: Bool = false
+    ) async throws -> [InboxRowActionsContent.ActionButton]? {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: tool, argsJSON: argsJSON, status: status, error: error)
         }
         let vm = await strip()
-        XCTAssertEqual(hooks(vm).content(InboxRef(kind: .action, id: pending), .inbox)?.kind,
-                       .action(failed: false))
-        XCTAssertEqual(hooks(vm).content(InboxRef(kind: .action, id: failed), .inbox)?.kind,
-                       .action(failed: true))
+        // Labeled: a trailing closure would read as the row's press.
+        // swiftlint:disable:next trailing_closure
+        let hooks = InboxRefHooks(vm: vm, navScreens: [], sessionHoldsCall: { _ in sessionHolds })
+        guard case let .action(_, buttons)? = hooks.content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
+            return nil
+        }
+        return buttons
+    }
+
+    func testActionDrawsApproveOrRetryByStatus() async throws {
+        let pending = try await actionButtons()
+        XCTAssertEqual(pending, [.approve, .reject, .edit])
+        // A failed apply: Retry only, as the card (Go refuses `actions dismiss` on it).
+        let failed = try await actionButtons(status: "failed", error: "archived")
+        XCTAssertEqual(failed, [.retry])
+    }
+
+    /// The row carries the proposal's own words under its line, whatever the
+    /// look's row title says, without the tool's name the row or card shows.
+    func testActionRowShowsTheProposalsOwnSummary() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue",
+                                               argsJSON: #"{"project_key":"ACME","issue_type":"Task","summary":"Fix the link"}"#)
+        }
+        let vm = await strip()
+        let hooks = hooks(vm)
+        let content = try XCTUnwrap(hooks.content(InboxRef(kind: .action, id: id), .inbox))
+        let summary = try XCTUnwrap(content.actionSummary)
+        XCTAssertTrue(summary.contains("ACME"), summary)
+        XCTAssertTrue(summary.contains("Fix the link"), summary)
+        XCTAssertFalse(summary.contains(AgentActionCardView.title(for: vm.feed.proposals[0])), summary)
+        XCTAssertEqual(content.state, .idle)
+        XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .action, id: id), .inbox),
+                        "an idle proposal row draws its summary under the line")
+    }
+
+    /// A proposal with nothing readable in its args keeps the tool's name as its words.
+    func testActionRowSummaryFallsBackToTheToolTitle() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: ConnectorCallProposal.tool, argsJSON: "{}")
+        }
+        let vm = await strip()
+        let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == id })
+        XCTAssertEqual(AgentActionCardView.rowSummary(for: action), AgentActionCardView.title(for: action))
+    }
+
+    /// A pending `save_automation` is saved in the editor only: Open Draft and Reject, never Approve.
+    func testSaveAutomationRowOpensTheDraftNeverApproves() async throws {
+        let buttons = try await actionButtons(tool: SaveAutomationCardModel.tool, argsJSON: #"{"path":"a.md"}"#)
+        XCTAssertEqual(buttons, [.openDraft, .reject])
+    }
+
+    private static let connectorArgs = #"{"server":"claude.ai Gmail","tool":"send","input":{"to":"a@example.com"}}"#
+
+    /// A session call: Approve only while its chat session holds it; Retry never.
+    func testConnectorCallApprovesOnlyWhileTheSessionHoldsIt() async throws {
+        let held = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: Self.connectorArgs,
+                                           sessionHolds: true)
+        XCTAssertEqual(held, [.approve, .reject, .edit])
+        let gone = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: Self.connectorArgs)
+        XCTAssertEqual(gone, [.reject, .edit])
+        let unreadable = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: "{}", sessionHolds: true)
+        XCTAssertEqual(unreadable, [.reject, .edit])
+    }
+
+    func testConnectorCallWithUnknownOutcomeOffersDismissOnly() async throws {
+        let buttons = try await actionButtons(tool: ConnectorCallProposal.tool, argsJSON: Self.connectorArgs,
+                                              status: "failed", error: ConnectorCallProposal.sessionEndedWhileRunning)
+        XCTAssertEqual(buttons, [.dismiss])
+    }
+
+    /// A Slack send whose workspace is still to be picked approves on its card only.
+    func testSlackSendNeedingAPickHasNoRowApprove() async throws {
+        let pick = ##"{"text":"On it","candidates":[{"account_id":1,"workspace":"acme","label":"#general"},"##
+            + ##"{"account_id":2,"workspace":"acme-eu","label":"#general"}]}"##
+        let picking = try await actionButtons(tool: SlackSendProposal.tool, argsJSON: pick)
+        XCTAssertEqual(picking, [.reject, .edit])
+        let pinned = ##"{"text":"On it","target":{"account_id":1,"workspace":"acme","label":"#general"}}"##
+        let ready = try await actionButtons(tool: SlackSendProposal.tool, argsJSON: pinned)
+        XCTAssertEqual(ready, [.approve, .reject, .edit])
+    }
+
+    /// An edit the card cannot show is never approved (F7).
+    func testUnreadableConfluenceEditHasNoApprove() async throws {
+        let buttons = try await actionButtons(tool: AgentActionCardView.confluenceEditTool, argsJSON: "{}")
+        XCTAssertEqual(buttons, [.reject, .edit])
+    }
+
+    func testOpenDraftOpensTheSaveProposalsDraft() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: SaveAutomationCardModel.tool, argsJSON: #"{"path":"a.md"}"#)
+        }
+        let runner = FakeCLIRunner()
+        let vm = await strip(runner)
+        var opened: [Int64] = []
+        // Labeled: a trailing closure would bind to `onCommand`.
+        // swiftlint:disable:next trailing_closure
+        let handler = InboxRowActionHandler(vm: vm, onOpenSaveDraft: { _ in opened.append(id) })
+        await handler.press(.openDraft, on: InboxRef(kind: .action, id: id))
+        XCTAssertEqual(opened, [id])
+        XCTAssertTrue(runner.invocations.isEmpty, "Open Draft writes nothing")
+    }
+
+    /// No `watchtower` binary: a row's CLI presses are off and its footer says why (plan "Failure paths").
+    func testMissingCLIDisablesRowWritesAndSaysWhy() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertInboxItem(db, triggerType: "mention",
+                                             permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
+        }
+        let ref = InboxRef(kind: .inboxItem, id: Int64(id))
+        // Labeled: a trailing closure would bind to `automationsWake`.
+        // swiftlint:disable:next trailing_closure
+        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
+        await vm.refresh()
+        let hooks = hooks(vm)
+        let content = try XCTUnwrap(hooks.content(ref, .inbox))
+        XCTAssertTrue(content.cliMissing)
+        XCTAssertTrue(content.isOff(.done))
+        XCTAssertTrue(content.isOff(.hide))
+        XCTAssertTrue(content.isOff(.snooze(duration: "")))
+        XCTAssertTrue(content.isOff(.reply))
+        XCTAssertFalse(content.isOff(.open), "what only opens stays")
+        XCTAssertFalse(content.isOff(.discussInChat))
+        XCTAssertTrue(content.showsCLIMissingLine)
+        XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .inboxItem, id: Int64(id)), .inbox),
+                        "the footer carries \(InboxRowActionsContent.cliMissingMessage)")
+        XCTAssertEqual(InboxRowActionsContent.cliMissingMessage, "The watchtower CLI isn't available")
+        XCTAssertFalse(hooks.content(ref, .preview)?.cliMissing ?? true,
+                       "a preview draws everything disabled without the line")
+        let present = await strip()
+        XCTAssertFalse(self.hooks(present).content(ref, .inbox)?.cliMissing ?? true)
+
+        let action = InboxRowActionsContent(kind: .action(summary: "Team: ACME", buttons: [.approve, .reject, .edit]),
+                                            cliMissing: true)
+        XCTAssertTrue(action.isOff(.approve))
+        XCTAssertTrue(action.isOff(.reject))
+        XCTAssertFalse(action.isOff(.edit), "Edit… only opens the card")
+        XCTAssertTrue(action.showsCLIMissingLine)
+    }
+
+    /// A reminder's, a track's and an idea's writes go straight to the
+    /// database: they stay on without the CLI, and their rows carry no
+    /// missing-CLI line. A custom track's Stop watching runs the CLI.
+    func testMissingCLIKeepsDatabaseWritesOn() async throws {
+        let id = try insertReminder()
+        // Labeled: a trailing closure would bind to `automationsWake`.
+        // swiftlint:disable:next trailing_closure
+        let vm = ActionStripViewModel(dbPool: pool, findCLI: { nil })
+        await vm.refresh()
+        let hooks = hooks(vm)
+        let reminder = try XCTUnwrap(hooks.content(InboxRef(kind: .reminder, id: id), .inbox))
+        XCTAssertTrue(reminder.cliMissing)
+        XCTAssertFalse(reminder.isOff(.done))
+        XCTAssertFalse(reminder.isOff(.snoozeHour))
+        XCTAssertFalse(reminder.isOff(.retryFailedPress))
+        XCTAssertFalse(reminder.showsCLIMissingLine)
+        XCTAssertNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .reminder, id: id), .inbox),
+                     "an idle reminder row draws nothing under its line")
+        await InboxRowActionHandler(vm: vm).press(.done, on: InboxRef(kind: .reminder, id: id))
+        XCTAssertNil(vm.rowErrors[.reminder(id)], "Done lands without the CLI")
+        let status = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(status, "done")
+
+        let auto = InboxRowActionsContent(kind: .track(custom: false, linkedTargetID: nil), cliMissing: true)
+        for press: InboxRowPress in [.done, .stopWatching, .makeTask, .retryFailedPress] {
+            XCTAssertFalse(auto.isOff(press), "\(press)")
+        }
+        XCTAssertFalse(auto.showsCLIMissingLine)
+        let custom = InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: nil), cliMissing: true)
+        XCTAssertFalse(custom.isOff(.done))
+        XCTAssertFalse(custom.isOff(.makeTask))
+        XCTAssertTrue(custom.isOff(.stopWatching), "a custom track's recipe goes through the CLI")
+        XCTAssertTrue(custom.showsCLIMissingLine)
+        let idea = InboxRowActionsContent(kind: .idea(kind: .idea, status: .proposed, awaitsVerdict: true),
+                                          cliMissing: true)
+        for press: InboxRowPress in [.approve, .reject, .makeTask, .notNow(until: ""), .activate, .drop] {
+            XCTAssertFalse(idea.isOff(press), "\(press)")
+        }
+        XCTAssertFalse(idea.showsCLIMissingLine)
+    }
+
+    /// A shown row without native content keeps the recipe's own buttons.
+    func testRowWithoutNativeContentKeepsTheRecipesButtons() {
+        let ref = ArtifactRef(kind: .inboxItem, id: 7)
+        let none = InboxRefHooks.make(isShown: { _ in true }, content: { _, _ in nil })
+        XCTAssertEqual(none.nativeKinds(ref), [])
+        XCTAssertNil(none.nativeActions(ref, .inbox))
+        let some = InboxRefHooks.make(isShown: { _ in true }, content: { _, _ in
+            InboxRowActionsContent(kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: false,
+                                                    showsHandToAgent: true))
+        })
+        XCTAssertEqual(some.nativeKinds(ref), [.open, .chat, .agent])
+    }
+
+    /// An idea row without its `IdeasViewModel` draws its verdicts disabled, not dead.
+    func testIdeaVerdictsDisabledWithoutIdeasViewModel() {
+        let content = InboxRowActionsContent(kind: .idea(kind: .idea, status: .active, awaitsVerdict: true),
+                                             writesUnavailable: true)
+        for button in InboxRowActionsContent.ideaButtons(kind: .idea, status: .active, awaitsVerdict: true) {
+            XCTAssertTrue(content.isOff(button.press), "\(button)")
+        }
+        XCTAssertFalse(content.isOff(.open), "the row still opens its card")
+    }
+
+    func testIdeaRowWritesUnavailableFollowsIdeasViewModel() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertIdea(db, status: "proposed") }
+        let vm = await strip()
+        var hooks = hooks(vm)
+        hooks.ideasAvailable = false
+        let ref = InboxRef(kind: .idea, id: id)
+        XCTAssertEqual(hooks.content(ref, .inbox)?.writesUnavailable, true)
+        hooks.ideasAvailable = true
+        XCTAssertEqual(hooks.content(ref, .inbox)?.writesUnavailable, false)
+    }
+
+    /// A failed apply with a press error shows one Retry: the row's own.
+    func testFailedProposalRowShowsOneRetry() {
+        let failed = InboxRowActionsContent(kind: .action(summary: "Create a task", buttons: [.retry]),
+                                            state: .failed(message: "the CLI timed out"), failedVerb: "apply")
+        XCTAssertFalse(failed.footerOffersRetry)
+        let pending = InboxRowActionsContent(kind: .action(summary: "Create a task", buttons: [.approve, .reject, .edit]),
+                                             state: .failed(message: "the CLI timed out"), failedVerb: "approve")
+        XCTAssertTrue(pending.footerOffersRetry, "a failed Approve is repeated from the footer")
+        XCTAssertTrue(InboxRowActionsContent(kind: .reminder, state: .failed(message: "busy")).footerOffersRetry)
+    }
+
+    /// Approved, then execution failed: the footer never repeats Approve on a row no longer pending.
+    func testFooterRetryNeverApprovesARowThatLeftPending() {
+        XCTAssertNil(InboxRowActionsContent.actionRetry(verb: "approve", buttons: [.retry]))
+        XCTAssertNil(InboxRowActionsContent.actionRetry(verb: "approve", buttons: [.dismiss]))
+        XCTAssertEqual(InboxRowActionsContent.actionRetry(verb: "approve", buttons: [.approve, .reject, .edit]),
+                       .approve)
+        let dismissRow = InboxRowActionsContent(kind: .action(summary: "claude.ai Gmail", buttons: [.dismiss]),
+                                                state: .failed(message: "refused"), failedVerb: "approve")
+        XCTAssertFalse(dismissRow.footerOffersRetry)
+    }
+
+    func testFooterRetryAfterApproveThenFailedApplyDoesNotApproveAgain() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, status: "pending") }
+        let runner = FakeCLIRunner(error: Failure())
+        let vm = await strip(runner)
+        let ref = InboxRef(kind: .action, id: id)
+        await handler(vm).press(.approve, on: ref)
+        XCTAssertEqual(vm.actionFeed.rowErrors[id]?.verb, "approve")
+        // The approval landed after all and its execution failed.
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'failed', error = 'archived' WHERE id = ?",
+                           arguments: [id])
+        }
+        await vm.refresh()
+        XCTAssertEqual(hooks(vm).content(ref, .inbox)?.footerOffersRetry, false)
+        await handler(vm).press(.retryFailedPress, on: ref)
+        XCTAssertEqual(runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.count, 1,
+                       "no second Approve on a failed proposal")
     }
 
     func testDuplicatesSuppressedPerKind() {
@@ -404,6 +662,21 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["inbox", "approvals", "changed", "--ref", "reminder:\(id)"]])
     }
 
+    /// The fire runs after the press settles: the CLI process never holds the row busy.
+    func testReminderFireDoesNotHoldTheRowBusy() async throws {
+        let id = try insertReminder()
+        let runner = FakeCLIRunner()
+        let vm = await strip(runner)
+        let busyDuringFire = LockedFlag()
+        runner.onRun = { [weak vm] _ in
+            let busy = await MainActor.run { vm?.isWriting(.reminder(id)) ?? true }
+            if busy { busyDuringFire.set() }
+        }
+        await handler(vm).press(.done, on: InboxRef(kind: .reminder, id: id))
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertFalse(busyDuringFire.value)
+    }
+
     func testReminderFireNotRunAfterFailure() async throws {
         let id = try insertReminder()
         try failUpdates(on: "reminders")
@@ -440,4 +713,12 @@ private actor Gate {
         waiters.forEach { $0.resume() }
         waiters = []
     }
+}
+
+/// A flag `FakeCLIRunner.onRun` sets off the main actor.
+private final class LockedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+    var value: Bool { lock.withLock { stored } }
+    func set() { lock.withLock { stored = true } }
 }

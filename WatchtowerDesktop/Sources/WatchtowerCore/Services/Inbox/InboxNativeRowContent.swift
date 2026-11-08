@@ -58,9 +58,30 @@ package struct InboxRowActionsContent: Equatable {
         case idea(kind: Idea.Kind, status: Idea.Status, awaitsVerdict: Bool)
         /// A due reminder: Done, Snooze 1h.
         case reminder
-        /// A proposal: Approve, Reject, Edit…; after a failed apply Retry
-        /// and Dismiss.
-        case action(failed: Bool)
+        /// A proposal: its own summary (`AgentActionCardView.rowSummary`),
+        /// drawn under the row's line next to Approve whatever the look's
+        /// row says (A's contract item 3), and the buttons its native card
+        /// offers today (`AgentActionCardView.rowButtons`).
+        case action(summary: String, buttons: [ActionButton])
+    }
+
+    /// One of a proposal row's buttons. **Edit…** and **Open Draft** open
+    /// the native card (its argument editor, the automation editor) where
+    /// the row cannot make a press the way the card does.
+    package enum ActionButton: Equatable, Sendable {
+        case approve, reject, edit, openDraft, retry, dismiss
+
+        /// The press it makes.
+        package var press: InboxRowPress {
+            switch self {
+            case .approve: .approve
+            case .reject: .reject
+            case .edit: .edit
+            case .openDraft: .openDraft
+            case .retry: .retry
+            case .dismiss: .dismiss
+            }
+        }
     }
 
     package enum State: Equatable, Sendable {
@@ -81,6 +102,18 @@ package struct InboxRowActionsContent: Equatable {
     /// One of an idea row's buttons.
     package enum IdeaButton: Equatable, Sendable {
         case approve, makeTask, notNow, reject, activate, drop
+
+        /// The press it makes (Not now's moment is picked in its menu).
+        package var press: InboxRowPress {
+            switch self {
+            case .approve: .approve
+            case .makeTask: .makeTask
+            case .notNow: .notNow(until: "")
+            case .reject: .reject
+            case .activate: .activate
+            case .drop: .drop
+            }
+        }
     }
 
     package let kind: Kind
@@ -88,12 +121,32 @@ package struct InboxRowActionsContent: Equatable {
     package var reply: Reply?
     /// A's `.preview` mode: every native action drawn disabled.
     package var isPreview: Bool
+    /// No `watchtower` binary: the row's presses that run the CLI are drawn
+    /// disabled and the footer says why (`usesCLI`); a write straight to the
+    /// database and what only opens or navigates stay.
+    package var cliMissing: Bool
+    /// What would carry the row's writes is not there yet (an idea's
+    /// `IdeasViewModel`): its writes are drawn disabled, never dead.
+    package var writesUnavailable: Bool
+    /// A proposal row's failed verb (`AgentActionFeed.RowError.verb`).
+    package var failedVerb: String?
 
-    package init(kind: Kind, state: State = .idle, reply: Reply? = nil, isPreview: Bool = false) {
+    package init(
+        kind: Kind,
+        state: State = .idle,
+        reply: Reply? = nil,
+        isPreview: Bool = false,
+        cliMissing: Bool = false,
+        writesUnavailable: Bool = false,
+        failedVerb: String? = nil
+    ) {
         self.kind = kind
         self.state = state
         self.reply = reply
         self.isPreview = isPreview
+        self.cliMissing = cliMissing
+        self.writesUnavailable = writesUnavailable
+        self.failedVerb = failedVerb
     }
 
     package var isBusy: Bool { state == .busy }
@@ -102,6 +155,81 @@ package struct InboxRowActionsContent: Equatable {
     package var hasReply: Bool {
         if case let .inboxItem(_, _, canReply, _) = kind { return canReply }
         return false
+    }
+
+    /// A proposal's own summary, drawn under the row's line; nil for any other kind.
+    package var actionSummary: String? {
+        guard case let .action(summary, _) = kind, !summary.isEmpty else { return nil }
+        return summary
+    }
+
+    /// Whether the row has anything under its line (`InboxRowActionsFooter`).
+    package var hasFooter: Bool {
+        state != .idle || reply != nil || showsCLIMissingLine || actionSummary != nil
+    }
+
+    /// The footer's missing-CLI line: only on a row that draws a press
+    /// the missing CLI turns off, so a list of database-only rows stays quiet.
+    package var showsCLIMissingLine: Bool { cliMissing && drawsCLIPress }
+
+    /// Whether the row draws a press that runs the `watchtower` CLI.
+    private var drawsCLIPress: Bool {
+        switch kind {
+        case .inboxItem: true
+        case let .action(_, buttons): buttons.contains { usesCLI($0.press) }
+        case let .track(custom, _): custom
+        case .idea, .reminder: false
+        }
+    }
+
+    /// Whether `press` on this row runs the `watchtower` CLI: a ping's
+    /// Done / Hide / Snooze and Reply (`watchtower inbox …`, `actions
+    /// propose`), every proposal verb (`watchtower actions …`), a custom
+    /// track's Stop watching (its recipe through `automations disable`).
+    /// A reminder's and an idea's writes, a track's Done and an auto
+    /// track's Stop watching, and Make a Task are GRDB writes. A custom
+    /// track's Retry counts as the CLI's: the failed press is not known here.
+    package func usesCLI(_ press: InboxRowPress) -> Bool {
+        guard press.writes else { return false }
+        switch kind {
+        case .inboxItem, .action: return true
+        case let .track(custom, _): return custom && (press == .stopWatching || press == .retryFailedPress)
+        case .idea, .reminder: return false
+        }
+    }
+
+    /// The footer's **Retry** under a failed press. A proposal's repeats
+    /// its failed verb only while the row still offers that press (an
+    /// Approve whose execution then failed has left the pending state), and
+    /// never beside the row's own Retry: one Retry a row.
+    package var footerOffersRetry: Bool {
+        guard case let .action(_, buttons) = kind else { return true }
+        guard !buttons.contains(.retry), let failedVerb else { return false }
+        return Self.actionRetry(verb: failedVerb, buttons: buttons) != nil
+    }
+
+    /// The press a proposal's footer **Retry** repeats for its failed
+    /// `verb` (`AgentActionFeed.RowError.verb`), nil when the row's current
+    /// buttons no longer offer it.
+    package static func actionRetry(verb: String, buttons: [ActionButton]) -> InboxRowPress? {
+        let button: ActionButton? = switch verb {
+        case "approve": .approve
+        case "reject": .reject
+        case "apply": .retry
+        case "dismiss": .dismiss
+        default: nil
+        }
+        guard let button, buttons.contains(button) else { return nil }
+        return button.press
+    }
+
+    /// The footer's line while the CLI is missing (the folder menu's words).
+    package static let cliMissingMessage = InboxFoldersCLIError.cliUnavailable.localizedDescription
+
+    /// Whether `press` is drawn disabled: a CLI press while the CLI is
+    /// missing, or a write while the row's writes are unavailable.
+    package func isOff(_ press: InboxRowPress) -> Bool {
+        (cliMissing && usesCLI(press)) || (writesUnavailable && press.writes)
     }
 
     /// `IdeaActionBar`'s verdict buttons, without its Merge, delete and a
@@ -131,11 +259,24 @@ package struct InboxRowActionsContent: Equatable {
 package enum InboxRowPress: Equatable, Sendable {
     case open, reply, done, hide, snooze(duration: String), discussInChat, handToAgent
     case stopWatching, makeTask, goToTarget, deleteTrack
-    case approve, reject, edit, retry, dismiss, notNow(until: String), activate, drop
+    case approve, reject, edit, openDraft, retry, dismiss, notNow(until: String), activate, drop
     case snoozeHour
     /// **Retry** under a failed press: repeats it.
     case retryFailedPress
     case replyChanged(String), proposeReply, cancelReply
+}
+
+package extension InboxRowPress {
+    /// The press writes (a CLI call or a database write), as opposed to one
+    /// that only opens, navigates or edits a draft.
+    var writes: Bool {
+        switch self {
+        case .open, .discussInChat, .handToAgent, .goToTarget, .deleteTrack, .edit, .openDraft,
+             .replyChanged, .cancelReply: false
+        case .reply, .done, .hide, .snooze, .stopWatching, .makeTask, .approve, .reject, .retry, .dismiss,
+             .notNow, .activate, .drop, .snoozeHour, .retryFailedPress, .proposeReply: true
+        }
+    }
 }
 
 /// A row's failed press (spec "Native row actions", Failure): the message

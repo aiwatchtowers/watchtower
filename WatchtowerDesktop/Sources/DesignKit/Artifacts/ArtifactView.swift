@@ -196,14 +196,15 @@ struct ArtifactListRowView: View {
     var body: some View {
         let footer = row.ref.flatMap { environment.refHooks.nativeFooter($0, mode) }
         VStack(alignment: .leading, spacing: Spacing.small) {
-            line
+            // The press is the line's: the footer (an error with its text
+            // selectable, the Reply composer) never opens the row.
+            line.modifier(rowPress)
             if let footer {
                 footer.padding(.leading, row.tone == nil ? 0 : IconSize.stateDot + Spacing.regular)
             }
         }
         .controlSize(.small)
         .kitRow(isSelected: false)
-        .modifier(rowPress)
     }
 
     /// The row's own press: the host's for its `ref` in `.inbox`, else its link.

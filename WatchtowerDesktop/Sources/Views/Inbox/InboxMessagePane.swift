@@ -69,7 +69,7 @@ struct InboxMessagePane: View {
             ) {
                 if let reply, reply.hasReply {
                     Button("Reply…") { onReplyPress(.reply) }
-                        .disabled(reply.reply != nil)
+                        .disabled(reply.reply != nil || reply.isOff(.reply))
                 }
                 Button("Done", action: onDone)
                 Button("Hide", action: onHide)
@@ -82,7 +82,7 @@ struct InboxMessagePane: View {
                 .fixedSize()
             }
             .padding(.top, Spacing.small)
-            if let reply, reply.hasReply, reply.reply != nil {
+            if let reply, reply.hasReply, reply.reply != nil || reply.showsCLIMissingLine {
                 InboxRowActionsFooter(content: reply, onPress: onReplyPress)
             }
         }
