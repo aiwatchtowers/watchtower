@@ -465,6 +465,21 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertEqual(menu.approvalsError, "config locked")
         XCTAssertEqual(folderMenu.content.refusal,
                        InboxFolderMenuRefusal(folderID: ids.approvals, message: "config locked"))
+
+        builtinAnswer = nil
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertNil(menu.approvalsError)
+        XCTAssertNil(folderMenu.content.refusal, "a press that landed clears the row's old reason")
+    }
+
+    /// A landed press clears only its own row's reason, not another row's.
+    func testApprovalsSuccessKeepsAnotherRowsRefusal() async {
+        let menu = model()
+        folderMenu.select(ids.root)
+        folderMenu.showRefusal("folders nest at most 3 deep", on: ids.release)
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertEqual(folderMenu.content.refusal,
+                       InboxFolderMenuRefusal(folderID: ids.release, message: "folders nest at most 3 deep"))
     }
 
     // MARK: - + New Artifact…
@@ -551,7 +566,7 @@ final class InboxArtifactMenuTests: XCTestCase {
         wireRoute()
         vm.showTemplate(name: "jira-state-report", scope: .personal,
                         route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
-        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner, ids.builtin])
+        await vm.templateInstallStarted(name: "jira-state-report", scope: .personal)([ids.owner, ids.builtin])
         XCTAssertEqual(runner.invocations.map { $0.prefix(6) }, [
             ["inbox", "folders", "route", String(ids.owner), "--folder", String(ids.release)],
             ["inbox", "folders", "route", String(ids.builtin), "--folder", String(ids.release)]
@@ -560,10 +575,36 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertNil(vm.templateRoute(name: "jira-state-report", scope: .personal), "routed once")
     }
 
+    /// The route is the one the install started with: a template opened
+    /// again mid-install (a plain New, or a New from another folder) never
+    /// changes where the copies already being made go.
+    func testTemplateRouteIsTakenWhenTheInstallStarts() async {
+        wireRoute()
+        vm.showTemplate(name: "jira-state-report", scope: .personal,
+                        route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        let finished = vm.templateInstallStarted(name: "jira-state-report", scope: .personal)
+        vm.showTemplate(name: "jira-state-report", scope: .personal)
+        await finished([ids.owner])
+        XCTAssertEqual(runner.invocations.map { $0.prefix(6) }, [
+            ["inbox", "folders", "route", String(ids.owner), "--folder", String(ids.release)]
+        ])
+
+        vm.showTemplate(name: "jira-state-report", scope: .personal,
+                        route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        let second = vm.templateInstallStarted(name: "jira-state-report", scope: .personal)
+        vm.showTemplate(name: "jira-state-report", scope: .personal, route: InboxNewArtifactRoute(folderID: ids.root,
+                                                                                                  title: "Inbox"))
+        await second([ids.builtin])
+        XCTAssertEqual(runner.invocations.last?.prefix(6),
+                       ["inbox", "folders", "route", String(ids.builtin), "--folder", String(ids.release)])
+        XCTAssertEqual(vm.templateRoute(name: "jira-state-report", scope: .personal),
+                       InboxNewArtifactRoute(folderID: ids.root, title: "Inbox"), "the newer flow's route stays")
+    }
+
     func testTemplateFromTheRootSendsNoRoute() async {
         wireRoute()
         vm.showTemplate(name: "jira-state-report", scope: .personal)
-        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner])
+        await vm.templateInstallStarted(name: "jira-state-report", scope: .personal)([ids.owner])
         XCTAssertTrue(runner.invocations.isEmpty)
     }
 
@@ -573,7 +614,7 @@ final class InboxArtifactMenuTests: XCTestCase {
         runner.on("route") { _ in throw Self.failure("the Inbox menu changed (revision 8, expected 7)") }
         vm.showTemplate(name: "jira-state-report", scope: .personal,
                         route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
-        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner])
+        await vm.templateInstallStarted(name: "jira-state-report", scope: .personal)([ids.owner])
         XCTAssertEqual(vm.routeFailures[ids.owner]?.reason, InboxFolderMenuModel.routeMenuChanged)
     }
 

@@ -122,6 +122,21 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
                                              items: items)
     }
 
+    /// The pinned row with the folder line the save sets (`placement`,
+    /// passed only when the footer's press saves —
+    /// `AutomationDraftFooter.pressSaves`): drawn last, on every step, also
+    /// when the row has nothing else (titled Changed then). The hashed
+    /// items, `changeMarks` and `visibleFields` never see it.
+    package func confirmationRow(on step: AutomationEditorStep, placement: String?) -> AutomationSaveConfirmationRow? {
+        var row = confirmationRow(on: step)
+        guard let placement else { return row }
+        if row == nil {
+            row = AutomationSaveConfirmationRow(title: AutomationSaveConfirmationRow.changedTitle, note: nil, items: [])
+        }
+        row?.placement = placement
+        return row
+    }
+
     /// The change marks on screen at a press on `step`: the Changed box's
     /// lines on What it collects, else the row's note and change lines.
     /// AUTO-06/D26: every changed field's line, or the unknown-diff / first

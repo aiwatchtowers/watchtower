@@ -91,6 +91,9 @@ struct AutomationDraftSteps<Look: View, Footer: View>: View {
 struct AutomationSaveConfirmation: View {
     let column: AutomationDraftColumnModel
     let step: AutomationEditorStep
+    /// The Inbox folder line the save sets (inbox builder B), only when the
+    /// press saves; drawn last.
+    var placement: String?
 
     /// The lines' height before they scroll: about a third of the editor's
     /// usual pane, room for six or seven lines.
@@ -100,7 +103,7 @@ struct AutomationSaveConfirmation: View {
     @State private var linesHeight: CGFloat = 0
 
     var body: some View {
-        if let row = column.confirmationRow(on: step) {
+        if let row = column.confirmationRow(on: step, placement: placement) {
             VStack(alignment: .leading, spacing: Spacing.compact) {
                 SectionHeader(title: row.title, systemImage: "arrow.left.arrow.right")
                 // A long row scrolls in place, the header above it.
@@ -109,6 +112,10 @@ struct AutomationSaveConfirmation: View {
                 }
                 .frame(height: min(linesHeight, Self.maxLinesHeight))
                 .scrollDisabled(linesHeight <= Self.maxLinesHeight)
+                // The folder line stays under the lines, never scrolled away.
+                if let placement = row.placement {
+                    InboxFolderPlacementLine(text: placement)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Spacing.medium)
