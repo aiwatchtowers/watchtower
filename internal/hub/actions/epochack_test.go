@@ -12,14 +12,33 @@ import (
 	"watchtower/internal/hub/wire"
 )
 
-// relayWorld is a hub on the relay, as the switcher records it.
+// relayWorld is a desktop hub's relay processor, the hub on the relay as the
+// switcher records it.
 func relayWorld(t *testing.T) *world {
 	t.Helper()
-	w := newWorld(t, transport.KindRelay)
-	if err := w.st.SetMeta(state.MetaTransport, string(transport.KindRelay)); err != nil {
-		t.Fatal(err)
+	return switchedWorld(t, transport.KindRelay, transport.KindRelay, string(transport.KindRelay))
+}
+
+// switchedWorld is a processor on kind of a hub with a switcher whose active
+// transport is active; meta is hub_meta.transport ("" = unset).
+func switchedWorld(t *testing.T, kind, active transport.Kind, meta string) *world {
+	t.Helper()
+	w := newWorld(t, kind)
+	w.withSwitch(&fakeSwitch{active: active})
+	if meta != "" {
+		if err := w.st.SetMeta(state.MetaTransport, meta); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return w
+}
+
+// wantAckOnly asserts the ack counted and no offer was stored.
+func (w *world) wantAckOnly(epoch uint32) {
+	w.t.Helper()
+	if d := w.device(w.phone); d.AckedEpoch != epoch || d.KXOffer != nil || d.KXOfferEpoch != 0 {
+		w.t.Fatalf("device: acked %d (want %d), offer %x @%d (want none)", d.AckedEpoch, epoch, d.KXOffer, d.KXOfferEpoch)
+	}
 }
 
 func freshOffer(t *testing.T) []byte {
@@ -103,18 +122,54 @@ func TestOfferReadAfterSwitchAwayIsDropped(t *testing.T) {
 	})
 }
 
-// A hub with no switcher (headless, relay-only) never writes
-// hub_meta.transport: its processor's transport decides.
-func TestHeadlessRelayHubStoresOfferWithoutTransportMeta(t *testing.T) {
-	for _, k := range []transport.Kind{transport.KindRelay, transport.KindCloudKit} {
-		t.Run(string(k), func(t *testing.T) {
-			w := newWorld(t, k)
+// A hub with no switcher (headless, relay-only) never switches: its
+// processor's transport decides, whatever hub_meta.transport says (unset, or
+// a stale value from an earlier run).
+func TestHeadlessRelayHubDecidesByItsOwnTransport(t *testing.T) {
+	for _, c := range []struct {
+		kind transport.Kind
+		meta string
+		want bool
+	}{
+		{transport.KindRelay, "", true},
+		{transport.KindRelay, string(transport.KindCloudKit), true},
+		{transport.KindCloudKit, "", false},
+		{transport.KindCloudKit, string(transport.KindRelay), false},
+	} {
+		t.Run(string(c.kind)+"/meta="+c.meta, func(t *testing.T) {
+			w := newWorld(t, c.kind)
+			if c.meta != "" {
+				if err := w.st.SetMeta(state.MetaTransport, c.meta); err != nil {
+					t.Fatal(err)
+				}
+			}
 			pub := freshOffer(t)
 			epoch := w.ackWithOffer(base64.RawURLEncoding.EncodeToString(pub))
 			d := w.device(w.phone)
-			if want := k == transport.KindRelay; d.AckedEpoch != epoch || (d.KXOffer != nil) != want {
-				t.Fatalf("device: acked %d (want %d), offer %x (want stored %v)", d.AckedEpoch, epoch, d.KXOffer, want)
+			if d.AckedEpoch != epoch || (d.KXOffer != nil) != c.want {
+				t.Fatalf("device: acked %d (want %d), offer %x (want stored %v)", d.AckedEpoch, epoch, d.KXOffer, c.want)
 			}
 		})
 	}
+}
+
+// An offer read off the iCloud mailbox is never stored, even while the hub
+// is on the relay: a desktop hub's other (PollOther) processor, or the
+// window of a switch toward the relay before its commit.
+func TestOfferReadOffICloudIsNeverStored(t *testing.T) {
+	for name, active := range map[string]transport.Kind{
+		"other processor of a hub on the relay": transport.KindRelay,
+		"mid-switch, iCloud still active":       transport.KindCloudKit,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := switchedWorld(t, transport.KindCloudKit, active, string(transport.KindRelay))
+			w.wantAckOnly(w.ackWithOffer(base64.RawURLEncoding.EncodeToString(freshOffer(t))))
+		})
+	}
+}
+
+// With a switcher, an unset hub_meta.transport is not known: nothing stored.
+func TestOfferWithSwitcherAndNoTransportMetaIsDropped(t *testing.T) {
+	w := switchedWorld(t, transport.KindRelay, transport.KindRelay, "")
+	w.wantAckOnly(w.ackWithOffer(base64.RawURLEncoding.EncodeToString(freshOffer(t))))
 }

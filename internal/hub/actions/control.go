@@ -330,19 +330,26 @@ func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Store
 	})
 }
 
-// onRelayTx reports whether the hub runs on the relay, read in the caller's
-// transaction so a switch away committed before it wins: hub_meta.transport,
-// which the switcher writes; a hub without a switcher (headless, relay-only)
-// never writes it, and its processor's own transport decides.
+// onRelayTx reports whether an offer read by this processor may be stored:
+// the processor reads the relay (an offer read off the iCloud mailbox, by a
+// desktop hub's other processor or mid-switch, never is), and the hub runs on
+// it. With a switcher that is hub_meta.transport, read in the caller's
+// transaction so a switch away committed before it wins (absent: not known,
+// nothing stored). A hub without a switcher (headless, relay-only) never
+// switches, so its processor's transport alone decides and a stale meta value
+// is ignored.
 func (p *Processor) onRelayTx(tx *sql.Tx) (bool, error) {
+	if p.cfg.Transport.Kind() != transport.KindRelay {
+		return false, nil
+	}
+	if p.cfg.Switch == nil {
+		return true, nil
+	}
 	v, ok, err := state.MetaTx(tx, state.MetaTransport)
 	if err != nil {
 		return false, err
 	}
-	if ok {
-		return v == string(transport.KindRelay), nil
-	}
-	return p.cfg.Switch == nil && p.cfg.Transport.Kind() == transport.KindRelay, nil
+	return ok && v == string(transport.KindRelay), nil
 }
 
 // Classes of an unusable relay key offer (logged; the bytes never are).
