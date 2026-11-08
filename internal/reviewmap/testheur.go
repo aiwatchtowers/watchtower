@@ -2,6 +2,10 @@ package reviewmap
 
 import "strings"
 
+// testSuffixes end a test file's base name (extension dropped); the
+// Desktop's ReviewChapters.isTest table, shared by IsTest and fileStem.
+var testSuffixes = []string{"_test", "Tests", "Test", ".test", ".spec"}
+
 // IsTest reports whether path looks like a test file: a Tests, tests or
 // __tests__ directory, a base name (extension dropped) ending _test, Tests,
 // Test, .test or .spec, or starting test_. A port of the Desktop's
@@ -17,7 +21,7 @@ func IsTest(path string) bool {
 		}
 	}
 	base := dropExtension(parts[len(parts)-1])
-	for _, suffix := range []string{"_test", "Tests", "Test", ".test", ".spec"} {
+	for _, suffix := range testSuffixes {
 		if strings.HasSuffix(base, suffix) {
 			return true
 		}

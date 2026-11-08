@@ -212,7 +212,7 @@ func fileStem(p string, test bool) string {
 	if !test {
 		return name
 	}
-	for _, suffix := range []string{"_test", "Tests", "Test", ".test", ".spec"} {
+	for _, suffix := range testSuffixes {
 		if strings.HasSuffix(name, suffix) && name != suffix {
 			name = strings.TrimSuffix(name, suffix)
 			break
