@@ -142,6 +142,13 @@ package struct InboxRowActionsContent: Equatable {
 
     package var isBusy: Bool { state == .busy }
 
+    /// The footer's **Retry** under a failed press, unless the row's own
+    /// buttons already have one (a failed apply's Retry): one Retry a row.
+    package var footerOffersRetry: Bool {
+        if case let .action(_, buttons) = kind, buttons.contains(.retry) { return false }
+        return true
+    }
+
     /// The footer's line while the CLI is missing (the folder menu's words).
     package static let cliMissingMessage = InboxFoldersCLIError.cliUnavailable.localizedDescription
 

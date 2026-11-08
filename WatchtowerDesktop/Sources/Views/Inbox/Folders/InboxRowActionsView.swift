@@ -168,9 +168,11 @@ struct InboxRowActionsFooter: View {
                         .foregroundStyle(Tone.error)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                    Button("Retry") { onPress(.retryFailedPress) }
-                        .buttonStyle(.kitSecondary)
-                        .disabled(content.isOff(.retryFailedPress))
+                    if content.footerOffersRetry {
+                        Button("Retry") { onPress(.retryFailedPress) }
+                            .buttonStyle(.kitSecondary)
+                            .disabled(content.isOff(.retryFailedPress))
+                    }
                 }
             }
             switch content.reply {

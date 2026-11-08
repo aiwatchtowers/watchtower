@@ -273,6 +273,17 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(hooks.content(ref, .inbox)?.writesUnavailable, false)
     }
 
+    /// A failed apply with a press error shows one Retry: the row's own.
+    func testFailedProposalRowShowsOneRetry() {
+        let failed = InboxRowActionsContent(kind: .action(summary: "Create a task", buttons: [.retry]),
+                                            state: .failed(message: "the CLI timed out"))
+        XCTAssertFalse(failed.footerOffersRetry)
+        let pending = InboxRowActionsContent(kind: .action(summary: "Create a task", buttons: [.approve, .reject, .edit]),
+                                             state: .failed(message: "the CLI timed out"))
+        XCTAssertTrue(pending.footerOffersRetry, "a failed Approve is repeated from the footer")
+        XCTAssertTrue(InboxRowActionsContent(kind: .reminder, state: .failed(message: "busy")).footerOffersRetry)
+    }
+
     func testDuplicatesSuppressedPerKind() {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.inboxItem), [.open, .chat, .agent])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.track), [.target])
