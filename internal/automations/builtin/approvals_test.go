@@ -300,11 +300,11 @@ func TestApprovalHook_DirectApplyQueuesNoRun(t *testing.T) {
 	assert.Empty(t, approvalRuns(t, d, id))
 }
 
-// An Inbox button press records a one-press row (surface inbox): no run.
-func TestApprovalHook_InboxButtonPressQueuesNoRun(t *testing.T) {
+// The inbox surface's one-press tool (apply_track_action, proposed and
+// approved by one press) records a row that is never an approval: no run.
+func TestApprovalHook_OnePressInboxToolQueuesNoRun(t *testing.T) {
 	d, id := hookedNeedsApproval(t)
-	act, err := d.InsertInboxButtonProposal(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Surface: "inbox",
-		ContextType: db.InboxButtonContextType, ContextID: "1:0:abc"})
+	act, err := d.InsertAgentAction(db.AgentAction{Tool: "apply_track_action", ArgsJSON: `{}`, Surface: "inbox"})
 	require.NoError(t, err)
 	for _, step := range [][2]string{{"pending", "approved"}, {"approved", "executing"}, {"executing", "applied"}} {
 		ok, err := d.TransitionAgentAction(act, []string{step[0]}, step[1], "", "")
@@ -312,6 +312,16 @@ func TestApprovalHook_InboxButtonPressQueuesNoRun(t *testing.T) {
 		require.True(t, ok)
 	}
 	assert.Empty(t, approvalRuns(t, d, id))
+}
+
+// A card's target button proposes create_target on the inbox surface and
+// waits for the owner's Approve: an approval, so it queues a run.
+func TestApprovalHook_InboxTargetButtonQueuesARun(t *testing.T) {
+	d, id := hookedNeedsApproval(t)
+	_, err := d.InsertInboxButtonProposal(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Surface: "inbox",
+		ContextType: db.InboxButtonContextType, ContextID: "1:0:abc"})
+	require.NoError(t, err)
+	assert.Len(t, approvalRuns(t, d, id), 1)
 }
 
 // A real approval: its proposal and its pending → approved decision each

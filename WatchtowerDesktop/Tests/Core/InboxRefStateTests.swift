@@ -89,15 +89,18 @@ final class InboxRefStateTests: XCTestCase {
                 try TestDatabase.insertAgentAction(db, turnID: "p", status: "pending"),
                 try TestDatabase.insertAgentAction(db, turnID: "f", status: "failed"),
                 try TestDatabase.insertAgentAction(db, turnID: "a", status: "applied"),
-                try TestDatabase.insertAgentAction(db, surface: "inbox", turnID: "i", status: "pending")
+                try TestDatabase.insertAgentAction(db, tool: "apply_track_action", surface: "inbox", turnID: "i",
+                                                   status: "pending"),
+                try TestDatabase.insertAgentAction(db, surface: "inbox", turnID: "t", status: "pending")
             ]
         }
         let refs = ids.map { ref(.action, $0) }
 
         let s = try state(refs)
 
-        XCTAssertEqual(refs.map(s.isShown), [true, true, false, false],
-                       "pending; failed with Retry; applied; an inbox-surface row is not the owner's decision")
+        XCTAssertEqual(refs.map(s.isShown), [true, true, false, false, true],
+                       "pending; failed with Retry; applied; the inbox one-press row is not the owner's decision;"
+                           + " an inbox target-button row is")
         XCTAssertEqual(refs.map(s.waits), refs.map(s.isShown))
         let count = try pool.read { try AgentActionQueries.awaitingOwnerCount($0) }
         XCTAssertEqual(count, s.waiting.count, "the same predicate as the badge's term")

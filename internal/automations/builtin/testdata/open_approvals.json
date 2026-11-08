@@ -13,7 +13,9 @@
     {"id": 9, "case": "session call, unknown outcome", "tool": "claude_ai_connector_call", "args_json": "{}", "status": "failed", "error": "session ended while the call ran; outcome unknown", "created_at": "2026-10-22T07:22:00Z"},
     {"id": 10, "case": "a workbench's direct-apply audit row", "tool": "create_target", "args_json": "{\"text\":\"f\"}", "status": "pending", "context_type": "project", "context_id": "3", "created_at": "2026-10-22T07:23:00Z"},
     {"id": 11, "case": "an Inbox button's one-press row", "tool": "apply_track_action", "args_json": "{}", "status": "pending", "surface": "inbox", "created_at": "2026-10-22T07:24:00Z"},
-    {"id": 12, "case": "pending, args not JSON", "tool": "create_target", "args_json": "not json", "status": "pending", "created_at": "2026-10-22T07:30:00Z"}
+    {"id": 12, "case": "pending, args not JSON", "tool": "create_target", "args_json": "not json", "status": "pending", "created_at": "2026-10-22T07:30:00Z"},
+    {"id": 13, "case": "an Inbox card's target button, waits for Approve", "tool": "create_target", "args_json": "{\"text\":\"Follow up with colleague A\"}", "status": "pending", "surface": "inbox", "created_at": "2026-10-22T07:31:00Z"},
+    {"id": 14, "case": "a Reply from an Inbox row, waits for Approve", "tool": "send_slack_message", "args_json": "{\"channel\":\"https://acme.slack.com/archives/C0ACME01/p1740000000000100\",\"text\":\"On it\",\"reason\":\"Reply from Waiting for me\"}", "status": "pending", "surface": "inbox", "context_type": "inbox_item", "context_id": "5", "created_at": "2026-10-22T07:32:00Z"}
   ],
   "reminders": [
     {"id": 1, "case": "due", "message_ref": "C0ACME01@1740000000.000100", "note": "Call colleague A back", "remind_at": "2026-10-22T08:30:00Z", "status": "pending", "created_at": "2026-10-22T07:05:00Z"},
@@ -22,5 +24,5 @@
     {"id": 4, "case": "dismissed", "note": "Dismissed one", "remind_at": "2026-10-22T07:00:00Z", "status": "dismissed", "created_at": "2026-10-22T06:01:00Z"},
     {"id": 5, "case": "due exactly now", "note": "Send the acme notes", "remind_at": "2026-10-22T09:00:00Z", "status": "pending", "created_at": "2026-10-22T07:10:00Z"}
   ],
-  "open": ["action:1", "reminder:1", "action:6", "reminder:5", "action:9", "action:12"]
+  "open": ["action:1", "reminder:1", "action:6", "reminder:5", "action:9", "action:12", "action:13", "action:14"]
 }

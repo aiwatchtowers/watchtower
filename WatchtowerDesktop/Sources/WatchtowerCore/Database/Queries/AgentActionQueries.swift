@@ -6,8 +6,13 @@ package enum AgentActionQueries {
     /// workbench row is the exception — DEV-06 refuses every External tool
     /// inline, so it is a propose-only proposal (a Slack send from the workbench
     /// terminal) that waits for the owner's Approve here.
-    /// Rows an Inbox card button proposed and approved in one press (`surface = 'inbox'`) are excluded too.
-    private static let notWorkbenchRow = "((context_type IS NOT 'project' OR external = 1) AND surface != 'inbox')"
+    /// The Inbox's one-press tool (`surface = 'inbox' AND tool = 'apply_track_action'`,
+    /// proposed and approved by the same press) is excluded too; every other
+    /// inbox row — a card's target button (`create_target`), a Reply — waits
+    /// for the owner's Approve and stays (STRIP-01 narrowing, ask #451; Go's
+    /// `approvalRowClause` in `internal/db/approvals.go` is the twin).
+    private static let notWorkbenchRow = "((context_type IS NOT 'project' OR external = 1)"
+        + " AND NOT (surface = 'inbox' AND tool = 'apply_track_action'))"
 
     /// A failed session-applied call (`claude_ai_connector_call`, Go
     /// `Tool.AppliedBySession`) has no Retry: Apply refuses it. It is terminal
@@ -97,9 +102,10 @@ package enum AgentActionQueries {
     /// Project rows (`context_type = 'project'`) are the audit trail of the
     /// project agent's direct MCP writes, never an owner gesture, so they
     /// stay off the strip (STRIP-01) — except an External one, which is a
-    /// proposal awaiting the owner (`notWorkbenchRow`). Rows an Inbox card
-    /// button proposed and approved in one press (`surface = 'inbox'`) are
-    /// not proposals either: they leave no decision to make.
+    /// proposal awaiting the owner (`notWorkbenchRow`). The Inbox's one-press
+    /// rows (`apply_track_action` on the `inbox` surface, proposed and
+    /// approved by one press) are not proposals either: they leave no
+    /// decision to make. A target-button or Reply row on that surface is.
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions

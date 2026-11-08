@@ -77,8 +77,7 @@ func (db *DB) approvalChanged(ref string) {
 
 // inboxReplyToolNames are the tools a Reply from an Inbox row proposes
 // (Inbox builder B, asks #445 and #451) — the one list; tools.InboxReplyTools
-// reads it. On the inbox surface only these are approvals (the spec's
-// STRIP-01 narrowing): every other inbox row is a button's one-press row.
+// reads it.
 var inboxReplyToolNames = []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}
 
 // InboxReplyToolNames returns a fresh copy of the Reply tools' names.
@@ -86,9 +85,11 @@ func InboxReplyToolNames() []string { return slices.Clone(inboxReplyToolNames) }
 
 // approvalRowClause is the half of openActionClause that never changes over
 // a row's life: not a workbench's direct-apply audit row unless External,
-// and on the inbox surface only a Reply proposal (never a button's
-// one-press row).
-const approvalRowClause = `(context_type IS NOT 'project' OR external = 1) AND (surface != 'inbox' OR tool IN ('send_slack_message', 'add_jira_comment', 'add_linear_comment'))`
+// and not the inbox surface's one-press tool apply_track_action (proposed
+// and approved by the same press). Every other inbox row waits for the
+// owner's Approve — a card's target button (create_target) and a Reply —
+// so it is an approval (the spec's STRIP-01 narrowing, ask #451).
+const approvalRowClause = `(context_type IS NOT 'project' OR external = 1) AND NOT (surface = 'inbox' AND tool = 'apply_track_action')`
 
 // ActionCanBeApproval reports whether agent_actions row id is a row that can
 // ever be an open approval (approvalRowClause) — one indexed read, so the
