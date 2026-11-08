@@ -24,7 +24,8 @@ package enum OrganizationPolicyPresentation {
             out.append(Line(label: "Shell commands in automations", value: allowed(b)))
         }
         if let a = p.allowedAIProviders {
-            out.append(Line(label: "AI providers", value: a.isEmpty ? "none — AI features cannot run" : list(a.map(providerName))))
+            let names = a.map(AIModelCatalog.fallbackDisplayName)
+            out.append(Line(label: "AI providers", value: a.isEmpty ? "none — AI features cannot run" : list(names)))
         }
         if let b = p.allowClaudeAITools {
             out.append(Line(label: "claude.ai tools in the chat", value: allowed(b)))
@@ -52,15 +53,6 @@ package enum OrganizationPolicyPresentation {
         case "jira": "Jira and Confluence"
         case "linear": "Linear"
         default: source
-        }
-    }
-
-    package static func providerName(_ id: String) -> String {
-        switch id {
-        case "claude": "Claude"
-        case "codex": "Codex"
-        case "ollama": "Ollama"
-        default: id
         }
     }
 

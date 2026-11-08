@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"SESSION","timestamp":"2026-11-05T12:00:00.000Z","message":{"role":"user","content":"please add a flag"},"uuid":"00000000-0000-0000-0000-000000000000","synthetic":true}
+{"type":"assistant","sessionId":"SESSION","timestamp":"2026-11-05T12:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"done, flag added"}]},"uuid":"00000000-0000-0000-0000-000000000000","synthetic":true}

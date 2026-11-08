@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/skills"
 	"watchtower/internal/tools"
 )
@@ -196,7 +197,7 @@ func skillExampleBackends(t *testing.T) automations.Backends {
 			}},
 		},
 	}
-	gen := &automationstest.FakeGenerator{Replies: []string{"- a summary line"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+	gen := &automationstest.FakeGenerator{Replies: []string{"- a summary line"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	return automations.Backends{DB: d, Generator: gen, Registry: reg, Clock: automations.RealClock{}}
 }
 

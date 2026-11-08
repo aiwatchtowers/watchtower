@@ -225,3 +225,28 @@ func TestMeasure_MoreThanTasksMaxTasks(t *testing.T) {
 	assert.Equal(t, n, m.TaskCostUSD.N)
 	assert.InDelta(t, 6.0/float64(n), m.TaskCostUSD.V, 0.01, "numerator covers every task, not the listed 50")
 }
+
+// Decision D (ask #507): codex sessions are agent sessions of the workbench;
+// the coach's metrics count them like Claude Code ones.
+func TestCoachMetrics_IncludeCodexSessions(t *testing.T) {
+	d := openDBs(t)
+	wb, tasks := d.workbench(t, "a", 1)
+	d.session(t, wb, "claude-1", tasks, 0, 1.0)
+	before := measure(t, d, wb)
+	path := "/tmp/x/rollout-codex-1.jsonl"
+	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
+	_, err := d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "codex", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: "codex-1", Agent: "codex", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+			SourcePath: path, StartedAt: at(0), EndedAt: at(60), Model: "gpt-test"}},
+		Events: []agentlogdb.AgentLogEvent{
+			{SessionUUID: "codex-1", Key: "codex-1:0", Kind: "owner_turn", Trigger: "owner", TS: at(0), SrcPath: path},
+			{SessionUUID: "codex-1", Key: "codex-1:1", Kind: "owner_turn", Trigger: "interrupt", TS: at(30), SrcPath: path, SrcOffset: 1},
+			{SessionUUID: "codex-1", Key: "codex-1:2", Kind: "api_call", Name: "gpt-test", OutputTokens: 5, CostEstimated: true, TS: at(60), SrcPath: path, SrcOffset: 2},
+		},
+	})
+	require.NoError(t, err)
+	after := measure(t, d, wb)
+	assert.Equal(t, before.Sessions+1, after.Sessions)
+	assert.InDelta(t, before.Corrections.V+1, after.Corrections.V, 1e-9, "the codex interrupt is a correction of the one task")
+}

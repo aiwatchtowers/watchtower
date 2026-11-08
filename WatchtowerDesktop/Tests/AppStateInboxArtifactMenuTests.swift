@@ -17,7 +17,7 @@ final class AppStateInboxArtifactMenuTests: XCTestCase {
     override func setUp() async throws {
         (pool, path) = try TestDatabase.createPool()
         (release, automation) = try await pool.write { db in
-            // Migration 00176's seed rows (the test schema is DDL only), one owner folder.
+            // Migration 00181's seed rows (the test schema is DDL only), one owner folder.
             try db.execute(sql: """
                 INSERT INTO inbox_folders (kind, parent_id, slug, title, position) VALUES ('root', NULL, 'inbox', 'Inbox', 0)
                 """)

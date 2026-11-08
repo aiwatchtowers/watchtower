@@ -20,7 +20,7 @@ Board #918 under the inbox builder umbrella (#1400). Spec `docs/superpowers/spec
 - `MaxOutputsPerRun` (50) is unchanged.
 - The `create-automation` skill (`internal/skills/shipped/create-automation.md`) carries "Cards with a layout", "Living cards" and "Designing the look" (never name blocks to the owner; call `draft_automation` after every look change; prefer a look the script computes).
 
-## Storage — migration 00175
+## Storage — migration 00180
 
 Columns on `automation_outputs` (no new table, no rebuild): `blocks_json` (`''` = markdown body), `output_key` (NULL = feed), `content_hash`, `written_at`, `changed_at` (both backfilled to `created_at`). Indexes `idx_automation_outputs_key` (unique, partial on `output_key IS NOT NULL`) and `idx_automation_outputs_changed (kind, changed_at)`.
 
@@ -39,7 +39,7 @@ Columns on `automation_outputs` (no new table, no rebuild): `blocks_json` (`''` 
 - Recipe: `{label, target: {title (≤ 200), intent? (≤ 1000), parent? (target id)}}`; needs `outputs: [target]` (`PermissionDenied` otherwise); `data` refused. Stored as `db.InboxAction{Kind: db.InboxActionTarget}`.
 - Press (Desktop): `actions propose --tool create_target --surface inbox --context-type automation_output --context-id <output id>:<flattened index>:<action hash> --args … --json`, never `--approve`. `<action hash>` = `blocks.ActionHash` (16 hex chars), so a living rewrite that changes the button, or moves another action to its index, finds no proposal and draws idle.
 - Registry: `create_target` gains the `inbox` surface (never trusted, never auto-executed) and `parent_id`, accepted on `inbox` only through `Tool.ValidateBinding` (`parent_id is only for an Inbox card's button` elsewhere; TGT-BRIEF-01 unchanged). The parent must exist, be personal and open at propose and again at apply.
-- Exactly one task per proposal (AGENT-05, migration 00174): partial unique `idx_targets_action_source` + `db.CreateTargetForAction` (insert-or-return), and one open proposal per button `idx_agent_actions_open_context`; a propose while the button's task still exists is refused. Refusals map to `db.ErrButtonHasOpenProposal` / `db.ErrButtonTaskExists` / "A newer proposal for this button is open (#N)" and exit **3**; the Desktop reads exit 3 as "state moved" and re-reads, any other non-zero exit is the propose-error banner.
+- Exactly one task per proposal (AGENT-05, migration 00179): partial unique `idx_targets_action_source` + `db.CreateTargetForAction` (insert-or-return), and one open proposal per button `idx_agent_actions_open_context`; a propose while the button's task still exists is refused. Refusals map to `db.ErrButtonHasOpenProposal` / `db.ErrButtonTaskExists` / "A newer proposal for this button is open (#N)" and exit **3**; the Desktop reads exit 3 as "state moved" and re-reads, any other non-zero exit is the propose-error banner.
 - Button states (`ArtifactTargetButton`, resolved by `TargetButtonStateResolver` from `InboxTargetButtonFacts`): idle, **Waiting for approval** (opens the approval card, `ActionStripViewModel.openProposal`), **Creating task…**, stuck **Didn't finish** + **Try again** (`approved`/`executing` 2 minutes after `decided_at` with no live process of ours: `actions apply` or `actions apply --force` on the same row), **Task created** (opens the task), failed + **Try again**, propose error. No sweep moves stuck rows. The approval card shows because B narrowed STRIP-01 to leave out only inbox `apply_track_action` rows.
 
 ## Desktop

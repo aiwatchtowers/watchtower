@@ -51,7 +51,7 @@ fi
 if [ "$FAKE_MODE" = "noread" ]; then
   while :; do sleep 1; done
 fi
-[ "$FAKE_MODE" = "gate" ] && echo $$ > "$FAKE_PID"
+case "$FAKE_MODE" in gate|long_line) echo $$ > "$FAKE_PID" ;; esac
 if [ "$FAKE_MODE" = "grandchild" ]; then
   sleep 300 &
   echo $! > "$FAKE_CHILD_PID"
@@ -166,6 +166,27 @@ while IFS= read -r line; do
       case "$FAKE_MODE" in
         crash_once)
           if first_time; then exit 3; fi ;;
+        exit_clean)
+          # Exit 0 mid-turn with partial text and no result line (L12).
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}'
+          [ -n "$FAKE_STDERR" ] && printf '%s\n' "$FAKE_STDERR" >&2
+          exit 0 ;;
+        long_line)
+          # A stdout line longer than the reader takes, of type
+          # $FAKE_LONG_TYPE (default user, a huge tool result), in the middle
+          # of a turn, which then finishes as usual — or, when that line was
+          # the result itself, waits for the next message as claude does.
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"before "}}}'
+          printf '{"type":"%s","pad":"' "${FAKE_LONG_TYPE:-user}"
+          head -c "${FAKE_LONG_BYTES:-4096}" /dev/zero | tr '\0' 'x'
+          printf '"}\n'
+          [ "${FAKE_LONG_TYPE:-user}" = result ] && continue
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"after"}}}'
+          printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_stop","index":0}}'
+          printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"sess-fake","usage":{"input_tokens":3,"output_tokens":2}}'
+          continue ;;
         crash_always)
           printf '%b\n' "${FAKE_CRASH:-panic: cannot decode content block}" >&2
           exit 3 ;;

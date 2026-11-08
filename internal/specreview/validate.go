@@ -20,11 +20,17 @@ func Normalize(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// contains reports whether needle occurs in hay after both are normalised.
-// A needle under minQuoteRunes runes is too weak to anchor anything.
-func contains(hay, needle string) bool {
-	return containsNorm(Normalize(hay), needle)
+// ContainsQuote reports whether quote occurs in hay after both are
+// normalised (whitespace runs collapsed): the one quote check of the spec
+// reviewer, used by Parse and by a thread's proposed finding alike. A quote
+// under minQuoteRunes runes is too weak to anchor anything; one over
+// maxQuoteRunes is refused, never clipped.
+func ContainsQuote(hay, quote string) bool {
+	return containsNorm(Normalize(hay), quote)
 }
+
+// contains is ContainsQuote.
+func contains(hay, needle string) bool { return ContainsQuote(hay, needle) }
 
 // containsNorm is contains for a hay that is already normalised.
 func containsNorm(normHay, needle string) bool {
@@ -58,6 +64,18 @@ type validator struct {
 	docNorm  string
 	root     *os.Root // nil when Folder is unset or unopenable
 	dropped  int
+	// guard is the drift guards of a loop round, nil outside a loop.
+	guard     *driftGuard
+	droppedBy map[string]int
+}
+
+// docValidator is a validator over doc's chapters, with no other sources.
+func docValidator(doc string, t DocType) *validator {
+	v := &validator{src: Sources{Doc: doc}, chapters: Chapters(doc, t), docNorm: Normalize(doc)}
+	for _, c := range v.chapters {
+		v.norm = append(v.norm, Normalize(doc[c.Start:c.End]))
+	}
+	return v
 }
 
 // normHeading is a heading as compared: leading # and case stripped.
@@ -201,7 +219,8 @@ func (v *validator) unanchoredChapter(ref string) string {
 // Parse validates a reviewer reply against what it may quote. A wrong enum, a
 // missing or unfound anchor, an unknown source ref or verdict key, an
 // unreadable evidence path, a duplicate or an entry over the cap drops that entry (counted in
-// Dropped); malformed JSON or an empty summary fails the whole call.
+// Dropped); in an author loop the drift guards drop more (drift, counted in
+// DroppedBy too). Malformed JSON or an empty summary fails the whole call.
 func Parse(raw string, src Sources, t DocType) (Result, error) {
 	js, err := prompts.ExtractJSONObject(raw)
 	if err != nil {
@@ -219,10 +238,9 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 		return Result{}, errors.New("spec review reply: empty summary")
 	}
 
-	v := &validator{src: src, chapters: Chapters(src.Doc, t), docNorm: Normalize(src.Doc)}
-	for _, c := range v.chapters {
-		v.norm = append(v.norm, Normalize(src.Doc[c.Start:c.End]))
-	}
+	v := docValidator(src.Doc, t)
+	v.src = src
+	v.guard = newDriftGuard(src, v.chapters)
 	if src.Folder != "" {
 		if r, err := os.OpenRoot(src.Folder); err == nil {
 			v.root = r
@@ -232,10 +250,12 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 
 	out := Result{
 		Summary:      summary,
+		Brief:        clip(in.Brief, maxBriefRunes),
 		Chapters:     v.chapters,
 		CodeRead:     in.CodeRead,
 		Agreements:   v.agreements(in.Agreements),
 		DecidedAlone: v.decidedAlone(in.DecidedAlone),
+		Theses:       v.theses(in.Theses),
 		BlindSpots:   v.blindSpots(in.BlindSpots),
 		Checks:       v.checks(in.Checks),
 		Resolved:     v.resolved(in.Resolved),
@@ -248,7 +268,7 @@ func Parse(raw string, src Sources, t DocType) (Result, error) {
 			out.Notes = append(out.Notes, n)
 		}
 	}
-	out.Dropped = v.dropped
+	out.Dropped, out.DroppedBy = v.dropped, v.droppedBy
 	return out, nil
 }
 
@@ -291,6 +311,12 @@ func (v *validator) agreements(in []Agreement) []Agreement {
 			continue
 		}
 		seen[a.Key] = true
+		if a.Status != "as_agreed" {
+			if r := v.drift(KindAgreement, a.Key, a.Severity, a.Where, a.Source.Ref, a.Chapter); r != "" {
+				v.dropFor(r)
+				continue
+			}
+		}
 		out = append(out, a)
 	}
 	return out
@@ -314,7 +340,43 @@ func (v *validator) decidedAlone(in []DecidedAlone) []DecidedAlone {
 			continue
 		}
 		seen[d.Key] = true
+		if r := v.drift(KindDecidedAlone, d.Key, d.Severity, &d.Where, "", d.Chapter); r != "" {
+			v.dropFor(r)
+			continue
+		}
 		out = append(out, d)
+	}
+	return out
+}
+
+func validThesisKind(k string) bool {
+	switch k {
+	case ThesisGoal, ThesisDecision, ThesisOwnerChange, ThesisNonGoal, ThesisRisk:
+		return true
+	}
+	return false
+}
+
+// theses keeps a thesis of a known kind whose where-quote is found; its
+// chapter comes from the anchor and its key from kind and text alone.
+func (v *validator) theses(in []Thesis) []Thesis {
+	out := []Thesis{}
+	seen := map[string]bool{}
+	for _, t := range in {
+		t.Text = field(t.Text)
+		ch, h, ok := v.anchor(t.Where)
+		if t.Text == "" || !validThesisKind(t.Kind) || !ok || len(out) >= maxTheses {
+			v.drop()
+			continue
+		}
+		t.Chapter, t.Where.Heading = ch, h
+		t.Key = itemKey("th:", t.Kind+"\x00"+t.Text, "")
+		if seen[t.Key] {
+			v.drop()
+			continue
+		}
+		seen[t.Key] = true
+		out = append(out, t)
 	}
 	return out
 }
@@ -345,6 +407,10 @@ func (v *validator) blindSpots(in []BlindSpot) []BlindSpot {
 			continue
 		}
 		seen[b.Key] = true
+		if r := v.drift(KindBlindSpot, b.Key, b.Severity, b.Where, "", b.Chapter); r != "" {
+			v.dropFor(r)
+			continue
+		}
 		out = append(out, b)
 	}
 	return out
@@ -371,6 +437,12 @@ func (v *validator) checks(in []Check) []Check {
 			continue
 		}
 		seen[c.Key] = true
+		if c.Answer == "concern" {
+			if r := v.drift(KindCheck, c.Key, c.Severity, nil, "", c.Chapter); r != "" {
+				v.dropFor(r)
+				continue
+			}
+		}
 		out = append(out, c)
 	}
 	return out

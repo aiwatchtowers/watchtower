@@ -43,12 +43,15 @@ var specReviewBeforeRelaunch func(askID int64)
 // "could not start"), and a running row whose process is gone, or that started
 // longer ago than the reviewer's timeout plus a grace, is failed — an overdue
 // reviewer that still runs is stopped first (SIGTERM to its process group).
+// The author loops and the threads' questions to the author are swept first,
+// with or without a launcher.
 func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
 	}
 	now := time.Now()
 	d.sweepSpecLoops(now)
+	d.sweepSpecReviewQuestions(now)
 	if d.specReviewLaunch == nil {
 		return
 	}
@@ -138,6 +141,37 @@ func (d *Daemon) sweepSpecLoops(now time.Time) {
 			if fin.Add(specreview.AuthorTimeout).Before(now) {
 				d.revealSpecLoop(r.AskID, specreview.EndTimeout, now)
 			}
+		}
+	}
+}
+
+// sweepSpecReviewQuestions closes the thread questions the author can no
+// longer answer, so it happens with the Desktop closed (spec 2026-11-08 §3):
+// an ask with no session left is `gone` — the loop's session_gone rule, a
+// stopped session keeps its row and may be resumed —, an open question older
+// than QuestionTimeout is `expired`. A question answered or closed meanwhile
+// (ErrQuestionClosed) is not an error. It needs no launcher.
+func (d *Daemon) sweepSpecReviewQuestions(now time.Time) {
+	rows, err := d.db.OpenSpecReviewQuestionsToSweep()
+	if err != nil {
+		d.logger.Printf("spec review sweep: %v", err)
+		return
+	}
+	for _, q := range rows {
+		state := "gone"
+		if q.SessionBound {
+			created, perr := db.ParseSpecReviewTime(q.CreatedAt)
+			if perr != nil {
+				d.logger.Printf("spec review sweep: question %d: unreadable created_at, its timeout cannot run: %v", q.ID, perr)
+				continue
+			}
+			if !created.Add(specreview.QuestionTimeout).Before(now) {
+				continue
+			}
+			state = "expired"
+		}
+		if err := d.db.CloseSpecReviewQuestion(q.ID, state, now); err != nil && !errors.Is(err, db.ErrQuestionClosed) {
+			d.logger.Printf("spec review sweep: closing question %d: %v", q.ID, err)
 		}
 	}
 }

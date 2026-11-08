@@ -56,8 +56,9 @@ package enum AgentChoicePresentation {
     /// Claude Code row (and a shell) keeps the wording it always had.
     package static func deleteSessionMessage(_ kind: TerminalSession.Kind) -> String {
         switch kind {
-        case .codex: "Its process stops and it leaves the list. Codex's own session file is kept."
-        case .claude, .shell: "Its process stops and it leaves the list. Claude Code's own transcript is kept."
+        case .agent(.codex): "Its process stops and it leaves the list. Codex's own session file is kept."
+        case .agent(.claude), .shell: "Its process stops and it leaves the list. Claude Code's own transcript is kept."
+        case .unsupported: "It leaves the list. Its agent's own session record is kept."
         }
     }
 

@@ -1,56 +1,19 @@
 package sessionfeed
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"watchtower/internal/agentkind"
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
+	"watchtower/internal/rollout"
 )
 
 // maxSubagentDepth bounds FindSubagent's descent into nested subagents.
 const maxSubagentDepth = 8
-
-// ReadSession is the entries of `workbench session-feed --session S --json`
-// read whole (no cursor), or with toolUseID set those of `--subagent T`: the
-// one reader the CLI and the hub's session_chat slice share. A missing
-// session wraps db.ErrTerminalSessionNotFound; a shell session is refused.
-func ReadSession(ctx context.Context, d *db.DB, sessionID int64, toolUseID string, dirs Dirs) ([]Entry, error) {
-	sess, err := d.GetTerminalSession(sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("session %d: %w", sessionID, err)
-	}
-	kind := agentkind.Kind(sess.Kind)
-	if kind != agentkind.Claude && kind != agentkind.Codex {
-		return nil, fmt.Errorf("session %d is not an agent session", sessionID)
-	}
-	convs, err := SessionConversations(ctx, d, sessionID, kind == agentkind.Codex, sess.FolderPath, sess.TranscriptPath.String, dirs)
-	if err != nil {
-		return nil, err
-	}
-	if toolUseID != "" {
-		res, _, err := FindSubagent(convs, toolUseID)
-		if err != nil {
-			return nil, err
-		}
-		return res.Entries, nil
-	}
-	var lookup AskLookup
-	if sess.WorkbenchID.Valid {
-		lookup = AskLookupFor(d, sess.WorkbenchID.Int64)
-	}
-	feed, err := Build(convs, nil, lookup)
-	if err != nil {
-		return nil, err
-	}
-	return feed.Entries, nil
-}
 
 // AskLookupFor resolves the asks of workbench workbenchID only, with the
 // answer rendered as the owner gave it. Reading never marks an ask
@@ -157,7 +120,7 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
-		f, err := os.Open(path)
+		f, _, err := rollout.Open(path)
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
@@ -166,10 +129,7 @@ func findCodexSubagent(c Conversation, selector string, depth int) (*Result, str
 		if err != nil {
 			return nil, "", &selectedCodexSubagentError{err}
 		}
-		for _, n := range nested.Agents {
-			ref := n.Ref
-			res.Entries = append(res.Entries, Entry{ID: ref.ToolUseID, Kind: KindSubagent, Subagent: &ref, At: n.StartedAt, Conversation: child.AgentSessionID})
-		}
+		res.Entries = append(res.Entries, liveMarkers(nested, child.AgentSessionID)...)
 		return res, path, nil
 	}
 	for _, a := range live.Agents {

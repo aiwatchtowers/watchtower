@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"database/sql"
 	"errors"
 	"strconv"
 	"strings"
@@ -534,4 +535,348 @@ func TestRecordCwdAlone_FailureHasItsOwnLabel(t *testing.T) {
 	reportStateHookError(&out, err)
 	assert.Contains(t, out.String(), "watchtower: agent cwd not recorded: ")
 	assert.NotContains(t, out.String(), "session state not recorded")
+}
+
+// Board #1019: an interrupt ends the turn the way the Stop does. An async
+// tool hook of the interrupted turn whose process starts after the
+// interrupt's — a parallel call's PostToolUse, the interrupted call's own
+// PreToolUse or PostToolUseFailure — writes nothing over its `waiting`; the
+// next prompt starts a new turn, and a tool of that turn records `working`.
+func TestProj11_InterruptedTurnsLateToolHookNeverOverwritesWaiting(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload func(path string) string
+	}{
+		{"parallel call's PostToolUse", func(p string) string { return toolEventPayload("PostToolUse", "toolu_A", p, "") }},
+		{"interrupted call's PreToolUse", func(p string) string { return toolEventPayload("PreToolUse", "toolu_B", p, "") }},
+		{"parallel call's PostToolUseFailure", func(p string) string {
+			return toolEventPayload("PostToolUseFailure", "toolu_A", p, "")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopStateFixture(t, "open")
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			_, at := hookClock(t)
+			transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+			require.Equal(t, "waiting", hookStep(t, database, pid, row, at, 1, stopPayload(transcript)).AgentState.String)
+			recordToolEvent(t, pid, at, 2, statePayload("UserPromptSubmit", briefLaunchID, ""))
+			appendTranscript(t, transcript, transcriptPrompt("again"), transcriptToolUse("toolu_A"),
+				transcriptToolUse("toolu_B"), transcriptToolResult("toolu_A"))
+			recordToolEvent(t, pid, at, 3, toolEventPayload("PreToolUse", "toolu_B", transcript, ""))
+			require.Equal(t, "working", storedAgentState(t, database, row))
+
+			recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+			require.Equal(t, "waiting", storedAgentState(t, database, row))
+
+			recordToolEvent(t, pid, at, 5, tc.payload(transcript))
+			assert.Equal(t, "waiting", storedAgentState(t, database, row), "a late hook of the interrupted turn wrote")
+
+			recordToolEvent(t, pid, at, 6, statePayload("UserPromptSubmit", briefLaunchID, ""))
+			assert.Equal(t, "working", storedAgentState(t, database, row), "the next prompt")
+			require.Equal(t, "waiting", hookStep(t, database, pid, row, at, 7, stopPayload(transcript)).AgentState.String)
+			appendTranscript(t, transcript, transcriptPrompt("next"), transcriptToolUse("toolu_C"))
+			recordToolEvent(t, pid, at, 8, toolEventPayload("PreToolUse", "toolu_C", transcript, ""))
+			assert.Equal(t, "working", storedAgentState(t, database, row), "a later turn's tool start")
+		})
+	}
+}
+
+// interruptFixture is a session whose turn after a Stop ran parallel calls
+// toolu_A and toolu_B, B started (working at second 3): the interrupt's
+// setting. It returns the transcript.
+func interruptFixture(t *testing.T) (database *db.DB, pid, row int64, at func(int), transcript string) {
+	t.Helper()
+	database, pid, row = stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at = hookClock(t)
+	transcript = writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+	require.Equal(t, "waiting", hookStep(t, database, pid, row, at, 1, stopPayload(transcript)).AgentState.String)
+	recordToolEvent(t, pid, at, 2, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	appendTranscript(t, transcript, transcriptPrompt("again"), transcriptToolUse("toolu_A"),
+		transcriptToolUse("toolu_B"), transcriptToolResult("toolu_A"))
+	recordToolEvent(t, pid, at, 3, toolEventPayload("PreToolUse", "toolu_B", transcript, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row))
+	return database, pid, row, at, transcript
+}
+
+// Board #1019: the interrupt's `waiting` and its turn end land in one
+// guarded UPDATE, so a write that loses the lock once lands whole on the
+// retry; an interrupt the transcript places in a turn already ended writes
+// nothing and leaves the turn end alone.
+func TestProj11_InterruptStoresItsTurnEndWithTheState(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	orig := setTerminalAgentState
+	t.Cleanup(func() { setTerminalAgentState = orig })
+	calls := 0
+	setTerminalAgentState = func(d *db.DB, id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string,
+		failure *db.AgentFailure, prompt bool, order db.AgentOrder) (bool, error) {
+		calls++
+		if calls == 1 {
+			return false, busyError
+		}
+		return orig(d, id, workbenchID, sessionID, state, at, onlyFrom, failure, prompt, order)
+	}
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	assert.Equal(t, 2, calls, "one write, retried once")
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.False(t, s.ToolRun)
+	end, ok := transcriptSize(transcript)
+	require.True(t, ok)
+	assert.Equal(t, end, s.TurnEnd.Int64, "the interrupt did not record its turn end")
+
+	setTerminalAgentState = orig
+	before := rowSnapshot(t, database, row)
+	appendTranscript(t, transcript, transcriptPrompt("next"))
+	recordToolEvent(t, pid, at, 6, interrupted("toolu_B", transcript))
+	assert.Equal(t, before, rowSnapshot(t, database, row), "an ended turn's interrupt wrote")
+}
+
+// Board #1019: the interrupt keeps the time order of the stored state's
+// transition. One whose hook started before it — the next prompt's
+// `working` (here out of a permission prompt the Esc left), or a tool run's
+// `working` out of `approval` — writes nothing and moves no turn end, so the
+// next turn's tool calls are never placed in the interrupted one. A tool
+// run over `working` is no transition: the interrupt stamped after the
+// turn's first `working` still ends it.
+func TestProj11_LateInterruptMovesNothing(t *testing.T) {
+	t.Run("after the next prompt", func(t *testing.T) {
+		database, pid, row, at, transcript := interruptFixture(t)
+		recordToolEvent(t, pid, at, 4, statePayload("Notification", briefLaunchID, "permission_prompt"))
+		appendTranscript(t, transcript, transcriptPrompt("next"))
+		recordToolEvent(t, pid, at, 6, statePayload("UserPromptSubmit", briefLaunchID, ""))
+		before := rowSnapshot(t, database, row)
+		require.Equal(t, "working", before["agent_state"])
+		recordToolEvent(t, pid, at, 5, interrupted("toolu_B", transcript))
+		assert.Equal(t, before, rowSnapshot(t, database, row), "a late interrupt wrote")
+	})
+	t.Run("after a later tool run out of approval", func(t *testing.T) {
+		database, pid, row, at, transcript := interruptFixture(t)
+		recordToolEvent(t, pid, at, 4, statePayload("Notification", briefLaunchID, "permission_prompt"))
+		recordToolEvent(t, pid, at, 6, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+		before := rowSnapshot(t, database, row)
+		require.Equal(t, "working", before["agent_state"])
+		recordToolEvent(t, pid, at, 5, interrupted("toolu_B", transcript))
+		assert.Equal(t, before, rowSnapshot(t, database, row), "an interrupt stamped before the stored state wrote")
+	})
+	t.Run("after a later tool run over working", func(t *testing.T) {
+		database, pid, row, at, transcript := interruptFixture(t)
+		recordToolEvent(t, pid, at, 5, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+		recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+		assert.Equal(t, "waiting", storedAgentState(t, database, row), "the interrupt did not end its turn")
+	})
+}
+
+// Board #1019: an interrupt the transcript cannot place — no tool_use_id,
+// a call not in it, or no transcript — still records `waiting` by the time
+// order, moves no turn end, and says so on one stderr line with no content.
+func TestProj11_UnplacedInterruptKeepsTheTurnEnd(t *testing.T) {
+	for _, tc := range []struct{ name, id, path, line string }{
+		{"no call id", "", "", "interrupted call not placed in the transcript"},
+		{"call not in the transcript", "toolu_Z", "", "interrupted call not placed in the transcript"},
+		{"transcript unreadable", "toolu_B", "/nonexistent/transcript.jsonl", "transcript unreadable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row, at, transcript := interruptFixture(t)
+			stored, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			path := tc.path
+			if path == "" {
+				path = transcript
+			}
+			at(4)
+			out, errOut, err := runSessionState(t, pid, strings.NewReader(interrupted(tc.id, path)))
+			require.NoError(t, err)
+			require.Empty(t, out)
+			assert.Equal(t, "watchtower: interrupt: turn end not moved: "+tc.line+"\n", errOut)
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, "waiting", s.AgentState.String)
+			assert.Equal(t, stored.TurnEnd, s.TurnEnd, "an unplaced interrupt moved the turn end")
+		})
+	}
+}
+
+// Board #1019: an interrupt with no turn end moved has its own stderr label.
+func TestReportStateHookError_TurnEndNotMovedHasItsOwnLabel(t *testing.T) {
+	var out bytes.Buffer
+	reportStateHookError(&out, errors.Join(turnEndNotMoved{"transcript unreadable"}, errors.New("state busy")))
+	assert.Equal(t, "watchtower: interrupt: turn end not moved: transcript unreadable\n"+
+		"watchtower: session state not recorded: state busy\n", out.String())
+}
+
+// Board #1019 (review F1): a turn that opened without a UserPromptSubmit (a
+// background notification) leaves the Stop's `waiting` stored; Esc before
+// any of its tool hooks landed repeats the state but still stores the turn
+// end, so the interrupted turn's late tool hooks write nothing.
+func TestProj11_InterruptOverWaitingStoresTheTurnEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload func(path string) string
+	}{
+		{"interrupted call's PreToolUse", func(p string) string { return toolEventPayload("PreToolUse", "toolu_B", p, "") }},
+		{"parallel call's PostToolUse", func(p string) string { return toolEventPayload("PostToolUse", "toolu_A", p, "") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := stopStateFixture(t, "open")
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			_, at := hookClock(t)
+			transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+			stopped := hookStep(t, database, pid, row, at, 1, stopPayload(transcript))
+			require.Equal(t, "waiting", stopped.AgentState.String)
+			appendTranscript(t, transcript, transcriptToolUse("toolu_A"), transcriptToolUse("toolu_B"), transcriptToolResult("toolu_A"))
+
+			recordToolEvent(t, pid, at, 3, interrupted("toolu_B", transcript))
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, "waiting", s.AgentState.String)
+			end, ok := transcriptSize(transcript)
+			require.True(t, ok)
+			require.NotEqual(t, stopped.TurnEnd, s.TurnEnd)
+			assert.Equal(t, end, s.TurnEnd.Int64, "the interrupt over waiting did not store its turn end")
+
+			recordToolEvent(t, pid, at, 4, tc.payload(transcript))
+			assert.Equal(t, "waiting", storedAgentState(t, database, row), "a late hook of the interrupted turn wrote")
+		})
+	}
+}
+
+// Board #1019 (review T1): Esc in the session's first turn, with no turn end
+// stored yet, places the call anywhere in the transcript and stores one.
+func TestProj11_InterruptInTheFirstTurnStoresATurnEnd(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptToolUse("toolu_A"), transcriptToolUse("toolu_B"),
+		transcriptToolResult("toolu_A"))
+	recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	recordToolEvent(t, pid, at, 2, toolEventPayload("PreToolUse", "toolu_B", transcript, ""))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	require.Equal(t, "working", s.AgentState.String)
+	require.False(t, s.TurnEnd.Valid, "no turn end before the first Stop")
+
+	recordToolEvent(t, pid, at, 3, interrupted("toolu_B", transcript))
+	s, err = database.GetTerminalSession(row)
+	require.NoError(t, err)
+	end, ok := transcriptSize(transcript)
+	require.True(t, ok)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, sql.NullInt64{Int64: end, Valid: true}, s.TurnEnd)
+
+	recordToolEvent(t, pid, at, 4, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "a late hook of the interrupted first turn wrote")
+}
+
+// Board #1019 (review T2): after an interrupt the next prompt starts a turn
+// with no Stop in between; that turn's tool result, placed after the
+// interrupt's turn end, records its `working` as a tool run.
+func TestProj11_ToolAfterAnInterruptWithNoStopRecords(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	require.Equal(t, "waiting", storedAgentState(t, database, row))
+
+	appendTranscript(t, transcript, transcriptPrompt("next"), transcriptToolUse("toolu_C"), transcriptToolResult("toolu_C"))
+	recordToolEvent(t, pid, at, 5, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	recordToolEvent(t, pid, at, 6, statePayload("Notification", briefLaunchID, "permission_prompt"))
+	require.Equal(t, "approval", storedAgentState(t, database, row))
+	recordToolEvent(t, pid, at, 7, toolEventPayload("PostToolUse", "toolu_C", transcript, ""))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "working", s.AgentState.String, "the next turn's tool result was held back")
+	assert.True(t, s.ToolRun)
+}
+
+// Board #1019 (review): an interrupt input with no transcript path records
+// `waiting` by the time order, moves no turn end and prints nothing.
+func TestProj11_InterruptWithNoTranscriptPathIsSilent(t *testing.T) {
+	database, pid, row, at, _ := interruptFixture(t)
+	stored, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", "")) // requires empty stdout and stderr
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, stored.TurnEnd, s.TurnEnd)
+}
+
+// Board #1019 (codex verify): the interrupt's turn end comes from the
+// transcript, not its size. The owner's next prompt was a repeat (`working`
+// over `working`, the time order unmoved) and is already in the transcript
+// with its first tool call when the late interrupt hook runs: the turn end
+// stops before that prompt, so the next turn's tool result still records.
+func TestProj11_LateInterruptAfterARepeatedPromptKeepsTheNextTurn(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	appendTranscript(t, transcript, transcriptToolResult("toolu_B"))
+	before, ok := transcriptSize(transcript)
+	require.True(t, ok)
+	appendTranscript(t, transcript, transcriptPrompt("next"), transcriptToolUse("toolu_C"), transcriptToolResult("toolu_C"))
+	recordToolEvent(t, pid, at, 5, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row), "the prompt is a repeat")
+
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, sql.NullInt64{Int64: before, Valid: true}, s.TurnEnd, "the turn end stops before the next prompt")
+
+	recordToolEvent(t, pid, at, 6, toolEventPayload("PostToolUse", "toolu_C", transcript, ""))
+	s, err = database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "working", s.AgentState.String, "the next turn's tool result was taken for the interrupted turn's")
+	assert.True(t, s.ToolRun)
+}
+
+// Board #1019 (codex verify): the stored turn end is where the interrupted
+// turn ends in the transcript — before Claude Code's interrupt marker after
+// the call's result — not the transcript's size; the interrupted turn's
+// parallel call, resulting after the marker, is still its own.
+func TestProj11_InterruptTurnEndIsTheCallsPlaceNotTheSize(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	appendTranscript(t, transcript, transcriptToolResult("toolu_B"))
+	want, ok := transcriptSize(transcript)
+	require.True(t, ok)
+	appendTranscript(t, transcript,
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`+"\n",
+		transcriptToolResult("toolu_A"), transcriptPrompt("next"), transcriptToolUse("toolu_C"))
+	size, _ := transcriptSize(transcript)
+	require.Greater(t, size, want)
+
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, sql.NullInt64{Int64: want, Valid: true}, s.TurnEnd)
+	recordToolEvent(t, pid, at, 5, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "the interrupted turn's parallel result wrote")
+}
+
+// A Stop reads the row's agent turns only to count its background_tasks
+// against them: a Stop without the key never reads them, so a failing read
+// cannot cost it its `waiting`; one with the key does read them.
+func TestProj11_StopWithoutBackgroundTasksNeverReadsTheTurns(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	orig := readTerminalAgentTurns
+	t.Cleanup(func() { readTerminalAgentTurns = orig })
+	reads := 0
+	readTerminalAgentTurns = func(*db.DB, int64) (db.AgentTurns, error) {
+		reads++
+		return db.AgentTurns{}, errors.New("turns unreadable")
+	}
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+
+	recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row))
+	s := hookStep(t, database, pid, row, at, 2, stopPayload(transcript)) // requires an empty stderr
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Zero(t, reads, "a Stop without background_tasks read the turns")
+
+	recordToolEvent(t, pid, at, 3, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	at(4)
+	_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10),
+		strings.TrimSuffix(stopPayload(transcript), "}")+`,"background_tasks":[{"id":"a1","type":"subagent"}]}`)
+	assert.Equal(t, 1, reads, "a Stop with background_tasks counts them against the turns")
+	assert.Contains(t, errOut, "turns unreadable")
 }

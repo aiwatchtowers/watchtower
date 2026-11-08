@@ -144,13 +144,36 @@ type Idea struct {
 	OwnerSource Source `json:"owner_source"`
 }
 
+// Thesis kinds of the summary.
+const (
+	ThesisGoal        = "goal"
+	ThesisDecision    = "decision"
+	ThesisOwnerChange = "owner_change" // what changes for the owner
+	ThesisNonGoal     = "non_goal"
+	ThesisRisk        = "risk"
+)
+
+// Thesis is one line of the review's summary, tied to its place in the
+// document. Its key comes from the kind and the normalised text only, so a
+// Discuss thread on it survives a re-run that quotes another passage.
+type Thesis struct {
+	Key     string `json:"key"`
+	Kind    string `json:"kind"`
+	Text    string `json:"text"`
+	Chapter string `json:"chapter"`
+	Where   Anchor `json:"where"`
+}
+
 // Result is the validated reviewer reply: what Plan 2 reads and the Desktop
 // decodes. JSON keys are pinned by testdata/result_keys.golden. Idea is nil
 // (and the key left out) when the reviewer gave none or it was dropped.
 // Verdicts (author-loop rounds 2+ only) rule on the previous round's open
-// items; the key is left out when there are none.
+// items; the key is left out when there are none. Brief and Theses are the
+// summary screen: empty in a reply from before it existed.
 type Result struct {
 	Summary      string         `json:"summary"`
+	Brief        string         `json:"brief"`
+	Theses       []Thesis       `json:"theses"`
 	Idea         *Idea          `json:"idea,omitempty"`
 	Agreements   []Agreement    `json:"agreements"`
 	DecidedAlone []DecidedAlone `json:"decided_alone"`
@@ -162,6 +185,10 @@ type Result struct {
 	Notes        []string       `json:"notes"`
 	CodeRead     bool           `json:"code_read"`
 	Dropped      int            `json:"dropped"`
+	// DroppedBy counts, by drift-guard reason (DropUnchangedText,
+	// DropMinorLate, DropDecided), the entries Dropped holds for that
+	// reason; left out when no guard dropped anything.
+	DroppedBy map[string]int `json:"dropped_by,omitempty"`
 }
 
 // Sources is everything a quote may come from. Every map is keyed by the Ref
@@ -182,6 +209,20 @@ type Sources struct {
 	// PrevOpenKeys is the previous round's open items of an author loop:
 	// the only keys a verdict may name.
 	PrevOpenKeys map[string]bool
+	// Closed is the review chain's closed list (ClosedList): findings that
+	// never come back.
+	Closed []ClosedItem
+	// KnownKeys is every key in a ledger or an open list along the chain.
+	KnownKeys map[string]bool
+	// LoopRound is the round of the author loop under review, 0 when the
+	// review is not a loop round: the drift guards run only in a loop.
+	LoopRound int
+	// PrevDoc is the previous ask's document along the chain, "" for none:
+	// the baseline of the changed-text guard.
+	PrevDoc string
+	// NewRefs is the conversation entries, asks and comments newer than the
+	// previous ask: a finding with no where-quote may cite only these.
+	NewRefs map[string]bool
 }
 
 // Severity levels of a finding.

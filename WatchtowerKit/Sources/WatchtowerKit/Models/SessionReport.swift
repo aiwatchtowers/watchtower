@@ -38,7 +38,7 @@ public struct SessionReport: SliceMirror {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         session = try c.decode(.session, or: Session.empty)
-        progress = try c.decode(.progress, or: Progress(done: 0, total: 0))
+        progress = try c.decode(.progress, or: Progress(done: 0, total: 0, merged: 0))
         onYou = try c.decode(.onYou, or: [])
         onYouMore = try c.decodeIfPresent(Int.self, forKey: .onYouMore)
         now = try c.decode(.now, or: [])
@@ -114,19 +114,32 @@ public struct SessionReport: SliceMirror {
     public struct Progress: Decodable, Hashable, Sendable {
         public let done: Int
         public let total: Int
+        /// Not done, but the task's branch is merged into its parent's
+        /// (board #986, #1017); 0 from a Mac before #1017.
+        public let merged: Int
 
-        public init(done: Int, total: Int) {
+        public init(done: Int, total: Int, merged: Int = 0) {
             self.done = done
             self.total = total
+            self.merged = merged
         }
 
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             done = try c.decode(.done, or: 0)
             total = try c.decode(.total, or: 0)
+            merged = try c.decode(.merged, or: 0)
         }
 
-        enum CodingKeys: String, CodingKey { case done, total }
+        enum CodingKeys: String, CodingKey { case done, total, merged }
+
+        /// "25 merged", worded as the Mac's report hero
+        /// (`SessionReportPresentation.heroLine`); nil with nothing merged or
+        /// no task in scope. The full report has no unchecked mark (only the
+        /// row's summary does), so it never reads "(unchecked)".
+        public var mergedText: String? {
+            MergedShareText.text(merged: merged, total: total, stale: false)
+        }
     }
 
     /// One of the session's open asks.
@@ -197,6 +210,9 @@ public struct SessionReport: SliceMirror {
         public let text: String
         public let done: Int
         public let total: Int
+        /// Not done, branch merged into its parent's (as `Progress.merged`);
+        /// 0 from a Mac before #1017.
+        public let merged: Int
         public let startedAt: String
         public let finishedAt: String
         /// Cap 50.
@@ -211,6 +227,7 @@ public struct SessionReport: SliceMirror {
             text = try c.decode(.text, or: "")
             done = try c.decode(.done, or: 0)
             total = try c.decode(.total, or: 0)
+            merged = try c.decode(.merged, or: 0)
             startedAt = try c.decode(.startedAt, or: "")
             finishedAt = try c.decode(.finishedAt, or: "")
             items = try c.decode(.items, or: [])
@@ -218,7 +235,7 @@ public struct SessionReport: SliceMirror {
         }
 
         enum CodingKeys: String, CodingKey {
-            case text, done, total, startedAt, finishedAt, items, itemsMore
+            case text, done, total, merged, startedAt, finishedAt, items, itemsMore
             case targetID = "targetId"
         }
     }

@@ -1,6 +1,7 @@
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// Records the argv of each call and answers a fixed output. No process is spawned.
 private final class RecordingCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -105,5 +106,21 @@ final class WorkbenchCLIReviewTests: XCTestCase {
         _ = try await cli.reviewLessons(projectID: 1, action: .dismiss(5))
         XCTAssertEqual(runner.lastArgs, ["workbench", "review", "lessons", "dismiss", "--workbench", "1", "--lesson", "5", "--json"])
         XCTAssertNil(runner.lastTimeout)
+    }
+
+    /// `spec-review question` prints one id: anything else says so, not
+    /// "not UTF-8".
+    func testSpecReviewQuestionNeedsAnID() async throws {
+        let ok = WorkbenchCLI(runner: FakeCLIRunner(stdout: Data("42\n".utf8)))
+        let id = try await ok.specReviewQuestion(askID: 1, itemKey: "ag:1", question: "why?")
+        XCTAssertEqual(id, 42)
+        let odd = WorkbenchCLI(runner: FakeCLIRunner(stdout: Data("question filed\n".utf8)))
+        do {
+            _ = try await odd.specReviewQuestion(askID: 1, itemKey: "ag:1", question: "why?")
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error as? WorkbenchCLIError, .unexpectedOutput(command: "workbench spec-review question"))
+            XCTAssertEqual(error.localizedDescription, "`watchtower workbench spec-review question` did not print an id")
+        }
     }
 }

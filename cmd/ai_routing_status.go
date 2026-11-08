@@ -59,8 +59,8 @@ func init() {
 				if p == "" {
 					continue
 				}
-				if p != "claude" && p != "codex" {
-					continue
+				if c, ok := providers.CapsFor(p); !ok || !c.Quota {
+					continue // only a provider with a subscription quota has a status
 				}
 				var status providerrouting.Status
 				var err error

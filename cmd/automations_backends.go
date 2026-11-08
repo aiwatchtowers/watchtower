@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
@@ -142,11 +144,14 @@ const automationAgentSystemPrompt = "You are one step of an automation script th
 // the child's `watchtower mcp` is pointed at it, since the allowlisted env
 // drops WATCHTOWER_CONFIG_PATH.
 func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, database *db.DB) automations.AgentRunner {
-	switch cfg.AI.Provider {
-	case "", "claude":
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "claude"}
-	case "codex":
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "codex"}
+	provider := cfg.AI.Provider
+	if provider == "" {
+		provider = providers.ByID("").ID
+	}
+	// Not providers.ByID(provider): an unknown id runs the in-process loop,
+	// never the default CLI child.
+	if providers.RunsChild(provider) {
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider}
 	}
 	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
 }
@@ -220,7 +225,9 @@ func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
 		Mode: providerrouting.PreferredReserve, Profile: providers.ToolPreflight, Retry: providerrouting.BeforeChild,
 		Tier: t, Revision: providers.RoutingRevision(r.cfg), Model: func(p string, _ digest.Tier) string { return tierModel(r.cfg, p, tier) },
 		Capable: func(p string, profile providers.InvocationProfile) bool {
-			return profile == providers.ToolPreflight && (p == "claude" || p == "codex")
+			// cliAgentRunner drives CLI children only; the row decides the rest.
+			caps, known := providers.CapsFor(p)
+			return profile == providers.ToolPreflight && known && providers.RunsChild(p) && providers.Satisfies(caps, profile)
 		}}
 }
 
@@ -246,31 +253,17 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	readyFile := filepath.Join(readyDir, "ready")
 	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
 	env := automationAgentEnv(req.RunID)
-	var client ai.Provider
-	if r.provider == "codex" {
-		home, err := codexAgentHome(r.dbPath, mcpArgs)
-		if err != nil {
-			return automations.AgentResult{}, err
-		}
-		defer func() { _ = os.RemoveAll(home) }()
-		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
-		c.SetMCPArgs(mcpArgs)
-		c.SetMCPEnvVars(codexAgentServerEnv)
-		// codex only: CODEX_HOME joins the env allowlist, pointing at the
-		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
-		c.SetChildEnv(append(env, "CODEX_HOME="+home))
-		c.SetServersFromHome()
-		c.SetProcessGroup(true)
-		client = c
-	} else {
-		c := ai.NewClient(model, r.dbPath, r.cfg.ClaudePath)
-		c.SetMCPArgs(mcpArgs)
-		c.SetWatchtowerTools(append(slices.Clone(req.Tools), "get_action"))
-		c.SetMaxTurns(automationAgentMaxTurns)
-		c.SetChildEnv(env)
-		c.SetProcessGroup(true)
-		client = c
+	newClient := wiringFor(r.provider).newAgentClient
+	if newClient == nil {
+		return automations.AgentResult{}, fmt.Errorf("agent(): provider %s runs no CLI child", r.provider)
 	}
+	client, cleanup, err := newClient(agentClientWiring{
+		cfg: r.cfg, dbPath: r.dbPath, model: model, mcpArgs: mcpArgs, env: env, tools: req.Tools,
+	})
+	if err != nil {
+		return automations.AgentResult{}, err
+	}
+	defer cleanup()
 	if err := req.BeforeModelCall(); err != nil {
 		return automations.AgentResult{}, err
 	}
@@ -363,31 +356,74 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 var codexAgentServerEnv = []string{automations.RunEnvMarker}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
-// temp folder the caller removes after the run. Its config.toml turns web
-// search off and declares only the watchtower automation-run server, so
+// temp folder the caller removes after the run (the returned remove), with
+// the run's rollout: the run is not --ephemeral, its turn cap counts the
+// rollout (N5). Its config.toml turns web search off and declares only the
+// watchtower automation-run server, so
 // neither the owner's ~/.codex/config.toml MCP servers nor web search —
 // both outside the effective tool set and GateAgentCall, and an
 // exfiltration channel for injected text — reach the child. The owner's
 // auth.json is linked, never copied, so codex can sign in; removing the
 // folder removes only the link.
-func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
-	dir, err := os.MkdirTemp("", "wt-agent-codex-home-*")
+func codexAgentHome(dbPath string, mcpArgs []string) (dir string, remove func(), err error) {
+	dir, remove, err = newCodexHome("wt-agent-codex-home-*", "auth.json")
 	if err != nil {
-		return "", fmt.Errorf("creating the agent's codex home: %w", err)
+		return "", nil, err
 	}
 	config := "web_search = \"disabled\"\n\n" + codex.WatchtowerServerTOML(dbPath, mcpArgs, codexAgentServerEnv)
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", fmt.Errorf("writing the agent's codex config: %w", err)
+		remove()
+		return "", nil, fmt.Errorf("writing the agent's codex config: %w", err)
 	}
-	auth := filepath.Join(ownerCodexHome(), "auth.json")
-	if _, err := os.Stat(auth); err == nil {
-		if err := os.Symlink(auth, filepath.Join(dir, "auth.json")); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", fmt.Errorf("linking the codex sign-in: %w", err)
+	return dir, remove, nil
+}
+
+// newCodexHome is a fresh 0700 temp CODEX_HOME named after pattern (one of
+// fsutil.StaleTempHomePatterns), with each named file of the owner's codex
+// home that exists linked into it, never copied: removing it removes only
+// the links. The home is held while it lives (fsutil.HoldTempHome), so the
+// stale-temp sweep removes it only after a killed run; remove drops the
+// hold and deletes the home, rollout included.
+func newCodexHome(pattern string, links ...string) (dir string, remove func(), err error) {
+	dir, err = os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("creating a codex run home: %w", err)
+	}
+	release, holdErr := fsutil.HoldTempHome(dir)
+	if holdErr != nil {
+		log.Printf("codex run home: not shielded from the stale-temp sweep: %v", holdErr)
+	}
+	remove = func() {
+		release()
+		removeCodexHome(dir)
+	}
+	for _, name := range links {
+		src := filepath.Join(ownerCodexHome(), name)
+		_, err := os.Stat(src)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err == nil {
+			err = os.Symlink(src, filepath.Join(dir, name))
+		}
+		if err != nil {
+			remove()
+			return "", nil, fmt.Errorf("linking the owner's codex %s: %w", name, err)
 		}
 	}
-	return dir, nil
+	return dir, remove, nil
+}
+
+// removeCodexHome removes a codex run home, rollout included; a failure is
+// logged as a class, never the path (FILES-01).
+func removeCodexHome(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		class := "i/o"
+		if errors.Is(err, fs.ErrPermission) {
+			class = "permission"
+		}
+		log.Printf("codex run home: removal failed (%s)", class)
+	}
 }
 
 // ownerCodexHome is the owner's codex home: CODEX_HOME, else ~/.codex.
@@ -427,12 +463,16 @@ func automationAgentEnv(runID int64) []string {
 // ceil(len(instruction+text)/4) tokens (the reply's share as output).
 func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
 	res := automations.AgentResult{Text: text}
-	if u != nil && u.CostUSD > 0 {
-		cost := u.CostUSD
+	var t llmusage.Tokens
+	if u != nil {
+		t = u.Tokens
+	}
+	if cost := t.ReportedCost(); cost > 0 {
 		res.ReportedCostUSD = &cost
 	}
-	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
-		res.InputTokens, res.OutputTokens = int64(u.InputTokens), int64(u.OutputTokens)
+	// AUTO-08 (ask #488): fresh input plus output, cache not debited.
+	if t.Input > 0 || t.Output > 0 {
+		res.InputTokens, res.OutputTokens = t.Input, t.Output
 		return res
 	}
 	total := int64(len(instruction)+len(text)+3) / 4

@@ -13,8 +13,19 @@ package final class ProviderConnection {
         package var serverURL: String?
         package var lightModel: String?
         package var configPath: String
-        package init(provider: String, model: String, path: String, configPath: String, serverURL: String? = nil, lightModel: String? = nil) {
-            self.serverURL = serverURL; self.lightModel = lightModel
+        /// A local HTTP server (`AIModelCatalog.isLocalServer`): tested over
+        /// HTTP, no CLI metadata.
+        package var localServer: Bool
+        package init(
+            provider: String,
+            model: String,
+            path: String,
+            configPath: String,
+            serverURL: String? = nil,
+            lightModel: String? = nil,
+            localServer: Bool = false
+        ) {
+            self.serverURL = serverURL; self.lightModel = lightModel; self.localServer = localServer
             self.provider = provider; self.model = model; self.path = path; self.configPath = configPath
         }
     }
@@ -40,19 +51,22 @@ package final class ProviderConnection {
     private var tasks: [Int: Task<Void, Never>] = [:]
     private let metadata: (Selection) async throws -> Metadata
     private let test: (Selection) async throws -> Result
+    /// The rows the copy names the reserve from (`reserve_peer`).
+    @ObservationIgnored private let catalog: AIModelCatalog
 
     package init(
+        catalog: AIModelCatalog = .shared,
         metadata: @escaping (Selection) async throws -> Metadata = { selected in
-            if selected.provider == "ollama" { return .notVerified }
+            if selected.localServer { return .notVerified }
             return try ProviderExecutableMetadata.check(provider: selected.provider, override: selected.path)
         },
         test: @escaping (Selection) async throws -> Result = { selected in
-            if selected.provider == "ollama" { return try await ProviderConnection.testLocal(selected) }
+            if selected.localServer { return try await ProviderConnection.testLocal(selected) }
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             let data = try await runner.run(args: ProviderConnection.arguments(selected), timeout: 55)
             return try JSONDecoder().decode(Result.self, from: data)
         }
-    ) { self.metadata = metadata; self.test = test }
+    ) { self.catalog = catalog; self.metadata = metadata; self.test = test }
 
     private static func testLocal(_ selected: Selection) async throws -> Result {
         let base = selected.serverURL?.isEmpty == false ? (selected.serverURL ?? "") : ProviderSettingsCopy.defaultOllamaURL
@@ -171,7 +185,7 @@ package final class ProviderConnection {
                 default: state = response.ok ? .ready : .notVerified
                 }
                 result = response.ok ? "\(Self.name(selected.provider)) answered using \(response.model)."
-                    : Self.testFailure + (response.error.map { " " + $0 } ?? "")
+                    : Self.testFailureMessage(code: response.errorCode, error: response.error)
             } catch {
                 guard operation == current, !Task.isCancelled else { return }
                 testing = false; state = .connectionNetworkError; result = Self.testFailure
@@ -188,33 +202,50 @@ package final class ProviderConnection {
         + "It may use paid quota. It does not test the light model or enable reserve."
     package static let modelRequired = "Enter a strong model or wait for the model catalog before testing."
     package static let metadataFailure = "Couldn't read connection metadata. Retry the connection check."
-    package static let testFailure = "Connection test failed. Retry the explicit test to send another request."
+    private static let testFailed = "Connection test failed."
+    package static let testFailure = testFailed + " Retry the explicit test to send another request."
+    /// The failed test's line: the CLI's message after `testFailure`, or
+    /// after a bare "Connection test failed." for `invalid_output`, whose
+    /// message names its own next step (codex ignoring the probe's system
+    /// prompt: update the CLI or its config, then test again) that "retry
+    /// the test" would contradict.
+    package static func testFailureMessage(code: String?, error: String?) -> String {
+        guard let error, !error.isEmpty else { return testFailure }
+        return (code == "invalid_output" ? testFailed : testFailure) + " " + error
+    }
     package static let mismatchedResult = "The response didn't match the selected provider and model. Connection is not verified."
-    package static func name(_ id: String) -> String { id == "ollama" ? "Ollama / Local" : id == "codex" ? "Codex" : "Claude" }
+    /// Provider id as the owner reads it: the catalog's display name (A7b).
+    package static func name(_ id: String) -> String { AIModelCatalog.shared.displayName(id) }
     package func label(for provider: String) -> String {
         let current = selection?.provider == provider ? state : .notVerified
-        return ProviderFallbackPreview(preferred: .claude, state: current).connectionLabel
+        return ProviderFallbackPreview(state: current).connectionLabel
     }
     package var copy: ProviderFallbackPreview.Copy? {
         guard let selection else { return nil }
-        let provider: ProviderFallbackPreview.Provider = selection.provider == "codex" ? .codex : .claude
+        // The copy names the provider under test as the reserve of its peer
+        // (the policy copy as the preferred one); a provider with no peer
+        // pairs with itself, so the copy still names it.
+        let side = ProviderFallbackPreview.Provider(id: selection.provider, name: Self.name(selection.provider))
+        let pair = catalog.fallbackPair(preferred: selection.provider) ?? .init(preferred: side, reserve: side)
         if testing {
             return .init(title: Self.testingLabel,
-                         detail: selection.provider == "ollama" ? Self.localWarning : Self.warning,
+                         detail: selection.localServer ? Self.localWarning : Self.warning,
                          action: nil, emphasis: .neutral, busy: true)
         }
         if state == .ready {
             return .init(title: "Connection test completed", detail: result ?? "", action: nil, emphasis: .success)
         }
-        let approved = ProviderFallbackPreview(preferred: state == .policy ? provider : provider.other, state: state).copy
+        let approved = ProviderFallbackPreview(pair: state == .policy ? pair : pair.reversed, state: state).copy
         let action = actionKind.map { action in
             action == .metadata ? "Retry connection check" : kind == .test ? "Retry connection test" : Self.testLabel
         }
         let detail = state == .connectionError
             ? "Sign in to the \(Self.name(selection.provider)) CLI in Terminal, then test connection again."
             : state == .checking ? "Checking the installed CLI without reading credentials or sending an AI prompt." : approved.detail
-        if selection.provider == "ollama" {
-            return .init(title: state == .policy ? "Ollama / Local is blocked by your organization" : "Local connection isn't verified",
+        if selection.localServer {
+            let title = state == .policy
+                ? "\(Self.name(selection.provider)) is blocked by your organization" : "Local connection isn't verified"
+            return .init(title: title,
                          detail: state == .policy ? approved.detail : Self.localWarning, action: action,
                          emphasis: approved.emphasis, busy: approved.busy)
         }

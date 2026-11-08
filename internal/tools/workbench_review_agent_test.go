@@ -283,3 +283,94 @@ func TestAnnotateChanges_UsesTheSessionsWorktree(t *testing.T) {
 	assert.Contains(t, string(names), "only.go")
 	assert.NotContains(t, string(names), "b.go", "b.go is only in the workbench folder")
 }
+
+// branchTipSession puts a committed branch "feature" (with feature.go, only
+// on the branch) beside the folder's main and binds the session to a target
+// carrying it: the folder stays on main, so the review reads the branch's
+// tip (board #1012) and annotate_changes must too (board #1013).
+func branchTipSession(t *testing.T, fx workbenchFixture, wb, session int64) (folder string, git func(args ...string) string) {
+	t.Helper()
+	folder = reviewFolder(t, fx.d, wb)
+	bin, _ := gitbin.Locate()
+	git = func(args ...string) string {
+		cmd := exec.Command(bin, args...)
+		cmd.Dir = folder
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+		return strings.TrimSpace(string(out))
+	}
+	git("checkout", "-q", "-b", "feature")
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "feature.go"), []byte("on the branch\nsecond\n"), 0o600))
+	git("add", "feature.go")
+	git("commit", "-q", "-m", "feature")
+	git("checkout", "-q", "main")
+	tid := db.SeedTestWorkbenchTarget(t, fx.d, wb, sql.NullInt64{}, "ticket")
+	_, err := fx.d.Exec(`UPDATE targets SET branch = 'feature' WHERE id = ?`, tid)
+	require.NoError(t, err)
+	_, err = fx.d.Exec(`UPDATE terminal_sessions SET target_id = ? WHERE id = ?`, tid, session)
+	require.NoError(t, err)
+	return folder, git
+}
+
+func TestAnnotateChanges_BranchTipSessionUsesTheTipTree(t *testing.T) {
+	fx, wb, session, reg := reviewRepoWorkbench(t)
+	_, git := branchTipSession(t, fx, wb, session)
+
+	res := mustApply(t, reg, wb, "annotate_changes", `{"notes":[
+		{"path":"feature.go","start_line":2,"end_line":2,"note":"only on the branch"}],"reason":"hand back"}`)
+	tip := git("rev-parse", "feature^{tree}")
+	assert.Equal(t, tip, res["tree_sha"], "stamped with the branch tip's tree, not the folder's")
+	notes, err := fx.d.ReviewNotes(wb, session)
+	require.NoError(t, err)
+	require.Len(t, notes, 1)
+	assert.Equal(t, tip, notes[0].TreeSHA)
+	assert.Equal(t, "second", strings.TrimRight(notes[0].Quote, "\n"))
+
+	// The folder's uncommitted b.go is not the branch's work.
+	_, err = proposeIn(t, reg, wb, "annotate_changes", `{"notes":[{"path":"b.go","start_line":1,"end_line":1,"note":"x"}],"reason":"r"}`)
+	assert.Equal(t, "notes[0].path: b.go is not a text file of the current changes (task branch feature at its last commit)", refusal(t, err))
+	_, err = proposeIn(t, reg, wb, "annotate_changes", `{"notes":[{"path":"feature.go","start_line":3,"end_line":3,"note":"x"}],"reason":"r"}`)
+	assert.Equal(t, "notes[0]: feature.go has 2 lines; lines 3-3 do not fit (task branch feature at its last commit)", refusal(t, err))
+}
+
+// The overview's snapshot (finish gate and `review overview --session`) reads
+// the branch tip against its base on a branch-tip session.
+func TestSnapshotReviewSession_BranchTipSession(t *testing.T) {
+	fx, wb, session, _ := reviewRepoWorkbench(t)
+	_, git := branchTipSession(t, fx, wb, session)
+	p, err := fx.d.GetWorkbench(wb)
+	require.NoError(t, err)
+	snap, err := SnapshotReviewSession(t.Context(), fx.d, p, session)
+	require.NoError(t, err)
+	assert.Equal(t, git("rev-parse", "feature^{tree}"), snap.Tree)
+	assert.Equal(t, git("rev-parse", "main"), snap.Base)
+	assert.False(t, snap.Empty)
+	assert.Equal(t, "feature", snap.Branch)
+	assert.Equal(t, "main", snap.FolderHead)
+	assert.True(t, snap.FolderDirty, "the folder's uncommitted b.go is outside the tip")
+}
+
+func TestGetReview_ReportsTheRoundsSource(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := askRegistry(t, fx.d, "")
+	folderRound := seedSentReviewRound(t, fx.d, fx.a, "a.go", 1, 1, "q", "c")
+	got := callReadIn(t, reg, fx.a, "get_review", fmt.Sprintf(`{"round_id":%d}`, folderRound))
+	var v reviewView
+	require.NoError(t, json.Unmarshal([]byte(got), &v))
+	assert.Equal(t, db.ReviewSourceFolder, v.Source)
+	assert.Empty(t, v.Branch)
+	assert.NotContains(t, v.Text, "Reviewed: branch")
+
+	sid := seedTerminalSession(t, fx.d, fx.a)
+	rid, err := fx.d.CreateReviewRound(db.ReviewRound{ProjectID: fx.a, SessionID: sql.NullInt64{Int64: sid, Valid: true},
+		Source: db.ReviewSourceBranch, Branch: "feature", FolderRoot: "/tmp/acme", BaseSHA: "b", BaseLabel: "main", TreeSHA: "t"})
+	require.NoError(t, err)
+	_, ok, err := fx.d.SendReviewRound(fx.a, rid)
+	require.NoError(t, err)
+	require.True(t, ok)
+	got = callReadIn(t, reg, fx.a, "get_review", fmt.Sprintf(`{"round_id":%d}`, rid))
+	require.NoError(t, json.Unmarshal([]byte(got), &v))
+	assert.Equal(t, db.ReviewSourceBranch, v.Source)
+	assert.Equal(t, "feature", v.Branch)
+	assert.Contains(t, v.Text, "\nReviewed: branch feature at its last commit, not the folder's work tree\n")
+}

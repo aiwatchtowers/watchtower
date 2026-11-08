@@ -68,6 +68,9 @@ var cliContentCommands = map[string]bool{
 	"trends":                           true,
 	"users":                            true,
 	"workbench spec-review show":       true,
+
+	// The Discuss thread agent's inputs: the document and the reviewer's context.
+	"workbench spec-review thread-context": true,
 }
 
 // contentRan is the path of the content command whose Run started in this

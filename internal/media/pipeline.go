@@ -220,9 +220,9 @@ func terminal(status, class string) outcome {
 func (r *run) item(ctx context.Context, it db.MediaItem) {
 	o := r.work(ctx, it)
 	if o.usage != nil {
-		r.st.InTok += o.usage.InputTokens
-		r.st.OutTok += o.usage.OutputTokens
-		r.st.Cost += o.usage.CostUSD
+		r.st.InTok += o.usage.InputTokens()
+		r.st.OutTok += o.usage.OutputTokens()
+		r.st.Cost += o.usage.CostUSD()
 	}
 	if o.fail != nil {
 		if ctx.Err() != nil {

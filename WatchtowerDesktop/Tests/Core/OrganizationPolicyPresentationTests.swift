@@ -28,7 +28,7 @@ struct OrganizationPolicyPresentationTests {
             "iPhone: workbench only",
             "Quick Connections you can use: https://mcp.example.com/",
             "Shell commands in automations: not allowed",
-            "AI providers: Claude, Ollama",
+            "AI providers: Claude, Ollama / Local",
             "claude.ai tools in the chat: allowed",
             "Delete a revoked account's data: on"
         ])

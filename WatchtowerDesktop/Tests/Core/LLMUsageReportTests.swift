@@ -86,6 +86,7 @@ final class LLMUsageReportTests: XCTestCase {
         XCTAssertEqual(LLMPurposeNames.display(purpose: "digest.channel").name, "Slack digests")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "briefing.daily").name, "Morning brief")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "ideas.consolidate").name, "Idea finder")
+        XCTAssertEqual(LLMPurposeNames.display(purpose: "spec_review.discuss").name, "Spec review — Discuss")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "media.describe").name, "Image descriptions")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "instructions.suggest").name, "Agent instruction suggestions")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "jira.boards").group, "Jira")

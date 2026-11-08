@@ -32,6 +32,10 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		os.Exit(runFakeAppServer(mode))
 	}
+	if nonce := os.Getenv(liveMCPNonceEnv); nonce != "" && len(os.Args) > 1 && os.Args[1] == "mcp" {
+		os.Exit(runFakeMCPServer(nonce)) // live_test.go: mounted as the watchtower server
+	}
+	liveCodexHome = os.Getenv("CODEX_HOME")
 	// No test runs a real `codex --version`: every binary counts as one
 	// with model_instructions_file, except where a test restores the real
 	// probe against a fake codex (instructions_test.go).
@@ -52,6 +56,10 @@ func TestMain(m *testing.M) {
 }
 
 func runFakeAppServer(mode string) int {
+	if path := os.Getenv("WT_USAGE_CWD"); path != "" {
+		cwd, _ := os.Getwd()
+		_ = os.WriteFile(path, []byte(cwd), 0600)
+	}
 	// Before anything is spawned, so the test's cleanup always knows the group.
 	if err := os.WriteFile(os.Getenv(fakePGIDEnv), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 		return 2
@@ -89,13 +97,25 @@ func runFakeAppServer(mode string) int {
 		}
 		// A notification first, as the real server sends them unasked.
 		_ = out.Encode(map[string]any{"method": "remoteControl/status/changed", "params": map[string]any{}})
-		_ = out.Encode(fakeAnswer(strings.TrimSuffix(mode, "-child"), *req.ID, req.Method))
+		_ = out.Encode(fakeAnswer(strings.TrimSuffix(strings.TrimSuffix(mode, "-child"), "-eof-hang"), *req.ID, req.Method))
+	}
+	if mode == "usage-eof-hang" {
+		if path := os.Getenv("WT_USAGE_EOF"); path != "" {
+			_ = os.WriteFile(path, []byte("eof"), 0600)
+		}
+		time.Sleep(30 * time.Second)
 	}
 	return 0
 }
 
 func fakeAnswer(mode string, id int, method string) map[string]any {
 	switch {
+	case method == "account/read" && mode == "usage-error":
+		return map[string]any{"id": id, "error": map[string]any{"code": 401, "message": "SECRET_ACCOUNT SECRET_EMAIL SECRET_TOKEN"}}
+	case method == "account/read" && mode == "usage":
+		return map[string]any{"id": id, "result": json.RawMessage(os.Getenv("WT_USAGE_ACCOUNT"))}
+	case method == "account/rateLimits/read" && mode == "usage":
+		return map[string]any{"id": id, "result": json.RawMessage(os.Getenv("WT_USAGE_LIMITS"))}
 	case method == "initialize":
 		return map[string]any{"id": id, "result": map[string]any{"userAgent": "fake/0"}}
 	case method == "hooks/list" && mode == "ok":

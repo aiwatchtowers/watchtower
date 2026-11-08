@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/powerstate"
 )
 
 // wireAutomations attaches the automations scheduler and executor to the
@@ -29,12 +30,15 @@ func wireAutomations(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen 
 // workbench folder that is not privacy-protected (the scheduler never
 // touches a protected one), the executor on
 // automationBackends with the daemon's generator, both logging to the
-// daemon logger. A run the scheduler queues wakes the executor.
+// daemon logger. A run the scheduler queues wakes the executor. Both hold
+// their work while the Mac is in a Power Nap dark wake (powerstate.Probe,
+// #880).
 func newDaemonAutomations(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (*automations.Scheduler, *automations.Executor) {
 	clock := automations.RealClock{}
-	exec := automations.NewExecutor(database, routingBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger})
+	exec := automations.NewExecutor(database, routingBackends(cfg, database, gen), automations.ExecutorOptions{Logger: logger, FullWake: powerstate.Probe})
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), clock)
 	sched := automations.NewScheduler(database, ix, clock, exec.Wake)
 	sched.SetLogger(logger)
+	sched.SetFullWakeProbe(powerstate.Probe)
 	return sched, exec
 }

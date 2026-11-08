@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"watchtower/internal/agentlog"
+	"watchtower/internal/agentfiles"
 )
 
 const (
@@ -102,7 +102,7 @@ func (st *state) run(r io.Reader, limit int) (*Result, error) {
 	res := st.res
 	br := bufio.NewReaderSize(r, 64<<10)
 	for {
-		raw, n, complete, err := agentlog.NextLine(br, limit)
+		raw, n, complete, err := agentfiles.NextLine(br, limit)
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, fmt.Errorf("reading transcript: %w", err)

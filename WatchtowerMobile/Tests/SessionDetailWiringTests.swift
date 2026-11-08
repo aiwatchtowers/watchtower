@@ -59,6 +59,16 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertEqual(SessionDetailModel.agentName(.init(rawValue: "")), "")
     }
 
+    /// A7b: the session line of an agent this app version does not know says
+    /// so, never a Claude Code name or a bare id that reads as one it knows.
+    func testTheAgentLabelSaysAnUnknownAgentIsNotSupported() {
+        XCTAssertEqual(SessionDetailModel.agentLabel(.claudeCode), "Claude Code")
+        XCTAssertEqual(SessionDetailModel.agentLabel(.codexCLI), "Codex")
+        XCTAssertEqual(SessionDetailModel.agentLabel(.init(rawValue: "gemini_cli")),
+                       "gemini_cli (not supported by this version)")
+        XCTAssertEqual(SessionDetailModel.agentLabel(.init(rawValue: "")), "Unknown agent (not supported by this version)")
+    }
+
     func testTheReportShowsProgressSegmentsAndSummary() throws {
         let report = try XCTUnwrap(try model(11).report)
         XCTAssertEqual(report.progressLabel, "2 / 5 targets")
@@ -67,6 +77,22 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertEqual(report.accessibilityLabel, "2 of 5 targets done, 1 in progress")
         XCTAssertEqual(report.summary, ["Now: Archive Closed Targets Now", "Next: Undo Archive Now"])
         XCTAssertEqual(report.prLines, ["PR #175 open"])
+    }
+
+    /// Board #1017: the merged share reads as on the Mac's report hero and
+    /// the session's row; a report without it (an older Mac) reads as before.
+    func testTheReportShowsTheMergedShare() throws {
+        let report = try XCTUnwrap(try model(10).report)
+        XCTAssertEqual(report.progressLabel, "1 / 3 targets · 1 merged")
+        XCTAssertEqual(report.accessibilityLabel, "1 of 3 targets done, 1 merged, 1 in progress")
+        let snapshot = try demoSnapshot(now: now)
+        let row = try XCTUnwrap(snapshot.session(10))
+        XCTAssertEqual(row.reportMergedText, "1 merged", "the row and the report agree")
+
+        let old = try mirror(SessionReport.self, ["progress": ["done": 1, "total": 3]])
+        let section = try XCTUnwrap(SessionDetailModel(sessionID: 10, snapshot: snapshot, report: old, timeline: nil, now: now)?.report)
+        XCTAssertEqual(section.progressLabel, "1 / 3 targets")
+        XCTAssertEqual(section.accessibilityLabel, "1 of 3 targets done")
     }
 
     func testAFinishedSessionsSummaryIsItsFinishSummary() throws {
@@ -218,7 +244,7 @@ final class SessionDetailWiringTests: XCTestCase {
             "live", "stateKind", "stateCaption", "stateCaptionClipped", "stateTone", "stateGlyph", "isRing", "openAsks",
             "oldestAskID", "closedAsks", "finishSummary", "finishSummaryClipped", "agentError", "agentErrorClipped",
             "reportTargetID", "reportDone", "reportTotal", "reportMerged", "reportMergedStale", "reportPRLine",
-            "reportPRLineClipped"
+            "reportPRLineClipped", "watchIssue", "watchHelp", "phone"
         ])
     }
 

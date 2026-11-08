@@ -45,13 +45,13 @@ func TestMigration_TargetsActionSourceDuplicatesRenamed(t *testing.T) {
 	require.NoError(t, err)
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	require.NoError(t, gooseUpTo(raw, "migrations", 173))
+	require.NoError(t, gooseUpTo(raw, "migrations", 178))
 	for _, src := range []string{"action:7", "action:7", "action:7", "action:8", "action:0", "action:0", "target:3", "target:3"} {
 		_, err := raw.Exec(`INSERT INTO targets (text, period_start, period_end, source_type, source_id)
 			VALUES ('t', '2026-11-03', '2026-11-03', 'chat', ?)`, src)
 		require.NoError(t, err)
 	}
-	require.NoError(t, gooseUpTo(raw, "migrations", 174))
+	require.NoError(t, gooseUpTo(raw, "migrations", 179))
 
 	rows, err := raw.Query(`SELECT id, source_id FROM targets ORDER BY id`)
 	require.NoError(t, err)
@@ -76,11 +76,11 @@ func TestMigration_TargetsActionSourceDuplicatesRenamed(t *testing.T) {
 	require.NoError(t, err)
 	defer clean.Close()
 	clean.SetMaxOpenConns(1)
-	require.NoError(t, gooseUpTo(clean, "migrations", 173))
+	require.NoError(t, gooseUpTo(clean, "migrations", 178))
 	_, err = clean.Exec(`INSERT INTO targets (text, period_start, period_end, source_type, source_id)
 		VALUES ('t', '2026-11-03', '2026-11-03', 'chat', 'action:9')`)
 	require.NoError(t, err)
-	require.NoError(t, gooseUpTo(clean, "migrations", 174))
+	require.NoError(t, gooseUpTo(clean, "migrations", 179))
 	var src string
 	require.NoError(t, clean.QueryRow(`SELECT source_id FROM targets`).Scan(&src))
 	assert.Equal(t, "action:9", src)

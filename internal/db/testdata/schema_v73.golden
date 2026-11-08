@@ -497,6 +497,12 @@ CREATE INDEX idx_situations_status_rank ON situations(status, rank DESC)
 index	idx_situations_updated
 CREATE INDEX idx_situations_updated ON situations(updated_at DESC)
 
+index	idx_spec_review_questions_ask
+CREATE INDEX idx_spec_review_questions_ask ON spec_review_questions(ask_id)
+
+index	idx_spec_review_questions_open
+CREATE UNIQUE INDEX idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open'
+
 index	idx_stream_digests_source
 CREATE INDEX idx_stream_digests_source ON stream_digests(source, account_id)
 
@@ -1206,6 +1212,36 @@ baseline_n INTEGER NOT NULL DEFAULT 0,
 verdict TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
 verdict_value REAL,
 verdict_at TEXT NOT NULL DEFAULT ''
+)
+
+table	codex_plan_usage_samples
+CREATE TABLE codex_plan_usage_samples (
+scope TEXT NOT NULL CHECK (length(scope) = 64),
+limit_key TEXT NOT NULL,
+taken_at TEXT NOT NULL,
+percent REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+resets_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (scope, limit_key, taken_at)
+)
+
+table	codex_plan_usage_status
+CREATE TABLE codex_plan_usage_status (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+state TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+reason TEXT NOT NULL DEFAULT '',
+plan TEXT NOT NULL DEFAULT '',
+fetched_at TEXT,
+last_error TEXT NOT NULL DEFAULT '',
+last_error_at TEXT,
+limits_json TEXT NOT NULL DEFAULT '[]',
+breakdown_json TEXT NOT NULL DEFAULT '[]',
+updated_at TEXT NOT NULL,
+plot_json TEXT NOT NULL DEFAULT '{}',
+publication_proof TEXT NOT NULL DEFAULT '',
+scope TEXT NOT NULL DEFAULT '',
+identity_known INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
 )
 
 table	custom_emojis
@@ -2685,7 +2721,7 @@ last_error_at TEXT,
 limits_json TEXT NOT NULL DEFAULT '[]',
 breakdown_json TEXT NOT NULL DEFAULT '[]',
 updated_at TEXT NOT NULL
-)
+, plot_json TEXT NOT NULL DEFAULT '{}', publication_proof TEXT NOT NULL DEFAULT '')
 
 table	project_comments
 CREATE TABLE "project_comments" (
@@ -3001,6 +3037,29 @@ updated_at TEXT NOT NULL,
 PRIMARY KEY (ask_id, item_key)
 )
 
+table	spec_review_questions
+CREATE TABLE spec_review_questions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+thread TEXT NOT NULL,
+item_key TEXT NOT NULL,
+question TEXT NOT NULL,
+answer TEXT NOT NULL DEFAULT '',
+state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+created_at TEXT NOT NULL,
+closed_at TEXT NOT NULL DEFAULT ''
+)
+
+table	spec_review_thread_findings
+CREATE TABLE spec_review_thread_findings (
+ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+item_key TEXT NOT NULL,
+thread TEXT NOT NULL,
+finding TEXT NOT NULL,
+created_at TEXT NOT NULL,
+PRIMARY KEY (ask_id, item_key)
+)
+
 table	spec_reviews
 CREATE TABLE spec_reviews (
 ask_id INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
@@ -3016,7 +3075,7 @@ attempt INTEGER NOT NULL DEFAULT 0,
 queued_at TEXT NOT NULL,
 started_at TEXT NOT NULL DEFAULT '',
 finished_at TEXT NOT NULL DEFAULT ''
-, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1)
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1, loop_rules INTEGER NOT NULL DEFAULT 0)
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -3133,7 +3192,7 @@ CREATE TABLE terminal_session_worktrees (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 root TEXT NOT NULL,
 branch TEXT NOT NULL DEFAULT '',
-first_at TEXT NOT NULL,
+first_at TEXT NOT NULL, last_at TEXT,
 PRIMARY KEY (session_id, root, branch)
 )
 
@@ -3163,7 +3222,8 @@ agent_background_at TEXT,
 chat_question TEXT,
 chat_question_at TEXT,
 agent_turns TEXT,
-agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT,
+agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
+CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -4661,6 +4721,30 @@ GROUP BY up.ancestor
 20	verdict_value	REAL	notnull=0	dflt=NULL	pk=0
 21	verdict_at	TEXT	notnull=1	dflt=''	pk=0
 
+## codex_plan_usage_samples
+0	scope	TEXT	notnull=1	dflt=NULL	pk=1
+1	limit_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	taken_at	TEXT	notnull=1	dflt=NULL	pk=3
+3	percent	REAL	notnull=1	dflt=NULL	pk=0
+4	resets_at	TEXT	notnull=1	dflt=''	pk=0
+
+## codex_plan_usage_status
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	state	TEXT	notnull=1	dflt=NULL	pk=0
+2	reason	TEXT	notnull=1	dflt=''	pk=0
+3	plan	TEXT	notnull=1	dflt=''	pk=0
+4	fetched_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	last_error	TEXT	notnull=1	dflt=''	pk=0
+6	last_error_at	TEXT	notnull=0	dflt=NULL	pk=0
+7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
+8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
+9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
+12	scope	TEXT	notnull=1	dflt=''	pk=0
+13	identity_known	INTEGER	notnull=1	dflt=0	pk=0
+14	ordinary_usage_allowed	INTEGER	notnull=0	dflt=NULL	pk=0
+
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1
 1	url	TEXT	notnull=1	dflt=NULL	pk=0
@@ -5938,6 +6022,8 @@ GROUP BY up.ancestor
 7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
 8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
 9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
 
 ## project_comments
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6211,6 +6297,24 @@ GROUP BY up.ancestor
 4	about	TEXT	notnull=1	dflt=''	pk=0
 5	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 
+## spec_review_questions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	ask_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	thread	TEXT	notnull=1	dflt=NULL	pk=0
+3	item_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	question	TEXT	notnull=1	dflt=NULL	pk=0
+5	answer	TEXT	notnull=1	dflt=''	pk=0
+6	state	TEXT	notnull=1	dflt='open'	pk=0
+7	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+8	closed_at	TEXT	notnull=1	dflt=''	pk=0
+
+## spec_review_thread_findings
+0	ask_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	item_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	thread	TEXT	notnull=1	dflt=NULL	pk=0
+3	finding	TEXT	notnull=1	dflt=NULL	pk=0
+4	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## spec_reviews
 0	ask_id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	status	TEXT	notnull=1	dflt=NULL	pk=0
@@ -6232,6 +6336,7 @@ GROUP BY up.ancestor
 17	ledger	TEXT	notnull=1	dflt=''	pk=0
 18	loop_end	TEXT	notnull=1	dflt=''	pk=0
 19	findings	INTEGER	notnull=1	dflt=-1	pk=0
+20	loop_rules	INTEGER	notnull=1	dflt=0	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6325,6 +6430,7 @@ GROUP BY up.ancestor
 1	root	TEXT	notnull=1	dflt=NULL	pk=2
 2	branch	TEXT	notnull=1	dflt=''	pk=3
 3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	last_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6360,6 +6466,8 @@ GROUP BY up.ancestor
 30	worktree_base	TEXT	notnull=0	dflt=NULL	pk=0
 31	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
 32	target_bound_at	TEXT	notnull=0	dflt=NULL	pk=0
+33	agent_watch_issue	TEXT	notnull=0	dflt=NULL	pk=0
+34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1

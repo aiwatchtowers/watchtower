@@ -616,7 +616,7 @@ struct WatchtowerApp: App {
                     return true
                 }
             }
-        }
+        }.menuBarExtraStyle(.window)
     }
 }
 

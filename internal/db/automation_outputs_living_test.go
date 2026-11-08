@@ -280,9 +280,9 @@ func TestListAutomationOutputs_OrderedByChangedAt(t *testing.T) {
 	assert.Equal(t, []string{"new living", "feed"}, titles())
 }
 
-func TestMigration00175_BackfillsWrittenAndChangedAt(t *testing.T) {
+func TestMigration00180_BackfillsWrittenAndChangedAt(t *testing.T) {
 	d := openTestDB(t)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 172))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 179))
 	a := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "h1")
 	_, err := d.Exec(`INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, ?, 'manual', 'succeeded')`, a)
 	require.NoError(t, err)
@@ -302,12 +302,12 @@ func TestMigration00175_BackfillsWrittenAndChangedAt(t *testing.T) {
 	require.NotNil(t, o.ReadAt, "read state survives")
 
 	// Down and up again leave the same table.
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 172))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 179))
 	require.NoError(t, gooseUp(d.DB, "migrations"))
 	assert.Equal(t, 2, countWhere(t, d, `SELECT COUNT(*) FROM automation_outputs WHERE changed_at = created_at`))
 }
 
-// A row inserted without the 00175 columns (an older writer, a test fixture)
+// A row inserted without the 00180 columns (an older writer, a test fixture)
 // reads with written_at = changed_at = created_at.
 func TestAutomationOutput_NullTimesReadAsCreatedAt(t *testing.T) {
 	d := openTestDB(t)

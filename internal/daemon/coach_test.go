@@ -30,7 +30,7 @@ func stubCoach(t *testing.T, proposeErr error) *coachCalls {
 	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) { c.judge++; return 0, 0, nil }
 	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
 		c.propose++
-		return 1, &digest.Usage{InputTokens: 5}, proposeErr
+		return 1, &digest.Usage{Tokens: llmusage.Tokens{Input: 5}}, proposeErr
 	}
 	t.Cleanup(func() { runCoachJudge, runCoachProposer = oj, op })
 	return c
@@ -250,7 +250,7 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			for _, provider := range []string{"claude", "codex"} {
 				response := `{"type":"result","subtype":"success","result":"ok"}`
 				if provider == "codex" {
-					response = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}`
+					response = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}` + "\n" + `{"type":"turn.completed"}`
 				}
 				if provider == preferred {
 					if provider == "claude" {
@@ -269,7 +269,10 @@ func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
 			spool := filepath.Join(t.TempDir(), "calls.jsonl")
 			llmusage.SetSpoolPath(spool)
 			t.Cleanup(func() { llmusage.SetSpoolPath("") })
-			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), time.Second)
+			// fakeCLI re-executes this test binary, which takes about a second to
+			// start under -race; the router starts it twice (preferred, then
+			// reserve). The deadline only guards against a hang.
+			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), 30*time.Second)
 			defer cancel()
 			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
 			require.NoError(t, err)

@@ -5,28 +5,30 @@ Chat replies fail, digests and briefings report "Didn't work yet", or Setup keep
 ## What you see
 
 - In Chats, a card: "The AI provider isn't signed in. Open Terminal and run: claude login" (or `codex login`), with no **Retry**.
-- In **Settings → System → AI**, a red cross by **Claude CLI Path** or **Codex CLI Path** ("Claude CLI not found"), or after **Test Connection**: "Not authenticated. Run 'claude' in Terminal."
+- In **Settings → System → AI**, **Not installed** or **Needs attention** under the provider, or after **Check connection**: "Claude CLI wasn't found" (or Codex), or "Sign in to the Claude CLI in Terminal, then test connection again."
 - In a Workbench: "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart." or "Codex was not found."
 - A status line "Didn't work yet — retries automatically" whose reason names the tool.
-- A reason or a **Test Connection** line that names a Codex model: "**Codex needs an update to use** gpt-6-astra" or "gpt-6-astra **isn't available on your Codex account**".
+- A reason that names a Codex model: "**Codex needs an update to use** gpt-6-astra" or "gpt-6-astra **isn't available on your Codex account**".
+- After **Test connection**: "Connection test failed. Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again."
 
 ## Why
 
-Either the tool is not installed where Watchtower looks, or it is installed but its sign-in expired or never happened. A local Ollama server has its own failures: "Server unreachable" or an HTTP error from **Test Connection**.
+Either the tool is not installed where Watchtower looks, or it is installed but its sign-in expired or never happened. A local Ollama server has its own failures: it is not running, or a model it does not have answers with an HTTP error.
 
 ## Fix
 
-1. Open **Settings → System → AI** and check the provider you picked.
-2. A red cross: install the tool, or type its full path into **Claude CLI Path** / **Codex CLI Path**. In Terminal, `which claude` (or `which codex`) prints the path. A green check means it was found.
-3. Not signed in: in Terminal run `claude login` (or `codex login`), or start `claude` and sign in. Use the same macOS user that runs Watchtower.
-4. Press **Test Connection**. The result line says what failed: not authenticated, "Model not available for your account.", "API overloaded. Try again later." or "Network error."
-5. A model error: clear **Light Model** or **Strong Model** with **Default**. "Codex needs an update": run `codex update` in Terminal. "Isn't available on your Codex account": type a model your account offers, such as `gpt-5.6-sol`.
-6. Ollama / Local: start the server, check the URL and that the chosen model exists, then **Test Connection**.
-7. Workbench: after the tool works, press **Restart** on the session.
+1. Open **Settings → System → AI** and check the **Preferred provider** (and the **Reserve provider**, if you use one).
+2. Press **Check connection**. It looks at the installed tool and its sign-in without sending an AI prompt.
+3. **Not installed**: install the tool, or type its full path into **Claude CLI path** / **Codex CLI path** (empty means **Auto-detect**). In Terminal, `which claude` (or `which codex`) prints the path.
+4. Not signed in: in Terminal run `claude login` (or `codex login`), or start `claude` and sign in. Use the same macOS user that runs Watchtower.
+5. **Not verified** means the sign-in can't be read without asking the provider. Press **Test connection**: it sends one short request with the **Strong model**, which may use paid quota. A failed test names the cause, for example "Provider request failed (auth)." or "(model)".
+6. A model error: empty **Light model** or **Strong model**, or pick **Provider default** in its menu. "Codex needs an update": run `codex update` in Terminal. "Isn't available on your Codex account": type a model your account offers, such as `gpt-5.6-sol`. "Ignored Watchtower's instructions": run `codex update` in Terminal, then **Test connection** again.
+7. Ollama / Local: start the server, check **Server URL** and that the chosen model exists, then **Test connection**.
+8. Workbench: after the tool works, press **Restart** on the session.
 
 ## How to check
 
-**Test Connection** shows a green tick. Retry the chat message; the status line on an empty tab changes to a time within one sync cycle.
+**Test connection** shows **Connection test completed** with "Claude answered using …" (or Codex). Retry the chat message; the status line on an empty tab changes to a time within one sync cycle.
 
 ## If it did not help
 

@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tools"
 )
 
@@ -257,7 +258,7 @@ func TestLLM_FailedCallDebitsReportedOrEstimatedUsage(t *testing.T) {
 		want  int64
 	}{
 		{"no usage", nil, 0},
-		{"reported usage", []digest.Usage{{InputTokens: 10, OutputTokens: 5}}, 15},
+		{"reported usage", []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}, 15},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -282,7 +283,7 @@ func TestLLM_FailedCallDebitsReportedOrEstimatedUsage(t *testing.T) {
 
 func TestLLM_ReportedCostRecorded(t *testing.T) {
 	gen := &automationstest.FakeGenerator{Replies: []string{"a", "b"},
-		Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5, CostUSD: 0.25}, {InputTokens: 10, OutputTokens: 5}}}
+		Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5, ReportedCostUSD: new(0.25)}}, {Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	r := mustReturn(t, `llm("x"); llm("y"); return 1`, sdkCase{perms: []string{"llm:light"}, gen: gen}, 1)
 	steps := r.env.Journal.Steps()
 	if steps[0].ReportedCostUSD == nil || *steps[0].ReportedCostUSD != 0.25 || steps[1].ReportedCostUSD != nil {
@@ -295,7 +296,7 @@ func TestLLM_ReportedCostRecorded(t *testing.T) {
 
 func TestLLM_SchemaRetryDebitsBothCalls(t *testing.T) {
 	gen := &automationstest.FakeGenerator{Replies: []string{"x", `{"a":1}`},
-		Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+		Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	r := mustReturn(t, `return llm("give", {schema: {type: "object"}}).a`, sdkCase{perms: []string{"llm:light"}, gen: gen}, 1)
 	if tot := r.env.Journal.Totals(); tot.InputTokens+tot.OutputTokens != 30 {
 		t.Fatalf("debited %d; want 30 (both calls)", tot.InputTokens+tot.OutputTokens)
@@ -340,7 +341,7 @@ func TestLLM_DebitsInputPlusOutputTokens(t *testing.T) {
 		usage         []digest.Usage
 		wantEstimated bool
 	}{
-		{"reported usage", []digest.Usage{{InputTokens: 100, OutputTokens: 50}}, false},
+		{"reported usage", []digest.Usage{{Tokens: llmusage.Tokens{Input: 100, Output: 50}}}, false},
 		{"no usage", nil, true},
 	}
 	for _, tc := range cases {

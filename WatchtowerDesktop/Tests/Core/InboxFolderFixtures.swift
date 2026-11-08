@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// Migration 00176's seed rows, which the generated test schema (DDL only)
+/// Migration 00181's seed rows, which the generated test schema (DDL only)
 /// lacks, plus owner folders and routes the tests write directly. The
 /// Desktop itself never writes these tables; only tests do.
 enum InboxFolderFixtures {

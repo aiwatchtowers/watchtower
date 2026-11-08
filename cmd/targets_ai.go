@@ -433,9 +433,9 @@ func runTargetsGenerate(cmd *cobra.Command, _ []string) error {
 		if runErr == nil {
 			inputTokens, outputTokens, totalAPI := 0, 0, 0
 			if usage != nil {
-				inputTokens = usage.InputTokens
-				outputTokens = usage.OutputTokens
-				totalAPI = usage.TotalAPITokens
+				inputTokens = usage.InputTokens()
+				outputTokens = usage.OutputTokens()
+				totalAPI = usage.TotalAPITokens()
 			}
 			_ = database.CompletePipelineRun(runID, 1, inputTokens, outputTokens, 0, totalAPI, nil, nil, "")
 		}
@@ -558,9 +558,9 @@ func runTargetsAIUpdate(cmd *cobra.Command, args []string) error {
 	if runErr == nil {
 		inputTokens, outputTokens, totalAPI := 0, 0, 0
 		if usage != nil {
-			inputTokens = usage.InputTokens
-			outputTokens = usage.OutputTokens
-			totalAPI = usage.TotalAPITokens
+			inputTokens = usage.InputTokens()
+			outputTokens = usage.OutputTokens()
+			totalAPI = usage.TotalAPITokens()
 		}
 		_ = database.CompletePipelineRun(runID, 1, inputTokens, outputTokens, 0, totalAPI, nil, nil, "")
 	}

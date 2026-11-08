@@ -22,6 +22,8 @@ final class ChatViewModelTests: XCTestCase {
     private var defaultsSuite: String!
 
     override func setUpWithError() throws {
+        // The routing card and the composer read the shared catalog's rows.
+        ProviderCatalogFixture.seedShared()
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         defaultsSuite = "ChatViewModelTests.\(UUID().uuidString)"
         defaults = UserDefaults(suiteName: defaultsSuite)
@@ -1602,6 +1604,7 @@ final class ChatViewModelTests: XCTestCase {
 
 extension ChatViewModelTests {
     func testNewAutomaticChatOmitsPinsAndObservesActualWithoutRecyclingBusyHost() async throws {
+        ProviderCatalogFixture.seedShared() // display names and the pair are the catalog's
         let vm = try makeViewModel()
         let created = await vm.newConversation()
         let id = try XCTUnwrap(created)
@@ -1887,5 +1890,58 @@ extension ChatViewModelTests {
         XCTAssertNil(pool.client(for: id), "A → error → B still proves a real routing transition")
         XCTAssertFalse(host.isAlive)
         XCTAssertEqual(vm.draft, "Retain the unsent draft")
+    }
+}
+
+extension ChatViewModelTests {
+    /// U3 (L11): a provider whose capability row has no reserve peer gets
+    /// the provider line and what it lacks, never the routing card; its
+    /// composer refuses images with U1's reason. Claude keeps its card.
+    func testOllamaProviderLineWithoutRoutingCard() async throws {
+        ProviderCatalogFixture.seedShared()
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .ollama, defaults: defaults)
+        let presentation = try XCTUnwrap(vm.routingPresentation, "the line shows for Ollama too")
+        XCTAssertNil(presentation.pair)
+        XCTAssertNil(presentation.preview, "no routing card without a reserve peer")
+        XCTAssertEqual(presentation.missingCapabilities, "No images or file reading with this provider.")
+        XCTAssertEqual(vm.attachUnavailableReason, "Images and PDFs need a provider that reads them.")
+
+        let claude = try makeViewModel()
+        XCTAssertEqual(claude.routingPresentation?.pair?.reserve.id, "codex", "a paired provider keeps the routing card")
+        XCTAssertNil(claude.routingPresentation?.missingCapabilities)
+        XCTAssertNil(claude.attachUnavailableReason)
+    }
+}
+
+extension ChatViewModelTests {
+    /// U1 after a switch: a chat that last ran on Ollama and is pinned to
+    /// Claude reads Claude's row, not the history's, until a session starts.
+    func testPinnedSwitchReadsTheChosenProvidersRow() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db)
+            try db.execute(sql: "UPDATE chat_conversations SET actual_provider = 'ollama' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let vm = ChatViewModel(dbManager: dbManager, pool: pool, provider: .ollama, defaults: defaults)
+        vm.select(conversationID: id)
+        vm.switchProvider(.claude)
+        XCTAssertNil(vm.attachUnavailableReason, "Claude reads images and PDFs")
+        vm.switchProvider(.ollama)
+        XCTAssertEqual(vm.attachUnavailableReason, "Images and PDFs need a provider that reads them.")
+    }
+
+    /// An automatic chat stays on its last provider only when that is the
+    /// preferred one's reserve (Go's stickiness rule); Ollama's history under
+    /// a Claude preference reads Claude's row.
+    func testAutomaticChatReadsHistoryOnlyForTheReserve() async throws {
+        let id = try await dbManager.dbPool.write { db in
+            let id = try TestDatabase.insertChatConversation(db)
+            try db.execute(sql: "UPDATE chat_conversations SET actual_provider = 'ollama' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let vm = try makeViewModel()
+        vm.select(conversationID: id)
+        XCTAssertTrue(vm.automaticRouting)
+        XCTAssertNil(vm.attachUnavailableReason, "Ollama is not Claude's reserve: Claude's row")
     }
 }

@@ -1,0 +1,17 @@
+{
+  "kind": "review",
+  "payload": {"focus": [], "questions": [], "checklist": []},
+  "answer": {
+    "answers": [],
+    "checklist": [],
+    "comments": [
+      {"quote": "Muting lasts", "prefix": "", "suffix": " a day.", "heading": "Behaviour",
+       "body": "Mute is per channel", "item_key": "ag:0123456789ab"},
+      {"quote": "migrate every row at once", "prefix": "", "suffix": "", "heading": "Rollout",
+       "body": "Batch it."}
+    ],
+    "note": "",
+    "verdict": "changes"
+  },
+  "canonical": "{\"answers\":[],\"checklist\":[],\"comments\":[{\"body\":\"Mute is per channel\",\"heading\":\"Behaviour\",\"item_key\":\"ag:0123456789ab\",\"prefix\":\"\",\"quote\":\"Muting lasts\",\"suffix\":\" a day.\"},{\"body\":\"Batch it.\",\"heading\":\"Rollout\",\"prefix\":\"\",\"quote\":\"migrate every row at once\",\"suffix\":\"\"}],\"note\":\"\",\"verdict\":\"changes\"}"
+}

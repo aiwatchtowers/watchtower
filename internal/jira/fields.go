@@ -51,9 +51,9 @@ func (fd *FieldDiscovery) addUsage(usage *ai.Usage) {
 	if usage == nil {
 		return
 	}
-	fd.totalInputTokens += usage.InputTokens
-	fd.totalOutputTokens += usage.OutputTokens
-	fd.totalAPITokens += usage.TotalAPITokens
+	fd.totalInputTokens += usage.InputTokens()
+	fd.totalOutputTokens += usage.OutputTokens()
+	fd.totalAPITokens += usage.TotalAPITokens()
 }
 
 // DiscoverFields fetches all fields from Jira API and stores custom fields in DB.

@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 )
 
 // TestMain installs the db schema template cache: every db.Open(":memory:")
@@ -222,4 +224,18 @@ func wantOutcome(t *testing.T, got actions.Outcome, status, reason string) {
 	if got.Status != status || got.Reason != reason {
 		t.Fatalf("outcome = %+v, want %s/%s", got, status, reason)
 	}
+}
+
+// withSessionCaps gives kind the row caps for the test (the handlers read
+// sessionCaps, not the kind).
+func withSessionCaps(t *testing.T, kind agentkind.Kind, caps sessionagent.Caps) {
+	t.Helper()
+	prev := sessionCaps
+	sessionCaps = func(k agentkind.Kind) sessionagent.Caps {
+		if k == kind {
+			return caps
+		}
+		return prev(k)
+	}
+	t.Cleanup(func() { sessionCaps = prev })
 }

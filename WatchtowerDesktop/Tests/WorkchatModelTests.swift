@@ -448,6 +448,8 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(model.outgoing.first?.state, .queued)
     }
 
+    /// A working Codex session holds the line until it stops: its MCP forms
+    /// raise no state mid-turn (plan Task G7 spike (c)).
     func testSendWhileWorkingHoldsOnCodex() async throws {
         let session = try await liveSession()
         setState(session, .working)
@@ -460,6 +462,24 @@ final class WorkchatModelTests: XCTestCase {
         await model.send()
 
         XCTAssertEqual(model.outgoing.first?.state, .queued)
+    }
+
+    /// The hold follows the capability row, never the kind: the same kind
+    /// holds or not as its injected row says.
+    func testHoldsUntilIdleFollowsCapability() throws {
+        let control = try makeControl()
+        let fullRow: (AgentKind) -> AgentSessionCaps = { _ in AgentSessionCaps.of(AgentKind.claude) }
+        let noRow: (AgentKind) -> AgentSessionCaps = { _ in .none }
+        let taking = WorkchatModel(
+            sessionID: 1, control: control, lineDelivery: delivery, kind: { .codex }, caps: fullRow
+        )
+        XCTAssertFalse(taking.holdsUntilIdle, "a row that takes lines while working never holds")
+        let holding = WorkchatModel(
+            sessionID: 1, control: control, lineDelivery: delivery, kind: { .claude }, caps: noRow
+        )
+        XCTAssertTrue(holding.holdsUntilIdle, "a row without it holds, whatever the kind")
+        let shell = WorkchatModel(sessionID: 1, control: control, lineDelivery: delivery) { .shell }
+        XCTAssertTrue(shell.holdsUntilIdle, "a shell has no agent row")
     }
 
     func testSendWhileApprovalPendingQueues() async throws {

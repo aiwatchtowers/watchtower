@@ -59,7 +59,11 @@ let package = Package(
             dependencies: [
                 "WatchtowerSync",
                 .product(name: "GRDB", package: "GRDB.swift"),
-            ]
+            ],
+            // The session capability rows, a copy of Go's
+            // internal/sessionagent/agent_capabilities.json
+            // (AgentSessionCapabilitiesTests pins the copy).
+            resources: [.copy("Resources/agent_capabilities.json")]
         ),
         .target(name: "WatchtowerDesign"),
         .target(

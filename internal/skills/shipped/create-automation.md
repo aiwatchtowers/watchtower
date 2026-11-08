@@ -214,7 +214,7 @@ error ("the script API is synchronous"). Use `log(...)` for notes.
 | `output.target({...create_target args})` | `outputs: [target]` | Proposes a target |
 | `output.slack({...send_slack_message args})` | `outputs: [slack]` AND `slack:write@<account>` | Proposes a Slack message; never sends alone |
 | `ask({kind, title, summary?, questions?, checklist?})` | `ask:owner`, workbench only | Asks the owner and waits |
-| `session({prompt, agent?, title?, wait?})` | `session:start`, workbench only | Starts a visible agent session. With `wait: "finish"` (default) it returns `{session_id, status, summary}` plus `error` when `status` is `error`; `status` is `finished`, `stopped`, `deleted` or `error`. With `wait: "none"` it returns only `{session_id}`: there is no `status` or `summary` to read. A launch that fails throws `NotAvailable`. A dry run starts nothing and returns `{status: "dry_run"}`, so a branch on a session's summary is not exercised by a dry run; tell the owner |
+| `session({prompt, agent?, title?, wait?})` | `session:start`, workbench only | Starts a visible agent session. With `wait: "finish"` (default) it returns `{session_id, status, summary}` plus `error` when `status` is `error` and `reason` when `status` is `not_watched`; `status` is `finished`, `stopped`, `deleted`, `error` or `not_watched`. `not_watched` comes at once when the Mac cannot watch the session (its log is missing, unreadable, compressed or not permitted): the session keeps running and its outcome is unknown, so a recipe must handle it — report it with the `reason`, or try again later — and never read it as success. With `wait: "none"` it returns only `{session_id}`: there is no `status` or `summary` to read. A launch that fails throws `NotAvailable`. A dry run starts nothing and returns `{status: "dry_run"}`, so a branch on a session's summary is not exercised by a dry run; tell the owner |
 | `shell(cmd)` | `shell:"<cmd>"`, workbench only | Runs one exact command |
 | `log(...)` | none | A note in the run's steps |
 | `trigger` | none | Read-only: `{kind, run_id, scheduled_for?, button?, events?, reply?, dry_run}`; `reply` only when `kind === "reply"` |
@@ -665,7 +665,7 @@ fresh.forEach(function (p) {
   } catch (e) {
     s = { status: "not started" };
   }
-  if (s.status === "not started" || s.status === "error") left++; // retried next round
+  if (s.status === "not started" || s.status === "error" || s.status === "not_watched") left++; // retried next round
   else done[p.number] = new Date().toISOString();
 });
 if (left === 0) state.set("last", start); // else "last" stays, so the next round sees the rest
@@ -759,7 +759,7 @@ const s = session({
   title: "Release",
   prompt: "Run /release."
 });
-output.report({ title: "Release " + s.status, body: s.summary || s.error || "" });
+output.report({ title: "Release " + s.status, body: s.status === "not_watched" ? "Not watched (" + s.reason + "): the outcome is unknown." : s.summary || s.error || "" });
 ```
 ````
 

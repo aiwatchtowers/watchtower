@@ -98,8 +98,25 @@ package struct CommentAnchor: Hashable, Sendable {
         guard let best = scored.map(\.1).max(), best > 0 else { return nil }
         let tied = scored.filter { $0.1 == best }.map(\.0)
         guard let near, tied.count > 1 else { return tied.first }
-        let distance = { (r: Range<String.Index>) in abs(text.distance(from: near, to: r.lowerBound)) }
-        return tied.min { distance($0) < distance($1) }
+        return Self.nearest(tied, to: near, in: text)
+    }
+
+    /// The candidate starting nearest to `near` (the earlier one on an equal
+    /// distance). `candidates` are in text order with distinct starts, so the
+    /// nearest is one of the two around `near`: index comparisons find them
+    /// and only those two distances are measured, not one per candidate.
+    private static func nearest(
+        _ candidates: [Range<String.Index>],
+        to near: String.Index,
+        in text: String
+    ) -> Range<String.Index>? {
+        let after = candidates.firstIndex { $0.lowerBound > near } ?? candidates.endIndex
+        let before = after > candidates.startIndex ? candidates[after - 1] : nil
+        let next = after < candidates.endIndex ? candidates[after] : nil
+        guard let before, let next else { return before ?? next }
+        let back = text.distance(from: before.lowerBound, to: near)
+        let ahead = text.distance(from: near, to: next.lowerBound)
+        return back <= ahead ? before : next
     }
 
     private static func commonSuffixLength(_ lhs: [Character], _ rhs: [Character]) -> Int {

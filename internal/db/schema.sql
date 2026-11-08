@@ -447,7 +447,7 @@ CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
     WHERE notified_at = '' AND due_date != '';
 CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
--- One task per create_target action id (00174, AGENT-05); 'action:0' is a
+-- One task per create_target action id (00179, AGENT-05); 'action:0' is a
 -- registry-less Execute and stays out. A rebuild of targets recreates it.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_action_source ON targets(source_id)
     WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0';
@@ -2113,7 +2113,7 @@ CREATE TABLE IF NOT EXISTS agent_actions (
 CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
 -- One open proposal per Inbox button (context '<output>:<index>:<action
--- hash>', 00174, AGENT-05). A rebuild of agent_actions recreates it.
+-- hash>', 00179, AGENT-05). A rebuild of agent_actions recreates it.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_actions_open_context ON agent_actions(context_type, context_id)
     WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing');
 
@@ -2741,6 +2741,8 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
+    agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
+    agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2806,7 +2808,8 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     open_items  TEXT NOT NULL DEFAULT '',   -- JSON this round hands the author
     ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
     loop_end    TEXT NOT NULL DEFAULT '',
-    findings    INTEGER NOT NULL DEFAULT -1  -- findings counted in result at the first finish (00162); -1 = not counted
+    findings    INTEGER NOT NULL DEFAULT -1, -- findings counted in result at the first finish (00162); -1 = not counted
+    loop_rules  INTEGER NOT NULL DEFAULT 0   -- author loop rules (00177): 0 = cap of 3 (2026-10-26), 2 = runs while fixes hold, fuse 8
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.
@@ -2817,6 +2820,33 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     body       TEXT NOT NULL DEFAULT '',
     about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
     updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
+);
+
+-- An author question from a spec review thread (00178); Go is the only
+-- writer, every state change is a conditional update from 'open'.
+CREATE TABLE IF NOT EXISTS spec_review_questions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    thread     TEXT NOT NULL,              -- the thread's conversation key
+    item_key   TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    answer     TEXT NOT NULL DEFAULT '',
+    state      TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+    created_at TEXT NOT NULL,
+    closed_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_spec_review_questions_ask ON spec_review_questions(ask_id);
+
+-- A finding the owner added from a spec review thread (00178); Go writes it,
+-- a reviewer re-run never touches it. finding is the JSON.
+CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    thread     TEXT NOT NULL,
+    finding    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
 
@@ -2888,12 +2918,14 @@ CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_sessi
 
 -- Worktrees and branches a workbench session's agents worked in (00111):
 -- one row per new (session, root, branch), written by the session-state hook
--- (at most 64 per session) and read by `workbench cleanup`. Go only.
+-- (at most 64 per session; last_at moved once per run it is seen in) and read
+-- by `workbench cleanup` and the Desktop's lanes count. Go only writes it.
 CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,             -- worktree root (the dir holding .git), symlink-resolved, absolute
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
+    last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
     PRIMARY KEY (session_id, root, branch)
 );
 
@@ -3113,12 +3145,12 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     pressed_action INTEGER,                                  -- CLI-written by `automations reply`: the index of the pressed Reply action
     pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- CLI-written: the reply run the press queued
     pressed_at    TEXT,                                      -- CLI-written: when; a card is pressed at most once
-    blocks_json   TEXT NOT NULL DEFAULT '',                  -- the card's canonical block document; '' = none (markdown body) (00175)
-    output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00175)
-    content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00175
+    blocks_json   TEXT NOT NULL DEFAULT '',                  -- the card's canonical block document; '' = none (markdown body) (00180)
+    output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00180)
+    content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00180
     written_at    TEXT,                                      -- the last run that wrote this row (backfilled to created_at)
     changed_at    TEXT,                                      -- the last write that changed content_hash (backfilled to created_at); the Inbox order
-    folder_id     INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL -- CLI/daemon-written: the recipe's explicit Inbox folder; NULL = follow the route (00176)
+    folder_id     INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL -- CLI/daemon-written: the recipe's explicit Inbox folder; NULL = follow the route (00181)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
@@ -3126,7 +3158,7 @@ CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 
--- The Inbox menu's folders (00176). The folder tables hold the menu's
+-- The Inbox menu's folders (00181). The folder tables hold the menu's
 -- arrangement only, never an item (STRIP-02). Only Go writes them: the CLI
 -- (each write one BEGIN IMMEDIATE transaction that compares and bumps
 -- inbox_folder_state.revision), the built-in indexer's route seed and a
@@ -3186,8 +3218,39 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     last_error_at  TEXT,
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
-    updated_at     TEXT NOT NULL
+    updated_at     TEXT NOT NULL,
+    plot_json      TEXT NOT NULL DEFAULT '{}',
+    publication_proof TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    state                  TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+    reason                 TEXT NOT NULL DEFAULT '',
+    plan                   TEXT NOT NULL DEFAULT '',
+    fetched_at             TEXT,
+    last_error             TEXT NOT NULL DEFAULT '',
+    last_error_at          TEXT,
+    limits_json            TEXT NOT NULL DEFAULT '[]',
+    breakdown_json         TEXT NOT NULL DEFAULT '[]',
+    updated_at             TEXT NOT NULL,
+    plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
+    scope                  TEXT NOT NULL DEFAULT '',
+    identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+    ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+    CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+);
+
+CREATE TABLE IF NOT EXISTS codex_plan_usage_samples (
+    scope      TEXT NOT NULL CHECK (length(scope) = 64),
+    limit_key  TEXT NOT NULL,
+    taken_at   TEXT NOT NULL,
+    percent    REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+    resets_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (scope, limit_key, taken_at)
+);
+
 
 -- One row per built-in whose one-time move from the old pipeline settings
 -- ran (done) or failed (00150); attempts counts the tries.

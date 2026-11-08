@@ -24,7 +24,7 @@ struct DesignShot {
 /// rendered over a transparent, white-looking page.
 enum DesignShotCatalog {
     @MainActor static var all: [DesignShot] {
-        [
+        PlansShotFixtures.shots + [
             DesignShot(name: "workbench-header", size: NSSize(width: 760, height: 44)) {
                 AnyView(DesignShotFixtures.workbenchHeader().padding(8).shotFrame().detailBackground())
             },
@@ -42,6 +42,10 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "sessions-panel", size: NSSize(width: 300, height: 140)) {
                 AnyView(DesignShotFixtures.sessionsPanel())
+            },
+            // U6 (spec 2026-11-05 §3.5): Working beside Working · not watched.
+            DesignShot(name: "session-state-not-watched", size: NSSize(width: 320, height: 0)) {
+                DesignShotFixtures.sessionNotWatched()
             },
             DesignShot(name: "session-drag-preview", size: NSSize(width: 300, height: 140)) {
                 DesignShotFixtures.sessionDragPreview(width: 276, busy: false)
@@ -67,6 +71,15 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-composer-ollama-capabilities", size: NSSize(width: 620, height: 0)) {
+                AnyView(ProviderCapabilitiesShotFixtures.ollamaComposer().shotFrame().detailBackground())
+            },
+            DesignShot(name: "workchat-hold-caption", size: NSSize(width: 560, height: 0)) {
+                AnyView(SessionCapsShotFixtures.workchatHoldCaption().shotFrame().detailBackground())
+            },
+            DesignShot(name: "settings-notifications-idle-caption", size: NSSize(width: 620, height: 240)) {
+                AnyView(SessionCapsShotFixtures.notificationSettings().shotFrame().panelBackground())
             },
             DesignShot(name: "workchat-activity-busy", size: NSSize(width: 720, height: 400)) {
                 AnyView(WorkchatLiveProposalShot(model: .busy, narrow: false, agentsOpen: false))
@@ -326,11 +339,11 @@ enum DesignShotCatalog {
                 ReviewShotFixtures.deepMeaning()
             },
             // Spec review in the review ask drawer (spec 2026-10-25 §7).
-            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
+            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1200)) {
                 SpecReviewShotFixtures.screen(.meaning)
             },
-            // A narrow drawer: the four mark buttons (Fix / Fine as is /
-            // Comment / Not useful) wrap to two rows inside the card. Below about 480 the Chapters
+            // A narrow drawer: the four mark buttons (Fix / Skip /
+            // Discuss / Not useful) wrap to two rows inside the card. Below about 480 the Chapters
             // screen's two columns overflow on their own.
             DesignShot(name: "spec-review-chapters-narrow", size: NSSize(width: 480, height: 1100)) {
                 SpecReviewShotFixtures.screen(.chapters)
@@ -357,6 +370,47 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
                 SpecReviewShotFixtures.strips()
+            },
+            // Spec review: summary, Discuss threads, per-kind buttons and the
+            // loop's new end lines (spec 2026-11-08), on fixtures.
+            DesignShot(name: "spec-review-summary", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.summary()
+            },
+            DesignShot(name: "spec-review-thread-open", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("open")
+            },
+            DesignShot(name: "spec-review-thread-replying", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("replying")
+            },
+            DesignShot(name: "spec-review-thread-question-pending", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("pending")
+            },
+            DesignShot(name: "spec-review-thread-question-answered", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("answered")
+            },
+            DesignShot(name: "spec-review-thread-question-expired", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("expired")
+            },
+            DesignShot(name: "spec-review-thread-finding-proposed", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("proposed")
+            },
+            DesignShot(name: "spec-review-thread-finding-refused", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("refused")
+            },
+            DesignShot(name: "spec-review-thread-folded", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("folded")
+            },
+            DesignShot(name: "spec-review-buttons-findings", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.findingKinds()
+            },
+            DesignShot(name: "spec-review-buttons-loop", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.loopKinds()
+            },
+            DesignShot(name: "spec-review-loop-stalled", size: NSSize(width: 760, height: 1100)) {
+                SpecReviewShotFixtures.loopEnded("loop-owner-items", end: "stalled", round: 4)
+            },
+            DesignShot(name: "spec-review-loop-cap", size: NSSize(width: 760, height: 420)) {
+                SpecReviewShotFixtures.loopEnded("loop-cap", end: "cap", round: 8, ownerItems: false)
             },
             // A question raised from the terminal: the reason as a caption,
             // the question once, on its card.
@@ -387,6 +441,16 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "analytics-statistics", size: NSSize(width: 900, height: 1340)) {
                 StatisticsShotFixtures.screen()
+            },
+            // Codex sessions on the Analytics pane (U4, board #975).
+            DesignShot(name: "analytics-codex-blocks", size: NSSize(width: 900, height: 1340)) {
+                CodexAnalyticsShotFixtures.blocks()
+            },
+            DesignShot(name: "analytics-codex-sessions", size: NSSize(width: 900, height: 260)) {
+                CodexAnalyticsShotFixtures.sessions()
+            },
+            DesignShot(name: "analytics-codex-sessions-narrow", size: NSSize(width: 480, height: 260)) {
+                CodexAnalyticsShotFixtures.sessions()
             },
             DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
                 CoachShotFixtures.screen(.editSheet)
@@ -595,6 +659,28 @@ enum DesignShotFixtures {
             .panelSurface()
             Color.clear.detailBackground()
         })
+    }
+
+    /// Two live codex sessions' state lines: one watched, one the session
+    /// host cannot watch (U6), as the sessions panel and the strip draw them.
+    static func sessionNotWatched() -> AnyView {
+        let rows: [(String, SessionSwitcherPresentation.State)] = [
+            ("Billing export", .init(kind: .working, live: true)),
+            ("Login redirect", .init(kind: .working, live: true, watchIssue: "compressed"))
+        ]
+        return AnyView(VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 6) {
+                    SessionLiveDot(state: row.1)
+                    Text(row.0).lineLimit(1)
+                    Spacer(minLength: 8)
+                    SessionStateLabel(state: row.1)
+                }
+            }
+        }
+        .padding(12)
+        .shotFrame()
+        .panelBackground())
     }
 
     /// The same preview wrapper and row as a live drag, including a title

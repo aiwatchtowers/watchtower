@@ -39,7 +39,9 @@ since: 0.25.0
 action: nav:automations
 -->
 
-Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
+Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. A model call counts its fresh input and its output. Input the provider reads from or writes to its prompt cache does not count, so on Claude most of a long prompt is not counted, and on Codex everything it did not read from its cache is. There is no daily cap across runs. At most two runs execute at the same time.
+
+With a [reserve provider](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits) on, an `llm()` call that hits your plan's limit tries the reserve, and every attempt, the failed one included, counts against the run's tokens and minutes. A call whose usage the provider did not report counts an estimate. An `agent()` step picks a provider that is not at its limit before it starts; a limit reached after it starts ends that step, keeping its proposals.
 
 A run also has one read budget for your synced data, shared by its `tool()` reads and `mcp()` calls: 300 reads or 5,000 rows. Past it a read throws a **ValidationError** the script can catch, and the run goes on. One read over 256 KB throws **ResultTooLarge**. An `agent()` step counts on its own.
 

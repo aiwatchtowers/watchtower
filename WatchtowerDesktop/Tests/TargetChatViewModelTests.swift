@@ -139,6 +139,81 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertLessThan(assistantIdx, summaryIdx)
     }
 
+    /// TGT-BRIEF-03: an execute block the model wrote before a tool call and
+    /// revised after it is applied once, in its final version; the owner is
+    /// told the draft was dropped.
+    func testABlockRevisedAfterAToolCallIsAppliedOnceInItsFinalVersion() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let draft = """
+        Adding it.
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "first draft", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let revised = """
+
+        Checked the board — better wording:
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "checked wording", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [
+            .sessionID("s1"), .text(draft),
+            .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")),
+            .toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "ok", sources: [])),
+            .text(revised), .done
+        ])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+
+        chat.inputText = "add a step"
+        chat.send()
+        await chat.engine.finished()
+        try await waitForStreamEnd(chat)
+
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertEqual(after.decodedSubItems.map(\.text), ["checked wording"])
+        XCTAssertEqual(chat.actionCards.count, 1)
+        XCTAssertTrue(chat.messages.contains {
+            $0.role == .system && $0.text.contains("1 action(s) written before a tool call were not used")
+        })
+    }
+
+    /// A reply that is only a draft block before a tool call applies
+    /// nothing and still shows a turn with the reason, not an empty-reply
+    /// error.
+    func testAReplyWithOnlyAPreToolDraftAppliesNothingAndSaysWhy() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let draft = """
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "first draft", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [
+            .sessionID("s1"), .text(draft),
+            .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")),
+            .toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "ok", sources: [])), .done
+        ])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+
+        chat.inputText = "add a step"
+        chat.send()
+        await chat.engine.finished()
+        try await waitForStreamEnd(chat)
+
+        let after = try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+        XCTAssertTrue(after.decodedSubItems.isEmpty)
+        XCTAssertTrue(chat.actionCards.isEmpty)
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertEqual(persisted.first { $0.role == "assistant" }?.text, "(no action proposed after the tool call)")
+        XCTAssertTrue(persisted.contains { $0.role == "system" && $0.text.contains("written before a tool call") })
+    }
+
     /// The VM is cached per target in an app-wide container and holds a `Target`
     /// VALUE, so a checklist edit made on the detail view around it (drag-
     /// reorder, tick, inline edit) would otherwise never reach the prompt: the
@@ -917,58 +992,100 @@ final class TargetChatViewModelTests: XCTestCase {
     /// an approved action is target activity even before the follow-up turn runs.
     func testApproveNotifiesTargetActivity() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService())
+        let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        addTeardownBlock { @MainActor in
+            chat.onTargetActivity = nil
+            mock.release()
+            chat.stop()
+            await chat.engine.finished()
+        }
+        let followUpEnded = expectation(description: "follow-up turn reports its own target activity")
         var notifications = 0
-        chat.onTargetActivity = { notifications += 1 }
+        chat.onTargetActivity = {
+            notifications += 1
+            if notifications == 2 { followUpEnded.fulfill() }
+        }
 
         let action = ProposedAction(type: .updateStatus, reason: "done", status: "done")
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
-        await chat.engine.finished()
+        await chat.engine.started()
+        XCTAssertTrue(chat.isStreaming, "the follow-up is held before completion")
 
-        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
+        mock.release()
+        await fulfillment(of: [followUpEnded], timeout: 5)
+        await chat.engine.finished()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
     }
 
     /// A failed action is activity too — the screen must not keep showing a step
     /// derived from a state the chat has since tried to change.
     func testApproveNotifiesTargetActivityEvenWhenTheActionFails() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService())
+        let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        addTeardownBlock { @MainActor in
+            chat.onTargetActivity = nil
+            mock.release()
+            chat.stop()
+            await chat.engine.finished()
+        }
+        let followUpEnded = expectation(description: "follow-up turn reports its own target activity")
         var notifications = 0
-        chat.onTargetActivity = { notifications += 1 }
+        chat.onTargetActivity = {
+            notifications += 1
+            if notifications == 2 { followUpEnded.fulfill() }
+        }
 
         // No status at all — the executor rejects it.
         let action = ProposedAction(type: .updateStatus, reason: "r", status: nil)
         let card = TargetActionCard(messageID: UUID(), action: action, state: .pending)
         chat.actionCards = [card]
         await chat.approve(card)
-        await chat.engine.finished()
+        await chat.engine.started()
+        XCTAssertTrue(chat.isStreaming, "the follow-up is held before completion")
 
         if case .failed = chat.actionCards.first?.state {} else {
             XCTFail("expected .failed, got \(String(describing: chat.actionCards.first?.state))")
         }
-        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
+        mock.release()
+        await fulfillment(of: [followUpEnded], timeout: 5)
+        await chat.engine.finished()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
     }
 
     /// Approve-all applies a batch in one pass, so it notifies once, not per card.
     func testApproveAllNotifiesTargetActivityOnce() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let chat = try makeChat(target: target, vm: vm, manager: manager,
-                                aiService: MockClaudeService())
+        let mock = MockClaudeService(events: [.text("Hello from Claude"), .done], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        addTeardownBlock { @MainActor in
+            chat.onTargetActivity = nil
+            mock.release()
+            chat.stop()
+            await chat.engine.finished()
+        }
+        let followUpEnded = expectation(description: "follow-up turn reports its own target activity")
         var notifications = 0
-        chat.onTargetActivity = { notifications += 1 }
+        chat.onTargetActivity = {
+            notifications += 1
+            if notifications == 2 { followUpEnded.fulfill() }
+        }
 
         chat.actionCards = [
             TargetActionCard(messageID: UUID(),
@@ -979,9 +1096,15 @@ final class TargetChatViewModelTests: XCTestCase {
                              state: .pending)
         ]
         await chat.approveAll()
-        await chat.engine.finished()
+        await chat.engine.started()
+        XCTAssertTrue(chat.isStreaming, "the follow-up is held before completion")
 
-        XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(notifications, 1, "the decision reports activity before the held follow-up ends")
+        mock.release()
+        await fulfillment(of: [followUpEnded], timeout: 5)
+        await chat.engine.finished()
+        XCTAssertFalse(chat.isStreaming)
+        XCTAssertEqual(notifications, 2, "the distinct completed follow-up reports one more activity")
     }
 
     /// A plain chat turn mutates nothing, but it is still work on the target —
@@ -1610,5 +1733,117 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(reply.status, "complete")
         XCTAssertEqual(reply.text, "(proposed 1 change(s) below)")
         XCTAssertNil(chat.errorMessage)
+    }
+}
+
+extension TargetChatViewModelTests {
+    /// The capability rows the chat surfaces read say every table provider
+    /// runs the tools, and a catalog not read yet offers none. Whether the
+    /// target and editor chats open them on Ollama is AGENT-04's (draft-only
+    /// there today, pending the owner), not this table's.
+    func testToolsAvailableFromCapabilities() {
+        ProviderCatalogFixture.seedShared()
+        let catalog = AIModelCatalog.shared
+        for id in ["claude", "codex", "ollama"] {
+            XCTAssertTrue(catalog.capabilities(for: id).hasTools, id)
+        }
+        XCTAssertFalse(catalog.capabilities(for: "gemini").hasTools, "an unknown provider has no tools")
+        XCTAssertFalse(AIModelCatalog().capabilities(for: "claude").hasTools, "a catalog not read yet offers nothing")
+        XCTAssertFalse(AutomationEditorChatSurface.toolsAvailable(provider: "ollama"), "AGENT-04: draft-only on a local server")
+        XCTAssertTrue(AutomationEditorChatSurface.toolsAvailable(provider: "codex"))
+        XCTAssertTrue(catalog.isLocalServer("ollama"))
+        XCTAssertFalse(catalog.isLocalServer("claude"))
+        XCTAssertFalse(AIModelCatalog().isKnownCLI("claude"), "a catalog not read yet: draft-only (AGENT-04 fails closed)")
+    }
+}
+
+extension TargetChatViewModelTests {
+    /// AGENT-04 before and after the catalog's first read: a target chat
+    /// opened before it is draft-only, then gets tools on claude and codex
+    /// once the read lands and stays draft-only on ollama (a local server).
+    func testToolAccessDecidedAgainWhenTheCatalogLoads() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        defer { ProviderCatalogFixture.seedShared() }
+        for (provider, tools) in [("claude", true), ("codex", true), ("ollama", false)] {
+            AIModelCatalog.shared.replaceProviders([])
+            let conv = try manager.dbPool.write { db in
+                try ChatConversationQueries.create(db, title: provider, contextType: "target", contextID: String(target.id)).id
+            }
+            let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                           conversationID: conv) { provider }
+            XCTAssertFalse(chat.toolsAvailable, "\(provider): draft-only before the catalog is read")
+            XCTAssertEqual(chat.engine.spec.toolAccess, .draftOnly)
+
+            ProviderCatalogFixture.seedShared() // the read lands and is announced
+            XCTAssertEqual(chat.toolsAvailable, tools, provider)
+            XCTAssertEqual(chat.engine.spec.toolAccess, tools ? .actions(surface: "target") : .draftOnly, provider)
+            chat.stop()
+        }
+    }
+}
+
+extension TargetChatViewModelTests {
+    /// The catalog's read lands while a turn runs: that turn finishes as it
+    /// started (draft-only) and the next one carries the tools. A read of
+    /// another catalog instance changes nothing, and after `stop()` the chat
+    /// no longer listens.
+    func testCatalogReadDuringATurnAppliesToTheNextTurn() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        defer { ProviderCatalogFixture.seedShared() }
+        AIModelCatalog.shared.replaceProviders([])
+        let mock = MockClaudeService(eventSequence: [[.text("one"), .done], [.text("two"), .done]], thenAwaitsRelease: true)
+        let conv = try await manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(target.id)).id
+        }
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       conversationID: conv, aiService: mock) { "claude" }
+
+        // Another catalog's read is not the app's: no change.
+        AIModelCatalog(providers: []).replaceProviders(ProviderCatalogFixture.providers())
+        XCTAssertFalse(chat.toolsAvailable)
+
+        chat.inputText = "first"
+        chat.send()
+        let started = await eventually { mock.toolModes.count == 1 }
+        XCTAssertTrue(started)
+        XCTAssertTrue(chat.isStreaming)
+        ProviderCatalogFixture.seedShared() // the read lands mid-turn
+        XCTAssertTrue(chat.toolsAvailable)
+        XCTAssertTrue(chat.isStreaming, "the running turn is not touched")
+        mock.release()
+        await chat.engine.finished()
+        let idle = await eventually { !chat.isStreaming }
+        XCTAssertTrue(idle)
+        XCTAssertNil(chat.errorMessage)
+        XCTAssertNil(mock.toolModes[0], "the first turn ran draft-only")
+
+        chat.inputText = "second"
+        chat.send()
+        let second = await eventually { mock.toolModes.count == 2 }
+        XCTAssertTrue(second, "the second turn reached the provider")
+        XCTAssertNotNil(mock.toolModes.count == 2 ? mock.toolModes[1] : nil, "the next turn carries the tools")
+        await chat.engine.finished()
+
+        chat.stop()
+        AIModelCatalog.shared.replaceProviders([])
+        XCTAssertTrue(chat.toolsAvailable, "a stopped chat no longer listens")
+    }
+
+    /// The launch reads the catalog only after the CLI store sync, so the
+    /// read runs the binary the store now holds.
+    func testLaunchReadsTheCatalogAfterTheCLIStoreSync() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let url = root.appendingPathComponent("Sources/App/AppState.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let launch = try XCTUnwrap(source.range(of: "launchTask = Task {"))
+        let sync = try XCTUnwrap(source.range(of: "await syncCLIBinaryStore()", range: launch.upperBound..<source.endIndex))
+        let read = try XCTUnwrap(source.range(of: "loadModelCatalogAtLaunch()", range: launch.upperBound..<source.endIndex))
+        XCTAssertLessThan(sync.lowerBound, read.lowerBound)
     }
 }

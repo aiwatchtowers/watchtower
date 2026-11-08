@@ -221,7 +221,7 @@ private struct SpecReviewLoopStackRow: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(loop.title).lineLimit(1).truncationMode(.tail)
-                Text("ask #\(loop.askID) · \(loop.docType == "plan" ? "plan" : "spec") · round \(loop.round) of \(SpecReviewLoopCenter.maxRounds)")
+                Text("ask #\(loop.askID) · \(loop.docType == "plan" ? "plan" : "spec") · round \(loop.round)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

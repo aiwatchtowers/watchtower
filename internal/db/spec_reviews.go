@@ -31,12 +31,17 @@ type SpecReview struct {
 	// Author loop (00160). The JSON columns are written by the loop code.
 	Loop, Replies, OpenItems, Ledger, LoopEnd string
 	Round                                     int
+	// LoopRules is the rules the author loop runs under (00177):
+	// 0 = the rules of 2026-10-26, 2 = specreview.LoopRulesOpen.
+	LoopRules int
 }
 
 // SpecLoopStart starts (or advances) an author loop when queueing a review.
 type SpecLoopStart struct {
 	Round   int
 	Replies string
+	// LoopRules is stored in spec_reviews.loop_rules.
+	LoopRules int
 }
 
 // SpecLoopRow is one open author-loop review for the sweep.
@@ -64,13 +69,13 @@ func specReviewTime(t time.Time) string { return t.UTC().Format(automationTimeLa
 func ParseSpecReviewTime(s string) (time.Time, error) { return time.Parse(automationTimeLayout, s) }
 
 const specReviewCols = `ask_id, status, reason, result, provider, model, doc_sha, dropped, pid, attempt,
-	queued_at, started_at, finished_at, loop, round, replies, open_items, ledger, loop_end, findings`
+	queued_at, started_at, finished_at, loop, round, replies, open_items, ledger, loop_end, findings, loop_rules`
 
 func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 	var r SpecReview
 	if err := row.Scan(&r.AskID, &r.Status, &r.Reason, &r.Result, &r.Provider, &r.Model, &r.DocSHA,
 		&r.Dropped, &r.PID, &r.Attempt, &r.QueuedAt, &r.StartedAt, &r.FinishedAt,
-		&r.Loop, &r.Round, &r.Replies, &r.OpenItems, &r.Ledger, &r.LoopEnd, &r.Findings); err != nil {
+		&r.Loop, &r.Round, &r.Replies, &r.OpenItems, &r.Ledger, &r.LoopEnd, &r.Findings, &r.LoopRules); err != nil {
 		return nil, fmt.Errorf("scanning spec review: %w", err)
 	}
 	return &r, nil
@@ -79,7 +84,7 @@ func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 // QueueSpecReview upserts the ask's review to queued inside the caller's
 // transaction: result, reason and pid are cleared, marks are kept and attempt
 // grows by one. A nil loop keeps every loop column; a non-nil loop sets
-// loop='author', round and replies and clears open_items, ledger and loop_end.
+// loop='author', round, replies and loop_rules and clears open_items, ledger and loop_end.
 func (db *DB) QueueSpecReview(tx *sql.Tx, askID int64, now time.Time, loop *SpecLoopStart) error {
 	const base = `INSERT INTO spec_reviews (ask_id, status, attempt, queued_at%s)
 		VALUES (?, 'queued', 1, ?%s)
@@ -90,9 +95,9 @@ func (db *DB) QueueSpecReview(tx *sql.Tx, askID int64, now time.Time, loop *Spec
 	if loop == nil {
 		_, err = tx.Exec(fmt.Sprintf(base, "", "", ""), askID, specReviewTime(now))
 	} else {
-		_, err = tx.Exec(fmt.Sprintf(base, ", loop, round, replies", ", 'author', ?, ?",
-			", loop = 'author', round = excluded.round, replies = excluded.replies, open_items = '', ledger = '', loop_end = ''"),
-			askID, specReviewTime(now), loop.Round, loop.Replies)
+		_, err = tx.Exec(fmt.Sprintf(base, ", loop, round, replies, loop_rules", ", 'author', ?, ?, ?",
+			", loop = 'author', round = excluded.round, replies = excluded.replies, loop_rules = excluded.loop_rules, open_items = '', ledger = '', loop_end = ''"),
+			askID, specReviewTime(now), loop.Round, loop.Replies, loop.LoopRules)
 	}
 	if err != nil {
 		return fmt.Errorf("queueing spec review: %w", err)
@@ -182,6 +187,8 @@ func (db *DB) ClaimSpecReview(askID int64, pid int, now time.Time) (bool, error)
 // FinishSpecReview stores r's result as done, only while the row is running
 // under pid; any other state is a no-op. Loop, OpenItems, Ledger and LoopEnd
 // are written only while the row's loop is 'author'; an 'owner' row keeps them.
+// Exception: a successful retry of an empty first-round reviewer failure becomes
+// a plain review, clearing its stale failure banner without restarting the loop.
 // Findings is written by the first finish only (findings < 0): a re-run, a
 // --force start or a sweep relaunch replaces result but keeps the count of the
 // review as it first was (the coach's first-round metric).
@@ -191,8 +198,14 @@ func (db *DB) FinishSpecReview(askID int64, pid int, r SpecReview, now time.Time
 			findings = CASE WHEN findings < 0 THEN ? ELSE findings END,
 			open_items = CASE WHEN loop = 'author' THEN ? ELSE open_items END,
 			ledger = CASE WHEN loop = 'author' THEN ? ELSE ledger END,
-			loop_end = CASE WHEN loop = 'author' THEN ? ELSE loop_end END,
-			loop = CASE WHEN loop = 'author' THEN ? ELSE loop END
+			loop_end = CASE WHEN loop = 'author' THEN ?
+                WHEN loop = 'owner' AND loop_end = 'reviewer_failed' AND round = 1
+                    AND trim(ledger) IN ('', '[]') AND trim(open_items) IN ('', '[]') THEN ''
+                ELSE loop_end END,
+            loop = CASE WHEN loop = 'author' THEN ?
+                WHEN loop = 'owner' AND loop_end = 'reviewer_failed' AND round = 1
+                    AND trim(ledger) IN ('', '[]') AND trim(open_items) IN ('', '[]') THEN ''
+                ELSE loop END
 		WHERE ask_id = ? AND status = 'running' AND pid = ?`,
 		r.Result, r.Provider, r.Model, r.DocSHA, r.Dropped, specReviewTime(now), r.Findings,
 		r.OpenItems, r.Ledger, r.LoopEnd, r.Loop, askID, pid)
@@ -336,6 +349,40 @@ func (db *DB) SpecLoopsToSweep() ([]SpecLoopRow, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing spec loops: %w", err)
+	}
+	return out, nil
+}
+
+// specReviewChainMaxDepth bounds the walk along previous_ask_id, so a cycle
+// (which no writer makes) still ends.
+const specReviewChainMaxDepth = 100
+
+// SpecReviewChain returns the ask ids of askID's review chain, the asks
+// linked by owner_asks.previous_ask_id: the root first, askID last. An ask
+// with no previous ask is a chain of one; an unknown ask is an empty chain.
+func (db *DB) SpecReviewChain(askID int64) ([]int64, error) {
+	rows, err := db.Query(`WITH RECURSIVE chain(id, prev, depth) AS (
+			SELECT id, previous_ask_id, 0 FROM owner_asks WHERE id = ?
+			UNION ALL
+			SELECT a.id, a.previous_ask_id, c.depth + 1 FROM owner_asks a
+				JOIN chain c ON a.id = c.prev
+			WHERE c.depth < ?
+		)
+		SELECT id FROM chain ORDER BY depth DESC`, askID, specReviewChainMaxDepth)
+	if err != nil {
+		return nil, fmt.Errorf("reading spec review chain: %w", err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scanning spec review chain: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading spec review chain: %w", err)
 	}
 	return out, nil
 }

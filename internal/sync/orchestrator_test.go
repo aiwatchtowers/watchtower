@@ -1329,14 +1329,14 @@ func TestSearchSyncThrottlesReadStateAndRoster(t *testing.T) {
 	// after one pass, so it cannot show the throttle). Its period ends AFTER
 	// the stubbed last_read (epoch 1700000001), or finishSync's
 	// AutoMarkReadFromSlack would mark it read on the first run and the
-	// later runs would measure the first-run path for C002 instead.
-	require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: watchtowerslack.Namespace(ts.accountID, "C001"), Name: "general", Type: "public", IsMember: true}))
-	_, err := ts.db.UpsertDigest(db.Digest{ChannelID: watchtowerslack.Namespace(ts.accountID, "C001"), Type: "channel", Summary: "s", PeriodFrom: 1700000100, PeriodTo: 1700000200, MessageCount: 1})
-	require.NoError(t, err)
-
+	// later runs would measure the first-run path for C002 instead. It also
+	// ends within the read-state window of every run below (#881).
 	start := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	now := start
 	ts.orch.now = func() time.Time { return now }
+	require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: watchtowerslack.Namespace(ts.accountID, "C001"), Name: "general", Type: "public", IsMember: true}))
+	_, err := ts.db.UpsertDigest(db.Digest{ChannelID: watchtowerslack.Namespace(ts.accountID, "C001"), Type: "channel", Summary: "s", PeriodFrom: float64(start.Add(-2 * time.Hour).Unix()), PeriodTo: float64(start.Add(-time.Hour).Unix()), MessageCount: 1})
+	require.NoError(t, err)
 
 	run := func(at time.Duration) {
 		t.Helper()
@@ -1424,11 +1424,12 @@ func TestSearchSyncReadStateFailureRetriesNextCycle(t *testing.T) {
 	ts := newTestSetup(t, mux)
 	require.NoError(t, ts.db.UpdateSlackAccountConnection(ts.accountID, "T024BE7LD", "my-company", "my-company", ""))
 	require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: watchtowerslack.Namespace(ts.accountID, "C001"), Name: "general", Type: "public", IsMember: true}))
-	_, err := ts.db.UpsertDigest(db.Digest{ChannelID: watchtowerslack.Namespace(ts.accountID, "C001"), Type: "channel", Summary: "s", PeriodFrom: 1700000100, PeriodTo: 1700000200, MessageCount: 1})
-	require.NoError(t, err)
-
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	ts.orch.now = func() time.Time { return now }
+	// The digest ended an hour before the injected clock: inside the
+	// read-state window (#881).
+	_, err := ts.db.UpsertDigest(db.Digest{ChannelID: watchtowerslack.Namespace(ts.accountID, "C001"), Type: "channel", Summary: "s", PeriodFrom: float64(now.Add(-2 * time.Hour).Unix()), PeriodTo: float64(now.Add(-time.Hour).Unix()), MessageCount: 1})
+	require.NoError(t, err)
 
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}), "a failed read-cursor refresh never fails the run")
 	first := infoCalls.Load()
@@ -1462,16 +1463,72 @@ func TestSyncChannelReadStateCancelledPassIsNoRefresh(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": map[string]any{"id": r.Form.Get("channel"), "last_read": "1700000001.000000"}})
 	})
 	ts := newTestSetup(t, mux)
+	recent := time.Now().Add(-time.Hour)
 	for _, raw := range []string{"C001", "C002", "C003"} {
 		ch := watchtowerslack.Namespace(ts.accountID, raw)
 		require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: ch, Name: raw, Type: "public", IsMember: true}))
-		_, err := ts.db.UpsertDigest(db.Digest{ChannelID: ch, Type: "channel", Summary: "s", PeriodFrom: 1700000100, PeriodTo: 1700000200, MessageCount: 1})
+		_, err := ts.db.UpsertDigest(db.Digest{ChannelID: ch, Type: "channel", Summary: "s", PeriodFrom: float64(recent.Add(-time.Hour).Unix()), PeriodTo: float64(recent.Unix()), MessageCount: 1})
 		require.NoError(t, err)
 	}
 
 	err := ts.orch.syncChannelReadState(ctx)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, int32(2), infoCalls.Load(), "no call after the cancel")
+}
+
+// TestSyncChannelReadStateOnlyWindowedDigests pins #881: the read-cursor
+// pass queries only channels whose unread channel digest ended within
+// readStateDigestWindow. A channel with only an older unread digest is never
+// queried, and an old unread tail alone does not fall into the first-run
+// path (which would query every cursor-less member channel each hour).
+func TestSyncChannelReadStateOnlyWindowedDigests(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	for _, tc := range []struct {
+		name    string
+		recent  bool
+		want    []string
+		wantLog string // "" = no skip line
+	}{
+		{"recent and old unread", true, []string{"C001"}, ""},
+		{"only old unread", false, nil, "channel read state: no unread digest within the window, skipping (older channels left out: 1)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			mux := defaultMux()
+			mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, r *http.Request) {
+				_ = r.ParseForm()
+				got = append(got, r.Form.Get("channel"))
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": map[string]any{"id": r.Form.Get("channel"), "last_read": "1700000001.000000"}})
+			})
+			ts := newTestSetup(t, mux)
+			ts.orch.now = func() time.Time { return now }
+			seed := func(raw string, to time.Time) {
+				t.Helper()
+				_, err := ts.db.UpsertDigest(db.Digest{ChannelID: watchtowerslack.Namespace(ts.accountID, raw), Type: "channel", Summary: "s", PeriodFrom: float64(to.Add(-time.Hour).Unix()), PeriodTo: float64(to.Unix()), MessageCount: 1})
+				require.NoError(t, err)
+			}
+			// Every channel lacks a last_read cursor, so a first-run pass
+			// would query all three.
+			for _, raw := range []string{"C001", "C002", "C003"} {
+				require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: watchtowerslack.Namespace(ts.accountID, raw), Name: raw, Type: "public", IsMember: true}))
+			}
+			if tc.recent {
+				seed("C001", now.Add(-time.Hour))
+			}
+			seed("C002", now.Add(-readStateDigestWindow-time.Hour))
+
+			var logs bytes.Buffer
+			ts.orch.SetLogger(log.New(&logs, "", 0))
+			require.NoError(t, ts.orch.syncChannelReadState(context.Background()))
+			assert.Equal(t, tc.want, got)
+			if tc.wantLog == "" {
+				assert.NotContains(t, logs.String(), "no unread digest within the window")
+			} else {
+				assert.Contains(t, logs.String(), tc.wantLog)
+			}
+		})
+	}
 }
 
 // TestSyncInboxReactionsDegenerateInputs pins the clean-exit branches of the

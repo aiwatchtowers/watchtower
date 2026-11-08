@@ -89,6 +89,18 @@ func TestAISessionAttachmentNewTurnRecoveryChecksAvailableCandidate(t *testing.T
 				err = backend.Turn(ctx, chat.Command{TurnID: "new-turn", Text: "new attachment question", Attachments: []chat.Attachment{{Path: path, Mime: mime, Name: "synthetic attachment"}}}, func(e chat.Event) { events = append(events, e) })
 				actual, getErr := database.GetChatConversation(1)
 				require.NoError(t, getErr)
+				// Codex takes images since G4 (L6): the sticky healthy
+				// codex runs the image turn (the fake exits 88); a PDF is
+				// still refused by capability before anything starts.
+				codexRuns := kind == "image" && scenario == "healthy-sticky"
+				if codexRuns {
+					require.Error(t, err)
+					require.Equal(t, "codex", actual.ActualProvider)
+					require.NoFileExists(t, claudeMarker)
+					require.FileExists(t, codexMarker)
+					require.NoError(t, backend.Close())
+					return
+				}
 				if scenario == "recovered" {
 					require.NoError(t, err)
 					require.Equal(t, "claude", actual.ActualProvider)

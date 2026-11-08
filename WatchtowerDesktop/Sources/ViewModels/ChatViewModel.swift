@@ -30,12 +30,15 @@ enum AIProvider: String, CaseIterable, Identifiable {
         value.flatMap(Self.init(rawValue:)) ?? .claude
     }
 
-    var displayName: String {
-        switch self {
-        case .claude: "Claude"
-        case .codex: "Codex"
-        case .ollama: "Ollama"
-        }
+    /// The provider's name from the Go catalog (A7b).
+    @MainActor var displayName: String { AIModelCatalog.shared.displayName(rawValue) }
+
+    /// The providers the chat's menu offers: the catalog's, in its order
+    /// (`AIProviderRegistryTests` pins this enum to the catalog's ids); only
+    /// `current` before the first read, so no Swift list stands in for it.
+    @MainActor static func offered(by catalog: AIModelCatalog, current: Self) -> [Self] {
+        let listed = catalog.providerIDs.compactMap(Self.init(rawValue:))
+        return listed.isEmpty ? [current] : listed
     }
 }
 
@@ -92,16 +95,48 @@ final class ChatViewModel {
 
     var routingPresentation: ChatRoutingPresentation? {
         let provider = automaticRouting ? preferredProvider : selectedProvider
-        guard let preferred = ProviderFallbackPreview.Provider.allCases.first(where: {
-            $0.rawValue.lowercased() == provider.rawValue
-        }) else { return nil }
+        let catalog = AIModelCatalog.shared
+        // The routing card belongs to a provider with a reserve peer (its
+        // capability row, U3); before the catalog is read no pair is known,
+        // so the line shows without the card.
+        let pair = catalog.fallbackPair(preferred: provider.rawValue)
         let driver = pool.client(for: conversationID)?.driver
-        return ChatRoutingPresentation(preferred: preferred, automatic: automaticRouting,
-                                       actualProvider: driver?.actualProvider ?? currentConversation?.actualProvider,
+        let actualProvider = driver?.actualProvider ?? currentConversation?.actualProvider
+        return ChatRoutingPresentation(pair: pair, automatic: automaticRouting,
+                                       actualProvider: actualProvider,
                                        actualModel: driver?.actualModel ?? currentConversation?.actualModel,
                                        reason: driver?.routing?.reason ?? currentConversation?.routingReason,
-                                       health: routingStatus, busy: isBusy)
+                                       health: routingStatus, busy: isBusy,
+                                       actualDisplayName: actualProvider.flatMap { catalog.provider($0)?.displayName },
+                                       capabilities: providerCapabilities)
     }
+
+    /// The capability row of the provider this chat runs on: the session's
+    /// own (its session_ready), else the catalog's for the provider the next
+    /// turn runs on: a pinned chat's choice; an automatic chat's preferred
+    /// provider, or its last actual provider when that is the preferred
+    /// one's reserve and fallback is not known off (Go keeps a chat on the
+    /// reserve until the owner switches or turns fallback off); nil while
+    /// neither is known.
+    var providerCapabilities: ProviderCapabilities? {
+        let driver = pool.client(for: conversationID)?.driver
+        if let capabilities = driver?.actualCapabilities { return capabilities }
+        let catalog = AIModelCatalog.shared
+        guard catalog.isLoaded else { return nil }
+        let provider = automaticRouting ? preferredProvider : selectedProvider
+        let history = currentConversation?.actualProvider.flatMap { actual in
+            automaticRouting && routingStatus?.enabled != false
+                && actual == catalog.reservePeer(of: provider.rawValue) ? actual : nil
+        }
+        let id = driver?.actualProvider ?? history ?? provider.rawValue
+        return catalog.capabilities(for: id)
+    }
+
+    /// Why the composer takes no images or PDFs here (U1); nil when it does
+    /// or the provider's row is not known yet.
+    var attachUnavailableReason: String? { providerCapabilities?.attachUnavailableReason }
+    /// Why the composer refuses a PDF from a provider that takes images only.
+    var pdfUnavailableReason: String? { providerCapabilities?.pdfUnavailableReason }
 
     /// Refresh only local metadata on chat/lifecycle/turn events; never an upstream probe.
     func refreshRoutingStatus() async {

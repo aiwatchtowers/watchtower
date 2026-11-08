@@ -1,0 +1,10 @@
+Verdict: changes requested
+
+Comments:
+> Muting lasts
+Under: Behaviour
+Mute is per channel
+
+> migrate every row at once
+Under: Rollout
+Batch it.

@@ -212,7 +212,12 @@ final class SessionStartStopHandlers {
     /// refusal when `watch` and the launch exited 127.
     private func launched(_ session: TerminalSession, watch: Bool) async -> ActionOutcome {
         if watch, await exitedNotFound(session.id) {
-            return .failed(Self.notFoundReason(session.kind), message: TerminalLaunch.exitMessage(code: 127, agent: session.kind.agent ?? .claude))
+            // No agent (a shell, a kind this version does not know) is never
+            // reported as Claude Code's missing binary (A7b, Go's twin).
+            guard let agent = session.kind.agent else {
+                return .failed(.notSupported, message: AgentKind.unsupportedRefusal(session.kind.rawValue))
+            }
+            return .failed(Self.notFoundReason(agent), message: TerminalLaunch.exitMessage(code: 127, agent: agent))
         }
         return .applied(["session_id": .integer(session.id), "stage": .string("starting")])
     }
@@ -230,8 +235,11 @@ final class SessionStartStopHandlers {
     }
 
     /// The reason an exit 127 is reported with: the agent the session runs.
-    static func notFoundReason(_ kind: TerminalSession.Kind) -> ActionReason {
-        kind == .codex ? .codexNotFound : .claudeNotFound
+    /// The agent's own not-found reason, from its session adapter. Every
+    /// adapter's value is an `ActionReason` case
+    /// (`testExit127ReasonFollowsTheSessionsAgent`).
+    static func notFoundReason(_ agent: AgentKind) -> ActionReason {
+        ActionReason(rawValue: agent.session.notFoundReason) ?? .writeFailed
     }
 
     /// `.inProgress` refuses before anything is written; `.failed` covers a
@@ -245,7 +253,8 @@ final class SessionStartStopHandlers {
         case let .failed(message): .failed(.writeFailed, message: message)
         // A launch that found no agent binary (Codex's `launch-args`) started no process.
         case let .agentNotFound(agent):
-            .failed(agent == .codex ? .codexNotFound : .claudeNotFound, message: TerminalLaunch.exitMessage(code: 127, agent: agent))
+            .failed(notFoundReason(agent), message: TerminalLaunch.exitMessage(code: 127, agent: agent))
+        case let .unsupportedAgent(raw): .failed(.notSupported, message: AgentKind.unsupportedRefusal(raw))
         }
     }
 

@@ -624,23 +624,41 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         codex?.state == .notSetUp
     }
 
-    /// Whether the skill the agent's session reads knows the group first
-    /// prompt (board #476): Claude Code's `group_prompt`, or the codex
-    /// part's; a CLI without a codex part ships a skill that knows it.
-    func skillKnowsGroupPrompt(_ agent: AgentKind) -> Bool {
-        switch agent {
-        case .claude: groupPrompt
-        case .codex: codex?.groupPrompt ?? true
-        }
+    /// One agent's part of the folder's install.
+    struct AgentPart: Equatable {
+        /// The agent's CLI is there to launch.
+        let found: Bool
+        /// The agent's skill copy is in the folder (current or not).
+        let skill: Bool
+        /// The skill copy knows the group first prompt (board #476).
+        let groupPrompt: Bool
     }
 
-    /// Whether the agent's CLI is there to launch: `claude_found`, or the
-    /// codex part's `found` (a CLI without a codex part cannot launch Codex).
+    /// Each agent's part, decoded from the status's shape: Claude Code's is
+    /// the top level (`claude_found`, `skill`, `group_prompt`; the format
+    /// predates Codex), Codex's the `codex` object. A CLI older than Codex
+    /// support has no codex part. This is the decoder of the CLI's per-agent
+    /// JSON (an LLMTRANSPORT-01 `permanent:` kind of mapping, written as a
+    /// table the guard does not scan): consumers read a part, never the kind.
+    var agentParts: [AgentKind: AgentPart] {
+        var parts: [AgentKind: AgentPart] = [
+            .claude: AgentPart(found: claudeFound, skill: skill != "missing", groupPrompt: groupPrompt)
+        ]
+        if let codex { parts[.codex] = AgentPart(found: codex.found, skill: codex.skill, groupPrompt: codex.groupPrompt) }
+        return parts
+    }
+
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (board #476); an agent with no part (a CLI that predates it)
+    /// ships a skill that knows it.
+    func skillKnowsGroupPrompt(_ agent: AgentKind) -> Bool {
+        agentParts[agent]?.groupPrompt ?? true
+    }
+
+    /// Whether the agent's CLI is there to launch; an agent with no part (a
+    /// CLI that predates it) cannot be launched.
     func agentFound(_ agent: AgentKind) -> Bool {
-        switch agent {
-        case .claude: claudeFound
-        case .codex: codex?.found ?? false
-        }
+        agentParts[agent]?.found ?? false
     }
 
     /// The header's Codex setup control (board #399): nil unless codex is
@@ -729,11 +747,21 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
     case agentNotFound(AgentKind)
     /// `spec-review start` exited 3: a reviewer run is already in progress.
     case specReviewRunning
+    /// The command printed bytes that are not UTF-8 text.
+    case unreadableOutput(command: String)
+    /// The command printed something other than the one id it prints.
+    case unexpectedOutput(command: String)
+    /// Go refused with exit 3; its words, as the owner sees them (such as
+    /// "not added: quote not found" or "the question is closed").
+    case refused(String)
 
     var errorDescription: String? {
         switch self {
         case .specReviewRunning: "The reviewer is already running"
+        case let .unreadableOutput(command): "`watchtower \(command)` printed text that is not UTF-8"
+        case let .unexpectedOutput(command): "`watchtower \(command)` did not print an id"
         case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
+        case let .refused(message): message
         }
     }
 }
@@ -1011,26 +1039,23 @@ struct WorkbenchCLI {
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`)
     /// for `agent`'s session: a Claude worktree skips Codex's install (it
-    /// starts Codex's app-server); nil installs both.
+    /// starts Codex's app-server). Always named: the CLI's "no `--agent`"
+    /// installs every agent's integration, which no session asks for (A7b).
     /// A refusal or failure exits 0 with the envelope's `refused`/`error`.
-    func worktreeCreate(projectID: Int64, name: String, agent: AgentKind?) async throws -> WorktreeCreateResult {
-        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name]
-            + Self.worktreeAgentArgs(agent) + ["--json"]
+    func worktreeCreate(projectID: Int64, name: String, agent: AgentKind) async throws -> WorktreeCreateResult {
+        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name,
+                    "--agent", agent.rawValue, "--json"]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
     }
 
     /// Re-creates a placed worktree at `path` on `branch` when it is gone from
     /// disk; `agent` as for `worktreeCreate`.
-    func worktreeEnsure(projectID: Int64, path: String, branch: String, agent: AgentKind?) async throws -> WorktreeCreateResult {
+    func worktreeEnsure(projectID: Int64, path: String, branch: String, agent: AgentKind) async throws -> WorktreeCreateResult {
         let args = ["workbench", "worktree", "ensure", "--workbench", String(projectID),
-                    "--path", path, "--branch", branch] + Self.worktreeAgentArgs(agent) + ["--json"]
+                    "--path", path, "--branch", branch, "--agent", agent.rawValue, "--json"]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
-    }
-
-    private static func worktreeAgentArgs(_ agent: AgentKind?) -> [String] {
-        agent.map { ["--agent", $0.rawValue] } ?? []
     }
 
     /// Drops the placed worktree at `path` from the workbench's records.
@@ -1180,6 +1205,70 @@ struct WorkbenchCLI {
     func specReviewReveal(askID: Int64, reason: String) async throws {
         _ = try await runner.run(args: ["workbench", "spec-review", "reveal", "--ask", String(askID),
                                         "--reason", reason])
+    }
+
+    /// The Discuss thread agent's data for item `itemKey` of review ask
+    /// `askID` (spec 2026-11-08 §3): the document snapshot, the item with its
+    /// quotes, the whole result, the ledger, the author's replies and the
+    /// conversation the reviewer was given, as fenced data blocks. Exit 3 is
+    /// "no such item".
+    func specReviewThreadContext(askID: Int64, itemKey: String) async throws -> String {
+        let data = try await runner.run(args: ["workbench", "spec-review", "thread-context",
+                                               "--ask=\(askID)", "--item=\(itemKey)"])
+        guard let text = String(bytes: data, encoding: .utf8) else {
+            throw WorkbenchCLIError.unreadableOutput(command: "workbench spec-review thread-context")
+        }
+        return text
+    }
+
+    /// Files a Discuss thread's question to the author of review ask `askID`
+    /// about item `itemKey` (spec 2026-11-08 §3); the question goes over
+    /// stdin. Returns the question's id. Exit 3 (the thread has an open
+    /// question, the ask has no session) is thrown as `.refused` with Go's
+    /// words.
+    func specReviewQuestion(askID: Int64, itemKey: String, question: String) async throws -> Int64 {
+        let data = try await refusing {
+            try await runner.run(args: ["workbench", "spec-review", "question", "--ask=\(askID)", "--item=\(itemKey)"],
+                                 stdin: Data(question.utf8))
+        }
+        guard let text = String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            throw WorkbenchCLIError.unreadableOutput(command: "workbench spec-review question")
+        }
+        guard let id = Int64(text) else {
+            throw WorkbenchCLIError.unexpectedOutput(command: "workbench spec-review question")
+        }
+        return id
+    }
+
+    /// Closes an open question the Desktop could not deliver (`reason`
+    /// `gone`). Exit 3 "the question is closed" (answered or expired
+    /// meanwhile) is thrown as `.refused`.
+    func specReviewCloseQuestion(id: Int64, reason: String) async throws {
+        _ = try await refusing {
+            try await runner.run(args: ["workbench", "spec-review", "question", "--close=\(id)", "--reason=\(reason)"])
+        }
+    }
+
+    /// Adds a finding a Discuss thread proposed to review ask `askID`
+    /// (`thread` is the thread's conversation key, `block` the finding's
+    /// JSON on stdin) and returns its key. Go checks its quotes; a refusal
+    /// ("not added: quote not found") is thrown as `.refused`.
+    func specReviewAddFinding(askID: Int64, thread: String, block: Data) async throws -> String {
+        let data = try await refusing {
+            try await runner.run(args: ["workbench", "spec-review", "add-finding", "--ask=\(askID)", "--thread=\(thread)"],
+                                 stdin: block)
+        }
+        struct Added: Decodable { let key: String }
+        return try JSONDecoder().decode(Added.self, from: data).key
+    }
+
+    /// Exit 3 with Go's words on stderr becomes `.refused(words)`.
+    private func refusing(_ run: () async throws -> Data) async throws -> Data {
+        do {
+            return try await run()
+        } catch CLIRunnerError.nonZeroExit(code: 3, let stderr) where !stderr.isEmpty {
+            throw WorkbenchCLIError.refused(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     /// Removes what was installed in the folder, then the workbench and every

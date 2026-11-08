@@ -21,6 +21,14 @@ package protocol EmbeddedChatStore: AnyObject {
     func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws
     @discardableResult
     func append(role: String, text: String) async throws -> Int64
+    /// A reply's tool step, written as it starts and as it ends (CHAT-02's
+    /// "as it happens" for a database chat), and the turn's usage (written
+    /// just before the reply's final state).
+    func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws
+    func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws
+    func saveUsage(messageID: Int64, usage: ChatUsage) async throws
+    /// The stored steps of these replies, by message id.
+    func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]]
     /// The `sqlite` path handed to `ai query --db-path`; nil for a chat that
     /// reads no workspace data.
     var dbPath: String? { get }
@@ -29,6 +37,12 @@ package protocol EmbeddedChatStore: AnyObject {
 extension EmbeddedChatStore {
     package func actions(turnID: String) throws -> [AgentAction] { [] }
     package func saveActual(messageID: Int64, provider: String, model: String) async throws {}
+    // A store that keeps no steps or usage (the memory store: its steps are
+    // shown while the turn runs, and a finished row has none).
+    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {}
+    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {}
+    package func saveUsage(messageID: Int64, usage: ChatUsage) async throws {}
+    package func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]] { [:] }
 }
 
 /// The existing `chat_messages`/`chat_conversations` columns, unchanged.
@@ -115,6 +129,30 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
                 """, arguments: [toContextType, contextID, now, conversationID])
             return db.changesCount > 0
         }
+    }
+
+    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
+        try await dbPool.write { db in
+            try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
+                                            argsJSON: start.argsJSON, startedAt: date.timeIntervalSince1970)
+        }
+    }
+
+    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {
+        try await dbPool.write { db in
+            try ChatStepQueries.finish(db, messageID: messageID, toolID: end.id, ok: end.ok, summary: end.summary,
+                                       sourcesJSON: ChatSource.encodeList(end.sources), endedAt: date.timeIntervalSince1970)
+        }
+    }
+
+    package func saveUsage(messageID: Int64, usage: ChatUsage) async throws {
+        try await dbPool.write { db in
+            try ChatMessageQueries.saveEmbeddedUsage(db, messageID: messageID, usage: usage)
+        }
+    }
+
+    package func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]] {
+        try dbPool.read { db in try ChatStepQueries.fetch(db, messageIDs: messageIDs) }
     }
 
     package func loadMessages() throws -> [ChatMessageRecord] {

@@ -1420,7 +1420,8 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question     TEXT,
     chat_question_at  TEXT,
     agent_turns       TEXT,
-    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
+    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -1428,7 +1429,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,
     branch     TEXT NOT NULL DEFAULT '',
-    first_at   TEXT NOT NULL,
+    first_at   TEXT NOT NULL, last_at TEXT,
     PRIMARY KEY (session_id, root, branch)
 );
 CREATE TABLE IF NOT EXISTS "tool_trust" (
@@ -1499,7 +1500,7 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL
-);
+, plot_json TEXT NOT NULL DEFAULT '{}', publication_proof TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS agent_log_files (
   path           TEXT PRIMARY KEY,
   agent          TEXT NOT NULL CHECK (agent IN ('claude')),
@@ -2280,7 +2281,7 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT ''
-, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1);
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1, loop_rules INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS learn_seen (
     item_id TEXT PRIMARY KEY,
     how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
@@ -2373,6 +2374,51 @@ CREATE TABLE IF NOT EXISTS history_backfill_daily (
  day_from REAL NOT NULL,
  digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
  PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
+);
+CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    state                  TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+    reason                 TEXT NOT NULL DEFAULT '',
+    plan                   TEXT NOT NULL DEFAULT '',
+    fetched_at             TEXT,
+    last_error             TEXT NOT NULL DEFAULT '',
+    last_error_at          TEXT,
+    limits_json            TEXT NOT NULL DEFAULT '[]',
+    breakdown_json         TEXT NOT NULL DEFAULT '[]',
+    updated_at             TEXT NOT NULL,
+    plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
+    scope                  TEXT NOT NULL DEFAULT '',
+    identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+    ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+    CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+);
+CREATE TABLE IF NOT EXISTS codex_plan_usage_samples (
+    scope      TEXT NOT NULL CHECK (length(scope) = 64),
+    limit_key  TEXT NOT NULL,
+    taken_at   TEXT NOT NULL,
+    percent    REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+    resets_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (scope, limit_key, taken_at)
+);
+CREATE TABLE IF NOT EXISTS spec_review_questions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    thread     TEXT NOT NULL,
+    item_key   TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    answer     TEXT NOT NULL DEFAULT '',
+    state      TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+    created_at TEXT NOT NULL,
+    closed_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    thread     TEXT NOT NULL,
+    finding    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
 );
 CREATE TABLE IF NOT EXISTS inbox_folders (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2745,6 +2791,8 @@ CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_spec_review_questions_ask ON spec_review_questions(ask_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_action_source ON targets(source_id) WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_actions_open_context ON agent_actions(context_type, context_id) WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing');
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;

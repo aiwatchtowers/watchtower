@@ -28,6 +28,24 @@ final class OwnerAskPromptTests: XCTestCase {
         }
     }
 
+    /// The thread's question line is Go's `asks.SpecReviewQuestionLine`,
+    /// with the same one-line cleanup (`OneLine`), on every shared fixture.
+    func testSpecReviewQuestionLineFixtures() throws {
+        let files = try OwnerAskFixtures.files("spec_review_question_lines")
+        XCTAssertGreaterThanOrEqual(files.count, 3)
+        for file in files {
+            let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: file.data) as? [String: Any], file.name)
+            let ask = try XCTUnwrap((fixture["ask_id"] as? NSNumber)?.int64Value, file.name)
+            let id = try XCTUnwrap((fixture["question_id"] as? NSNumber)?.int64Value, file.name)
+            let question = try XCTUnwrap(fixture["question"] as? String, file.name)
+            let line = OwnerAskPrompt.specReviewQuestionLine(askID: ask, questionID: id, question: question)
+            XCTAssertEqual(line, fixture["line"] as? String, file.name)
+            XCTAssertFalse(line.unicodeScalars.contains {
+                CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0)
+            }, file.name)
+        }
+    }
+
     func testTheLineIsOneLineWithNoControlCharacters() {
         let line = OwnerAskPrompt.line(id: 1, kind: .check, answer: OwnerAskAnswer(checklist: [
             .init(id: "1", state: .broken, note: "a\nb"), .init(id: "2", state: .skipped)

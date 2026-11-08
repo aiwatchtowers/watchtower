@@ -56,10 +56,12 @@ struct PermissionCardModel: Equatable {
     /// The card shows Allow once.
     var offersAllow: Bool { allowBlock == nil }
 
-    /// The request the session's card shows: a live Claude session's
-    /// pending one (Codex keeps "Needs approval on the Mac").
+    /// The request the session's card shows: the pending one of a live
+    /// session whose prompts the Mac takes from the phone
+    /// (`takesFromPhone.permissionAnswer`; Codex keeps "Needs approval on the
+    /// Mac", ask #521).
     static func request(for session: TerminalSessionState, in snapshot: WorkbenchReplicaSnapshot) -> PermissionRequest? {
-        session.live && session.agent == .claudeCode ? snapshot.pendingPermission(for: session.id) : nil
+        session.live && session.takesFromPhone.permissionAnswer ? snapshot.pendingPermission(for: session.id) : nil
     }
 
     /// The session shows a card this phone may answer: the bar's footer

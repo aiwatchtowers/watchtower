@@ -10,11 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-)
 
-// zstdMagic opens a zstd frame: Codex can compress rollouts, and this reader
-// does not decompress them.
-var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
+	"watchtower/internal/rollout"
+)
 
 // codexRollout is a Codex rollout file
 // ($CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl). It holds two
@@ -26,7 +24,9 @@ var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 //
 // `response_item` lines (they repeat the owner's text and carry injected
 // context), `compacted` lines (their history repeats it) and unknown types
-// are skipped.
+// are skipped. A zstd-compressed rollout is decompressed in memory
+// (rollout.Open) and read the same; one that does not decode is
+// ErrUnsupportedTranscript.
 type codexRollout struct{ path string }
 
 // findCodexRollout prefers the path the SessionStart hook stored when it is
@@ -70,7 +70,7 @@ func isRolloutOf(path, sessionID string) bool {
 }
 
 func (c codexRollout) OwnerText(capChars int) (string, error) {
-	f, err := os.Open(c.path)
+	f, compressed, err := rollout.Open(c.path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("%w %s", ErrNoTranscript, c.path)
 	}
@@ -80,9 +80,6 @@ func (c codexRollout) OwnerText(capChars int) (string, error) {
 	defer f.Close()
 
 	br := bufio.NewReaderSize(f, 64*1024)
-	if head, _ := br.Peek(len(zstdMagic)); bytes.Equal(head, zstdMagic) {
-		return "", fmt.Errorf("%w: compressed rollout %s", ErrUnsupportedTranscript, c.path)
-	}
 	sawLine, sawJSON := false, false
 	text, err := scanOwnerText(br, capChars, func(line []byte) string {
 		if len(bytes.TrimSpace(line)) > 0 {
@@ -93,6 +90,9 @@ func (c codexRollout) OwnerText(capChars int) (string, error) {
 		return text
 	})
 	if err != nil {
+		if compressed {
+			return "", fmt.Errorf("%w: compressed rollout %s: %w", ErrUnsupportedTranscript, c.path, err)
+		}
 		return "", err
 	}
 	if sawLine && !sawJSON {

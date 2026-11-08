@@ -1,0 +1,6 @@
+{
+  "synthetic": true,
+  "source": "the hook event names in the codex 0.159.2 binary, each one seen firing in the G7 spike runs except PreCompact, PostCompact, SubagentStart, SubagentStop and Interrupt",
+  "codex_version": "0.159.2",
+  "events": ["SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop", "Interrupt"]
+}

@@ -262,7 +262,7 @@ final class InboxRouteTests: XCTestCase {
 
     // MARK: - Folders (inbox builder B)
 
-    /// The root and Needs approval as migration 00176 seeds them (the
+    /// The root and Needs approval as migration 00181 seeds them (the
     /// generated test schema holds no rows), plus one owner folder.
     private func seedFolders() async throws -> (approvals: Int64, owner: Int64) {
         try await manager.dbPool.write { db in

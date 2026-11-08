@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,5 +83,40 @@ func TestDeliveryLineIsOneLine(t *testing.T) {
 	want := "Ask #5 answered (re vi ew [31m x y z w v: answered) — read it with get_ask 5 using the watchtower-workbench skill."
 	if got != want {
 		t.Fatalf("got  %q\nwant %q", got, want)
+	}
+}
+
+// specReviewQuestionLineFixture is one testdata/spec_review_question_lines
+// file, which the Swift twin reproduces.
+type specReviewQuestionLineFixture struct {
+	AskID      int64  `json:"ask_id"`
+	QuestionID int64  `json:"question_id"`
+	Question   string `json:"question"`
+	Line       string `json:"line"`
+}
+
+func TestSpecReviewQuestionLine_Fixtures(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "spec_review_question_lines", "*.json"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no spec review question line fixtures: %v", err)
+	}
+	for _, path := range files {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var f specReviewQuestionLineFixture
+			if err := json.Unmarshal(raw, &f); err != nil {
+				t.Fatal(err)
+			}
+			got := SpecReviewQuestionLine(f.AskID, f.QuestionID, f.Question)
+			if got != f.Line {
+				t.Fatalf("got  %q\nwant %q", got, f.Line)
+			}
+			if strings.ContainsAny(got, "\n\r") {
+				t.Fatalf("the line breaks: %q", got)
+			}
+		})
 	}
 }

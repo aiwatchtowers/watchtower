@@ -144,11 +144,16 @@ final class TargetChatViewModel {
     let actionFeed: AgentActionFeed
 
     /// Provider kind is chosen app-wide for Discuss chats; the VM passes
-    /// `model: nil` and the CLI resolves the provider — so the only case
-    /// without tools is the app-wide Ollama provider. Resolved once at init
-    /// (the `memoryChatEnabled` injection precedent) rather than re-read from
-    /// config.yaml on every turn, so it stays a stable, test-injectable value.
-    let toolsAvailable: Bool
+    /// `model: nil` and the CLI resolves the provider. AGENT-04: tools only
+    /// for a provider the catalog knows runs as a CLI child, so a local HTTP
+    /// server, or a catalog not read yet, is draft-only. Unless a test injects
+    /// it, it is decided again when the catalog finishes a read
+    /// (`AIModelCatalog.didLoadNotification`), never left at its first answer.
+    private(set) var toolsAvailable: Bool
+    @ObservationIgnored private let conversationID: Int64
+    @ObservationIgnored private var catalogObserver: NSObjectProtocol?
+    /// The app-wide provider (config.yaml's `ai.provider`; tests pass one).
+    @ObservationIgnored private let providerID: @MainActor () -> String
 
     /// The rows as the tab renders them (and as tests read them).
     var messages: [ChatMessage] { engine.chatMessages }
@@ -179,14 +184,18 @@ final class TargetChatViewModel {
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         cliRunner: CLIRunnerProtocol? = nil,
-        toolsAvailable: Bool = Constants.aiProviderID() != "ollama",
-        center: EmbeddedChatCenter? = nil
+        // AGENT-04: nil = tools only for a provider known to run as a CLI.
+        toolsAvailable: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
+        center: EmbeddedChatCenter? = nil,
+        providerID: @escaping @MainActor () -> String = { Constants.aiProviderID() }
     ) {
+        self.providerID = providerID
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
-        self.toolsAvailable = toolsAvailable
+        self.toolsAvailable = toolsAvailable ?? AIModelCatalog.shared.isKnownCLI(providerID())
+        self.conversationID = conversationID
         let spec = Self.placeholderSpec(targetID: target.id, conversationID: conversationID)
         self.engine = center?.engine(for: spec) ?? EmbeddedChatEngine(
             spec: spec,
@@ -203,6 +212,26 @@ final class TargetChatViewModel {
         engine.onTurnFinished = { [weak self] outcome in self?.turnFinished(outcome) }
         startMessageObservation(conversationID: conversationID)
         actionFeed.start(conversationID: conversationID)
+        if toolsAvailable == nil {
+            catalogObserver = NotificationCenter.default.addObserver(
+                forName: AIModelCatalog.didLoadNotification, object: AIModelCatalog.shared, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshToolAccess() }
+            }
+        }
+    }
+
+    /// Shown above the feed while the chat runs draft-only because the
+    /// provider catalog could not be read (not for a provider without tools).
+    var toolsNotice: String? { toolsAvailable ? nil : AIModelCatalog.shared.unreadReason }
+
+    /// The catalog finished a read: tool access is decided again and, when
+    /// it changed, the engine's spec is rebuilt for the next turn.
+    func refreshToolAccess() {
+        let now = AIModelCatalog.shared.isKnownCLI(providerID())
+        guard now != toolsAvailable else { return }
+        toolsAvailable = now
+        engine.update(spec: makeSpec(conversationID: conversationID))
     }
 
     /// Tears the VM's long-lived work down: the GRDB message observation and any
@@ -211,6 +240,8 @@ final class TargetChatViewModel {
     /// these tasks (the `CustomTrackTimelineViewModel.stop()` precedent), and
     /// without it the observation would keep the pool observed forever.
     func stop() {
+        if let catalogObserver { NotificationCenter.default.removeObserver(catalogObserver) }
+        catalogObserver = nil
         observationTask?.cancel()
         observationTask = nil
         engine.stop()
@@ -387,7 +418,9 @@ final class TargetChatViewModel {
     /// the engine stores AFTER the reply, keeping the transcript in
     /// assistant-then-system order.
     private func surfaceActions(_ input: ChatPostTurnInput) async -> ChatPostTurnResult {
-        let parsed = TargetActionParser.parse(input.reply)
+        // Actions only from the text after the last tool call started: a block the
+        // model revised after a tool result is applied once (TGT-BRIEF-03).
+        let parsed = TargetActionParser.parse(reply: input.reply, finalText: input.finalText)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
         let displayText: String
@@ -398,6 +431,9 @@ final class TargetChatViewModel {
         } else if !parsed.errors.isEmpty {
             // Only malformed blocks: the warnings below say why.
             displayText = "(invalid action proposal)"
+        } else if parsed.ignored > 0 {
+            // Only drafts before a tool call: the notice below says why.
+            displayText = "(no action proposed after the tool call)"
         } else {
             // Only registry tool calls (their proposals were written by the
             // chat-mode subprocess): name them, or this is an empty reply.
@@ -464,10 +500,21 @@ final class TargetChatViewModel {
                 "automatically — decide on their cards."
             )
         }
-        for err in parsed.errors {
-            systemMessages.append("⚠️ Invalid action proposal: \(err)")
-        }
+        systemMessages += Self.parseNotices(ignored: parsed.ignored, errors: parsed.errors)
         return ChatPostTurnResult(displayText: displayText, notices: systemMessages, applied: appliedChanges)
+    }
+
+    /// The notices of what the parse dropped: drafts written before a tool
+    /// call, and one warning per malformed block.
+    private static func parseNotices(ignored: Int, errors: [String]) -> [String] {
+        var notices: [String] = []
+        if ignored > 0 {
+            notices.append(
+                "\(ignored) action(s) written before a tool call were not used — " +
+                "only the actions at the end of the reply count."
+            )
+        }
+        return notices + errors.map { "⚠️ Invalid action proposal: \($0)" }
     }
 
     /// Feed a follow-up turn back into the conversation. The text is shown as a
@@ -779,6 +826,10 @@ final class TargetChatViewModel {
     people's blockers) go into your prose reply, NEVER into actions. Never emit
     actions the owner did not ask for, and never create targets outside this
     task's vertical line.
+
+    WHERE BLOCKS GO: write action blocks after your last tool call, at the end
+    of your reply. A block written before a tool call is ignored, so after a
+    tool result write the final version of every action you still mean.
 
     JSON RULES (strict — a malformed block is dropped, not applied):
     - Emit ONE valid JSON object per block. Inside string values, escape every
