@@ -271,20 +271,30 @@ const intoPrefix = "into:"
 // first appearance: one per not-done leaf with a base among the progress
 // leaves and the leaves under each in-scope leaf's parent (the phases count
 // those, progress or not).
+//
+// Each parent's leaves are walked once and each key checked in a set, so
+// siblings sharing a parent cost one walk, not one each (board #1016).
 func (s scope) mergeRefs() []string {
 	var out []string
+	seen := map[string]bool{}
 	add := func(e *boardEntry) {
 		if e.target.Status == "done" {
 			return
 		}
-		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
+		if base, branch, ok := s.b.mergeBase(e); ok && !seen[intoRef(base, branch)] {
+			seen[intoRef(base, branch)] = true
 			out = append(out, intoRef(base, branch))
 		}
 	}
+	walked := map[int64]bool{}
 	for _, e := range s.leaves() {
 		if s.progress[e.id()] {
 			add(e)
 		}
+		if walked[e.parent] {
+			continue
+		}
+		walked[e.parent] = true
 		for _, l := range s.b.leavesUnder(e.parent) {
 			add(l)
 		}
@@ -296,11 +306,13 @@ func (s scope) mergeRefs() []string {
 // progress leaf with a base (the phase-only leaves of mergeRefs left out).
 func (s scope) countedMergeRefs() []string {
 	var out []string
+	seen := map[string]bool{}
 	for _, e := range s.leaves() {
 		if !s.progress[e.id()] || e.target.Status == "done" {
 			continue
 		}
-		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
+		if base, branch, ok := s.b.mergeBase(e); ok && !seen[intoRef(base, branch)] {
+			seen[intoRef(base, branch)] = true
 			out = append(out, intoRef(base, branch))
 		}
 	}
