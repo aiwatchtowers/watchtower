@@ -181,3 +181,12 @@ func isHex(s string) bool {
 	}
 	return true
 }
+
+// HeadCommit is the commit the folder's HEAD names (`rev-parse --verify
+// HEAD^{commit}`); "" for an unborn HEAD. The big-branch map walks lanes
+// from it (review_rounds.head_sha). A done context or any other git
+// failure is an error.
+func (r *Repo) HeadCommit(ctx context.Context) (string, error) {
+	sha, _, err := r.revParse(ctx, "HEAD^{commit}")
+	return sha, err
+}

@@ -35,11 +35,14 @@ func TestTargetsByBranches_NewestWinsAndOtherWorkbenchesIgnored(t *testing.T) {
 	open := add(pid, "open b", "todo", "feature/b", "2026-01-15T00:00:00Z")
 	add(other, "foreign c", "todo", "feature/c", "2026-01-15T00:00:00Z")
 
-	got, err := d.TargetsByBranches(pid, []string{"feature/a", "feature/b", "feature/c", ""})
+	// An older writer stored the branch untrimmed: it still matches, keyed trimmed.
+	padded := add(pid, "padded", "todo", " feature/d\n", "2026-01-15T00:00:00Z")
+
+	got, err := d.TargetsByBranches(pid, []string{"feature/a", "feature/b", "feature/c", "", "feature/d "})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("got %d targets: %+v", len(got), got)
 	}
 	if got["feature/a"].ID != newer {
@@ -47,6 +50,9 @@ func TestTargetsByBranches_NewestWinsAndOtherWorkbenchesIgnored(t *testing.T) {
 	}
 	if got["feature/b"].ID != open || got["feature/b"].Branch != "feature/b" {
 		t.Fatalf("feature/b = %+v", got["feature/b"])
+	}
+	if got["feature/d"].ID != padded {
+		t.Fatalf("feature/d = %+v, want the untrimmed row %d", got["feature/d"], padded)
 	}
 	if got, err := d.TargetsByBranches(pid, nil); err != nil || len(got) != 0 {
 		t.Fatalf("no branches = %+v %v", got, err)
