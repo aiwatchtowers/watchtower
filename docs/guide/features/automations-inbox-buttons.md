@@ -41,6 +41,11 @@ Under the recipe's own buttons every card has a common row:
 - **Hand to Agent…** works in the button's `workbench`, or the recipe's own workbench, or asks you to pick. The card is fenced as data in the task, so the agent doesn't take its words as instructions.
 - **Done** and **Dismiss**.
 
+### Which folder a card goes to
+<!-- learn: none -->
+
+A card goes to its automation's Inbox folder: the **Inbox** root, unless you used **Move to Folder** in the card's **⋯** or saved a folder from the editor chat. A recipe can send one card elsewhere with `folder`, the folder's name as the recipe knows it (its slug, made from the first title and kept through renames): `output.inbox({title, body, folder: "release"})`. A slug no folder has sends the card to the automation's own folder, and the run's history says `folder "release" not found — shown in Inbox`; the run doesn't fail. A recipe never makes a folder.
+
 ### Replying to a card
 <!-- learn
 id: buttons-reply
@@ -102,7 +107,7 @@ output.inbox({
 
 Its permissions include `inbox:reply` and its outputs include `inbox`. In the script, check `trigger.kind === "reply"` first and branch on `trigger.reply.value`.
 
-1. Open the card in the Inbox's **Automations** filter.
+1. Open the card in its Inbox folder, the **Inbox** root unless you moved the automation.
 2. Press **Nudge the owner**. The button changes to **Sent — run #N**.
 3. Follow the run from the card's source line or from the automation's **History**.
 

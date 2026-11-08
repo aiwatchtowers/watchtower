@@ -6,7 +6,7 @@ import WatchtowerCore
 /// Search is gone, the boards are in Connections → Jira). A stored raw value
 /// of theirs decodes to nil (a `sidebar.hiddenItems` entry is ignored), and a
 /// `watchtower-nav://` link naming one of the first four opens the matching
-/// Inbox filter (`InboxRoute.aliasHosts`); the other two are not links.
+/// legacy entry of the Inbox's root (`InboxRoute.aliasHosts`); the other two are not links.
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case home
     case chat

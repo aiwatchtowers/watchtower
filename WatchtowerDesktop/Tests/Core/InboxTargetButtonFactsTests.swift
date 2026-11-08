@@ -299,7 +299,7 @@ final class InboxTargetButtonFactsTests: XCTestCase {
     }
 }
 
-/// A waiting button's click opens the approval card when the list has it,
+/// A waiting button's click opens Needs approval when it shows the card,
 /// and otherwise keeps the card on screen with a notice (review A15 #1).
 @MainActor
 final class InboxTargetOpenProposalTests: XCTestCase {
@@ -318,43 +318,48 @@ final class InboxTargetOpenProposalTests: XCTestCase {
             return (output, proposal)
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.open(.automations, select: .output(outputID))
+        await vm.open(folder: nil, select: .card(.output(outputID)))
         XCTAssertEqual(vm.selection, .output(outputID))
 
         await vm.openProposal(proposalID)
 
         XCTAssertEqual(vm.selection, .output(outputID))
-        XCTAssertEqual(vm.filter, .automations)
         XCTAssertEqual(vm.lastError, ActionStripViewModel.proposalNotListed(proposalID))
     }
 
-    func testOpenProposalListedSelectsIt() async throws {
+    func testOpenProposalListedOpensNeedsApproval() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let proposalID = try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, surface: "main", contextType: "automation_output",
-                                               contextID: "1:0:abc")
+        let (proposalID, approvals) = try await pool.write { db -> (Int64, Int64) in
+            let seed = try InboxFolderFixtures.seed(db)
+            let id = try TestDatabase.insertAgentAction(db, surface: "main", contextType: "automation_output",
+                                                        contextID: "1:0:abc")
+            return (id, seed.approvals)
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.open(.all, select: nil)
+        await vm.open(folder: nil, select: nil)
         await vm.openProposal(proposalID)
-        XCTAssertEqual(vm.selection, .proposal(proposalID))
+        // A proposal is drawn in Needs approval's stack (inbox builder B).
+        XCTAssertEqual(vm.folderMenu.selectedFolderID, approvals)
         XCTAssertNil(vm.lastError)
     }
 
     /// A card's target button proposal (create_target on the inbox surface)
     /// is an approval since the STRIP-01 narrowing: its click opens it.
-    func testOpenProposalOfAnInboxTargetButtonSelectsIt() async throws {
+    func testOpenProposalOfAnInboxTargetButtonOpensNeedsApproval() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        let proposalID = try await pool.write { db in
-            try TestDatabase.insertAgentAction(db, surface: "inbox", contextType: "automation_output",
-                                               contextID: "1:0:abc")
+        let (proposalID, approvals) = try await pool.write { db -> (Int64, Int64) in
+            let seed = try InboxFolderFixtures.seed(db)
+            let id = try TestDatabase.insertAgentAction(db, surface: "inbox", contextType: "automation_output",
+                                                        contextID: "1:0:abc")
+            return (id, seed.approvals)
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        await vm.open(.all, select: nil)
+        await vm.open(folder: nil, select: nil)
         await vm.openProposal(proposalID)
-        XCTAssertEqual(vm.selection, .proposal(proposalID))
+        // A proposal is drawn in Needs approval's stack (inbox builder B).
+        XCTAssertEqual(vm.folderMenu.selectedFolderID, approvals)
         XCTAssertNil(vm.lastError)
     }
 }

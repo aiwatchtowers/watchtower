@@ -43,7 +43,7 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 
 The Tracks, Ideas & Decisions, Reaction Commands, Daily Briefing and Day Plan rows are switched on their built-in cards. Turning **Track my threads** off also pauses your custom-track watches.
 
-Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, the empty Tracks filter, the People tab and their Home lines say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
+Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, the empty **Track my threads** list, the People tab and their Home lines say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
 
 ## Why a tab is empty and what its status line means
 <!-- learn
@@ -82,7 +82,7 @@ Which source each feature waits for:
 
 The brief, the plan and the Inbox's messages also need Watchtower to know who you are. Until a source supplies your identity they show no time at all; see [Sources and accounts](sources-and-accounts.md#why-watchtower-needs-to-know-who-you-are).
 
-The Inbox's empty **Day** filter offers **Change the hour**, which opens the **Morning brief** card in Automations, where **Time** sets the hour of both the brief and the plan. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
+The **Morning brief** card in Automations → **Built in** sets the hour of both the brief and the plan with **Time**. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
 
 ## After you connect a source
 

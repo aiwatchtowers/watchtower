@@ -227,8 +227,9 @@ extension AppState {
         vm.refresh()
         guard let savedID else { return }
         Task {
-            await vm.draftSaved(contextID: contextID, conversationID: conversationID, automationID: savedID)
-            if case let .editor(.newDraft(current, _, _)) = vm.panel, current == contextID { vm.showCard(savedID) }
+            await vm.draftSaved(contextID: contextID, conversationID: conversationID, automationID: savedID) {
+                if case let .editor(.newDraft(current, _, _)) = vm.panel, current == contextID { vm.showCard(savedID) }
+            }
         }
     }
 }

@@ -39,6 +39,31 @@ struct InboxMenuItems: View {
     }
 }
 
+/// An artifact's ⋯ as the reading pane draws it: the entries, whether they
+/// are off (a call on the automation runs, or it is not known yet), and the
+/// last failed press's text (`InboxArtifactMenuModel.headerErrors`).
+struct InboxArtifactMenuState {
+    let entries: [InboxMenuEntry]
+    var isDisabled = false
+    var isWorking = false
+    var error: String?
+    var onCommand: (InboxMenuCommand) -> Void = { _ in }
+}
+
+/// The artifact ⋯ with its progress while a press runs.
+struct InboxArtifactMenuButton: View {
+    let menu: InboxArtifactMenuState
+
+    var body: some View {
+        HStack(spacing: Spacing.small) {
+            if menu.isWorking { ProgressView().controlSize(.small) }
+            InboxMoreMenu(entries: menu.entries, help: "More for this artifact", onCommand: menu.onCommand)
+                .disabled(menu.isDisabled)
+        }
+        .controlSize(.small)
+    }
+}
+
 /// A ⋯ button that opens `entries` (the artifact header, a folder row).
 struct InboxMoreMenu: View {
     let entries: [InboxMenuEntry]
@@ -58,47 +83,5 @@ struct InboxMoreMenu: View {
         .fixedSize()
         .help(help)
         .accessibilityLabel(help)
-    }
-}
-
-/// The reading pane's artifact header: the title, its source line, **Done**
-/// and the artifact ⋯; a failed ⋯ entry's text under it, never silent
-/// (spec: "Artifact ⋯ entry failed"). Values only; Task 14 wires it.
-struct InboxArtifactHeader: View {
-    let title: String
-    let source: String
-    let menu: InboxArtifactMenuContent
-    /// The CLI's text of the last failed ⋯ press, or the busy line.
-    var error: String?
-    /// A ⋯ press under way: the menu waits.
-    var isWorking = false
-    var onDone: () -> Void = {}
-    var onCommand: (InboxMenuCommand) -> Void = { _ in }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                Text(title)
-                    .font(.title3.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: Spacing.regular)
-                if isWorking { ProgressView().controlSize(.small) }
-                Button("Done", action: onDone)
-                    .buttonStyle(.kitSecondary)
-                InboxMoreMenu(entries: menu.entries, onCommand: onCommand)
-                    .disabled(isWorking)
-            }
-            .controlSize(.small)
-            Text(source)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let error {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(Tone.error)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-        }
     }
 }

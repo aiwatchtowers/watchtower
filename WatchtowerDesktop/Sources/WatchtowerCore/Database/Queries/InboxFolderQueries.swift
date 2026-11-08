@@ -71,6 +71,13 @@ package struct InboxFolderTree: Equatable, Sendable {
 
     package func folder(_ id: Int64) -> InboxFolder? { folders.first { $0.id == id } }
 
+    /// Where an automation's artifacts land: its route's folder, else the
+    /// folder named `defaultSlug` (a built-in's `default_folder`), else the
+    /// root — the built-in card's **Show in Inbox**.
+    package func folder(forAutomation automationID: Int64, defaultSlug: String) -> InboxFolder {
+        routes[automationID].flatMap(folder) ?? folders.first { $0.slug == defaultSlug } ?? root
+    }
+
     /// A folder whose own `hidden` or any ancestor's is set leaves the menu
     /// and the badge. An unknown id is not visible.
     package func isVisible(_ id: Int64) -> Bool {
@@ -173,6 +180,8 @@ package enum InboxFolderQueries {
     }
 
     /// The `waiting-for-me` built-in as the root's composition needs it.
+    /// A dry run never counts as its last run (`newestEndedRuns(dryRuns:
+    /// false)`): a dry run commits no outputs.
     package static func waitingForMe(_ db: Database) throws -> WaitingForMeState {
         do {
             let automationID = try Int64.fetchOne(
@@ -180,7 +189,7 @@ package enum InboxFolderQueries {
             guard let automationID else { return WaitingForMeState(automationID: nil, messagesStandIn: true) }
             let status = try String.fetchOne(db, sql: """
                 SELECT status FROM automation_runs
-                WHERE automation_id = ? AND status NOT IN ('queued', 'running', 'waiting')
+                WHERE automation_id = ? AND trigger != 'dry_run' AND status NOT IN ('queued', 'running', 'waiting')
                 ORDER BY id DESC LIMIT 1
                 """, arguments: [automationID])
             return WaitingForMeState(automationID: automationID, messagesStandIn: status != "succeeded")
@@ -192,6 +201,43 @@ package enum InboxFolderQueries {
         }
     }
 
+    /// The `needs-approval` built-in as Needs approval's note and card
+    /// selection need it: stopped by the daemon (`disabled_reason`), and
+    /// its latest finished run and latest failed run — failed meaning any
+    /// finish but `succeeded` (a timed-out, over-budget or cancelled run
+    /// left its cards as stale as a failed one). Dry runs are never
+    /// counted: they commit no cards, so they neither hide a failure nor
+    /// make one up (Go `HasUnfinishedAutomationRun`). No row (not indexed
+    /// yet, or a database without the automation tables) is `.absent`.
+    package static func needsApproval(_ db: Database) throws -> NeedsApprovalState {
+        do {
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT id, disabled_reason FROM automations WHERE builtin_id = ?",
+                arguments: [needsApprovalBuiltinID]) else { return .absent }
+            let automationID: Int64 = row["id"]
+            let disabledReason: String = row["disabled_reason"] ?? ""
+            let latest = try String.fetchOne(db, sql: """
+                SELECT status FROM automation_runs
+                WHERE automation_id = ? AND trigger != 'dry_run' AND status NOT IN ('queued', 'running', 'waiting')
+                ORDER BY id DESC LIMIT 1
+                """, arguments: [automationID])
+            let failedRun = try Int64.fetchOne(db, sql: """
+                SELECT id FROM automation_runs
+                WHERE automation_id = ? AND trigger != 'dry_run'
+                  AND status NOT IN ('queued', 'running', 'waiting', 'succeeded')
+                ORDER BY id DESC LIMIT 1
+                """, arguments: [automationID])
+            return NeedsApprovalState(
+                automationID: automationID, stopped: !disabledReason.isEmpty, lastRunFailed: latest.map { $0 != "succeeded" } ?? false,
+                latestFailedRunID: failedRun)
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return .absent
+        }
+    }
+
+    /// The `needs-approval` built-in's id (`builtin.Entry`, Go).
+    package static let needsApprovalBuiltinID = "needs-approval"
+
     /// The Messages legacy entry stands in for Waiting for me: see
     /// `WaitingForMeState.messagesStandIn`.
     package static func messagesStandIn(_ db: Database) throws -> Bool {
@@ -200,6 +246,21 @@ package enum InboxFolderQueries {
 
     /// The `waiting-for-me` built-in's id (`builtin.Entry`, Go).
     package static let waitingForMeBuiltinID = "waiting-for-me"
+
+    /// The `idea-finder` built-in is indexed: Idea finder stays in the root
+    /// with no ideas yet (its New idea and Find Ideas in Past Messages…).
+    package static func ideaFinderPresent(_ db: Database) throws -> Bool {
+        do {
+            return try Bool.fetchOne(
+                db, sql: "SELECT EXISTS (SELECT 1 FROM automations WHERE builtin_id = ?)",
+                arguments: [ideaFinderBuiltinID]) ?? false
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return false
+        }
+    }
+
+    /// The `idea-finder` built-in's id (`builtin.Entry`, Go).
+    package static let ideaFinderBuiltinID = "idea-finder"
 }
 
 /// The `waiting-for-me` built-in's place in the root (spec "Waiting for me").

@@ -57,6 +57,10 @@ struct InboxArtifactCard: View {
     let workbenches: [Workbench]
     /// The target buttons' state, from the Inbox center.
     var targets = InboxTargetButtonSource()
+    /// False: no Done or Dismiss (`InboxCardButtons.showsDoneDismiss`).
+    var showsDoneDismiss = true
+    /// The native row actions of rows with a `ref` (`InboxRefHooks`).
+    var refHooks = ArtifactRefHooks()
 
     /// An agent press waiting for the owner's workbench.
     @State private var pickingTask: String?
@@ -83,7 +87,7 @@ struct InboxArtifactCard: View {
             }
             InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
                              onDone: onDone, onDismiss: onDismiss, workbenches: workbenches,
-                             drawsOwnActions: false)
+                             drawsOwnActions: false, showsDoneDismiss: showsDoneDismiss)
                 .padding(.top, Spacing.small)
         }
     }
@@ -103,6 +107,8 @@ struct InboxArtifactCard: View {
 
     private func environment(reply: InboxReplyState) -> ArtifactEnvironment {
         let byIndex = Dictionary(layout.pressable.map { ($0.index, $0) }) { first, _ in first }
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
         return ArtifactEnvironment(
             markdown: Self.markdown,
             avatar: { Self.avatar(people[$0]) },
@@ -118,6 +124,7 @@ struct InboxArtifactCard: View {
                 case .nothing: break
                 }
             },
+            refHooks: refHooks,
             targetButtonState: { index in
                 guard case .target(let target)? = byIndex[index]?.kind else { return .idle }
                 return targets.button(target, index: index, card: card).state
@@ -130,6 +137,7 @@ struct InboxArtifactCard: View {
                 return !InboxCardPress.isDisabled(action, reply: reply, isWriting: isWriting, navScreens: navScreens)
             }
         )
+        // swiftlint:enable trailing_closure
     }
 
     /// A person the local `users` table knows: the initials of their Slack

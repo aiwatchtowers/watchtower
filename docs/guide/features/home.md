@@ -111,7 +111,7 @@ When every feature is ready or retrying on its own, the zone shrinks to "Everyth
 
 The menu lists Home, Targets, Workbench, Automations and Calendar, then three collapsible sections:
 
-- **FOCUS**: Catch Up, Inbox (briefings, plans, tracks and ideas are its filters).
+- **FOCUS**: Catch Up, Inbox (briefings, plans, tracks and ideas live in its root).
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 

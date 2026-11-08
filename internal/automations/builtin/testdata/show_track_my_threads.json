@@ -23,7 +23,6 @@
   "sends": [
     "Track cards in your Inbox"
   ],
-  "result_filter": "tracks",
   "default_folder": "inbox",
   "parameters": [],
   "feature_ids": [

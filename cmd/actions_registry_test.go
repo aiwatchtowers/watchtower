@@ -203,8 +203,16 @@ func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
 		"list_slack_channels", "get_confluence_page", "list_emails", "get_email",
 		"list_inbox", "list_calendar_events", "list_meeting_recaps", "get_meeting_recap", "list_meeting_notes",
 		"list_day_plans", "get_day_plan", "list_reminders", "list_jira_sprints", "list_jira_releases",
-		"list_linear_cycles"} {
+		"list_linear_cycles", "list_inbox_folders"} {
 		assert.True(t, listed[name], "%s missing on automation_editor", name)
+	}
+	// The Inbox folder list (inbox builder B, Task 15) is the editor chat's
+	// alone: a recipe names folders by slug, and no other chat proposes one.
+	for _, surface := range []string{"main", "target", "inbox", "project", "reaction", tools.AutomationSurface} {
+		assert.False(t, surfaceToolNames(reg, surface)["list_inbox_folders"], "list_inbox_folders leaked onto %s", surface)
+	}
+	for _, rt := range tools.ReadTools() {
+		assert.NotEqual(t, "list_inbox_folders", rt.Name, "dev-mode MCP never mounts list_inbox_folders (DEV-01)")
 	}
 	for _, name := range surfaceNamesOf(reg, tools.AutomationEditorSurface, tools.AccessWrite) {
 		assert.Equal(t, "save_automation", name, "save_automation is the only write on automation_editor")

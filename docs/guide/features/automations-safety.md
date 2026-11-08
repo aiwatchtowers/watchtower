@@ -45,7 +45,7 @@ A run also has one read budget for your synced data, shared by its `tool()` read
 
 ### What a run can write
 
-Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack message, a new target) are proposals. They appear in the Inbox's **Automations** filter, labelled with the automation and run number, and wait for your approval.
+Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack message, a new target) are proposals. They wait for your approval in the Inbox's **Needs approval**, labelled with the automation and run number.
 
 A run waiting on you pauses and resumes after you decide. After its pause timeout (72 hours by default) it ends as expired.
 
@@ -74,7 +74,7 @@ The marking lowers the risk but does not remove it. If such a recipe also has au
 ## Using it
 - To confirm: open the card, press **Review…**, read the column (**Show recipe** has the script), then **Confirm** or **Confirm and Turn On**. Saving also confirms, and only what the column listed.
 - To allow an automatic write: tick the tool under the "Auto" caption in **Form**.
-- To see what a run is waiting on: open the Inbox's **Automations** filter.
+- To see what a run is waiting on: open **Needs approval** in the Inbox.
 
 ## When it's empty or wrong
 - **Needs your confirmation.** The fingerprint changed or the file came from outside. Open **Review…**.

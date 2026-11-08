@@ -88,17 +88,19 @@ action: nav:automations
 
 ### Where results land
 <!-- learn
-id: automations-results
+id: automations-results-folders
 title: Find what your automations made
-text: Automation cards land in the **Inbox** under **Automations**, reports on the card, and notes in the next briefing.
+text: Automation cards land in the **Inbox** folder unless you move them; reports stay on the card, notes go to the briefing.
 area: automations
 level: basics
 kind: tip
-since: 0.24.0
+since: next
 action: nav:inbox
+replaces: [automations-results]
+changed: Cards now land in an Inbox folder instead of the Automations filter.
 -->
 
-- Inbox: cards in the **Automations** filter, with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**, until you open them; a click there opens the card.
+- Inbox: cards in the automation's folder (the **Inbox** root unless you use **Move to Folder** in a card's **⋯**, [Inbox](inbox.md#folders-and-the-menu)), with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**, until you open them; a click there opens the card.
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
@@ -116,7 +118,7 @@ Reaction commands are the **Reactions** card in **Built in**, and each custom tr
 - **Needs your confirmation.** Open **Review…**, check the column, then press **Confirm and Turn On**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **The form is off ("The recipe can't be read").** The file has an error, named next to it. The controls stay off so they never overwrite the file's settings; click **Open in Script**, fix the recipe, then save.
 - **Disabled.** Use **⋯**, then **Turn On**.
-- **Recipes turned off after the update.** Automations used to have an on/off switch in Settings → Features. If yours was off, the update turned off each recipe you had enabled, once, so nothing starts spending on its own; a notice may tell you so. In the Automations tab, use **⋯**, then **Turn On** on the ones you want.
+- **Recipes turned off after the update.** If Automations was off in Settings → Features before it became always on, the update turned your recipes off once. Use **⋯**, then **Turn On** on the ones you want.
 - **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it are never made up.
 - **Ended on budget or time.** Raise the budget in **Form** (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.

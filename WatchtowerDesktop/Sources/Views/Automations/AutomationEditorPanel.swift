@@ -405,7 +405,8 @@ struct AutomationEditorPanel: View {
         )
         return VStack(alignment: .leading, spacing: Spacing.regular) {
             footerMessages(form, key: key, column: column)
-            AutomationSaveConfirmation(column: column, step: step)
+            AutomationSaveConfirmation(column: column, step: step,
+                                       placement: verdict.pressSaves ? placement?.placementText : nil)
             AutomationDraftFooterBar(
                 verdict: verdict,
                 step: step,
@@ -414,6 +415,13 @@ struct AutomationEditorPanel: View {
                 isSaving: isSaving,
                 warnings: AutomationDraftFooter.Warnings(column: column, dryRunTokens: tokens)
             ) { press($0, key: key) }
+            // An earlier save of this automation landed but its folder did not.
+            if !isNew, let failure = vm.routeFailures[key] {
+                InboxFolderSaveFailureLine(reason: failure.reason, isRetrying: vm.routeRetrying.contains(key)) {
+                    let vm = vm
+                    Task { await vm.retryRoute(key) }
+                }
+            }
         }
         .controlSize(.small)
         .padding(Spacing.large)
@@ -494,13 +502,35 @@ struct AutomationEditorPanel: View {
         return false
     }
 
+    /// The Inbox folder the save puts the cards in: the chat's newest
+    /// suggestion, else a new draft's **+ New Artifact…** folder.
+    private var placement: InboxNewArtifactRoute? {
+        let entry = chat?.draft.entry
+        return vm.editorPlacement(suggestion: entry?.folder, draftContextID: newDraftContextID,
+                                  automationID: existingID, suggestionKey: entry?.suggestionKey)
+    }
+
+    /// The saved automation being edited; nil for a new draft.
+    private var existingID: Int64? {
+        if case let .existing(id, _) = target { return id }
+        return nil
+    }
+
     /// The owner's press: saves or confirms the bytes the column shows,
-    /// keeping auto only for the boxes checked (AUTO-03).
+    /// keeping auto only for the boxes checked (AUTO-03). A save also sets
+    /// the folder its Changed row named: once it landed, never on a refusal.
     private func press(_ action: AutomationDraftFooter.Action, key: Int64) {
         guard case let .review(plan) = editor.saving[key] else { return }
         var checked = plan
         checked.keepAuto = (editor.keepAuto[key] ?? []).intersection(plan.pausedGrants)
         let editor = editor
+        let vm = vm
+        let route = action.saves ? placement : nil
+        let entry = chat?.draft.entry
+        let suggestionKey = AutomationsViewModel.suggestionSpentBySave(
+            saves: action.saves, suggestion: entry?.folder, suggestionKey: entry?.suggestionKey
+        )
+        if let newDraftContextID { vm.setPressRoute(route, forDraft: newDraftContextID) }
         if let turnOnBuiltin {
             // A built-in: the save never touches on/off (its feature keys).
             whenLanded(key) {
@@ -508,24 +538,31 @@ struct AutomationEditorPanel: View {
                     await editor.confirmShown(key, plan: checked, turnOn: false)
                     return
                 }
-                await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                let landed = await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                await vm.routeEditorSave(key: key, landed: landed, draftContextID: nil, editor: editor, route: route,
+                                         spending: suggestionKey)
                 if action == .saveAndTurnOn, editor.saving[key] == .done { await turnOnBuiltin() }
             }
             return
         }
+        let draftContextID = newDraftContextID
         whenLanded(key) {
+            // The automation this press saved; nil for a confirm or a refusal.
+            var landed: Int64?
             switch action {
             case .saveAndTurnOn, .saveAndConfirm:
-                await editor.commit(key, plan: checked, turnOn: true)
+                landed = await editor.commit(key, plan: checked, turnOn: true)
             case .saveTurnedOff:
-                await editor.commit(key, plan: checked, turnOn: false)
+                landed = await editor.commit(key, plan: checked, turnOn: false)
             case .confirmAndTurnOn:
                 await editor.confirmShown(key, plan: checked, turnOn: true)
             case .confirmTurnedOff, .confirm:
                 await editor.confirmShown(key, plan: checked, turnOn: false)
             case .save:
-                await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                landed = await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
             }
+            await vm.routeEditorSave(key: key, landed: landed, draftContextID: draftContextID, editor: editor,
+                                     route: route, spending: suggestionKey)
         }
     }
 
@@ -627,8 +664,9 @@ struct AutomationEditorPanel: View {
         }
         let vm = vm, target = target, onSaved = onSaved
         Task {
-            await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID)
-            if vm.panel == .editor(target) { onSaved(savedID) }
+            await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID) {
+                if vm.panel == .editor(target) { onSaved(savedID) }
+            }
         }
     }
 

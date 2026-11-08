@@ -15,6 +15,8 @@ package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
     /// "updated 6 min ago · after every sync", "run #12 · 2 h ago".
     package var detail: String
     package var unread: Bool
+    /// The row's own ⋯ (and context menu); empty draws none.
+    package var menu: [InboxMenuEntry]
 
     package init(
         id: String,
@@ -22,7 +24,8 @@ package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
         title: String,
         summary: String = "",
         detail: String = "",
-        unread: Bool = false
+        unread: Bool = false,
+        menu: [InboxMenuEntry] = []
     ) {
         self.id = id
         self.kind = kind
@@ -30,6 +33,7 @@ package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
         self.summary = summary
         self.detail = detail
         self.unread = unread
+        self.menu = menu
     }
 }
 
@@ -58,22 +62,19 @@ package struct InboxFolderListContent: Equatable, Sendable {
         self.readError = readError
     }
 
-    /// The empty folder's words (spec "The Inbox screen" → States). Task 12
-    /// moves them into `EmptyStateCopyTable` under `inbox`, `inboxFolder`
-    /// and `inboxApprovals`.
-    package var emptyCopy: EmptyStateCopy {
+    /// The `EmptyStateCopyTable` key of the empty folder (spec "The Inbox
+    /// screen" → States): `inbox`, `inboxFolder` or `inboxApprovals`.
+    package var emptyCopyKey: String {
         switch folderKind {
-        case .root:
-            EmptyStateCopy(icon: "tray", title: "Your Inbox is empty",
-                           landsHere: "Automations put what they make here.",
-                           feature: nil, primaryAction: .tabAction(label: "New Artifact…"))
-        case .owner:
-            EmptyStateCopy(icon: "folder", title: "Nothing in \(folderTitle) yet",
-                           landsHere: "Move an automation here from its ⋯ menu, or make a new one.",
-                           feature: nil, primaryAction: .tabAction(label: "New Artifact…"))
-        case .approvals:
-            EmptyStateCopy(icon: "checkmark.circle", title: "Nothing waits for your approval", landsHere: "",
-                           feature: nil, primaryAction: nil)
+        case .root: "inbox"
+        case .owner: "inboxFolder"
+        case .approvals: "inboxApprovals"
         }
+    }
+
+    /// The empty folder's words, an owner folder's title filled in.
+    package var emptyCopy: EmptyStateCopy {
+        EmptyStateCopyTable.copy(for: emptyCopyKey, briefingHour: 8, folderTitle: folderTitle)
+            ?? EmptyStateCopy(icon: "tray", title: "Nothing here", landsHere: "", feature: nil, primaryAction: nil)
     }
 }

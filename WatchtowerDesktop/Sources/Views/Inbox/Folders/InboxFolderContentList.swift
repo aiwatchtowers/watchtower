@@ -3,13 +3,41 @@ import WatchtowerCore
 
 /// The Inbox's second column: the selected folder's entries, newest change
 /// first, with unread dots and the "updated …" lines, or the folder's empty
-/// state (root, owner folder, Needs approval).
-struct InboxFolderContentList: View {
+/// state (`EmptyStateCopyTable`'s `inbox`, `inboxFolder`, `inboxApprovals`)
+/// with what the caller keeps under it (`emptyExtra`: the empty root's
+/// OWNER-02 line and reaction cheat sheet).
+struct InboxFolderContentList<EmptyExtra: View>: View {
     let content: InboxFolderListContent
     /// A row picked by click or the arrow keys; nil when Escape clears it.
     var onSelect: (String?) -> Void = { _ in }
     /// The empty root's and an empty owner folder's **New Artifact…**.
     var onNewArtifact: () -> Void = {}
+    /// A row's own ⋯ press (the Idea finder's Find Ideas in Past Messages…),
+    /// or a press in an artifact row's context menu.
+    var onMenu: (String, InboxMenuCommand) -> Void = { _, _ in }
+    /// An artifact row's context menu: its artifact ⋯ (spec "Menus").
+    var contextMenu: (InboxFolderListRow) -> [InboxMenuEntry] = { _ in [] }
+    /// The empty state's readiness line and actions.
+    var emptyState: EmptyStateContext = .neutral
+    let emptyExtra: EmptyExtra
+
+    init(
+        content: InboxFolderListContent,
+        onSelect: @escaping (String?) -> Void = { _ in },
+        onNewArtifact: @escaping () -> Void = {},
+        onMenu: @escaping (String, InboxMenuCommand) -> Void = { _, _ in },
+        contextMenu: @escaping (InboxFolderListRow) -> [InboxMenuEntry] = { _ in [] },
+        emptyState: EmptyStateContext = .neutral,
+        @ViewBuilder emptyExtra: () -> EmptyExtra
+    ) {
+        self.content = content
+        self.onSelect = onSelect
+        self.onNewArtifact = onNewArtifact
+        self.onMenu = onMenu
+        self.contextMenu = contextMenu
+        self.emptyState = emptyState
+        self.emptyExtra = emptyExtra()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,10 +45,15 @@ struct InboxFolderContentList: View {
                 InboxReadErrorLine(message: readError)
             }
             if content.rows.isEmpty {
-                FeatureEmptyState(copy: content.emptyCopy, readiness: nil, syncLine: nil, turnOnError: nil,
-                                  isTurningOn: false) { _ in onNewArtifact() }
+                ScrollView {
+                    TabEmptyState(copyKey: content.emptyCopyKey, folderTitle: content.folderTitle, context: emptyState,
+                                  onTabAction: onNewArtifact) {
+                        emptyExtra
+                    }
                     .padding(.top, Spacing.wide)
                     .frame(maxWidth: .infinity)
+                }
+                .accessibilityIdentifier("inbox.emptyFolder")
             } else {
                 // A List, as today's Inbox list (`InboxSplitView`): arrow keys
                 // move the selection and VoiceOver reads the rows as a list.
@@ -31,7 +64,7 @@ struct InboxFolderContentList: View {
                         .selectionDisabled()
                         .listRowSeparator(.hidden)
                     ForEach(content.rows) { row in
-                        InboxFolderListRowView(row: row)
+                        InboxFolderListRowView(row: row, contextEntries: contextMenu(row)) { onMenu(row.id, $0) }
                             .tag(Optional(row.id))
                             .listRowSeparator(.hidden)
                     }
@@ -44,10 +77,27 @@ struct InboxFolderContentList: View {
     }
 }
 
+extension InboxFolderContentList where EmptyExtra == EmptyView {
+    init(
+        content: InboxFolderListContent,
+        onSelect: @escaping (String?) -> Void = { _ in },
+        onNewArtifact: @escaping () -> Void = {},
+        onMenu: @escaping (String, InboxMenuCommand) -> Void = { _, _ in },
+        emptyState: EmptyStateContext = .neutral
+    ) {
+        self.init(content: content, onSelect: onSelect, onNewArtifact: onNewArtifact, onMenu: onMenu,
+                  emptyState: emptyState) { EmptyView() }
+    }
+}
+
 /// One list row: the unread dot, the title with its summary, the "updated …"
 /// line under it.
 struct InboxFolderListRowView: View {
     let row: InboxFolderListRow
+    /// The context menu when the row has no ⋯ of its own (an artifact's ⋯).
+    var contextEntries: [InboxMenuEntry] = []
+    /// A press in the row's own ⋯ (`row.menu`) or its context menu.
+    var onMenu: (InboxMenuCommand) -> Void = { _ in }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
@@ -75,9 +125,17 @@ struct InboxFolderListRowView: View {
                         .lineLimit(1)
                 }
             }
+            if !row.menu.isEmpty {
+                Spacer(minLength: Spacing.small)
+                InboxMoreMenu(entries: row.menu, help: "More for \(row.title)", onCommand: onMenu)
+            }
         }
         .padding(.vertical, Spacing.small)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: row.menu.isEmpty ? .combine : .contain)
+        .contextMenu {
+            let entries = row.menu.isEmpty ? contextEntries : row.menu
+            if !entries.isEmpty { InboxMenuItems(entries: entries, onCommand: onMenu) }
+        }
     }
 }
 

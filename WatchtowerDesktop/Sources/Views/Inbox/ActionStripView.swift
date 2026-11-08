@@ -2,14 +2,14 @@ import GRDB
 import SwiftUI
 import WatchtowerCore
 
-/// The Inbox tab's content (C1): one list and reading pane over every kind
-/// that needs the owner — the day card, messages, tracks, ideas, and B's
-/// proposals, due reminders and automation cards — under the filter bar
-/// (All · Day · Messages · Tracks · Ideas · Automations). The learned-rules
+/// The Inbox tab's content: the folder menu and the selected folder
+/// (`ActionStripActionsView`) over every kind that needs the owner — the
+/// day card, messages, tracks, ideas, proposals, due reminders and
+/// automation artifacts. The learned-rules
 /// manager still feeds the digest/tracks/briefing/catch-up prompts
 /// (`ListLearnedRulesByPipeline`) and the assistant profile editor still
 /// feeds Catch-Up compose and the idea chat, so they keep their door here:
-/// the header's ⋯ menu opens them in the reading pane (R7).
+/// the root's ⋯ in the folder menu opens them in the reading pane (R7).
 /// Reads `appState.actionStripViewModel` (AppState-owned so it survives
 /// navigation, the `SlackAccountsViewModel` house pattern), re-`refresh()`es
 /// on every appear — cross-process daemon/CLI writes don't fire
@@ -53,7 +53,15 @@ struct ActionStripView: View {
                     learnedRulesDB: appState.databaseManager?.dbPool,
                     profile: appState.secretaryProfileViewModel,
                     tracks: appState.tracksViewModel,
-                    trackControls: appState.customTrackControls
+                    trackControls: appState.customTrackControls,
+                    onTurnOnApprovals: { await appState.turnOnNeedsApproval() },
+                    onRunHistory: { automationID, runID in
+                        appState.openAutomationRun(automationID: automationID, runID: runID)
+                    },
+                    onNewArtifact: { appState.newInboxArtifact() },
+                    onMakeTaskFromTrack: { await appState.makeTask(fromTrack: $0) },
+                    onGoToTarget: { appState.navigateToTarget($0) },
+                    artifactMenu: appState.inboxArtifactMenu
                 )
             } else {
                 ProgressView()
@@ -87,7 +95,6 @@ struct ActionStripView: View {
             today: HomeFeedBuilder.dayString(Date(), calendar: .current),
             plan: plan,
             owner: appState.owner,
-            onDone: { vm.markDayDone(day.date) },
             onCommand: { command in Task { await appState.perform(command) } },
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
@@ -153,12 +160,15 @@ struct ActionStripView: View {
     }
 }
 
-/// The Inbox under its filter bar: the list and reading pane
-/// (`InboxSplitView`), or — when the filter has nothing and no editor is
-/// open — the filter's empty state in its place. The empty All list keeps
-/// the reaction cheat sheet inline (B); otherwise the cheat sheet stays one
-/// `?` click away in the reading pane, never among the cards (a card-shaped
-/// help block there would read as something waiting on the owner).
+/// The Inbox (inbox builder B): the folder menu, then the selected folder —
+/// its entry list beside the reading pane (the root and owner folders),
+/// Needs approval's one column of cards, or, from a legacy entry of the
+/// root (Track my threads, Idea finder, Messages; ask #445), today's list
+/// for it with its own reading pane (`InboxSplitView`). An empty root says
+/// so and keeps the reaction cheat sheet inline while nothing in the Inbox
+/// waits on the owner (B); otherwise the cheat sheet stays one `?` click
+/// away in the reading pane, never among the cards (a card-shaped help
+/// block there would read as something waiting on the owner).
 /// Split out of `ActionStripView` so it takes plain inputs and can be tested
 /// without an `AppState`.
 struct ActionStripActionsView: View {
@@ -178,7 +188,7 @@ struct ActionStripActionsView: View {
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
     /// The Your day card's pane (`ActionStripView.dayPane`); nil shows its title.
     var dayPane: ((InboxDayCard) -> InboxDayPane?)?
-    /// The Ideas filter's New idea and Find Ideas rows; nil leaves them out.
+    /// The Idea finder's New idea and Find Ideas rows; nil leaves them out.
     var ideas: IdeasViewModel?
     /// The idea card (`ActionStripView.ideaPane`); nil shows its title.
     var ideaPane: ((Idea) -> InboxIdeaPane?)?
@@ -208,77 +218,506 @@ struct ActionStripActionsView: View {
     var trackControls: (any CustomTrackControlling)?
     /// The moment the list's times are told from; nil is now (design shots fix it).
     var now: Date?
+    /// Needs approval's **Turn On** (off and stopped notes): the built-in
+    /// card's own `AppState.setBuiltinEnabled(["approval-cards"], on: true)`.
+    var onTurnOnApprovals: () async -> String? = { nil }
+    /// Needs approval's **Run History**: the automation's card, the run open.
+    var onRunHistory: (Int64, Int64?) -> Void = { _, _ in }
+    /// **+ New Artifact…** and the empty folders' **New Artifact…**: the
+    /// Automations tab's New flow, the selected owner folder as its route.
+    var onNewArtifact: () -> Void = {}
+    /// A track row's **Make a Task** (`AppState.makeTask(fromTrack:)`): why it failed, or nil.
+    var onMakeTaskFromTrack: (Track) async -> String? = { _ in nil }
+    /// A track row's **Go to Target**, an idea made into a task.
+    var onGoToTarget: (Int) -> Void = { _ in }
+    /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
+    /// nil (tests, shots) draws neither.
+    var artifactMenu: InboxArtifactMenuModel?
 
-    /// What the header opened in the reading pane, and the Ideas filter's
+    /// What the header opened in the reading pane, and the Idea finder's
     /// open row; settable at init so a design shot can open one.
     @State var aux: InboxAuxPane?
     @State var ideasRow: InboxIdeasRow?
     @State private var newIdea = InboxNewIdeaDraft()
+    @Environment(\.markdownNavScreens) private var navScreens
     @State private var backfillRange = InboxIdeaBackfillRange(from: Date(), to: Date())
+    /// Proposals whose recipe card's **Edit…** was pressed: Needs approval
+    /// draws their native card, with its argument editor, in its place.
+    @State private var editingActions: Set<Int64> = []
 
+    /// The Inbox's header and the strip's error line above all three
+    /// columns (b-01), then the folder menu and the selected folder.
     var body: some View {
-        let isEmpty = vm.sections.isEmpty
         VStack(spacing: 0) {
+            header
             if let message = vm.lastError {
                 errorBanner(message)
             }
-            InboxFilterBar(
-                filter: filter,
-                showsCheatSheetButton: !(isEmpty && vm.filter == .all),
-                onOpenAux: openAux,
-                onFindIdeas: ideas.map { _ in { openIdeasRow(.findIdeas) } }
-            ) {
-                if let ideas {
-                    InboxIdeasHeader(isMining: ideas.isBackfilling,
-                                     row: Binding(get: { ideasRow }, set: openIdeasRow))
-                }
-            }
-            if vm.filter == .ideas, let ideas, let ideasRow {
-                self.ideasRow(ideasRow, ideas: ideas)
-                    .padding(.horizontal, Spacing.medium)
-                    .padding(.bottom, Spacing.regular)
-            }
-            if isEmpty && aux == nil {
-                ScrollView {
-                    emptyList.padding(.top, Spacing.wide)
-                }
-                .accessibilityIdentifier(vm.filter == .all ? "actionStrip.cheatSheet" : "inbox.emptyFilter")
-            } else {
-                InboxSplitView(
-                    vm: vm,
-                    proposalCard: card,
-                    saveProposal: saveProposal,
-                    workbenches: workbenches,
-                    onRetryBuiltin: onRetryBuiltin,
-                    onCardAction: onCardAction,
-                    dayPane: dayPane,
-                    ideaPane: ideaPane.map { make in
-                        { idea in
-                            // One prominent action: the open New idea row's Create.
-                            make(idea).map { pane in
-                                var pane = pane
-                                pane.approveIsPrimary = !(vm.filter == .ideas && ideasRow == .newIdea)
-                                return pane
-                            }
-                        }
-                    },
-                    onOpenAutomationRun: onOpenAutomationRun,
-                    now: now,
-                    aux: $aux,
-                    cheatSheet: cheatSheet,
-                    learnedRulesDB: learnedRulesDB,
-                    profile: profile,
-                    tracks: tracks,
-                    trackControls: trackControls
-                ) {
-                    emptyList
-                }
+            HSplitView {
+                InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux, onCommand: folderMenuCommand,
+                                      onNewArtifact: onNewArtifact, onSelect: selectFolder)
+                    .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
+                           maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
+                inbox
+                    .frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
 
-    private var filter: Binding<InboxFilter> {
-        Binding(get: { vm.filter }, set: { vm.filter = $0 })
+    private var inbox: some View {
+        VStack(spacing: 0) {
+            if let list = vm.legacyList {
+                legacyHeader(list)
+                if list == .ideas, let ideas, let ideasRow {
+                    self.ideasRow(ideasRow, ideas: ideas)
+                        .padding(.horizontal, Spacing.medium)
+                        .padding(.bottom, Spacing.regular)
+                }
+            }
+            content
+        }
+        .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
+                            presenting: artifactMenu?.pendingDelete) { pending in
+            Button("Delete", role: .destructive) {
+                guard let artifactMenu else { return }
+                Task { await artifactMenu.confirmDelete(pending) }
+            }
+            Button("Cancel", role: .cancel) { artifactMenu?.cancelDelete() }
+        } message: { _ in
+            Text("This removes the recipe file with its runs, state and outputs.")
+        }
+    }
+
+    // MARK: - The ⋯ menus
+
+    /// The artifact ⋯'s Delete…, behind the Automations tab's own confirmation.
+    private var deleteConfirming: Binding<Bool> {
+        Binding(get: { artifactMenu?.pendingDelete != nil }, set: { shown in
+            if !shown { artifactMenu?.cancelDelete() }
+        })
+    }
+
+    private var deleteTitle: String {
+        "Delete “\(artifactMenu?.pendingDelete?.name ?? "")”?"
+    }
+
+    /// A folder-menu ⋯ press the menu does not carry out: Needs approval's.
+    private func folderMenuCommand(_ folderID: Int64, _ command: InboxMenuCommand) {
+        guard vm.folderMenu.tree.folder(folderID)?.kind == .approvals, let artifactMenu else { return }
+        Task { await artifactMenu.performApprovals(command, fromFolder: folderID) }
+    }
+
+    /// `card`'s ⋯ in the reading pane.
+    private func artifactMenuState(_ card: AutomationOutputCard) -> InboxArtifactMenuState? {
+        guard let artifactMenu else { return nil }
+        return InboxArtifactMenuState(
+            entries: artifactMenu.content(for: card).entries,
+            isDisabled: artifactMenu.isDisabled(card),
+            isWorking: artifactMenu.isWorking(card),
+            error: artifactMenu.headerErrors[card.id]
+        ) { command in Task { await artifactMenu.perform(command, on: card) } }
+    }
+
+    /// The artifact a list row stands for.
+    private func artifactCard(_ rowID: String) -> AutomationOutputCard? {
+        for entry in vm.folderEntries {
+            if case let .artifact(card) = entry, entry.id == rowID { return card }
+        }
+        return nil
+    }
+
+    /// An artifact row's context menu: its ⋯.
+    private func rowContextMenu(_ row: InboxFolderListRow) -> [InboxMenuEntry] {
+        guard row.kind == .artifact, let artifactMenu, let card = artifactCard(row.id),
+              !artifactMenu.isDisabled(card) else { return [] }
+        return artifactMenu.content(for: card).entries
+    }
+
+    private var folderKind: InboxFolderKind {
+        (vm.folderMenu.tree.folder(vm.folderMenu.selectedFolderID) ?? vm.folderMenu.tree.root).kind
+    }
+
+    /// The empty root keeps the cheat sheet inline while nothing in the
+    /// Inbox waits (every folder's count is 0); then its `?` is not shown.
+    private var showsInlineCheatSheet: Bool {
+        vm.hasRead && vm.legacyList == nil && aux == nil && folderKind == .root && vm.folderEntries.isEmpty
+            && vm.folderMenu.snapshot.counts.values.allSatisfy { $0 == 0 }
+    }
+
+    /// The Inbox's title and the `?` (reaction commands), above the menu,
+    /// the list and the reading pane.
+    private var header: some View {
+        HStack(spacing: Spacing.regular) {
+            Text("Inbox").font(.headline)
+            Spacer(minLength: 0)
+            if !showsInlineCheatSheet {
+                Button {
+                    openAux(.reactionCommands)
+                } label: {
+                    Image(systemName: "questionmark.circle")
+                }
+                .buttonStyle(.kitIcon(isOn: false))
+                .help("Reaction commands")
+                .accessibilityLabel("Reaction commands")
+                .accessibilityIdentifier("actionStrip.cheatSheetButton")
+            }
+        }
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.regular)
+    }
+
+    /// A legacy list's way back to the root, its title and the Idea
+    /// finder's controls.
+    private func legacyHeader(_ list: InboxLegacyList) -> some View {
+        HStack(spacing: Spacing.regular) {
+            Button {
+                vm.closeLegacy()
+            } label: {
+                Label(vm.folderMenu.tree.root.title, systemImage: "chevron.left")
+            }
+            .buttonStyle(.kitQuiet)
+            .help("Back to the folder")
+            Text(list.title).font(.headline)
+            if list == .ideas, let ideas {
+                InboxIdeasHeader(isMining: ideas.isBackfilling,
+                                 row: Binding(get: { ideasRow }, set: openIdeasRow))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.regular)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if !vm.hasRead, let reason = vm.firstReadError {
+            // The first read failed: say so, never a spinner that never ends.
+            Self.firstReadFailure(reason) { Task { await vm.refresh() } }
+        } else if !vm.hasRead {
+            // Nothing read yet: no "empty" or cheat sheet for a moment.
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("inbox.loading")
+        } else if let list = vm.legacyList {
+            legacySplit(list)
+        } else if folderKind == .approvals {
+            if let aux {
+                auxPane(aux)
+            } else {
+                approvalsPane
+            }
+        } else if vm.folderEntries.isEmpty, aux == nil {
+            folderList
+        } else {
+            PanelSplit(isPanelShown: true, width: inboxPaneWidth) {
+                folderList
+            } panel: {
+                if let aux {
+                    auxPane(aux)
+                } else {
+                    readingPane(vm.selectedEntry)
+                }
+            }
+            .detailBackground()
+        }
+    }
+
+    // MARK: - A folder's list and reading pane
+
+    private var folderList: some View {
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        InboxFolderContentList(
+            content: vm.folderList,
+            onSelect: { id in
+                aux = nil
+                Task { await vm.selectEntry(id) }
+            },
+            onNewArtifact: onNewArtifact,
+            onMenu: entryMenu,
+            contextMenu: rowContextMenu,
+            emptyState: emptyState,
+            emptyExtra: { rootEmptyExtra }
+        )
+        // swiftlint:enable trailing_closure
+        .accessibilityIdentifier(showsInlineCheatSheet ? "actionStrip.cheatSheet" : "inbox.folderList")
+        .task(id: listedArtifacts.map(\.automationID)) { await artifactMenu?.prepare(listedArtifacts) }
+    }
+
+    /// The artifacts the folder's list shows (their rows' context menus).
+    private var listedArtifacts: [AutomationOutputCard] {
+        vm.folderEntries.compactMap { entry in
+            if case let .artifact(card) = entry { card } else { nil }
+        }
+    }
+
+    /// Under the empty root: why it is empty without an owner (OWNER-02),
+    /// and the reaction cheat sheet while nothing in the Inbox waits.
+    @ViewBuilder
+    private var rootEmptyExtra: some View {
+        if folderKind == .root {
+            if !ownerKnown {
+                NoOwnerEmptyState(openConnections: onOpenConnections)
+            }
+            if showsInlineCheatSheet {
+                cheatSheet.frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    /// A legacy entry's own ⋯ (the Idea finder's Find Ideas in Past
+    /// Messages…), or an artifact row's context menu.
+    private func entryMenu(_ entryID: String, _ command: InboxMenuCommand) {
+        if let card = artifactCard(entryID), let artifactMenu {
+            Task { await artifactMenu.perform(command, on: card) }
+            return
+        }
+        guard command == .findIdeasInPastMessages, ideas != nil else { return }
+        vm.openLegacy(.ideas)
+        openIdeasRow(.findIdeas)
+    }
+
+    /// The entry's pane: an artifact (with its ⋯) or a day card in today's reading pane.
+    @ViewBuilder
+    private func readingPane(_ entry: InboxFolderEntry?) -> some View {
+        switch entry {
+        case let .artifact(card)?:
+            pane(.output(card), menu: artifactMenuState(card))
+                .task(id: card.automationID) { await artifactMenu?.prepare(card) }
+        case let .legacyDay(card)?: pane(.day(card))
+        case let .approval(item)?: pane(Self.listItem(item))
+        case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
+        case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
+        }
+    }
+
+    /// An approval as today's card: the recipe's card when it is current, else native.
+    private static func listItem(_ item: NeedsApprovalItem) -> InboxListItem {
+        if let recipe = item.recipe { return .output(recipe) }
+        switch item.record {
+        case let .action(action): return .proposal(action)
+        case let .reminder(reminder): return .reminder(reminder)
+        }
+    }
+
+    /// Today's reading pane over one card, its presses on the strip's writes.
+    /// The reading pane for `item`; `inApprovals` draws it as one card of
+    /// Needs approval's stack (`InboxReadingPane.stackedInApprovals()`).
+    private func pane(
+        _ item: InboxListItem?, inApprovals: Bool = false, menu: InboxArtifactMenuState? = nil
+    ) -> some View {
+        let now = now ?? Date()
+        let pane = InboxReadingPane(
+            item: item,
+            navScreens: navScreens,
+            now: now,
+            isWriting: item.map { vm.isWriting($0.id) } ?? false,
+            onCommand: onCardAction,
+            onOpenAutomationRun: onOpenAutomationRun,
+            onDone: { item.map { done($0.id) } },
+            onDismiss: { item.map { dismiss($0.id) } },
+            onSnooze: { duration in item.map { snooze($0.id, duration) } },
+            proposalCard: card,
+            saveProposal: saveProposal,
+            onRetryBuiltin: onRetryBuiltin,
+            workbenches: workbenches,
+            artifactPeople: vm.feed.artifactPeople,
+            dayCard: { card in
+                if let pane = dayPane?(card) {
+                    pane
+                } else {
+                    InboxCardPlaceholder(day: card)
+                }
+            },
+            trackCard: { track in InboxCardColumn { InboxCardPlaceholder(track: track, now: now) } },
+            ideaCard: { InboxCardPlaceholder(idea: $0).padding(Spacing.page) }
+        )
+        let handler = rowHandler(replyHost: InboxRefHooks.replyHost(item))
+        let refHooks = refHooks(handler)
+        let withHooks = pane
+            .refHooks(refHooks.hooks)
+            .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
+            .withArtifactMenu(menu)
+        return inApprovals ? withHooks.stackedInApprovals() : withHooks
+    }
+
+    // MARK: - Native row actions
+
+    /// The native actions on an artifact's rows with a `ref`.
+    private func refHooks(_ handler: InboxRowActionHandler) -> InboxRefHooks {
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches,
+                      sessionHoldsCall: { sessionHoldsCall?($0) ?? false }, ideasAvailable: ideas != nil,
+                      onCommand: onCardAction,
+                      onPress: { ref, press in Self.dispatch(press, on: ref, handler) })
+        // swiftlint:enable trailing_closure
+    }
+
+    /// A message card's Reply presses, by `inbox_items` id.
+    private static func messageReplyPress(_ handler: InboxRowActionHandler) -> (Int, InboxRowPress) -> Void {
+        { id, press in dispatch(press, on: InboxRef(kind: .inboxItem, id: Int64(id)), handler) }
+    }
+
+    /// The Reply composer's own presses at once (keystrokes keep their
+    /// order); every other press in a task.
+    private static func dispatch(_ press: InboxRowPress, on ref: InboxRef, _ handler: InboxRowActionHandler) {
+        guard !handler.pressNow(press, on: ref) else { return }
+        Task { await handler.press(press, on: ref) }
+    }
+
+    private func rowHandler(replyHost: String) -> InboxRowActionHandler {
+        InboxRowActionHandler(
+            vm: vm,
+            ideas: ideas,
+            onCommand: onCardAction,
+            onMakeTaskFromTrack: onMakeTaskFromTrack,
+            onGoToTarget: onGoToTarget,
+            onIdeaMadeTask: onGoToTarget,
+            onEditAction: { editingActions.insert($0) },
+            onOpenSaveDraft: onOpenSaveDraft,
+            sessionHoldsCall: { sessionHoldsCall?($0) ?? false },
+            navScreens: navScreens,
+            now: { now ?? Date() },
+            replyHost: replyHost
+        )
+    }
+
+    private func done(_ id: InboxSelection) {
+        Task {
+            switch id {
+            case .output(let output): await vm.markOutputDone(output)
+            case .reminder(let reminder): await vm.markReminderDone(reminder)
+            case .proposal, .day, .track, .idea, .message, .builtinNotice: break
+            }
+        }
+    }
+
+    private func dismiss(_ id: InboxSelection) {
+        guard case .output(let output) = id else { return }
+        Task { await vm.dismissOutput(output) }
+    }
+
+    /// A reminder's Snooze 1h, the only snooze these cards offer.
+    private func snooze(_ id: InboxSelection, _ duration: String) {
+        guard case .reminder(let reminder) = id, duration == "1h" else { return }
+        let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600))
+        Task { await vm.snoozeReminder(reminder, until: until) }
+    }
+
+    // MARK: - Needs approval
+
+    private var approvalsPane: some View {
+        let entries = vm.folderEntries
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        return NeedsApprovalPane(
+            count: entries.count,
+            note: vm.approvalsNoteContent,
+            menu: artifactMenu == nil ? []
+                : InboxArtifactMenuContent.approvalsEntries(isEnabled: vm.folderMenu.approvalsEnabled),
+            menuError: artifactMenu?.approvalsError,
+            menuWorking: artifactMenu?.approvalsPressing ?? false,
+            onNote: { Task { await vm.pressApprovalsNote(turnOn: onTurnOnApprovals, runHistory: onRunHistory) } },
+            onMenu: { command in Task { await artifactMenu?.performApprovals(command) } },
+            emptyState: emptyState,
+            cards: {
+                ForEach(entries) { entry in
+                    approvalCard(entry)
+                }
+            }
+        )
+        // swiftlint:enable trailing_closure
+        .detailBackground()
+    }
+
+    /// One Needs approval card: a native proposal is today's card; a
+    /// reminder, a notice and the recipe's card are today's reading pane on
+    /// a card fill.
+    @ViewBuilder
+    private func approvalCard(_ entry: InboxFolderEntry) -> some View {
+        switch entry {
+        case let .approval(item) where item.recipe == nil || isEditing(item):
+            if case let .action(action) = item.record {
+                if action.tool == SaveAutomationCardModel.tool, action.isPending {
+                    saveProposal(action)
+                } else {
+                    card(action)
+                }
+            } else {
+                filled(Self.listItem(item))
+            }
+        case let .approval(item):
+            // The recipe's card: no Done/Dismiss (they would close the
+            // artifact, not the approval); its row's native actions act on it.
+            filled(Self.listItem(item))
+        case let .builtinNotice(notice):
+            filled(.builtinNotice(notice))
+        case .artifact, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages:
+            EmptyView()
+        }
+    }
+
+    /// **Edit…** was pressed on this proposal's recipe card.
+    private func isEditing(_ item: NeedsApprovalItem) -> Bool {
+        guard case let .action(action) = item.record else { return false }
+        return editingActions.contains(action.id)
+    }
+
+    private func filled(_ item: InboxListItem) -> some View {
+        pane(item, inApprovals: true)
+            .padding(Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
+    }
+
+    // MARK: - A legacy list
+
+    /// Today's list for a legacy entry, with its own reading pane.
+    private func legacySplit(_ list: InboxLegacyList) -> some View {
+        // The Messages entry's card has Reply while it stands in for Waiting for me.
+        let handler = rowHandler(replyHost: InboxRefHooks.replyHost(nil))
+        let refHooks = refHooks(handler)
+        return InboxSplitView(
+            vm: vm,
+            proposalCard: card,
+            saveProposal: saveProposal,
+            workbenches: workbenches,
+            onRetryBuiltin: onRetryBuiltin,
+            onCardAction: onCardAction,
+            dayPane: dayPane,
+            ideaPane: ideaPane.map { make in
+                { idea in
+                    // One prominent action: the open New idea row's Create.
+                    make(idea).map { pane in
+                        var pane = pane
+                        pane.approveIsPrimary = !(list == .ideas && ideasRow == .newIdea)
+                        return pane
+                    }
+                }
+            },
+            onOpenAutomationRun: onOpenAutomationRun,
+            now: now,
+            aux: $aux,
+            cheatSheet: cheatSheet,
+            learnedRulesDB: learnedRulesDB,
+            profile: profile,
+            tracks: tracks,
+            trackControls: trackControls
+        ) {
+            TabEmptyState(copyKey: list.emptyCopyKey, context: emptyState)
+                .accessibilityIdentifier("inbox.emptyLegacyList")
+        }
+        .messageReply({ refHooks.messageReply($0) }, onPress: Self.messageReplyPress(handler))
+    }
+
+    // MARK: - The panes the header and the menu open
+
+    private func auxPane(_ pane: InboxAuxPane) -> some View {
+        InboxAuxPaneView(pane: pane, cheatSheet: cheatSheet, learnedRulesDB: learnedRulesDB,
+                         profile: profile) { aux = nil }
+            .detailBackground()
     }
 
     /// The reaction cheat sheet with the feature's enable/status line.
@@ -293,7 +732,7 @@ struct ActionStripActionsView: View {
         )
     }
 
-    /// Opens (or closes, nil) the Ideas filter's row; Find Ideas starts from
+    /// Opens (or closes, nil) the Idea finder's row; Find Ideas starts from
     /// the range that is mining, or the last two weeks.
     private func openIdeasRow(_ row: InboxIdeasRow?) {
         if row == .findIdeas, ideasRow != .findIdeas, let ideas {
@@ -308,31 +747,24 @@ struct ActionStripActionsView: View {
         case .newIdea:
             InboxNewIdeaRow(ideas: ideas, draft: $newIdea, onCreated: { id in
                 ideasRow = nil
-                await vm.open(.ideas, select: .idea(id))
+                await vm.open(folder: nil, select: .card(.idea(id)))
             }, onCancel: { ideasRow = nil })
         case .findIdeas:
             InboxIdeaBackfillRow(ideas: ideas, range: $backfillRange) { ideasRow = nil }
         }
     }
 
-    /// The header's pane opens in the reading pane in place of the selected card.
+    /// A folder picked in the menu: its list, nothing open.
+    private func selectFolder(_ id: Int64) {
+        aux = nil
+        ideasRow = nil
+        vm.selectFolder(id)
+    }
+
+    /// The menu's and header's pane opens in the reading pane in place of the selected card.
     private func openAux(_ pane: InboxAuxPane) {
         aux = pane
         Task { await vm.select(nil) }
-    }
-
-    /// The filter's empty state: All keeps the reaction cheat sheet (B), All
-    /// and Day say why when the owner is unknown.
-    @ViewBuilder
-    private var emptyList: some View {
-        TabEmptyState(copyKey: vm.filter.emptyCopyKey, context: emptyState) {
-            if !ownerKnown, vm.filter == .all || vm.filter == .day {
-                NoOwnerEmptyState(openConnections: onOpenConnections)
-            }
-            if vm.filter == .all {
-                cheatSheet.frame(maxWidth: .infinity)
-            }
-        }
     }
 
     private func card(_ action: AgentAction) -> AgentActionCardView {
@@ -378,6 +810,19 @@ struct ActionStripActionsView: View {
     private func openContext(_ action: AgentAction) -> (() -> Void)? {
         guard let onOpenAutomationRun, let runID = ActionStripViewModel.automationRunID(action) else { return nil }
         return { onOpenAutomationRun(runID) }
+    }
+
+    /// The Inbox when its first read failed: the reason and Try Again.
+    static func firstReadFailure(_ reason: String, onTryAgain: @escaping () -> Void) -> some View {
+        FeatureEmptyState(
+            copy: EmptyStateCopy(
+                icon: "exclamationmark.triangle", title: "The Inbox could not be read", landsHere: reason,
+                feature: nil, primaryAction: .tabAction(label: "Try Again")),
+            readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
+            onAction: { _ in onTryAgain() },
+            extra: { EmptyView() }
+        )
+        .accessibilityIdentifier("inbox.readFailed")
     }
 
     /// The `IdeasView` house pattern: a write failure

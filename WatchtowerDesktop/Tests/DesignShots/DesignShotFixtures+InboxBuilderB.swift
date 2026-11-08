@@ -3,14 +3,14 @@ import GRDB
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 
 /// Inbox builder B (plan Task 1): every state of the folder menu, the
 /// folder list, Needs approval, Waiting for me, the native row actions, the
 /// ⋯ menus and the editor's folder line, drawn on plain values before any
 /// wiring. Compared with the mockups `docs/design/mockups/inbox-builder/b-01
-/// … b-04`. Rows with a `ref` are drawn as `InboxRowActionsView` beside a
-/// plain row stand-in (Task 13 draws them through A's `ArtifactView`); the
+/// … b-04`. Rows with a `ref` are list rows drawn by A's `ArtifactView`
+/// with the Desktop's native actions through `InboxRefHooks` (Task 13); the
 /// Changed row is a stand-in over A's row model (Task 15 re-renders it from
 /// `AutomationSaveConfirmation`). Sample data only.
 @MainActor
@@ -21,34 +21,25 @@ enum InboxBuilderBShotFixtures {
 
     // MARK: - Folder menu
 
+    /// Drawn from `InboxFolderMenuModel` since Task 11
+    /// (`InboxFolderMenuShotFixtures`); the menu's other uses below stay on
+    /// plain rows.
     private static var menuShots: [DesignShot] {
-        let menu: [(String, InboxFolderMenuContent)] = [
-            ("inbox-b-menu-hidden-shown", hiddenShown),
-            ("inbox-b-menu-new-folder", InboxFolderMenuContent(
-                rows: [root, approvals], selection: 1,
-                folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release acme 2.0"))),
-            ("inbox-b-menu-drag", InboxFolderMenuContent(
-                rows: [root, approvals, team, release(depth: 1, count: 2)], selection: 1,
-                dropIndicator: InboxFolderDrop(targetID: 3, placement: .before))),
-            ("inbox-b-menu-changed", InboxFolderMenuContent(
-                rows: [root, approvals, release(depth: 1, count: 2)], selection: 1, note: .menuChanged)),
-            ("inbox-b-menu-cli-unavailable", InboxFolderMenuContent(
-                rows: [root, approvals, release(depth: 1, count: 2)], selection: 1, note: .cliUnavailable)),
-            ("inbox-b-menu-write-refused", InboxFolderMenuContent(
-                rows: [root, approvals, shortRelease], selection: 1,
-                folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release",
-                                              error: #"a folder named "Release" already exists here"#))),
-            ("inbox-b-menu-move-pending", InboxFolderMenuContent(
-                rows: [root, approvals, release(depth: 1, count: 2), team], selection: 1, pendingMoveID: 3)),
-            ("inbox-b-folder-delete-confirm", InboxFolderMenuContent(
-                rows: fullTree, selection: 3,
-                deleteConfirmation: InboxFolderDeleteSummary(folderID: 3, title: "Release acme 2.0", folders: 1,
-                                                             automations: 3, artifacts: 5)))
-        ]
+        let names = ["inbox-b-menu-hidden-shown", "inbox-b-menu-new-folder", "inbox-b-menu-drag",
+                     "inbox-b-menu-changed", "inbox-b-menu-cli-unavailable", "inbox-b-menu-write-refused",
+                     "inbox-b-menu-move-pending", "inbox-b-folder-delete-confirm"]
         return [
-            DesignShot(name: "inbox-b-menu-root", size: NSSize(width: 1180, height: 640)) { inboxRoot() }
-        ] + menu.map { name, content in
-            DesignShot(name: name, size: NSSize(width: 260, height: 300)) { menuColumn(content) }
+            DesignShot(name: "inbox-b-menu-root", size: NSSize(width: 1180, height: 640)) {
+                InboxFoldersShotFixtures.root()
+            }
+        ] + names.map { name in
+            DesignShot(name: name, size: NSSize(width: 260, height: 300)) {
+                do {
+                    return menuColumn(try InboxFolderMenuShotFixtures.content(name))
+                } catch {
+                    return DesignShotFixtures.failure(error)
+                }
+            }
         }
     }
 
@@ -58,66 +49,16 @@ enum InboxBuilderBShotFixtures {
     private static let team = InboxFolderRow(id: 5, kind: .owner, title: "Team", icon: "person.2", depth: 1, count: 0)
     private static let blockers = InboxFolderRow(id: 4, kind: .owner, title: "Blockers", icon: "shippingbox",
                                                  depth: 2, count: 1)
-    private static let shortRelease = InboxFolderRow(id: 3, kind: .owner, title: "Release", icon: "flag", depth: 1,
-                                                     count: 0)
     private static func release(depth: Int, count: Int) -> InboxFolderRow {
         InboxFolderRow(id: 3, kind: .owner, title: "Release acme 2.0", icon: "flag", depth: depth, count: count)
     }
 
     private static var fullTree: [InboxFolderRow] { [root, approvals, release(depth: 1, count: 2), blockers, team] }
 
-    private static var hiddenShown: InboxFolderMenuContent {
-        let oldSprint = InboxFolderRow(id: 6, kind: .owner, title: "Old sprint", icon: "shippingbox", depth: 1,
-                                       count: 4, hidden: true)
-        return InboxFolderMenuContent(rows: [root, approvals, release(depth: 1, count: 2), oldSprint], selection: 1,
-                                      showsHidden: true)
-    }
-
     private static func menuColumn(_ content: InboxFolderMenuContent) -> AnyView {
         AnyView(InboxFolderMenu(content: content)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .detailBackground())
-    }
-
-    /// The whole Inbox: the menu, the root's list, the selected artifact
-    /// under its header (b-01's main panel).
-    private static func inboxRoot() -> AnyView {
-        AnyView(VStack(spacing: 0) {
-            inboxHeader
-            Divider()
-            HStack(spacing: 0) {
-                InboxFolderMenu(content: InboxFolderMenuContent(rows: fullTree, selection: 1))
-                    .frame(width: PaneWidth.sideListIdeal)
-                Divider()
-                InboxFolderContentList(content: rootList(selection: "weekly"))
-                    .frame(width: 300)
-                Divider()
-                InboxCardColumn {
-                    VStack(alignment: .leading, spacing: Spacing.medium) {
-                        InboxArtifactHeader(title: "Weekly mail roundup", source: "Weekly mail roundup · Run #12 · 2 h ago",
-                                            menu: InboxArtifactMenuContent(folders: fullTree))
-                        Text("Three threads from example.com need an answer this week: the acme invoice, "
-                            + "the venue for the offsite and the contract renewal.")
-                            .font(.callout)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground())
-    }
-
-    /// The header today's Inbox keeps: its title and the `?`.
-    private static var inboxHeader: some View {
-        HStack {
-            Text("Inbox").font(.headline)
-            Spacer()
-            Button {} label: { Image(systemName: "questionmark.circle") }
-                .buttonStyle(.kitIcon(isOn: false))
-        }
-        .padding(.horizontal, Spacing.medium)
-        .padding(.vertical, Spacing.regular)
     }
 
     // MARK: - Folder lists
@@ -147,9 +88,6 @@ enum InboxBuilderBShotFixtures {
             },
             DesignShot(name: "inbox-b-folder-empty", size: NSSize(width: 420, height: 300)) {
                 listColumn(InboxFolderListContent(folderKind: .owner, folderTitle: "Release acme 2.0"))
-            },
-            DesignShot(name: "inbox-b-approvals-empty", size: NSSize(width: 420, height: 240)) {
-                listColumn(InboxFolderListContent(folderKind: .approvals, folderTitle: "Needs approval"))
             }
         ]
     }
@@ -162,48 +100,14 @@ enum InboxBuilderBShotFixtures {
 
     // MARK: - Needs approval
 
-    /// What Needs approval shows above its cards, and the cards.
-    private struct Approvals {
-        var banner: String?
-        var note: NeedsApprovalNoteContent?
-        var notice = false
-        var cards: [ApprovalCard]
-    }
-
-    private enum ApprovalCard {
-        case native(AgentAction)
-        case nativeReminder
-        case recipe([StandInRow])
-    }
-
+    /// Drawn from the wired Inbox since Task 12 (`InboxApprovalsShotFixtures`),
+    /// plus the Automations tab's built-in card under the same banner.
     private static var approvalShots: [DesignShot] {
-        let native: [ApprovalCard] = [.native(slackSend()), .native(jiraIssue())]
-        let restart = "The background sync did not restart: the daemon did not stop in time"
-        let states: [(String, Approvals)] = [
-            ("inbox-b-approvals-native", Approvals(cards: native)),
-            ("inbox-b-approvals-recipe", Approvals(cards: [.recipe([jiraRow(), reminderRow()])])),
-            ("inbox-b-approvals-mixed", Approvals(cards: [
-                .native(slackSend()), .recipe([jiraRow(), linearFailedRow(), reminderRow()])
-            ])),
-            ("inbox-b-approvals-notice", Approvals(notice: true, cards: [.recipe([jiraRow(), reminderRow()])])),
-            ("inbox-b-approvals-off", Approvals(note: NeedsApprovalNoteContent(state: .off), cards: native)),
-            ("inbox-b-approvals-stopped", Approvals(note: NeedsApprovalNoteContent(state: .stopped), cards: native)),
-            ("inbox-b-approvals-run-failed", Approvals(note: NeedsApprovalNoteContent(state: .lastRunFailed),
-                                                       cards: native)),
-            ("inbox-b-approvals-off-turn-on-failed", Approvals(note: NeedsApprovalNoteContent(
-                state: .off, failure: "Feature changes are being applied in Settings — try again"), cards: native)),
-            ("inbox-b-approvals-stopped-turn-on-failed", Approvals(note: NeedsApprovalNoteContent(
-                state: .stopped, failure: "watchtower exited with error: database is locked"), cards: native)),
-            ("inbox-b-approvals-restart-failed", Approvals(banner: restart, cards: native)),
-            ("inbox-b-approvals-failed-action", Approvals(cards: [.native(linearFailed())])),
-            ("inbox-b-approvals-reminder", Approvals(cards: [.nativeReminder]))
-        ]
-        return states.map { name, approvals in
-            DesignShot(name: name, size: NSSize(width: 760, height: 0)) { approvalsPane(approvals) }
-        } + [
+        InboxApprovalsShotFixtures.shots + [
             DesignShot(name: "inbox-b-builtin-restart-failed", size: NSSize(width: 760, height: 0)) {
                 AnyView(VStack(spacing: 0) {
-                    DaemonBannerView(banner: .failed(restart), onStart: {}, onOpenLogs: {}, onDismiss: {})
+                    DaemonBannerView(banner: .failed(InboxApprovalsShotFixtures.restartFailure),
+                                     onStart: {}, onOpenLogs: {}, onDismiss: {})
                     BuiltinShotFixtures.card(.shipped)
                 }
                 .detailBackground())
@@ -211,128 +115,42 @@ enum InboxBuilderBShotFixtures {
         ]
     }
 
-    private static func approvalsPane(_ approvals: Approvals) -> AnyView {
-        let count = approvals.cards.reduce(0) { total, card in
-            if case let .recipe(rows) = card { return total + rows.count }
-            return total + 1
-        } + (approvals.notice ? 1 : 0)
-        return AnyView(VStack(spacing: 0) {
-            if let banner = approvals.banner {
-                DaemonBannerView(banner: .failed(banner), onStart: {}, onOpenLogs: {}, onDismiss: {})
-            }
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                HStack {
-                    Text("Needs approval · \(count)").font(.title3.weight(.semibold))
-                    Spacer()
-                    InboxMoreMenu(entries: InboxArtifactMenuContent.approvalsEntries(isEnabled: true)) { _ in }
-                }
-                if let note = approvals.note {
-                    NeedsApprovalNote(content: note)
-                }
-                if approvals.notice {
-                    nativeCard(.builtinNotice(BuiltinUpgradeNotice(
-                        builtinID: "morning-brief", error: "your customised prompt was kept; the move stopped at "
-                            + "the confirm step", updatedAt: now)))
-                }
-                ForEach(Array(approvals.cards.enumerated()), id: \.offset) { _, card in
-                    approvalCard(card)
-                }
-            }
-            .padding(Spacing.page)
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground())
-    }
-
-    @ViewBuilder
-    private static func approvalCard(_ card: ApprovalCard) -> some View {
-        switch card {
-        case let .native(action):
-            nativeProposal(action)
-        case .nativeReminder:
-            nativeCard(.reminder(reminder))
-        case let .recipe(rows):
-            standInCard(title: nil, caption: nil, rows: rows)
-        }
-    }
-
-    /// Today's card for a proposal (the reading pane's `AgentActionCardView`).
-    private static func nativeProposal(_ action: AgentAction) -> some View {
-        var card = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
-        // Only the run-made proposal names its automation; a reaction's does not.
-        card.contextLabel = action.tool == "send_slack_message" ? "⚙ Release notes · run #4" : nil
-        card.onDismiss = {}
-        return card
-    }
-
-    /// Today's reading-pane card for a reminder or a built-in notice, on a
-    /// card fill.
-    private static func nativeCard(_ item: InboxListItem) -> some View {
-        InboxReadingPane(item: item, navScreens: [], now: now, onCommand: { _ in }, onRetryBuiltin: { _ in })
-            .padding(Spacing.medium)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .card()
-    }
-
-    private static let now = Date(timeIntervalSinceReferenceDate: 815_000_000)
-
-    private static var reminder: Reminder {
-        Reminder(row: Row([
-            "id": 7, "account_id": 1, "message_ref": "", "note": "Answer colleague A about the budget",
-            "remind_at": AutomationDates.format(now.addingTimeInterval(-600)), "status": "pending"
-        ]))
-    }
-
-    private static func slackSend() -> AgentAction {
-        action(id: 41, tool: "send_slack_message",
-               args: ##"{"text":"Release 2.0 is tagged; checklist in the thread.","target":{"account_id":1,"##
-                   + ##""workspace":"acme","channel_id":"C1","label":"#acme-release"}}"##,
-               status: "pending", reason: "Release notes run #4: tell the channel the tag is out")
-    }
-
-    private static func jiraIssue() -> AgentAction {
-        action(id: 42, tool: "create_jira_issue",
-               args: #"{"project_key":"ACME","issue_type":"Bug","summary":"Checklist link broken on the release page"}"#,
-               status: "pending", reason: "From your :ticket: reaction")
-    }
-
-    private static func linearFailed() -> AgentAction {
-        action(id: 43, tool: "create_linear_issue",
-               args: #"{"team":"ACME","title":"Rollback plan for 2.0"}"#,
-               status: "failed", reason: "From your :ticket: reaction", error: "the team was archived")
-    }
-
-    private static func action(
-        id: Int64, tool: String, args: String, status: String, reason: String, error: String = ""
-    ) -> AgentAction {
-        AgentAction(row: Row([
-            "id": id, "tool": tool, "args_json": args, "status": status, "surface": "automation",
-            "context_type": "automation_run", "context_id": "4", "reason": reason, "error": error,
-            "created_at": AutomationDates.format(now.addingTimeInterval(-1800))
-        ]))
-    }
-
     // MARK: - Rows with a ref
 
-    /// A row of a recipe's list block (A's `ArtifactListRowView` shape) with
-    /// the Desktop's native actions at its trailing edge.
+    /// A row of a recipe's list block with a `ref`; its native actions come
+    /// through `InboxRefHooks` like the Inbox's.
     private struct StandInRow {
         let title: String
         var subtitle: String?
         var badge: String?
-        var tone: Color?
+        var tone: ArtifactTone?
         let actions: InboxRowActionsContent
+
+        /// The ref of the kind the native actions are for.
+        func ref(_ id: Int64) -> ArtifactRef {
+            let kind: ArtifactRefKind = switch actions.kind {
+            case .inboxItem: .inboxItem
+            case .track: .track
+            case .idea: .idea
+            case .reminder: .reminder
+            case .action: .action
+            }
+            return ArtifactRef(kind: kind, id: id)
+        }
     }
 
     private static func jiraRow() -> StandInRow {
         StandInRow(title: "Create a Jira issue",
                    subtitle: "ACME · “Checklist link broken on the release page” · from your :ticket: reaction",
-                   actions: InboxRowActionsContent(kind: .action(failed: false)))
+                   actions: InboxRowActionsContent(kind: .action(
+                       summary: "Project: ACME · Task · Summary: Checklist link broken",
+                       buttons: [.approve, .reject, .edit])))
     }
 
     private static func linearFailedRow() -> StandInRow {
-        StandInRow(title: "Create a Linear issue", subtitle: "failed: the team was archived", tone: Tone.error,
-                   actions: InboxRowActionsContent(kind: .action(failed: true)))
+        StandInRow(title: "Create a Linear issue", subtitle: "failed: the team was archived", tone: .danger,
+                   actions: InboxRowActionsContent(kind: .action(
+                       summary: "Team: ACME · Title: Release notes", buttons: [.retry])))
     }
 
     private static func reminderRow() -> StandInRow {
@@ -343,7 +161,7 @@ enum InboxBuilderBShotFixtures {
     private static func ping(
         _ who: String, _ place: String, _ text: String, age: String, late: Bool, _ actions: InboxRowActionsContent
     ) -> StandInRow {
-        StandInRow(title: "\(who) in \(place)", subtitle: text, badge: age, tone: late ? Tone.warning : nil,
+        StandInRow(title: "\(who) in \(place)", subtitle: text, badge: age, tone: late ? .warning : nil,
                    actions: actions)
     }
 
@@ -379,14 +197,14 @@ enum InboxBuilderBShotFixtures {
         ]
         let other: [(String, String, [StandInRow])] = [
             ("inbox-b-rows-track", "Release watch", [
-                StandInRow(title: "Release acme 2.0 checklist", subtitle: "2 new replies", tone: .accentColor,
+                StandInRow(title: "Release acme 2.0 checklist", subtitle: "2 new replies", tone: .accent,
                            actions: InboxRowActionsContent(kind: .track(custom: false, linkedTargetID: nil))),
                 StandInRow(title: "Tell me when finance decides on the acme refund", subtitle: "1 new reply",
-                           tone: .accentColor, actions: InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: 12)))
+                           tone: .accent, actions: InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: 12)))
             ]),
             ("inbox-b-rows-idea", "Release ideas", [
                 StandInRow(title: "Move the release checklist into the repo", subtitle: "Idea · proposed",
-                           tone: .accentColor, actions: InboxRowActionsContent(kind: .idea(
+                           tone: .accent, actions: InboxRowActionsContent(kind: .idea(
                                kind: .idea, status: .proposed, awaitsVerdict: true))),
                 StandInRow(title: "Ship release notes as a page", subtitle: "Idea · active",
                            actions: InboxRowActionsContent(kind: .idea(kind: .idea, status: .active,
@@ -413,60 +231,38 @@ enum InboxBuilderBShotFixtures {
             }
         } + [
             DesignShot(name: "inbox-b-waiting-not-run", size: NSSize(width: 980, height: 360)) { waitingNotRun() },
-            DesignShot(name: "inbox-b-waiting-empty", size: NSSize(width: 660, height: 0)) { waitingEmpty() }
+            DesignShot(name: "inbox-b-waiting-empty", size: NSSize(width: 660, height: 300)) { waitingEmpty() }
         ]
     }
 
     private static func standInCard(title: String?, caption: String?, rows: [StandInRow]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
+        let listRows = rows.enumerated().map { index, row in
+            ArtifactListRow(title: row.title, subtitle: row.subtitle,
+                            badge: row.badge.map { ArtifactBadge(text: $0, tone: row.tone ?? .neutral) },
+                            tone: row.tone, ref: row.ref(Int64(index + 1)))
+        }
+        let byRef = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
+            (InboxRefHooks.inboxRef(row.ref(Int64(index + 1))), row.actions)
+        })
+        let hooks = InboxRefHooks.make(isShown: { byRef[$0] != nil }, content: { ref, _ in byRef[ref] })
+        return VStack(alignment: .leading, spacing: Spacing.small) {
             if let title {
                 Text(title).font(.title3.weight(.semibold))
             }
             if let caption {
                 Text(caption).font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                standInRow(row)
-            }
+            ArtifactView(document: ArtifactDocument(blocks: [.list(ArtifactBlock.List(rows: listRows))]), mode: .inbox)
+                .environment(\.artifactEnvironment, ArtifactEnvironment(refHooks: hooks))
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
     }
 
-    private static func standInRow(_ row: StandInRow) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(alignment: .center, spacing: Spacing.regular) {
-                Circle()
-                    .fill(row.tone ?? .clear)
-                    .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                        Text(row.title).font(.callout.weight(.medium))
-                        if let badge = row.badge {
-                            Chip(text: badge, color: row.tone ?? .secondary)
-                        }
-                    }
-                    if let subtitle = row.subtitle {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: Spacing.regular)
-                InboxRowActionsView(content: row.actions)
-            }
-            .opacity(row.actions.isBusy ? 0.6 : 1)
-            InboxRowActionsFooter(content: row.actions)
-                .padding(.leading, IconSize.stateDot + Spacing.regular)
-        }
-        .controlSize(.small)
-        .kitRow(isSelected: false)
-    }
-
     /// Before Waiting for me's first run: the root lists the Messages legacy
-    /// entry in its place, and its message card has Reply… like a row.
+    /// entry in its place, and its message card (`InboxMessagePane`) has
+    /// Reply… like a row.
     private static func waitingNotRun() -> AnyView {
         let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
             InboxFolderListRow(id: "messages", kind: .legacy, title: "Messages", summary: "4 waiting",
@@ -474,41 +270,45 @@ enum InboxBuilderBShotFixtures {
             InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
                                detail: "Your day · Fri 6 Nov", unread: true)
         ], selection: "messages")
-        let actions = pingActions()
+        let now = Date()
+        let values: [String: (any DatabaseValueConvertible)?] = [
+            "id": 1, "trigger_type": "mention", "snippet": "Can you check the checklist?", "channel_id": "1:C001",
+            "permalink": "https://acme.slack.com/archives/C001/p1700000000000100",
+            "why_matters": "Colleague A needs it before the release tag.",
+            "created_at": ISO8601DateFormatter().string(from: now.addingTimeInterval(-2 * 86400))
+        ]
+        let row = HomeFeedInboxRow(item: InboxItem(row: Row(values)), stamp: now.addingTimeInterval(-2 * 86400),
+                                   who: "Colleague A", whereText: "#acme-release")
         return AnyView(HStack(spacing: 0) {
             InboxFolderContentList(content: list).frame(width: 300)
             Divider()
             InboxCardColumn {
-                VStack(alignment: .leading, spacing: Spacing.medium) {
-                    Text("Colleague A · #acme-release · 2 days ago").font(.caption).foregroundStyle(.secondary)
-                    Text("Can you check the checklist?").font(.title3.weight(.semibold))
-                    HStack {
-                        InboxRowActionsView(content: actions)
-                        Spacer()
-                    }
-                    InboxRowActionsFooter(content: actions)
-                }
+                InboxMessagePane(row: row, onDone: {}, onHide: {}, onSnooze: { _ in }, onCommand: { _ in },
+                                 navScreens: [], now: now, reply: pingActions())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .detailBackground())
     }
 
-    /// Waiting for me with nothing open: its list block's own empty line.
+    /// Waiting for me with nothing open: its list block's own empty line,
+    /// in the wired reading pane with the built-in's ⋯ on its title row.
     private static func waitingEmpty() -> AnyView {
         let json = #"{"v":1,"blocks":[{"type":"list","rows":[],"empty":"Nobody is waiting on you"}]}"#
-        guard case let .document(document) = ArtifactDocument.decode(json) else {
+        guard case .document = ArtifactDocument.decode(json) else {
             XCTFail("the empty Waiting for me sample does not decode")
             return AnyView(Text("fixture failed"))
         }
-        return AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
-            InboxArtifactHeader(title: "Waiting for me", source: "Updated 6 min ago · after every sync",
-                                menu: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree))
-            ArtifactView(document: document, mode: .inbox)
-        }
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground())
+        let now = AutomationDates.parse("2026-11-06T12:00:00Z") ?? Date()
+        let card = AutomationOutputCard(
+            id: 21, automationID: 9, automationName: "Waiting for me", runID: 21, title: "Waiting for me",
+            body: "", priority: "normal", createdAt: now.addingTimeInterval(-360), blocksJSON: json,
+            outputKey: "waiting")
+        let menu = InboxArtifactMenuState(entries: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree).entries)
+        return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+            .withArtifactMenu(menu)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .detailBackground())
     }
 
     // MARK: - The ⋯ menus
@@ -530,11 +330,12 @@ enum InboxBuilderBShotFixtures {
             },
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
-                    InboxFolderListRowView(row: InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder",
-                                                                   summary: "1 to judge", detail: "updated 3 h ago"))
+                    InboxFolderListRowView(row: InboxFolderListRow(
+                        id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
+                        detail: "updated 3 h ago", menu: InboxFolderEntry.legacyIdeas.menuEntries))
                         .kitRow(isSelected: true)
                         .frame(width: 280)
-                    menuPanel("Idea finder ⋯", InboxArtifactMenuContent.ideaFinderEntries)
+                    menuPanel("Idea finder ⋯", InboxFolderEntry.legacyIdeas.menuEntries)
                 }
                 .padding(Spacing.page)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -550,12 +351,19 @@ enum InboxBuilderBShotFixtures {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .detailBackground())
             },
-            DesignShot(name: "inbox-b-artifact-menu-error", size: NSSize(width: 660, height: 0)) {
-                AnyView(InboxArtifactHeader(
-                    title: "Weekly mail roundup", source: "Weekly mail roundup · Run #12 · 2 h ago", menu: artifact,
-                    error: "Couldn't move it: the Inbox menu changed — reload it and try again.")
-                    .padding(Spacing.page)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            DesignShot(name: "inbox-b-artifact-menu-error", size: NSSize(width: 660, height: 340)) {
+                // The wired reading pane: the ⋯ on the artifact's title row,
+                // the failed press's text (the model's own) under it.
+                let now = AutomationDates.parse("2026-11-06T12:00:00Z") ?? Date()
+                let card = AutomationOutputCard(
+                    id: 12, automationID: 4, automationName: "Weekly mail roundup", runID: 12,
+                    title: "Weekly mail roundup", body: "Two threads need you this week.", priority: "normal",
+                    createdAt: now.addingTimeInterval(-7200))
+                let menu = InboxArtifactMenuState(
+                    entries: artifact.entries, error: "Couldn't move it: \(InboxFolderMenuModel.routeMenuChanged)")
+                return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+                    .withArtifactMenu(menu)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .detailBackground())
             }
         ]
@@ -603,10 +411,14 @@ enum InboxBuilderBShotFixtures {
     private static var editorShots: [DesignShot] {
         [
             DesignShot(name: "inbox-b-changed-row-new-folder", size: NSSize(width: 480, height: 0)) {
-                changedRow(column: changedColumn(), isNew: false, placement: .newFolder(title: "Release", parent: "Inbox"))
+                changedRow(column: changedColumn(), isNew: false,
+                           placement: InboxNewArtifactRoute(newFolder: "Release", parentID: nil, parentTitle: "Inbox"))
             },
-            DesignShot(name: "inbox-b-changed-row-folder-only", size: NSSize(width: 480, height: 0)) {
-                changedRow(column: newRecipeColumn(), isNew: true, placement: .existing(title: "Release"))
+            // A fixed height: the row's lines scroll past their cap, which a
+            // fitted shot measures before the scroll view has its height.
+            DesignShot(name: "inbox-b-changed-row-folder-only", size: NSSize(width: 480, height: 380)) {
+                changedRow(column: newRecipeColumn(), isNew: true,
+                           placement: InboxNewArtifactRoute(folderID: 3, title: "Release"))
             },
             DesignShot(name: "inbox-b-save-folder-failed", size: NSSize(width: 480, height: 0)) {
                 AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
@@ -620,28 +432,13 @@ enum InboxBuilderBShotFixtures {
         ]
     }
 
-    /// The pinned Changed row (A's row model, drawn as
-    /// `AutomationSaveConfirmation` draws it) ending with the folder line,
-    /// above the footer.
+    /// The editor's pinned Changed row (A's `AutomationSaveConfirmation`)
+    /// ending with the folder line the save sets, above the footer.
     private static func changedRow(
-        column: AutomationDraftColumnModel, isNew: Bool, placement: InboxFolderPlacement
+        column: AutomationDraftColumnModel, isNew: Bool, placement: InboxNewArtifactRoute
     ) -> AnyView {
-        let row = column.confirmationRow(on: .look)
-        return AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
-            VStack(alignment: .leading, spacing: Spacing.compact) {
-                SectionHeader(title: row?.title ?? AutomationSaveConfirmationRow.changedTitle,
-                              systemImage: "arrow.left.arrow.right")
-                if let note = row?.note {
-                    Text(note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-                ForEach(Array((row?.items ?? []).enumerated()), id: \.offset) { _, item in
-                    Text(item.text).font(.callout).fixedSize(horizontal: false, vertical: true)
-                }
-                InboxFolderPlacementLine(placement: placement)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Spacing.medium)
-            .card()
+        AnyView(VStack(alignment: .leading, spacing: Spacing.regular) {
+            AutomationSaveConfirmation(column: column, step: .look, placement: placement.placementText)
             footerBar(column: column, isNew: isNew)
         }
         .padding(Spacing.large)

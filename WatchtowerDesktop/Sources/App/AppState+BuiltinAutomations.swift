@@ -27,20 +27,44 @@ extension AppState {
     /// `features enable` of its first feature turns it on again (the CLI
     /// clears the stop; no fast-forward, no restart — the next sync reads
     /// the row). Returns why it did not land, nil on success.
+    ///
+    /// A Turn On that enabled a feature but whose daemon restart failed also
+    /// sets the app-wide daemon banner ("The background sync did not
+    /// restart: …" with **Retry**) from the restart's own error (owner's
+    /// decision, ask #503): the caller's line may leave once the feature
+    /// reads on, yet nothing runs until a restart succeeds. The banner text
+    /// never comes from `loadError`, which may hold an enable failure of a
+    /// later id instead (`switchNow` keeps the first failure).
     func setBuiltinEnabled(_ featureIDs: [String], on: Bool) async -> String? {
         let daemon = daemonControl
-        let restart: @MainActor () async throws -> Void = { try await self.restartOnChain(daemon) }
         guard on else {
+            let restart: @MainActor () async throws -> Void = { try await self.restartOnChain(daemon) }
             let busy = await featureManager.disableNow(featureIDs, restart: restart).busy
             return busy ? Self.featureChangesBusy : featureManager.loadError
         }
-        let result = await featureManager.enableNow(featureIDs, restart: restart)
+        let result = await featureManager.enableNow(featureIDs) {
+            do {
+                try await self.restartOnChain(daemon)
+            } catch {
+                // Set as the restart fails, not once `enableNow` returns: a
+                // newer restart that succeeds during its trailing reload
+                // clears the banner, and a late write would bring it back.
+                self.daemonStartFailure = Self.daemonRestartFailureText(error)
+                throw error
+            }
+        }
         if result.busy { return Self.featureChangesBusy }
         if let error = featureManager.loadError { return error }
         if result.enabled.isEmpty, let first = featureIDs.first {
             return await featureManager.resumeStoppedBuiltin(first)
         }
         return nil
+    }
+
+    /// Needs approval's note **Turn On** (off and stopped): the built-in
+    /// card's own Turn On, for its one feature.
+    func turnOnNeedsApproval() async -> String? {
+        await setBuiltinEnabled([ActionStripViewModel.approvalsFeatureID], on: true)
     }
 
     /// A built-in card's When **Save**: the config keys written through a

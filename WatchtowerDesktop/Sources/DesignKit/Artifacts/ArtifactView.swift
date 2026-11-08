@@ -194,8 +194,28 @@ struct ArtifactListRowView: View {
     @Environment(\.artifactEnvironment) private var environment
 
     var body: some View {
+        let footer = row.ref.flatMap { environment.refHooks.nativeFooter($0, mode) }
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            // The press is the line's: the footer (an error with its text
+            // selectable, the Reply composer) never opens the row.
+            line.modifier(rowPress)
+            if let footer {
+                footer.padding(.leading, row.tone == nil ? 0 : IconSize.stateDot + Spacing.regular)
+            }
+        }
+        .controlSize(.small)
+        .kitRow(isSelected: false)
+    }
+
+    /// The row's own press: the host's for its `ref` in `.inbox`, else its link.
+    private var rowPress: ArtifactLinkTap {
+        let open = mode == .inbox ? row.ref.flatMap(environment.refHooks.open) : nil
+        return ArtifactLinkTap(link: open == nil ? row.link : nil, press: open)
+    }
+
+    private var line: some View {
         let hidden = row.ref.map(environment.refHooks.nativeKinds) ?? []
-        HStack(alignment: .center, spacing: Spacing.regular) {
+        return HStack(alignment: .center, spacing: Spacing.regular) {
             if let tone = row.tone {
                 Circle()
                     .fill(Tone.artifact(tone))
@@ -227,9 +247,6 @@ struct ArtifactListRowView: View {
                 native
             }
         }
-        .controlSize(.small)
-        .kitRow(isSelected: false)
-        .modifier(ArtifactLinkTap(link: row.link))
     }
 }
 
@@ -449,10 +466,17 @@ struct ArtifactActionButton: View {
 /// reached or opened from the keyboard; VoiceOver sees them as links.
 struct ArtifactLinkTap: ViewModifier {
     let link: String?
+    /// The host's own press (a row's `ref`), in place of the link.
+    var press: (() -> Void)?
     @Environment(\.openURL) private var openURL
 
     func body(content: Content) -> some View {
-        if let link, let url = URL(string: link) {
+        if let press {
+            content
+                .contentShape(Rectangle())
+                .onTapGesture(perform: press)
+                .accessibilityAddTraits(.isButton)
+        } else if let link, let url = URL(string: link) {
             content
                 .contentShape(Rectangle())
                 .onTapGesture { openURL(url) }

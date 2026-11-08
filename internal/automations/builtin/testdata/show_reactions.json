@@ -22,7 +22,6 @@
   "sends": [
     "A proposal in your Inbox, in Needs approval; ideas, reminders and brief notes are saved at once"
   ],
-  "result_filter": "automations",
   "default_folder": "inbox",
   "parameters": [
     {

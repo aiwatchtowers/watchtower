@@ -43,6 +43,11 @@ type draftArgs struct {
 	Slug        string `json:"slug,omitempty" jsonschema:"the slug of the saved automation this draft edits; omit for a new recipe"`
 	WorkbenchID int64  `json:"workbench_id,omitempty" jsonschema:"the workbench the recipe belongs to; omit for a personal recipe"`
 	BuiltinID   string `json:"builtin_id,omitempty" jsonschema:"the built-in this draft edits"`
+	// Folder is the editor chat's suggestion of the Inbox folder the saved
+	// automation's artifacts go to. Placement, not part of the recipe: it is
+	// cached with the draft for the editor's Changed row and never reaches
+	// the evaluation or the approval hash.
+	Folder *FolderSuggestion `json:"folder,omitempty" jsonschema:"only when the owner asked for an Inbox folder: the folder the saved automation's cards go to; pass it again on every later draft_automation call (the newest draft's folder is the one shown)"`
 }
 
 // DraftResult is draft_automation's result. Every slice is [] when empty,
@@ -192,8 +197,12 @@ func draft(ctx context.Context, d Deps, call tools.Call) (*DraftResult, error) {
 	if err := json.Unmarshal(call.Args, &a); err != nil {
 		return nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
+	folder, err := a.Folder.clean()
+	if err != nil {
+		return nil, err
+	}
 	res, err := evaluate(ctx, d, a, evalOptions{conversation: call.Binding.ConversationID})
-	d.cacheDraft(call.Binding, a.RecipeText, res, err)
+	d.cacheDraft(call.Binding, a.RecipeText, folder, res, err)
 	if err != nil {
 		return nil, err
 	}

@@ -304,7 +304,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
                 VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
                 """)
         }
-        let tables = ["agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs"]
+        let tables = ["agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs",
+                      "inbox_folders", "inbox_folder_state", "inbox_folder_routes"]
         let snapshot = {
             try await pool.read { db in
                 try tables.map { table in

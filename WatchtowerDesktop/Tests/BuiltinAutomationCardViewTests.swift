@@ -71,10 +71,10 @@ final class BuiltinAutomationCardViewTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "Cost not reported"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Show in Inbox"), "no handler, no link")
         var actions = BuiltinCardActions()
-        var opened: [InboxFilter] = []
-        actions.openInbox = { opened.append($0) }
+        var opened: [String] = []
+        actions.openInbox = { id, folder in opened.append("\(id):\(folder)") }
         try BuiltinAutomationCard(model: model, actions: actions) {}.inspect().find(button: "Show in Inbox").tap()
-        XCTAssertEqual(opened, [.day])
+        XCTAssertEqual(opened, ["\(model.automation.id):inbox"], "the automation and its default folder")
         XCTAssertThrowsError(try sut.inspect().find(button: "Save"), "Save appears only once a field changed")
         XCTAssertThrowsError(try sut.inspect().find(button: "Delete…"), "a built-in is turned off, never deleted")
     }

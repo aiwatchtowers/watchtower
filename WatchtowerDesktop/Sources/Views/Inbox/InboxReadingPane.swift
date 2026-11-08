@@ -43,6 +43,16 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let dayCard: (InboxDayCard) -> DayCard
     let trackCard: (InboxTrackCard) -> TrackCard
     let ideaCard: (Idea) -> IdeaCard
+    /// Drawn as one card of Needs approval's stack (`stackedInApprovals()`).
+    private(set) var inApprovals = false
+    /// The native row actions of an artifact's rows with a `ref`
+    /// (`refHooks(_:)`, `InboxRefHooks`); the default draws none.
+    private(set) var rowHooks = ArtifactRefHooks()
+    /// An automation card's ⋯ on its title row (`withArtifactMenu(_:)`).
+    private(set) var artifactMenu: InboxArtifactMenuState?
+    /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
+    private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
+    private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
 
     init(
         item: InboxListItem?,
@@ -84,6 +94,47 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.ideaCard = ideaCard
     }
 
+    /// This pane as one card of Needs approval's stack: no scrolling column
+    /// of its own (the stack scrolls). An automation card
+    /// there is the `needs-approval` recipe's look of an approval: its Done
+    /// and Dismiss would close the artifact, not the approval, so they are
+    /// left out; the approval's own presses (Approve, Reject, Edit…; Retry
+    /// and Dismiss after a failed apply; a reminder's Done and Snooze 1h)
+    /// are its row's native actions (`refHooks(_:)`). A native reminder card
+    /// keeps its Done and Snooze (today's reminder functions).
+    func stackedInApprovals() -> Self {
+        var pane = self
+        pane.inApprovals = true
+        return pane
+    }
+
+    /// This pane with Reply on a message card: `content` (nil: none) and
+    /// its presses by `inbox_items` id.
+    func messageReply(
+        _ content: @escaping (HomeFeedInboxRow) -> InboxRowActionsContent?,
+        onPress: @escaping (Int, InboxRowPress) -> Void
+    ) -> Self {
+        var pane = self
+        pane.messageReplyContent = content
+        pane.onMessageReplyPress = onPress
+        return pane
+    }
+
+    /// This pane with `hooks` on an artifact's rows with a `ref`.
+    func refHooks(_ hooks: ArtifactRefHooks) -> Self {
+        var pane = self
+        pane.rowHooks = hooks
+        return pane
+    }
+
+    /// This pane with the artifact ⋯ on an automation card's title row, and
+    /// a failed press's text under it.
+    func withArtifactMenu(_ menu: InboxArtifactMenuState?) -> Self {
+        var pane = self
+        pane.artifactMenu = menu
+        return pane
+    }
+
     /// The pane's one readable column (style guide: "one readable column").
     static var readableWidth: CGFloat { InboxCardColumn<EmptyView>.readableWidth }
 
@@ -114,7 +165,9 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
             column {
                 InboxMessagePane(row: row, isWriting: isWriting, onDone: onDone, onHide: onDismiss,
                                  onSnooze: onSnooze, onCommand: onCommand, workbenches: workbenches,
-                                 navScreens: navScreens, now: now)
+                                 navScreens: navScreens, now: now, reply: messageReplyContent(row)) {
+                    onMessageReplyPress(row.item.id, $0)
+                }
             }
         case .builtinNotice(let notice):
             column { builtinNotice(notice) }
@@ -123,8 +176,15 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         }
     }
 
+    /// The card in the pane's scrolling column; in Needs approval's stack,
+    /// the card alone: the stack scrolls and pads its cards itself.
+    @ViewBuilder
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
-        InboxCardColumn(content: content)
+        if inApprovals {
+            content()
+        } else {
+            InboxCardColumn(content: content)
+        }
     }
 
     private var nothingSelected: some View {
@@ -147,6 +207,18 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                 if card.priority == "high" {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
+                if let artifactMenu, !inApprovals {
+                    Spacer(minLength: Spacing.regular)
+                    InboxArtifactMenuButton(menu: artifactMenu)
+                }
+            }
+            if let error = artifactMenu?.error, !inApprovals {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Tone.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("inbox.artifactMenuError")
             }
             switch InboxCardLayout.of(card) {
             case .markdown:
@@ -154,12 +226,14 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                     MarkdownView(text: card.body)
                 }
                 InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets)
+                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
+                                 showsDoneDismiss: !inApprovals)
                     .padding(.top, Spacing.small)
             case let .artifact(result, cardActions):
                 InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
                                   navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets)
+                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
+                                  showsDoneDismiss: !inApprovals, refHooks: rowHooks)
             }
         }
     }

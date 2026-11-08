@@ -37,10 +37,74 @@ package enum AutomationScopeChoice: Hashable, Sendable {
 package struct AutomationNewFlow: Equatable, Sendable {
     package var fixedScope: AutomationScopeChoice?
     package var composerPrefill: String?
+    /// **+ New Artifact…** from an Inbox folder: the folder the saved
+    /// automation is routed to; nil (the root, or any other way in) sends
+    /// no route.
+    package var route: InboxNewArtifactRoute?
 
-    package init(fixedScope: AutomationScopeChoice? = nil, composerPrefill: String? = nil) {
+    package init(
+        fixedScope: AutomationScopeChoice? = nil,
+        composerPrefill: String? = nil,
+        route: InboxNewArtifactRoute? = nil
+    ) {
         self.fixedScope = fixedScope
         self.composerPrefill = composerPrefill
+        self.route = route
+    }
+}
+
+/// The Inbox folder an automation goes to once saved: an existing folder
+/// (**+ New Artifact…** from it, or the editor chat's suggestion naming it),
+/// or a folder the route creates (the suggestion of a new one). `title` is
+/// the folder's, for the lines that name it.
+package struct InboxNewArtifactRoute: Equatable, Hashable, Sendable {
+    package enum Destination: Equatable, Hashable, Sendable {
+        case existing(folderID: Int64)
+        /// Made by the route under `parentID` (nil = the root), named
+        /// `parentTitle` on the editor's line.
+        case new(parentID: Int64?, parentTitle: String)
+    }
+
+    package let destination: Destination
+    package let title: String
+
+    package init(folderID: Int64, title: String) {
+        destination = .existing(folderID: folderID)
+        self.title = title
+    }
+
+    package init(newFolder title: String, parentID: Int64?, parentTitle: String) {
+        destination = .new(parentID: parentID, parentTitle: parentTitle)
+        self.title = title
+    }
+
+    /// `inbox folders route`'s target: `--folder` or `--new-title`/`--parent`.
+    package var cliDestination: InboxFoldersCLI.RouteDestination {
+        switch destination {
+        case let .existing(folderID): .folder(folderID)
+        case let .new(parentID, _): .newFolder(title: title, icon: nil, parent: parentID)
+        }
+    }
+
+    /// The editor's Changed row line (spec "Creating a folder from the
+    /// editor"): "Folder: Release", or "New folder: Release, in Inbox".
+    package var placementText: String {
+        switch destination {
+        case .existing: "Folder: \(title)"
+        case let .new(_, parentTitle): "New folder: \(title), in \(parentTitle)"
+        }
+    }
+}
+
+/// A saved automation whose route did not land: the folder it was meant
+/// for and why ("Saved. The folder was not created: <reason>").
+package struct InboxRouteFailure: Equatable, Sendable {
+    package let route: InboxNewArtifactRoute
+    package let reason: String
+
+    package init(route: InboxNewArtifactRoute, reason: String) {
+        self.route = route
+        self.reason = reason
     }
 }
 

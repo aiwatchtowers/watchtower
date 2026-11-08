@@ -1,6 +1,6 @@
 # Tracks
 
-Tracks are the few things in your Slack that need your eye right now: a request waiting on you, a decision that needs your input, a thread you delegated and must follow. Watchtower pulls them out of your channel digests and merges mentions of the same thing across channels, so you read one entry instead of five threads. You can also create custom tracks, which watch a topic you describe. Tracks are cards in the [Inbox](inbox.md), under its **Tracks** filter.
+Tracks are the few things in your Slack that need your eye right now: a request waiting on you, a decision that needs your input, a thread you delegated and must follow. Watchtower pulls them out of your channel digests and merges mentions of the same thing across channels, so you read one entry instead of five threads. You can also create custom tracks, which watch a topic you describe. Tracks are cards in the [Inbox](inbox.md), under its **Track my threads** entry.
 
 ## Why use it
 
@@ -23,13 +23,15 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 ## Using it
 
 <!-- learn
-id: tracks-follow
+id: tracks-follow-threads
 title: Follow what needs your eye
-text: Pick the Inbox's **Tracks** filter: requests, decisions and follow-ups pulled from your Slack, one entry each.
+text: Open **Track my threads** in the Inbox: requests, decisions and follow-ups from your Slack, one entry each.
 area: communication
 level: next
 kind: feature
-since: 0.24.0
+since: next
+replaces: [tracks-follow]
+changed: Tracks moved from the Inbox's Tracks filter to its Track my threads entry.
 action: nav:tracks
 requires: feature:slack-digests
 -->
@@ -56,11 +58,11 @@ since: 0.24.0
 action: chat:Dismiss every auto track older than a month
 -->
 
-1. Open the Inbox and pick the **Tracks** filter: every track you follow, updated ones first, with a dot on the unread ones. **All** shows only the unread ones.
+1. Open the Inbox and pick **Track my threads**: every track you follow, updated ones first, with a dot on the unread ones.
 2. Click a track for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority.
 3. Press **Done** when you have read it. **Open in Slack**, **Discuss in Chat** and **Hand to Agent…** sit beside it.
 4. The **⋯** menu has **Stop watching**, which takes the track off the list. A mined track adds **Make a Task**, which creates a [target](targets.md) and opens it; a custom track adds **Go to Target** when it is linked to one, and **Delete…**, which asks inline.
-5. Stopped tracks fold into **Stopped · N** at the end of the Tracks filter; **Show** lists them and **Restore** on a card brings it back.
+5. Stopped tracks fold into **Stopped · N** at the end of Track my threads; **Show** lists them and **Restore** on a card brings it back.
 6. To clean up many at once, ask [Chats](ai-chat.md), for example "dismiss every auto track older than a month". It proposes the exact set and waits for your **Approve**.
 
 ### Custom tracks on the card
@@ -95,7 +97,7 @@ A custom track's card has a **Collecting / Paused** switch, which turns the watc
 
 When the track is linked to a target, an event's proposed change waits for your **Apply** or **Dismiss**. **Apply** goes through the same approval as any assistant action, applies once, and says why when it can't (for example "This change was already applied.").
 
-To watch a new topic, open Automations, click **+**, choose **Watch for something** and **Continue**. The chat opens with "Watch for " ready; say what to watch for, then press **Save and Turn On**. The track appears in the Inbox's **Tracks** filter with the watch behind it.
+To watch a new topic, open Automations, click **+**, choose **Watch for something** and **Continue**. The chat opens with "Watch for " ready; say what to watch for, then press **Save and Turn On**. The track appears in the Inbox's **Track my threads** with the watch behind it.
 
 ## When it's empty or wrong
 
@@ -106,7 +108,7 @@ To watch a new topic, open Automations, click **+**, choose **Watch for somethin
 - **Scan says to confirm the watch.** You or the chat changed the watch's recipe. Open it in Automations and confirm it.
 - **"Track my threads needs Slack Digests on"** (when you run it from the terminal). Turn on Slack Digests; watches and Track my threads wait for it.
 
-Filter still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+Still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
 ## Related
 
