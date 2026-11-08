@@ -432,3 +432,25 @@ func TestWorkbenchReviewOverview_CachedIncomplete(t *testing.T) {
 	_, readable = cachedIncomplete(`{not json`)
 	assert.False(t, readable)
 }
+
+// An unknown --chapter key is a usage error before any model call, never a
+// summary-only run.
+func TestWorkbenchReviewOverview_UnknownChapterRefused(t *testing.T) {
+	_, wb, s, _, _ := mapFixture(t)
+	r := startRound(t, wb, s)
+	g := &keyReviewGen{}
+	useReviewGenerator(t, g)
+	for _, args := range [][]string{
+		{"--json", "--chapter", "lane:nope"},
+		{"--json", "--stream", "--chapter", "lane:task-b", "--chapter", "lane:nope"},
+	} {
+		_, _, err := runWorkbench(t, append([]string{"review", "overview", "--workbench", itoa(wb),
+			"--round", itoa(int64(r["id"].(float64)))}, args...)...)
+		resetSetFlags(workbenchReviewCmd.Commands()...)
+		var ec *exitCodeError
+		require.ErrorAs(t, err, &ec, args)
+		assert.Equal(t, 2, ec.code)
+		assert.EqualError(t, err, "unknown chapter lane:nope")
+	}
+	assert.Zero(t, g.calls, "no model call")
+}

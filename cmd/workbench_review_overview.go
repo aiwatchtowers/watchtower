@@ -168,6 +168,11 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 	if err != nil || !ok {
 		return err
 	}
+	for _, key := range reviewFlagChapters { // never a summary-only run by a typo or a stale key
+		if !slices.ContainsFunc(job.m.Chapters, func(ch reviewmap.Chapter) bool { return ch.Key == key }) {
+			return usageError("unknown chapter %s", key)
+		}
+	}
 	if emit != nil {
 		emit(reviewai.Event{Event: "map", Map: &job.m})
 	}
