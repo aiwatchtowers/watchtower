@@ -573,6 +573,11 @@ content width). No migration, no AI, no daemon phase.
     the feed), or its run in the Automations tab (`openAutomationRun`) while
     the Inbox's view model is not built yet (the Inbox has no source gate
     since C1) — since #449 (2026-10-22). `includeRead: false`: an opened note is not shown.
+    The `needs-approval` built-in's cards never show here
+    (`excludingAutomation:` its id from `InboxFolderQueries.needsApproval`,
+    applied before the cap; APPROVAL-01, board #1072): the Inbox draws them
+    only through the open approvals, which Home lists as proposals, so a card
+    of a closed approval never reaches the feed.
   - Calendar (`events`): today and the next 4 days through
     `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,
