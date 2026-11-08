@@ -61,13 +61,18 @@ package struct OwnerAskAnswer: Equatable, Sendable {
         package var suffix: String
         package var heading: String
         package var body: String
+        /// The spec review finding the comment is about (Go `asks.Comment.ItemKey`,
+        /// JSON `item_key`, omitted when nil): the next author loop seeds that
+        /// finding instead of an owner comment. Nil on a margin comment.
+        package var itemKey: String?
 
-        package init(anchor: CommentAnchor, body: String) {
+        package init(anchor: CommentAnchor, body: String, itemKey: String? = nil) {
             quote = anchor.quote
             prefix = anchor.prefix
             suffix = anchor.suffix
             heading = anchor.heading
             self.body = body
+            self.itemKey = itemKey
         }
 
         package init(from decoder: Decoder) throws {
@@ -77,6 +82,13 @@ package struct OwnerAskAnswer: Equatable, Sendable {
             suffix = try c.decodeIfPresent(String.self, forKey: .suffix) ?? ""
             heading = try c.decodeIfPresent(String.self, forKey: .heading) ?? ""
             body = try c.decode(String.self, forKey: .body)
+            let key = try c.decodeIfPresent(String.self, forKey: .itemKey) ?? ""
+            itemKey = key.isEmpty ? nil : key
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case quote, prefix, suffix, heading, body
+            case itemKey = "item_key"
         }
     }
 

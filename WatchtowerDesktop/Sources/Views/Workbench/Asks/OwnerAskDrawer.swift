@@ -300,7 +300,8 @@ struct OwnerAskDrawer: View {
         showClassic = false
         specReviewLoadedFor = nil
         guard specReviewApplies, let cli = vm.cli else { return }
-        let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks, chats: appState?.embeddedChatCenter)
+        let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks, chats: appState?.embeddedChatCenter,
+                                    threadCenter: appState?.specReviewThreadCenter)
         await model.load()
         guard !Task.isCancelled else { return }
         specReview = model

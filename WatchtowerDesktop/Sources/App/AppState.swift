@@ -385,6 +385,9 @@ final class AppState {
     /// The spec review author loop (#1121): each finished round typed into
     /// the author's session, and the session rows' round line.
     private(set) var specReviewLoopCenter: SpecReviewLoopCenter?
+    /// The spec review Discuss threads' app-lifetime half (spec 2026-11-08
+    /// §3): open threads, questions to the author and their follow-ups.
+    private(set) var specReviewThreadCenter: SpecReviewThreadCenter?
     /// The Analytics pane's `agents report` runs and Turn On (#298), and its coach (#1120).
     private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     private(set) var coachCenter: CoachCenter?
@@ -735,6 +738,7 @@ final class AppState {
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
                     self?.specReviewLoopCenter?.stop()
+                    self?.specReviewThreadCenter?.stop()
                     // An agents report / enable / coach child gets SIGTERM.
                     self?.agentAnalyticsCenter?.stop(); self?.coachCenter?.stop()
                     // The owner is in no session once the app is gone.
@@ -1821,6 +1825,9 @@ final class AppState {
             dbPool: dbPool, delivery: lineDelivery, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner())
         )
         vm.specReviewLoop = specReviewLoop
+        let specReviewThreads = SpecReviewThreadCenter(
+            dbPool: dbPool, cli: WorkbenchCLI(runner: cliRunner ?? UnresolvedCLIRunner()), delivery: lineDelivery
+        )
         vm.sessionCleanup = SessionCleanupCenter.forWorkbenches(runner: cliRunner, terminals: terminalCenter)
         workbenchesViewModel?.stop()
         workbenchesViewModel = vm
@@ -1833,6 +1840,8 @@ final class AppState {
         sessionReportCenter = reports
         specReviewLoopCenter?.stop()
         specReviewLoopCenter = specReviewLoop
+        specReviewThreadCenter?.stop()
+        specReviewThreadCenter = specReviewThreads
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
         // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
@@ -2084,17 +2093,6 @@ final class AppState {
             let watcher = DigestWatcher(dbPool: dbPool)
             self.digestWatcher = watcher
             watcher.start()
-        }
-    }
-
-    private func loadCustomEmoji(from manager: DatabaseManager) {
-        Task.detached {
-            let map = try? await manager.dbPool.read { db in
-                try CustomEmojiQueries.fetchEmojiMap(db)
-            }
-            await MainActor.run {
-                self.customEmojiMap = map ?? [:]
-            }
         }
     }
 }

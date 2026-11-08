@@ -1,0 +1,6 @@
+{
+  "ask_id": 42,
+  "question_id": 9,
+  "question": "Tab\there,\r\nCRLF, zero​width, line sep and \u001b[1mescape?",
+  "line": "Owner's thread on spec review ask #42 asks you: Tab here,  CRLF, zero width, line sep and  [1mescape? — answer with answer_review_question 9."
+}

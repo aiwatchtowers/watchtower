@@ -107,6 +107,24 @@ package struct SpecReviewProposedFinding: Decodable, Equatable, Sendable {
     /// The card's head line: the title, else the text.
     package var headline: String { title.isEmpty ? text : title }
 
+    /// The block as `add-finding` reads it on stdin (Go's
+    /// `ThreadFindingInput`): `kind`, `severity`, `title`, `text`,
+    /// `quote` `{source, text}` and `where` (null when none).
+    package func blockJSON() -> Data {
+        let block: [String: Any] = [
+            "kind": kind, "severity": severity?.rawValue ?? "", "title": title, "text": text,
+            "quote": ["source": quote.source, "text": quote.text],
+            "where": anchor.map { ["heading": $0.heading, "quote": $0.quote] as Any } ?? NSNull()
+        ]
+        return (try? JSONSerialization.data(withJSONObject: block, options: [.sortedKeys])) ?? Data("{}".utf8)
+    }
+
+    /// The same finding as one the owner already added: Go's key is made
+    /// from the content, so the stored row shows this proposal as added.
+    package func isSameProposal(as other: Self) -> Bool {
+        kind == other.kind && title == other.title && text == other.text && quote == other.quote
+    }
+
     package init(
         kind: String,
         severity: SpecReviewSeverity?,
