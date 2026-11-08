@@ -64,6 +64,21 @@ public enum SealedBox {
         context: EnvelopeContext,
         verifier: Curve25519.Signing.PublicKey?
     ) throws -> (header: EnvelopeHeader, frame: InnerFrame) {
+        try open(data, envelopeClass: envelopeClass, recipients: [recipient], info: info, context: context, verifier: verifier)
+    }
+
+    /// `open` with candidate private keys, tried in order (relay client Phase 5: a keybox may be sealed to the
+    /// phone's offered ephemeral key, its current one, or `dev_kx`). The class and the signature are checked once,
+    /// before any HPKE attempt: a signature failure is final and never retried on another key. When no candidate
+    /// opens it, `.authenticationFailed`, the record's fault (no candidate is no lock error either).
+    public static func open(
+        _ data: Data,
+        envelopeClass: EnvelopeClass,
+        recipients: [Curve25519.KeyAgreement.PrivateKey],
+        info: Data,
+        context: EnvelopeContext,
+        verifier: Curve25519.Signing.PublicKey?
+    ) throws -> (header: EnvelopeHeader, frame: InnerFrame) {
         guard hpkeClasses.contains(envelopeClass) else { throw EnvelopeError.wrongClass(envelopeClass) }
         let envelope = try Envelope.parse(data)
         let header = envelope.header
@@ -75,16 +90,21 @@ public enum SealedBox {
         if let verifier { try EnvelopeSealer.verify(envelope, context: context, key: verifier) }
         guard envelope.body.count >= encapsulatedKeyLength + tagLength else { throw EnvelopeError.lengthMismatch }
         let aad = try context.aad(header: header)
-        let plain: Data
-        do {
-            var opener = try HPKE.Recipient(
-                privateKey: recipient, ciphersuite: ciphersuite, info: info,
-                encapsulatedKey: envelope.body.prefix(encapsulatedKeyLength))
-            plain = try opener.open(envelope.body.dropFirst(encapsulatedKeyLength), authenticating: aad)
-        } catch {
-            // Wrong key, wrong code nonce, moved record, flipped bit: one outcome, no detail leaks.
-            throw EnvelopeError.authenticationFailed
+        let encapsulated = envelope.body.prefix(encapsulatedKeyLength)
+        let sealed = envelope.body.dropFirst(encapsulatedKeyLength)
+        var opened: Data?
+        for recipient in recipients {
+            do {
+                var opener = try HPKE.Recipient(
+                    privateKey: recipient, ciphersuite: ciphersuite, info: info, encapsulatedKey: encapsulated)
+                opened = try opener.open(sealed, authenticating: aad)
+                break
+            } catch {
+                // Wrong key, wrong code nonce, moved record, flipped bit: one outcome, no detail leaks.
+                continue
+            }
         }
+        guard let plain = opened else { throw EnvelopeError.authenticationFailed }
         let frame = try InnerFrame.parse(plain)
         guard header.flags.contains(.hasAsset) == (frame.asset != nil) else { throw EnvelopeError.frameMalformed }
         return (header, frame)

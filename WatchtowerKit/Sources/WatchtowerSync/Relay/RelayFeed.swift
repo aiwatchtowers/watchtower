@@ -67,6 +67,22 @@ public enum DesktopReachability: Equatable, Sendable {
 /// `SecureTransportError.keysUnavailable`: the cycle fails with the token
 /// untouched, so the same batch replays after unlock (Review Focus 1). An
 /// older version of an echo already seen is dropped by the rollback guard.
+///
+/// Weekly key rotation (relay client Phase 5, "The phone's rule for a relay
+/// key"): a record in an epoch above the phone's newest (`epochKeysPending`)
+/// is waited for as a lock is (the cycle throws `keysUnavailable`, the token
+/// stays), for at most `SecureTransport.keyboxWaitCap` from the first sighting
+/// (`relay_wait_since`); then the feed parks: no fetch until
+/// `resumeIfParked()` (a merge, a foreground) or a new feed (a launch), and
+/// `relay_feed_parked_since` tells Now. Nothing is skipped: every record is read
+/// in order once the keys come. While `SecureTransport.waitsForKeybox` is false
+/// (no key source) it stops at once, with no mark. A batch read with no pending
+/// record ends the wait and the mark; a resume alone keeps the mark. Hours the
+/// keychain stays locked count toward the cap, as the plan's hour from the first
+/// sighting does (F26: a phone locked between uses still parks and Now says so). A hub record in an epoch the phone will
+/// never hold is dropped (`epochGone`) and, once per batch, every unechoed
+/// action is queued again (`requeueUnechoedAfterDrop`), so a lost echo or a
+/// lost `resend_from` is recovered.
 public actor RelayFeed {
     /// The desktop refreshes its heartbeat every 15 min; the phone shows the
     /// Mac online while the heartbeat is UNDER 35 min (2100 s) old — one
@@ -114,6 +130,12 @@ public actor RelayFeed {
     /// The currently-running cycle, if any. Concurrent `pollOnce` callers
     /// await this instead of starting their own — see `pollOnce`.
     private var inFlight: Task<Int, Error>?
+    /// No fetch until `resumeIfParked()`: the feed waited its cap for a keybox, or has no key source (relay client
+    /// Phase 5). In memory only, so a launch reads again.
+    private var parked = false
+    /// Counts `resumeIfParked()` calls: a cycle parks only when none came while it read, so a merge's resume is never
+    /// undone by a read that started before the keys were there.
+    private var resumes = 0
     /// Unknown record kinds already warned about — log once per kind per feed
     /// instance (a newer desktop may ship kinds this build does not know).
     private(set) var loggedUnknownKinds: Set<String> = []
@@ -176,9 +198,19 @@ public actor RelayFeed {
     }
 
     private func performPoll() async throws -> Int {
+        guard !parked else { return 0 }
+        let resumesAtStart = resumes
         try await pull?()
         let since = try store.relayToken()
-        let batch = try await transport.changes(in: .relay, since: since)
+        let batch: CloudChangeBatch
+        let epochGone: Int
+        do {
+            (batch, epochGone) = try await transport.relayChanges(since: since)
+        } catch SecureTransportError.epochKeysPending {
+            try waitForKeybox(resumesAtStart: resumesAtStart)
+            throw SecureTransportError.keysUnavailable
+        }
+        try store.endRelayWait()
         // Before the batch: a control the handler left undecided is handed again (the paying check answers now).
         await deleteRead(try await retryUndecided())
         // Monotonic stale-batch drop, mirroring ReplicaStore.apply — but
@@ -201,6 +233,8 @@ public actor RelayFeed {
             if let delete = outcome.delete { deletes.append(delete) }
         }
 
+        // Before the token moves: a requeue that fails replays the batch, so the drop is never lost.
+        if epochGone > 0 { try await outbox.requeueUnechoedAfterDrop() }
         if try store.setRelayToken(batch.newToken) {
             await deleteRead(deletes)
             await compactConsumedRelay(keepSince: batch.newToken)
@@ -214,6 +248,34 @@ public actor RelayFeed {
             Task { await onActionApplied() }
         }
         return echoes
+    }
+
+    // MARK: - Waiting for a keybox (relay client Phase 5)
+
+    /// A record of the batch waits for a keybox: the first sighting is recorded; past `keyboxWaitCap` the feed parks
+    /// and marks it. With no key source it parks at once, with no mark and no sighting. Never parks when a resume came
+    /// since this cycle started (`resumesAtStart`): the next cycle reads again. Synchronous on purpose: no suspension
+    /// between the check and the park, so a resume cannot land in between.
+    private func waitForKeybox(resumesAtStart: Int) throws {
+        guard resumes == resumesAtStart else { return }
+        guard transport.waitsForKeybox() else {
+            parked = true
+            logger.notice("relay feed stopped: a record waits for a keybox and none can come")
+            return
+        }
+        let since = try store.startRelayWait(at: now())
+        guard now().timeIntervalSince(since) >= SecureTransport.keyboxWaitCap else { return }
+        try store.markRelayFeedParked(at: now())
+        parked = true
+        logger.notice("relay feed parked: no keybox for a newer epoch within the wait cap")
+    }
+
+    /// Reads again after a park: the next cycle fetches. Called on a merge, a return to the foreground and when a
+    /// key source comes back. The parked mark and the wait's first sighting stay: a read with no pending record ends
+    /// both (`endRelayWait`); if the record still waits, the feed parks again after one read, the mark unchanged.
+    public func resumeIfParked() {
+        resumes += 1
+        parked = false
     }
 
     /// Drops the consumed relay buffer (events at or below the token just
@@ -417,7 +479,7 @@ public actor RelayFeed {
         /// Every hub record was handled and everything left was deleted.
         case drained
         /// Something stays (a transport control the follower left undecided, a record that changed since it was
-        /// read, one without a known wire name): drained again on a later pass.
+        /// read, one without a known wire name, one waiting for its keybox): drained again on a later pass.
         case incomplete
         /// The transport refused the deletes (sim rule 16: a lapsed or forbidden relay account).
         case refused(TransportRefusal)
@@ -450,7 +512,8 @@ public actor RelayFeed {
     /// phone's own leftovers included, except its `device` record when `keepingDeviceRecord` (CloudKit: both hubs'
     /// cleanup keeps that lane). Nothing is written there: a `resend_from` read there resends on this feed's own
     /// outbox, never on `side`. A record that does not open (another phone's on a shared CloudKit zone, a hello, or
-    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. A throw (a locked keychain, the
+    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. One sealed in an epoch whose keybox
+    /// has not come stays, unhandled, and keeps the drain `incomplete`. A throw (a locked keychain, the
     /// transport unreachable) leaves the rest for a later pass. An `applied` echo settled here fires
     /// `onActionApplied` once, after the deletes, as a poll does.
     public func drainMailbox(
@@ -460,8 +523,12 @@ public actor RelayFeed {
         if !scan.unopenable.isEmpty {
             logger.notice("left mailbox: \(scan.unopenable.count, privacy: .public) records do not open, skipped")
         }
+        if scan.pending > 0 {
+            logger.notice("left mailbox: \(scan.pending, privacy: .public) records wait for their keybox, kept")
+        }
         var deletes: [ConditionalDelete] = []
-        var complete = true
+        // A record waiting for its keybox stays, unhandled: the mailbox is not drained while it is there.
+        var complete = scan.pending == 0
         var appliedEcho = false
         for record in scan.opened {
             if record.sealed?.envelopeClass == .relayToPhone {

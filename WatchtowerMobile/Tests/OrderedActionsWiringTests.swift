@@ -86,6 +86,13 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
         try await poll({ env.outboxBacklog == .empty }, "nothing waits, and the last flush went through")
+
+        // A parked feed (relay client Phase 5, S58) brings the written action into the session's backlog, and a
+        // read with no pending record takes it out again.
+        try env.store.markRelayFeedParked(at: Date())
+        try await poll({ env.outboxBacklog.parked?.sent == 1 }, "the session's backlog carries the parked feed")
+        try env.store.endRelayWait()
+        try await poll({ env.outboxBacklog == .empty }, "the merge ends it")
     }
 
     /// Every fetch sweeps (not only the boot's): a phone that stays up still withdraws an action the Mac never
@@ -278,7 +285,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let keys = try TestPhone.keys()
         let env = try await orderedSession(over: transport, keys: keys)
 
-        env.keysMerged(newestEpochRaised: false)
+        await env.keysMerged(newestEpochRaised: false, droppedNewestPair: false)
         try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -288,10 +295,10 @@ final class OrderedActionsWiringTests: XCTestCase {
         link.epochs.append(EpochKeys(
             epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
         try keys.store.saveHubLink(link)
-        env.keysMerged(newestEpochRaised: true)
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
         try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
-        env.keysMerged(newestEpochRaised: true)
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
         try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
 

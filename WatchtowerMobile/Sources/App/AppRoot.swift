@@ -430,6 +430,7 @@ final class AppRoot {
     /// final review Phone I-1).
     private func wire(_ session: HubSession) {
         let hubID = session.hubID
+        session.linkOnRow = { [weak self] in self?.followerLink(hubID: hubID) }
         session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
         session.onFetched = { [weak self, weak session] in
             self?.checkLink(hubID: hubID)
@@ -986,8 +987,13 @@ extension AppRoot: LinkHost {
         }
     }
 
-    func keysMerged(hubID: String, newestEpochRaised: Bool) {
-        env.session(hubID)?.keysMerged(newestEpochRaised: newestEpochRaised)
+    func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge? {
+        guard let session = env.session(hubID) else { return nil }
+        return try await session.mergeKeybox(keys, now: now, reseal: reseal)
+    }
+
+    func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async {
+        await env.session(hubID)?.keysMerged(newestEpochRaised: newestEpochRaised, droppedNewestPair: droppedNewestPair)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
@@ -1270,6 +1276,14 @@ extension AppRoot: TransportFollowerHost {
 
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
         await linking.mergeSwitchKeys(keybox, hubID: hubID)
+    }
+
+    func relayOffer(hubID: String) async throws -> Data? {
+        try await env.session(hubID)?.relayOffer()
+    }
+
+    func clearEphemeral(hubID: String) -> Bool {
+        linking.clearEphemeral(hubID: hubID)
     }
 
     func persistRoute(_ link: LinkRecord) -> Bool {
