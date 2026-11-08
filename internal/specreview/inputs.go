@@ -600,7 +600,8 @@ func (in *inputs) closed(d *db.DB, ask *db.OwnerAsk) error {
 }
 
 // setLoopRound sets LoopRound: the round of the ask's review row when that row
-// is in the author loop, else 0.
+// is in an author loop under LoopRulesOpen, else 0 (a loop under the legacy
+// rules keeps the Parse it started with: no drift guards).
 func (in *inputs) setLoopRound(d *db.DB, ask *db.OwnerAsk) error {
 	row, err := d.GetSpecReview(ask.ID)
 	if errors.Is(err, db.ErrSpecReviewNotFound) {
@@ -609,7 +610,7 @@ func (in *inputs) setLoopRound(d *db.DB, ask *db.OwnerAsk) error {
 	if err != nil {
 		return err
 	}
-	if row.Loop == "author" {
+	if row.Loop == "author" && row.LoopRules >= LoopRulesOpen {
 		in.src.LoopRound = row.Round
 	}
 	return nil

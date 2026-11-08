@@ -181,8 +181,13 @@ func TestParse_NotALoopRoundUnchanged(t *testing.T) {
 }
 
 // queueLoopRound files a re-round on prev with snapshot doc, queued as
-// round of an author loop.
+// round of an author loop under LoopRulesOpen.
 func (f *fixture) queueLoopRound(t *testing.T, prev int64, round int, doc string) *db.OwnerAsk {
+	t.Helper()
+	return f.queueLoopRoundRules(t, prev, round, doc, LoopRulesOpen)
+}
+
+func (f *fixture) queueLoopRoundRules(t *testing.T, prev int64, round int, doc string, rules int) *db.OwnerAsk {
 	t.Helper()
 	var id int64
 	require.NoError(t, f.d.WithTx(func(tx *sql.Tx) error {
@@ -196,7 +201,7 @@ func (f *fixture) queueLoopRound(t *testing.T, prev int64, round int, doc string
 		if err != nil {
 			return err
 		}
-		return f.d.QueueSpecReview(tx, id, runNow, &db.SpecLoopStart{Round: round, LoopRules: LoopRulesOpen})
+		return f.d.QueueSpecReview(tx, id, runNow, &db.SpecLoopStart{Round: round, LoopRules: rules})
 	}))
 	a, err := f.d.GetOwnerAskByID(id)
 	require.NoError(t, err)
@@ -270,4 +275,21 @@ func TestBuildInputs_LoopRoundPrevDocNewRefs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, src.LoopRound)
 	assert.Empty(t, src.PrevDoc)
+}
+
+// A loop running under the legacy rules keeps the Parse it started with: in
+// its round 2 a non-blocker new finding on unchanged text stays.
+func TestBuildInputs_LegacyLoopHasNoDriftGuards(t *testing.T) {
+	f := newFixture(t)
+	r1 := f.queueLoopRoundRules(t, 0, 1, testDoc, LoopRulesLegacy)
+	finishRow(t, f.d, r1.ID, "author", `{}`, nil, nil)
+	r2 := f.queueLoopRoundRules(t, r1.ID, 2, testDoc, LoopRulesLegacy)
+
+	src, _, _, err := BuildInputs(context.Background(), f.deps(nil), r2, f.folder)
+	require.NoError(t, err)
+	assert.Zero(t, src.LoopRound)
+	assert.Equal(t, testDoc, src.PrevDoc)
+	r := parseOne(t, `{"summary":"s","blind_spots":[`+blindJSON("old text minor", keptQuote, "minor")+`]}`, src)
+	assert.Equal(t, []string{"old text minor"}, bsTexts(r))
+	assert.Nil(t, r.DroppedBy)
 }
