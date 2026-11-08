@@ -1191,7 +1191,7 @@ func locateGitExclude(dir string) (excludeLoc, bool, error) {
 	if err != nil || !found {
 		return excludeLoc{}, false, err
 	}
-	common, err := commonGitDir(gitDir)
+	common, err := gitdir.CommonDir(gitDir)
 	if err != nil {
 		return excludeLoc{}, false, err
 	}
@@ -1200,23 +1200,6 @@ func locateGitExclude(dir string) (excludeLoc, bool, error) {
 		return excludeLoc{}, false, fmt.Errorf("relating %s to %s: %w", abs, root, err)
 	}
 	return excludeLoc{file: filepath.Join(common, "info", "exclude"), rel: rel}, true, nil
-}
-
-// commonGitDir follows a linked worktree's commondir file; a main work
-// tree's git dir is its own common dir.
-func commonGitDir(gitDir string) (string, error) {
-	b, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
-	if errors.Is(err, os.ErrNotExist) {
-		return gitDir, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("reading %s/commondir: %w", gitDir, err)
-	}
-	common := strings.TrimSpace(string(b))
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(gitDir, common)
-	}
-	return filepath.Clean(common), nil
 }
 
 // excludeDoc is an exclude file split into the owner's lines and ours.

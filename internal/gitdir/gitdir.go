@@ -1,8 +1,9 @@
 // Package gitdir finds the git work tree holding a directory by reading
 // files only — a walk up for a ".git" entry, a linked work tree's "gitdir:"
-// pointer and the HEAD file — and never runs git. The workbench's
-// info/exclude upkeep (internal/devpack) and the session-state hook's
-// worktree ledger (cmd) share it.
+// pointer, the HEAD file and a linked work tree's "commondir" and "gitdir"
+// back-pointer — and never runs git. The workbench's info/exclude upkeep
+// (internal/devpack), the session-state hook's worktree ledger and
+// `ai query --read-folder` (cmd) share it.
 package gitdir
 
 import (
@@ -118,23 +119,46 @@ func readPointer(path string) ([]byte, error) {
 }
 
 // CommonDir is the common git dir of the repository gitDir belongs to: the
-// path gitDir's "commondir" file names (a relative path is taken from
-// gitDir) — a linked work tree's — else gitDir itself, a main work tree's. A
-// "commondir" file that cannot be read or names nothing is an error.
+// path gitDir's "commondir" file names — a linked work tree's — else gitDir
+// itself, a main work tree's. A relative path is taken from gitDir's real
+// path (symlinks resolved first, as git does, so a "../.." never lands
+// above an alias). A "commondir" file that cannot be read or names nothing
+// is an error.
 func CommonDir(gitDir string) (string, error) {
-	b, err := readPointer(filepath.Join(gitDir, "commondir"))
+	common, err := readPathFile(gitDir, "commondir")
 	if errors.Is(err, os.ErrNotExist) {
 		return gitDir, nil
 	}
+	return common, err
+}
+
+// WorktreeBackPointer is the ".git" path a linked work tree's admin dir
+// records in its "gitdir" file — git's link back to the work tree. A
+// relative path is taken from adminDir's real path; a missing, unreadable
+// or empty file is an error.
+func WorktreeBackPointer(adminDir string) (string, error) {
+	return readPathFile(adminDir, "gitdir")
+}
+
+// readPathFile reads the one-line path file dir/name. A relative path is
+// joined to dir's real path and cleaned. A missing file is returned as an
+// error wrapping os.ErrNotExist.
+func readPathFile(dir, name string) (string, error) {
+	p := filepath.Join(dir, name)
+	b, err := readPointer(p)
 	if err != nil {
 		return "", err
 	}
-	common := strings.TrimSpace(string(b))
-	if common == "" {
-		return "", fmt.Errorf("%s names no common dir", filepath.Join(gitDir, "commondir"))
+	target := strings.TrimSpace(string(b))
+	if target == "" {
+		return "", fmt.Errorf("%s names no path", p)
 	}
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(gitDir, common)
+	if !filepath.IsAbs(target) {
+		resolved, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return "", fmt.Errorf("resolving %s: %w", dir, err)
+		}
+		target = filepath.Join(resolved, target)
 	}
-	return filepath.Clean(common), nil
+	return filepath.Clean(target), nil
 }

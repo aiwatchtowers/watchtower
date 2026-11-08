@@ -123,4 +123,38 @@ func TestCommonDir(t *testing.T) {
 	assert.Equal(t, main, got)
 	_, err = CommonDir(empty)
 	assert.Error(t, err, "an empty commondir fails closed")
+
+	// A relative commondir is taken from the git dir's real path: through
+	// a symlinked admin dir "../.." still lands on the real common dir.
+	alias := filepath.Join(tempDir(t), "alias")
+	require.NoError(t, os.Symlink(admin, alias))
+	got, err = CommonDir(alias)
+	require.NoError(t, err)
+	assert.Equal(t, main, got)
+
+	unreadable := filepath.Join(main, "worktrees", "dir")
+	require.NoError(t, os.MkdirAll(filepath.Join(unreadable, "commondir"), 0o755))
+	_, err = CommonDir(unreadable)
+	assert.Error(t, err, "a commondir that cannot be read fails closed")
+	big := filepath.Join(main, "worktrees", "big")
+	writeFile(t, filepath.Join(big, "commondir"), strings.Repeat("x", pointerMaxBytes+1))
+	_, err = CommonDir(big)
+	assert.Error(t, err, "an oversized commondir fails closed")
+}
+
+func TestWorktreeBackPointer(t *testing.T) {
+	admin := filepath.Join(tempDir(t), "acme", ".git", "worktrees", "wt")
+	writeFile(t, filepath.Join(admin, "gitdir"), "/work/wt/.git\n")
+	got, err := WorktreeBackPointer(admin)
+	require.NoError(t, err)
+	assert.Equal(t, "/work/wt/.git", got)
+
+	rel := filepath.Join(filepath.Dir(admin), "rel")
+	writeFile(t, filepath.Join(rel, "gitdir"), "../../../../wt/.git\n")
+	got, err = WorktreeBackPointer(rel)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filepath.Dir(rel)))), "wt", ".git"), got)
+
+	_, err = WorktreeBackPointer(filepath.Join(filepath.Dir(admin), "none"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "no gitdir file")
 }
