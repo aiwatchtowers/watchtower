@@ -85,6 +85,12 @@ func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionI
 	if err != nil {
 		return reviewPlace{}, err
 	}
+	return snapshotReviewPlace(ctx, snap, sessionID)
+}
+
+// snapshotReviewPlace is the place of session sessionID's folder at
+// snapshot snap.
+func snapshotReviewPlace(ctx context.Context, snap tools.ReviewSnapshot, sessionID int64) (reviewPlace, error) {
 	head, err := snap.Repo.HeadCommit(ctx)
 	if err != nil {
 		return reviewPlace{}, err

@@ -29,11 +29,11 @@ import (
 // a var for tests.
 var finishGateBudget = 30 * time.Second
 
-// SessionLaneIntent gives the lane items (LaneIntent) of a session's folder
-// as it stands, so the gate reads the overview cached under the intent the
-// overview command made it for. The map is built in cmd, which sets this;
-// nil gives no lane items.
-var SessionLaneIntent func(ctx context.Context, d *db.DB, p *db.Workbench, session int64) ([]reviewai.IntentItem, error)
+// LaneIntentFunc gives the lane items (LaneIntent) of the map of a
+// session's folder at snapshot snap, so the finish gate reads the overview
+// cached under the intent the overview command made it for. The map is
+// built in cmd, which passes it to WorkbenchTools; nil gives no lane items.
+type LaneIntentFunc func(ctx context.Context, d *db.DB, p *db.Workbench, session int64, snap ReviewSnapshot) ([]reviewai.IntentItem, error)
 
 // maxListedLeaves caps the open leaves a refusal lists.
 const maxListedLeaves = 20
@@ -80,7 +80,7 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 
 // checkFinishGates runs both gates for session on workbench p; a refusal is
 // a *ValidationError naming what is open and the next step.
-func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session int64, a finishSessionArgs) error {
+func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session int64, a finishSessionArgs, lanes LaneIntentFunc) error {
 	if !workbenchmethod.ResolveSession(d, p.ID, session).FinishOn() {
 		return nil // the owner turned the finish check off; a read failure resolves to on
 	}
@@ -104,7 +104,7 @@ func checkFinishGates(ctx context.Context, d *db.DB, p *db.Workbench, session in
 	if handover {
 		return nil // the owner reads what is left in the ask
 	}
-	return checkOverviewGate(ctx, d, p, session)
+	return checkOverviewGate(ctx, d, p, session, lanes)
 }
 
 // finishTicket is the session's launch target, else the call's target_id
@@ -177,7 +177,7 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 // item. A folder outside git has no diff to check, nor has the workbench
 // folder once the session left a worktree of its own (leftItsWorktree); any
 // other git failure refuses.
-func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
+func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64, laneIntent LaneIntentFunc) error {
 	gitCtx, cancel := context.WithTimeout(ctx, finishGateBudget)
 	defer cancel()
 	snap, err := SnapshotReviewSession(gitCtx, d, p, session)
@@ -197,8 +197,8 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if err != nil {
 		return fmt.Errorf("finish check: reading the session's intent: %w", err)
 	}
-	if SessionLaneIntent != nil {
-		lanes, err := SessionLaneIntent(gitCtx, d, p, session)
+	if laneIntent != nil {
+		lanes, err := laneIntent(gitCtx, d, p, session, snap)
 		if err != nil {
 			return fmt.Errorf("finish check: reading the branch's lanes: %w", err)
 		}

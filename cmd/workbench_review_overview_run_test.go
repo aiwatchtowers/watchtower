@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	"watchtower/internal/tools"
 )
 
 // Board #1025: the overview run — per-chapter parts, the streamed form,
@@ -386,7 +387,9 @@ func TestWorkbenchReviewOverview_SessionFormKeysTheFinishGate(t *testing.T) {
 	require.Equal(t, true, out["ok"], out)
 	p, err := database.GetWorkbench(wb)
 	require.NoError(t, err)
-	lanes, err := sessionLaneIntent(context.Background(), database, p, s)
+	snap, err := tools.SnapshotReviewSession(context.Background(), database, p, s)
+	require.NoError(t, err)
+	lanes, err := sessionLaneIntent(context.Background(), database, p, s, snap)
 	require.NoError(t, err)
 	assert.Len(t, lanes, 2)
 	again := reviewJSON(t, wb, "overview", "--session", itoa(s), "--cached-only")

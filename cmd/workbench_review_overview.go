@@ -99,7 +99,6 @@ func init() {
 	f.Int64Var(&reviewFlagRound, "round", 0, "review round id")
 	f.Int64Var(&reviewFlagSession, "session", 0, "terminal session id: the session's folder as it stands, no round")
 	workbenchReviewCmd.AddCommand(workbenchReviewOverviewCmd)
-	tools.SessionLaneIntent = sessionLaneIntent
 }
 
 // loadReviewAIConfig loads the config the way the other model commands do.
@@ -239,10 +238,11 @@ func (job *overviewJob) load(ctx context.Context, session int64) error {
 	return nil
 }
 
-// sessionLaneIntent is tools.SessionLaneIntent: the lane items of the map of
-// the session's folder as it stands, the one the session form describes.
-func sessionLaneIntent(ctx context.Context, d *db.DB, p *db.Workbench, session int64) ([]reviewai.IntentItem, error) {
-	pl, err := sessionReviewPlace(ctx, d, p, session)
+// sessionLaneIntent is finish_session's tools.LaneIntentFunc: the lane items
+// of the map of the session's folder at the gate's snapshot, the map the
+// session form describes.
+func sessionLaneIntent(ctx context.Context, d *db.DB, p *db.Workbench, session int64, snap tools.ReviewSnapshot) ([]reviewai.IntentItem, error) {
+	pl, err := snapshotReviewPlace(ctx, snap, session)
 	if err != nil {
 		return nil, err
 	}

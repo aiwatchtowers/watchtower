@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,13 +68,13 @@ func TestWithLaneIntent_AfterTheSessionsItemsWithoutRepeats(t *testing.T) {
 // The gate reads the overview cached under the session's and the lanes'
 // items, and a lane item that is not done never refuses.
 func TestProj14_LaneItemsKeyTheOverviewButNeverGate(t *testing.T) {
-	fx, wb, session, reg := repoSession(t)
+	fx, wb, session, _ := repoSession(t)
 	linkIntent(t, fx.d, wb, session, 1)
 	lane := reviewai.IntentItem{Text: "ABC-1 Login", Source: reviewai.SourceLane}
-	SessionLaneIntent = func(context.Context, *db.DB, *db.Workbench, int64) ([]reviewai.IntentItem, error) {
-		return []reviewai.IntentItem{lane}, nil
-	}
-	t.Cleanup(func() { SessionLaneIntent = nil })
+	reg := laneRegistry(t, fx.d, strconv.FormatInt(session, 10), nil,
+		func(context.Context, *db.DB, *db.Workbench, int64, ReviewSnapshot) ([]reviewai.IntentItem, error) {
+			return []reviewai.IntentItem{lane}, nil
+		})
 
 	cacheOverview(t, fx.d, wb, session, "done") // under the session's items alone
 	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
