@@ -406,14 +406,14 @@ final class InboxFolderMenuModelTests: XCTestCase {
         model.askDelete(ids.release)
         XCTAssertEqual(model.deleteConfirmation?.folders, 1)
 
-        try pool.write { db in
+        try await pool.write { db in
             _ = try InboxFolderFixtures.folder(db, parent: ids.release, slug: "later", position: 1)
         }
         await model.reload()
         XCTAssertEqual(model.deleteConfirmation?.folders, 2, "the numbers follow the tree")
 
         model.askDelete(ids.team)
-        try pool.write { try $0.execute(sql: "DELETE FROM inbox_folders WHERE id = ?", arguments: [ids.team]) }
+        try await pool.write { try $0.execute(sql: "DELETE FROM inbox_folders WHERE id = ?", arguments: [ids.team]) }
         await model.reload()
         XCTAssertNil(model.deleteConfirmation, "the folder is gone")
     }
