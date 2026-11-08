@@ -16,7 +16,7 @@ text: The progress line counts tasks whose branch is already merged above them a
 area: development
 level: next
 kind: tip
-since: next
+since: 0.27.0
 action: nav:projects
 -->
 

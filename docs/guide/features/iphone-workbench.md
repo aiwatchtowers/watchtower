@@ -51,7 +51,7 @@ text: Send a line to a Codex session from the phone; the Mac hands it over once 
 area: iphone
 level: next
 kind: tip
-since: next
+since: 0.27.0
 -->
 
 Type into **Message the session…** and send. Your line shows under it:
