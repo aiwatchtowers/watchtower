@@ -27,6 +27,8 @@ struct ReviewChangesPaneView: View {
 
     /// The chat panel is open (per workbench, open at first).
     @AppStorage private var chatOpen: Bool
+    /// The panel's Reviewer | Author switch (per workbench; the author's Workchat at first).
+    @AppStorage private var chatSide: ReviewChatSide
     /// Each new value puts the keyboard in the panel's composer.
     @State private var chatFocus: UUID?
     /// Ask agent opened the closed panel: its composer focuses as it is made.
@@ -68,6 +70,7 @@ struct ReviewChangesPaneView: View {
         self.codeRoot = codeRoot
         self.workbenches = workbenches
         _chatOpen = AppStorage(wrappedValue: true, chat?.openKey ?? "review.chatPanel.none")
+        _chatSide = AppStorage(wrappedValue: .author, chat?.sideKey ?? "review.chatPanel.none.side")
     }
 
     var body: some View {
@@ -133,7 +136,8 @@ struct ReviewChangesPaneView: View {
                     ) {
                         review
                     } panel: {
-                        ReviewAgentChatPanel(chat: chat, composerFocus: chatFocus, focusOnOpen: chatFocusOnOpen) {
+                        ReviewAgentChatPanel(chat: chat, model: model, identity: identity, side: $chatSide,
+                                             composerFocus: chatFocus, focusOnOpen: chatFocusOnOpen) {
                             chatFocusOnOpen = false
                         }
                     }
@@ -359,10 +363,11 @@ struct ReviewChangesPaneView: View {
     }
 
     /// Ask agent: the quote goes on top of the Workchat draft, the panel
-    /// opens and the keyboard goes to its composer.
+    /// opens on the author's side and the keyboard goes to its composer.
     private func ask(_ quote: String) {
         guard let chat else { return }
         chat.ask(quote)
+        chatSide = .author
         // A panel made now would take the new request as its starting
         // value and not act on it: it focuses as it is made instead.
         if !chatOpen { chatFocusOnOpen = true }

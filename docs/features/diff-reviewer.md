@@ -405,7 +405,7 @@ and then showed folder chapters with no order of what to read first. Specs:
 `docs/superpowers/specs/2026-11-07-big-branch-review-design.md` (business, owner-approved in ask
 #591) and `docs/superpowers/specs/2026-11-07-big-branch-review-technical.md` (§ numbers below);
 plan `docs/superpowers/plans/2026-11-08-big-branch-review.md`. Phase 1 (Go) is below; the
-Desktop (phase 2) and the reviewer chat (phase 3) follow.
+Desktop (phase 2) reads the map; the reviewer chat (phase 3) is the next section.
 
 - **Map** (`internal/reviewmap`, `watchtower workbench review map --round R | --session S --json`,
   writes nothing, budget `reviewMapBudget` 20 s): chapters in reading order — the agent's
@@ -479,3 +479,16 @@ Desktop (phase 2) and the reviewer chat (phase 3) follow.
   `api_removed`, the head branch read at map time, no default branch → `lanes_partial`, NFC
   paths, top-level-only globs without `/`, and a multi-batch summary judging coverage from
   descriptions (the agent can hand over).
+
+## The reviewer beside the diff (#1025 phase 3, 2026-11-08)
+
+Business item 8 and tech spec §6 of `docs/superpowers/specs/2026-11-07-big-branch-review-*.md`; mockup frame 5 in `docs/design/mockups/big-branch-review/`.
+
+- **Panel**: today's agent chat panel (PanelSplit, same toolbar toggle) gets a **Reviewer | Author** switch (`ReviewChatSide`, stored per workbench under `review.chatPanel.<id>.side`, Author at first). Author is the session's Workchat, unchanged; Ask agent switches to it. A test VM without `WorkbenchesViewModel.reviewer` shows no switch.
+- **Surface**: `ReviewerSurface` (WatchtowerCore) — `toolAccess .draftOnly`, the owner's chat instructions, `--read-folder` = the round's `folder_root` (the session's worktree when it has one; `ai query --read-folder` accepts a workbench's registered session worktrees since Task 13). Ollama reads nothing and its turn runs without the folder. Each turn's prompt is `ReviewerMapBrief` (≤ 6,000 characters: chapters in reading order with their level and up to three paths, "Can skip" as a count, the summary, the chapter open in Deep) plus the question; the system prompt says it is not the author.
+- **Threads**: migration 00175 `review_reviewer_threads(project_id, branch, conversation_id, created_at)`, PK `(project_id, branch)`, Desktop writer (`ReviewerThreadQueries.ensure`). The key is the round's `branch` when set, else the folder's checked-out branch, a detached HEAD `session:<id>` (`ReviewerSurface.threadBranch`). The conversation is `chat_conversations` of context type `review_reviewer`, context id `<workbench>:<branch>`; a trigger deletes it with its row, so a deleted workbench takes its threads. Like code questions, reviewer threads are never mined for ideas, never in the knowledge index and save no knowledge prefix.
+- **Send to author** (`ReviewerCenter.send`): one design comment through `ReviewChangesModel.addDesignComment` in the open round; nothing else is written and nothing reaches the session until the owner sends the round. Without an open round the button is off with "Start a round to send". The "Sent to the author as a design comment in round N" line is kept in memory only.
+- **Map seam**: `ReviewerMapInput` is filled by `ReviewChangesModel.reviewerMapInput` from the chapters and the overview (level = the chapter's most serious overview risk). When phases 1–2 meet it, that one body reads `ReviewMap` instead.
+- **Send guard**: the write checks the round is still open (`ReviewQueries.requireOpenRound`), so a round sent elsewhere after the pane loaded it refuses the comment ("This round was already sent, so it cannot change."); once written, a failed reload is shown and not reported as a failed send. The Sent mark is per answer and round, so another session's round of the branch can still take the same answer.
+- **Branch-tip round**: the folder is on another branch, so the panel line says "reads the workbench folder, which is not on <branch>" and the system prompt tells the reviewer its files are not the branch's (Codex reads the round's tip tree with `git show <tree>:<path>`, which works for an origin-only branch too). With Ollama the line says the reviewer answers from the map only.
+- **v1 limits**: no **New thread** (one thread per branch for its lifetime; a renamed branch starts a new one); the Sent line does not survive a relaunch; on a branch-tip round Claude's file tools read the folder's version of a file, not the branch's.

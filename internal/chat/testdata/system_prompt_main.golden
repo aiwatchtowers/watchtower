@@ -236,6 +236,7 @@ Workbench
 - Reviewing a spec or plan (features/workbench/spec-review.md)
 - Branch review (features/workbench/diff-review.md)
 - Reviewing a big branch (features/workbench/big-branch-review.md)
+- Branch reviewer (features/workbench/branch-reviewer.md)
 - Methodology (features/workbench/methodology.md)
 - Your instructions (features/workbench/instructions.md)
 - Codex (features/workbench/codex.md)

@@ -503,6 +503,20 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
   shell under `--sandbox read-only` with web search off. Without
   `--read-folder` both argvs are byte-identical to before. The follow-up
   spike #341 is dismissed.
+- **Amendment (2026-11-08, board #1025, owner approved in ask #560):**
+  `--read-folder DIR` also accepts a session worktree of a workbench: DIR's
+  real path (symlinks resolved, compared the way the file system does) must
+  equal a root a session of that workbench recorded in
+  `terminal_session_worktrees`, and that root must be a linked work tree of
+  the workbench folder's repository (read from files, never by running git:
+  the root's `.git` is a regular file, git's `gitdir` back-pointer names it,
+  the admin dir sits in its common git dir's `worktrees`, and that common
+  git dir is the folder's). A subfolder of it, a symlink into it, a worktree
+  no session recorded, a recorded root in another repository, a recorded
+  main checkout, a folder with a forged or malformed `.git` and a malformed
+  `commondir` are refused as before (exit 2), the message naming why. Everything else in this section
+  is unchanged; the big-branch review's reviewer runs in the session's own
+  worktree this way (spec 2026-11-07-big-branch-review-technical §6).
 - Model (owner decision 3): the popover and the Questions tab carry the same
   provider/model picker as the main chat composer, preselected to the default
   tier; the choice is kept per conversation (`chat_conversations.provider`/

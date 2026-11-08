@@ -106,7 +106,7 @@ func ResolveFolder(ctx context.Context, o Options, requested string) (ResolvedFo
 	reqTop, wbTop := longestContaining(tops, reqReal), longestContaining(tops, wbReal)
 	res.MainTopLevel = wbTop
 	switch {
-	case reqTop != "" && !samePath(reqTop, wbTop):
+	case reqTop != "" && !SamePath(reqTop, wbTop):
 		res.Scope, res.WorktreeName = ScopeWorktree, filepath.Base(reqTop)
 		res.Root = mappedRoot(reqTop, wbTop, wbReal)
 	case reqTop != "":
@@ -189,23 +189,23 @@ func longestContaining(tops []string, path string) string {
 }
 
 // within reports whether path is base or below it; both are clean
-// absolute paths, compared as the file system does (samePath).
+// absolute paths, compared as the file system does (SamePath).
 func within(path, base string) bool {
-	if samePath(path, base) {
+	if SamePath(path, base) {
 		return true
 	}
 	if !strings.HasSuffix(base, string(filepath.Separator)) {
 		base += string(filepath.Separator)
 	}
-	return len(path) > len(base) && samePath(path[:len(base)], base)
+	return len(path) > len(base) && SamePath(path[:len(base)], base)
 }
 
-// samePath compares two paths the way the file system does: equal
+// SamePath compares two paths the way the file system does: equal
 // strings are the same path; strings that differ only in case are the same
 // path only when both name one directory on disk (a case-insensitive
 // volume, the macOS default). On a case-sensitive volume /x/WT and /x/wt
 // are two folders, and any doubt (either fails to stat) answers no.
-func samePath(a, b string) bool {
+func SamePath(a, b string) bool {
 	if a == b {
 		return true
 	}
@@ -227,7 +227,7 @@ var sameDirectory = func(a, b string) bool {
 // at top: top joined with the workbench's path below its own top level
 // when that directory exists there, else top.
 func mappedRoot(top, wbTop, wbReal string) string {
-	if wbTop == "" || samePath(wbTop, wbReal) {
+	if wbTop == "" || SamePath(wbTop, wbReal) {
 		return top
 	}
 	// within(wbReal, wbTop) holds: the rest of wbReal is the path below it,

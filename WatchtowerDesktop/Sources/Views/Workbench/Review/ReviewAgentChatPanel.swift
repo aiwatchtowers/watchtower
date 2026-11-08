@@ -10,9 +10,11 @@ struct ReviewAgentChat {
     let projectID: Int64
     let sessionID: Int64
 
-    /// The panel's open state, per workbench; its width sits under `widthKey`.
+    /// The panel's open state, per workbench; its width sits under `widthKey`
+    /// and the Reviewer | Author switch under `sideKey`.
     var openKey: String { "review.chatPanel.\(projectID)" }
     var widthKey: String { "review.chatPanel.\(projectID).width" }
+    var sideKey: String { "review.chatPanel.\(projectID).side" }
 
     /// The session's Workchat; nil without session control or once the session is gone.
     var workchat: WorkchatModel? {
@@ -34,10 +36,21 @@ struct ReviewAgentChat {
     }
 }
 
-/// The right-hand panel of Branch review: the session's Workchat, or one
-/// line when there is no session to talk to.
+/// Which side of the panel is shown (board #1025, mockup frame 5).
+enum ReviewChatSide: String {
+    case reviewer, author
+}
+
+/// The right-hand panel of Branch review: a **Reviewer | Author** switch
+/// (when the app has a reviewer) over the branch's independent reviewer or
+/// the session's Workchat — unchanged — or one line when there is no session
+/// to talk to.
 struct ReviewAgentChatPanel: View {
     let chat: ReviewAgentChat
+    /// The round the reviewer reads and Send to author writes into.
+    let model: ReviewChangesModel
+    let identity: ReviewSessionIdentity
+    @Binding var side: ReviewChatSide
     /// Each new value puts the keyboard in the composer.
     let composerFocus: UUID?
     /// The panel opened for Ask agent: the composer takes the keyboard as it
@@ -46,7 +59,7 @@ struct ReviewAgentChatPanel: View {
     /// The panel is on screen: `focusOnOpen` was used.
     let onShown: () -> Void
 
-    /// What the panel shows: the Workchat with its composer, or one line.
+    /// What the author side shows: the Workchat with its composer, or one line.
     enum Content: Equatable {
         case workchat
         case notRunning
@@ -59,20 +72,45 @@ struct ReviewAgentChatPanel: View {
     }
 
     var body: some View {
-        Group {
-            switch Self.content(chat) {
-            case .workchat:
-                SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID,
-                                composerFocus: composerFocus, composerAutoFocus: focusOnOpen)
-                    .id(chat.sessionID)
-            case .notRunning:
-                Text(Self.notRunningText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(Spacing.medium)
+        VStack(spacing: 0) {
+            if let reviewer = chat.vm.reviewer {
+                HStack(spacing: Spacing.cozy) {
+                    KitSegmentedPicker(title: "Chat", selection: $side, segments: [
+                        KitSegment(value: ReviewChatSide.reviewer, title: "Reviewer"),
+                        KitSegment(value: .author, title: "Author")
+                    ])
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.small)
+                Divider()
+                if side == .reviewer {
+                    ReviewerPanel(center: reviewer, model: model, context: ReviewerSurface.context(
+                        projectID: chat.projectID, sessionID: chat.sessionID, round: model.round,
+                        place: identity.place, mainStatus: identity.mainStatus
+                    ))
+                } else {
+                    author
+                }
+            } else {
+                author
             }
         }
         .onAppear(perform: onShown)
+    }
+
+    @ViewBuilder private var author: some View {
+        switch Self.content(chat) {
+        case .workchat:
+            SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID,
+                            composerFocus: composerFocus, composerAutoFocus: focusOnOpen)
+                .id(chat.sessionID)
+        case .notRunning:
+            Text(Self.notRunningText)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(Spacing.medium)
+        }
     }
 }
