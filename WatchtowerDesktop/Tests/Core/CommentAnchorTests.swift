@@ -257,4 +257,21 @@ final class CommentAnchorTests: XCTestCase {
         XCTAssertEqual(offset(made.locate(in: text, near: at(11))), 11)
         XCTAssertEqual(offset(made.locate(in: text, near: text.endIndex)), 11)
     }
+
+    /// Four tied candidates (starts 1, 9, 19, 27): every pair of neighbours
+    /// splits at its midpoint, the earlier one taking the midpoint itself —
+    /// an interior pair included, where both neighbours are candidates.
+    func testATieAmongManyGoesToTheNearestNeighbour() {
+        let text = "\nsame\nxx\nsame\nyyyy\nsame\nzz\nsame\n"
+        let made = CommentAnchor(quote: "same", prefix: "\n", suffix: "\n", heading: "")
+        let offset = { (found: Range<String.Index>?) in found.map { text.distance(from: text.startIndex, to: $0.lowerBound) } }
+        let at = { (n: Int) in text.index(text.startIndex, offsetBy: n) }
+        let cases: [(near: Int, want: Int)] = [
+            (0, 1), (5, 1), (6, 9), (9, 9), (13, 9), (14, 9), (15, 19), (19, 19), (23, 19), (24, 27), (27, 27), (31, 27)
+        ]
+        for (near, want) in cases {
+            XCTAssertEqual(offset(made.locate(in: text, near: at(near))), want, "near \(near)")
+        }
+        XCTAssertEqual(offset(made.locate(in: text, near: text.endIndex)), 27)
+    }
 }
