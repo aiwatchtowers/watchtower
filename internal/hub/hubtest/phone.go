@@ -118,6 +118,13 @@ type Phone struct {
 
 	// EchoEpochs is the epoch each action's last echo read was sealed in.
 	EchoEpochs map[uint64]uint32
+	// Dropped names every hub record Sync read and could not open in an
+	// epoch at or below the one the phone seals in (the Kit's
+	// epochKeysGone: those keys never come, so the record is dropped).
+	// With RequeueOnDrop each batch that dropped one writes the whole
+	// outbox again once, in order (the Kit's requeueUnechoedAfterDrop).
+	Dropped       []string
+	RequeueOnDrop bool
 	// Guard, when set, is the Kit's rollback guard on hub records
 	// (RollbackGuard.swift): per wire name the newest (epoch, seq) opened,
 	// epoch first; an older version is dropped unhandled and listed in
@@ -472,10 +479,16 @@ func (p *Phone) Sync() (int, error) {
 		if err != nil {
 			return n, err
 		}
+		dropped := false
 		for _, rec := range b.Changed {
 			f, err := p.open(rec.Name, rec.Envelope)
 			if err != nil {
-				continue // the phone's own records
+				// The phone's own records, or a hub record it cannot open.
+				if p.goneEpoch(rec) {
+					p.Dropped = append(p.Dropped, rec.Name)
+					dropped = true
+				}
+				continue
 			}
 			if p.Guard && p.rolledBack(rec) {
 				continue
@@ -506,10 +519,23 @@ func (p *Phone) Sync() (int, error) {
 			}
 		}
 		p.cursor = b.NewSeq
+		if dropped && p.RequeueOnDrop {
+			if err := p.ResendOutbox(); err != nil {
+				return n, err
+			}
+		}
 		if !b.More {
 			return n, nil
 		}
 	}
+}
+
+// goneEpoch reports a hub record to this phone, sealed in an epoch at or
+// below the one the phone seals in, which it cannot open: its keys are gone.
+func (p *Phone) goneEpoch(rec transport.Stored) bool {
+	h, err := secure.ParseHeader(rec.Envelope)
+	return err == nil && h.Class == secure.ClassRelayToPhone && h.Hub == p.cfg.Hub &&
+		h.Sender == p.cfg.Hub && h.Epoch <= p.cfg.Epoch
 }
 
 // Records is every live record name in the mailbox.

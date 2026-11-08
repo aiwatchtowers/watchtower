@@ -43,6 +43,11 @@ func (p *Phone) AckEpoch(epoch uint32) (string, error) {
 	return p.WriteControl(wire.Control{Kind: wire.ControlEpochAck, Epoch: &epoch, NextKX: &offer})
 }
 
+// ErasePair drops the phone's wt/relay/v2/ pair of epoch, as the Kit erases
+// an old epoch's keys on schedule: a hub record sealed under it no longer
+// opens.
+func (p *Phone) ErasePair(epoch uint32) { delete(p.pairs, epoch) }
+
 // HoldsPair reports whether the phone holds a wt/relay/v2/ pair for epoch.
 func (p *Phone) HoldsPair(epoch uint32) bool { _, ok := p.pairs[epoch]; return ok }
 
@@ -100,6 +105,11 @@ func (p *Phone) takePair(epoch uint32, kx *wire.KeyboxRelayKX) error {
 		}
 	}
 	if own == nil {
+		if _, held := p.pairs[epoch]; held {
+			// An epoch merged before keeps its pair: the key it was
+			// derived from was replaced by a newer offer since.
+			return nil
+		}
 		return errors.New("hubtest: the keybox names a key the phone does not hold")
 	}
 	peer, err := ecdh.X25519().NewPublicKey(hubPub)

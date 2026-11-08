@@ -179,6 +179,12 @@ type Publisher struct {
 	// resignal holds the alert keys Resignal asked to signal on CloudKit,
 	// kept until a cycle saved the alert with its signal or found it gone.
 	resignal map[string]bool
+
+	// repEpoch is the epoch the last publish read (0 before the first) and
+	// rep the rotation republish being counted (nil for none); both under
+	// cycleMu (republish.go).
+	repEpoch uint32
+	rep      *republish
 }
 
 // NewPublisher builds a Publisher over c.
@@ -580,6 +586,9 @@ func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error
 			continue
 		}
 		wrote, err := p.publishKind(ctx, k, srcs, &rep)
+		if err == nil && !slices.Contains(rep.Failed, k) {
+			p.kindPublished(k)
+		}
 		if wrote {
 			p.lastWrite[k] = now
 			if err == nil {
@@ -645,6 +654,7 @@ func (p *Publisher) publishKind(ctx context.Context, k Kind, srcs []Source, rep 
 	if err != nil {
 		return false, err
 	}
+	p.trackEpoch(epoch)
 	known, err := p.c.Store.SliceHashes(string(k))
 	if err != nil {
 		return false, err
@@ -772,10 +782,14 @@ func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves
 	if len(outs) != len(saves) {
 		return false, fmt.Errorf("slices: saving %s: %d outcomes for %d records", k, len(outs), len(saves))
 	}
-	var done []pushed
+	var (
+		done   []pushed
+		assets []string
+	)
 	for i, o := range outs {
 		if o.Saved {
 			done = append(done, pending[i])
+			assets = append(assets, saves[i].Record.AssetPath())
 			continue
 		}
 		rep.Skipped = append(rep.Skipped, pending[i].name)
@@ -785,6 +799,7 @@ func (p *Publisher) saveChanged(ctx context.Context, k Kind, epoch uint32, saves
 		}
 		p.warnOnce(pending[i].name, pending[i].hash, "refused by the transport ("+why+")")
 	}
+	p.countSaved(k, assets)
 	if done, err = p.saveSignals(ctx, done, rep); err != nil {
 		return true, err
 	}
