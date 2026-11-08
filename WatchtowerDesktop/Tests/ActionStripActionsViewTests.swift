@@ -213,4 +213,33 @@ final class ActionStripActionsViewTests: XCTestCase {
             .on(lastCheck: "x")
         )
     }
+
+    /// The Messages entry stands in for Waiting for me (before its first
+    /// run): its message card, drawn through the legacy split view, has
+    /// Reply… for a Slack item (B Task 18).
+    func testMessagesStandInCardHasReplyThroughTheLegacySplit() async throws {
+        let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var item: Int64 = 0
+        let pool = try makePool { db in
+            item = try TestDatabase.insertInboxItem(
+                db, channelID: "1:C001", triggerType: "mention",
+                permalink: "https://acme.slack.com/archives/C001/p1700000000000100")
+            let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me")
+            try db.execute(sql: """
+                UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me'
+                WHERE id = ?
+                """, arguments: [id])
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+        vm.openLegacy(.messages)
+        await vm.refresh()
+        XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.messagesStandIn)
+        vm.selection = .message(Int(item))
+        let sut = view(vm, rows: [], feature: .off)
+
+        XCTAssertNoThrow(try sut.inspect().find(InboxMessagePane.self), "the message card is shown")
+        XCTAssertNoThrow(try sut.inspect().find(button: "Reply…"))
+    }
 }

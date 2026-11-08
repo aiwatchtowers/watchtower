@@ -81,8 +81,8 @@ final class InboxRowActionsTests: XCTestCase {
         let vm = await strip()
         let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .inboxItem, id: id), .inbox))
         // `InboxMessagePane`: Open in Slack (a permalink), Discuss in Chat,
-        // Hand to Agent…, Done, Hide, Snooze ▾; Reply… lands with Task 18.
-        XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: false,
+        // Hand to Agent…, Done, Hide, Snooze ▾; Reply… for a Slack item (Task 18).
+        XCTAssertEqual(content.kind, .inboxItem(openLabel: "Open in Slack", openEnabled: true, canReply: true,
                                                 showsHandToAgent: true))
         XCTAssertEqual(content.state, .idle)
     }
@@ -396,6 +396,7 @@ final class InboxRowActionsTests: XCTestCase {
 
     func testDuplicatesSuppressedPerKind() {
         XCTAssertEqual(InboxRefHooks.nativeKinds(.inboxItem), [.open, .chat, .agent])
+        XCTAssertEqual(InboxRefHooks.nativeKinds(.inboxItem, hasReply: true), [.open, .chat, .agent, .reply])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.track), [.target])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.idea), [.target])
         XCTAssertEqual(InboxRefHooks.nativeKinds(.reminder), [.open])

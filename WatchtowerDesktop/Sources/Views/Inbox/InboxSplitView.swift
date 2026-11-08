@@ -42,6 +42,9 @@ struct InboxSplitView<EmptyList: View>: View {
     let trackControls: (any CustomTrackControlling)?
     /// The list column when the list has nothing.
     let emptyList: EmptyList
+    /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
+    private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
+    private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
 
     @Environment(\.markdownNavScreens) private var navScreens
 
@@ -81,6 +84,18 @@ struct InboxSplitView<EmptyList: View>: View {
         self.tracks = tracks
         self.trackControls = trackControls
         self.emptyList = emptyList()
+    }
+
+    /// This split view with Reply on its reading pane's message card
+    /// (`InboxReadingPane.messageReply(_:onPress:)`).
+    func messageReply(
+        _ content: @escaping (HomeFeedInboxRow) -> InboxRowActionsContent?,
+        onPress: @escaping (Int, InboxRowPress) -> Void
+    ) -> Self {
+        var split = self
+        split.messageReplyContent = content
+        split.onMessageReplyPress = onPress
+        return split
     }
 
     var body: some View {
@@ -206,6 +221,7 @@ struct InboxSplitView<EmptyList: View>: View {
                 }
             }
         )
+        .messageReply(messageReplyContent, onPress: onMessageReplyPress)
     }
 
     /// The track card; Done and Stop watching open the next row once it left.

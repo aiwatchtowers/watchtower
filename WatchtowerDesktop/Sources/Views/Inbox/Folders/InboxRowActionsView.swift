@@ -199,6 +199,7 @@ struct InboxRowActionsFooter: View {
                     .focused($composing)
                     .onAppear { composing = true }
                     .onExitCommand { onPress(.cancelReply) }
+                    .disabled(content.isBusy)
                 Button("Propose Reply") { onPress(.proposeReply) }
                     .buttonStyle(.kitSecondary)
                     .keyboardShortcut(composing ? KeyboardShortcut(.return, modifiers: .command) : nil)
@@ -206,6 +207,7 @@ struct InboxRowActionsFooter: View {
                               || content.isOff(.proposeReply))
                 Button("Cancel") { onPress(.cancelReply) }
                     .buttonStyle(.kitQuiet)
+                    .disabled(content.isBusy)
             }
             if let error {
                 Text(error)
