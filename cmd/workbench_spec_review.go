@@ -49,9 +49,11 @@ var workbenchSpecReviewShowCmd = &cobra.Command{
 	Use:   "show --ask N [--json]",
 	Short: "Show the spec review of ask N and the owner's marks",
 	Long: "--json prints {ask_id, status, reason, provider, model, dropped, attempt, queued_at,\n" +
-		"started_at, finished_at, result, marks}: result is the validated reviewer result or null,\n" +
-		"marks maps each item key to {state, body, about, updated_at} (about: a comment's finding\n" +
-		"text, left out when not known). The database is opened read-only.",
+		"started_at, finished_at, result, marks, loop, round, loop_end, open_items, ledger,\n" +
+		"thread_findings}: result is the validated reviewer result or null, marks maps each item key\n" +
+		"to {state, body, about, updated_at} (about: a comment's finding text, left out when not\n" +
+		"known), thread_findings lists the findings added from Discuss threads ([] when none).\n" +
+		"The database is opened read-only.",
 	Args: cobra.NoArgs,
 	RunE: runSpecReviewShow,
 }
@@ -277,6 +279,9 @@ type specReviewShowJSON struct {
 	LoopEnd    string                        `json:"loop_end"`
 	OpenItems  json.RawMessage               `json:"open_items"`
 	Ledger     json.RawMessage               `json:"ledger"`
+	// ThreadFindings is the findings the owner added from Discuss threads
+	// (each a specreview.ThreadFinding), by key; [] when none.
+	ThreadFindings []json.RawMessage `json:"thread_findings"`
 }
 
 type specReviewMarkJSON struct {
@@ -309,12 +314,20 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("reading spec review marks of ask %d: %w", id, err)
 	}
+	threadFindings, err := database.ListSpecReviewThreadFindings(id)
+	if err != nil {
+		return fmt.Errorf("reading thread findings of ask %d: %w", id, err)
+	}
 	out := specReviewShowJSON{
 		AskID: row.AskID, Status: row.Status, Reason: row.Reason, Provider: row.Provider, Model: row.Model,
 		Dropped: row.Dropped, Attempt: row.Attempt, QueuedAt: row.QueuedAt, StartedAt: row.StartedAt,
 		FinishedAt: row.FinishedAt, Marks: map[string]specReviewMarkJSON{},
 		Loop: row.Loop, Round: row.Round, LoopEnd: row.LoopEnd,
 		OpenItems: listOrEmpty(row.OpenItems), Ledger: listOrEmpty(row.Ledger),
+		ThreadFindings: []json.RawMessage{},
+	}
+	for _, f := range threadFindings {
+		out.ThreadFindings = append(out.ThreadFindings, json.RawMessage(f.Finding))
 	}
 	if row.Result != "" {
 		out.Result = json.RawMessage(row.Result)
