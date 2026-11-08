@@ -58,6 +58,10 @@ struct AgentActionCardView: View {
     /// `onRetry`, which the host makes `actions apply` on an approved row
     /// and `actions apply --force` on an executing one — the same row.
     var targetButtonState: ArtifactTargetButtonState?
+    /// False on an older proposal of an Inbox target button whose newest row
+    /// is another one: Try again is offered only on the newest row (the CLI
+    /// refuses the older one with exit 3).
+    var offersRetry = true
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -499,13 +503,40 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private func actions(connector: ConnectorCallProposal?) -> some View {
-        if targetButtonState == .stuck {
+        switch Self.targetRow(targetButtonState, status: action.status) {
+        case .stuck:
             ArtifactTargetStuckLine(onTryAgain: onRetry)
                 .controlSize(.small)
                 .disabled(inFlight)
                 .accessibilityIdentifier("agentAction.targetStuck")
-        } else {
+        case .inFlight:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityIdentifier("agentAction.targetCreating")
+        case .decision:
             decisionRow(connector: connector)
+        }
+    }
+
+    /// What an Inbox target button's proposal draws in place of the
+    /// decision row: an approved or executing row the button calls stuck,
+    /// or whose Try again failed without moving it, offers Try again on the
+    /// same row; one in flight shows progress only (no Retry while our own
+    /// or a recent apply may still land). Every other row keeps its row.
+    enum TargetRow: Equatable {
+        case stuck, inFlight, decision
+    }
+
+    static func targetRow(_ state: ArtifactTargetButtonState?, status: String) -> TargetRow {
+        switch state {
+        case .stuck?:
+            return .stuck
+        case .failed?:
+            return status == "failed" ? .decision : .stuck
+        case .creating?:
+            return .inFlight
+        default:
+            return .decision
         }
     }
 
@@ -533,7 +564,7 @@ struct AgentActionCardView: View {
                             .buttonStyle(.borderedProminent)
                     }
                     Button("Reject", action: onReject)
-                } else if action.canRetry {
+                } else if action.canRetry, offersRetry {
                     Button("Retry", action: onRetry)
                 } else if let onDismiss, ConnectorCallProposal.awaitsDismissal(action) {
                     Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)

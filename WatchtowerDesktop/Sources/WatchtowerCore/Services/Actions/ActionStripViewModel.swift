@@ -71,6 +71,18 @@ package final class ActionStripViewModel {
     /// — the cheat sheet's "last check". Nil until the phase has run once.
     package private(set) var lastReactionCheck: String?
     package var lastError: String?
+    /// The newest proposal of each Inbox target button the list can show
+    /// (its outputs' and its proposals' `automation_output` contexts), by
+    /// context id, as the last `refresh()` read it.
+    package private(set) var targetProposals: [String: AgentAction] = [:]
+    /// Of those, the applied rows whose task still exists.
+    package private(set) var targetTasks: [Int64: Int64] = [:]
+    /// The target buttons whose propose is running (one per context).
+    package private(set) var proposingTargets: Set<String> = []
+    /// Why a target button's last propose failed, by context id; survives
+    /// navigation, cleared by the next propose that lands or exits 3 and by
+    /// a read that finds a row newer than the one seen at the press.
+    private var targetPressErrors: [String: TargetPressFailure] = [:]
     /// Called once a `refresh()` read is done (the 30 s poll and every
     /// press included): the sidebar's Inbox badge counts the same rows, and
     /// its observation never sees the daemon's writes, so AppState refreshes
@@ -248,8 +260,16 @@ package final class ActionStripViewModel {
                     db, nowUTC: nowUTC, dayLimit: dayLimit, disabledFeatures: disabledFeatures)
                 let runLabels = try AutomationQueries.runLabels(
                     db, runIDs: feed.proposals.compactMap(Self.automationRunID))
+                let buttons = try AgentActionQueries.newestButtonProposals(
+                    db, outputIDs: feed.outputs.map(\.id),
+                    contextIDs: feed.proposals.filter { $0.contextType == AgentActionQueries.buttonContextType }
+                        .map(\.contextID))
+                let tasks = try AgentActionQueries.actionsWithTask(
+                    db, actionIDs: buttons.values.filter { $0.status == "applied" }.map(\.id))
                 return (
                     feed: feed,
+                    buttons: buttons,
+                    tasks: tasks,
                     labels: Self.labels(for: feed.proposals, runLabels: runLabels),
                     lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands")
                 )
@@ -258,6 +278,11 @@ package final class ActionStripViewModel {
             feed = snapshot.feed
             actionLabels = snapshot.labels
             lastReactionCheck = snapshot.lastCheck
+            targetProposals = snapshot.buttons
+            targetTasks = snapshot.tasks
+            targetPressErrors = targetPressErrors.filter { context, failure in
+                snapshot.buttons[context]?.id == failure.seenRowID
+            }
             rebuildSections()
             keepSelectionListed(was: before)
         } catch {
@@ -658,6 +683,8 @@ package final class ActionStripViewModel {
     private enum CardKey: Hashable {
         /// A press on the card (Done, Dismiss, Snooze, Reply, Stop watching).
         case card(InboxSelection)
+        /// A target button's propose, by its context id.
+        case targetPress(String)
         /// The card's read mark on opening.
         case opening(InboxSelection)
     }
@@ -679,6 +706,110 @@ package final class ActionStripViewModel {
                 lastError = error.localizedDescription
             }
         }
+    }
+
+    // MARK: - Inbox target buttons (Inbox builder A)
+
+    /// A failed propose and the newest row of its context when it was pressed.
+    private struct TargetPressFailure {
+        let message: String
+        let seenRowID: Int64?
+    }
+
+    /// What the Desktop knows about the target button of `contextID`.
+    package func targetFacts(contextID: String) -> InboxTargetButtonFacts {
+        let row = targetProposals[contextID]
+        return InboxTargetButtonFacts(
+            proposal: row.map(InboxTargetButtonFacts.Proposal.init),
+            taskID: row.flatMap { targetTasks[$0.id] },
+            inFlight: row.map { actionFeed.inFlight.contains($0.id) } ?? false,
+            pressError: targetPressErrors[contextID]?.message,
+            applyError: row.flatMap { actionFeed.rowErrors[$0.id]?.message }
+        )
+    }
+
+    /// The button facts of a `create_target` proposal an Inbox button made,
+    /// when it is its button's newest row; nil for any other row (an older
+    /// row of a button is never offered Try again).
+    package func targetFacts(for action: AgentAction) -> InboxTargetButtonFacts? {
+        guard action.tool == "create_target", action.contextType == AgentActionQueries.buttonContextType,
+              targetProposals[action.contextID]?.id == action.id else { return nil }
+        return targetFacts(contextID: action.contextID)
+    }
+
+    /// A button's row with a newer row of the same button: nothing on its
+    /// card may retry it (Go refuses it with exit 3).
+    package func isSupersededButtonRow(_ action: AgentAction) -> Bool {
+        guard action.contextType == AgentActionQueries.buttonContextType,
+              let newest = targetProposals[action.contextID] else { return false }
+        return newest.id != action.id
+    }
+
+    /// The press of an idle target button: one `actions propose`, never
+    /// `--approve` (AUTO-02). One press per button at a time. Exit 3 means
+    /// the button's state moved (an open proposal, its task exists): no
+    /// banner, the read draws it. Any other failure is kept for the button.
+    package func proposeTarget(_ press: InboxTargetPress) async {
+        let runner = cliRunner
+        let context = press.contextID
+        await pendingWrites.run(CardKey.targetPress(context)) {
+            proposingTargets.insert(context)
+            defer { proposingTargets.remove(context) }
+            let seen = targetProposals[context]?.id
+            guard let runner = runner ?? ProcessCLIRunner.makeDefault() else {
+                targetPressErrors[context] = TargetPressFailure(
+                    message: CLIRunnerError.binaryNotFound.localizedDescription, seenRowID: seen)
+                return
+            }
+            do {
+                _ = try await runner.run(args: press.arguments)
+                targetPressErrors[context] = nil
+            } catch CLIRunnerError.nonZeroExit(AgentActionFeed.stateMovedExit, _) {
+                targetPressErrors[context] = nil
+            } catch {
+                targetPressErrors[context] = TargetPressFailure(message: Self.pressRefusal(error), seenRowID: seen)
+            }
+            await refresh()
+        }
+    }
+
+    /// **Try again** on a target button's stuck or failed row, or on its
+    /// approval card: the same row, never a new proposal — `actions apply`
+    /// for an approved or failed row, `actions apply --force` for one
+    /// stranded in `executing`.
+    package func tryAgainTarget(_ id: Int64) async {
+        let row = targetProposals.values.first { $0.id == id } ?? actionRows.first { $0.id == id }
+        await actionFeed.retry(id, force: row?.isExecuting == true)
+        await refresh()
+        adoptFeedError()
+    }
+
+    /// A waiting button's click: its approval card in the reading pane.
+    /// When the list has no such card (another filter hides it, or the
+    /// strip leaves the row out), the shown card stays and a short notice
+    /// says why; the button keeps its waiting state.
+    package func openProposal(_ id: Int64) async {
+        if isListed(.proposal(id)) {
+            await select(.proposal(id))
+        } else if filter != .all, actionRows.contains(where: { $0.id == id }) {
+            await open(.all, select: .proposal(id))
+        } else {
+            lastError = Self.proposalNotListed(id)
+        }
+    }
+
+    /// The notice of a waiting button whose approval card the list does not show.
+    nonisolated static func proposalNotListed(_ id: Int64) -> String {
+        "The approval for this task (#\(id)) isn't in the Inbox list yet."
+    }
+
+    /// A CLI refusal's own text (stderr without cobra's "Error: "), else the error's.
+    nonisolated static func pressRefusal(_ error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "watchtower exited with code \(code)" : replyRefusal(text)
+        }
+        return error.localizedDescription
     }
 
     package func approve(_ id: Int64, shownArgs: String, patch: String? = nil) async {

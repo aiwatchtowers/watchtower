@@ -336,12 +336,19 @@ struct ActionStripActionsView: View {
     }
 
     private func card(_ action: AgentAction) -> AgentActionCardView {
-        AgentActionCardView(
+        // An Inbox target button's newest proposal: the button's state, so a
+        // stuck row offers Try again (apply, or apply --force on the same row).
+        let targetState = vm.targetFacts(for: action).map { TargetButtonStateResolver.state($0, now: now ?? Date()) }
+        return AgentActionCardView(
             action: action,
             inFlight: vm.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await vm.approve(action.id, shownArgs: action.argsJSON) } },
             onReject: { Task { await vm.reject(action.id) } },
-            onRetry: { Task { await vm.retry(action.id) } },
+            onRetry: {
+                Task {
+                    if targetState != nil { await vm.tryAgainTarget(action.id) } else { await vm.retry(action.id) }
+                }
+            },
             gestureError: vm.actionFeed.rowErrors[action.id],
             onOpen: onOpen,
             onApproveEdited: { patch in Task { await vm.approve(action.id, shownArgs: action.argsJSON, patch: patch) } },
@@ -349,7 +356,9 @@ struct ActionStripActionsView: View {
             contextLabel: vm.actionLabels[action.id],
             onOpenContext: openContext(action),
             onDismiss: { Task { await vm.dismiss(action.id) } },
-            sessionHoldsCall: sessionHoldsCall?(action) ?? false
+            sessionHoldsCall: sessionHoldsCall?(action) ?? false,
+            targetButtonState: targetState,
+            offersRetry: !vm.isSupersededButtonRow(action)
         )
     }
 

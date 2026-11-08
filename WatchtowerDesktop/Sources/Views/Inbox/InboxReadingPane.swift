@@ -38,6 +38,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let workbenches: [Workbench]
     /// `users` id → best name for a card's `person` blocks.
     let artifactPeople: [String: String]
+    /// The target buttons' state, from the Inbox center (Inbox builder A).
+    let targets: InboxTargetButtonSource
     let dayCard: (InboxDayCard) -> DayCard
     let trackCard: (InboxTrackCard) -> TrackCard
     let ideaCard: (Idea) -> IdeaCard
@@ -57,6 +59,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
         artifactPeople: [String: String] = [:],
+        targets: InboxTargetButtonSource = InboxTargetButtonSource(),
         @ViewBuilder dayCard: @escaping (InboxDayCard) -> DayCard,
         @ViewBuilder trackCard: @escaping (InboxTrackCard) -> TrackCard,
         @ViewBuilder ideaCard: @escaping (Idea) -> IdeaCard
@@ -75,6 +78,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.onRetryBuiltin = onRetryBuiltin
         self.workbenches = workbenches
         self.artifactPeople = artifactPeople
+        self.targets = targets
         self.dayCard = dayCard
         self.trackCard = trackCard
         self.ideaCard = ideaCard
@@ -150,12 +154,12 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                     MarkdownView(text: card.body)
                 }
                 InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
+                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets)
                     .padding(.top, Spacing.small)
             case let .artifact(result, cardActions):
                 InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
                                   navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
+                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets)
             }
         }
     }
@@ -251,13 +255,14 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
-        artifactPeople: [String: String] = [:]
+        artifactPeople: [String: String] = [:],
+        targets: InboxTargetButtonSource = InboxTargetButtonSource()
     ) {
         self.init(
             item: item, navScreens: navScreens, now: now, isWriting: isWriting, onCommand: onCommand,
             onOpenAutomationRun: onOpenAutomationRun, onDone: onDone, onDismiss: onDismiss, onSnooze: onSnooze,
             proposalCard: proposalCard, saveProposal: saveProposal, onRetryBuiltin: onRetryBuiltin,
-            workbenches: workbenches, artifactPeople: artifactPeople,
+            workbenches: workbenches, artifactPeople: artifactPeople, targets: targets,
             dayCard: { InboxCardPlaceholder(day: $0) },
             trackCard: { card in InboxCardColumn { InboxCardPlaceholder(track: card, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0) }

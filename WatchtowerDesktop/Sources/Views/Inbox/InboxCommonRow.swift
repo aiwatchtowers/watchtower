@@ -17,6 +17,14 @@ enum InboxCardCommand: Equatable {
     /// The automation's card, where a recipe that cannot run is confirmed or
     /// turned on.
     case openAutomation(AutomationOutputCard)
+    /// An idle target button: `actions propose` of `create_target`, no approve.
+    case proposeTarget(InboxTargetPress)
+    /// A waiting target button: its proposal's approval card.
+    case openProposal(Int64)
+    /// A stuck or failed target button: apply the same proposal again.
+    case tryAgainTarget(Int64)
+    /// A created target button: the task it made.
+    case openTarget(Int)
 }
 
 /// The button row every Inbox card shares (spec B2, C1 §6.2): Open source

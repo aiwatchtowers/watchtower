@@ -41,6 +41,14 @@ extension AppState {
             await actionStripViewModel?.pressReply(outputID: outputID, action: action, contentHash: contentHash)
         case .openAutomation(let card):
             openAutomationRun(automationID: card.automationID, runID: nil)
+        case .proposeTarget(let press):
+            await actionStripViewModel?.proposeTarget(press)
+        case .openProposal(let id):
+            await actionStripViewModel?.openProposal(id)
+        case .tryAgainTarget(let id):
+            await actionStripViewModel?.tryAgainTarget(id)
+        case .openTarget(let id):
+            navigateToTarget(id)
         }
     }
 
