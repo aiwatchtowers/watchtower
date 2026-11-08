@@ -262,13 +262,14 @@ struct ActionStripActionsView: View {
             }
             content
         }
-        .confirmationDialog(deleteTitle, isPresented: deleteConfirming) {
+        .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
+                            presenting: artifactMenu?.pendingDelete) { pending in
             Button("Delete", role: .destructive) {
-                guard let artifactMenu, let pending = artifactMenu.pendingDelete else { return }
+                guard let artifactMenu else { return }
                 Task { await artifactMenu.confirmDelete(pending) }
             }
             Button("Cancel", role: .cancel) { artifactMenu?.cancelDelete() }
-        } message: {
+        } message: { _ in
             Text("This removes the recipe file with its runs, state and outputs.")
         }
     }

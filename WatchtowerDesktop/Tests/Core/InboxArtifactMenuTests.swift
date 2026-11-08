@@ -273,6 +273,13 @@ final class InboxArtifactMenuTests: XCTestCase {
         ]])
     }
 
+    /// A Move (a caller-shown route) leaves the menu's own refusal line alone.
+    func testMoveKeepsTheMenusRefusalLine() async {
+        folderMenu.showRefusal("a folder named \"Release\" already exists here", on: ids.release)
+        await model().perform(.moveTo(folderID: ids.release), on: card(ids.owner))
+        XCTAssertEqual(folderMenu.refusal?.folderID, ids.release)
+    }
+
     func testMoveConflictReloadsLikeTheMenuAndShowsOnTheHeader() async {
         runner.on("route") { _ in throw Self.failure("the Inbox menu changed (revision 8, expected 7)") }
         let menu = model()

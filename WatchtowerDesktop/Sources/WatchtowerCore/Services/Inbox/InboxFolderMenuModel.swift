@@ -472,7 +472,8 @@ package final class InboxFolderMenuModel {
         }
         cliMissing = false
         isBusy = true
-        refusal = nil
+        // A caller-shown write (a route) leaves the menu's own line alone.
+        if onFailure == nil { refusal = nil }
         defer { isBusy = false }
         do {
             try await call(InboxFoldersCLI(runner: runner), tree.revision)

@@ -165,8 +165,8 @@ package final class InboxArtifactMenuModel {
         }
     }
 
-    /// The confirmation's **Delete** of `pending` (taken when pressed: the
-    /// dialog's dismissal clears `pendingDelete` before this runs): the
+    /// The confirmation's **Delete** of `pending` (the dialog presents it,
+    /// so the dismissal clearing `pendingDelete` does not matter): the
     /// tab's `delete`, with its cleanup.
     package func confirmDelete(_ pending: PendingDelete) async {
         guard let vm = hooks.automations() else { return }
