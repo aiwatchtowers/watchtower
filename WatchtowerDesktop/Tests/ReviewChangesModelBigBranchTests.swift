@@ -296,21 +296,37 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         await h.settle()
     }
 
-    /// The owner's sentence and the provider's own text stay apart.
+    /// The owner's sentence and the provider's own text stay apart. Go's
+    /// real sequence when the summary fails after the chapters: the failed
+    /// summary event, then the summary's error envelope — the chapters stay
+    /// and only the summary is retried (mockup frame 2c), never the run.
     func testFailedChapterKeepsTheSentenceAndTheDetailApart() async throws {
         let h = try harness()
         await openDeep(h)
         let run = try await process(h, 0)
+        run.send(chapterLine("dir:cmd", "ok"))
         run.send(#"{"event":"chapter","key":"dir:pkg","state":"failed","#
             + #""error":{"class":"provider","text":"The AI provider failed on “pkg”.","detail":"HTTP 529 overloaded"}}"#)
         run.send(#"{"event":"summary","state":"failed","#
             + #""error":{"class":"timeout","text":"The overview of the summary did not finish in 2 min.","detail":"deadline"}}"#)
-        run.send(Self.overviewEnvelope)
+        run.send(#"{"ok":false,"error":"The overview of the summary did not finish in 2 min.","#
+            + #""error_class":"timeout","detail":"deadline"}"#)
         run.finish()
         await h.settle()
         XCTAssertEqual(h.model.chapterStates["dir:pkg"], .failed(text: "The AI provider failed on “pkg”.", detail: "HTTP 529 overloaded"))
         XCTAssertEqual(h.model.summaryState, .failed(text: "The overview of the summary did not finish in 2 min.", detail: "deadline"))
-        XCTAssertEqual(h.model.chapterStates["dir:cmd"], .cached, "described in the assembled overview")
+        XCTAssertEqual(h.model.chapterStates["dir:cmd"], .ok, "the described chapter stays")
+        XCTAssertEqual(h.model.chapterDescription("dir:cmd"), "Does it.")
+        if case .failed = h.model.overview { XCTFail("a summary failure is not the whole run's failure") }
+        h.model.retrySummary()
+        let second = try await process(h, 1)
+        XCTAssertEqual(second.args.last, "--summary", "Retry redoes only the summary")
+        second.send(#"{"event":"summary","state":"ok"}"#)
+        second.send(Self.overviewEnvelope)
+        second.finish()
+        await h.settle()
+        XCTAssertEqual(h.model.summaryState, .ok)
+        guard case .ready = h.model.overview else { return XCTFail("the summary Retry lands the overview") }
     }
 
     /// Retry during a run queues; one follow-up run takes every queued key.

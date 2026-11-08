@@ -1454,9 +1454,15 @@ final class ReviewChangesModel {
 
     /// A run that failed as a whole (`busy`, `cancelled`, killed, silent):
     /// the full run's card shows the text with Retry; a partial run's
-    /// chapters and summary show it on their own lines.
+    /// chapters and summary show it on their own lines. A full run whose
+    /// summary event already failed (Go then answers that error) keeps its
+    /// chapters and shows the summary's own Retry (mockup frame 2c).
     private func failRun(_ finished: OverviewRun, text: String, detail: String?) {
-        if finished.kind == .full {
+        if finished.kind == .full, case .failed = summaryState {
+            settleFailed(finished, text: nil, detail: nil)
+            failedGenerating = true
+            overview = .idle
+        } else if finished.kind == .full {
             settleFailed(finished, text: nil, detail: nil)
             failedGenerating = true
             overview = .failed(text, detail: detail)
