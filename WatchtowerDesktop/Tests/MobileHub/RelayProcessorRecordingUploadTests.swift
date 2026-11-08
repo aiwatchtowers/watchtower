@@ -81,11 +81,13 @@ final class RelayProcessorRecordingUploadTests: XCTestCase {
     private func makeJobs() throws -> PhoneRecordingJobs {
         let dir = recordingsDir
         let store = DatabasePendingTranscriptStore(writer: try XCTUnwrap(dbPool))
+        let claims = RecordingNameClaims()
         return try PhoneRecordingJobs(
             sidecar: sidecar, dbPool: dbPool, events: nil, now: { [now] in now },
             enqueue: { [weak self] audio, eventID, title in
                 let url = try await MeetingRecorderCenter.reservePhoneRecording(eventID: eventID, title: title,
-                                                                                isPrivate: false, in: dir, store: store)
+                                                                                isPrivate: false, in: dir, store: store,
+                                                                                claims: claims)
                 try await MeetingRecorderCenter.copyPhoneRecording(from: audio, to: url, store: store)
                 self?.enqueued.append((url, eventID, title))
                 return url
