@@ -4,7 +4,7 @@ import Foundation
 /// "N chapters / M files left" counter and the next chapter to read.
 package enum ReviewChapterList {
     package struct Section: Equatable, Sendable, Identifiable {
-        package enum Kind: String, Sendable { case dangerous, other, canSkip }
+        package enum Kind: Sendable { case dangerous, other, canSkip }
 
         package var id: Kind { kind }
         package let kind: Kind
