@@ -145,13 +145,14 @@ calls on it.
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for agent analytics, owner approved in ask #153, board #297; amended 2026-10-15 for the methodology preset, board #266; amended 2026-10-18 for agent analytics moving to `agentlog.db`, owner approved in ask #350, board #849)
+**Status:** Enforced (amended 2026-10-11 for the owner's presence row, owner approved in ask #148, board #395; amended 2026-10-12 for the Codex part, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for links leaving the folder, owner approved in ask #118, target 156; amended 2026-10-14 for the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for agent analytics, owner approved in ask #153, board #297; amended 2026-10-15 for the methodology preset, board #266; amended 2026-10-18 for agent analytics moving to `agentlog.db`, owner approved in ask #350, board #849; amended 2026-11-06 for the `PreToolUse` and `PostToolUseFailure` state entries, owner approved in ask #525, board #988)
 
 **Observable:** `watchtower workbench delete N` first runs the folder removal
 (`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
 `watchtower-workbench` skill, our hook entries — `SessionStart`, `Stop` and,
 since 2026-10-03, the session state entries under `UserPromptSubmit`,
-`Notification`, `PostToolUse` and `StopFailure` (PROJ-11) and the two ask
+`Notification`, `PostToolUse` and `StopFailure` (PROJ-11; since 2026-11-06
+also `PreToolUse`, its own `"*"` group, and `PostToolUseFailure`) and the two ask
 guard entries — the `Stop` command hook (a prompt hook until 2026-10-11;
 a leftover marker prompt of the workbench goes too) and the `PreToolUse`
 command hook matched to `AskUserQuestion` (PROJ-13) — the local
@@ -370,7 +371,7 @@ owner fix a line by hand.
 
 ## PROJ-04 — the install never overwrites the owner's content
 
-**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156; amended 2026-10-14 for the cleanup allow rule, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for the two skills, owner approved in ask #146, board #266)
+**Status:** Enforced (install rules amended 2026-10-11 for the ask guard command entry, owner approved in ask #148, board #395; amended 2026-10-12 for `integrate codex`, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-14 for symlinks leaving the folder, owner approved in ask #109, target 156; amended 2026-10-14 for the cleanup allow rule, owner approved 2026-10-12 in ask #193, board #535; amended 2026-10-15 for the two skills, owner approved in ask #146, board #266; amended 2026-11-06 for the `PreToolUse` and `PostToolUseFailure` state entries, owner approved in ask #525, board #988)
 
 **Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
@@ -380,10 +381,13 @@ the ask guard (PROJ-13) — since 2026-10-11 the command entry `workbench
 ask-guard --workbench N --stop` (`timeout: 30`), before that a prompt hook —
 two entries of ours on that event; one
 each under `UserPromptSubmit`, `Notification`, `PostToolUse`,
-`StopFailure`, since 2026-10-10 `SubagentStop` and, since 2026-10-11,
-`SubagentStart` (the six session state hooks, PROJ-11); and, since 2026-10-03, one
-`PreToolUse` command entry in its own group with matcher `AskUserQuestion`
-(the ask tool block, PROJ-13). A command entry is recognised per event by its
+`StopFailure`, since 2026-10-10 `SubagentStop`, since 2026-10-11
+`SubagentStart` and, since 2026-11-06, `PostToolUseFailure` and a
+`PreToolUse` entry in its own group with matcher `"*"` (the eight session
+state hooks, PROJ-11; an entry of ours found in another `PreToolUse` group is
+moved to its own `"*"` group, the owner's hooks there kept); and, since
+2026-10-03, one `PreToolUse` command entry in its own group with matcher
+`AskUserQuestion` (the ask tool block, PROJ-13). A command entry is recognised per event by its
 command suffix after a `watchtower` binary (installing twice leaves one of
 each; the state and ask guard entries have no legacy spelling, so nothing
 else is taken for one), and our command entry written from another binary is
@@ -401,7 +405,8 @@ takes out the command entry and any leftover marker prompt of N. Our
 (the owner's hooks there kept) and re-added in its own `AskUserQuestion`
 group. A malformed settings file — `hooks`, or the entry list of any event
 we own (`PreToolUse` included since 2026-10-03, `SubagentStop` since
-2026-10-10, `SubagentStart` since 2026-10-11), of the wrong type — is left
+2026-10-10, `SubagentStart` since 2026-10-11, `PostToolUseFailure` since
+2026-11-06), of the wrong type — is left
 byte-identical and reported once by the install, the removal and the status
 (a malformed owner `hooks.SubagentStop` or `hooks.SubagentStart` is refused
 there like any other state event, while the
@@ -1086,16 +1091,17 @@ attributed to Watchtower.
 
 ## PROJ-11 — session state hooks never steer the session's agent and never show a stale state (v1 limits below)
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566; amended 2026-10-14 for the worktree ledger of the session cleanup, owner approved 2026-10-12 in ask #193, board #535)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03; amended 2026-10-03 to the session report's state set, owner-approved in the states brainstorm, and 2026-10-04 to the turn order of board #368, see the changelog; amended 2026-10-10 with the owner's approval, board #411, ask #139; amended 2026-10-11 for the chat question columns, owner approved in ask #148, board #395; amended 2026-10-11 for teammates in their turn, owner approved in ask #167, board #543; amended 2026-10-12 for Codex sessions — the heading said "never steer Claude Code" —, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-12 for Ready to check, owner approved 2026-10-12, ask #195, board #534; amended 2026-10-12 for the session's working directory, owner approved in ask #188, board #566; amended 2026-10-14 for the worktree ledger of the session cleanup, owner approved 2026-10-12 in ask #193, board #535; amended 2026-11-05 for a Codex turn's failure read from its rollout and the Codex Interrupt hook, owner approved in ask #499, board #959; amended 2026-11-06 for the tool start and the failed tool as working signals and the longer lock wait, owner approved in ask #525, board #988; amended 2026-11-07 for the interrupt's turn end (board #1019) and the ledger's last sighting (board #1018), owner approved in ask #576)
 
 **Observable:** `workbench session-state --workbench N` (installed async,
 `"timeout": 5`, under `UserPromptSubmit`, `Notification`, `PostToolUse`,
-`StopFailure`, since 2026-10-10 `SubagentStop` and, since 2026-10-11,
-`SubagentStart` — six state hooks; the
+`StopFailure`, since 2026-10-10 `SubagentStop`, since 2026-10-11
+`SubagentStart` and, since 2026-11-06, `PreToolUse` (matcher `"*"`) and
+`PostToolUseFailure` — eight state hooks; the
 first four are the core ones, and only they gate the Stop hook's state write
-and the run mark, so a folder installed before `SubagentStop` or
-`SubagentStart` keeps recording until Repair, while `integrate status`
-reports `state_hooks` only with all six) and the Stop hook's state write (PROJ-07 note) never print to
+and the run mark, so a folder installed before `SubagentStop`,
+`SubagentStart`, `PreToolUse` or `PostToolUseFailure` keeps recording until
+Repair, while `integrate status` reports `state_hooks` only with all eight) and the Stop hook's state write (PROJ-07 note) never print to
 stdout, never exit non-zero, never block or delay a prompt (async entries),
 and do nothing without `WATCHTOWER_TERMINAL_SESSION_ID` (stdin unread). They
 write only workbench N's `claude` row whose stored `claude_session_id` equals
@@ -1132,8 +1138,9 @@ shows **Error** (red). `finish_session` stores `finished_at`/`finish_summary`
 and shows **Finished** (blue; orange while the session has an open `question` ask; Ready to check below while
 every open ask is a check or a review)
 whether or not the session runs. A write that changes the state into
-`working` (a UserPromptSubmit, or a PostToolUse out of waiting or approval:
-a turn the agent started itself is a new turn) clears `finished_at` and the
+`working` (a UserPromptSubmit, a PostToolUse out of waiting or approval, or
+since 2026-11-06 a main-thread PreToolUse or PostToolUseFailure out of
+waiting: a turn the agent started itself is a new turn) clears `finished_at` and the
 error in the same statement (`finish_summary` is kept); a `working` over a
 stored `working` clears `finished_at` only for a UserPromptSubmit, never for
 a PostToolUse (that is `finish_session`'s own turn); an
@@ -1254,12 +1261,82 @@ cleanup must find), and a codex row records too. The pair comes from the
 symlink-resolved `cwd` (or its nearest existing ancestor), a walk up for
 `.git` (`internal/gitdir`; an unreadable `.git` stops the walk) and a read
 of the worktree's `HEAD` file — `""` for a detached HEAD or an unreadable
-one, still recorded. A known pair or a full session is seen by one
-read-only read and writes nothing (no write lock); a new pair is written by
+one, still recorded. A known pair already seen in the current run (its
+`last_at`, else `first_at`, at or after the run mark) or a full session is
+seen by one read-only read and writes nothing (no write lock); a known pair
+last seen before a readable run mark gets one `UPDATE` of its `last_at` to
+the event's time (board #1018, migration `00174`; `first_at` never changes),
+in its own transaction after the state write. `last_at` only moves
+forward; concurrent hooks of one run that both find the pair stale may both
+write it (the later stamp wins), so the move costs at most a few writes per
+pair per run, never a wrong value; a pair whose run mark is unreadable is
+not touched (it counts in the run it was first seen in). A failed move is
+one stderr line `watchtower: session worktree sighting not moved: …` after
+the state write and never fails or changes it; a new pair is written by
 `INSERT OR IGNORE` in its own transaction after the event's state write has
 committed, never inside it. No `cwd`, an unresolvable one, one outside any
 repository or a conversation that is not the row's records nothing. The
 "session full" stderr line comes at most once per hook process.
+
+Since 2026-11-06 (board #988, owner approved in ask #525: "a working agent
+is always Working"; the `PostToolUseFailure`-over-`approval` rule: owner approved in
+ask #527): a `PostToolUseFailure` (a tool ran and failed) is a
+`PostToolUse` in every respect — on the main thread out of `waiting` or
+`approval`, in a subagent only over `approval` plus the background heartbeat
+— except a tool the owner interrupted (`is_interrupt: true`): no Stop
+follows an interrupt, so a main-thread one records `waiting` (over
+`working` or `approval`, under the turn order below; it clears no count or
+question beyond a plain `waiting`) and a subagent's records nothing. A main-thread `PreToolUse` (a tool
+starts) records `working` out of `waiting`, out of the run mark (a stamp
+with no state) or a row with nothing stored, but never over `approval` (it
+fires before the tool's permission dialog; the guard is in the read and in
+the guarded `UPDATE`). Both keep a main-thread `PostToolUse`'s turn order: the
+transcript placement of the call's `tool_use_id`, `agent_tool_run`, the write
+landing only while the turn end it checked still holds, and the Stop's
+`waiting` replacing that `working` whatever its stamp; a call the transcript
+cannot place keeps the time order. Out of `waiting` such a write also clears
+the background count and the chat question, as a `PostToolUse`'s does. A
+subagent's `PreToolUse` writes nothing. The async
+state hooks wait up to 2 s for the write lock and try once more after a busy
+lock, every write of one hook process — the worktree ledger's included —
+inside one 4.5 s budget from its start
+(the hook's 5 s timeout less a margin; a write or retry with no time left is
+not tried and is reported as one stderr line), the state write first (a
+`UserPromptSubmit` clears the chat question after it); so does the
+`SessionStart` id move (`SetTerminalClaudeSessionID`, its own 4.5 s budget);
+the sync Stop hook, the run mark and Codex's synchronous hooks keep their one
+1 s wait. The worktree ledger's write comes last in that shared budget, so a long
+lock can leave it out (reported on stderr); the session/worktree pair's next
+event tries it again (`HasSessionWorktree` is read first). Codex is unchanged (no
+`PostToolUseFailure` event there, and its hooks are synchronous).
+
+Since 2026-11-07 (board #1019, **owner approved in ask #576**, which
+superseded ask #572) the interrupted main-thread tool's `waiting` also ends
+the turn: the same guarded `UPDATE` (`db.AgentOrder.Interrupt`/`TurnEnd`,
+under the tool run's `agent_turn_end IS <seen>` guard and the time order,
+`agent_tool_run = 0`) stores the interrupted turn's end as `agent_turn_end`,
+read from the transcript, never its size when the hook runs: after the
+interrupted call's `tool_use` (searched from the stored turn end, or the
+start with none), the start of the first user message without a tool result
+that Claude Code did not write inside the turn (`isMeta`, a compaction
+summary and a message of only `<system-reminder>` blocks are skipped) —
+the interrupt marker or the owner's next prompt —, else the end of the last
+whole line. A later async tool hook of the interrupted turn is placed
+before it and writes nothing over the `waiting`; the next turn's calls are
+placed after it even when already in the transcript. The turn end moves
+only when the transcript places the interrupted call after the stored turn
+end (or, with none stored, finds it at all); a call placed before is an
+ended turn's and writes nothing; an unplaced one records `waiting` by the
+time order alone with one stderr line `watchtower: interrupt: turn end not
+moved: <reason>` (none for an input with no transcript path). Over a stored
+`waiting` an interrupt whose turn end would move is not a repeat: it stores
+the turn end (a moved turn end is a change, also in the guarded `UPDATE`).
+The Stop reads the row's agent turns only when its input lists background
+tasks. Accepted limits: an interrupt whose hook starts after the next
+prompt's repeated `working` writes `waiting` while the new turn runs, until
+that turn's next tool hook records `working`; a user message of any other
+kind inside the interrupted turn ends it early; an interrupt stamped before
+a later transition into `working` writes nothing.
 
 Since 2026-10-12 (board #399, Codex): a `codex` row gets the same guarantees
 from codex's own hooks, passed as launch flags (`workbench <verb> --agent
@@ -1274,20 +1351,77 @@ transcript turn-order check for codex rows. The mapping:
 
 | Codex event | Stored write |
 |---|---|
-| `UserPromptSubmit` | `working` (as Claude) |
+| `UserPromptSubmit` | `working` (as Claude); over a stored `working` (a turn that failed with no Stop) it moves `agent_state_at` to the prompt's time (`RestampCodexPromptTurn`, board #959), so the failed turn's error never lands on the new turn |
 | `PermissionRequest` | `approval` (Claude's `Notification` `permission_prompt`) |
 | `PostToolUse` | `working` over `approval`/`waiting`, ordered by time only |
 | `SubagentStart` / `SubagentStop` | open / close the `agent_id` turn in `agent_turns` (only `agent_id` needed); a stop lowers the count to the open turns |
 | `Stop` | the drift check, then `waiting` with the count of open turns (NULL when none); no `HasCoreStateHooks` gate (the whole hook set arrives in one argv and is trusted in one batch) |
+| `Interrupt` (since 2026-11-05, board #959) | the owner's Esc, which fires no Stop: the Stop's `waiting` with the count of open turns, no drift check |
+| a failed turn (since 2026-11-05, board #959; pulled by the session host since G5, board #972) | no hook (Codex has no `StopFailure`, and Stop does not fire): the session host's rollout watch (`internal/sessionhost/codexwatch.go`, one per hosted codex row while it reads `working`, `stat` every 2 s) — or, for a session whose host does not watch, the app's bridge `workbench session-probe` — reads the rollout's last turn lifecycle event; a `task_complete` carrying `error` writes the StopFailure write — `waiting`, `agent_failed_at`, `agent_error` = `codex_error_info` — through `recordAgentState(…, onlyFrom: working)` stamped with that line's time, so a turn the host and the bridge both report is written once; the next prompt clears it as for Claude |
+| an interrupted turn, pulled (G5, board #972) | the host's watch reads a last `turn_aborted` and writes the Interrupt's plain `waiting` the same way (only over `working`, stamped with the line); the `Interrupt` hook above stays the main path |
+| any hook event of the row's session (G5) | clears `agent_watch_issue` (below), so the watch re-arms |
 | `SessionStart` | a NULL id is set on any source and the run marked; `startup`/`resume` with the same id mark the run; `resume` onto another id moves it and marks; `clear`, `fork` and a `compact` onto another id move it like Claude's switch path (no mark: `agent_state` stays until the next prompt); a same-id `compact` writes nothing but a changed transcript path; `startup` with another stored id writes nothing |
 
-Codex v1 limits: no Error state (codex has no `StopFailure`), no idle notice
-(`waiting` comes only from Stop), background agents only through
-`SubagentStart`/`SubagentStop`, and no registry probe: `workbench
-session-probe` reads `unknown` for a codex row without reading `~/.claude`,
-so a stale count ends by the existing path. A Claude SessionStart never
+**Never a silent `working` (G5, spec 2026-11-05 §3.5, decision C, ask #499).**
+When the watch cannot read a working codex row's rollout it marks the row not
+watched instead: `terminal_sessions.agent_watch_issue` (migration 00175:
+`missing`/`permission`/`compressed`/`unreadable`) and `agent_watch_issue_at`,
+written by `db.SetAgentWatchIssue` only over a `working` codex row that is not
+finished and carries no failure (a failure wins), and only while the row still
+holds the session id, transcript path and state stamp the verdict was read
+off (a hook in between re-arms instead; a give-up ends the arm). Missing: after 30 s, with one
+`LocateCodex` lookup by session id; permission (EACCES/EPERM) and compressed
+(a zstd rollout that does not decode) at once; unreadable after three ticks
+in a row with an undecodable committed last line (an unterminated last line
+waits for the next tick). A rotation (a new `agent_transcript_path`, a new
+inode, a shrunk file) re-reads from the start and never gives up. No path
+yet, a row not working, finished or already marked: not armed. The watch
+ends with the session's process or the row's deletion. One log line per row
+and issue, row id and class only (FILES-01). The next hook event of the row
+clears the mark. The Desktop and the phone show "Working · not watched"
+(`SessionStatePresentation`, the hub's `resolveState`, the Kit's
+`watchIssue`); an automation `session()` waiting on the row ends at once
+with `not_watched` (AUTO-11, N6 in ask #516).
+
+Codex v1 limits: the Error state comes from the rollout, not a hook, so it
+shows up to 2 s after the turn failed (the host's tick). The app's bridge
+(`SessionBackgroundProber` running `workbench session-probe` once per 5 s for
+a live codex row that reads Working) runs only for a run the host does not
+watch: each run's Launched/Attached reply says `watched` only when its watch
+store opened, so a host older than G5, a store that did not open (logged
+path-free) or a launch with no database leaves the run to the bridge. The
+bridge follows the same table without ticks: permission and compressed at
+once, a rollout missing while the row has worked 30 s (`missing`, only once
+the row stores a transcript path), and an undecodable tail on a file
+unchanged for three watch ticks (`unreadable`). A zstd-compressed rollout is
+read through `internal/rollout` like a plain one, and a rollout whose last
+256 KB hold no turn event reads as not failed. A turn that fails
+while the row reads Needs approval, or after a later state write on the row,
+is not shown as Error. While the session host is down nothing watches (its
+sessions are gone with it). Codex sessions get no idle notice and no elicitation approval
+(`waiting` comes only from Stop and Interrupt; codex 0.159.2 has no `Notification` hook event and an MCP
+elicitation fires no hook, plan Task G7 spike (c): `sessionagent.Caps` `IdleSignal`/`Elicitation` are
+false and Settings → Notifications says "Idle notices are not available for Codex sessions.",
+guard `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent`), and background agents only
+through `SubagentStart`/`SubagentStop`. A stale background count is judged
+from the rollout (S6): `workbench session-probe` reads the subagent lifecycle
+(`sessionfeed.LiveOf`): one still running reads `busy` and keeps the count,
+all finished reads `idle`, and no rollout or an unknown status reads
+`unknown`, which ends the count as before; it never reads `~/.claude`. A Claude SessionStart never
 writes into a codex row (a nested `claude` in a codex session's shell), and a
 nested `codex exec` gets no launch flags, so it fires no hooks.
+
+**One entry point (A5, spec 2026-11-05 §3.5).** Every state write of a
+session event goes through `recordAgentEvent` (cmd), the only caller of
+`recordAgentState`: a hook's payload, decoded by its agent's session adapter
+(`sessionagent.Adapter.Normalize`, the moved `hookEvent`), and a pulled turn
+(`sessionagent.Puller.Event`: a failed codex turn reads as a StopFailure
+carrying its `codex_error_info`, an aborted one as an Interrupt) reach the row
+the same way, under the same guards (time order; a payload of another session
+writes nothing). The event decides the failure and whether it is the owner's
+prompt. Consumers decide by the adapter's `Caps` (`internal/sessionagent`,
+shared with Swift and the phone through `agent_capabilities.json`), never by
+the kind. Guard: `TestSessionAgent_OneStateEntryPoint` (an AST check).
 
 **Why locked:** Owner decisions of board #312 (2026-10-03), and the states
 brainstorm of the session report (1a, 2a, 3a, 4: all). A status hook that
@@ -1323,11 +1457,15 @@ it again once it was cleared; only Go writes it.
 - Board #411, the Desktop in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testProj11_BackgroundAgentsAreNotStopped`, `testProj11_BackgroundWithAsksIsNotWaitingOnAsk`, `testProj11_BackgroundEndsOnGrace` (a count lowered to 0 ends after 120 s; a count > 0 never ends on the Desktop's clock), `testProj11_UnreadableOrFutureBackgroundStampIsNotBackground`, `testProj11_BackgroundIsAtPrompt`; `WatchtowerDesktop/Tests/Core/SessionAgentNoticePolicyTests.swift::testProj11_BackgroundIsNeverAnnouncedTheStopAfterOnce`
 - Board #411, the staleness probe (2026-10-10, registry only, ask #142) — in `cmd/workbench_session_probe_test.go`: `TestProj11_ProbeNeverStartsBackground` (a `waiting` with no count: nothing written whatever the registry reads), `TestProj11_ProbeNeverEndsOnAFailedReading` (a `ps` that cannot answer for an existing pid, or a registry whose every entry file is unreadable → `ok: false`, the row byte-identical), `TestSessionProbeStageOneTable` (a count stale for 30 min: `busy` and `waiting` write nothing; `idle`, `shell`, a missing or unknown status, no entry, a dead or reused pid end the count and only it; not stale, an unparsable stamp or a row back to `working` → `not_stale`, nothing written), `TestSessionProbeStaleStampWithoutACountIsNotStale` (a NULL or 0 count next to a stale stamp → `not_stale`, nothing written), `TestSessionProbeNeverTouchesStateOrFinished` (whatever the outcome: `agent_state`, its time, `finished_at`, the turn order and the error stay), `TestSessionProbeEnvelopeShape` (one JSON object, exit 0; `ok: false` with an error on a missing row, another workbench, no ids, a broken config), `TestSessionProbeWorkbenchFlags` (`--workbench` and `--session` reach the probe), `TestSessionProbeHasNoPingFlag` (no ping is built: `--ping` is an unknown flag); in `internal/db/terminal_sessions_test.go`: `TestEndTerminalBackgroundIsCompareAndClear` (clears only the two columns, only on the stamp the probe read; a newer heartbeat or Stop, a row back to `working`, another conversation or workbench → nothing written; a second end is a no-op); supporting in `internal/claudesession/registry_test.go`: `TestFindSessionPrefersTheLiveEntryOfASession`, `TestAliveRejectsAReusedPID` (a `ps` error is unknown, never dead), `TestFindSessionFirstWriteEntryHasNoStatus`, `TestFindSessionUnreadableRegistryIsAnError`, `TestFindSessionPropagatesAnUnreadableProcessTable`, `TestFindSessionTakesTheConfigDirLiterally`
 - Board #411, the Desktop half of the staleness probe (2026-10-10, ask #142; the Desktop only decides when to run `workbench session-probe` and never writes) — in `WatchtowerDesktop/Tests/Core/SessionAgentStatusTests.swift`: `testNeedsProbeTable` (a count above zero whose report is at least 30 min old, never one from the future), `testProj11_DisplayOverEndsTheCountWithoutAWrite` (a count shown over reads as finished / ask / stopped); in `WatchtowerDesktop/Tests/Core/SessionProbeResultTests.swift`: `testDecodesEveryOutcomeAndTheFailureEnvelope`; in `WatchtowerDesktop/Tests/SessionBackgroundProberTests.swift`: `testNoProbeBeforeThirtyMinutes`, `testABusyCountIsProbedAgainOnlyAfterAnotherThirtyMinutes`, `testNoProbeOutsideAgentsWorking` (Needs approval, working, not live, standalone, an earlier run, a count of 0 or none), `testOneProbeInFlightPerSession`, `testOneFailedProbeNeverEndsTheCount`, `testTwoFailedProbesShowTheCountOverWithoutAWrite` (cleared by a probe that runs, a new report and a new run), `testAnEndedCountAsksForARead`, `testStopCancelsTheProbe`; in `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift`: `testAProbeThatEndsTheCountPostsOneStoppedNotice`, `testTwoFailedProbesShowStoppedOnceWithoutAWrite`
-- Codex (2026-10-12, board #399) — in `cmd/workbench_codex_hooks_test.go`: `TestProj11_CodexForeignSessionIDIgnored`, `TestProj11_CodexPermissionRequestIsApproval`, `TestProj11_CodexPostToolUseClearsApproval`, `TestProj11_CodexRowNeverGetsFailure`, `TestProj11_CodexStopGateTrueWithoutSettingsFile`, `TestProj11_CodexStopWritesWaitingAndOpenTurnCount`, `TestProj11_CodexStopWithoutOpenTurnsHasNoCount`, `TestProj11_CodexSubagentStopLowersCount`, `TestProj11_CodexSubagentWithoutAgentIDWritesNothing`; `internal/db/terminal_sessions_codex_test.go::TestProj11_CodexNullIDIgnoresStateWrites` (every hook writer, a real and an empty id: the NULL-id row byte-identical); supporting: `cmd/workbench_codex_hooks_test.go` (`TestCodexSessionStart_PlanTable`, `TestCodexSessionStart_StartupSetsNullID`, `TestCodexSessionStart_ResumeMarksRun`, `TestCodexSessionStart_ClearMovesIDAndClearsState`, `TestCodexSessionStart_CompactKeepsTheLiveTurn`, `TestCodexSessionStart_StartupWithOtherStoredIDWritesNothing`, `TestCodexSessionStart_NestedClaudeNeverTakesTheRow`, `TestSessionProbe_CodexRowIsUnknownWithoutClaudeDir`), `cmd/workbench_hook_row_test.go` (`TestCodexHook_WithoutItsRowWritesNothing`, `TestCodexHook_OnItsRowWithoutAnIDWritesNothing`, `TestResolveHookRow_CodexFromEnv`), `internal/db/terminal_sessions_codex_test.go::TestAgentGuardsAcceptCodex`; every existing PROJ-11 guard above unchanged
-- supporting (board #411): `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStopAndStart`, `TestHasStateHooksNeedsAllSixCoreNeedsFour`); `WatchtowerDesktop/Tests/Core/SessionStatePresentationTests.swift::testBackgroundIsGreenWithAgentCount`; `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift::testBackgroundEndsOnTheClockWithoutAWrite` (the 120 s grace, one notice, no write); `cmd/workbench_check_test.go::TestBackgroundAgentsCountTable` (was `TestBackgroundSubagentsCountsSubagentsAndWorkflows`; its type and malformed-input cases kept, its `except` cases moved to `TestBackgroundAgentsLeavesOutTheStoppingAgent`), `TestStopHookInputParsesTheCapturedFixtures`
+- Codex (2026-10-12, board #399) — in `cmd/workbench_codex_hooks_test.go`: `TestProj11_CodexForeignSessionIDIgnored`, `TestProj11_CodexPermissionRequestIsApproval`, `TestProj11_CodexPostToolUseClearsApproval`, `TestProj11_CodexRowGetsFailureOnlyFromItsRollout` (renamed from `TestProj11_CodexRowNeverGetsFailure` on 2026-11-05, see the changelog), `TestProj11_CodexInterruptEndsTheTurn`, `TestProj11_CodexPromptAfterAnUnseenFailureIsNeverMarkedFailed`, `TestProj11_HostAndBridgeReportSameFailureOnce`, `TestProj11_HostPullEndsAnAbortedTurnAsWaiting`, `TestProj11_NextHookEventClearsWatchIssue` (G5), `TestProj11_CodexStopGateTrueWithoutSettingsFile`, `TestProj11_CodexStopWritesWaitingAndOpenTurnCount`, `TestProj11_CodexStopWithoutOpenTurnsHasNoCount`, `TestProj11_CodexSubagentStopLowersCount`, `TestProj11_CodexSubagentWithoutAgentIDWritesNothing`; `internal/db/terminal_sessions_codex_test.go::TestProj11_CodexNullIDIgnoresStateWrites` (every hook writer, a real and an empty id: the NULL-id row byte-identical); supporting: `cmd/workbench_codex_hooks_test.go` (`TestCodexSessionStart_PlanTable`, `TestCodexSessionStart_StartupSetsNullID`, `TestCodexSessionStart_ResumeMarksRun`, `TestCodexSessionStart_ClearMovesIDAndClearsState`, `TestCodexSessionStart_CompactKeepsTheLiveTurn`, `TestCodexSessionStart_StartupWithOtherStoredIDWritesNothing`, `TestCodexSessionStart_NestedClaudeNeverTakesTheRow`, `TestSessionProbe_CodexRowIsUnknownWithoutClaudeDir`), `cmd/workbench_hook_row_test.go` (`TestCodexHook_WithoutItsRowWritesNothing`, `TestCodexHook_OnItsRowWithoutAnIDWritesNothing`, `TestResolveHookRow_CodexFromEnv`), `internal/db/terminal_sessions_codex_test.go::TestAgentGuardsAcceptCodex`; every existing PROJ-11 guard above unchanged
+- supporting (board #411): `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStopAndStart`, `TestHasStateHooksNeedsAllEightCoreNeedsFour`, renamed from `…AllSix…` on 2026-11-06, board #988); `WatchtowerDesktop/Tests/Core/SessionStatePresentationTests.swift::testBackgroundIsGreenWithAgentCount`; `WatchtowerDesktop/Tests/SessionAgentStateCenterTests.swift::testBackgroundEndsOnTheClockWithoutAWrite` (the 120 s grace, one notice, no write); `cmd/workbench_check_test.go::TestBackgroundAgentsCountTable` (was `TestBackgroundSubagentsCountsSubagentsAndWorkflows`; its type and malformed-input cases kept, its `except` cases moved to `TestBackgroundAgentsLeavesOutTheStoppingAgent`), `TestStopHookInputParsesTheCapturedFixtures`
 - Board #543, teammates in their turn (2026-10-11, ask #167) — in `cmd/workbench_session_state_test.go`: `TestProj11_TeammateCountsOnlyInItsTurn` (a replay of the captured inputs: two teammates in their turn at the Stop → 2, each `SubagentStop` lowers by one, the next Stop with both idle → NULL, an internal agent's stop changes nothing, a teammate's start over Stopped raises nothing until the next Stop), `TestProj11_FinishedSubagentStillListedIsNotCounted` (the last `SubagentStop` lowers to 0 although the list still carries the subagent that stopped before it), `TestProj11_SubagentStartNeverStartsOrRaisesTheCount` (over a counted `waiting` and over `working`: every column but `agent_turns` byte-identical), `TestProj11_LostTeammateStopIsCappedByTheList`, and in `internal/db/terminal_sessions_test.go` `TestProj11_LateHookOfThePreviousRunWritesNoTurn` (a turn stamped before the run mark writes nothing); `TestProj11_OnlyTheStopStartsBackground`, `TestProj11_HookNeverWritesStdoutAndExitsZero` and `TestProj11_NestedSessionNeverMovesTheRow` extended with `SubagentStart`; in `internal/db/terminal_sessions_test.go`: `TestProj11_AgentTurnStampsOnlyMoveForward`, `TestProj11_AgentTurnsCapDropsOldestClosed`, `TestProj11_AgentTurnWriteNeverTouchesTheState`, and `TestProj11_NewRunAndConversationSwitchClearTheCount` extended (the three resets NULL `agent_turns`; a row holding only turns is cleared)
 - Board #565/#566, the session's working directory (2026-10-12, ask #188) — in `cmd/workbench_session_state_test.go`: `TestProj11_CwdNeverChangesTheState`, `TestProj11_UnchangedCwdWritesNothing`, `TestProj11_SubagentCwdIsNeverRecorded`; in `internal/db/terminal_sessions_test.go`: `TestProj11_OlderCwdNeverOverwritesANewerOne`, `TestProj11_CwdWriteNeverTouchesTheState`, `TestProj11_LateHookOfThePreviousRunWritesNoCwd`; `TestProj11_HookNeverWritesStdoutAndExitsZero` (a relative cwd and a recorded one among its inputs) and `TestProj11_NestedSessionNeverMovesTheRow` (the nested run's cwd moves nothing) extended with `cwd`; supporting: `cmd/workbench_session_state_test.go::TestHookCwdTable`, `cmd/workbench_brief_session_test.go` (`TestSessionStartRecordsTheRunsCwd`, `TestSessionStartWithoutCwdKeepsALateHooksCwdOut`), `cmd/workbench_check_test.go::TestStopHookRecordsTheCwd`, `cmd/workbench_codex_hooks_test.go::TestHookCwd_CodexHooksRecordTheMainAgentCwd`, `internal/db/terminal_sessions_test.go` (`TestSetTerminalAgentCwdWritesOnlyAChange`, `TestRunMarkStoresTheRunsCwdClearRemovesIt`, `TestConversationSwitchKeepsTheCwd`, `TestGetTerminalSessionNeedsNoCwdColumns`), `WatchtowerDesktop/Tests/Core/SessionPlaceTests.swift` (`testTrustedCwdTable`, `testResolveTable`); every existing PROJ-11 guard above unchanged
 - Board #535, the worktree ledger (2026-10-14, ask #193) — in `cmd/workbench_session_ledger_test.go`: `TestProj11_LedgerRecordsANewWorktreeOnce` (two events in one worktree → one row; a new branch → a second row), `TestProj11_LedgerFailureNeverCostsTheStateWrite` (the ledger table dropped: the state is written, exit 0, one stderr line), `TestProj11_SubagentCwdIsRecordedButNeverMovesTheSessionPlace` (a subagent event in a worktree: a ledger row, the session's place unchanged — `TestProj11_SubagentCwdIsNeverRecorded` keeps pinning the place half); supporting in the same file: `TestSessionStateLedger_Resolver`, `TestSessionStateLedger_ResolvesSymlinks`, `TestSessionStateLedger_ResolvesASymlinkIntoASubdirectory`, `TestSessionStateLedger_OutsideARepositoryRecordsNothing`, `TestSessionStateLedger_NoCwdRecordsNothing`, `TestSessionStateLedger_ForeignConversationRecordsNothing`, `TestSessionStateLedger_StopsAtTheCap`, `TestSessionStateLedger_AFullSessionTakesNoWriteLock`, `TestSessionStateLedger_UsesTheFixture`, `TestCodexSessionStateLedger_RecordsTheCwd`; `internal/db/terminal_session_worktrees_test.go` (`TestRecordSessionWorktree_InsertsOnceAndIgnoresRepeats`, `TestRecordSessionWorktree_StopsAt64`, `TestHasSessionWorktree_UsesAReadOnlyTx`); every existing PROJ-11 guard above unchanged
+
+- Board #988, working from the tool start (2026-11-06, ask #525) — in `cmd/workbench_session_state_tooluse_test.go`: `TestProj11_PreToolUseOutOfWaitingIsWorking` (out of the Stop's `waiting`, the run mark and nothing stored; `agent_tool_run` set), `TestProj11_PreToolUseNeverOverwritesApproval` (a `PreToolUse` stamped after the permission prompt leaves the row byte-identical; the guarded `UPDATE` refuses too), `TestProj11_PostToolUseFailureClearsApprovalUnlessInterrupted` (main thread and subagent: a failed tool ends `approval`, an interrupted one records `waiting` on the main thread and leaves the row byte-identical in a subagent), `TestSessionState_InterruptedToolRecordsWaiting` (`working` → `waiting`; an ended turn's interrupted call writes nothing), `TestProj11_EndedTurnsPreToolUseNeverOverwritesTheStop` (both events: the ended turn's call after the Stop writes nothing, a later turn's call records `working`, one landing first is replaced by the Stop and the stored time never goes back), `TestProj11_PostToolUseFailureIsWorking` (over `working` keeps `finished_at`; out of `waiting` records `working` and clears it); `internal/db/session_report_test.go::TestProj11_ToolStartNeverOverwritesApproval`; supporting: `cmd/workbench_session_state_tooluse_test.go` (`TestSessionState_InjectedMessageTurnIsWorking` — a teammate-message turn after the Stop and an idle notice, with and without the tool start —, `TestSessionState_SubagentToolStartOrFailureNeverMovesTheState`, `TestSessionState_SubagentToolFailureIsAHeartbeat`, `TestHookLockWaitStopsAtTheBudget`, `TestSessionState_PromptStateWriteGoesFirstWithinTheBudget`, `TestHookLockWaitRetriesABusyWriteOnce`, `TestSessionState_BusyStateWriteIsRetried`, `TestApplySessionStart_BusyIDMoveIsRetried`), `cmd/workbench_session_state_test.go::TestSessionState_AgentStateFor`, `internal/devpack/workbench_state_hooks_test.go` (`TestInstallStateHooksAddsSubagentStopAndStart`, `TestHasStateHooksNeedsAllEightCoreNeedsFour` — was `TestHasStateHooksNeedsAllSixCoreNeedsFour`, its cases kept —, `TestInstallWorkbenchInstallsTheStateHooks`); every existing PROJ-11 guard above unchanged
+- Board #1019, the interrupt ends the turn (2026-11-07, ask #576) — in `cmd/workbench_session_state_tooluse_test.go`: `TestProj11_InterruptedTurnsLateToolHookNeverOverwritesWaiting`, `TestProj11_InterruptStoresItsTurnEndWithTheState`, `TestProj11_LateInterruptMovesNothing`, `TestProj11_UnplacedInterruptKeepsTheTurnEnd`, `TestProj11_InterruptOverWaitingStoresTheTurnEnd`, `TestProj11_InterruptInTheFirstTurnStoresATurnEnd`, `TestProj11_ToolAfterAnInterruptWithNoStopRecords`, `TestProj11_InterruptWithNoTranscriptPathIsSilent`, `TestProj11_LateInterruptAfterARepeatedPromptKeepsTheNextTurn`, `TestProj11_InterruptTurnEndIsTheCallsPlaceNotTheSize`, `TestProj11_StopWithoutBackgroundTasksNeverReadsTheTurns`; supporting: `cmd/workbench_turn_order_test.go::TestInterruptedTurnEnd`, `cmd/workbench_session_state_tooluse_test.go::TestReportStateHookError_TurnEndNotMovedHasItsOwnLabel`, `internal/db/terminal_sessions_test.go` (`TestSetTerminalAgentState_InterruptStoresTheTurnEnd`, `TestSetTerminalAgentState_InterruptOverWaitingMovesTheTurnEnd`); every existing PROJ-11 guard above unchanged
+- Board #1018, the ledger's last sighting (2026-11-07, ask #576) — `TestProj11_LedgerRecordsANewWorktreeOnce` unchanged (still holds within a run); supporting: `cmd/workbench_session_ledger_test.go` (`TestSessionStateLedger_ALaterRunTouchesAReusedWorktreeOnce`, `TestSessionStateLedger_AFullSessionTouchesAHeldPair`, `TestSessionStateLedger_TouchFailureHasItsOwnLabel`), `internal/db/terminal_session_worktrees_test.go` (`TestSessionWorktree_StaleAgainstTheRunMarkAndTouch`, `TestSessionWorktree_UpgradedRowWithNoLastAt`), `WatchtowerDesktop/Tests/Core/SessionTargetBranchTests.swift::testWorkLinksCountALaneAReusedRunSawAgain`
 
 **Locked since:** 2026-10-03
 
@@ -1467,12 +1605,12 @@ would send the agent to read an answer that is not there — the
 
 ## PROJ-13 — the ask guard never traps a turn
 
-**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; amended 2026-10-03 with the `finish_session` reminder (prompt v2); amended 2026-10-10 for the ask guard v3 (#478); rewritten 2026-10-11 for presence and the three ask levels — owner approved 2026-10-05, ask #66; 2026-10-10, asks #145/#146; the business spec that amends PROJ-13 approved 2026-10-11, ask #148; board #395, see the changelog; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-15 for the ask guard modes and the finish check — owner approved in ask #141 (modes) and ask #146 (spec), board #266)
+**Status:** Enforced (Go; owner approved 2026-10-03 as the spec's "PROJ-12", renumbered; amended 2026-10-03 with the `finish_session` reminder (prompt v2); amended 2026-10-10 for the ask guard v3 (#478); rewritten 2026-10-11 for presence and the three ask levels — owner approved 2026-10-05, ask #66; 2026-10-10, asks #145/#146; the business spec that amends PROJ-13 approved 2026-10-11, ask #148; board #395, see the changelog; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-15 for the ask guard modes and the finish check — owner approved in ask #141 (modes) and ask #146 (spec), board #266; amended 2026-11-07 for classifier v5 (the chat question's context and yes/no options, the raised ask's summary) — owner approved in ask #562)
 
 **Observable:** The `Stop` ask guard is the command hook `workbench ask-guard
 --workbench N --stop` (`timeout: 30`). It never blocks when `stop_hook_active`
 is true, and it blocks at most once per Stop, so the Stop after a block always
-passes. It classifies `last_assistant_message` with the v4 text
+passes. It classifies `last_assistant_message` with the v5 text
 (`internal/devpack/askguard_classifier.md`, pinned by a golden) through
 Watchtower's light-tier model (≤ 20 s, its child process group killed and
 reaped on the budget or a signal), and decides by a fixed table: in the
@@ -1567,7 +1705,7 @@ contract pins the text.
 `timeout: 5`), both passed as launch flags and resolving the row through
 `WATCHTOWER_TERMINAL_SESSION_ID` (a codex row with a workbench; otherwise
 nothing printed, exit 0). `--stop` classifies the codex Stop's
-`last_assistant_message` with the same v4 text and decision table (an empty
+`last_assistant_message` with the same v5 text and decision table (an empty
 message calls no model), honours `stop_hook_active` the same way, and prints
 the same block JSON, which codex reads as Claude Code does. `--pre-tool-use`
 denies `request_user_input` with the same present or away reason, within the
@@ -1609,7 +1747,7 @@ decoding stdin, before any classifier call. `stop_hook_active` never blocks in a
 is away (the away reason) and lets the tool run while the owner is present in this session; `off` lets
 it run. The PreToolUse mode read runs inside the shared `askGuardReadBudget`, and a panic in it
 recovers to the strict away denial; the Stop mode read is bounded per read by `askGuardBusyTimeout`.
-The classifier text (v4 golden) and the fixed reasons are unchanged. Accepted limits: under `soft` a
+The classifier text (v4 golden at the time; v5 since 2026-11-07) and the fixed reasons are unchanged. Accepted limits: under `soft` a
 recorded question is raised only while the Desktop runs, and only in Watchtower terminal sessions.
 
 **Why locked:** Owner decision (spec 2026-10-03, decision 3), the PROJ-07
@@ -1624,7 +1762,7 @@ blocked tool: the owner approved this narrowing of "never block because
 Watchtower is broken" with v4 (business D1, ask #148).
 
 **Test guards** (names kept where they exist; none relaxed):
-- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` — now over the v4 classifier golden. Each clause it checked over v3 maps to a v4 golden clause or a named Go guard, so no assertion is dropped:
+- `internal/devpack/workbench_ask_guard_test.go::TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` — now over the classifier golden (v4; since 2026-11-07 `askguard_classifier_v5.golden`, which keeps every clause below word for word). Each clause it checked over v3 maps to a v4 golden clause or a named Go guard, so no assertion is dropped:
 
   | v3 clause checked before | v4 home |
   |---|---|
@@ -1649,7 +1787,7 @@ Watchtower is broken" with v4 (business D1, ask #148).
 - `cmd/workbench_escalate_test.go::TestProj13_EscalationIsCompareAndTake` (filed once; a cleared or replaced question, a state off `waiting` or stamped later than the tolerance → `gone`, nothing written; a second run → `gone`)
 - Codex (2026-10-12, board #399) — in `cmd/workbench_codex_hooks_test.go`: `TestProj13_CodexAskGuardStopUsesLastAssistantMessage`, `TestProj13_CodexAskGuardEmptyMessageNoModelCall`, `TestProj13_CodexPreToolUseDeniesRequestUserInput`, `TestProj13_CodexPreToolUseForeignSessionIsAway`; supporting: `cmd/workbench_hook_row_test.go::TestCodexHook_WithoutItsRowWritesNothing` (each codex hook without its row: no output, exit 0); every existing PROJ-13 guard unchanged
 - supporting (escalation): `cmd/workbench_escalate_test.go` (`TestEscalateFilesAQuickAskWithTheSameOptions`, `TestEscalationRaceFilesOneAsk`, `TestEscalateFourOptionsIsFull`, `TestEscalateZeroOptionsIsQuick`, `TestEscalateAtTheOpenCapKeepsTheQuestion`, `TestEscalateEnvelopeShape`); `internal/db/terminal_sessions_test.go::TestTakeChatQuestionIsCompareAndTake`
-- supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench` (now with both reasons), `TestAskToolDenialReasonsAreTheSpecsText`, `TestAskGuardReasonsAreTheSpecsText`, `TestDecideStopTable`, `TestStopWithoutAQuestionClearsTheOlderOne`, `TestAskGuardModelOutputNormalisation`, `TestAskGuardMessageTail`, `TestAskGuardModelChildIsIsolated`, `TestStopGuardReadFailureStillClearsTheOlderQuestion`, `TestStopGuardDeletedWorkbenchPassesSilently`, `TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing`, `TestStopGuardContinuedTurnWithoutASessionCallsNoModel`, `TestStopGuardUnreadableSessionVariableReadsAsAway`, `TestTierForSourceAskGuardIsLight`; `internal/devpack/workbench_ask_guard_test.go::TestAskGuardClassifier_IsTheV4Golden`; `internal/digest/isolated_child_test.go` (`TestIsolateChildKillsTheGroupAndDropsEnv`, `TestIsolateChildCancelAfterTheWaitKillsNothing`); `internal/db/owner_presence_test.go::TestOwnerPresentInStaleWriteIsAbsent`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys` (a prompt-only folder → `ask_guard: false`)
+- supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench` (now with both reasons), `TestAskToolDenialReasonsAreTheSpecsText`, `TestAskGuardReasonsAreTheSpecsText`, `TestDecideStopTable`, `TestStopWithoutAQuestionClearsTheOlderOne`, `TestAskGuardModelOutputNormalisation`, `TestAskGuardMessageTail`, `TestAskGuardModelChildIsIsolated`, `TestStopGuardReadFailureStillClearsTheOlderQuestion`, `TestStopGuardDeletedWorkbenchPassesSilently`, `TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing`, `TestStopGuardContinuedTurnWithoutASessionCallsNoModel`, `TestStopGuardUnreadableSessionVariableReadsAsAway`, `TestTierForSourceAskGuardIsLight`; `internal/devpack/workbench_ask_guard_test.go::TestAskGuardClassifier_IsTheV5Golden` (was `…IsTheV4Golden`); `internal/digest/isolated_child_test.go` (`TestIsolateChildKillsTheGroupAndDropsEnv`, `TestIsolateChildCancelAfterTheWaitKillsNothing`); `internal/db/owner_presence_test.go::TestOwnerPresentInStaleWriteIsAbsent`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys` (a prompt-only folder → `ask_guard: false`)
 - `cmd/workbench_askguard_modes_test.go::TestProj13_ModeTable` (2026-10-15: every mode × finish check against the table; strict + on is `decideStop`)
 - `cmd/workbench_askguard_modes_test.go::TestProj13_SoftNeverSendsBackAndAlwaysRecords` (owner away: a chat and a full request pass and are recorded, the full one with its text and level `full`)
 - `cmd/workbench_askguard_modes_test.go::TestProj13_OffWithFinishOffCallsNoModel` (set personally, also over a folder file saying strict and on: no model call, the older question kept; until 2026-10-17 its second case was "set in the folder file", which board #558 inverted into the guard below)
@@ -1663,7 +1801,7 @@ Watchtower is broken" with v4 (business D1, ask #148).
 
 ## PROJ-14 — a session report shows only that session's work, and only the session itself says it finished
 
-**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-24 for the finish gates, owner approved spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md` in ask #550, board #947)
+**Status:** Enforced (Go; owner approved 2026-10-03, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md` Part 8; amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-24 for the finish gates, owner approved spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md` in ask #550, board #947; amended 2026-11-06 for the merged progress share, owner approved in ask #525, board #986; amended 2026-11-07 for the finish gate reading the review place, owner approved in ask #576, board #1013)
 
 **Observable:** A `terminal_session_targets` link row comes only from that
 session's own workbench tools: `update_target`, `create_targets`,
@@ -1698,20 +1836,60 @@ no row or audit row (`Scope` runs again at apply, where a refusal caused by a
 change in between lands as a `failed` audit row, as for any tool) —
 while (1) the ticket has an open leaf (`todo`/`in_progress`/`in_review`;
 `blocked`, `done` and `dismissed` leaves do not count), listed in the
-refusal, or (2) the session's folder (`ReviewSessionFolder`) differs from its
-base and the AI overview cache (`review_overviews`) holds no overview for that
-exact tree, base and intent hash, or that overview lacks a `done` coverage
-entry for any intent item (a missing entry counts as not done). A folder
-outside git, or no git, an empty diff, and the workbench folder of a session
-that worked in a worktree of its own (launch folder or a recorded
-`terminal_session_worktrees` root elsewhere) and has left it skip (2); any
-other git failure refuses. `handover_ask_id` passes both: an ask of this workbench
+refusal, or (2) the session's review place differs from its base — since
+board #1013 the place a review round reads (`SnapshotReviewSession` through
+`ResolveReviewSource`/`ReviewSource.Read`: the folder's snapshot, or the task
+branch's committed tip against its base branch) — and the AI overview
+cache (`review_overviews`) holds no overview for that exact tree, base and
+intent hash, or that overview lacks a `done` coverage entry for any intent
+item (a missing entry counts as not done). On a branch-tip place (2) also
+refuses while the folder has changes against its HEAD (untracked files
+included; `ReviewSnapshot.FolderDirty`), even with an empty tip — the
+reviewer reads the tip and would never see them — with the refusal `the
+folder on <head> has uncommitted changes the reviewer does not read (it
+reads task branch <b> at its last commit) — commit them on <b> or move the
+folder onto it, then try again`; `workbench review overview --session`
+answers the same text as its error and makes no overview, and a git failure
+reading the folder refuses. A folder outside git, or no git, an empty diff,
+and the workbench folder of a session that worked in a worktree of its own
+(launch folder or a recorded `terminal_session_worktrees` root elsewhere)
+and has left it skip (2) — the last only for a folder snapshot, never on a
+branch-tip place; any other git failure refuses. Since board #1013
+`annotate_changes` checks and stamps its notes against the same place and
+names the tip in its refusals. `handover_ask_id` passes both: an ask of this workbench
 filed by this session (`owner_asks.session_id`), not withdrawn, about the
 ticket or a target under it (any target when there is no ticket); a refusal
 names what is wrong with it. The gates never call the model or write the
 database (the snapshot writes git objects only); the overview is made by the
 agent through `workbench review overview --session <id>`, which caches it
 under the key the Desktop round on the same tree reads and opens no round.
+
+Since 2026-11-06 (board #986, **owner-approved, ask #525**) the progress
+(report, phases and row line) counts a merged share apart from `done`: a
+not-done progress leaf whose branch git finds in its base — the branch of its
+nearest ancestor that carries one, when that differs from the leaf's own; a
+leaf with no branch or on that ancestor's branch (plan tasks on their
+feature's branch) never counts as merged — this base rule is a controller
+decision on board #986, not part of ask #525.
+The verdict is the drift check's merge detection against that base
+(`workbenchcheck.OpenRepositoryAgainst`: a commit-less fresh branch is not
+merged), cached in `workbench_pr_states` under `into:<base>:<branch>`; a
+branch git no longer finds keeps its cached verdict, and so does a cached
+merged branch left only on origin with a tip the base contains (session
+cleanup deleted the local branch; without its reflog git cannot tell a
+fast-forward merge from a branch with no work). `session-report
+--summary` refreshes these verdicts with git only, within 3 s, and never
+runs gh; the refresh still writes only `workbench_pr_states` and never the
+board. Done keeps its meaning (the board status); with nothing merged the
+numbers read as before. Part of the same amendment's failure reporting
+(board #985 review): a summary row whose merged share holds a verdict the
+refresh could not check — a git call failed, the base did not resolve, the
+budget ran out, the cache could not be read; not a verdict git only cannot
+give, such as a base too far ahead for the squash check, and only for the
+verdicts the row's own `merged` count reads — carries `merged_stale: true`
+(additive key; false when absent) and the Desktop row caption says so
+("N merged (unchecked)", "merged not checked"); a verdict read but not saved
+still counts in that run's rows.
 
 **Why locked:** Owner decision (spec 2026-10-03, decision 4). A report that
 listed another session's work, or a session marked finished by anything but
@@ -1726,7 +1904,9 @@ owner's and the agent's backs.
 - `internal/sessionreport/refresh_test.go::TestSessionReport_ReportsAWorktreeBranch` (a placed session's `wt/` branch, board #229)
 - Codex (2026-10-12, board #399): `internal/sessionreport/summary_test.go::TestSessionReport_IncludesCodexSessions`; supporting: `internal/tools/workbench_docs_test.go::TestAgentLabel_CodexRowIsCodexCLI`, `internal/devpack/codex_hooks_test.go::TestCodexMCPOverrides_IncludeApproveAndAgentFlag` (the `env_vars` entry); every existing PROJ-14 guard unchanged
 - supporting: `internal/tools/workbench_finish_test.go` (`TestSessionLinks_EachWriteToolLinksItsTargets`, `TestSessionLinks_ReadToolsLinkNothing`, `TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns`)
+- Merged share (2026-11-06, board #986, ask #525): `internal/sessionreport/merged_test.go::TestProj14_MergedLeafCountsAsMerged`, `::TestProj14_SharedBranchNeverCountsMerged`, `::TestProj14_MergedSurvivesBranchCleanup`, `::TestProj14_MergedSurvivesCleanupOfAPushedBranch`, `::TestProj14_MergeRefreshWritesOnlyThePRCache`; supporting: `internal/workbenchcheck/base_test.go::TestOpenRepositoryAgainst_*`, `cmd/workbench_session_report_test.go::TestWorkbenchSessionReport_SummaryRefreshesTheMergedShare`, `::TestWorkbenchSessionReport_SummaryRefreshNoteGoesToStderr` (`merged_stale`), `internal/sessionreport/summary_refresh_test.go::TestRefreshedSummaries_MergedStale`, `WatchtowerDesktop/Tests/Core/SessionReportPresentationTests.swift::testMergedStaleCaption`; `TestWorkbenchSessionReport_SummaryNeverRunsGH` unchanged
 - Finish gates (2026-10-24, board #947): `internal/tools/workbench_finish_gate_test.go::TestProj14_FinishRefusesOpenLeaves`, `::TestProj14_FinishTicketFromTargetIDWhenNotLaunched`, `::TestProj14_HandoverAskPassesBothGates`, `::TestProj14_HandoverAskRefusals`, `::TestProj14_FinishCheckOffSkipsGates`, `::TestProj14_FinishRefusesWithoutOverview`, `::TestProj14_ANoteAfterTheOverviewAsksForItAgain`, `::TestProj14_FinishRefusesUncoveredItems`, `::TestProj14_AllItemsDonePasses`, `::TestProj14_LeftItsWorktreeSkipsTheOverview`, `::TestProj14_GitFailureRefuses`, `::TestProj14_OpenLeavesRefusalListsAtMostTwenty`, `::TestProj14_EmptyDiffSkipsTheOverview`; supporting: `internal/reviewdiff/snapshot_test.go::TestSameTree`, `cmd/workbench_review_overview_test.go::TestReviewOverview_SessionForm*`
+- Review place (2026-11-07, board #1013, ask #576): `internal/tools/workbench_finish_gate_test.go::TestProj14_BranchTipWithADirtyFolderRefuses`, `::TestProj14_BranchTipWithACleanFolder`; supporting: `internal/tools/workbench_review_agent_test.go` (`TestSnapshotReviewSession_BranchTipSession`, `TestAnnotateChanges_BranchTipSessionUsesTheTipTree`), `internal/reviewdiff/snapshot_test.go::TestUncommitted`, `cmd/workbench_review_branch_test.go` (`TestReviewOverview_SessionFormReadsTheBranchTip`, `TestReviewOverview_SessionFormOnAStackedBranch`); every existing `TestProj14_*` unchanged
 
 **Locked since:** 2026-10-03
 
@@ -1781,9 +1961,9 @@ other direction.
 
 **Locked since:** 2026-10-04
 
-## PROJ-16 — a line from the owner's phone reaches a Claude Code session only from a device the owner allowed on the Mac, only while the agent is idle (or working, for a Claude session), and only through PROJ-12's delivery; nothing typed from the phone ever answers a permission prompt
+## PROJ-16 — a line from the owner's phone reaches a session whose agent takes input from the phone (`phoneInput`; idle, or working for an agent whose row `takesLineWhileWorking`) only from a device the owner allowed on the Mac, and only through PROJ-12's delivery; any other agent is refused `not_supported`; nothing typed from the phone ever answers a permission prompt
 
-**Status:** Enforced (Desktop; owner approved 2026-10-07 as decision OD-1 — a new contract rather than an amendment of PROJ-12 — with OD-2, the one-time Allow on the Mac; spec `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` §6.6, §10, §11, plan `docs/superpowers/plans/2026-10-08-mobile-poc-b-workbench-remote.md` Task 18; amended 2026-10-17 for the phone's permission answers, PROJ-21, owner approved in ask #263 / #265; amended 2026-10-25 for send while busy, owner approved in ask #614)
+**Status:** Enforced (Desktop; owner approved 2026-10-07 as decision OD-1 — a new contract rather than an amendment of PROJ-12 — with OD-2, the one-time Allow on the Mac; spec `docs/superpowers/specs/2026-10-07-mobile-poc-design.md` §6.6, §10, §11, plan `docs/superpowers/plans/2026-10-08-mobile-poc-b-workbench-remote.md` Task 18; amended 2026-10-17 for the phone's permission answers, PROJ-21, owner approved in ask #263 / #265; amended 2026-10-25 for send while busy, owner approved in ask #614; amended 2026-11-05 for the session capabilities, owner approved in ask #514 / #519)
 
 **Observable:** A `session_input` or `session_finish_request` action from
 the phone is typed into a workbench session only when (0) the device is
@@ -1891,6 +2071,42 @@ the line; a Needs approval state then holds the next one) and
 `testProj16_AWorkingCodexSessionStillHoldsTheLine` (a Codex session gets no
 line); `SessionControlTests.testPhoneLineCheckStillHoldsWhileWorking` is kept.
 
+**Amended 2026-11-05 (LLM transport independence, plan Task G7, S4/S5; owner
+approved the contract change in ask #514, the plan in ask #519):** condition
+(2) reads "a live board agent session whose capability row has `phoneInput`"
+(Go `sessionagent.Caps` since plan Task A5, Swift `AgentSessionCaps`, both
+pinned to `internal/sessionagent/agent_capabilities.json`) instead of "a live board `claude` session", and
+"working" counts only for an agent whose row `takesLineWhileWorking`
+(`midturnInput` and `elicitation`: every dialog it can open mid-turn raises
+a hook state). G7's spike on codex 0.159.2 showed Codex takes a line pasted
+mid-turn at its next step (`cmd/testdata/codex_hooks/SPIKES.md` (a)), but an
+MCP elicitation form it opens mid-turn fires no hook (spike (c)), so a line
+pasted with its Return could answer that form: Codex has `phoneInput` but
+not `takesLineWhileWorking`, and its phone and Workchat lines wait for idle
+(`WorkchatModel.holdsUntilIdle = !takesLineWhileWorking`; the composer says
+"Codex takes your message when this turn ends."). Sending to a working
+Codex session is an owner decision for when codex reports elicitations. A
+board session of an agent without `phoneInput` is refused `not_supported`
+with "<Agent> sessions can't take messages from the phone yet. Type it on
+the Mac." — never "This session no longer exists on the Mac", which stays the
+deleted session's `not_found`. The Kit gains `ActionReason.notSupported`; an
+older phone decodes the reason to nil and shows the message (the failed row
+renders the hub's `errorMessage`). The phone app keeps the composer hidden
+for a Codex session ("Write to Codex sessions on the Mac.") until the hub
+publishes the capability on the session record (plan Task A5), because an
+older Mac still refuses Codex lines. Release order (ask #232 practice): the
+phone build with `notSupported` ships first or with the Mac. Guards:
+`testProj16_AWorkingCodexSessionStillHoldsTheLine` (Swift and Go; it pinned
+the old `not_found` refusal) is replaced by
+`testProj16_AWorkingCodexSessionHoldsTheLineUntilIdle` /
+`TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle` (held `agent_busy`,
+nothing typed while it works; the Go twin also types it once idle, without
+`while_busy`) and `testCodexRefusedAsNotSupported` /
+`TestProj16_CodexSessionRefusedAsNotSupported` (an agent row without
+`phoneInput`: reason and message, nothing typed);
+`TestProj16_DeletedSessionStillNotFound` pins `not_found`. Every other
+condition and guard is unchanged.
+
 **Why locked:** Any device signed into the owner's Apple ID can write relay
 records. Without a Mac-side grant, that device could drive a Claude Code
 session that holds workbench write tools. A line typed at a permission prompt
@@ -1898,7 +2114,8 @@ could be read as an answer to that dialog; a Claude agent that works queues a
 line for its next step, so working alone no longer holds it (2026-10-25).
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/MobileHub/SessionInputHandlersTests.swift` — `testProj16_AnUnallowedDeviceTypesNothing`, `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt`, `testProj16_AWorkingCodexSessionStillHoldsTheLine`, `testProj16_NeedsApprovalNeverGetsAPhoneLine`, `testProj16_ADraftHoldsTheLineAndNothingIsPasted`, `testProj16_AHeldLineExpiresAfter24h`, `testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored`, `testProj16_RevokeFailsHeldLines`, `testProj16_AnUnlinkedDeviceTypesNothing` (condition 0, through the relay)
+- `WatchtowerDesktop/Tests/MobileHub/SessionInputHandlersTests.swift` — `testProj16_AnUnallowedDeviceTypesNothing`, `testProj16_AWorkingClaudeSessionTakesTheLineButNeverAPrompt`, `testProj16_AWorkingCodexSessionHoldsTheLineUntilIdle`, `testCodexRefusedAsNotSupported`, `testProj16_NeedsApprovalNeverGetsAPhoneLine`, `testProj16_ADraftHoldsTheLineAndNothingIsPasted`, `testProj16_AHeldLineExpiresAfter24h`, `testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored`, `testProj16_RevokeFailsHeldLines`, `testProj16_AnUnlinkedDeviceTypesNothing` (condition 0, through the relay)
+- Go hub twins (`internal/hub/actions/handlers/session_input_test.go`): `TestProj16_AWorkingCodexSessionHoldsTheLineUntilIdle`, `TestProj16_CodexSessionRefusedAsNotSupported`, `TestProj16_DeletedSessionStillNotFound`; the capability rows `internal/sessionagent/adapter_test.go::TestSessionAgent_DerivedGates` and `WatchtowerDesktop/Tests/Core/AgentSessionCapsTests.swift` (`testRowsMatchGo`, `testDerivedGates`); Kit `ActionReasonTests` (`testNotSupportedDecodes`, `testUnknownReasonDecodesToNilAndKeepsMessage`); phone `SessionInputSenderTests::testFailedRowShowsHubMessageForUnknownReason`
 - The PROJ-12 guards run unchanged against `SessionLineDelivery` (see PROJ-12).
 - supporting: `SessionInputHandlersTests` (`testEmptyOrWhitespaceTextIsInvalidParams`, `testLineBreaksAndControlCharactersBecomeOneLine`, `testTextOver4000CharactersIsInvalidParams`, `testTheFinishRequestTypesTheFixedLine`, `testAMarkedRunWithNoTurnYetIsIdle`, `testAFinishedStateFromAnEarlierRunIsNotIdle`, `testAFailedStateReadHoldsTheLineAsStateUnknown`, `testASessionNotRunningOrNotOnABoardFails`, `testCancelAfterDeliveryIsANoOpAndTheOriginalStaysApplied`, `testCancelWhileHeldCancelsTheOriginal`, `testAHeldLineSurvivesAHubRestartAndGoesOnIdle`, `testALineInterruptedMidPasteIsOutcomeUnknownAfterARestart`, `testASessionDeletedWhileALineIsHeldFailsSessionNotRunning`, `testLinesHeldByTheirGateAreNotRetriedInALoop` (wired through `SessionLineDelivery.follow` and a real `SessionAgentStateCenter`), `testOnlyThePhoneThatSentALineCanCancelIt`, `testACancelDuringAnInFlightRetryTypesNothing`, `testAStopDuringAnInFlightRetryTypesNothingAndTheNextStartTypesItOnce`, `testAQuickStopAndStartTypesTheLineOnce`, `testASecondLineWaitsForAHookAfterTheFirstWasSubmitted`, `testWithoutAHookTheSecondLineGoesAfterTheSettleCap`, `testTheRelayEchoesHeldThenTheLaterOutcomeAndKeepsIt`); `RelayProcessorTests::testASidecarWithoutTheTypingRequestColumnGainsIt`; Kit `SessionInputTextTests`; `MobileLinkCenterTests` (`testALinkedPhonesStartSessionsToggleIsMirroredAndATypingRequestIsStoredNotGranted`, `testATypingRequestAsksTheOwnerOnce`, `testAPhoneLinkingWithTypingOnAsks`, `testThePhonesToggleOffRevokesAndRevokeAndRemoveAreReported`, `testAnUnrelatedRewriteKeepsTheTypingGrant`); `SessionStartHandlerTests::testABriefFromADeviceThatMayNotTypeIsIgnoredForTheBasePrompt`; phone `WatchtowerMobile/Tests/SessionInputWiringTests.swift` (`testTheToggleOffHidesTheBarAndFinish`, `testAHeldEchoShowsItsReason`, `testNeedsApprovalShowsTheNoticeAndNoSendButton`)
 
@@ -2099,7 +2316,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## PROJ-21 — a permission prompt is answered from the phone only by the owner's explicit Allow once or Deny, from a device allowed for it on the Mac, through the hook; the answer types nothing, allows one call, and never answers a prompt the Mac answered first
 
-**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; amended 2026-10-19, ask #400: the Workchat card on the Mac answers through the same guarded compare-and-set, `decided_by = "Mac"`, no device grant)
+**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; amended 2026-10-19, ask #400: the Workchat card on the Mac answers through the same guarded compare-and-set, `decided_by = "Mac"`, no device grant; amended 2026-11-05, plan Task G7, owner approved in ask #514 / #519: decided by the session capability `permissionWait`, another agent refused `not_supported`)
 
 **Observable:** A Claude Code permission prompt of a board `claude`
 session is answered from the phone only through the synchronous
@@ -2210,6 +2427,29 @@ reattach of the session host's runs is done (`SessionLiveness.settled`,
 `TerminalCenter.hostRunsSettled`), so a prompt of a session that survived
 the restart (PROJ-20) is never expired for it.
 
+**Amended 2026-11-05 (LLM transport independence, plan Task G7, S3/S4;
+owner approved the contract change in ask #514, the plan in ask #519):**
+`permission_answer` goes only to a board agent session whose capability row
+has `permissionWait` (Go `sessionagent.Caps`, Swift `AgentSessionCaps`),
+`session_interrupt` only to one whose row `takesInterrupt` (`permissionWait`
+and `elicitation`: an Esc must not cancel a form the hooks never reported — G7 spike (c): a codex 0.159.2 MCP elicitation form shows "esc to cancel" in the terminal, fires no hook and leaves the row Working, so the phone's Esc would cancel it instead of interrupting the turn; kept refused for Codex by the owner's answer relayed for G7);
+any other agent is refused `not_supported` with "<Agent> sessions can't answer this permission
+from the phone yet. Answer it on the Mac." (interrupt: "<Agent> sessions
+can't be interrupted from the phone yet. Stop it on the Mac."), never "no
+longer exists" (a deleted session keeps `not_found`). Codex stays refused:
+G7's spike on codex 0.159.2 showed its `PermissionRequest` hook can hold and
+answer (`cmd/testdata/codex_hooks/spikes/permission_request_output_*.json`, the same
+JSON Claude Code takes), but while it holds codex shows only "Running hook"
+and no prompt in the terminal, so a permission-wait hook would take the
+Mac's own answer away for the whole hold (`SPIKES.md` (b)); enabling it is an
+owner decision. The guards `testAnAnswerForACodexSessionIsNotFound` and
+`testInterruptOfACodexSessionIsNotFound` (Swift and Go) are replaced by
+`testCodexRefusedAsNotSupported` / `TestProj21_CodexPermissionRefusedAsNotSupported`
+and `testInterruptOfACodexSessionIsNotSupported` /
+`TestProj21_CodexInterruptRefusedAsNotSupported` (reason, message, the row
+still pending, no Esc); `TestProj21_DeletedSessionInterruptStillNotFound`
+pins `not_found`.
+
 **Why locked:** Owner decision (ask #263): away from the Mac, a session at
 a prompt was a dead end, but PROJ-16's reason stands — a typed line or
 Return can answer a prompt that opens meanwhile. This channel answers by the
@@ -2227,10 +2467,10 @@ owner never saw.
 - `WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift::testProj21_GoClippedFlagReachesTheWire`
 - `WatchtowerKit/Tests/WatchtowerSyncTests/PermissionAllowRuleTests.swift` — `testProj21_AClippedRequestCannotBeAllowed`, `testProj21_ASettingsPathEditCannotBeAllowed` (the shared rule, every listed path)
 - `WatchtowerMobile/Tests/PermissionCardTests.swift` — `testWithoutTheGrantTheCardIsReadOnlyWithAHint` (the phone's no-grant card; the typing grant never enables it), `testProj21_AClippedRequestOffersDenyOnly`, `testProj21_ASettingsPathEditOffersDenyOnly`
-- supporting: `cmd/workbench_permission_wait_test.go` (`TestPermissionWait_RecordsApprovalAtOnce`, `TestPermissionWait_SessionGoneExitsSilently`, `TestPermissionWait_ForeignSessionExitsSilently`, `TestPermissionWait_CancelExitsSilently` (SIGTERM closes the row `expired`), `TestPermissionWait_MacAnswerAtTheSameStampWins`, `TestPermissionWait_AFailedReadIsRetried`, `TestPermissionWait_ReadsThatKeepFailingExpireTheRequest`, `TestPermissionSummary`); `internal/db/permission_requests_test.go` (`TestOpenPermissionRequestSetsApprovalAndInserts`, `TestOpenPermissionRequestInsertsWhenTheStateGuardHoldsBack`, `TestInsertPermissionRequestClosesTheOlderPending`, `TestClosePermissionRequestIsCompareAndSet`, `TestPermissionRequestCheckRejectsUnknownStatus`, `TestOpenPermissionRequestStoresTheClippedFlag`, `TestGetPermissionRequestRefusesABadStamp`); `internal/devpack/workbench_state_hooks_test.go::TestInstallWorkbenchInstallsThePermissionWaitHook`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_PermissionWaitKey`; `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingPermissionWaitNeedsRepair`; `PermissionAnswerHandlersTests` (`testTheTypingGrantAloneCannotAnswer`, `testADenyDecidesThePendingRow`, `testAnAnswerAfterTheMacAnsweredIsNotPending`, `testAnAnswerToAnExpiredRequestIsNotPending`, `testALateAnswerToAnOlderPromptNeverDecidesTheNewerOne`, `testAnAnswerForAnotherSessionsRequestIsNotFound`, `testAnAnswerForASessionNoLongerRunningFails`, `testAnAnswerWithBadParamsIsInvalid`, `testInterruptSendsOneEscWhileWorking`, `testInterruptSendsOneEscWhileAgentsWork`, `testInterruptAtNeedsApprovalFailsNotWorking`, `testInterruptWithAPendingRequestFailsNotWorking`, `testInterruptWhenIdleFailsNotWorking`, `testAStaleInterruptExpires`, `testInterruptNeedsTheTypingGrant`, `testInterruptOfASessionNoLongerRunningFails`, `testBothKindsAreClaimedBeforeTheirHandler`, `testAnAllowOfASummaryPastTheWireCapIsRefused`, `testAnAnswerThatLosesTheRaceIsNotPending`, `testAnAnswerForACodexSessionIsNotFound`, `testInterruptOfACodexSessionIsNotFound`); `WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift` (`testOnlyPendingRowsOfLiveBoardSessionsArePublished`, `testOldOrOrphanPendingRowsExpireOnThePass`, `testBeforeLivenessSettlesOnlyTheAgeExpires`, `testTheExpiryAgeIsTheHookTimeout`); `FastLaneTests::testTheReattachsEndReachesTheLivenessCopy`; `TerminalCenterReattachTests::testStartHostReattachWaitsForTheConnection` (marks liveness settled); `WatchtowerDesktop/Tests/MobileHub/MobileLinkCenterTests+Permissions.swift` (`testAPermissionsRequestIsStoredNotGranted`, `testPermissionsAllowIsSeparateFromTyping`, `testThePhonesPermissionsToggleOffRevokes`, `testAnUnrequestedPermissionsGrantSurvivesARewrite`); `RelayProcessorTests::testASidecarWithoutThePermissionColumnsGainsThem`; phone `PermissionCardTests` (`testAPendingRequestReplacesTheApprovalNotice`, `testCodexSessionKeepsTheNotice`, `testInterruptOnlyWhileWorkingAndAllowedToType`), `PermissionAnswerWiringTests` (`testANotPendingEchoShowsAnsweredOnTheMac`, `testAnAnswerOnMacEchoShowsWhyAndFreesDeny`) and `SettingsWiringTests::testTheCardsTurnOnWritesTheRequestAndTheCardFollows`
+- supporting: `cmd/workbench_permission_wait_test.go` (`TestPermissionWait_RecordsApprovalAtOnce`, `TestPermissionWait_SessionGoneExitsSilently`, `TestPermissionWait_ForeignSessionExitsSilently`, `TestPermissionWait_CancelExitsSilently` (SIGTERM closes the row `expired`), `TestPermissionWait_MacAnswerAtTheSameStampWins`, `TestPermissionWait_AFailedReadIsRetried`, `TestPermissionWait_ReadsThatKeepFailingExpireTheRequest`, `TestPermissionSummary`); `internal/db/permission_requests_test.go` (`TestOpenPermissionRequestSetsApprovalAndInserts`, `TestOpenPermissionRequestInsertsWhenTheStateGuardHoldsBack`, `TestInsertPermissionRequestClosesTheOlderPending`, `TestClosePermissionRequestIsCompareAndSet`, `TestPermissionRequestCheckRejectsUnknownStatus`, `TestOpenPermissionRequestStoresTheClippedFlag`, `TestGetPermissionRequestRefusesABadStamp`); `internal/devpack/workbench_state_hooks_test.go::TestInstallWorkbenchInstallsThePermissionWaitHook`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_PermissionWaitKey`; `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingPermissionWaitNeedsRepair`; `PermissionAnswerHandlersTests` (`testTheTypingGrantAloneCannotAnswer`, `testADenyDecidesThePendingRow`, `testAnAnswerAfterTheMacAnsweredIsNotPending`, `testAnAnswerToAnExpiredRequestIsNotPending`, `testALateAnswerToAnOlderPromptNeverDecidesTheNewerOne`, `testAnAnswerForAnotherSessionsRequestIsNotFound`, `testAnAnswerForASessionNoLongerRunningFails`, `testAnAnswerWithBadParamsIsInvalid`, `testInterruptSendsOneEscWhileWorking`, `testInterruptSendsOneEscWhileAgentsWork`, `testInterruptAtNeedsApprovalFailsNotWorking`, `testInterruptWithAPendingRequestFailsNotWorking`, `testInterruptWhenIdleFailsNotWorking`, `testAStaleInterruptExpires`, `testInterruptNeedsTheTypingGrant`, `testInterruptOfASessionNoLongerRunningFails`, `testBothKindsAreClaimedBeforeTheirHandler`, `testAnAllowOfASummaryPastTheWireCapIsRefused`, `testAnAnswerThatLosesTheRaceIsNotPending`, `testCodexRefusedAsNotSupported`, `testInterruptOfACodexSessionIsNotSupported`; Go twins `TestProj21_CodexPermissionRefusedAsNotSupported`, `TestProj21_CodexInterruptRefusedAsNotSupported`, `TestProj21_DeletedSessionInterruptStillNotFound`); `WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift` (`testOnlyPendingRowsOfLiveBoardSessionsArePublished`, `testOldOrOrphanPendingRowsExpireOnThePass`, `testBeforeLivenessSettlesOnlyTheAgeExpires`, `testTheExpiryAgeIsTheHookTimeout`); `FastLaneTests::testTheReattachsEndReachesTheLivenessCopy`; `TerminalCenterReattachTests::testStartHostReattachWaitsForTheConnection` (marks liveness settled); `WatchtowerDesktop/Tests/MobileHub/MobileLinkCenterTests+Permissions.swift` (`testAPermissionsRequestIsStoredNotGranted`, `testPermissionsAllowIsSeparateFromTyping`, `testThePhonesPermissionsToggleOffRevokes`, `testAnUnrequestedPermissionsGrantSurvivesARewrite`); `RelayProcessorTests::testASidecarWithoutThePermissionColumnsGainsThem`; phone `PermissionCardTests` (`testAPendingRequestReplacesTheApprovalNotice`, `testCodexSessionKeepsTheNotice`, `testInterruptOnlyWhileWorkingAndAllowedToType`), `PermissionAnswerWiringTests` (`testANotPendingEchoShowsAnsweredOnTheMac`, `testAnAnswerOnMacEchoShowsWhyAndFreesDeny`) and `SettingsWiringTests::testTheCardsTurnOnWritesTheRequestAndTheCardFollows`
 - PROJ-16's guards run unchanged (`testProj16_NeedsApprovalNeverGetsAPhoneLine` among them); the working-agent guard was replaced by PROJ-16's 2026-10-25 amendment (ask #614).
 
-**Limits (accepted):** a Mac answer is seen only at the allowed tool's PostToolUse (or the turn's `waiting` after a Mac deny), so during a long-running command the owner already allowed on the Mac the session still shows Needs approval on the phone with Allow once and Deny, both of which Claude Code ignores (spec §2.3), and Interrupt is refused with "A permission prompt may be open — answer it on the Mac or with Deny" (that Deny is ignored too: stop the command on the Mac); the phone says "Sent to the session" after an answer, never "Allowed" or "Denied" as an outcome; a subagent's tool event during a main-agent prompt closes the row `answered_on_mac` early (fails safe: the phone's answer is refused, the Mac prompt still works); in the few milliseconds between Claude Code drawing a prompt and the hook writing its `pending` row, a session can still read Working with no pending row, so an Esc handled in that window could still reach the prompt; the expiry of `pending` rows (older than 86400 s, or of a session that is not live) runs only on the hub's slice pass, so it does not run while no phone is linked or the hub is off (such a row has no reader); the 86400 s hook timeout held 700 s on Claude Code 2.1.302 and no cap was found, but a lower cap would only expire rows early (the Mac prompt is unaffected); the hook timeout and the Desktop's expiry age (`PermissionRequestSlice.maxAge`) are a Go↔Swift dual path; a phone clock more than 2 minutes behind the Mac makes every interrupt `expired` (the age is the phone's own `created_at`: the server's save date cannot replace it, since it cannot tell a clock behind from an outbox that sent late, and a late Esc must stay refused); a phone's `permissions_requested` sent with its hello at link time is not carried in `pending_devices` (as `typing_requested` is), so a phone linked with the toggle already on reads unrequested until its next `device` rewrite (the toggle is off by default; a re-link keeps the stored grant and request); Codex sessions keep "Needs approval on the Mac" (out of scope for v1).
+**Limits (accepted):** a Mac answer is seen only at the allowed tool's PostToolUse (or the turn's `waiting` after a Mac deny), so during a long-running command the owner already allowed on the Mac the session still shows Needs approval on the phone with Allow once and Deny, both of which Claude Code ignores (spec §2.3), and Interrupt is refused with "A permission prompt may be open — answer it on the Mac or with Deny" (that Deny is ignored too: stop the command on the Mac); the phone says "Sent to the session" after an answer, never "Allowed" or "Denied" as an outcome; a subagent's tool event during a main-agent prompt closes the row `answered_on_mac` early (fails safe: the phone's answer is refused, the Mac prompt still works); in the few milliseconds between Claude Code drawing a prompt and the hook writing its `pending` row, a session can still read Working with no pending row, so an Esc handled in that window could still reach the prompt; the expiry of `pending` rows (older than 86400 s, or of a session that is not live) runs only on the hub's slice pass, so it does not run while no phone is linked or the hub is off (such a row has no reader); the 86400 s hook timeout held 700 s on Claude Code 2.1.302 and no cap was found, but a lower cap would only expire rows early (the Mac prompt is unaffected); the hook timeout and the Desktop's expiry age (`PermissionRequestSlice.maxAge`) are a Go↔Swift dual path; a phone clock more than 2 minutes behind the Mac makes every interrupt `expired` (the age is the phone's own `created_at`: the server's save date cannot replace it, since it cannot tell a clock behind from an outbox that sent late, and a late Esc must stay refused); a phone's `permissions_requested` sent with its hello at link time is not carried in `pending_devices` (as `typing_requested` is), so a phone linked with the toggle already on reads unrequested until its next `device` rewrite (the toggle is off by default; a re-link keeps the stored grant and request); Codex sessions keep "Needs approval on the Mac" (no `permissionWait`: its hook would hide the terminal prompt while it holds, plan Task G7 spike (b)), and the phone gets `not_supported` for them.
 
 **Locked since:** 2026-10-17
 
@@ -2444,9 +2684,12 @@ owner never saw.
   (b) A subagent's permission prompt (`Notification`) moves the
   row from `waiting` to `approval`, and after the grant the subagent's
   `PostToolUse` records `working` while the main turn is still stopped.
-  (c) A turn started without a prompt whose first tool fails stays
-  Stopped until a later tool succeeds: `PostToolUseFailure` is
-  not hooked. (d) Subagent detection relies solely on the `agent_id` field
+  (c) Closed 2026-11-06 by board #988 (ask #525): a turn started without
+  a prompt reads Working from its first main-thread tool start
+  (`PreToolUse`), and a failed tool (`PostToolUseFailure`) counts too. What
+  remains: a turn with no prompt that runs no main-thread tool (a reply in
+  text only) reads Stopped until its Stop, and a folder not yet repaired has
+  neither hook. (d) Subagent detection relies solely on the `agent_id` field
   of the hook input; an input without it is treated as the main thread's.
   The background count (board #411, 2026-10-10): whether `SubagentStop`
   fires for a killed or crashed subagent is unverified (the count then waits
@@ -2570,6 +2813,20 @@ owner never saw.
 
 ## Changelog
 
+- 2026-11-07 (board #1019, **owner approved in ask #576**, superseding ask #572): **PROJ-11 amended** — an interrupted main-thread tool's `waiting` also stores the interrupted turn's end (`agent_turn_end`), read from the transcript (the first user message without a tool result after the interrupted call that Claude Code did not write inside the turn), in the same guarded `UPDATE`; a late async tool hook of that turn writes nothing over the `waiting`, the next turn's calls still record `working`; over a stored `waiting` a moved turn end is a change, not a repeat; an unplaced call keeps the time order with one stderr line `watchtower: interrupt: turn end not moved: <reason>`; the Stop reads the agent turns only with background tasks. Accepted limits in the contract text. Strengthening, no guard relaxed; new guards listed under PROJ-11 ("Board #1019").
+- 2026-11-07 (board #1018, **owner approved in ask #576**): **PROJ-11 amended** — the worktree ledger gains `terminal_session_worktrees.last_at` (migration `00174`): a known pair whose last sighting (`last_at`, else `first_at`) predates a readable run mark is touched in the run (`HasSessionWorktree` returns `stale`, `TouchSessionWorktree` moves only `last_at`, forward only; concurrent hooks of one run may both write it, the later stamp wins), so the Desktop's "N lanes" counts a lane worktree a later run reuses. A pair already seen in the run still costs one read-only read and no write; a full session touches a pair it already holds; a new pair is inserted with `last_at = first_at`; `first_at` never changes and the cleanup reads only it; a failed move is the stderr line `watchtower: session worktree sighting not moved: …`. Guards unchanged (`TestProj11_LedgerRecordsANewWorktreeOnce` still holds within a run); supporting tests listed under PROJ-11 ("Board #1018"). No guard relaxed.
+- 2026-11-07 (board #1013, **owner approved in ask #576**): **PROJ-14 amended** — gate 2 and `review overview --session` read the session's review place as a round does (the folder's snapshot, or the task branch's committed tip against its base branch); on a tip place a folder with uncommitted changes refuses (fails closed, a git failure reading it refuses too) and the left-its-worktree skip does not apply; `annotate_changes` checks and stamps notes against the tip and names it in its refusals. Strengthening, no guard relaxed; new guards listed under PROJ-14 ("Review place").
+- 2026-11-07 (**owner approved in ask #562**: the raised chat ask's dedupe): **PROJ-13 amended, meaning unchanged** — the Stop classifier is v5 (`internal/devpack/askguard_classifier.md`, golden `askguard_classifier_v5.golden`): a chat request also returns `context` (1–3 sentences from the message the owner needs to answer — why the agent asks, what each answer changes, what it recommends; ≤ 600 runes, one line, a cut one ending with "…", a value that is no JSON string read as none without costing the verdict, dropped when it repeats the question, cleared for any other request), and a closed yes/no question returns its two answers as `options` in the message's language ("never invent options" stays for every other question). The context is stored in `terminal_sessions.chat_question` (`context`, omitted when empty; no migration). The raised ask's summary is the context, a blank line and the reason's line, or the reason's line alone — no longer the question again (the question stays the title and q1); a recorded full request keeps its text plus the reason's line. Every v4 clause `TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk` checks is in v5 word for word; the golden test is renamed `TestAskGuardClassifier_IsTheV5Golden`; new `cmd` tests `TestAskGuardContextNormalisation`, `TestStopGuardRecordsTheQuestionsContext`, `TestEscalateSummaryIsTheContextThenTheReason`; `TestEscalateFilesAQuickAskWithTheSameOptions` now asserts the reason-only summary. No guard was relaxed.
+- 2026-11-06 (board #988, **owner approved in ask #525**: "a working agent is always Working"): **PROJ-11 amended** — a main-thread `PreToolUse` is a working signal (only out of `waiting`, the run mark or an empty row, never over `approval`, under `PostToolUse`'s transcript turn order, so the Stop still wins); a `PostToolUseFailure` is a `PostToolUse` (it may end `approval` — this rule: owner approved in ask #527), except an interrupted tool (`is_interrupt`), which records `waiting` on the main thread (no Stop follows an interrupt) and nothing in a subagent; the async state hooks and the `SessionStart` id move wait 2 s for the write lock with one retry on a busy lock; the v1 limit (c) "`PostToolUseFailure` is not hooked" is closed. **PROJ-04 / PROJ-02 amended** — the install writes and the removal takes out two more state entries, `PreToolUse` in its own `"*"` group (beside the ask tool block's `AskUserQuestion` group) and `PostToolUseFailure`; `integrate status` reports `state_hooks` only with all eight, so an existing folder is offered Repair (its Stop state and run mark keep working: `HasCoreStateHooks` is unchanged). Guard changes, none weakened: `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks` expects three `PreToolUse` groups (the owner's first and unchanged, plus one each of ours) where it expected two, and `TestProj04_StateHooksKeepOwnerHooksAndKeys` also requires an emptied `PostToolUseFailure` to be dropped; `TestProj04_MalformedStateEventLeavesTheFileByteIdentical` runs over `PostToolUseFailure` and `PreToolUse` too. New guards listed under PROJ-11. Codex hooks unchanged (synchronous, no `PostToolUseFailure`).
+- 2026-11-06 (board #986): **PROJ-14 amended** — **owner approved in ask #525:** the session progress gains a merged share (a not-done leaf whose branch git finds in its base, apart from done), cached in `workbench_pr_states` under `into:<base>:<branch>` refs (no migration), and `session-report --summary` runs a git-only refresh of those verdicts (≤ 3 s, never gh). **Controller decision (not part of ask #525):** the base is the branch of the leaf's nearest branch-carrying ancestor, and a leaf on that ancestor's branch or with no branch has no base. Additive JSON key `merged` on progress, phases and summary rows, and — part of this amendment's failure reporting, board #985 review — `merged_stale` on summary rows (a merged share the `--summary` refresh could not check; the row caption shows it). Strengthening, no guard relaxed: `TestWorkbenchSessionReport_SummaryNeverRunsGH` and every `TestProj14_*` unchanged; new guards listed under PROJ-14. PROJ-07 and PROJ-11 unchanged.
+
+- 2026-11-06 (LLM transport independence, plan Task A5, board #980; **plan approved in ask #519, spec in ask #514**): **PROJ-11 amended** with the single entry point note — `internal/sessionagent` is the Workbench session adapter (`Adapter`: `HookSpecs`, `Normalize`, `Transcript`, `Conversations`, `Probe`, `Watch`, `Caps`; `For(kind)`), `hookEvent` is its `Event`, and every state write goes through `recordAgentEvent` (guard `TestSessionAgent_OneStateEntryPoint`). G7's interim `agentkind.SessionCaps` moves into `sessionagent.Caps`; Swift `AgentSessionCaps` and the Kit's `AgentSessionCapabilities` are pinned to the shared `agent_capabilities.json` (Go `TestSessionAgent_CapsFixtureMatchesAdapters`, Swift `AgentSessionCapsTests.testRowsMatchTheGoFixture`, Kit `AgentSessionCapabilitiesTests.testDecodesGoFixture`). The install rows (`devpack`), the session-probe verdicts, the rollout watch's reader and the AI title's transcript come from the adapters. No PROJ-11/12/13/16/21 assertion changed.
+
+- 2026-11-06 (LLM transport independence, plan Task G5, S1/S2/S6; **decision C in ask #507, option A in ask #499, N6 in ask #516; plan approved in ask #519**): **PROJ-11 amended** — the Codex pull moves into the session host. `watchtower session-host` watches each hosted codex session launched with a `watch` request (`LaunchReq.Watch{agent, database}`; the run's `SessionInfo.watched` says whether its watch started) while its row reads `working`: a failed turn is the StopFailure write and a `turn_aborted` the Interrupt's `waiting`, both through `recordAgentState(…, onlyFrom: working)` stamped with the rollout line (`cmd/session_host_watch.go`, `recordCodexPull`), so the host and the app's bridge write a turn once. The "never show a stale state" rule gains the not-watched mark (migration 00175 `agent_watch_issue`/`agent_watch_issue_at`, the §3.5 table above): a rollout the watch cannot read never leaves a silent `working`; any hook event clears it. The Desktop's #959 poll is now the bridge for a run the host does not watch, with the watch's give-ups (round-1 review: a per-run `watched` flag replaced a host-wide hello flag, so an unopened store never leaves a run unwatched by both). `session-probe` judges a codex row's stale background count from the rollout (S6) instead of reading `unknown` blind. The capability `agentkind.SessionCaps.RolloutWatch` (Swift `AgentSessionCaps.rolloutWatch`) replaces the kind check. Codex v1 limits lose "Error up to 5 s plus a poll" and the blind probe. New guards: `TestProj11_HostAndBridgeReportSameFailureOnce`, `TestProj11_HostPullEndsAnAbortedTurnAsWaiting`, `TestProj11_NextHookEventClearsWatchIssue` (cmd), `TestProj11_WatchIssueOnlyOverWorkingCodexRow`, `TestProj11_FailureWinsOverWatchIssue` (`internal/db`), `TestProj11_WatchIssueLogLineCarriesNoPath` and the `TestCodexWatch_*` table (`internal/sessionhost`), `testProj11_BridgeChecksOnlyCodexRowsTheHostDoesNotWatch` (Swift). Every existing PROJ-11 guard runs unchanged; the v1 limits wording now reads "no idle notice and no elicitation approval", which `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent` pins.
+
+- 2026-11-05 (board #959, **owner approved in ask #499**, option A plus the Interrupt hook): **PROJ-11 amended for Codex sessions — a failed turn shows Error, Esc ends Working.** Codex has no `StopFailure` hook and fires no Stop on a turn that fails on a model/API error (400/429/500; verified live with codex 0.159.2), so the row stayed Working. Now `workbench session-probe` (the existing CLI the Desktop's `SessionBackgroundProber` runs, now also once per 5 s for a live codex row that reads Working) reads the session's rollout (`sessionfeed.LocateCodex`, last 256 KB, `sessionfeed.CodexLastTurn`) and, when the last turn lifecycle event is a `task_complete` carrying `error`, records Claude's StopFailure write through `recordAgentState`: `waiting` with `agent_failed_at` and `agent_error` = `codex_error_info`, stamped with that line's time, only over `working`, only for the conversation the row runs and only when later than the stored state; outcome `failed`. The next prompt clears it, as for Claude. A hook still never sets a codex row's failure. And `integrate codex` installs and trusts a tenth hook, `Interrupt` → `workbench session-state --agent codex` (the trusted launch-flag path; captured live: Esc fires `Interrupt` and no Stop), recorded as the Stop's `waiting` with the open-turn count and no drift check. A Codex prompt over a stored `working` now moves `agent_state_at` to its time (`db.RestampCodexPromptTurn`), so a failed turn no probe saw yet never marks the next prompt's turn. Guard `TestProj11_CodexRowNeverGetsFailure` is rewritten to the new contract as `TestProj11_CodexRowGetsFailureOnlyFromItsRollout`, at least as strong: the StopFailure/Notification payloads and the Stop's `error` still record nothing; no rollout, a turn that ended fine, an aborted turn, a running turn and a failure older than the stored state record nothing; a failed last turn records the error, `agent_failed_at` = `agent_state_at`; a second probe of the failed row writes nothing; a prompt clears it. New guards: `TestProj11_CodexInterruptEndsTheTurn`, `TestProj11_CodexPromptAfterAnUnseenFailureIsNeverMarkedFailed` (cmd), `testProj11_WorkingCodexSessionIsCheckedForAFailedTurn` and `testProj11_OnlyALiveWorkingCodexSessionIsChecked` (`WatchtowerDesktop/Tests/SessionBackgroundProberTests.swift`); supporting: `TestSessionProbe_CodexFailureNeedsTheRowsOwnRollout`, `TestSessionProbe_CodexFailureWithoutATimeIsLoggedNotWritten`, `internal/db/terminal_sessions_codex_test.go::TestRestampCodexPromptTurn`, `testCodexCheckThatCannotRunBacksOff`, `internal/sessionfeed/codex_turn_test.go`, `testCodexFailedTurnAsksForARead`, the `interrupt` hook fixture, the recaptured `codex_hooks_state_upsert.after.toml`. No other guard changed.
+
+- 2026-11-05 (LLM transport independence, plan Task G7, S3/S4/S5/S10; **contract change approved in ask #514, plan in ask #519; the Codex hold while it works confirmed by the owner in ask #523, the permission answer kept refused in ask #521**): **PROJ-16 amended** — the heading and condition (2) decide by the session capability (`phoneInput`, `takesLineWhileWorking`) instead of the `claude` kind; Codex takes phone lines when idle and still waits for idle while it works (spike (a) proved mid-turn input, spike (c) found its MCP forms unreported); another agent gets `not_supported` with its message, a deleted session keeps `not_found`. **PROJ-21 amended** — the answer decides by `permissionWait`, Interrupt by `takesInterrupt`; Codex stays refused, now `not_supported` (spike (b): its hook hides the terminal prompt while it holds). **PROJ-11's Codex v1 limits** name the missing idle signal and elicitation (spike (c)) with the Settings caption. Guards replaced, not relaxed: `…AWorkingCodexSessionStillHoldsTheLine` → `…AWorkingCodexSessionHoldsTheLineUntilIdle` + `…CodexSessionRefusedAsNotSupported`, `…AnAnswerForACodexSessionIsNotFound` / `…InterruptOfACodexSessionIsNotFound` → their `not_supported` twins (reason and message asserted); new `TestProj11_CodexNoIdleSignalIsDisclosedNotSilent`, `TestProj16_DeletedSessionStillNotFound`, `TestProj21_DeletedSessionInterruptStillNotFound`.
 - 2026-10-31 (**owner approved in ask #811**): **PROJ-20 amended — the local-PTY fallback is removed.** Every workbench session runs only in `watchtower session-host`; the Desktop's in-app SwiftTerm process (`SwiftTermSession`, `TerminalCenter.makeLocalProcess`, `TerminalCenter.unprotected`, the "This session stops when Watchtower quits." note and the quit alert's "N unprotected sessions will stop.") is gone. The Observable's fallback sentence is replaced by: when the host cannot be reached or started, the session does not open and the pane shows the reason; no session ever runs outside the host. A host that did not answer at launch is asked once more by each session start (the client's existing `ensureRunning`, no new retry loop). Guard changes approved in the same ask: `testProj20_ReattachAdoptsRunningSessionWithoutRelaunch` loses its `unprotected.isEmpty` assertion (its `HostedTerminalSession` check stays); the supporting `testQuitPromptNamesUnprotectedSessionsThatStop` is deleted; the supporting `testDetachAllNeverSignals` keeps only its hosted half (never signalled, connection closed, nothing forgotten). New supporting guards: `WatchtowerDesktop/Tests/TerminalCenterTests.swift::testProj20_NoSessionHostOpensNoSessionAndShowsTheReason` (no reachable host → nothing launched, the run ends with the reason in the pane and is not reported as a natural exit, so no PROJ-18 placed-session cleanup follows; the next start reaches a host that is back) and `testStartWithoutASessionHostClientOpensNothing`. No other guard changed.
 - 2026-10-28 (agent coach Plan 2, board #1120, **approved in ask #722**): amendment, no guard weakened. **PROJ-22** item (4): the daily miner folds into the coach once; suggestions reach the owner as coach proposals, still only on the owner's Accept; a moved row is decided only in the coach. See the amendment in PROJ-22.
 - 2026-10-26 (agent coach, board #1120, **approved in ask #659**): amendment, no guard weakened. **PROJ-22** item (3): `coach accept` is another writer of the owner's instructions, only on the owner's Accept. See the amendment in PROJ-22.

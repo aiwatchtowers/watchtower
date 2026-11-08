@@ -72,8 +72,22 @@ struct TerminalSessionSlice: SliceSource {
         let reportTargetID: Int64?
         let reportDone: Int?
         let reportTotal: Int?
+        /// Tasks not done whose branch is merged into their parent's (board
+        /// #986, #1008); with the summary, 0 when none.
+        let reportMerged: Int?
+        /// Only `true` (the summary's `merged_stale`: the merge ref could not
+        /// be checked), else absent.
+        let reportMergedStale: Bool? // swiftlint:disable:this discouraged_optional_boolean
         let reportPRLine: String?
         let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        /// Why the Mac cannot watch this working session (Go
+        /// `sessionPayload.WatchIssue`); nil = watched.
+        let watchIssue: String?
+        /// The Mac's tooltip for `watchIssue` (Go `sessionPayload.WatchHelp`).
+        let watchHelp: String?
+        /// What the hub takes from the phone for this session (U5, Go
+        /// `sessionPayload.Phone`).
+        let phone: AgentSessionCaps.Phone
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -85,9 +99,12 @@ struct TerminalSessionSlice: SliceSource {
             case oldestAskID = "oldest_ask_id"
             case closedAsks, finishSummary, finishSummaryClipped, agentError, agentErrorClipped
             case reportTargetID = "report_target_id"
-            case reportDone, reportTotal
+            case reportDone, reportTotal, reportMerged, reportMergedStale
             case reportPRLine = "report_pr_line"
             case reportPRLineClipped = "report_pr_line_clipped"
+            case watchIssue = "watch_issue"
+            case watchHelp = "watch_help"
+            case phone
         }
     }
 

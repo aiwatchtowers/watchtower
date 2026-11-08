@@ -23,6 +23,9 @@ import (
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providers"
 )
 
 // agentRecipeText is a manual recipe allowed agent:run, the light tier, one
@@ -146,10 +149,14 @@ func TestAgent_IterationsCapped12(t *testing.T) {
 	srv, ts := newFakeOpenAI(t, func(int) map[string]any { return toolCallReply("list_targets", `{}`, 10, 5) })
 	f := newAgentFixture(t, ollamaConfig(t, ts.URL), `return agent("loop forever").text`, "")
 	run := f.run(t, db.TriggerManual)
-	assert.Equal(t, db.RunSucceeded, run.Status, run.Error)
+	// Past the cap the call fails with a budget failure, as claude's
+	// error_max_turns does (L13, asks #507, #514), never a success text.
+	assert.Equal(t, db.RunFailed, run.Status)
+	assert.Contains(t, run.Error, "stopped after 12 model turns")
 	assert.Len(t, srv.requests(), 12, "runtime B stops at 12 model calls")
 	step := f.agentStep(t, run.ID)
 	assert.Equal(t, "runtime-b", step.Name)
+	assert.Equal(t, automations.StepError, step.Status)
 	assert.Equal(t, int64(120), step.InputTokens, "each model call is debited on the step")
 	assert.Equal(t, int64(120), run.InputTokens)
 	assert.Equal(t, int64(60), run.OutputTokens)
@@ -245,6 +252,7 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 	s := &claudeStub{dir: dir, path: filepath.Join(dir, claudeStubName)}
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "reply"), []byte(reply), 0o600))
 	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then echo \"codex-cli 0.145.0\"; exit 0; fi\n" +
 		"env > '" + dir + "/env'\n" +
 		"for a in \"$@\"; do printf '%s\\0' \"$a\"; done > '" + dir + "/argv'\n" +
 		"if [ -n \"$CODEX_HOME\" ]; then echo \"$CODEX_HOME\" > '" + dir + "/codex-home'; cp \"$CODEX_HOME/config.toml\" '" + dir + "/codex-home.toml'; " +
@@ -256,9 +264,16 @@ func newClaudeStub(t *testing.T, reply string) *claudeStub {
 		"rf=$(sed -n 's/.*\"--automation-ready-file\", *\"\\([^\"]*\\)\".*/\\1/p' '" + dir + "/allargs' | head -n 1)\n" +
 		"if [ -n \"$rf\" ] && [ ! -f '" + dir + "/noserver' ]; then : > \"$rf\"; fi\n" +
 		"echo $$ > '" + dir + "/pid'\n" +
+		"echo $$ >> '" + dir + "/starts'\n" +
+		"if [ -f '" + dir + "/wait' ]; then while [ ! -f '" + dir + "/release' ]; do sleep 0.01; done; fi\n" +
 		"if [ -f '" + dir + "/sleep' ]; then trap '' INT; exec sleep 30; fi\n" +
 		"if [ -f '" + dir + "/fail' ]; then exit 1; fi\n" +
-		"cat '" + dir + "/reply'\n"
+		// A codex run in its own home: the run's rollout, written before
+		// the stream, and what the home held then.
+		"if [ -f '" + dir + "/rollout' ]; then r=\"$CODEX_HOME/sessions/2026/01/01\"; mkdir -p \"$r\"; " +
+		"cp '" + dir + "/rollout' \"$r/rollout-2026-01-01T00-00-00-x.jsonl\"; ls -R \"$CODEX_HOME\" > '" + dir + "/home-ls'; fi\n" +
+		"cat '" + dir + "/reply'\n" +
+		"if [ -f '" + dir + "/hold' ]; then exec sleep 30; fi\n"
 	require.NoError(t, os.WriteFile(s.path, []byte(script), 0o700))
 	t.Cleanup(func() {
 		if pid := s.pid(); pid > 0 {
@@ -581,4 +596,226 @@ func TestAutomationBackends_WireMCPAndAgent(t *testing.T) {
 		assert.Equal(t, want, b.Agent.Name(), provider)
 		assert.NotNil(t, b.Registry)
 	}
+}
+
+func TestAgent_RoutingKnownHealthUsesActualBackend(t *testing.T) {
+	for _, preferred := range []string{"claude", "codex"} {
+		t.Run(preferred, func(t *testing.T) {
+			sink := &ledgerSink{}
+			llmusage.SetSink(sink)
+			t.Cleanup(func() { llmusage.SetSink(nil) })
+			claude := newClaudeStub(t, `{"type":"result","result":"done","usage":{"input_tokens":12,"output_tokens":3}}`)
+			codex := newClaudeStub(t, `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`+"\n"+`{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`)
+			cfg := claude.config(t)
+			cfg.CodexPath = codex.path
+			cfg.AI.Provider = preferred
+			reserve := "codex"
+			selected := codex
+			skipped := claude
+			if preferred == "codex" {
+				reserve = "claude"
+				selected = claude
+				skipped = codex
+			}
+			cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+			cfg.AI.Providers = map[string]config.AIProviderConfig{"claude": {Models: config.AIModels{Light: "claude-haiku-5-5"}}, "codex": {Models: config.AIModels{Light: "gpt-6-light"}}}
+			store, err := providerhealth.Installation()
+			require.NoError(t, err)
+			require.NoError(t, store.RecordQuota(context.Background(), providerhealth.AccountScope(preferred, ""), &providers.Failure{Provider: preferred, Category: providers.Quota}))
+			f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
+			run := f.run(t, db.TriggerManual)
+			require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+			require.Equal(t, reserve, f.agentStep(t, run.ID).Name)
+			require.Zero(t, skipped.pid())
+			require.Positive(t, selected.pid())
+			require.Equal(t, tierModel(cfg, reserve, "light"), flagAfter(t, selected.argv(t), "--model"))
+			require.Len(t, sink.calls, 1)
+			require.Equal(t, reserve, sink.calls[0].Provider)
+			require.Equal(t, tierModel(cfg, reserve, "light"), sink.calls[0].Model)
+			require.NotEmpty(t, sink.calls[0].OperationID)
+			require.Equal(t, 1, sink.calls[0].Attempt)
+		})
+	}
+}
+
+func TestAgent_RoutingQuotaAfterProposalNeverRestartsChild(t *testing.T) {
+	claude := newClaudeStub(t, `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached|4102444800","usage":{"input_tokens":31,"output_tokens":7}}`)
+	codex := newClaudeStub(t, `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}`+"\n"+`{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`)
+	cfg := claude.config(t)
+	cfg.CodexPath = codex.path
+	cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: "codex"}
+	f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
+	require.NoError(t, os.WriteFile(filepath.Join(claude.dir, "wait"), nil, 0o600))
+	id := f.enqueue(t, db.TriggerManual)
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _, err := f.exec.ExecuteInline(ctx, id); done <- err }()
+	require.Eventually(t, func() bool { return claude.pid() > 0 }, 5*time.Second, 10*time.Millisecond)
+	// The child's bound server may already have proposed an action when quota
+	// arrives. Persist that receipt while the real fake child is still running.
+	action, err := f.d.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"pending"}`, Surface: "automation", ContextType: "automation_run", ContextID: strconv.FormatInt(id, 10)})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(claude.dir, "release"), nil, 0o600))
+	require.NoError(t, <-done)
+	run, err := f.d.GetAutomationRun(id)
+	require.NoError(t, err)
+	require.Equal(t, db.RunFailed, run.Status)
+	require.Equal(t, int64(31), run.InputTokens)
+	require.Equal(t, int64(7), run.OutputTokens)
+	require.Zero(t, codex.pid(), "no reserve child within a started tool step")
+	starts, err := os.ReadFile(filepath.Join(claude.dir, "starts"))
+	require.NoError(t, err)
+	require.Len(t, strings.Fields(string(starts)), 1)
+	receipt, err := f.d.GetAgentAction(action)
+	require.NoError(t, err)
+	require.Equal(t, "pending", receipt.Status)
+	store, err := providerhealth.Installation()
+	require.NoError(t, err)
+	state, err := store.Read(context.Background(), providerhealth.AccountScope("claude", ""))
+	require.NoError(t, err)
+	require.Equal(t, providerhealth.QuotaWait, state.State)
+	next := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, next.Status, next.Error)
+	require.Equal(t, "codex", f.agentStep(t, next.ID).Name)
+	require.Positive(t, codex.pid())
+	starts, err = os.ReadFile(filepath.Join(claude.dir, "starts"))
+	require.NoError(t, err)
+	require.Len(t, strings.Fields(string(starts)), 1)
+	receipt, err = f.d.GetAgentAction(action)
+	require.NoError(t, err)
+	require.Equal(t, "pending", receipt.Status)
+}
+
+// The run budget debits the same quantity for the same work whichever
+// provider ran agent(), with provider routing off or on: uncached input plus
+// output. Claude reports input_tokens without its cache reads and writes;
+// codex's input_tokens includes cached_input_tokens, which the budget leaves
+// out (the LLM usage ledger still records the full split).
+func TestAgent_BudgetDebitsUncachedInputOnEveryProvider(t *testing.T) {
+	const (
+		claudeReply = `{"type":"result","result":"done","usage":{"input_tokens":100,"cache_read_input_tokens":900,"cache_creation_input_tokens":200,"output_tokens":50}}`
+		codexReply  = `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n" +
+			`{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":900,"output_tokens":50}}`
+	)
+	for _, tc := range []struct {
+		name     string
+		provider string
+		routed   bool
+	}{
+		{"claude/direct", "claude", false},
+		{"codex/direct", "codex", false},
+		{"claude/routed", "claude", true},
+		{"codex/routed", "codex", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			claude := newClaudeStub(t, claudeReply)
+			codex := newClaudeStub(t, codexReply)
+			cfg := claude.config(t)
+			cfg.CodexPath = codex.path
+			cfg.AI.Provider = tc.provider
+			if tc.routed {
+				reserve := "codex"
+				if tc.provider == "codex" {
+					reserve = "claude"
+				}
+				cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+				cfg.AI.Providers = map[string]config.AIProviderConfig{"claude": {Models: config.AIModels{Light: "claude-haiku-5-5"}}, "codex": {Models: config.AIModels{Light: "gpt-6-light"}}}
+			}
+			f := newAgentFixture(t, cfg, `return agent("triage").text`, "")
+			run := f.run(t, db.TriggerManual)
+			require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+			require.Equal(t, tc.provider, f.agentStep(t, run.ID).Name)
+			assert.Equal(t, int64(100), run.InputTokens, "uncached input only")
+			assert.Equal(t, int64(50), run.OutputTokens)
+			assert.False(t, run.TokensEstimated)
+		})
+	}
+}
+
+// codexResponses is a codex stream of n model responses, one watchtower
+// tool call each, then the answer (a text-only last response).
+func codexResponses(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"type":"turn.started"}` + "\n")
+	for i := range n - 1 {
+		id := strconv.Itoa(i)
+		b.WriteString(`{"type":"item.started","item":{"id":"t` + id + `","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"status":"in_progress"}}` + "\n")
+		b.WriteString(`{"type":"item.completed","item":{"id":"t` + id + `","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}]},"status":"completed"}}` + "\n")
+	}
+	b.WriteString(`{"type":"item.completed","item":{"id":"m","type":"agent_message","text":"done"}}` + "\n")
+	b.WriteString(`{"type":"turn.completed","usage":{"input_tokens":7,"output_tokens":3}}`)
+	return b.String()
+}
+
+// codexRollout is a rollout recording n model responses (structure only).
+func codexRollout(n int) string {
+	var b strings.Builder
+	for i := range n {
+		b.WriteString(`{"type":"token_usage_record","payload":{},"synthetic":true}` + "\n")
+		b.WriteString(`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":` +
+			strconv.Itoa(i+1) + `},"last_token_usage":{"input_tokens":1}}},"synthetic":true}` + "\n")
+	}
+	return b.String()
+}
+
+// codexAgentFixture is an agent() run on a codex stub playing stream, with
+// rollout ("" = none) written to the run's home first; hold keeps the stub
+// alive after the stream until its group is killed.
+func codexAgentFixture(t *testing.T, stream, rollout string, hold bool) (*claudeStub, *agentFixture) {
+	t.Helper()
+	stub := newClaudeStub(t, stream)
+	if rollout != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "rollout"), []byte(rollout), 0o600))
+	}
+	if hold {
+		require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "hold"), nil, 0o600))
+	}
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", "")
+	cfg := &config.Config{ActiveWorkspace: "acme", CodexPath: stub.path, AI: config.AIConfig{Provider: "codex"}}
+	return stub, newAgentFixture(t, cfg, `return agent("triage").text`, "")
+}
+
+// AUTO-08 (asks #507, #514): a codex agent() stops when its 13th model turn
+// starts, as claude's --max-turns 12 does: the run fails with a budget
+// failure and the child's process group is gone.
+func TestAuto08_CodexAgentStopsAtTheSameCap(t *testing.T) {
+	stub, f := codexAgentFixture(t, codexResponses(13), codexRollout(13), true)
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunFailed, run.Status)
+	assert.Contains(t, run.Error, "stopped after 12 model turns")
+	assert.Equal(t, automations.StepError, f.agentStep(t, run.ID).Status)
+	assert.True(t, errors.Is(syscall.Kill(-stub.pid(), 0), syscall.ESRCH), "the stub's process group is gone")
+
+	// Twelve turns are inside the cap.
+	_, f = codexAgentFixture(t, codexResponses(12), codexRollout(12), false)
+	run = f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+}
+
+// N5 (ask #522): the cap counts the rollout's model responses, not the
+// stream's items: a stream the stream rule reads as one turn still stops
+// when its rollout records 13 responses.
+func TestCodexAgent_StopsAtCapFromRollout(t *testing.T) {
+	_, f := codexAgentFixture(t, codexResponses(1), codexRollout(13), false)
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunFailed, run.Status)
+	assert.Contains(t, run.Error, "stopped after 12 model turns")
+}
+
+// The agent()'s codex run is not --ephemeral: its rollout is written in the
+// per-run home, and the home goes with it after the run.
+func TestCodexAgent_TempHomeRemovedAfterRun(t *testing.T) {
+	stub, f := codexAgentFixture(t, codexResponses(1), codexRollout(1), false)
+	run := f.run(t, db.TriggerManual)
+	require.Equal(t, db.RunSucceeded, run.Status, run.Error)
+	assert.NotContains(t, stub.argv(t), "--ephemeral")
+	listing, err := os.ReadFile(filepath.Join(stub.dir, "home-ls"))
+	require.NoError(t, err)
+	assert.Contains(t, string(listing), "rollout-2026-01-01T00-00-00-x.jsonl", "the rollout was in the run's home")
+	home, err := os.ReadFile(filepath.Join(stub.dir, "codex-home"))
+	require.NoError(t, err)
+	_, err = os.Stat(strings.TrimSpace(string(home)))
+	assert.True(t, os.IsNotExist(err), "the home, rollout included, is removed")
 }

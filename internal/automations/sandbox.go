@@ -153,7 +153,7 @@ func (e *Env) call(kind, name string, args any, opts callOpts, fn func(step *Ste
 		v, encErr = encodeSDKResult(v)
 		err = encErr
 	}
-	step.recordOutcome(v, err)
+	step.recordOutcome(v, err, e.Meter != nil && e.Meter.hasUnknownUsage())
 	if step.releaseFinish(encErr) {
 		return v, err // fn closed the step; a failed encoding re-closes it as error
 	}
@@ -207,6 +207,13 @@ func (e *Env) replayCall(kind, name string, buffered bool, played *replayed,
 			return nil, played.r.diverge(played.rec.Seq)
 		}
 	}
+	_, unknown, err := decodeReplayMetadata(played.rec.ClockJSON)
+	if err != nil {
+		return nil, played.r.diverge(played.rec.Seq)
+	}
+	if unknown && e.Meter != nil {
+		e.Meter.markUnknown()
+	}
 	return played.value()
 }
 
@@ -223,6 +230,9 @@ type ModelUsage struct {
 // ids, so every LLM ledger row it records (llm(), agent(), a built-in
 // primitive) sums to what the run's row counts.
 func (e *Env) MeteredModelCall(step *Step, call func(ctx context.Context) (ModelUsage, error)) error {
+	if err := e.Ctx.Err(); err != nil {
+		return err
+	}
 	if err := e.Meter.BeforeCall(); err != nil {
 		return err
 	}

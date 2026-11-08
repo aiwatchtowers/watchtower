@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"slices"
@@ -21,6 +23,9 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
@@ -135,11 +140,14 @@ const automationAgentSystemPrompt = "You are one step of an automation script th
 // the child's `watchtower mcp` is pointed at it, since the allowlisted env
 // drops WATCHTOWER_CONFIG_PATH.
 func newAutomationAgentRunner(cfg *config.Config, configPath, dbPath string, database *db.DB) automations.AgentRunner {
-	switch cfg.AI.Provider {
-	case "", "claude":
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "claude"}
-	case "codex":
-		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: "codex"}
+	provider := cfg.AI.Provider
+	if provider == "" {
+		provider = providers.ByID("").ID
+	}
+	// Not providers.ByID(provider): an unknown id runs the in-process loop,
+	// never the default CLI child.
+	if providers.RunsChild(provider) {
+		return &cliAgentRunner{cfg: cfg, configPath: configPath, dbPath: dbPath, provider: provider}
 	}
 	return &runtimeBAgentRunner{cfg: cfg, database: database, reg: buildAutomationRegistry(cfg, database)}
 }
@@ -167,11 +175,66 @@ type cliAgentRunner struct {
 	configPath string // "" = the child's default
 	dbPath     string
 	provider   string // "claude" | "codex"
+	router     *providerrouting.Router
+	prepared   bool
 }
 
 func (r *cliAgentRunner) Name() string { return r.provider }
 
+// Prepare uses shared known health only. A selected runner remains bound for
+// its entire tool loop, including failures after proposals.
+func (r *cliAgentRunner) Prepare(ctx context.Context, tier string) (automations.AgentRunner, error) {
+	selected := *r
+	selected.prepared = true
+	if !r.cfg.AI.Fallback.Enabled || flagProvider != "" || aiFlagModel != "" || (r.cfg.AI.ConfiguredProvider != "" && r.cfg.AI.Provider != r.cfg.AI.ConfiguredProvider) {
+		selected.router = nil
+		return &selected, nil
+	}
+	if err := r.cfg.AI.Validate(); err != nil {
+		return nil, err
+	}
+	if selected.router == nil {
+		health, err := providerhealth.Installation()
+		selected.router = &providerrouting.Router{Health: health, Diagnostic: func(err error) { log.Printf("AI agent routing: %v", err) }}
+		if err != nil {
+			log.Printf("AI agent routing: %v", err)
+		}
+	}
+	provider, err := selected.router.Select(ctx, selected.routingRequest(tier))
+	if err != nil {
+		var failure *providers.Failure
+		if errors.As(err, &failure) && failure.Category == providers.Policy {
+			return nil, automations.PolicyError(err)
+		}
+		return nil, err
+	}
+	selected.provider = provider
+	return &selected, nil
+}
+
+func (r *cliAgentRunner) routingRequest(tier string) providerrouting.Request {
+	t := digest.TierLight
+	if tier == "strong" {
+		t = digest.TierStrong
+	}
+	return providerrouting.Request{Preferred: r.cfg.AI.Provider, Reserve: r.cfg.AI.Fallback.Provider,
+		Mode: providerrouting.PreferredReserve, Profile: providers.ToolPreflight, Retry: providerrouting.BeforeChild,
+		Tier: t, Revision: providers.RoutingRevision(r.cfg), Model: func(p string, _ digest.Tier) string { return tierModel(r.cfg, p, tier) },
+		Capable: func(p string, profile providers.InvocationProfile) bool {
+			// cliAgentRunner drives CLI children only; the row decides the rest.
+			caps, known := providers.CapsFor(p)
+			return profile == providers.ToolPreflight && known && providers.RunsChild(p) && providers.Satisfies(caps, profile)
+		}}
+}
+
 func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
+	if !r.prepared {
+		selected, err := r.Prepare(ctx, req.Tier)
+		if err != nil {
+			return automations.AgentResult{}, err
+		}
+		return selected.Run(ctx, req)
+	}
 	if err := providers.Allowed(r.provider); err != nil {
 		return automations.AgentResult{}, automations.PolicyError(err) // #608: nothing spawned, nothing metered
 	}
@@ -186,42 +249,54 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 	readyFile := filepath.Join(readyDir, "ready")
 	mcpArgs := append(r.mcpArgs(req), "--automation-ready-file", readyFile)
 	env := automationAgentEnv(req.RunID)
-	var client ai.Provider
-	if r.provider == "codex" {
-		home, err := codexAgentHome(r.dbPath, mcpArgs)
-		if err != nil {
-			return automations.AgentResult{}, err
-		}
-		defer func() { _ = os.RemoveAll(home) }()
-		c := codex.NewClient(model, r.dbPath, r.cfg.CodexPath)
-		c.SetMCPArgs(mcpArgs)
-		c.SetMCPEnvVars(codexAgentServerEnv)
-		// codex only: CODEX_HOME joins the env allowlist, pointing at the
-		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
-		c.SetChildEnv(append(env, "CODEX_HOME="+home))
-		c.SetServersFromHome()
-		c.SetProcessGroup(true)
-		client = c
-	} else {
-		c := ai.NewClient(model, r.dbPath, r.cfg.ClaudePath)
-		c.SetMCPArgs(mcpArgs)
-		c.SetWatchtowerTools(append(slices.Clone(req.Tools), "get_action"))
-		c.SetMaxTurns(automationAgentMaxTurns)
-		c.SetChildEnv(env)
-		c.SetProcessGroup(true)
-		client = c
+	newClient := wiringFor(r.provider).newAgentClient
+	if newClient == nil {
+		return automations.AgentResult{}, fmt.Errorf("agent(): provider %s runs no CLI child", r.provider)
 	}
+	client, cleanup, err := newClient(agentClientWiring{
+		cfg: r.cfg, dbPath: r.dbPath, model: model, mcpArgs: mcpArgs, env: env, tools: req.Tools,
+	})
+	if err != nil {
+		return automations.AgentResult{}, err
+	}
+	defer cleanup()
 	if err := req.BeforeModelCall(); err != nil {
 		return automations.AgentResult{}, err
 	}
-	text, usage, err := client.QuerySync(ctx, automationAgentSystemPrompt, req.Instruction, "")
+	var text string
+	var usage *ai.Usage
+	var observed agentUsageObserver
+	query := func(callCtx context.Context) error {
+		var callErr error
+		text, usage, callErr = client.QuerySync(callCtx, automationAgentSystemPrompt, req.Instruction, "")
+		return callErr
+	}
+	if r.router == nil {
+		err = query(ctx)
+	} else {
+		route := r.routingRequest(req.Tier)
+		route.Preferred, route.Mode, route.Retry = r.provider, providerrouting.Pinned, providerrouting.Never
+		route.InputBytes = len(automationAgentSystemPrompt) + len(req.Instruction)
+		route.Hook = &observed
+		_, err = r.router.Run(ctx, route, func(callCtx context.Context, _ providerrouting.Attempt) (providerrouting.Result, error) {
+			callErr := query(callCtx)
+			return providerrouting.Result{Text: text}, callErr
+		})
+	}
 	if err != nil {
+		if observed.seen {
+			return observed.result, err
+		}
 		// A child that failed or was killed (cancel, deadline) reports no
 		// usage; it still read the instruction, so a provider without usage
 		// numbers cannot run unbounded (spec §7.5).
 		return automations.AgentResult{InputTokens: int64(len(req.Instruction)+3) / 4, Estimated: true}, err
 	}
 	res := agentResult(req.Instruction, text, usage)
+	if observed.seen {
+		res = observed.result
+		res.Text = text
+	}
 	// The server touches readyFile once it accepted the run's binding and
 	// serves: without it the child answered with no watchtower tools at all
 	// (e.g. the marker never reached the server), which is not a success.
@@ -229,6 +304,24 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		return res, errAgentToolsNeverConnected
 	}
 	return res, nil
+}
+
+// agentUsageObserver keeps the tool child's leaf usage even when QuerySync
+// returns a typed quota instead of a successful result. It never admits a replay.
+type agentUsageObserver struct {
+	seen   bool
+	result automations.AgentResult
+}
+
+func (*agentUsageObserver) Before(context.Context, providerrouting.Attempt) error { return nil }
+func (o *agentUsageObserver) After(_ context.Context, a providerrouting.Attempt, outcome providerrouting.Outcome) error {
+	if len(outcome.Calls) == 0 {
+		return nil
+	}
+	u := automations.ModelAttemptUsage(a, outcome)
+	o.seen = true
+	o.result = automations.AgentResult{Text: outcome.Result.Text, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, Estimated: u.Estimated, ReportedCostUSD: u.ReportedUSD}
+	return nil
 }
 
 // errAgentToolsNeverConnected is an agent() CLI child that exited without its
@@ -259,31 +352,74 @@ func (r *cliAgentRunner) mcpArgs(req automations.AgentRequest) []string {
 var codexAgentServerEnv = []string{automations.RunEnvMarker}
 
 // codexAgentHome is the CODEX_HOME of one agent() codex child, a fresh 0700
-// temp folder the caller removes after the run. Its config.toml turns web
-// search off and declares only the watchtower automation-run server, so
+// temp folder the caller removes after the run (the returned remove), with
+// the run's rollout: the run is not --ephemeral, its turn cap counts the
+// rollout (N5). Its config.toml turns web search off and declares only the
+// watchtower automation-run server, so
 // neither the owner's ~/.codex/config.toml MCP servers nor web search —
 // both outside the effective tool set and GateAgentCall, and an
 // exfiltration channel for injected text — reach the child. The owner's
 // auth.json is linked, never copied, so codex can sign in; removing the
 // folder removes only the link.
-func codexAgentHome(dbPath string, mcpArgs []string) (string, error) {
-	dir, err := os.MkdirTemp("", "wt-agent-codex-home-*")
+func codexAgentHome(dbPath string, mcpArgs []string) (dir string, remove func(), err error) {
+	dir, remove, err = newCodexHome("wt-agent-codex-home-*", "auth.json")
 	if err != nil {
-		return "", fmt.Errorf("creating the agent's codex home: %w", err)
+		return "", nil, err
 	}
 	config := "web_search = \"disabled\"\n\n" + codex.WatchtowerServerTOML(dbPath, mcpArgs, codexAgentServerEnv)
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
-		_ = os.RemoveAll(dir)
-		return "", fmt.Errorf("writing the agent's codex config: %w", err)
+		remove()
+		return "", nil, fmt.Errorf("writing the agent's codex config: %w", err)
 	}
-	auth := filepath.Join(ownerCodexHome(), "auth.json")
-	if _, err := os.Stat(auth); err == nil {
-		if err := os.Symlink(auth, filepath.Join(dir, "auth.json")); err != nil {
-			_ = os.RemoveAll(dir)
-			return "", fmt.Errorf("linking the codex sign-in: %w", err)
+	return dir, remove, nil
+}
+
+// newCodexHome is a fresh 0700 temp CODEX_HOME named after pattern (one of
+// fsutil.StaleTempHomePatterns), with each named file of the owner's codex
+// home that exists linked into it, never copied: removing it removes only
+// the links. The home is held while it lives (fsutil.HoldTempHome), so the
+// stale-temp sweep removes it only after a killed run; remove drops the
+// hold and deletes the home, rollout included.
+func newCodexHome(pattern string, links ...string) (dir string, remove func(), err error) {
+	dir, err = os.MkdirTemp("", pattern)
+	if err != nil {
+		return "", nil, fmt.Errorf("creating a codex run home: %w", err)
+	}
+	release, holdErr := fsutil.HoldTempHome(dir)
+	if holdErr != nil {
+		log.Printf("codex run home: not shielded from the stale-temp sweep: %v", holdErr)
+	}
+	remove = func() {
+		release()
+		removeCodexHome(dir)
+	}
+	for _, name := range links {
+		src := filepath.Join(ownerCodexHome(), name)
+		_, err := os.Stat(src)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err == nil {
+			err = os.Symlink(src, filepath.Join(dir, name))
+		}
+		if err != nil {
+			remove()
+			return "", nil, fmt.Errorf("linking the owner's codex %s: %w", name, err)
 		}
 	}
-	return dir, nil
+	return dir, remove, nil
+}
+
+// removeCodexHome removes a codex run home, rollout included; a failure is
+// logged as a class, never the path (FILES-01).
+func removeCodexHome(dir string) {
+	if err := os.RemoveAll(dir); err != nil {
+		class := "i/o"
+		if errors.Is(err, fs.ErrPermission) {
+			class = "permission"
+		}
+		log.Printf("codex run home: removal failed (%s)", class)
+	}
 }
 
 // ownerCodexHome is the owner's codex home: CODEX_HOME, else ~/.codex.
@@ -323,12 +459,16 @@ func automationAgentEnv(runID int64) []string {
 // ceil(len(instruction+text)/4) tokens (the reply's share as output).
 func agentResult(instruction, text string, u *ai.Usage) automations.AgentResult {
 	res := automations.AgentResult{Text: text}
-	if u != nil && u.CostUSD > 0 {
-		cost := u.CostUSD
+	var t llmusage.Tokens
+	if u != nil {
+		t = u.Tokens
+	}
+	if cost := t.ReportedCost(); cost > 0 {
 		res.ReportedCostUSD = &cost
 	}
-	if u != nil && (u.InputTokens > 0 || u.OutputTokens > 0) {
-		res.InputTokens, res.OutputTokens = int64(u.InputTokens), int64(u.OutputTokens)
+	// AUTO-08 (ask #488): fresh input plus output, cache not debited.
+	if t.Input > 0 || t.Output > 0 {
+		res.InputTokens, res.OutputTokens = t.Input, t.Output
 		return res
 	}
 	total := int64(len(instruction)+len(text)+3) / 4

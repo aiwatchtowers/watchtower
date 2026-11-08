@@ -64,21 +64,44 @@ struct CLIRunnerTests {
     /// runs; the grant goes when it exits (F9).
     @Test("ProcessCLIRunner registers the child's argv and pid while it runs")
     func processRunnerRegistersOwnerLaunch() async throws {
-        let pidFile = NSTemporaryDirectory() + "owner-launch-\(UUID().uuidString)"
-        defer { try? FileManager.default.removeItem(atPath: pidFile) }
-        let args = ["-c", "echo $$ > \"$1\"; sleep 1", "sh", pidFile]
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("owner-launch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("pid").path
+        let releaseFile = directory.appendingPathComponent("release").path
+        try #require(mkfifo(releaseFile, 0o600) == 0)
+        // Only shell builtins: hold the child until the parent checks the real
+        // grant. Closing the FIFO writer releases read through EOF, with no
+        // timer or descendant that can outlive cancellation of the runner.
+        let args = ["-c", #"echo $$ > "$1"; read -r release < "$2" || :"#, "sh", pidFile, releaseFile]
         let run = Task { try await ProcessCLIRunner(binaryPath: "/bin/sh").run(args: args) }
-        var pid: Int32?
-        for _ in 0..<100 where pid == nil {
-            try await Task.sleep(for: .milliseconds(20))
-            pid = (try? String(contentsOfFile: pidFile, encoding: .utf8))
-                .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        var releaseFD: Int32?
+        do {
+            var pid: Int32?
+            for _ in 0..<100 where releaseFD == nil {
+                try await Task.sleep(for: .milliseconds(20))
+                pid = (try? String(contentsOfFile: pidFile, encoding: .utf8))
+                    .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                // PID publication can precede ProcessCLIRunner's registration.
+                if let pid, OwnerConfirmGrants.shared.hasLive(pid: pid) {
+                    let descriptor = open(releaseFile, O_WRONLY | O_NONBLOCK | O_CLOEXEC)
+                    if descriptor >= 0 { releaseFD = descriptor }
+                }
+            }
+            let child = try #require(pid)
+            let descriptor = try #require(releaseFD, "child did not become registered and ready")
+            #expect(OwnerConfirmGrants.shared.hasLive(pid: child))
+            close(descriptor)
+            releaseFD = nil
+            _ = try await run.value
+            #expect(!OwnerConfirmGrants.shared.hasLive(pid: child))
+            #expect(!OwnerConfirmGrants.shared.consume(args, pid: child))
+        } catch {
+            if let releaseFD { close(releaseFD) }
+            run.cancel()
+            _ = await run.result // ProcessCLIRunner terminates and waits before returning.
+            throw error
         }
-        let child = try #require(pid)
-        #expect(OwnerConfirmGrants.shared.hasLive(pid: child))
-        _ = try await run.value
-        #expect(!OwnerConfirmGrants.shared.hasLive(pid: child))
-        #expect(!OwnerConfirmGrants.shared.consume(args, pid: child))
     }
 
     @Test("ProcessCLIRunner writes stdin to the child and closes it")

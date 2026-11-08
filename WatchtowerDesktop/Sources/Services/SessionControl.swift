@@ -60,9 +60,10 @@ final class SessionControl {
     /// Code queues a line typed mid-turn and reads it at its next step, as
     /// in the terminal. A session not live, a run with no hook state yet, a
     /// permission prompt, a line just submitted and text in the prompt
-    /// still hold it. The phone's lines use it for Claude sessions since
-    /// 2026-10-25 (PROJ-16 amended, ask #614); every other kind keeps
-    /// `lineCheck`.
+    /// still hold it. Used, in the Workchat and for the phone's lines (PROJ-16
+    /// amended, ask #614), only for an agent whose capability row
+    /// `takesLineWhileWorking` (Claude Code); every other kind (Codex: an MCP
+    /// form it opens mid-turn raises no state) keeps `lineCheck`.
     func workchatLineCheck(_ sessionID: Int64) -> LineCheck {
         guard let current = status(sessionID) else { return .sessionGone }
         if current.state.kind == .needsApproval { return .hold(.needsApproval) }

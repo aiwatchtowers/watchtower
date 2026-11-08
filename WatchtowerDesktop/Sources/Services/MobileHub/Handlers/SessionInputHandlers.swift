@@ -12,7 +12,9 @@ import WatchtowerSync
 /// A line goes only from a device the owner allowed to type
 /// (`typing_allowed`, else `device_not_allowed`; an unlinked one never gets
 /// here — the relay fails it `device_not_linked`), only to a live board
-/// `claude` session, and only through the shared `SessionLineDelivery`
+/// agent session whose capability row has `phoneInput` (another agent is
+/// refused `not_supported`, a deleted session `not_found`), and only
+/// through the shared `SessionLineDelivery`
 /// under every PROJ-12 rule, as one sanitised line. On top of those, right
 /// before every paste (the delivery's gate, after its fresh state read) the
 /// agent must be idle — the session's resolved state for the current run is
@@ -64,6 +66,8 @@ final class SessionInputHandlers: HubCompanion {
     private let now: @Sendable () -> Date
     private let timeout: Duration
     private let sleep: @Sendable (Duration) async -> Void
+    /// The session capability rows the handler decides by (tests swap them).
+    private let caps: (AgentKind) -> AgentSessionCaps
 
     /// What the gate found during the current try of a line, by record name;
     /// read (and cleared) once the try ends.
@@ -91,10 +95,12 @@ final class SessionInputHandlers: HubCompanion {
         now: @escaping @Sendable () -> Date = { Date() },
         timeout: Duration = SessionInputHandlers.defaultTimeout,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
-        control: SessionControl? = nil
+        control: SessionControl? = nil,
+        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of
     ) {
         self.dbPool = dbPool
         self.sidecar = sidecar
+        self.caps = caps
         self.lineDelivery = lineDelivery
         self.terminalCenter = terminalCenter
         // The app passes its shared one (over the same `lineDelivery`);
@@ -202,9 +208,10 @@ final class SessionInputHandlers: HubCompanion {
         guard deviceGrant(action.deviceID).typingAllowed else {
             return .failed(.deviceNotAllowed, message: Self.notAllowedMessage)
         }
-        guard try await isBoardSession(sessionID) else {
+        guard let agent = try await boardAgent(sessionID) else {
             return .failed(.notFound, message: "This session no longer exists on the Mac")
         }
+        guard caps(agent).phone.input else { return .notSupported(.input, agent: agent) }
         guard terminalCenter.liveIDs.contains(sessionID) else {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
@@ -303,10 +310,14 @@ final class SessionInputHandlers: HubCompanion {
         if let failure = standingFailure(line) { return .fail(failure) }
         // The state was read right before (the delivery's fresh read): a
         // session it does not list was deleted.
-        // Only Claude sessions reach this handler (`isBoardSession`), and Claude
-        // Code queues a line typed mid-turn: a working agent does not hold it
-        // (PROJ-16 amended, ask #614). A permission prompt still does.
-        switch control.workchatLineCheck(line.sessionID) {
+        // An agent that takes a line while it works (Claude Code queues it
+        // for its next step and reports every mid-turn dialog) does not hold
+        // it while working (PROJ-16 amended, ask #614); any other (Codex: an
+        // MCP form it opens mid-turn raises no state) waits for idle. A
+        // permission prompt holds either.
+        let whileWorking = terminalCenter.agent(of: line.sessionID).map { caps($0).phone.inputWhileWorking } ?? false
+        let check = whileWorking ? control.workchatLineCheck(line.sessionID) : control.lineCheck(line.sessionID)
+        switch check {
         case .go: return nil
         case .sessionGone: return .fail(.sessionNotRunning)
         case .hold(.needsApproval): return .hold(.needsApproval)
@@ -518,16 +529,34 @@ final class SessionInputHandlers: HubCompanion {
         }
     }
 
-    /// A live or stopped `claude` session of a workbench: the phone sees
-    /// nothing else.
-    private func isBoardSession(_ sessionID: Int64) async throws -> Bool {
-        try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind == .claude }
+    /// The agent of a live or stopped agent session of a workbench; nil for
+    /// anything else (deleted, a shell, no workbench).
+    private func boardAgent(_ sessionID: Int64) async throws -> AgentKind? {
+        try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind.agent }
     }
 }
 
 extension ActionOutcome {
     static func held(_ reason: ActionReason) -> Self {
         Self(status: .held, reason: reason, result: nil, errorMessage: nil)
+    }
+
+    /// What the phone asked of a session whose agent cannot take it.
+    enum NotSupported {
+        case input, permission, interrupt
+    }
+
+    /// The `not_supported` refusal (S4, PROJ-16/21 amended): the agent's
+    /// session cannot take `what` from the phone. The same words as Go's
+    /// hub (`notSupported*Format`); an older phone shows the message.
+    static func notSupported(_ what: NotSupported, agent: AgentKind) -> Self {
+        let name = agent.displayName
+        let message = switch what {
+        case .input: "\(name) sessions can't take messages from the phone yet. Type it on the Mac."
+        case .permission: "\(name) sessions can't answer this permission from the phone yet. Answer it on the Mac."
+        case .interrupt: "\(name) sessions can't be interrupted from the phone yet. Stop it on the Mac."
+        }
+        return .failed(.notSupported, message: message)
     }
 }
 

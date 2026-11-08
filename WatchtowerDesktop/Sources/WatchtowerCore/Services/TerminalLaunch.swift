@@ -39,6 +39,21 @@ package struct TerminalLaunch: Equatable, Sendable {
             if case let .newAgent(_, _, prompt) = self { return prompt }
             return nil
         }
+
+        /// The new session's chosen id or the resumed one; nil for a shell
+        /// and a new session of an agent that mints its own.
+        var sessionID: String? {
+            switch self {
+            case let .newAgent(_, id, _): id
+            case let .resumeAgent(_, id): id
+            case .shell: nil
+            }
+        }
+
+        var isResume: Bool {
+            if case .resumeAgent = self { return true }
+            return false
+        }
     }
 
     /// Names the `terminal_sessions` row a `claude` process runs in, so the
@@ -81,12 +96,13 @@ package struct TerminalLaunch: Equatable, Sendable {
     }
 
     /// Does not validate a session id: callers check `isValidSessionID`
-    /// first. `rowID` reaches an agent launch's environment as
-    /// `sessionRowEnv`. A Codex mode runs `codex` as `launch-args` resolved
-    /// it (`codex`), its script in `codexCommandEnv`; without one there is
-    /// no binary to run, and the launch exits 127 ("Codex was not found").
-    /// `automationRunID` reaches every agent launch, a resume included, as
-    /// `automationRunEnv`; a shell never carries it.
+    /// first. The agent's own command comes from its session adapter
+    /// (`SessionAgent.launchCommand`). `rowID` reaches an agent launch's
+    /// environment as `sessionRowEnv`. An agent whose hooks arrive with its
+    /// launch flags runs as `launch-args` resolved it (`codex`); without one
+    /// there is no binary to run, and the launch exits 127 ("Codex was not
+    /// found"). `automationRunID` reaches every agent launch, a resume
+    /// included, as `automationRunEnv`; a shell never carries it.
     package static func make(
         shell: String?,
         folder: String,
@@ -97,49 +113,27 @@ package struct TerminalLaunch: Equatable, Sendable {
         automationRunID: Int64? = nil
     ) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
-        var args: [String]
-        switch mode {
-        case let .newAgent(.claude, uuid, prompt):
-            // `env -u` keeps the prompt out of everything Claude Code runs.
-            // `/bin/sh` reads the variable: the login shell only runs a
-            // single-quoted literal, so one whose `$VAR` is not POSIX
-            // (nushell's `$env.VAR`) or that quotes differently (csh) still
-            // passes the prompt as one argument.
-            let uuid = uuid ?? ""
-            args = ["-l", "-c", prompt == nil ? "exec claude --session-id \(uuid)"
-                : "exec /bin/sh -c 'exec env -u \(firstPromptEnv) claude --session-id \(uuid) \"$\(firstPromptEnv)\"'"]
-        case let .resumeAgent(.claude, uuid):
-            args = ["-l", "-c", "exec claude --resume \(uuid)"]
-        case .newAgent(.codex, _, _), .resumeAgent(.codex, _):
-            // `TerminalCenter.start` refuses a Codex launch without its args
-            // before it gets here; `make` stays total for any other caller,
-            // and 127 reads as "Codex was not found" (`exitMessage`).
-            args = ["-l", "-c", codex == nil ? "exit 127" : codexLoginCommand]
-        case .shell:
-            args = ["-l"]
+        guard let agent = mode.agent else {
+            return Self(executable: executable, args: ["-l"], currentDirectory: folder, rowID: rowID)
         }
+        let start = AgentStart(sessionID: mode.sessionID, prompt: mode.prompt, resume: mode.isResume, launchArgs: codex)
+        let command = agent.session.launchCommand(start)
         // The worktree setup command runs before a NEW agent start only
         // (never a resume or a plain shell), ahead of the agent's own command.
-        var setupText: String?
-        if let setup, !setup.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           case .newAgent = mode, codex != nil || mode.agent == .claude {
-            args[args.count - 1] = setupPrefix + args[args.count - 1]
-            setupText = setup
+        let setupText = setup.flatMap { text in
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !start.resume && command.runs ? text : nil
         }
-        var launch = Self(executable: executable, args: args, currentDirectory: folder, rowID: rowID)
-        if let rowID, mode != .shell {
-            launch.environment = ["\(sessionRowEnv)=\(rowID)"]
-        }
-        if mode.agent == .codex, let codex {
-            launch.environment.append("\(codexCommandEnv)=\(codexScript(codex, mode: mode))")
-        }
-        if let prompt = mode.prompt {
-            launch.environment.append("\(firstPromptEnv)=\(mode.agent == .codex ? prompt : positionalPrompt(prompt))")
-        }
+        var launch = Self(
+            executable: executable,
+            args: ["-l", "-c", (setupText == nil ? "" : setupPrefix) + command.command],
+            currentDirectory: folder,
+            rowID: rowID
+        )
+        if let rowID { launch.environment.append("\(sessionRowEnv)=\(rowID)") }
+        launch.environment += command.environment
+        if let prompt = command.prompt { launch.environment.append("\(firstPromptEnv)=\(prompt)") }
         if let setupText { launch.environment.append("\(setupCommandEnv)=\(setupText)") }
-        if let automationRunID, mode != .shell {
-            launch.environment.append("\(automationRunEnv)=\(automationRunID)")
-        }
+        if let automationRunID { launch.environment.append("\(automationRunEnv)=\(automationRunID)") }
         return launch
     }
 
@@ -169,23 +163,6 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// it to `/bin/sh` as is; `/bin/sh` reads the script from
     /// `codexCommandEnv` and runs it, so only `/bin/sh` ever parses values.
     package static let codexLoginCommand = "exec /bin/sh -c 'eval \"$\(codexCommandEnv)\"'"
-
-    /// The Codex script (spec 2026-10-12 §7): `<binary> <launch-args…>
-    /// [resume '<id>'] [-- "$PROMPT"]`, every value single-quoted, with
-    /// `path_prepend` ahead of `PATH` so an nvm `codex` finds its `node`.
-    /// Nothing follows `resume <id>` but `--` and the prompt: a `-c` after
-    /// the subcommand would replace every root `-c` (the hooks and the MCP
-    /// server). The prompt is read from the environment, after `--`, so one
-    /// starting with "-" is no flag. `env -u` drops both variables before
-    /// `codex` runs.
-    static func codexScript(_ codex: CodexLaunchArgs, mode: Mode) -> String {
-        var words = ["exec", "env", "-u", firstPromptEnv, "-u", codexCommandEnv, shellQuote(codex.binary)]
-            + codex.args.map(shellQuote)
-        if case let .resumeAgent(_, id) = mode { words += ["resume", shellQuote(id)] }
-        if mode.prompt != nil { words += ["--", "\"$\(firstPromptEnv)\""] }
-        let path = codex.pathPrepend.isEmpty ? "" : "PATH=\(shellQuote(codex.pathPrepend)):\"$PATH\" "
-        return path + words.joined(separator: " ")
-    }
 
     /// POSIX single quotes, with a `'` inside written `'\''` (for `/bin/sh`).
     package static func shellQuote(_ value: String) -> String {
@@ -259,17 +236,20 @@ package struct TerminalLaunch: Equatable, Sendable {
     /// The terminal pane's line after the session ends. 127 is the shell's
     /// "command not found": `exec claude` found no `claude` on the login
     /// shell's PATH, which a bare exit code would not tell the owner. For
-    /// Codex it also names a `launch-args` that found no `codex`.
-    package static func exitMessage(code: Int32?, agent: AgentKind = .claude) -> String {
-        switch (agent, code) {
-        case (.claude, 127?):
-            "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
-        case (.codex, 127?):
-            "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."
-        case let (agent, code?):
-            "\(agent.displayName) exited (code \(code))."
-        case let (agent, nil):
-            "\(agent.displayName) exited."
+    /// Codex it also names a `launch-args` that found no `codex`. A shell
+    /// (`agent` nil) names no agent.
+    package static func exitMessage(code: Int32?, agent: AgentKind?) -> String {
+        guard let agent else {
+            switch code {
+            case 127?: return "The shell found no command to run (code 127)."
+            case let code?: return "The session exited (code \(code))."
+            case nil: return "The session exited."
+            }
+        }
+        return switch code {
+        case 127?: agent.session.notFoundMessage
+        case let code?: "\(agent.displayName) exited (code \(code))."
+        case nil: "\(agent.displayName) exited."
         }
     }
 }

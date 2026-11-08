@@ -74,6 +74,16 @@ struct SessionChatView: View {
         vm.session(sessionID, projectID: projectID) != nil && !composerShown
     }
 
+    /// The line where the composer would be once it is gone: a kind this
+    /// build does not know says so (never the finished line, A7b); a known
+    /// session that ended keeps its history readable; nil otherwise.
+    static func endedLine(kind: TerminalSession.Kind?, finishedShown: Bool) -> String? {
+        if let unsupported = kind?.unsupportedMessage { return unsupported }
+        return finishedShown ? finishedLine : nil
+    }
+
+    static let finishedLine = "Session finished. The history stays readable."
+
     /// The round button is Stop while the agent or its subagents work.
     private var working: Bool {
         vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
@@ -135,10 +145,12 @@ struct SessionChatView: View {
             } else {
                 feed
             }
-            if path.isRoot && finishedShown {
-                // No composer and no Stop once the session ended.
+            if path.isRoot, let line = Self.endedLine(kind: vm.session(sessionID, projectID: projectID)?.kind,
+                                                      finishedShown: finishedShown) {
+                // No composer and no Stop once the session ended, or for a
+                // kind this build does not know (A7b).
                 Divider()
-                Text("Session finished. The history stays readable.")
+                Text(line)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

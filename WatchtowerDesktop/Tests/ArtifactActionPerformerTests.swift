@@ -45,4 +45,15 @@ final class ArtifactActionPerformerTests: XCTestCase {
         XCTAssertEqual(opened, 0)
         XCTAssertFalse(outcome.opened)
     }
+
+    /// Export as Word writes a real .docx (a zip package) with the text in it.
+    func testWordDataIsADocxPackage() throws {
+        let data = try ArtifactExporter.wordData(markdown: "# Plan\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nПривіт", title: "Plan")
+        XCTAssertEqual(Array(data.prefix(2)), Array("PK".utf8))
+        let back = try NSAttributedString(
+            data: data, options: [.documentType: NSAttributedString.DocumentType.officeOpenXML], documentAttributes: nil
+        )
+        XCTAssertTrue(back.string.contains("Plan"))
+        XCTAssertTrue(back.string.contains("Привіт"))
+    }
 }

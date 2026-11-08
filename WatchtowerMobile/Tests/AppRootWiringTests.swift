@@ -126,7 +126,7 @@ final class AppRootWiringTests: XCTestCase {
             let session = try HubSession(
                 transport: transport,
                 replicaPath: paths.replicaPath(hubID),
-                transportKind: .cloudKit,
+                backend: .live,
                 transportStore: transportStore,
                 hubID: hubID,
                 linkedDevice: device,
@@ -934,7 +934,7 @@ final class AppRootWiringTests: XCTestCase {
         let env = try HubSession(
             transport: gate,
             replicaPath: try makeReplicaPath(),
-            transportKind: .cloudKit,
+            backend: .live,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory()
         )
@@ -1241,7 +1241,7 @@ final class AppRootWiringTests: XCTestCase {
         let relaunched = try HubSession(
             transport: transport,
             replicaPath: paths.replicaPath(TestHub.acme),
-            transportKind: .cloudKit,
+            backend: .live,
             hubID: TestHub.acme,
             linkedDevice: device,
             keys: try TestPhone.keys(),
@@ -1634,7 +1634,7 @@ final class AppRootWiringTests: XCTestCase {
         let session = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory()
         )
@@ -1734,13 +1734,13 @@ final class AppRootWiringTests: XCTestCase {
         let root = try makeRoot(links: [linkRecord()])
         try await poll { root.env.activeSession.isLooping }
         let active = root.linking.links.first { $0.hubID == root.env.activeHubID }?.link
-        XCTAssertTrue(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: active))
-        XCTAssertFalse(SettingsView.offersUnlink(transportKind: .inMemoryDemo, link: linkRecord()), "the demo has no link to end")
+        XCTAssertTrue(SettingsView.offersUnlink(backend: root.env.backend, link: active))
+        XCTAssertFalse(SettingsView.offersUnlink(backend: .inMemoryDemo, link: linkRecord()), "the demo has no link to end")
 
         await root.linking.unlink(TestHub.acme)
 
         XCTAssertTrue(root.linking.links.isEmpty)
-        XCTAssertFalse(SettingsView.offersUnlink(transportKind: root.env.transportKind, link: root.linking.links.first?.link))
+        XCTAssertFalse(SettingsView.offersUnlink(backend: root.env.backend, link: root.linking.links.first?.link))
         try await assertTheFarewellWentThroughTheHubsOwnTransport(TestHub.acme)
         XCTAssertEqual(root.linking.phase, .idle)
         XCTAssertTrue(root.showsOnboarding)
@@ -1846,7 +1846,7 @@ final class AppRootWiringTests: XCTestCase {
         linked.isLocked = true
         XCTAssertEqual(try DeviceIdentity.current(keys: linked).deviceID, TestE2E.deviceID.uuidString)
         let session = try HubSession(
-            transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), transportKind: .cloudKit,
+            transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), backend: .live,
             hubID: e2eHub, linkedDevice: device,
             keys: PhoneKeys(store: linked, hubID: e2eHub),
             defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
@@ -1857,7 +1857,7 @@ final class AppRootWiringTests: XCTestCase {
         let fresh = InMemoryPhoneKeyStore()
         XCTAssertNil(try DeviceIdentity.current(keys: fresh).deviceID)
         let unlinked = try HubSession(
-            transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), transportKind: .cloudKit,
+            transport: InMemoryCloudTransport(), replicaPath: try makeReplicaPath(), backend: .live,
             hubID: e2eHub, keys: PhoneKeys(store: fresh, hubID: e2eHub),
             defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
         )
@@ -1889,7 +1889,7 @@ final class AppRootWiringTests: XCTestCase {
     func testTheCloudKitKindWithNoKeysNeverSealsAnything() async throws {
         let transport = InMemoryCloudTransport()
         let session = try HubSession(
-            transport: transport, replicaPath: try makeReplicaPath(), transportKind: .cloudKit,
+            transport: transport, replicaPath: try makeReplicaPath(), backend: .live,
             hubID: e2eHub, linkedDevice: device,
             defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
         )

@@ -335,7 +335,9 @@ func twoHopServer(t *testing.T, rec *recorder) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.add(r.Header)
 		if r.URL.Path == "/" {
-			http.SetCookie(w, &http.Cookie{Name: "sid", Value: "secret", Path: "/"})
+			// A plain cookie, no Secure: a client with a jar would send it
+			// back over this http server, which is what the test must catch.
+			w.Header().Add("Set-Cookie", "sid=secret; Path=/")
 			w.Header().Set("WWW-Authenticate", `Basic realm="x"`)
 			http.Redirect(w, r, "/second", http.StatusFound)
 			return

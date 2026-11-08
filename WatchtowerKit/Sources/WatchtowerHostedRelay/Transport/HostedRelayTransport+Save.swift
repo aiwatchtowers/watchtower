@@ -251,7 +251,10 @@ extension HostedRelayTransport {
     private func saveItem(_ record: CloudRecord, expect: WriteExpectation) async throws -> Relay_V1_SaveItem {
         var item = Relay_V1_SaveItem()
         var attachment = ""
-        if let file = record.assetFileURL { attachment = try await upload(file, zone: record.zone) }
+        if let file = record.assetFileURL {
+            attachment = try await upload(file, zone: record.zone)
+            noteOwnAttachment(attachment, of: record)
+        }
         item.record.zone = zoneName(record.zone)
         item.record.name = record.recordName
         item.record.envelope = record.payload
@@ -263,5 +266,15 @@ extension HostedRelayTransport {
         case .seq(let seq): item.expectedSeq = seq
         }
         return item
+    }
+
+    /// Ledgers an upload as this device's own, so its pull never downloads it back (#1469).
+    /// Best-effort: a failed write only costs that one download later.
+    private func noteOwnAttachment(_ attachmentID: String, of record: CloudRecord) {
+        do {
+            try store.noteRelayOwnAttachment(attachmentID, name: record.recordName, zone: record.zone)
+        } catch {
+            Self.logger.error("relay upload: own attachment not ledgered, \(Self.kind(record.zone), privacy: .public)")
+        }
     }
 }

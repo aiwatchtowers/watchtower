@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: User guide
+    url: https://github.com/aiwatchtowers/watchtower/blob/main/docs/guide/README.md
+    about: Setup, every feature, troubleshooting and reference. Many questions are answered there.
+  - name: Report a security vulnerability
+    url: https://github.com/aiwatchtowers/watchtower/security/advisories/new
+    about: Please report security problems privately, not as a public issue.

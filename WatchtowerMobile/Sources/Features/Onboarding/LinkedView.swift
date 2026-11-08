@@ -25,6 +25,14 @@ struct LinkFailureView: View {
 
     var body: some View {
         LinkOutcomeLayout(systemImage: "exclamationmark.triangle", title: failure.title, detail: failure.hint) {
+            if let retry = failure.retryTitle {
+                Button {
+                    Task { await linking.retryFailedCode() }
+                } label: {
+                    Text(retry)
+                }
+                .buttonStyle(ProminentActionStyle())
+            }
             if failure.offersScan {
                 Button {
                     linking.startScan()

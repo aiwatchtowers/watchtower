@@ -85,6 +85,9 @@ struct EmbeddedChatRows<Accessory: View>: View {
                     .foregroundStyle(.orange)
             }
             accessory(item)
+            if engine.reviewedMessageID == item.id {
+                ChatActionReviewView(actions: engine.reviewedActions)
+            }
         }
         if let queued = engine.queuedText {
             VStack(alignment: .trailing, spacing: 2) {
@@ -102,6 +105,7 @@ struct EmbeddedChatRows<Accessory: View>: View {
         } else {
             ChatMessageRow(item: item, isLast: item.id == engine.messages.last?.id, isEditing: false,
                            actions: .embedded(copy: Self.copy, retry: retry(for: item, thread),
+                                              reviewActions: { engine.reviewActions(messageID: $0) },
                                               answerQuestion: answerQuestion(for: item, thread)),
                            questionAnswer: thread.ownerReply(after: item.id),
                            showsRememberMark: engine.spec.showsRememberMarks)

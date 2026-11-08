@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -117,7 +118,7 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	sess, err := database.GetTerminalSession(id)
+	sess, err := sessionagent.LoadSession(database, id)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return fmt.Errorf("session %d not found", id)
 	}
@@ -147,12 +148,10 @@ func runWorkbenchSessionFeed(cmd *cobra.Command, _ []string) error {
 
 // requireAgentSession refuses sessions the feed cannot read: shells.
 func requireAgentSession(sess *db.TerminalSession) error {
-	switch agentkind.Kind(sess.Kind) {
-	case agentkind.Claude, agentkind.Codex:
-		return nil
-	default:
+	if !agentkind.IsAgent(sess.Kind) {
 		return fmt.Errorf("session %d is not an agent session", sess.ID)
 	}
+	return nil
 }
 
 // buildSessionFeedOutput reads either one subagent's feed (sub set) or the
@@ -223,8 +222,11 @@ func sessionFeedActivity(path string, codex, sidechain bool) *sessionfeed.Activi
 // sessionFeedConversations lists the tab's conversations in ledger order
 // whose transcripts exist.
 func sessionFeedConversations(ctx context.Context, database *db.DB, sess *db.TerminalSession) ([]sessionfeed.Conversation, error) {
-	return sessionfeed.SessionConversations(ctx, database, sess.ID, agentkind.Kind(sess.Kind) == agentkind.Codex,
-		sess.FolderPath, sess.TranscriptPath.String,
+	a, ok := sessionagent.Of(sess.Kind)
+	if !ok {
+		return nil, fmt.Errorf("session %d is not an agent session", sess.ID)
+	}
+	return a.Conversations(ctx, database, sess.ID, sess.FolderPath, sess.TranscriptPath.String,
 		sessionfeed.Dirs{ClaudeProjects: filepath.Join(agentsClaudeDir(), "projects"), CodexHome: terminalCodexHome()})
 }
 

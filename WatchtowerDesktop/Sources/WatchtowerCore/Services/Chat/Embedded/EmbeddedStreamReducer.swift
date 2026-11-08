@@ -2,9 +2,11 @@ import Foundation
 
 /// The one fold of `watchtower ai query` events into a turn's visible text —
 /// what eight chat view models used to copy (backlog 2026-09-26). `.text`
-/// appends; `.turnComplete` replaces with the whole answer and arms "the next
-/// `.text` starts over"; `.reset` (a tool call cut the turn) drops the
-/// pre-tool preamble.
+/// appends (the v2 stream sends nothing else for text, so text streamed
+/// before a tool call stays); the v1 shapes a test double may still send:
+/// `.turnComplete` replaces with the whole answer and arms "the next `.text`
+/// starts over", `.reset` drops the text so far. Steps and usage are not
+/// text: the engine reads them before the reducer.
 package struct EmbeddedStreamReducer: Sendable {
     package enum Effect: Equatable, Sendable {
         /// The turn's full text changed to this value.
@@ -42,7 +44,9 @@ package struct EmbeddedStreamReducer: Sendable {
             return .sessionID(sid)
         case .error(let message):
             return .failed(message)
-        case .done:
+        case .failure(let error):
+            return .failed(error.message)
+        case .routing, .toolStart, .toolEnd, .usage, .done:
             return .none
         }
     }

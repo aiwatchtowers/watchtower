@@ -21,9 +21,11 @@ import (
 // the same variable.
 const terminalSessionEnv = tools.TerminalSessionEnv
 
-// sessionRecordBusyTimeout bounds the wait for the write lock: a daemon
-// holding it fails the record as one line instead of eating the hook's
-// 10 s budget before the brief is printed.
+// sessionRecordBusyTimeout bounds one wait for the write lock of a
+// synchronous hook write — the Stop hook's, the SessionStart's run mark or
+// clear, a codex hook's: a daemon holding it fails the record as one line
+// instead of eating the hook's budget. The async state hooks and the
+// SessionStart's id move wait longer (stateHookLockWait, board #988).
 const sessionRecordBusyTimeout = time.Second
 
 // sessionStartInputWait bounds the wait for the hook input: Claude Code
@@ -170,13 +172,23 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 	if !w.moveID && !w.markRun && !w.clearState {
 		return nil
 	}
-	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
-		return err
-	}
 	if w.moveID {
-		if _, err := database.SetTerminalClaudeSessionID(rowID, workbenchID, sessionID); err != nil {
+		// The state hooks' longer wait with one retry (board #988, ask
+		// #525): a lost move leaves the row on the old conversation, and
+		// every later hook of the new one is dropped as foreign. Bounded by
+		// stateHookBudget: with the 1 s input wait and the mark's or
+		// clear's 1 s, at most ~6.5 s of waiting before the brief prints,
+		// inside the hook's 10 s timeout.
+		move := stateHookLockWait.until(lockNow().Add(stateHookBudget))
+		if err := move.write(database, func() error {
+			_, err := setTerminalClaudeSessionID(database, rowID, workbenchID, sessionID)
+			return err
+		}); err != nil {
 			return err
 		}
+	}
+	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
+		return err
 	}
 	if w.markRun {
 		if _, err := database.MarkTerminalAgentRun(rowID, workbenchID, sessionID, hookNow(), w.cwd); err != nil {
@@ -190,6 +202,9 @@ func (w sessionStartWrites) apply(database *db.DB, rowID, workbenchID int64, ses
 	}
 	return nil
 }
+
+// setTerminalClaudeSessionID is the SessionStart's id move; a seam for tests.
+var setTerminalClaudeSessionID = (*db.DB).SetTerminalClaudeSessionID
 
 // sessionStartPlan is the id write a Codex SessionStart makes on its row
 // (spec 2026-10-12-codex-workbench-agent §5).
@@ -267,12 +282,14 @@ func recordCodexSessionStart(stdin io.Reader, stderr io.Writer, database *db.DB,
 // applyCodexSessionStart makes planCodexSessionStart's writes on row: the id
 // first, so the mark's and the path's guards see the final id, then the
 // run's mark (a codex row has its state hooks by construction, spec §6.3),
-// then the absolute transcript path every accepted start stores. With
-// nothing to write it does not wait for the write lock.
+// then the absolute transcript path every accepted start stores, then the
+// watch issue's clear. A foreign start with nothing to write does not wait
+// for the write lock (the clear reads first and writes only a set issue).
 func applyCodexSessionStart(database *db.DB, row db.TerminalSession, ev hookEvent) error {
 	plan := planCodexSessionStart(row.ClaudeSessionID, ev)
 	path := codexPathToStore(row, ev, plan)
-	if plan == sessionStartNone && path == "" {
+	current := row.ClaudeSessionID.Valid && row.ClaudeSessionID.String == ev.SessionID
+	if plan == sessionStartNone && path == "" && !current {
 		return nil
 	}
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
@@ -292,6 +309,12 @@ func applyCodexSessionStart(database *db.DB, row db.TerminalSession, ev hookEven
 		if _, err := database.SetTerminalTranscriptPath(row.ID, wb, ev.SessionID, path); err != nil {
 			return fmt.Errorf("storing the transcript path: %w", err)
 		}
+	}
+	// A SessionStart is a hook event too, a compaction of the current
+	// session with nothing else to store included: the session host's watch
+	// re-arms on the (maybe new) path (spec 2026-11-05 §3.5).
+	if _, err := database.ClearAgentWatchIssue(row.ID); err != nil {
+		return fmt.Errorf("clearing the watch issue: %w", err)
 	}
 	return nil
 }

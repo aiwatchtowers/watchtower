@@ -292,14 +292,15 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertTrue(backend.writes.isEmpty)
     }
 
-    func testAtMostTwoEpochsAreKept() throws {
+    /// Relay client Phase 3 (Owner approval 4): the cap went from 2 to 8; the time rule is `EpochRetentionTests`.
+    func testAtMostEightEpochsAreKept() throws {
         let store = makeStore(FakeKeychainBackend())
-        let epochs = (1...3).map {
+        let epochs = (1...10).map {
             EpochKeys(epoch: UInt32($0), dataKey: Data(repeating: UInt8($0), count: 32), alertKey: Data(repeating: UInt8($0 + 10), count: 32))
         }
         try store.saveHubLink(link(epochs: epochs))
-        XCTAssertEqual(try store.hubLink("hub-1")?.epochs.map(\.epoch), [2, 3])
-        XCTAssertEqual(try store.alertMaterial("hub-1")?.epochs.map(\.epoch), [2, 3])
+        XCTAssertEqual(try store.hubLink("hub-1")?.epochs.map(\.epoch), Array(3...10))
+        XCTAssertEqual(try store.alertMaterial("hub-1")?.epochs.map(\.epoch), Array(3...10))
     }
 
     func testTheDeviceIDIsReadableWhileLockedAndEqualsTheIdentitysID() throws {

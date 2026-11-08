@@ -115,6 +115,24 @@ final class SessionReportTests: XCTestCase {
         XCTAssertThrowsError(try decode(#"{"progress": {"done": "three"}}"#))
     }
 
+    /// Board #986: `merged` on progress, phases and summary rows; an older
+    /// CLI without it reads 0.
+    func testMergedDecodesAndDefaultsToZero() throws {
+        let r = try decode(#"{"progress": {"done": 3, "total": 32, "merged": 25}, "phases": [{"target_id": 2, "merged": 4}]}"#)
+        XCTAssertEqual(r.progress, .init(done: 3, total: 32, merged: 25))
+        XCTAssertEqual(r.phases.first?.merged, 4)
+        XCTAssertEqual(try Self.golden("session_report_314").progress.merged, 0)
+        let rows = try JSONDecoder().decode([SessionReportSummary].self, from: Data(
+            #"[{"session_id": 1, "done": 3, "total": 32, "merged": 25}, {"session_id": 2, "done": 1, "total": 2}]"#.utf8
+        ))
+        XCTAssertEqual(rows.map(\.merged), [25, 0])
+        XCTAssertEqual(rows.map(\.mergedStale), [false, false], "absent: false")
+        let stale = try JSONDecoder().decode([SessionReportSummary].self, from: Data(
+            #"[{"session_id": 1, "merged": 2, "merged_stale": true}, {"session_id": 2, "merged_stale": null}]"#.utf8
+        ))
+        XCTAssertEqual(stale.map(\.mergedStale), [true, false])
+    }
+
     func testSummaryRowsDecode() throws {
         let json = """
             [{"session_id": 1, "target_id": 314, "done": 14, "total": 15, "pr_line": "PR #147 open", "finished_at": ""},

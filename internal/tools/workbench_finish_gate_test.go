@@ -315,3 +315,78 @@ func reviewFolder(t *testing.T, d *db.DB, wb int64) string {
 	require.NoError(t, err)
 	return p.FolderPath
 }
+
+// tipSession is repoSession on a branch-tip place (board #1013): the folder
+// stays on main with its uncommitted b.go, the session's ticket (done, so
+// gate 1 passes) carries branch "feature", committed with feature.go unless
+// empty, in which case the branch sits at main's tip.
+func tipSession(t *testing.T, empty bool) (fx workbenchFixture, wb, session int64, reg *Registry, git func(args ...string) string) {
+	t.Helper()
+	fx, wb, session, reg = repoSession(t)
+	if empty {
+		folder := reviewFolder(t, fx.d, wb)
+		bin, _ := gitbin.Locate()
+		git = func(args ...string) string {
+			cmd := exec.Command(bin, args...)
+			cmd.Dir = folder
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+			return strings.TrimSpace(string(out))
+		}
+		git("branch", "feature")
+		tid := db.SeedTestWorkbenchTarget(t, fx.d, wb, sql.NullInt64{}, "ticket")
+		_, err := fx.d.Exec(`UPDATE targets SET branch = 'feature' WHERE id = ?`, tid)
+		require.NoError(t, err)
+		launchedFor(t, fx.d, session, tid)
+	} else {
+		_, git = branchTipSession(t, fx, wb, session)
+	}
+	_, err := fx.d.Exec(`UPDATE targets SET status = 'done' WHERE branch = 'feature'`)
+	require.NoError(t, err)
+	return fx, wb, session, reg, git
+}
+
+const dirtyFolderRefusal = "the folder on main has uncommitted changes the reviewer does not read (it reads task branch feature " +
+	"at its last commit) — commit them on feature or move the folder onto it, then try again"
+
+// Board #1013: on a branch-tip place the folder's uncommitted work is not
+// what the reviewer reads, so gate 2 refuses it — with an empty task branch
+// too, where the tip alone would read as nothing to review.
+func TestProj14_BranchTipWithADirtyFolderRefuses(t *testing.T) {
+	for _, empty := range []bool{true, false} {
+		t.Run(map[bool]string{true: "empty task branch", false: "task branch with commits"}[empty], func(t *testing.T) {
+			fx, wb, session, reg, _ := tipSession(t, empty)
+			if !empty {
+				cacheOverview(t, fx.d, wb, session, "done")
+			}
+			_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+			assert.Equal(t, dirtyFolderRefusal, refusal(t, err))
+			assertNotFinished(t, fx.d, session, 0)
+		})
+	}
+}
+
+// A clean folder on a branch-tip place is judged by the tip as before: an
+// empty branch passes, a branch with commits needs its overview. Board
+// #1013 (F8): a worktree in the session's ledger does not skip it — the tip
+// is the session's work wherever the folder is.
+func TestProj14_BranchTipWithACleanFolder(t *testing.T) {
+	t.Run("empty task branch", func(t *testing.T) {
+		fx, wb, _, reg, _ := tipSession(t, true)
+		require.NoError(t, os.Remove(filepath.Join(reviewFolder(t, fx.d, wb), "b.go")))
+		mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	})
+	t.Run("task branch with commits", func(t *testing.T) {
+		fx, wb, session, reg, _ := tipSession(t, false)
+		require.NoError(t, os.Remove(filepath.Join(reviewFolder(t, fx.d, wb), "b.go")))
+		_, err := fx.d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at)
+			VALUES (?, ?, 'wt/x', '2026-10-24T00:00:00.000Z')`, session, t.TempDir())
+		require.NoError(t, err)
+		_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+		assert.Contains(t, refusal(t, err), "your changes have no AI overview yet")
+		assertNotFinished(t, fx.d, session, 0)
+
+		cacheOverview(t, fx.d, wb, session, "done")
+		mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	})
+}

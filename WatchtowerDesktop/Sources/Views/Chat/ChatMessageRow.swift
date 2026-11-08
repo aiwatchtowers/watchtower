@@ -3,18 +3,20 @@ import WatchtowerCore
 
 /// What a row can ask of the thread. Closures are rebuilt per render and are
 /// deliberately excluded from `ChatMessageRow`'s equality. A nil action hides
-/// its button: the embedded chats offer Copy and Retry only (`embedded`).
+/// its button: the embedded chats offer Copy and Retry only (`embedded`), and
+/// no sources panel, so their replies show no sources row.
 struct ChatRowActions {
     var copy: (String) -> Void = { _ in }
     var regenerate: ((Int64) -> Void)? = { _ in }
     var retry: ((Int64) -> Void)? = { _ in }
+    var reviewActions: ((Int64) -> Void)?
     var continueStopped: ((Int64) -> Void)? = { _ in }
     var showVariant: ((Int64, Int) -> Void)? = { _, _ in }
     var beginEdit: ((Int64) -> Void)? = { _ in }
     var submitEdit: (Int64, String) -> Void = { _, _ in }
     var cancelEdit: () -> Void = {}
     var openArtifact: (String) -> Void = { _ in }
-    var openSources: (Int64, [ChatSource]) -> Void = { _, _ in }
+    var openSources: ((Int64, [ChatSource]) -> Void)? = { _, _ in }
     /// Sends a question card's answers as the owner's next message; nil
     /// while the card cannot be answered (an older reply, a turn running).
     var answerQuestion: ((String) -> Void)?
@@ -25,10 +27,11 @@ struct ChatRowActions {
     static func embedded(
         copy: @escaping (String) -> Void,
         retry: ((Int64) -> Void)?,
+        reviewActions: ((Int64) -> Void)? = nil,
         answerQuestion: ((String) -> Void)? = nil
     ) -> Self {
-        Self(copy: copy, regenerate: nil, retry: retry, continueStopped: nil, showVariant: nil,
-             beginEdit: nil, answerQuestion: answerQuestion)
+        Self(copy: copy, regenerate: nil, retry: retry, reviewActions: reviewActions, continueStopped: nil, showVariant: nil,
+             beginEdit: nil, openSources: nil, answerQuestion: answerQuestion)
     }
 }
 
@@ -82,7 +85,7 @@ struct ChatMessageRow: View, Equatable {
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
                                  versions: artifactVersions, keptKeys: keptArtifactKeys, onOpenArtifact: actions.openArtifact,
-                                 onOpenSources: { actions.openSources(item.id, item.sources) },
+                                 onOpenSources: actions.openSources.map { open in { open(item.id, item.sources) } },
                                  questionAnswer: questionAnswer, onAnswerQuestion: actions.answerQuestion)
             statusCard
         } else {
@@ -91,6 +94,10 @@ struct ChatMessageRow: View, Equatable {
     }
 
     @ViewBuilder private var statusCard: some View {
+        if item.message.errorCode == ChatErrorCode.quotaExhausted.rawValue {
+            ChatRoutingStatusView(preview: ProviderFallbackPreview(state: .stopped),
+                                  onAction: actions.reviewActions.map { review in { review(item.id) } })
+        } else {
         switch item.message.status {
         case "error":
             HStack(spacing: 8) {
@@ -127,6 +134,7 @@ struct ChatMessageRow: View, Equatable {
             }
         default:
             EmptyView()
+        }
         }
     }
 
@@ -202,16 +210,14 @@ struct ChatMessageRow: View, Equatable {
 struct LiveAssistantRow: View {
     let turn: LiveTurn
     var onOpenArtifact: (String) -> Void = { _ in }
-    var onOpenSources: ([ChatSource]) -> Void = { _ in }
+    /// nil: no sources panel to open (an embedded chat), so no sources row.
+    var onOpenSources: (([ChatSource]) -> Void)?
     var onStreamingTextChanged: (String) -> Void = { _ in }
 
     var body: some View {
-        // Labelled: the question-card closures follow onOpenSources.
-        // swiftlint:disable trailing_closure
         AssistantMessageBody(text: turn.text, steps: turn.steps, isRunning: turn.isRunning,
                              onOpenArtifact: onOpenArtifact,
-                             onOpenSources: { onOpenSources(turn.steps.flatMap(\.sources)) })
-        // swiftlint:enable trailing_closure
+                             onOpenSources: onOpenSources.map { open in { open(turn.steps.flatMap(\.sources)) } })
             .background { ChatLiveArtifactFeed(turn: turn, onText: onStreamingTextChanged) }
     }
 }
@@ -231,7 +237,8 @@ struct AssistantMessageBody: View {
     var versions: [String: Int] = [:]
     var keptKeys: Set<String> = []
     var onOpenArtifact: (String) -> Void = { _ in }
-    var onOpenSources: () -> Void = {}
+    /// nil hides the sources row (a chat with no sources panel).
+    var onOpenSources: (() -> Void)?
     /// A question card's answer (the next owner message) and its sender.
     var questionAnswer: String?
     var onAnswerQuestion: ((String) -> Void)?
@@ -277,7 +284,7 @@ struct AssistantMessageBody: View {
             if let card = question.card {
                 ChatQuestionCardView(card: card, answerText: questionAnswer, onAnswer: onAnswerQuestion)
             }
-            if !isRunning {
+            if !isRunning, let onOpenSources {
                 SourcesSummaryRow(sources: steps.flatMap(\.sources), onOpen: onOpenSources)
             }
         }

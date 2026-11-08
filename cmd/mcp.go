@@ -93,7 +93,7 @@ func init() {
 	mcpCmd.Flags().Int64Var(&mcpFlagAutomationRun, "automation-run", 0, "--surface automation: the running automation run whose agent() child this server serves")
 	mcpCmd.Flags().StringVar(&mcpFlagAutomationReadyFile, "automation-ready-file", "", "--surface automation: a file created once the server accepted the run's binding and serves")
 	mcpCmd.Flags().StringSliceVar(&mcpFlagAutomationTools, "automation-tools", nil, "--surface automation: the tools the agent() call asked for (comma-separated)")
-	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session (claude|codex); labels its comments when no terminal session names it")
+	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session ("+agentkind.Choices("|")+"); labels its comments when no terminal session names it")
 	mcpCmd.Flags().Int64Var(&mcpFlagWorkbench, workbenchFlag, 0, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
@@ -309,7 +309,7 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 	}
 	k, ok := agentkind.Parse(raw)
 	if !ok {
-		return "", fmt.Errorf("--agent must be claude or codex, got %q", raw)
+		return "", fmt.Errorf("--agent must be %s, got %q", agentkind.Choices("or"), raw)
 	}
 	return k, nil
 }

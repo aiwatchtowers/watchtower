@@ -43,6 +43,7 @@ import (
 	"watchtower/internal/customtracks"
 	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
+	"watchtower/internal/sessions"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
 	"watchtower/internal/tracks"
@@ -118,6 +119,10 @@ const maxDailyAIAttempts = 3
 
 // Daemon runs periodic incremental syncs on a timer and after wake-from-sleep events.
 type Daemon struct {
+	aiWorkerPool *sessions.SessionPool
+	routingJob   func(context.Context, context.Context) (context.Context, context.Context)
+	routingWatch func(context.Context)
+
 	orchestrators       []*sync.Orchestrator
 	config              *config.Config
 	logger              *log.Logger
@@ -244,6 +249,11 @@ type Daemon struct {
 	cycleSection    atomic.Int32
 	fetchProgressAt atomic.Int64
 	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
+	// fullWake reports the system capability bits and whether the Mac is in
+	// a full wake rather than a Power Nap DarkWake (SetFullWakeProbe);
+	// runLoop starts no scheduled cycle while it says no. nil = always a
+	// full wake.
+	fullWake func() (caps uint32, full bool)
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -255,7 +265,34 @@ func New(cfg *config.Config) *Daemon {
 		config:       cfg,
 		logger:       log.New(os.Stderr, "[daemon] ", log.LstdFlags),
 		reactionSlot: builtin.NewReactionSlot(),
+		fullWake:     alwaysFullWake,
 	}
+}
+
+// alwaysFullWake is the default full-wake probe: no dark wake gate.
+func alwaysFullWake() (caps uint32, full bool) { return 0, true }
+
+// SetFullWakeProbe sets the probe runLoop asks before it starts a scheduled
+// cycle (the first one, a poll tick, the end of the post-wake wait): while it
+// reports a dark wake (full false), the cycle is deferred until it reports a
+// full wake. caps are the raw system capability bits the dark/full log lines
+// carry (powerstate.Probe). A manual trigger is never gated. The probe must
+// fail open — report a full wake when it cannot tell. nil restores the
+// default (always a full wake). Call it before Run.
+func (d *Daemon) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
+	if probe == nil {
+		probe = alwaysFullWake
+	}
+	d.fullWake = probe
+}
+
+// wakeState asks the full-wake probe; a Daemon built without New has none
+// and is always in a full wake.
+func (d *Daemon) wakeState() (caps uint32, full bool) {
+	if d.fullWake == nil {
+		return alwaysFullWake()
+	}
+	return d.fullWake()
 }
 
 // SetOrchestrators attaches one Slack sync orchestrator per connected account.
@@ -472,6 +509,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 		defer d.advertiseCaps()()
 	}
 
+	if d.routingWatch != nil {
+		watchCtx, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); d.routingWatch(watchCtx) }()
+		defer func() { cancel(); <-done }()
+	}
+
 	pollInterval := d.config.Sync.PollInterval
 	if pollInterval < minPollInterval {
 		pollInterval = config.DefaultPollInterval
@@ -557,6 +601,9 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 // budgets, throttle stamps and pipeline_runs rows see a cancel only on
 // shutdown. It moves d.cycleSection along for runLoop.
 func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
+	if d.routingJob != nil {
+		ctx, fetchCtx = d.routingJob(ctx, fetchCtx)
+	}
 	// First of all: this cycle's AI usage counts the calls other processes
 	// spooled since the last one.
 	d.phaseLLMLedger(ctx)
@@ -773,7 +820,8 @@ const stalePipelineRunError = "interrupted: the process running it exited before
 
 // staleTempAge is how old a prompt temp file or an extract spool file must
 // be before the startup sweep removes it: a live call removes its own long
-// before (fsutil.StaleTempPatterns, extract.StaleTempAge).
+// before, or holds a long-lived one, which the sweep skips (fsutil.HoldTempFile;
+// fsutil.StaleTempPatterns, extract.StaleTempAge).
 const staleTempAge = 10 * time.Minute
 
 // sweepStaleTemp removes what a killed process left holding the owner's
@@ -848,9 +896,12 @@ func (d *Daemon) reapStalePipelineRuns() {
 // inboxErr is what must freeze the inbox watermark (INBOX-09): every account
 // whose sync failed or left its search window incomplete (a rate limit,
 // broken pagination — Run returns nil for those), named by account — except
-// an account whose token is revoked. A revoked account fails every cycle
-// until the owner reconnects it, so freezing on it would stop every other
-// account's watermark for good; its status row already shows it as revoked.
+// an account whose token is revoked or signed in to another Slack team
+// (sync.ErrSlackTeamMismatch, amended 2026-11-03, ask #454). Either fails
+// every cycle until the owner reconnects it, so freezing on it would stop
+// every other account's watermark for good; recordAuthResult marks its
+// status row (revoked, or the mismatch's Re-login error), and the error is
+// still logged and returned as the cycle's sync error.
 func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
 		return nil, nil
@@ -882,7 +933,7 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 				if firstErr == nil {
 					firstErr = err
 				}
-				if !sync.IsRevokedAuthError(err) {
+				if !sync.IsRevokedAuthError(err) && !errors.Is(err, sync.ErrSlackTeamMismatch) {
 					freezing = append(freezing, fmt.Errorf("slack account %d: %w", o.AccountID(), err))
 				}
 			case o.SearchIncomplete():
@@ -986,8 +1037,14 @@ func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
 // snapshot, Flush keyed by its own start — so a calendar change made while
 // the daemon was stopped still fires, though this pass writes it before the
 // first runSync's snapshot. With no bus, or no calendar subscriber, it just
-// runs the two phases.
+// runs the two phases. In a Power Nap dark wake (SetFullWakeProbe) it syncs
+// nothing: the pass would be cut off when the Mac sleeps again, and the
+// first cycle, deferred to the full wake, syncs the calendars anyway.
 func (d *Daemon) startupCalendarSync(ctx context.Context) {
+	if caps, full := d.wakeState(); !full {
+		d.logger.Printf("dark wake (Power Nap, caps 0x%02x), skipping the startup calendar sync; the first full-wake cycle syncs calendars", caps)
+		return
+	}
 	start := time.Now()
 	d.cycleEvents = d.beginAutomationEvents()
 	d.observePhase(ctx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
@@ -1333,21 +1390,22 @@ func (d *Daemon) phaseChannelDigests(ctx context.Context) {
 	if d.digestPipe == nil {
 		return
 	}
+	d.digestPipe.DeferredSchedule = true
 	d.trackedPipelineRun("digests", func() pipelineRunStats {
 		n, usage, err := d.digestPipe.RunChannelDigestsOnly(ctx)
 		switch {
 		case err != nil:
 			d.logger.Printf("digest error: %v", err)
-		case n > 0 && usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0):
-			d.logger.Printf("generated %d digest(s) (%d+%d tokens)", n, usage.InputTokens, usage.OutputTokens)
+		case n > 0 && usage != nil && (usage.InputTokens() > 0 || usage.OutputTokens() > 0):
+			d.logger.Printf("generated %d digest(s) (%d+%d tokens)", n, usage.InputTokens(), usage.OutputTokens())
 		case n > 0:
 			d.logger.Printf("generated %d digest(s)", n)
 		}
 		stats := pipelineRunStats{items: n, err: err}
 		if usage != nil {
-			stats.inTok = usage.InputTokens
-			stats.outTok = usage.OutputTokens
-			stats.totalAPI = usage.TotalAPITokens
+			stats.inTok = usage.InputTokens()
+			stats.outTok = usage.OutputTokens()
+			stats.totalAPI = usage.TotalAPITokens()
 		}
 		return stats
 	})
@@ -1698,11 +1756,18 @@ func (d *Daemon) injectTrackContext() {
 // (maxDailyAIAttempts) — RunRollups returns nil for every benign outcome
 // (feature off, lock held by another process, fewer than 2 channel digests,
 // nothing new since the last rollup) and non-nil only for a real failure, so
-// err != nil is exactly the real-attempt predicate; a DB read error also
-// consumes budget, matching day-plan/briefing. See rollupAttemptsExhausted's
+// ordinary errors consume budget, matching day-plan/briefing. Pure provider
+// deferral preserves the attempt marker, including its UTC calendar date. See rollupAttemptsExhausted's
 // doc comment for why the budget key is the UTC date, not local.
 func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 	if !d.config.Digest.Enabled || d.digestPipe == nil {
+		return
+	}
+	d.digestPipe.DeferredSchedule = true
+	if err := d.digestPipe.PreflightRollups(ctx); err != nil {
+		if !digest.ProviderDeferred(err) && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("rollup preflight error: %v", err)
+		}
 		return
 	}
 	date := rollupBudgetDate(now)
@@ -1710,7 +1775,9 @@ func (d *Daemon) runRollupPhase(ctx context.Context, now time.Time) {
 		return
 	}
 	if err := d.digestPipe.RunRollups(ctx); err != nil {
-		d.recordRollupAttempt(date)
+		if !digest.ProviderDeferred(err) {
+			d.recordRollupAttempt(date)
+		}
 		d.logger.Printf("rollup error: %v", err)
 	}
 }
@@ -1732,6 +1799,13 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	if d.peoplePipe == nil {
 		return
 	}
+	d.peoplePipe.DeferredSchedule = true
+	if err := d.peoplePipe.Preflight(ctx); err != nil {
+		if !digest.ProviderDeferred(err) && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("people preflight error: %v", err)
+		}
+		return
+	}
 	now := time.Now()
 	if !d.lastPeople.IsZero() && now.Sub(d.lastPeople) < 24*time.Hour {
 		return
@@ -1751,9 +1825,14 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 	// without data writes no empty "people" row every cycle (the
 	// phaseCustomTrackScan precedent). A failed check falls through so Run
 	// reports the error in a tracked row.
-	if has, err := d.peoplePipe.HasData(); err != nil {
+	if has, err := d.peoplePipe.HasData(ctx); err != nil {
 		d.logger.Printf("people: data check failed, running anyway: %v", err)
 	} else if !has {
+		// Current source eligibility can remove all input from an old window.
+		// Drop that empty descriptor without claiming success for newer data.
+		if err := d.peoplePipe.AcknowledgeWindow(ctx); err != nil {
+			d.logger.Printf("people: %v", err)
+		}
 		return
 	}
 
@@ -1763,7 +1842,7 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			d.logger.Printf("people cards error: %v", err)
 			// A shutdown mid-run is not a failed attempt: the next start
 			// resumes the users still without a card.
-			if !isBenignShutdownErr(ctx, err) {
+			if !isBenignShutdownErr(ctx, err) && !digest.ProviderDeferred(err) {
 				d.recordPeopleAttempt(date)
 			}
 		} else if d.peoplePipe.LastOutcome() == guide.OutcomeNoData {
@@ -1774,8 +1853,19 @@ func (d *Daemon) phasePeopleCards(ctx context.Context) {
 			if n > 0 {
 				d.logger.Printf("generated %d people card(s)", n)
 			}
+			previous := d.lastPeople
 			d.lastPeople = now
-			d.saveLastPeople()
+			if !d.peoplePipe.RunStartedAt.IsZero() {
+				d.lastPeople = d.peoplePipe.RunStartedAt
+			}
+			if stampErr := d.saveLastPeople(); stampErr != nil {
+				d.lastPeople = previous
+				err = fmt.Errorf("saving people success stamp: %w", stampErr)
+			} else {
+				if ackErr := d.peoplePipe.AcknowledgeWindow(ctx); ackErr != nil {
+					d.logger.Printf("people: %v", ackErr)
+				}
+			}
 		}
 		inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
 		return pipelineRunStats{items: n, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: err}
@@ -1959,11 +2049,12 @@ func (d *Daemon) phaseStreamDigests(ctx context.Context) {
 		if err != nil {
 			d.logger.Printf("stream-digests error: %v", err)
 		}
-		// The throttle advances whenever the phase RAN, error or not — the
-		// lastIdeas precedent: unconsumed material simply waits for the next
-		// cycle rather than retrying immediately at repeated AI cost.
-		d.lastStreams = now
-		d.saveLastStreams()
+		// A pure provider wait is still due; account input receipts keep its
+		// original bounds. Ordinary/mixed errors retain the legacy throttle.
+		if !digest.ProviderDeferred(err) {
+			d.lastStreams = now
+			d.saveLastStreams()
+		}
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
 		return pipelineRunStats{inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
 	})
@@ -2345,11 +2436,13 @@ func (d *Daemon) loadLastPeople() {
 	d.logger.Printf("restored last people time: %s", d.lastPeople.Format(time.RFC3339))
 }
 
-func (d *Daemon) saveLastPeople() {
+func (d *Daemon) saveLastPeople() error {
 	data := strconv.FormatInt(d.lastPeople.Unix(), 10)
-	if err := os.WriteFile(d.lastPeoplePath(), []byte(data), 0o600); err != nil {
+	if err := fsutil.WriteFileAtomic(d.lastPeoplePath(), []byte(data), 0o600); err != nil {
 		d.logger.Printf("failed to save last people time: %v", err)
+		return err
 	}
+	return nil
 }
 
 func (d *Daemon) lastIdeasPath() string {
@@ -2829,3 +2922,15 @@ func (d *Daemon) markAccessOK(source string, id int64) {
 		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
 	}
 }
+
+// SetRoutingJob installs the immutable routing snapshot captured per sync job.
+// It is configured before Run; pipelines and their checkpoints remain intact.
+func (d *Daemon) SetRoutingJob(bind func(context.Context, context.Context) (context.Context, context.Context)) {
+	d.routingJob = bind
+}
+
+// SetRoutingWatch installs the routing publisher after the daemon owns its PID.
+func (d *Daemon) SetRoutingWatch(watch func(context.Context)) { d.routingWatch = watch }
+
+// SetAIWorkerPool shares admission with separately constructed coach factories.
+func (d *Daemon) SetAIWorkerPool(pool *sessions.SessionPool) { d.aiWorkerPool = pool }

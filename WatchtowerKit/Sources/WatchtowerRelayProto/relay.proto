@@ -51,6 +51,7 @@ message Request {
     SendAlert send_alert = 18;
     SubmitTransaction submit_transaction = 19;
     GetAccountState get_account_state = 20;
+    VouchHub vouch_hub = 21;
   }
 }
 
@@ -144,6 +145,10 @@ message Changes {
   string zone = 1;
   uint64 since_seq = 2;
   uint32 limit = 3;
+  // Set on every page of a full resync (a pull that started at since_seq = 0): a since_seq below the
+  // tombstone floor then continues instead of answering TOKEN_EXPIRED. The caller computes deletions
+  // itself (local names the resync did not return), so purged tombstones do not matter to it.
+  bool resync = 4;
 }
 
 message ChangesResult {
@@ -174,6 +179,8 @@ enum ControlKind {
   CONTROL_KIND_SLOT_REMOVED = 3;
   CONTROL_KIND_PAIRING_OPENED = 4;
   CONTROL_KIND_SESSION_EXPIRED = 5;
+  // To a hub: a phone put it into a slot (detail: the phone's device id). Best effort, not retried.
+  CONTROL_KIND_SLOT_ADDED = 6;
 }
 
 message Control {
@@ -206,6 +213,9 @@ enum ErrorCode {
   ERROR_CODE_ATTESTATION_REQUIRED = 20;
   // An attestation check failed: signature, chain, app id, environment, counter or nonce.
   ERROR_CODE_ATTESTATION_FAILED = 21;
+  // A hub in no slot: it may only log in, subscribe, read its account state and use its pairing slot.
+  // From add_slot / promote_pairing: the hub has no unexpired vouch from this phone.
+  ERROR_CODE_HUB_NOT_VOUCHED = 22;
 }
 
 message Error {
@@ -225,6 +235,8 @@ enum DeviceKind {
   DEVICE_KIND_UNSPECIFIED = 0;
   DEVICE_KIND_PHONE = 1;
   DEVICE_KIND_MAC = 2;
+  // A headless hub (Linux, Raspberry Pi). Same rules as a Mac: no attestation, vouched by a phone.
+  DEVICE_KIND_HUB = 3;
 }
 
 message Attestation {
@@ -267,6 +279,19 @@ enum ChallengePurpose {
   // buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
   CHALLENGE_PURPOSE_LOGIN = 0;
   CHALLENGE_PURPOSE_REGISTER = 1;
+  // A single-use nonce for vouch_hub, from the phone's own device.
+  CHALLENGE_PURPOSE_VOUCH = 2;
+}
+
+// vouch_hub (phone only): the phone vouches for a hub after the pairing code was confirmed, before
+// add_slot or promote_pairing. attestation: an App Attest assertion over
+// SHA256("relay/v1/vouch" ‖ nonce ‖ hub_device_id ‖ auth_pub ‖ server_origin).
+message VouchHub {
+  string hub_device_id = 1;
+  bytes auth_pub = 2;
+  // From GetChallenge{purpose: VOUCH}.
+  bytes nonce = 3;
+  Attestation attestation = 4;
 }
 
 message GetChallenge {

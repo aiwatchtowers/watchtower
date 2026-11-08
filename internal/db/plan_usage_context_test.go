@@ -97,7 +97,7 @@ func TestPlanUsage_ContextCancellationRollsBackStartedPublication(t *testing.T) 
 			t.Cleanup(func() { _ = d.Close() })
 			// Use the real production tables, with a test-only SQLite trigger that
 			// cancels immediately after the status UPDATE has executed in the tx.
-			for _, migration := range []string{"00115_plan_usage.sql", "00169_codex_plan_usage.sql"} {
+			for _, migration := range []string{"00115_plan_usage.sql", "00176_codex_plan_usage.sql"} {
 				body, err := migrationsFS.ReadFile("migrations/" + migration)
 				require.NoError(t, err)
 				_, err = d.Exec(strings.Split(string(body), "-- +goose Down")[0])

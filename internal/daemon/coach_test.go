@@ -17,6 +17,8 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
+	"watchtower/internal/sessions"
 )
 
 type coachCalls struct{ judge, propose int }
@@ -28,7 +30,7 @@ func stubCoach(t *testing.T, proposeErr error) *coachCalls {
 	runCoachJudge = func(*db.DB, *agentlogdb.DB, time.Time) (int, int, error) { c.judge++; return 0, 0, nil }
 	runCoachProposer = func(context.Context, *coach.Proposer, coach.Inputs) (int, *digest.Usage, error) {
 		c.propose++
-		return 1, &digest.Usage{InputTokens: 5}, proposeErr
+		return 1, &digest.Usage{Tokens: llmusage.Tokens{Input: 5}}, proposeErr
 	}
 	t.Cleanup(func() { runCoachJudge, runCoachProposer = oj, op })
 	return c
@@ -230,4 +232,92 @@ func TestCoachGenerator_IsStdinOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(argv), secret, "owner text must never be on argv")
 	assert.Contains(t, string(stdin), secret, "owner text goes on stdin")
+}
+
+func TestCoachFactoryUsesSharedQuotaRouter(t *testing.T) {
+	for _, preferred := range []string{"claude", "codex"} {
+		t.Run(preferred, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			reserve := "codex"
+			if preferred == reserve {
+				reserve = "claude"
+			}
+			cfg := &config.Config{}
+			cfg.AI.Provider = preferred
+			cfg.AI.ConfiguredProvider = preferred
+			cfg.AI.Fallback = config.AIFallbackConfig{Enabled: true, Provider: reserve}
+			for _, provider := range []string{"claude", "codex"} {
+				response := `{"type":"result","subtype":"success","result":"ok"}`
+				if provider == "codex" {
+					response = `{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}` + "\n" + `{"type":"turn.completed"}`
+				}
+				if provider == preferred {
+					if provider == "claude" {
+						response = `{"type":"result","subtype":"error_during_execution","is_error":true,"error":{"type":"usage_limit_reached"},"result":"quota"}`
+					} else {
+						response = `{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Try again later."}}`
+					}
+				}
+				bin := fakeCLI(t, provider, response)
+				if provider == "claude" {
+					cfg.ClaudePath = bin
+				} else {
+					cfg.CodexPath = bin
+				}
+			}
+			spool := filepath.Join(t.TempDir(), "calls.jsonl")
+			llmusage.SetSpoolPath(spool)
+			t.Cleanup(func() { llmusage.SetSpoolPath("") })
+			ctx, cancel := context.WithTimeout(digest.WithSource(context.Background(), "coach.propose"), time.Second)
+			defer cancel()
+			text, _, _, err := coachGeneratorFactory(cfg).Generate(ctx, "", "request", "")
+			require.NoError(t, err)
+			require.Equal(t, "ok", text)
+			calls, skipped, err := llmusage.ParseSpoolFile(spool)
+			require.NoError(t, err)
+			require.Zero(t, skipped)
+			require.Len(t, calls, 2)
+			require.Equal(t, preferred, calls[0].Provider)
+			require.Equal(t, reserve, calls[1].Provider)
+			require.NotEmpty(t, calls[0].OperationID)
+			require.Equal(t, calls[0].OperationID, calls[1].OperationID)
+		})
+	}
+}
+
+type coachAdmissionGenerator struct {
+	calls    int
+	provider string
+}
+
+func (g *coachAdmissionGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	g.calls++
+	return g.provider, nil, "", nil
+}
+func TestCoachGeneratorUsesJobSnapshotAndSharedAdmission(t *testing.T) {
+	d := newQuietDaemon(t)
+	pool := sessions.NewSessionPool(1)
+	defer pool.Close()
+	d.SetAIWorkerPool(pool)
+	snapshot := &config.Config{}
+	snapshot.AI.Provider = "codex"
+	oldFactory := coachGeneratorFactory
+	defer func() { coachGeneratorFactory = oldFactory }()
+	leaf := &coachAdmissionGenerator{}
+	coachGeneratorFactory = func(cfg *config.Config) digest.Generator { leaf.provider = cfg.AI.Provider; return leaf }
+	ctx := config.WithRoutingSnapshot(context.Background(), snapshot)
+	gen := d.coachGenerator(ctx)
+	worker, err := pool.Acquire(ctx)
+	require.NoError(t, err)
+	waiting, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+	defer cancel()
+	_, _, _, err = gen.Generate(waiting, "", "", "")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Zero(t, leaf.calls)
+	pool.Release(worker)
+	text, _, _, err := gen.Generate(ctx, "", "", "")
+	require.NoError(t, err)
+	require.Equal(t, "codex", text)
+	require.Equal(t, 1, leaf.calls)
 }

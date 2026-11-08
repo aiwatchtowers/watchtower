@@ -101,8 +101,11 @@ final class AppState {
     @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
     @ObservationIgnored var connectionAccountsReadAt: Date? // `refreshConnectionAccountsIfStale`'s clock
     /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
-    @ObservationIgnored lazy var sharedConfig = ConfigService()
-
+    @ObservationIgnored weak var observedProviderConnection: ProviderConnection?
+    @ObservationIgnored weak var observedRoutingApplication: ProviderRoutingApplication?
+    @ObservationIgnored lazy var sharedConfig = makeSharedConfig() {
+        didSet { observedRoutingApplication = sharedConfig.routingApplication; observedProviderConnection = sharedConfig.providerConnection }
+    }
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
 
@@ -240,9 +243,7 @@ final class AppState {
     /// The Meetings goal's download ahead of use (`autoDownloadTranscriptionModel`).
     @ObservationIgnored private(set) lazy var transcriptionModelAutoDownloader = makeTranscriptionModelAutoDownloader()
 
-    /// Provider/model registry from `watchtower ai models --json`, shared by
-    /// the chat model picker and Settings suggestions. Loaded lazily.
-    let aiModelCatalog = AIModelCatalog()
+    @ObservationIgnored var modelCatalogLaunchOverride: (@MainActor () async -> Void)? // tests: no CLI at launch
 
     /// Persistent chat ViewModels — survive tab switches.
     private(set) var chatViewModel: ChatViewModel?
@@ -534,7 +535,10 @@ final class AppState {
         wireDaemonStartQueue()
         wireDatabaseCompaction()
         daemonManager.onRunningChanged = { [weak self] running in
-            guard running else { return }
+            guard running else {
+                self?.observedRoutingApplication?.daemonUnavailable()
+                return
+            }
             self?.daemonStartFailure = nil
             self?.clearRestartFailedTurnOnErrors()
         }
@@ -551,13 +555,7 @@ final class AppState {
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
     func ensureChatViewModels() {
         guard let db = databaseManager, chatViewModel == nil else { return }
-        let provider = AIProvider.fromConfig(ConfigService().aiProvider)
-        let cvm = ChatViewModel(
-            dbManager: db,
-            pool: ensureChatSessionPool(db),
-            provider: provider,
-            cliRunner: ProcessCLIRunner.makeDefault()
-        )
+        let cvm = makeMainChatViewModel(db)
         // Once per launch, before anything is shown or listed.
         cvm.cleanUpUntouchedConversations()
         let hvm = ChatHistoryViewModel(dbManager: db)
@@ -613,11 +611,12 @@ final class AppState {
         provider: String,
         panelDraftBox: PanelDraftBox,
         onSaved: @escaping (Int64?) -> Void,
-        makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
+        makeSpec: @escaping (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {
         AutomationEditorChat(
             conversationID: conversationID, dbPool: pool,
             toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
+            decideTools: { AutomationEditorChatSurface.toolsAvailable(provider: provider) },
             center: embeddedChatCenter, panelDraftBox: panelDraftBox, onSaved: onSaved, makeSpec: makeSpec
         )
     }
@@ -816,6 +815,7 @@ final class AppState {
             // the store copy may still be the stale one, and DaemonManager
             // caches whatever path it first resolves.
             daemonManager.startPolling()
+            loadModelCatalogAtLaunch()
             do {
                 let manager = try await migrateCompactOpen().get()
                 ambiguousWorkspaces = []

@@ -8,6 +8,9 @@ public enum TransportStoreError: Error, Equatable, Sendable {
     /// The store serves another route: a CloudKit scope when a relay Mac is asked for, or the
     /// other way round, or another relay Mac (a store is bound to one route for good).
     case boundToAnotherRoute
+    /// A relay lane's zone changed while writes are queued for its old zone, and the old zone is
+    /// not a pairing slot's: the store keeps them, and the caller wipes deliberately.
+    case queuedWritesForAnotherZone
 }
 
 /// Persistence for the CloudKit adapter: an incoming change buffer (the
@@ -773,6 +776,8 @@ public final class TransportStore: Sendable {
         try db.execute(sql: "DELETE FROM relay_cursors")
         try db.execute(sql: "DELETE FROM relay_records")
         try db.execute(sql: "DELETE FROM relay_resync_seen")
+        try db.execute(sql: "DELETE FROM relay_zone_names")
+        try db.execute(sql: "DELETE FROM relay_own_attachments")
     }
 
     /// Drops buffered events at or below a consumer's floor token for one zone.
@@ -979,8 +984,9 @@ public final class TransportStore: Sendable {
 /// `WatchtowerHostedRelay`): per zone the server cursor (`relay_cursors`),
 /// every record the server returned with its seq (`relay_records`), the
 /// names a `TOKEN_EXPIRED` resync has seen so far (`relay_resync_seen`, R10)
-/// and the relay Mac the store serves (`relay_binding`). Empty on a CloudKit
-/// store. Zones are keyed by `CloudZoneID`: a store serves one Mac.
+/// the relay Mac the store serves (`relay_binding`) and the relay zone each
+/// lane reads (`relay_zone_names`). Empty on a CloudKit store. Zones are keyed
+/// by `CloudZoneID`: a store serves one Mac.
 extension TransportStore {
     /// A resync in progress is one marker row in `relay_resync_seen`, kept apart from the seen
     /// names by its zone key (`<zone>#resync`, never a `CloudZoneID` raw value), so no record name
@@ -1018,6 +1024,48 @@ extension TransportStore {
         }
     }
 
+    /// Records the relay zone each lane reads (`pair/<slot>` while pairing, then the Mac's data
+    /// zone and mailbox: R3 of relay Phase 3). A lane whose relay zone changed starts the new zone
+    /// from 0 as a resync, in the same transaction: its cursor belonged to the old zone, and the
+    /// resync's last page deletes the old zone's records from the buffer. The buffer's change
+    /// tokens keep counting up. Writes still queued for an old `pair/` zone (an unsent hello) are
+    /// dropped and logged; queued writes for any other old zone throw
+    /// `TransportStoreError.queuedWritesForAnotherZone` and nothing changes. A lane with no
+    /// recorded zone (a store from before) only records it. Returns the dropped writes.
+    @discardableResult
+    package func adoptRelayZones(_ names: [CloudZoneID: String]) throws -> Int {
+        let dropped = try queue.write { db -> [CloudZoneID: Int] in
+            var dropped: [CloudZoneID: Int] = [:]
+            for zone in CloudZoneID.allCases {
+                guard let serverZone = names[zone] else { continue }
+                let stored = try String.fetchOne(
+                    db, sql: "SELECT server_zone FROM relay_zone_names WHERE zone = ?", arguments: [zone.rawValue])
+                guard stored != serverZone else { continue }
+                try db.execute(
+                    sql: """
+                        INSERT INTO relay_zone_names (zone, server_zone) VALUES (?, ?)
+                        ON CONFLICT(zone) DO UPDATE SET server_zone = excluded.server_zone
+                        """,
+                    arguments: [zone.rawValue, serverZone])
+                guard let stored else { continue }
+                let queued = try Int.fetchOne(
+                    db, sql: "SELECT count(*) FROM pending WHERE zone = ?", arguments: [zone.rawValue]) ?? 0
+                if queued > 0 {
+                    // Thrown inside the write: the transaction rolls back, every row stays.
+                    guard stored.hasPrefix("pair/") else { throw TransportStoreError.queuedWritesForAnotherZone }
+                    try db.execute(sql: "DELETE FROM pending WHERE zone = ?", arguments: [zone.rawValue])
+                    dropped[zone] = queued
+                }
+                try Self.startRelayResync(zone, db)
+            }
+            return dropped
+        }
+        for (zone, count) in dropped.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+            logger.warning("relay zone changed: dropped \(count, privacy: .public) queued writes, lane \(zone.rawValue, privacy: .public)")
+        }
+        return dropped.values.reduce(0, +)
+    }
+
     /// The relay tables, created with the others on every store (empty on a CloudKit one).
     fileprivate static func createRelayTables(_ db: Database) throws {
         try db.execute(sql: """
@@ -1040,6 +1088,16 @@ extension TransportStore {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 mac_device_id TEXT NOT NULL,
                 hub_id TEXT
+            );
+            CREATE TABLE IF NOT EXISTS relay_zone_names (
+                zone TEXT PRIMARY KEY,
+                server_zone TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS relay_own_attachments (
+                zone TEXT NOT NULL,
+                name TEXT NOT NULL,
+                attachment_id TEXT NOT NULL,
+                PRIMARY KEY (zone, name)
             );
             """)
     }
@@ -1079,6 +1137,7 @@ extension TransportStore {
             for name in deleted {
                 try db.execute(
                     sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
+                try Self.forgetOwnAttachment(name, zone: zone, db)
             }
             if resync {
                 for name in changed.map(\.recordName) + deleted {
@@ -1093,15 +1152,17 @@ extension TransportStore {
 
     /// Starts a `TOKEN_EXPIRED` resync of `zone`: the cursor back to 0 and nothing seen yet, persisted.
     package func beginRelayResync(_ zone: CloudZoneID) throws {
-        try queue.write { db in
-            try db.execute(
-                sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
-                arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
-            try db.execute(
-                sql: "INSERT INTO relay_resync_seen (zone, name) VALUES (?, ?)",
-                arguments: [Self.resyncMarkerZone(zone), Self.resyncRunning])
-            try Self.writeRelayCursor(0, zone: zone, db)
-        }
+        try queue.write { db in try Self.startRelayResync(zone, db) }
+    }
+
+    private static func startRelayResync(_ zone: CloudZoneID, _ db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
+            arguments: [zone.rawValue, resyncMarkerZone(zone)])
+        try db.execute(
+            sql: "INSERT INTO relay_resync_seen (zone, name) VALUES (?, ?)",
+            arguments: [resyncMarkerZone(zone), resyncRunning])
+        try writeRelayCursor(0, zone: zone, db)
     }
 
     /// Whether a resync of `zone` started and has not finished (a later pull resumes it), stalled or not.
@@ -1135,7 +1196,9 @@ extension TransportStore {
     }
 
     /// Ends a resync after its last page (R10), in one transaction: a deletion event for each
-    /// record the server once returned that the resync did not, and the resync state cleared.
+    /// record the server once returned that the resync did not, the own-attachment rows of names
+    /// neither the server nor the send queue holds, and the resync state cleared. (A conditional
+    /// save is not queued: one landing while its resync finishes loses its row, one download.)
     /// Returns the deleted names.
     package func finishRelayResync(_ zone: CloudZoneID) throws -> [String] {
         try queue.write { db in
@@ -1151,12 +1214,57 @@ extension TransportStore {
             for name in gone {
                 try db.execute(
                     sql: "DELETE FROM relay_records WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
+                try Self.forgetOwnAttachment(name, zone: zone, db)
             }
+            try db.execute(
+                sql: """
+                    DELETE FROM relay_own_attachments
+                    WHERE zone = ?
+                      AND name NOT IN (SELECT name FROM relay_records WHERE zone = ?)
+                      AND name NOT IN (SELECT record_name FROM pending WHERE zone = ?)
+                    """,
+                arguments: [zone.rawValue, zone.rawValue, zone.rawValue])
             try db.execute(
                 sql: "DELETE FROM relay_resync_seen WHERE zone IN (?, ?)",
                 arguments: [zone.rawValue, Self.resyncMarkerZone(zone)])
             return gone
         }
+    }
+
+    /// Records that this device uploaded `attachmentID` for its record `name` of `zone` (a relay
+    /// save, before it goes out). A record ledgered here is the device's own: a pull keeps it
+    /// without downloading the blob (#1469). One row per record name, the newest upload's; a
+    /// deletion of the record (pulled, or found gone by a resync) or a wipe drops it, and a
+    /// finished resync drops the rows of names neither the server nor the send queue holds (an
+    /// upload whose save never landed). Written before the save goes out, so a pull racing the
+    /// save already knows it. A pulled deletion buffered after a re-save of the same name
+    /// uploaded again drops the newer row too: that upload is downloaded back once, nothing worse.
+    package func noteRelayOwnAttachment(_ attachmentID: String, name: String, zone: CloudZoneID) throws {
+        try queue.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO relay_own_attachments (zone, name, attachment_id) VALUES (?, ?, ?)
+                    ON CONFLICT(zone, name) DO UPDATE SET attachment_id = excluded.attachment_id
+                    """,
+                arguments: [zone.rawValue, name, attachmentID])
+        }
+    }
+
+    /// Whether `attachmentID` of the record `name` of `zone` is this device's own upload
+    /// (`noteRelayOwnAttachment`). Relay attachment ids are single-use, so an id that matches
+    /// is the device's own bytes, whoever wrote the record since.
+    package func isRelayOwnAttachment(_ attachmentID: String, name: String, zone: CloudZoneID) throws -> Bool {
+        try queue.read { db in
+            try Bool.fetchOne(
+                db,
+                sql: "SELECT EXISTS (SELECT 1 FROM relay_own_attachments WHERE zone = ? AND name = ? AND attachment_id = ?)",
+                arguments: [zone.rawValue, name, attachmentID]) ?? false
+        }
+    }
+
+    private static func forgetOwnAttachment(_ name: String, zone: CloudZoneID, _ db: Database) throws {
+        try db.execute(
+            sql: "DELETE FROM relay_own_attachments WHERE zone = ? AND name = ?", arguments: [zone.rawValue, name])
     }
 
     private static func writeRelayCursor(_ seq: UInt64, zone: CloudZoneID, _ db: Database) throws {

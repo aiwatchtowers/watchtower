@@ -266,9 +266,9 @@ func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOpti
 	var model string
 	if usage != nil {
 		model = usage.Model
-		inTok = usage.InputTokens
-		outTok = usage.OutputTokens
-		totalAPI = usage.TotalAPITokens
+		inTok = usage.InputTokens()
+		outTok = usage.OutputTokens()
+		totalAPI = usage.TotalAPITokens()
 	}
 	// Recorded before the parse: a response that fails to parse was still paid for.
 	p.lastInputTokens = inTok

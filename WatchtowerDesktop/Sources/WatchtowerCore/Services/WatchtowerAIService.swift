@@ -119,6 +119,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// resolves, or refuses with exit 2); it never comes with a tool mode —
     /// the CLI refuses the pair. `ownerInstructions` adds the bare
     /// `--owner-instructions` flag (no content: the CLI reads the texts).
+    ///
+    /// `--events v2` makes the CLI speak the main chat's protocol (`ChatEvent`):
+    /// tool calls as steps, the turn's usage, and no `reset` — text streamed
+    /// before a tool call is never wiped (CHAT-02), on claude and codex alike.
     package static func buildArgs(
         dbPath: String?,
         model: String?,
@@ -127,7 +131,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         readFolder: String? = nil,
         ownerInstructions: Bool = false
     ) -> [String] {
-        var args = ["ai", "query", "--prompt-stdin"]
+        var args = ["ai", "query", "--prompt-stdin", "--events", "v2"]
 
         if let dbPath, !dbPath.isEmpty {
             args += ["--db-path", dbPath]
@@ -233,12 +237,11 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
 
         let stderrRead = ProcessPipes.drain(stderr)
 
-        var accumulatedText = ""
         let handle = stdout.fileHandleForReading
 
         for await line in handle.ndjsonLines {
             if Task.isCancelled { break }
-            if let event = parseLine(line, accumulatedText: &accumulatedText) {
+            if let event = Self.parseLine(line) {
                 continuation.yield(event)
             }
         }
@@ -257,50 +260,33 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             )
         }
 
-        // Emit turnComplete with full accumulated text (matches old behavior)
-        if !accumulatedText.isEmpty {
-            continuation.yield(.turnComplete(accumulatedText))
-        }
-
         continuation.yield(.done)
         continuation.finish()
     }
 
-    /// Parse a JSON line from `watchtower ai query` output. Package-visible so
-    /// the reset/accumulation contract can be unit-tested without a subprocess.
-    package func parseLine(_ line: String, accumulatedText: inout String) -> StreamEvent? {
-        guard let data = line.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = json["type"] as? String else {
+    /// One `ai query --events v2` line as a stream event, decoded by the
+    /// main chat's `ChatEvent.parse`; nil for a line that is not a v2 event
+    /// or carries nothing an embedded chat keeps (`turn_start`, `turn_done`
+    /// — the process's exit ends the stream —, `tool_wait`, which only the
+    /// main chat's permission gate sends).
+    package static func parseLine(_ line: String) -> StreamEvent? {
+        guard let event = ChatEvent.parse(line) else { return nil }
+        switch event {
+        case let .sessionReady(_, provider, model, routing, _):
+            return .routing(provider: provider, model: model, metadata: routing)
+        case let .textDelta(_, text):
+            return text.isEmpty ? nil : .text(text)
+        case let .toolStart(start):
+            return .toolStart(start)
+        case let .toolEnd(end):
+            return .toolEnd(end)
+        case let .usage(usage):
+            return .usage(usage)
+        case let .error(error):
+            return .failure(error)
+        case .turnStart, .turnDone, .toolWait, .exited:
             return nil
         }
-
-        switch type {
-        case "text":
-            if let text = json["text"] as? String {
-                accumulatedText += text
-                return .text(text)
-            }
-        case "reset":
-            // A tool call interrupted the turn — drop the pre-tool preamble so
-            // the final turnComplete carries only the post-tool answer.
-            accumulatedText = ""
-            return .reset
-        case "session_id":
-            if let sid = json["session_id"] as? String {
-                return .sessionID(sid)
-            }
-        case "error":
-            if let errMsg = json["error"] as? String {
-                return .error(errMsg)
-            }
-        case "done":
-            // Handled after the stream loop (turnComplete + done)
-            break
-        default:
-            break
-        }
-        return nil
     }
 
     /// Find the watchtower CLI binary — bundled in .app or in PATH.

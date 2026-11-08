@@ -6,6 +6,7 @@ package guide
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -88,6 +89,7 @@ const (
 	OutcomeGenerated RunOutcome = iota // reached the AI stage (cards written or attempted)
 	OutcomeCovered                     // every active user already has a card for the window
 	OutcomeNoData                      // no active users with enough messages, or no situations yet
+	OutcomeDeferred                    // provider wait; required cards remain unfinished
 )
 
 // ProgressFunc is called during generation to report progress.
@@ -95,11 +97,13 @@ type ProgressFunc func(completed, totalUsers int, status string)
 
 // Pipeline generates and stores unified people cards.
 type Pipeline struct {
-	db          *db.DB
-	cfg         *config.Config
-	generator   digest.Generator
-	logger      *log.Logger
-	promptStore *prompts.Store
+	// DeferredSchedule enables the daemon-only pending input descriptor.
+	DeferredSchedule bool
+	db               *db.DB
+	cfg              *config.Config
+	generator        digest.Generator
+	logger           *log.Logger
+	promptStore      *prompts.Store
 
 	OnProgress      ProgressFunc
 	ForceRegenerate bool
@@ -107,6 +111,9 @@ type Pipeline struct {
 	// fresh install's first digests (period_to = now) count the same day. The
 	// daemon sets it until the first run that stamps last_people.txt.
 	FirstRun bool
+
+	// RunStartedAt is the original scheduled window claim, retained on quota retries.
+	RunStartedAt time.Time
 
 	// LastStep* fields are set before each OnProgress callback with the
 	// current step's message count and time window. Read them in OnProgress.
@@ -139,8 +146,9 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 
 // lightModel returns the resolved light-tier model name, used only as the
 // bookkeeping label on people cards (people.batch is a light-tier source).
-func (p *Pipeline) lightModel() string {
-	light, _ := providers.ResolveModelsFor(p.cfg, p.cfg.AI.Provider)
+func (p *Pipeline) lightModel(ctx context.Context) string {
+	cfg := config.RoutingSnapshot(ctx, p.cfg)
+	light, _ := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	return light
 }
 
@@ -175,8 +183,14 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 	p.totalOutputTokens.Store(0)
 	p.totalAPITokens.Store(0)
 
-	from, to := p.currentWindow()
-	return p.RunForWindow(ctx, from, to)
+	p.lastOutcome = OutcomeGenerated
+	if err := p.Preflight(ctx); err != nil {
+		if digest.ProviderDeferred(err) {
+			p.lastOutcome = OutcomeDeferred
+		}
+		return 0, err
+	}
+	return p.runScheduledWindow(ctx)
 }
 
 // currentWindow is Run's window: the DefaultWindowDays days ending at the
@@ -196,8 +210,11 @@ func (p *Pipeline) currentWindow() (from, to float64) {
 // the negation of RunForWindow's OutcomeNoData. The daemon checks it before
 // opening a tracked run, so a workspace without data yet writes no empty
 // pipeline_runs row every cycle.
-func (p *Pipeline) HasData() (bool, error) {
-	from, to := p.currentWindow()
+func (p *Pipeline) HasData(contexts ...context.Context) (bool, error) {
+	from, to, _, err := p.scheduledWindow(false, contexts...)
+	if err != nil {
+		return false, err
+	}
 	if !p.ForceRegenerate {
 		sits, err := p.db.GetSituationsForWindow(from, to)
 		if err != nil {
@@ -217,6 +234,12 @@ func (p *Pipeline) HasData() (bool, error) {
 // RunForWindow executes the people card pipeline for a specific time window.
 func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, error) {
 	p.lastOutcome = OutcomeGenerated
+	if err := p.Preflight(ctx); err != nil {
+		if digest.ProviderDeferred(err) {
+			p.lastOutcome = OutcomeDeferred
+		}
+		return 0, err
+	}
 	t0 := time.Now()
 	p.loadCaches()
 	p.logger.Printf("people: loadCaches took %s", time.Since(t0).Round(time.Millisecond))
@@ -323,6 +346,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	// card fell back (batch error, user missing from the reply, store error) —
 	// so a run in which the AI produced nothing is not reported as a success.
 	var aiCards, aiFailures int
+	var materialErr error
 
 	// Phase 1: Batch processing for low-data users (fast, cheap).
 	if len(batchEntries) > 0 {
@@ -336,11 +360,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			batchDuration := time.Since(stepStart).Seconds()
 
 			if err != nil {
+				if deferred := p.deferredCardError(err, materialErr, aiFailures, true); deferred != nil {
+					return int(completed.Load()), deferred
+				}
 				// Fallback: create insufficient_data cards for the whole batch.
 				p.logger.Printf("people: batch error, falling back to insufficient_data: %v", err)
 				aiFailures += len(batch)
+				materialErr = errors.Join(materialErr, err)
 				for _, entry := range batch {
 					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
+						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: fallback card error for %s: %v", entry.stats.UserID, ferr)
 					}
 					newVal := int(completed.Add(1))
@@ -352,22 +381,21 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			lookup := newBatchResultLookup(batch, results)
 
 			// Distribute tokens evenly across batch users for progress reporting.
-			inTokPer, outTokPer := 0, 0
-			if usage != nil && len(batch) > 0 {
-				inTokPer = usage.InputTokens / len(batch)
-				outTokPer = usage.OutputTokens / len(batch)
-			}
+			inTokPer, outTokPer := batchUsagePerUser(usage, len(batch))
 
 			for _, entry := range batch {
 				result, ok := lookup(entry.stats.UserID)
 				if !ok {
 					// AI didn't return this user — fallback to insufficient_data.
 					aiFailures++
+					materialErr = errors.Join(materialErr, errors.New("people batch omitted a required user"))
 					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
+						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
+					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
 					aiCards++
@@ -416,11 +444,21 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			batchDuration := time.Since(stepStart).Seconds()
 
 			if err != nil {
+				if deferred := p.deferredCardError(err, materialErr, aiFailures, true); deferred != nil {
+					return int(completed.Load()), deferred
+				}
+				if p.routedCallUnavailable(ctx, err) {
+					return int(completed.Load()), errors.Join(err, materialErr)
+				}
 				// Fallback: try individual processing for this batch.
 				p.logger.Printf("people: full-data batch error, falling back to individual: %v", err)
 				for _, entry := range batch {
 					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+						if deferred := p.deferredCardError(ferr, materialErr, aiFailures, false); deferred != nil {
+							return int(completed.Load()), deferred
+						}
 						aiFailures++
+						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: individual fallback error for %s: %v", entry.stats.UserID, ferr)
 					} else {
 						aiCards++
@@ -433,24 +471,25 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			lookup := newBatchResultLookup(batch, results)
 
-			inTokPer, outTokPer := 0, 0
-			if usage != nil && len(batch) > 0 {
-				inTokPer = usage.InputTokens / len(batch)
-				outTokPer = usage.OutputTokens / len(batch)
-			}
+			inTokPer, outTokPer := batchUsagePerUser(usage, len(batch))
 
 			for _, entry := range batch {
 				result, ok := lookup(entry.stats.UserID)
 				if !ok {
 					// AI didn't return this user — fallback to individual.
 					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+						if deferred := p.deferredCardError(ferr, materialErr, aiFailures, false); deferred != nil {
+							return int(completed.Load()), deferred
+						}
 						aiFailures++
+						materialErr = errors.Join(materialErr, ferr)
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					} else {
 						aiCards++
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
+				} else if serr := p.storeBatchCard(ctx, entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
+					materialErr = errors.Join(materialErr, serr)
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
 					aiCards++
@@ -490,6 +529,40 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	}
 
 	return total, nil
+}
+
+// deferredCardError keeps one policy for required batch/individual work: stop
+// before quality fallback or completion progress, retaining earlier material
+// failures so the daemon cannot exempt a mixed failure from its attempt budget.
+// Batch errors keep the batch-level diagnostic prefix used by RunForWindow.
+func (p *Pipeline) deferredCardError(err, materialErr error, failed int, batch bool) error {
+	if !digest.ProviderDeferred(err) {
+		return nil
+	}
+	p.lastOutcome = OutcomeDeferred
+	if failed <= 0 {
+		return err
+	}
+	combined := errors.Join(err, materialErr, fmt.Errorf("%d cards failed", failed))
+	if batch {
+		return fmt.Errorf("people material failures: %w", combined)
+	}
+	return combined
+}
+
+// Only routed full-data batch calls skip individual quality fallback for an
+// unavailable provider. Off/pinned generators retain their legacy fallback.
+func (p *Pipeline) routedCallUnavailable(ctx context.Context, err error) bool {
+	return digest.RoutingEnabled(p.generator, ctx) && errors.Is(err, digest.ErrAICall)
+}
+
+// batchUsagePerUser is shared by both data populations and keeps empty/nil
+// usage reporting at zero without changing the number of completed users.
+func batchUsagePerUser(usage *digest.Usage, users int) (int, int) {
+	if usage == nil || users <= 0 {
+		return 0, 0
+	}
+	return usage.InputTokens() / users, usage.OutputTokens() / users
 }
 
 // coveredUsers returns the users that already have an AI-produced card for the
@@ -582,12 +655,12 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
 
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
-		p.LastStepInputTokens += usage.InputTokens
-		p.LastStepOutputTokens += usage.OutputTokens
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
+		p.LastStepInputTokens += usage.InputTokens()
+		p.LastStepOutputTokens += usage.OutputTokens()
 	}
 
 	result, err := parsePeopleCardResult(raw)
@@ -627,8 +700,8 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	}
 	if usage != nil {
 		card.Model = usage.Model
-		card.InputTokens = usage.InputTokens
-		card.OutputTokens = usage.OutputTokens
+		card.InputTokens = usage.InputTokens()
+		card.OutputTokens = usage.OutputTokens()
 		card.CostUSD = 0
 	}
 
@@ -662,7 +735,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 }
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
-func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
+func (p *Pipeline) storeBatchCard(ctx context.Context, stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
 	redFlags, _ := json.Marshal(result.RedFlags)
 	highlights, _ := json.Marshal(result.Highlights)
 	accomplishments, _ := json.Marshal(result.Accomplishments)
@@ -689,7 +762,7 @@ func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, f
 		DecisionStyle:      result.DecisionStyle,
 		Tactics:            string(tactics),
 		Status:             "active",
-		Model:              p.lightModel(),
+		Model:              p.lightModel(ctx),
 		PromptVersion:      pv,
 		InputTokens:        inTok,
 		OutputTokens:       outTok,
@@ -749,10 +822,10 @@ func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEn
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
 
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
 	}
 
 	results, err := parseBatchCardResult(raw)
@@ -884,12 +957,12 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
 
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
-		p.LastStepInputTokens += usage.InputTokens
-		p.LastStepOutputTokens += usage.OutputTokens
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
+		p.LastStepInputTokens += usage.InputTokens()
+		p.LastStepOutputTokens += usage.OutputTokens()
 	}
 
 	result, err := parseTeamSummaryResult(raw)
@@ -910,8 +983,8 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 	}
 	if usage != nil {
 		s.Model = usage.Model
-		s.InputTokens = usage.InputTokens
-		s.OutputTokens = usage.OutputTokens
+		s.InputTokens = usage.InputTokens()
+		s.OutputTokens = usage.OutputTokens()
 		s.CostUSD = 0
 	}
 

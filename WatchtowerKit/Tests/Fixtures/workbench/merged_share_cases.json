@@ -1,0 +1,12 @@
+{
+  "about": "The merged share of a session's report line, worded the same on the Mac row (SessionReportPresentation.rowCaption) and the phone (TerminalSessionState.reportMergedText), board #986/#1008. An absent key is absent on the wire; an absent text means no merged part.",
+  "cases": [
+    {"merged": 25, "total": 32, "text": "25 merged"},
+    {"merged": 25, "stale": true, "total": 32, "text": "25 merged (unchecked)"},
+    {"merged": 0, "stale": true, "total": 32, "text": "merged not checked"},
+    {"stale": true, "total": 32, "text": "merged not checked"},
+    {"merged": 0, "total": 32},
+    {"merged": 25, "total": 0},
+    {"merged": 25}
+  ]
+}

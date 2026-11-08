@@ -1,11 +1,13 @@
 package automations
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -26,8 +28,8 @@ import (
 // the run not resumable (a restart ends it as before). A var for tests.
 var MaxReplayResultBytes = 1 << 20
 
-// MaxReplayLogBytes caps a run's whole recorded log (results and clock
-// reads); past it the run is not resumable. A var for tests.
+// MaxReplayLogBytes caps a run's whole recorded log (results, clock
+// reads and execution metadata); past it the run is not resumable. A var for tests.
 var MaxReplayLogBytes = 16 << 20
 
 // maxClockReadsPerCall caps the time reads recorded between two SDK calls;
@@ -98,15 +100,68 @@ func newPlayer(records []db.AutomationRunReplay, steps []db.AutomationRunStep, o
 	return r, nil
 }
 
-func decodeClock(text string) ([]int64, error) {
-	if text == "" {
-		return nil, nil
+// replayMetadataV1 adds execution facts to clock reads without changing normal
+// legacy array records. It is internal persistence, never a synthetic clock read.
+type replayMetadataV1 struct {
+	Version           int      `json:"version"`
+	Reads             *[]int64 `json:"reads"`
+	UnknownModelUsage *bool    `json:"unknown_model_usage"`
+}
+
+func decodeReplayMetadata(text string) ([]int64, bool, error) {
+	if len(text) > MaxReplayLogBytes {
+		return nil, false, errors.New("replay metadata exceeds the log limit")
+	}
+	raw := bytes.TrimSpace([]byte(text))
+	if len(raw) == 0 {
+		return nil, false, nil
 	}
 	var reads []int64
-	if err := json.Unmarshal([]byte(text), &reads); err != nil {
-		return nil, fmt.Errorf("decoding a replay clock record: %w", err)
+	unknown := false
+	if raw[0] == '{' {
+		var meta replayMetadataV1
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&meta); err != nil {
+			return nil, false, fmt.Errorf("decoding replay metadata: %w", err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return nil, false, errors.New("trailing replay metadata")
+		}
+		if meta.Version != 1 || meta.Reads == nil || meta.UnknownModelUsage == nil || !*meta.UnknownModelUsage {
+			return nil, false, errors.New("unsupported replay metadata")
+		}
+		reads, unknown = *meta.Reads, *meta.UnknownModelUsage
+	} else {
+		if raw[0] != '[' {
+			return nil, false, errors.New("invalid replay metadata")
+		}
+		if err := json.Unmarshal(raw, &reads); err != nil {
+			return nil, false, fmt.Errorf("decoding a replay clock record: %w", err)
+		}
 	}
-	return reads, nil
+	if len(reads) > maxClockReadsPerCall {
+		return nil, false, errors.New("too many replay clock reads")
+	}
+	return reads, unknown, nil
+}
+
+func decodeClock(text string) ([]int64, error) {
+	reads, _, err := decodeReplayMetadata(text)
+	return reads, err
+}
+
+func withUnknownModelUsage(clock string) (string, error) {
+	reads, _, err := decodeReplayMetadata(clock)
+	if err != nil {
+		return "", err
+	}
+	if reads == nil {
+		reads = []int64{}
+	}
+	unknown := true
+	raw, err := json.Marshal(replayMetadataV1{Version: 1, Reads: &reads, UnknownModelUsage: &unknown})
+	return string(raw), err
 }
 
 // Live reports whether the run executes for real (a recorder, or a player

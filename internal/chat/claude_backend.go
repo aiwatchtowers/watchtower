@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,6 +20,9 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
+	"watchtower/internal/streamline"
 )
 
 // ClaudeOptions configures the warm Claude backend.
@@ -57,8 +59,9 @@ type ClaudeOptions struct {
 	// when there is none). The first turn of every child is prefixed with it:
 	// no Claude session is stored (--no-session-persistence, #604 G11), so a
 	// new child knows the conversation only from Watchtower's own history.
-	// nil = no history to replay.
-	Replay func(turnID string) (string, error)
+	// nil = no history to replay. current is the turn's own attachments: a
+	// file among them is sent with the turn and left out of the replay.
+	Replay func(turnID string, current []Attachment) (string, error)
 	// ProjectAttachments are the project's binary files. They are sent ahead
 	// of the owner's own attachments on the first turn of every child
 	// (spec §6.1).
@@ -89,7 +92,14 @@ type claudeProc struct {
 	// unreadable is set once a JSON line the translator could not read was
 	// reported, so a protocol change is noted once per child, not per line.
 	unreadable atomic.Bool
+	// readErr holds the readError that stopped the stdout reader (a failed
+	// read, an over-long protocol line); exitOutcome turns it into the
+	// turn's failure.
+	readErr atomic.Value
 }
+
+// readError is what claudeProc.readErr holds.
+type readError struct{ err error }
 
 // exitedOutputWait bounds how long an exited child's stdout may take to be
 // fully read before the exit is judged (exitOutcome). It waits after a
@@ -420,7 +430,7 @@ func (b *claudeBackend) projectBlocks(ownSize int64) (blocks []json.RawMessage, 
 	var squeezed []string
 	blocks = make([]json.RawMessage, 0, len(b.opts.ProjectAttachments))
 	for _, a := range b.opts.ProjectAttachments {
-		l, err := loadAttachment(a, false)
+		l, err := loadAttachment(a, allAttachments)
 		if err == nil {
 			size := l.encodedSize()
 			listed := size <= promptBudget
@@ -571,46 +581,117 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	return p, nil
 }
 
-// read translates the child's stdout into events on p.events.
+// maxWarmLine is the longest stdout line the warm reader takes (tool
+// results arrive as one line each; streamline.MaxLine); a variable so tests
+// can lower it.
+var maxWarmLine = streamline.MaxLine
+
+// errOversizedProtocolLine fails a turn whose skipped line may have been
+// one the turn cannot go on without (its result, a permission request):
+// skipping it would leave the turn waiting for good.
+var errOversizedProtocolLine = errors.New("a claude protocol line over the reader's limit")
+
+// skippableLineType matches the start of a line that may be skipped: a
+// message or stream event (a huge tool result or its echo). Any other line
+// — a result, a control request, an init, or one whose type does not lead —
+// fails the turn instead (errOversizedProtocolLine).
+var skippableLineType = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"(?:user|assistant|stream_event)"`)
+
+// read translates the child's stdout into events on p.events. A line over
+// maxWarmLine is skipped and counted, as every other CLI reader does
+// (streamline): the turn goes on and ends with the result event, which
+// closes the tool calls whose result may have been that line. A skipped
+// line that may carry the turn's control flow ends the child instead.
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
 	defer r.Close()
 	// The child is gone or replaced: a claimed call's result can no longer
 	// arrive.
 	defer b.gate.procGone(p)
-	sc := bufio.NewScanner(r)
-	// Tool results arrive as one line each; allow multi-megabyte lines.
-	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
-	for sc.Scan() {
-		if b.routeStatusAnswer(sc.Bytes()) || b.routeControl(p, sc.Bytes()) {
-			continue
+	lines := streamline.NewWithLimit(r, maxWarmLine)
+	protocolLost := false
+	lines.OnSkip(func(head []byte) {
+		switch {
+		case protocolLost:
+		case skippableLineType.Match(head):
+			b.tr.MarkLineSkipped()
+		default:
+			// Ended at once: Next goes on to the following line, which a
+			// child waiting for its next message never writes.
+			protocolLost = true
+			b.failRead(p, errOversizedProtocolLine)
 		}
-		f, err := b.tr.feed(sc.Bytes())
-		if err != nil {
-			// Non-JSON noise on stdout is not a protocol event; a JSON line
-			// the translator cannot read is a protocol change worth a note.
-			if json.Valid(sc.Bytes()) && !p.unreadable.Swap(true) {
-				fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
+	})
+	skipped := 0
+	for {
+		line, readErr := lines.Next()
+		if n := lines.Skipped(); n > skipped {
+			// Counts only, never content (FILES-01).
+			fmt.Fprintf(b.warn(), "chat: skipped %d claude output line(s) over %d bytes\n", n-skipped, maxWarmLine)
+			skipped = n
+		}
+		if protocolLost {
+			return // failRead already ended the child
+		}
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				b.failRead(p, readErr)
 			}
-			continue
+			return
 		}
-		if f.sessionID != "" {
-			b.noteSessionID(p, f.sessionID)
-		}
-		if f.init {
-			b.noteAPIKeySource(f.apiKeySource)
-		}
-		for _, r := range f.results {
-			b.gate.onResult(r)
-		}
-		for _, e := range f.events {
-			select {
-			case p.events <- e:
-			case <-p.stop:
-				return
-			}
+		if !b.feedLine(p, line) {
+			return
 		}
 	}
+}
+
+// failRead ends a child whose stdout can no longer be read: the turn's
+// result never arrives, so the turn ends through exitOutcome with a typed
+// failure instead of waiting for a cancel. The next turn gets a fresh
+// child, which replays.
+func (b *claudeBackend) failRead(p *claudeProc, err error) {
+	p.readErr.Store(readError{err})
+	fmt.Fprintf(b.warn(), "chat: reading claude output: %v\n", err)
+	if p.pgid > 1 {
+		killGroup(p)
+	}
+}
+
+// feedLine routes one stdout line; false once the reader must stop (the
+// child was released).
+func (b *claudeBackend) feedLine(p *claudeProc, line []byte) bool {
+	if b.routeStatusAnswer(line) || b.routeControl(p, line) {
+		return true
+	}
+	f, err := b.tr.feed(line)
+	if err != nil {
+		// Non-JSON noise on stdout is not a protocol event; a JSON line
+		// the translator cannot read is a protocol change worth a note.
+		if json.Valid(line) && !p.unreadable.Swap(true) {
+			fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
+		}
+		return true
+	}
+	if f.sessionID != "" {
+		b.noteSessionID(p, f.sessionID)
+	}
+	if f.init {
+		b.noteAPIKeySource(f.apiKeySource)
+	}
+	for _, r := range f.results {
+		b.gate.onResult(r)
+	}
+	for _, id := range f.lost {
+		b.gate.lost(id)
+	}
+	for _, e := range f.events {
+		select {
+		case p.events <- e:
+		case <-p.stop:
+			return false
+		}
+	}
+	return true
 }
 
 // routeControl answers the CLI's control lines: a can_use_tool goes to the
@@ -666,6 +747,10 @@ func (b *claudeBackend) currentSessionLocked() string {
 	return sid
 }
 
+// errNoResult is a clean child exit mid-turn: claude ended without the
+// turn's result line.
+var errNoResult = errors.New("claude ended the turn without a result")
+
 type outcomeKind int
 
 const (
@@ -679,6 +764,7 @@ type outcome struct {
 	msg    string
 	failed bool   // outcomeDone whose terminal event was an error
 	code   string // that error's code (msg holds its message)
+	cause  error  // outcomeExited with a typed failure (a clean exit, L12)
 }
 
 // Turn sends one owner message to the warm process and relays its events.
@@ -690,8 +776,9 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 		b.cancelled, b.inFlight = false, false
 		b.mu.Unlock()
 	}()
+	b.tr.SetTurnContext(ctx)
 	b.curTurn.Store(c.TurnID)
-	b.tr.clearInterrupted()
+	b.tr.startTurn()
 	b.gate.resume()
 	b.active.Store(true)
 	defer b.active.Store(false)
@@ -711,7 +798,7 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	case outcomeContext:
 		return ctx.Err()
 	default:
-		emit(b.exitedTerminal(c.TurnID, out.msg))
+		emit(b.exitedTerminal(c.TurnID, out))
 		return nil
 	}
 }
@@ -723,7 +810,7 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, emit func(Ev
 	text := c.Text
 	if b.nextChildIsNew() {
 		b.markFreshSession() // its history holds no project files either
-		prefix, err := b.replayText(c.TurnID)
+		prefix, err := b.replayText(c.TurnID, c.Attachments)
 		if err != nil {
 			return outcome{}, fmt.Errorf("building the replay: %w", err)
 		}
@@ -751,16 +838,20 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, emit func(Ev
 
 // exitedTerminal is the terminal event of a turn whose child exited without a
 // result: interrupted when the owner cancelled (the child was killed after
-// the grace), otherwise the classified exit message.
-func (b *claudeBackend) exitedTerminal(turnID, msg string) Event {
+// the grace), a typed failure when the exit carries one (a clean exit, L12),
+// otherwise the classified exit message.
+func (b *claudeBackend) exitedTerminal(turnID string, out outcome) Event {
 	b.mu.Lock()
 	cancelled, sid := b.cancelled, b.currentSessionLocked()
 	b.mu.Unlock()
 	if cancelled {
 		return Event{Type: EventTurnDone, TurnID: turnID, Status: StatusInterrupted, SessionID: sid}
 	}
-	code, retry := ClassifyClaudeError(msg)
-	return errorEvent(turnID, code, msg, retry)
+	if out.cause != nil {
+		return failureEvent(turnID, out.cause)
+	}
+	code, retry := ClassifyClaudeError(out.msg)
+	return errorEvent(turnID, code, out.msg, retry)
 }
 
 // await relays events until the turn's terminal event, the child's exit, or
@@ -796,12 +887,39 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	if o, done := drainPending(p.events, handle); done {
 		return o
 	}
+	if re, ok := p.readErr.Load().(readError); ok {
+		return readOutcome(re.err)
+	}
 	waitClosed(p.errDone, 500*time.Millisecond)
-	msg := strings.TrimSpace(p.stderr.String())
+	stderr := strings.TrimSpace(p.stderr.String())
+	if p.cmd.ProcessState.Success() {
+		// A clean exit mid-turn left the answer without its end: never a
+		// blank or partial success (L12), as codex and the batch path. Its
+		// stderr decides the category when it is one of the CLI's own auth
+		// or rate-limit diagnostics (providers.CleanExitFailure).
+		cause := errNoResult
+		if stderr != "" {
+			cause = logredact.Errorf("%w: %s", errNoResult, logredact.Text(stderr))
+		}
+		return outcome{kind: outcomeExited, msg: logredact.Full(cause), cause: providers.CleanExitFailure("claude", stderr, cause)}
+	}
+	msg := stderr
 	if msg == "" {
 		msg = "claude exited: " + p.cmd.ProcessState.String()
 	}
 	return outcome{kind: outcomeExited, msg: msg}
+}
+
+// readOutcome is the outcome of a turn whose child was ended because its
+// stdout could not be read: an over-long protocol line is invalid output,
+// any other read failure a broken transport.
+func readOutcome(err error) outcome {
+	cause := fmt.Errorf("reading claude output: %w", err)
+	category := providers.Transport
+	if errors.Is(err, errOversizedProtocolLine) {
+		category = providers.InvalidOutput
+	}
+	return outcome{kind: outcomeExited, msg: cause.Error(), cause: providers.WithFailure("claude", category, cause)}
 }
 
 // send writes the user message to the live child (spawning one if needed).
@@ -909,11 +1027,11 @@ func (b *claudeBackend) restartFresh() {
 	}
 }
 
-func (b *claudeBackend) replayText(turnID string) (string, error) {
+func (b *claudeBackend) replayText(turnID string, current []Attachment) (string, error) {
 	if b.opts.Replay == nil {
 		return "", nil
 	}
-	return b.opts.Replay(turnID)
+	return b.opts.Replay(turnID, current)
 }
 
 // Cancel sends the interrupt control request; if the turn has not ended

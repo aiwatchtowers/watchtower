@@ -25,6 +25,12 @@ packages:
   GRDB:
     url: https://github.com/aiwatchtowers/GRDB.swift
     exactVersion: "7.11.1-sqlcipher.2"
+  # SwiftProtobuf is transitive through WatchtowerHostedRelay; the test bundle compiles the Kit's in-memory relay,
+  # which uses it directly, so it is declared for the app and the tests alike (same URL and version as the Kit's:
+  # SPM dedupes it, and the bundle reuses the host's copy).
+  SwiftProtobuf:
+    url: https://github.com/apple/swift-protobuf
+    exactVersion: "1.39.0"
 
 # Signing lives in Base.xcconfig (unsigned defaults plus an optional
 # `#include? "Signing.xcconfig"` for device and archive signing), wired to
@@ -64,8 +70,13 @@ targets:
       # Stroke, Tone, Motion …), re-exported by DesignSystem/Metrics.swift.
       - package: WatchtowerKit
         product: WatchtowerDesign
+      # The hosted relay client. The app only: the extensions never link it (R20).
+      - package: WatchtowerKit
+        product: WatchtowerHostedRelay
       - package: GRDB
         product: GRDB
+      - package: SwiftProtobuf
+        product: SwiftProtobuf
       # App extensions are embedded into the app's PlugIns folder.
       - target: NotifyService
       - target: NotifyContent
@@ -96,6 +107,14 @@ targets:
         # action builds; scoped to Debug so Release stays lean.
         Debug:
           ENABLE_TESTABILITY: YES
+        Release:
+          # No relay in Release: the origin is forced empty here, which beats
+          # any xcconfig value (a local Signing.xcconfig included).
+          WATCHTOWER_RELAY_ORIGIN: ""
+          # The Debug file without the App Attest key. Phase 4 adds the key
+          # (production) to Release; enabling App Attest on the App ID is the
+          # owner's portal step then, so archives need none before it.
+          CODE_SIGN_ENTITLEMENTS: WatchtowerMobile-Release.entitlements
 
   # Notification Service Extension (spec §2.1). Fills an ask alert from its
   # sealed record (mobile E2E Task 18, `AlertOpener`); the rest of A13 is
@@ -156,6 +175,10 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Tests
+      # The Kit's in-memory relay, compiled into the bundle (relay client Phase 3 Task 10's end-to-end link): its
+      # product would link a second copy of WatchtowerHostedRelay beside the host app's, and errors thrown by one
+      # copy would not match a catch in the other.
+      - path: ../WatchtowerKit/Sources/WatchtowerHostedRelayTesting
     configFiles:
       Debug: Base.xcconfig
       Release: Base.xcconfig
@@ -171,8 +194,13 @@ targets:
       # put into the transport. Test target only; the app never links it.
       - package: WatchtowerKit
         product: WatchtowerE2ETesting
+      # The relay identity's real-Keychain test. Test target only for now.
+      - package: WatchtowerKit
+        product: WatchtowerHostedRelay
       - package: GRDB
         product: GRDB
+      - package: SwiftProtobuf
+        product: SwiftProtobuf
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobileTests

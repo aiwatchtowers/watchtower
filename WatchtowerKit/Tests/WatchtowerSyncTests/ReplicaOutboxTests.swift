@@ -312,6 +312,68 @@ final class ReplicaOutboxTests: XCTestCase {
         XCTAssertEqual(try phone.store.queuedControls(), [])
     }
 
+    /// Relay client Phase 3: an outbox from Phase 1 (its CHECK without `hub_on_relay`) is rebuilt with its rows, its
+    /// `action_seq` index and the new reason.
+    func testAPhase1OutboxTakesTheHubOnRelayReason() async throws {
+        let path = try tempPath()
+        let seed = try makePhone(path: path)
+        let ids = try await insertOrdered(2, seed)
+        try await seed.store.writer.write { db in
+            let columns = try db.columns(in: "pending_actions").map(\.name).joined(separator: ", ")
+            let old = ReplicaStore.pendingActionsTableSQL(name: "pending_actions_old", ifNotExists: false)
+                .replacingOccurrences(of: ",'hub_on_relay'", with: "")
+            try db.execute(sql: old)
+            try db.execute(sql: "INSERT INTO pending_actions_old (\(columns)) SELECT \(columns) FROM pending_actions")
+            try db.execute(sql: "DROP TABLE pending_actions")
+            try db.execute(sql: "ALTER TABLE pending_actions_old RENAME TO pending_actions")
+        }
+        try seed.store.reader.close()
+
+        let phone = try makePhone(path: path)
+        XCTAssertEqual(try phone.store.outboxRows([.queued]).map(\.actionID), ids, "the rows are kept")
+        try phone.store.markUndelivered(actionIDs: [ids[0]], reason: .hubOnRelay, message: "m")
+        XCTAssertEqual(try phone.store.pendingActions().first { $0.id == ids[0] }?.undeliveredReason, .hubOnRelay)
+        XCTAssertEqual(try phone.store.outboxRows([.queued]).map(\.actionSeq), [2])
+        let index = try await phone.store.reader.read { db in
+            try String.fetchOne(db, sql: "SELECT name FROM sqlite_master WHERE name = 'idx_pending_actions_action_seq'")
+        }
+        XCTAssertNotNil(index, "the action_seq index is back")
+    }
+
+    /// R12: a route change resets both tokens; the first complete data pull keeps what it returned (and this phone's
+    /// keybox) and deletes the rest; later pulls sweep nothing. The outbox stays.
+    func testARouteChangeSweepsWhatTheFirstFullPullDidNotReturn() async throws {
+        let keys = try TestE2E.phoneStore()
+        let store = try ReplicaStore.inMemory(opener: TestE2E.opener(store: keys))
+        let phone = Phone(secure: TestE2E.phoneTransport(try TestE2E.phone(store: keys)), store: store)
+        let old = InMemoryCloudTransport()
+        let oldHub = TestE2E.hubTransport(TestE2E.hub(), inner: old)
+        let slice = { (id: String) in
+            CloudRecordFactory.record(for: SliceRecord(kind: .briefing, id: id, modifiedAt: self.base, payload: Data("{}".utf8)))
+        }
+        try await oldHub.save([slice("kept"), slice("gone"), try TestE2E.keyboxRecord(modifiedAt: base)])
+        let oldBatch = try await old.changes(in: .data, since: nil)
+        XCTAssertTrue(try store.apply(oldBatch))
+        try await insertOrdered(1, phone)
+        XCTAssertFalse(try store.adoptRoute("cloudkit"), "the first route is only recorded")
+        XCTAssertFalse(try store.adoptRoute("cloudkit"))
+
+        XCTAssertTrue(try store.adoptRoute("relay"))
+        XCTAssertNil(try store.storedToken())
+        XCTAssertTrue(try store.sweepsAfterFullPull())
+        let new = InMemoryCloudTransport()
+        let newHub = TestE2E.hubTransport(TestE2E.hub(firstSeq: 1_000), inner: new)
+        try await newHub.save([slice("kept")])
+        let newBatch = try await new.changes(in: .data, since: nil)
+        XCTAssertTrue(try store.apply(newBatch))
+
+        let names = try await store.reader.read { db in try String.fetchAll(db, sql: "SELECT record_name FROM slice_records") }
+        XCTAssertEqual(names.count, 2, "the returned row and the keybox")
+        XCTAssertTrue(names.contains { $0.hasPrefix("keybox-") })
+        XCTAssertFalse(try store.sweepsAfterFullPull())
+        XCTAssertEqual(try store.outboxRows([.queued]).count, 1, "the outbox stays")
+    }
+
     func testAnActionSeqIsUniqueAcrossRows() async throws {
         let phone = try makePhone()
         try await insertOrdered(1, phone)

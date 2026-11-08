@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // dictateMockGen is a mock digest.Generator for dictate CLI tests. Same shape
@@ -31,7 +32,7 @@ func (m *dictateMockGen) Generate(_ context.Context, _, userMessage, _ string) (
 	if m.err != nil {
 		return "", nil, "", m.err
 	}
-	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 20}, "s1", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 10}}, "s1", nil
 }
 
 // stubDictateGenerator swaps the generator factory seam for the test's

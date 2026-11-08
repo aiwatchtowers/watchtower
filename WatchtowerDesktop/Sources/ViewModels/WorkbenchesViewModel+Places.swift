@@ -39,12 +39,29 @@ extension WorkbenchesViewModel {
     }
 
     /// The place line of each agent session of a workbench (a shell has no
-    /// hook to report where it works, a standalone terminal no workbench).
+    /// hook to report where it works, a standalone terminal no workbench):
+    /// led by the branch its work merges into and its lane worktrees
+    /// (board #987, `SessionPlacePresentation.rowLabel`).
     func sessionPlaceLabels(_ sessions: [TerminalSession]) -> [Int64: SessionPlacePresentation.PlaceLabel] {
         var labels: [Int64: SessionPlacePresentation.PlaceLabel] = [:]
+        var targets: [Int64: [Int64: SessionTargetBranch.Entry]] = [:]
         for session in sessions where session.kind.agent != nil {
             guard let projectID = session.projectID else { continue }
-            labels[session.id] = sessionPlaceLabel(sessionID: session.id, projectID: projectID)
+            if targets[projectID] == nil {
+                targets[projectID] = SessionTargetBranch.index(sessionTargetRoots[projectID] ?? [])
+            }
+            let place = sessionPlaces.currentPlace(sessionID: session.id)
+            let work = sessionWork[projectID]
+            let links = work?.links[session.id]
+            labels[session.id] = SessionPlacePresentation.rowLabel(
+                place, mainStatus: gitStatus[projectID],
+                stale: sessionPlaces.isPlaceStale(sessionID: session.id),
+                targetBranch: SessionTargetBranch.resolve(
+                    boundTargetID: session.targetID, linkedTargetIDs: links?.linkedTargetIDs ?? [],
+                    targets: targets[projectID] ?? [:]
+                ),
+                lanes: work.map { $0.lanes(of: session.id, place: place) } ?? []
+            )
         }
         return labels
     }

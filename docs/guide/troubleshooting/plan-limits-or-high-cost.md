@@ -12,9 +12,11 @@ Claude or Codex runs out of subscription quota sooner than expected, a forecast 
 
 Each subscription has its own account-wide allowances. Watchtower's background jobs, chats, Workbench sessions and your own use draw from the provider's windows; Claude and Codex percentages are never added together. Watchtower reads each source independently every five minutes, with a longer retry delay after errors, and never refreshes Claude Code's sign-in itself.
 
+If you enable a [reserve AI provider](../concepts/ai-providers-and-cost.md#a-reserve-provider-for-quota-limits), scheduled Slack digest batches and people card batches keep their unfinished input window when both providers are waiting for quota. They try the missing work on a later regular sync cycle; already saved digests and cards stay saved. Other background jobs keep their own retry schedules.
+
 ## Fix
 
-1. Open **Usage → Watchtower** and pick **7 days**. The table lists each job by cost (by tokens where no cost is known), so the biggest is first; **Your automations** and **Chats and workbenches** are below it.
+1. Open **Usage → Watchtower** and pick **7 days**. The table lists each job by cost (by tokens where no cost is known), so the biggest is first; **Your automations** and **Chats and workbenches** are below it. The totals at the top add Watchtower, your automations and chats; each section's own share is next to its title.
 2. Switch off what you do not need in **Settings → Features**. The badges mark Heavy, Medium and Light. Turning off Slack Digests also leaves Tracks and People Cards with nothing to read, and Ideas with most of it.
 3. In **Statistics**, **Mute for AI** on noisy channels or bots. Muted channels are skipped by digests, tracks and the briefing.
 4. Lower the load per call: set **Light Model** and **Strong Model** in **Settings → System → AI**, or use Codex or a local Ollama model, which bills nothing.

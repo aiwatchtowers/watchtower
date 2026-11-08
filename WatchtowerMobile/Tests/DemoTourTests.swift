@@ -37,7 +37,7 @@ final class DemoTourTests: XCTestCase {
         let liveReplicaBefore = try? FileManager.default.attributesOfItem(atPath: liveReplica.path)[.modificationDate] as? Date
         let standardSeq = UserDefaults.standard.string(forKey: DemoSeed.hubSeqCeilingKey)
 
-        let live = try AppRoot.demo(AppEnvironment(transportKind: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
+        let live = try AppRoot.demo(AppEnvironment(backend: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
         let tour = managed(DemoTour())
         await tour.start(over: live)
         let root = try XCTUnwrap(tour.root)
@@ -64,7 +64,7 @@ final class DemoTourTests: XCTestCase {
     /// Try the Demo right after Exit Demo waits for the old tour to end, so
     /// the old teardown never removes the new tour's files.
     func testANewTourWaitsForTheLastOneToEnd() async throws {
-        let live = try AppRoot.demo(AppEnvironment(transportKind: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
+        let live = try AppRoot.demo(AppEnvironment(backend: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
         let tour = managed(DemoTour())
         await tour.start(over: live)
         let first = try XCTUnwrap(tour.root)
@@ -86,7 +86,7 @@ final class DemoTourTests: XCTestCase {
     /// A link URL from the Camera during the tour ends it: the live root
     /// gets the URL.
     func testALinkURLEndsTheTour() async throws {
-        let live = try AppRoot.demo(AppEnvironment(transportKind: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
+        let live = try AppRoot.demo(AppEnvironment(backend: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
         let tour = managed(DemoTour())
         await tour.start(over: live)
         let root = try XCTUnwrap(tour.root)
@@ -99,7 +99,7 @@ final class DemoTourTests: XCTestCase {
 
     /// A tour that cannot start says so instead of doing nothing.
     func testATourThatCannotStartLeavesAFailure() async throws {
-        let live = try AppRoot.demo(AppEnvironment(transportKind: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
+        let live = try AppRoot.demo(AppEnvironment(backend: .inMemoryDemo, defaults: try makeDefaults()), defaults: try makeDefaults())
         let tour = DemoTour { throw CocoaError(.fileWriteNoPermission) }
 
         await tour.start(over: live)
@@ -127,7 +127,7 @@ final class DemoTourTests: XCTestCase {
     /// Only a live build offers Add Mac: the tour's scan would reach the
     /// owner's iCloud.
     func testTheDemoOffersNoAddMac() {
-        XCTAssertFalse(MacsView.offersAdd(transportKind: .inMemoryDemo))
-        XCTAssertTrue(MacsView.offersAdd(transportKind: .cloudKit))
+        XCTAssertFalse(MacsView.offersAdd(backend: .inMemoryDemo))
+        XCTAssertTrue(MacsView.offersAdd(backend: .live))
     }
 }

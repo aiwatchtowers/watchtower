@@ -26,6 +26,7 @@ public struct OutboxFlushReport: Equatable, Sendable {
 extension ActionOutbox {
     static let refusedMessage = "Not delivered to your Mac."
     static let noAnswerMessage = "No answer from your Mac for 24 hours."
+    static let hubOnRelayMessage = "Your Mac runs over Relay now."
     /// The hosted relay's mailbox TTL: a control unwritten this long is dropped there (sim "Bounded state").
     static let hostedRelayControlTTL: TimeInterval = 14 * 86_400
     /// Seals per enqueue when other enqueues keep drawing the seq (Ruling 2).
@@ -151,9 +152,12 @@ extension ActionOutbox {
         // Checked before anything moves: a lost skip would stall the order (the hub asks once per gap).
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        _ = try store.requeue(fromSeq: seq)
+        // Before `first` is read: a row of an older epoch that does not open is listed here, so the skip covers it.
+        try await resealOlderEpochs(from: seq)
         // Seqs in [seq, first) are settled, already Not delivered (each keeps its first reason) or gone (an
         // `applied` echo or the owner's Dismiss): nothing to list (Ruling 1).
-        let first = try store.requeue(fromSeq: seq) ?? store.nextActionSeq()
+        let first = try store.outboxRows([.queued]).first { $0.actionSeq >= seq }?.actionSeq ?? store.nextActionSeq()
         if first > seq {
             let control = ControlPayload.skipTo(first, deviceID: device, hubID: hub)
             let at = now()
@@ -165,6 +169,116 @@ extension ActionOutbox {
         return try await reportedFlush()
     }
 
+    /// Sim rule 14 (the hub asks again for what it can no longer open), after the requeue and before the skip is
+    /// decided: every queued row from `seq` on that was
+    /// sealed in an epoch below the current one is resealed under the current epoch, the same `action_seq` and wire
+    /// name, a fresh envelope seq; the flush then overwrites its record under the version of its last write. Rows
+    /// already in the current epoch keep their bytes. A row whose own envelope does not open is Not delivered.
+    private func resealOlderEpochs(from seq: UInt64) async throws {
+        let current = try transport.currentEpoch()
+        for row in try store.outboxRows([.queued]) where row.actionSeq >= seq && row.epoch < current {
+            guard let resealed = try await transport.reseal(
+                ownEnvelope: row.envelope, wireName: row.wireName, modifiedAt: row.createdAt)
+            else {
+                logger.error(
+                    "action \(row.actionSeq, privacy: .public) of epoch \(row.epoch, privacy: .public) does not open: not delivered")
+                try store.markUndelivered(actionIDs: [row.actionID], reason: .refused, message: Self.refusedMessage)
+                continue
+            }
+            let epoch = try Envelope.parse(resealed.payload).header.epoch
+            if try !store.replaceOutboxEnvelope(actionID: row.actionID, envelope: resealed.payload, epoch: epoch) {
+                logger.error("resealed action \(row.actionSeq, privacy: .public) is no longer queued: envelope not replaced")
+            }
+        }
+    }
+
+    // MARK: epoch_ack
+
+    /// Confirms the phone's newest epoch to an ordered hub (sim rule 13): an `epoch_ack{epoch}` queued once per
+    /// raise, never for an epoch at or below one already acknowledged, in place of an unsent ack for a lower one,
+    /// then a flush. A hub on today's path gets none. Returns whether an ack was queued.
+    @discardableResult
+    public func enqueueEpochAck(epoch: UInt32) async throws -> Bool {
+        let queued = try await onChain { try await self.queueEpochAck(epoch) }.value
+        if queued { requestFlush() }
+        return queued
+    }
+
+    private func queueEpochAck(_ epoch: UInt32) async throws -> Bool {
+        guard try orderedPath(), try store.epochAckDue(epoch) else { return false }
+        guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
+        guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        let control = ControlPayload(
+            id: UUID().uuidString, kind: .epochAck, deviceID: device.uuidString, hubID: hub.uuidString, epoch: epoch)
+        let at = now()
+        let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
+        let queued = try store.queueEpochAck(
+            QueuedControl(id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at),
+            epoch: epoch)
+        if queued { logger.notice("epoch_ack for epoch \(epoch, privacy: .public) queued") }
+        return queued
+    }
+
+    // MARK: A transport switch (relay client Phase 3)
+
+    /// The hub moved to another transport: once the operation in flight on the chain ends, this outbox writes
+    /// nothing more (every later pass returns an empty report), so no action reaches the transport the hub left.
+    /// The session on the new transport flushes the same rows. A held outbox belongs to a session that is being
+    /// replaced; `releaseFlushes()` undoes the hold only when the move fails before anything moved.
+    public func holdFlushes() async {
+        _ = try? await onChain { await self.setFlushesHeld() }.value
+    }
+
+    private func setFlushesHeld() {
+        flushesHeld = true
+    }
+
+    /// Undoes `holdFlushes()` when the move it was for did not happen (its route could not be written): the session
+    /// goes on on its route, and this outbox writes there again, after the operation in flight on the chain.
+    public func releaseFlushes() async {
+        _ = try? await onChain { await self.clearFlushesHeld() }.value
+    }
+
+    private func clearFlushesHeld() {
+        flushesHeld = false
+    }
+
+    /// Rule 13: every ordered action without a final echo (`queued` or `sent`) is `queued` again with no known
+    /// version, on the chain after any flush in flight: the next flush, on the session of `onNewTransport`, writes
+    /// the same envelope bytes, in order, with `.absent` (a resend: never resealed). Legacy rows are not touched.
+    /// Returns how many rows it put back.
+    @discardableResult
+    public func resendUnechoed(onNewTransport transport: TransportKind) async throws -> Int {
+        let count = try await onChain { try await self.requeueForNewTransport() }.value
+        logger.notice("\(count, privacy: .public) unechoed actions queued again for \(transport.rawValue, privacy: .public)")
+        return count
+    }
+
+    /// R32: every ordered action without a final echo (`queued` or `sent`) is listed as Not delivered with `reason`,
+    /// on the chain after any flush in flight. Legacy rows are not touched. Returns how many rows it listed.
+    @discardableResult
+    public func listUnechoedAsUndelivered(reason: UndeliveredReason) async throws -> Int {
+        try await onChain { try await self.listUnechoed(reason: reason) }.value
+    }
+
+    private func requeueForNewTransport() throws -> Int {
+        try store.requeueForNewTransport()
+    }
+
+    private func listUnechoed(reason: UndeliveredReason) throws -> Int {
+        let ids = try store.outboxRows([.queued, .sent]).map(\.actionID)
+        try store.markUndelivered(actionIDs: ids, reason: reason, message: Self.message(for: reason))
+        return ids.count
+    }
+
+    private static func message(for reason: UndeliveredReason) -> String {
+        switch reason {
+        case .refused: refusedMessage
+        case .noAnswer: noAnswerMessage
+        case .hubOnRelay: hubOnRelayMessage
+        }
+    }
+
     // MARK: Retry and Dismiss All
 
     /// A new action with the failed row's kind, entity and params at the end of the queue (new id, now, next seq,
@@ -174,6 +288,7 @@ extension ActionOutbox {
     public func retry(id: String) async throws -> String? {
         guard retrying.insert(id).inserted else { return nil }
         defer { retrying.remove(id) }
+        await retryClaimedHook?()
         guard let old = try store.pendingActions().first(where: { $0.id == id }), old.state == .failed else {
             throw ActionOutboxError.notRetryable
         }
@@ -243,7 +358,7 @@ extension ActionOutbox {
     /// the next pass, the action is listed as Not delivered, and the records after it go on.
     func performFlush() async throws -> OutboxFlushReport {
         var report = OutboxFlushReport()
-        guard transport.isConditional else { return report }
+        guard transport.isConditional, !flushesHeld else { return report }
         for control in try store.queuedControls() {
             if case .hostedRelay = route, now().timeIntervalSince(control.queuedAt) >= Self.hostedRelayControlTTL {
                 // The relay would have purged any copy by now. On CloudKit there is no such TTL and a control is

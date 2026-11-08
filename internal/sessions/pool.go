@@ -10,75 +10,73 @@ import (
 // Worker represents a slot in the concurrency pool.
 type Worker struct{}
 
-// SessionPool manages a fixed number of worker slots to limit parallel
-// Claude CLI invocations. Each call acquires a slot and releases it when done.
+// SessionPool admits calls through one shared limit, including calls retaining
+// an older routing snapshot. Reducing the limit never cancels existing calls.
 type SessionPool struct {
-	workers chan *Worker
-	mu      sync.Mutex
-	closed  bool
+	mu           sync.Mutex
+	size, active int
+	closed       bool
+	changed      chan struct{}
 }
 
-// NewSessionPool creates a pool with the given number of worker slots.
 func NewSessionPool(size int) *SessionPool {
-	if size <= 0 {
-		size = 1
-	}
-	workers := make(chan *Worker, size)
-	for i := 0; i < size; i++ {
-		workers <- &Worker{}
-	}
-	return &SessionPool{
-		workers: workers,
-	}
+	return &SessionPool{size: max(size, 1), changed: make(chan struct{})}
 }
 
-// Acquire waits for a free worker slot. Returns error if pool is closed.
+func (p *SessionPool) notify() { close(p.changed); p.changed = make(chan struct{}) }
+
+// Acquire waits for admission or cancellation. Close wakes all waiters.
 func (p *SessionPool) Acquire(ctx context.Context) (*Worker, error) {
-	p.mu.Lock()
-	if p.closed {
+	for {
+		p.mu.Lock()
+		if p.closed {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("session pool is closed")
+		}
+		if err := ctx.Err(); err != nil {
+			p.mu.Unlock()
+			return nil, fmt.Errorf("acquire timeout: %w", err)
+		}
+		if p.active < p.size {
+			p.active++
+			p.mu.Unlock()
+			return &Worker{}, nil
+		}
+		changed := p.changed
 		p.mu.Unlock()
-		return nil, fmt.Errorf("session pool is closed")
-	}
-	p.mu.Unlock()
-
-	select {
-	case w := <-p.workers:
-		return w, nil
-	case <-ctx.Done():
-		return nil, fmt.Errorf("acquire timeout: %w", ctx.Err())
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("acquire timeout: %w", ctx.Err())
+		}
 	}
 }
 
-// Release returns a worker slot to the pool.
-func (p *SessionPool) Release(w *Worker) {
+// Release returns an admitted worker, including after Close or Resize.
+func (p *SessionPool) Release(_ *Worker) {
 	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return
-	}
-	p.mu.Unlock()
-
-	select {
-	case p.workers <- w:
-	default:
+	defer p.mu.Unlock()
+	if p.active > 0 {
+		p.active--
+		p.notify()
 	}
 }
 
-// Close closes the pool and stops accepting new acquire requests.
+// Resize changes admission for future calls across every generation.
+func (p *SessionPool) Resize(size int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.size = max(size, 1)
+	p.notify()
+}
+
 func (p *SessionPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if p.closed {
-		return
-	}
-	p.closed = true
-	close(p.workers)
-	for range p.workers {
+	if !p.closed {
+		p.closed = true
+		p.notify()
 	}
 }
 
-// Size returns the pool capacity.
-func (p *SessionPool) Size() int {
-	return cap(p.workers)
-}
+func (p *SessionPool) Size() int { p.mu.Lock(); defer p.mu.Unlock(); return p.size }

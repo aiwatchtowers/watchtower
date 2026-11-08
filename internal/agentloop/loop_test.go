@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/providers"
 	"watchtower/internal/tools"
 )
 
@@ -138,9 +139,8 @@ func TestLoop_MaxIterationsCap(t *testing.T) {
 	c := clientWith(reg, srv.URL)
 	c.maxIter = 3
 
-	text, _, err := c.run(context.Background(), "", "loop", nil)
-	require.NoError(t, err)
-	assert.NotEmpty(t, text, "cap must still return some text, never hang")
+	_, _, err := c.run(context.Background(), "", "loop", nil)
+	require.Error(t, err, "past the cap the run fails, never hangs")
 	assert.Equal(t, 3, *calls, "the loop stops exactly at the cap")
 }
 
@@ -159,24 +159,30 @@ func TestLoop_OutOfSurfaceToolRejected(t *testing.T) {
 	assert.Empty(t, reg.proposed, "a main-only tool must not be proposed from the target surface")
 }
 
-// When the cap is hit with partial content, the answer is marked truncated
-// rather than presented as complete.
-func TestLoop_MaxIterationsCapMarksTruncation(t *testing.T) {
+// At the iteration cap the run fails with a budget failure, the category of
+// claude's error_max_turns (L13), never a success text: a cap of N lets N
+// model calls run and makes no N+1th.
+func TestAgentloop_CapIsBudgetFailure(t *testing.T) {
 	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
-	// Every turn emits content AND a tool call, so it loops to the cap with
-	// non-empty lastContent.
+	// Every turn emits content AND a tool call, so it loops to the cap.
 	withContent := oaResponse{Choices: []oaChoice{{Message: oaMessage{
 		Role: "assistant", Content: "partial progress",
 		ToolCalls: []oaToolCall{{ID: "c1", Type: "function", Function: oaFunction{Name: "list_targets", Arguments: `{}`}}},
 	}}}}
-	srv, _ := scriptedServer(t, withContent)
+	srv, calls := scriptedServer(t, usageResp(withContent, 100, 10))
 	c := clientWith(reg, srv.URL)
 	c.maxIter = 2
 
-	text, _, err := c.run(context.Background(), "", "loop", nil)
-	require.NoError(t, err)
-	assert.Contains(t, text, "partial progress")
-	assert.Contains(t, text, "tool-call limit", "truncated output must be flagged")
+	text, usage, err := c.run(context.Background(), "", "loop", nil)
+	require.Error(t, err)
+	var f *providers.Failure
+	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+	assert.Equal(t, providers.Budget, f.Category)
+	assert.Contains(t, err.Error(), "stopped after 2 model turns")
+	assert.Empty(t, text, "no success text at the cap")
+	require.NotNil(t, usage, "the usage of the calls made is kept")
+	assert.Equal(t, 200, usage.InputTokens())
+	assert.Equal(t, 2, *calls, "the cap's model calls ran, no more")
 }
 
 // A non-200 from the model endpoint fails the run (a transport error, unlike a
@@ -356,7 +362,7 @@ func TestAgentLoop_MaxIterationsOption(t *testing.T) {
 	c.reg = reg
 
 	_, _, err := c.run(context.Background(), "", "loop", nil)
-	require.NoError(t, err)
+	require.ErrorContains(t, err, "stopped after 12 model turns")
 	assert.Equal(t, 12, *calls)
 
 	assert.Equal(t, defaultMaxIterations, NewClientWithOptions("m", "", nil, tools.Binding{}, Options{}).maxIter,
@@ -419,4 +425,51 @@ func TestAgentLoop_ResultCheckRefusesResult(t *testing.T) {
 	require.Len(t, *reqs, 2)
 	last := (*reqs)[1].Messages[len((*reqs)[1].Messages)-1]
 	assert.Equal(t, `{"error":"ResultTooLarge: the result is too large"}`, last.Content)
+}
+
+// cancelOnRead cancels the run on its first read.
+type cancelOnRead struct {
+	*fakeReg
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnRead) CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error) {
+	r.cancel()
+	return r.fakeReg.CallRead(ctx, name, args, b)
+}
+
+// A stop lands between tool calls: the loop dispatches nothing more (a
+// registry tool need not honour a stopped context, and a write must never
+// run after Stop) and ends with the context's error.
+func TestAgentloop_StopBetweenToolCallsDispatchesNoMore(t *testing.T) {
+	two := toolCallResp("list_targets", `{}`)
+	two.Choices[0].Message.ToolCalls = append(two.Choices[0].Message.ToolCalls,
+		oaToolCall{ID: "c2", Type: "function", Function: oaFunction{Name: "list_targets", Arguments: `{}`}})
+	model, requests := recordingServer(t, two, finalResp("done"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := &cancelOnRead{fakeReg: listTargetsReg(), cancel: cancel}
+	_, _, err := clientWith(reg, model.URL).QuerySync(ctx, "", "go", "")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, []string{"list_targets"}, reg.reads, "the second call is never dispatched")
+	assert.Len(t, requests(), 1, "no model call after the stop")
+}
+
+// A stop that releases the blocked send of a tool's start event dispatches
+// nothing: the consumer stopped reading, the channel is full, and the stop
+// comes while the start waits to be sent.
+func TestAgentloop_StopReleasingAToolStartDispatchesNothing(t *testing.T) {
+	model, _ := recordingServer(t, toolCallResp("list_targets", `{}`), finalResp("done"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := listTargetsReg()
+	c := clientWith(reg, model.URL)
+	c.EmitToolEvents()
+	_, _, err := c.run(ctx, "", "go", func(ch ai.StreamChunk) {
+		if ch.Tool != nil && !ch.Tool.Done {
+			cancel() // the send this chunk waited on was released by the stop
+		}
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Empty(t, reg.reads, "nothing is dispatched after the stop")
 }

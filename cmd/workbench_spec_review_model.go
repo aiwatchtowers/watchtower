@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/providers"
+	"watchtower/internal/sessionagent"
 )
 
 // Session selection is local to this review; config.yaml and other agents stay unchanged.
@@ -32,7 +33,7 @@ func specReviewSessionConfig(ctx context.Context, database *db.DB, askID int64, 
 	if !ask.SessionID.Valid {
 		return &sessionCfg, model, nil
 	}
-	session, err := database.GetTerminalSession(ask.SessionID.Int64)
+	session, err := sessionagent.LoadSession(database, ask.SessionID.Int64)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return &sessionCfg, model, nil
 	}

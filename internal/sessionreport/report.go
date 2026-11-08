@@ -52,11 +52,14 @@ type Session struct {
 	FinishSummary string `json:"finish_summary"`
 }
 
-// Progress counts the in-scope leaves: Done are done, Total leaves out
-// dismissed ones.
+// Progress counts the in-scope leaves: Done are done, Merged are not done
+// but git found their branch's work in their base (the branch of the nearest
+// ancestor that carries another one, board #986), Total leaves out dismissed
+// ones. Done + Merged <= Total.
 type Progress struct {
-	Done  int `json:"done"`
-	Total int `json:"total"`
+	Done   int `json:"done"`
+	Total  int `json:"total"`
+	Merged int `json:"merged"`
 }
 
 // Ask is one of the session's open asks.
@@ -83,8 +86,8 @@ type NowItem struct {
 	Since  string `json:"since"`
 }
 
-// Phase is a parent of in-scope leaves. Done and Total count all its
-// non-dismissed leaf descendants; StartedAt is the earliest move of one of
+// Phase is a parent of in-scope leaves. Done, Merged and Total count all
+// its non-dismissed leaf descendants, as Progress does; StartedAt is the earliest move of one of
 // them to in_progress, FinishedAt the latest move to done, set only when all
 // are done.
 type Phase struct {
@@ -92,6 +95,7 @@ type Phase struct {
 	Text       string `json:"text"`
 	Done       int    `json:"done"`
 	Total      int    `json:"total"`
+	Merged     int    `json:"merged"`
 	StartedAt  string `json:"started_at"`
 	FinishedAt string `json:"finished_at"`
 	Items      []Item `json:"items"`
@@ -132,8 +136,8 @@ func Build(ctx context.Context, d *db.DB, workbenchID, sessionID int64, opts Opt
 	if err != nil {
 		return Report{}, err
 	}
-	r := Report{Session: sess, Progress: sc.counts(), OnYou: []Ask{}, Now: []NowItem{}, Next: []Item{},
-		Phases: sc.phases(spans), PRs: sc.prs(states), PRNote: opts.PRNote}
+	r := Report{Session: sess, Progress: sc.counts(states), OnYou: []Ask{}, Now: []NowItem{}, Next: []Item{},
+		Phases: sc.phases(spans, states), PRs: sc.prs(states), PRNote: opts.PRNote}
 	for _, a := range asks {
 		r.OnYou = append(r.OnYou, Ask{ID: a.ID, Kind: a.Kind, Title: a.Title, TargetID: nullableInt(a.TargetID),
 			CreatedAt: a.CreatedAt})

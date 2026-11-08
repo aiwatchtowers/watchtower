@@ -31,7 +31,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
             now: { clock.now },
@@ -366,7 +366,7 @@ final class FetchCadenceWiringTests: XCTestCase {
         let env = try HubSession(
             transport: InMemoryCloudTransport(),
             replicaPath: try makeReplicaPath(),
-            transportKind: .inMemoryDemo,
+            backend: .inMemoryDemo,
             defaults: try makeDefaults(),
             recordingsDirectory: try makeRecordingsDirectory(),
             startsActive: false,

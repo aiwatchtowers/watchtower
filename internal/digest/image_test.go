@@ -84,7 +84,7 @@ func TestClaudeImageArgs(t *testing.T) {
 	if got != "described" {
 		t.Errorf("result = %q, want the final result event's text", got)
 	}
-	if usage == nil || usage.Model != "strong-model" || usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.TotalAPITokens != 13 {
+	if usage == nil || usage.Model != "strong-model" || usage.InputTokens() != 11 || usage.OutputTokens() != 7 || usage.TotalAPITokens() != 13 {
 		t.Errorf("usage = %+v, want strong-model 11/7 (13 API tokens)", usage)
 	}
 

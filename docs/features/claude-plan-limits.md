@@ -26,7 +26,7 @@ Network/process work is outside SQL transactions. Context-aware reads and transa
 
 ## Storage and publication
 
-Migration 00115's Claude singleton/samples stay compatible. Migration 00169 adds `codex_plan_usage_status`, scoped `codex_plan_usage_samples`, and `plot_json TEXT NOT NULL DEFAULT '{}'` to both status tables. Samples are retained for 8 days.
+Migration 00115's Claude singleton/samples stay compatible. Migration 00176 adds `codex_plan_usage_status`, scoped `codex_plan_usage_samples`, and `plot_json TEXT NOT NULL DEFAULT '{}'` to both status tables. Samples are retained for 8 days.
 
 Codex publishes successful status and samples in one transaction. Claude retains samples-before-status; a status upsert publishes limits/fetched time/plot together. Reads select samples no later than published `fetched_at`, matching the current reset within ±60 seconds; Codex also requires the current scope. Repeated publication is idempotent. Errors retain last-good diagnostic data, while presentation gates prevent drawing an old forecast.
 

@@ -489,7 +489,7 @@ func (p *Pipeline) recordSemanticStep(runID int64, step *int, name, status strin
 	}
 	if err := p.db.InsertPipelineStep(db.PipelineStep{
 		RunID: runID, Step: *step, Status: status, ChannelName: name,
-		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
+		InputTokens: u.InputTokens(), OutputTokens: u.OutputTokens(), TotalAPITokens: u.TotalAPITokens(),
 		DurationSeconds: time.Since(start).Seconds(),
 	}); err != nil {
 		p.logf("memory: record semantic step %s: %v", name, err)
@@ -514,9 +514,9 @@ func (a *usageAccumulator) add(u *digest.Usage) {
 	if u == nil {
 		return
 	}
-	a.input += u.InputTokens
-	a.output += u.OutputTokens
-	a.totalAPI += u.TotalAPITokens
+	a.input += u.InputTokens()
+	a.output += u.OutputTokens()
+	a.totalAPI += u.TotalAPITokens()
 	if u.Model != "" {
 		a.model = u.Model
 	}
@@ -724,7 +724,7 @@ func (p *Pipeline) recordBatchStep(runID int64, step, total int, status string, 
 	if err := p.db.InsertPipelineStep(db.PipelineStep{
 		RunID: runID, Step: step, Total: total, Status: status,
 		ChannelID: channelID, ChannelName: batchChannelNames(windows, idxs),
-		InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, TotalAPITokens: u.TotalAPITokens,
+		InputTokens: u.InputTokens(), OutputTokens: u.OutputTokens(), TotalAPITokens: u.TotalAPITokens(),
 		MessageCount: batchMessageCount(windows, idxs), PeriodFrom: &pFrom, PeriodTo: &pTo,
 		DurationSeconds: time.Since(start).Seconds(),
 	}); err != nil {
@@ -1101,3 +1101,6 @@ var linkLabelReplacer = strings.NewReplacer("[[", "", "]]", "", "|", "/", "\n", 
 func linkLabel(title string) string {
 	return linkLabelReplacer.Replace(title)
 }
+
+// SetGenerator configures the job-bound generator before the pipeline runs.
+func (p *Pipeline) SetGenerator(gen digest.Generator) { p.generator = gen }

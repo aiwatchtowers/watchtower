@@ -20,6 +20,14 @@ package enum EmbeddedChatErrorClassifier {
     }
 
     package static func classify(_ error: Error) -> Failure {
+        if let failure = error as? ChatSessionError {
+            var code = ChatErrorCode(rawValue: failure.persistenceCode) ?? failure.code
+            // `ai query --events v2` reports a refusal before the run (config,
+            // tools) as `internal`: its text may still say what kind it is.
+            if code == .internalError, let byText = classify(message: failure.message).code { code = byText }
+            return Failure(code: code, message: failure.message,
+                           retryable: failure.retryable && code != .quotaExhausted)
+        }
         if let aiError = error as? WatchtowerAIError {
             switch aiError {
             case .cliNotFound, .launchFailed:

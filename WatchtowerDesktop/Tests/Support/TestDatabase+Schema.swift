@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS digests (
     prompt_version  INTEGER NOT NULL DEFAULT 0,  -- version of prompt used for generation
     people_signals  TEXT NOT NULL DEFAULT '[]',   -- JSON array of PersonSignals from MAP phase (legacy)
     situations      TEXT NOT NULL DEFAULT '[]',   -- JSON array of Situation objects from channel digest
-    running_summary TEXT NOT NULL DEFAULT '',     -- JSON running context for next digest (channel memory)
+    running_summary TEXT NOT NULL DEFAULT '', daily_attempt_id TEXT NOT NULL DEFAULT '',     -- JSON running context for next digest (channel memory)
     UNIQUE(channel_id, type, period_from, period_to)
 );
 CREATE TABLE IF NOT EXISTS digest_participants (
@@ -1108,7 +1108,7 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     created_at   REAL NOT NULL,
     updated_at   REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL);
+    CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS chat_messages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -1420,7 +1420,8 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question     TEXT,
     chat_question_at  TEXT,
     agent_turns       TEXT,
-    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT,
+    agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
+    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -1428,7 +1429,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,
     branch     TEXT NOT NULL DEFAULT '',
-    first_at   TEXT NOT NULL,
+    first_at   TEXT NOT NULL, last_at TEXT,
     PRIMARY KEY (session_id, root, branch)
 );
 CREATE TABLE IF NOT EXISTS "tool_trust" (
@@ -1742,7 +1743,7 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
   delivered_at   TEXT
-, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')));
+, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), branch TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS review_comments (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id       INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
@@ -2347,6 +2348,32 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     ok                    INTEGER NOT NULL DEFAULT 1,
     automation_id         INTEGER,
     automation_run_id     INTEGER
+, operation_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, config_revision TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS ideas_extraction_windows (
+    source TEXT NOT NULL CHECK (source IN ('gmail', 'imap', 'jira')),
+    account_id INTEGER NOT NULL,
+    window_key TEXT NOT NULL,
+    from_value TEXT NOT NULL,
+    to_value TEXT NOT NULL,
+    reached_value TEXT NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+    PRIMARY KEY (source, account_id, window_key)
+);
+CREATE TABLE IF NOT EXISTS history_backfill_considered (
+ account_id INTEGER NOT NULL,
+ channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+ from_ts REAL NOT NULL,
+ to_ts REAL NOT NULL,
+ reached_ts REAL NOT NULL,
+ PRIMARY KEY(account_id, channel_id, from_ts, to_ts)
+);
+CREATE TABLE IF NOT EXISTS history_backfill_daily (
+ account_id INTEGER NOT NULL,
+ chunk_from REAL NOT NULL,
+ chunk_to REAL NOT NULL,
+ day_from REAL NOT NULL,
+ digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
+ PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
 );
 CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
     id                     INTEGER PRIMARY KEY CHECK (id = 1),
@@ -3077,6 +3104,46 @@ CREATE TRIGGER IF NOT EXISTS meeting_transcripts_private_delete_recaps BEFORE DE
 WHEN OLD.private = 1
 BEGIN
     DELETE FROM meeting_recaps WHERE transcript_id = OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_gmail_delete AFTER DELETE ON google_accounts
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='gmail' AND account_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_gmail_reset AFTER UPDATE OF ideas_email_floor ON google_accounts WHEN NEW.ideas_email_floor = 0
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='gmail' AND account_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_imap_delete AFTER DELETE ON email_accounts
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='imap' AND account_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_imap_reset AFTER UPDATE OF ideas_email_floor ON email_accounts WHEN NEW.ideas_email_floor = 0
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='imap' AND account_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_jira_delete AFTER DELETE ON jira_accounts
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='jira' AND account_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_jira_reset AFTER UPDATE OF ideas_jira_floor ON jira_accounts WHEN NEW.ideas_jira_floor = ''
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='jira' AND account_id=OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_history_reset AFTER DELETE ON history_backfill
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source=OLD.source_kind AND account_id=OLD.account_id AND window_key <> 'forward';
+END;
+CREATE TRIGGER IF NOT EXISTS ideas_extraction_output_reset AFTER DELETE ON stream_digests
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source=OLD.source AND account_id=OLD.account_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_backfill_considered_reset AFTER DELETE ON history_backfill
+BEGIN
+ DELETE FROM history_backfill_considered WHERE OLD.source_kind='slack' AND account_id=OLD.account_id;
+END;
+CREATE TRIGGER IF NOT EXISTS history_backfill_daily_reset AFTER DELETE ON history_backfill
+BEGIN
+ DELETE FROM history_backfill_daily WHERE OLD.source_kind='slack' AND account_id=OLD.account_id AND chunk_from >= OLD.floor_ts AND chunk_to <= OLD.upper_ts;
 END;
 """#
 }

@@ -23,15 +23,15 @@ const insertLLMCallSQL = `INSERT OR IGNORE INTO llm_calls (
 	call_id, at, surface, purpose, process, provider, model,
 	input_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens, output_tokens,
 	usage_estimated, reported_cost_usd, est_cost_usd, duration_ms, ok,
-	automation_id, automation_run_id)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	automation_id, automation_run_id, operation_id, attempt, config_revision)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 func llmCallArgs(c llmusage.Call) []any {
 	return []any{
 		c.CallID, c.At, c.Surface, c.Purpose, c.Process, c.Provider, c.Model,
 		c.Input, c.CacheRead, c.CacheWrite5m, c.CacheWrite1h, c.Output,
 		boolToInt(c.Estimated), c.ReportedCostUSD, c.EstCostUSD, c.DurationMS, boolToInt(c.OK),
-		c.AutomationID, c.AutomationRunID,
+		c.AutomationID, c.AutomationRunID, c.OperationID, c.Attempt, c.ConfigRevision,
 	}
 }
 

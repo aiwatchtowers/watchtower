@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/sessionagent"
 )
 
 const (
@@ -187,6 +188,14 @@ type contextAcc struct {
 	partsFor map[string][]laneParts
 }
 
+// contextMeasured says whether a session's context and skills were
+// measured: it has the v2 facts and its agent's transcript records the
+// baseline parts and skill listing (Caps.AnalyticsContext; a codex rollout
+// does not: "Not measured for Codex sessions").
+func contextMeasured(s agentlogdb.AgentReportSession) bool {
+	return s.Facts && sessionagent.CapsOf(s.Agent).AnalyticsContext
+}
+
 // Context measures the period's context from the sessions' events (keyed by
 // uuid, in AgentReportEvents order), their baseline parts and the workbench
 // folder ("" = no disk sizes). Sessions without the v2 facts are skipped.
@@ -204,7 +213,7 @@ func Context(sessions []agentlogdb.AgentReportSession, events map[string][]agent
 	a := &contextAcc{growth: map[string]int64{}, srcIdx: map[srcKey]int{}, readIdx: map[string]int{}, repeats: map[string]*RepeatRow{},
 		main: newBaseAgg(), sub: newBaseAgg(), partsFor: groupParts(parts)}
 	for _, s := range sessions {
-		if !s.Facts {
+		if !contextMeasured(s) {
 			continue
 		}
 		r.FactsSessions++

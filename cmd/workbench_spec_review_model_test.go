@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"watchtower/internal/config"
 	"watchtower/internal/specreview"
 
@@ -130,4 +131,63 @@ func TestSpecReviewRun_ClaudeDiscoveryFailureIsStored(t *testing.T) {
 	row, err := database.GetSpecReview(id)
 	require.NoError(t, err)
 	require.Equal(t, "failed", row.Status)
+}
+
+// Exercise the production reviewer factory and its child argv, not only the
+// chosen config field: configured/fallback models must not replace the session.
+func TestSpecReviewSessionModel_ReachesProductionCodexFactory(t *testing.T) {
+	database, askID, repo := specReviewAsk(t)
+	ask, err := database.GetOwnerAskByID(askID)
+	require.NoError(t, err)
+	transcript := filepath.Join(t.TempDir(), "main.jsonl")
+	require.NoError(t, os.WriteFile(transcript, []byte(`{"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}`+"\n"), 0o600))
+	row, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, agent_transcript_path)
+		VALUES (?, 'codex', 'fixture session', ?, 'fixture-thread', ?)`, ask.WorkbenchID, repo, transcript)
+	require.NoError(t, err)
+	sessionID, err := row.LastInsertId()
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE owner_asks SET session_id = ? WHERE id = ?`, sessionID, askID)
+	require.NoError(t, err)
+	stored, err := database.GetTerminalSession(sessionID)
+	require.NoError(t, err)
+	require.False(t, stored.TranscriptPath.Valid, "production loading must hydrate the separately stored transcript path")
+
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	argsFile := filepath.Join(t.TempDir(), "args")
+	t.Setenv("WT_REVIEW_ARGS", argsFile)
+	codexPath := filepath.Join(t.TempDir(), "fake-codex")
+	require.NoError(t, os.WriteFile(codexPath, []byte(`#!/bin/sh
+if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit 0; fi
+printf '%s\n' "$@" > "$WT_REVIEW_ARGS"
+cat > /dev/null
+echo '{"type":"thread.started","thread_id":"fixture-thread"}'
+echo '{"type":"turn.started"}'
+echo '{"type":"item.completed","item":{"type":"agent_message","text":"session-model-chosen"}}'
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`), 0o755))
+	original := &config.Config{
+		CodexPath: codexPath, ClaudePath: "/usr/bin/false",
+		AI: config.AIConfig{Provider: "claude", ConfiguredProvider: "claude",
+			Models:    config.AIModels{Strong: "claude-configured"},
+			Providers: map[string]config.AIProviderConfig{"codex": {Models: config.AIModels{Strong: "codex-configured"}}},
+			Fallback:  config.AIFallbackConfig{Enabled: true, Provider: "codex"}},
+	}
+	selected, model, err := specReviewSessionConfig(context.Background(), database, askID, original)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	answer, codeRead, err := specReviewAgentFactory(selected, model).Review(ctx, repo, "fixture instructions", "Review the fixture")
+	require.NoError(t, err)
+	require.True(t, codeRead)
+	require.Equal(t, "session-model-chosen", answer)
+	argv, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	require.Contains(t, string(argv), "--model\ngpt-6.1-sol\n")
+	require.Contains(t, string(argv), "--sandbox\nread-only\n")
+	require.NotContains(t, string(argv), "codex-configured")
+	require.Equal(t, "claude", original.AI.Provider)
+	require.Equal(t, "claude-configured", original.AI.Models.Strong)
+	require.Equal(t, "codex-configured", original.AI.Providers["codex"].Models.Strong)
+	require.True(t, original.AI.Fallback.Enabled)
 }

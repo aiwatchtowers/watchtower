@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/tools"
 )
 
@@ -29,7 +31,7 @@ func TestCliGeneratorProviderSwitch(t *testing.T) {
 		{"codex", "*codex.CodexGenerator"},
 		{"ollama", "*ollama.Generator"},
 		{"", "*digest.ClaudeGenerator"},
-		{"unknown", "*digest.ClaudeGenerator"},
+		{"unknown", "cmd.refusedProvider"},
 	}
 	for _, tt := range tests {
 		t.Run("gen/"+tt.provider, func(t *testing.T) {
@@ -50,6 +52,7 @@ func TestNewAIClientProviderSwitch(t *testing.T) {
 		{"codex", "*codex.Client"},
 		{"ollama", "*ollama.Client"},
 		{"", "*ai.Client"},
+		{"unknown", "cmd.refusedProvider"},
 	}
 	for _, tt := range tests {
 		t.Run("client/"+tt.provider, func(t *testing.T) {
@@ -59,6 +62,22 @@ func TestNewAIClientProviderSwitch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// An unknown provider is a configuration error, never permission to send
+// the owner's request to Claude. Both factories must refuse before spawn.
+func TestUnknownProviderFactoriesRefuseCalls(t *testing.T) {
+	cfg := &config.Config{AI: config.AIConfig{Provider: "unknown"}}
+	text, usage, sessionID, err := cliGenerator(cfg).Generate(context.Background(), "system", "request", "")
+	require.EqualError(t, err, `unknown AI provider "unknown"`)
+	assert.Empty(t, text)
+	assert.Nil(t, usage)
+	assert.Empty(t, sessionID)
+
+	answer, clientUsage, err := newAIClient(cfg, "").QuerySync(context.Background(), "system", "request", "")
+	require.EqualError(t, err, `unknown AI provider "unknown"`)
+	assert.Empty(t, answer)
+	assert.Nil(t, clientUsage)
 }
 
 // Runtime B: the ollama provider on a tool-bearing chat surface (--tools chat)
@@ -73,13 +92,13 @@ func TestNewQueryClientOllamaToolWiring(t *testing.T) {
 	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
 
 	aiFlagTools = "chat"
-	client, cleanup, err := newQueryClient(cfg, dbPath)
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup()
 	assert.Equal(t, "*agentloop.Client", fmt.Sprintf("%T", client), "ollama + --tools chat gets the runtime-B loop")
 
 	aiFlagTools = ""
-	plain, cleanup2, err := newQueryClient(cfg, dbPath)
+	plain, cleanup2, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup2()
 	assert.Equal(t, "*ollama.Client", fmt.Sprintf("%T", plain), "ollama without tools stays the plain client")
@@ -116,7 +135,7 @@ func TestNewQueryClientWiresEnabledExternalConnections(t *testing.T) {
 	aiFlagModel = ""
 	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
 
-	client, cleanup, err := newQueryClient(cfg, dbPath)
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup()
 
@@ -156,7 +175,7 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 	aiFlagTools, aiFlagModel = "chat", ""
 	servers := func(surface string) []ai.ExternalMCPServer {
 		aiFlagSurface = surface
-		client, cleanup, err := newQueryClient(cfg, dbPath)
+		client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 		require.NoError(t, err)
 		defer cleanup()
 		c, ok := client.(*ai.Client)
@@ -174,7 +193,7 @@ func TestNewQueryClientSkipsExternalConnectionsOnAutomationEditor(t *testing.T) 
 	cfg.AI.Provider = "codex"
 	override := func(surface string) string {
 		aiFlagSurface = surface
-		client, cleanup, err := newQueryClient(cfg, dbPath)
+		client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 		require.NoError(t, err)
 		defer cleanup()
 		c, ok := client.(*codex.Client)
@@ -214,7 +233,7 @@ func TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully(t *test
 	aiFlagModel = ""
 	defer func() { aiFlagTools = oldTools; aiFlagModel = oldModel }()
 
-	client, cleanup, err := newQueryClient(cfg, dbPath)
+	client, cleanup, err := newQueryClient(cfg, dbPath, transport.Options{})
 	require.NoError(t, err)
 	defer cleanup()
 

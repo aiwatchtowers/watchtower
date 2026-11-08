@@ -150,10 +150,10 @@ func TestCodexPlanUsage_RetentionExactBoundary(t *testing.T) {
 }
 
 func TestCodexPlanUsageMigration_DownUpPreservesClaude(t *testing.T) {
-	raw := openRawDBAtVersion(t, 169)
+	raw := openRawDBAtVersion(t, 176)
 	_, err := raw.Exec(`INSERT INTO plan_usage_status (id,state,limits_json,updated_at,plot_json) VALUES (1,'ok','[]','2026-11-02T09:00:00Z','{"test":1}')`)
 	require.NoError(t, err)
-	require.NoError(t, gooseDownTo(raw, "migrations", 168))
+	require.NoError(t, gooseDownTo(raw, "migrations", 175))
 	var state string
 	require.NoError(t, raw.QueryRow(`SELECT state FROM plan_usage_status WHERE id=1`).Scan(&state))
 	assert.Equal(t, "ok", state)

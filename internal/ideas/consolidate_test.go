@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/kb"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
 )
 
@@ -1019,7 +1020,7 @@ type systemGen struct {
 
 func (g *systemGen) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
 	g.systems = append(g.systems, system)
-	return `{"ops":[]}`, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "sess", nil
+	return `{"ops":[]}`, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "sess", nil
 }
 
 func ideasOverride(lead string, n int) string {

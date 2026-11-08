@@ -21,6 +21,8 @@ hooks.SubagentStart=[{hooks=[{type="command",command="'/Users/example/Library/Ap
 -c
 hooks.SubagentStop=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
 -c
+hooks.Interrupt=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench session-state --agent codex",timeout=5}]}]
+-c
 hooks.PreToolUse=[{matcher="request_user_input",hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench ask-guard --agent codex --pre-tool-use",timeout=5}]}]
 -c
 hooks.Stop=[{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench check --agent codex --stop-hook",timeout=15}]},{hooks=[{type="command",command="'/Users/example/Library/Application Support/Watchtower/bin/watchtower' workbench ask-guard --agent codex --stop",timeout=30}]}]

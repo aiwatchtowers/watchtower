@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"regexp"
+	"strings"
 )
 
 // The transcript spans toolCallTurn reads around a Stop's turn end: the
@@ -32,8 +34,13 @@ const (
 // tool calls: an assistant message's tool_use blocks and a user message's
 // tool_result blocks.
 type transcriptLine struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type string `json:"type"`
+	// IsMeta and IsCompactSummary mark user entries Claude Code writes itself
+	// (skill bodies, command caveats, a compaction's summary), never a turn's
+	// opening (opensUserTurn).
+	IsMeta           bool `json:"isMeta"`
+	IsCompactSummary bool `json:"isCompactSummary"`
+	Message          struct {
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
 }
@@ -42,7 +49,12 @@ type transcriptBlock struct {
 	Type      string `json:"type"`
 	ID        string `json:"id"`
 	ToolUseID string `json:"tool_use_id"`
+	Text      string `json:"text"`
 }
+
+// reminderBlockRe matches a <system-reminder> block, the context Claude Code
+// and hooks inject into a user entry mid-turn.
+var reminderBlockRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
 
 // toolCallTurn places tool call toolUseID in the transcript at path against
 // turnEnd, the transcript's size when the Stop hook let a turn end. The
@@ -141,6 +153,93 @@ func toolCallEntry(line []byte, toolUseID string) toolEntry {
 		}
 	}
 	return noToolEntry
+}
+
+// interruptedTurnEnd is the end of the turn tool call toolUseID was
+// interrupted in (board #1019), read from offset from (a turn end, or 0)
+// over at most transcriptLookahead bytes: after the call's tool_use entry,
+// the offset where the first user message starts that carries no tool
+// result — the interrupt's marker or the owner's next prompt — else the end
+// of the last whole line read (a line still being written is left out). A
+// tool result, of this call or a parallel one, never ends the turn: those
+// entries are the turn's own. found is false when the span holds no
+// tool_use entry of the call; ok is false when the transcript cannot be read.
+func interruptedTurnEnd(path, toolUseID string, from int64) (end int64, found, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false, false
+	}
+	defer f.Close()
+	if toolUseID == "" {
+		return 0, false, true
+	}
+	partial := false
+	if from > 0 {
+		var prev [1]byte
+		if _, err := f.ReadAt(prev[:], from-1); err != nil {
+			return 0, false, false
+		}
+		partial = prev[0] != '\n'
+	}
+	r := bufio.NewReader(io.NewSectionReader(f, from, transcriptLookahead))
+	id := []byte(toolUseID)
+	pos := from
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return 0, false, false
+		}
+		if !bytes.HasSuffix(line, []byte{'\n'}) {
+			return pos, found, true // the end of the span, or a line still being written
+		}
+		switch {
+		case partial:
+		case !found:
+			found = bytes.Contains(line, id) && toolCallEntry(line, toolUseID) == toolUseEntry
+		case opensUserTurn(line):
+			return pos, true, true
+		}
+		partial = false
+		pos += int64(len(line))
+	}
+}
+
+// opensUserTurn says whether a transcript line is a user message that
+// opens what follows a turn: an owner's prompt, Claude Code's interrupt
+// marker or a notice that starts a turn by itself. Entries Claude Code
+// writes inside a turn never do: tool results, isMeta entries (a skill's
+// body, a command caveat), a compaction summary, and a message that is only
+// <system-reminder> blocks (injected context, hook output).
+func opensUserTurn(line []byte) bool {
+	var entry transcriptLine
+	if json.Unmarshal(line, &entry) != nil || entry.Type != "user" || entry.IsMeta || entry.IsCompactSummary {
+		return false
+	}
+	var text string
+	if json.Unmarshal(entry.Message.Content, &text) == nil {
+		return !onlyReminders(text)
+	}
+	var blocks []transcriptBlock
+	if json.Unmarshal(entry.Message.Content, &blocks) != nil {
+		return false // neither text nor blocks: not a message the owner sent
+	}
+	var parts []string
+	for _, b := range blocks {
+		switch b.Type {
+		case "tool_result":
+			return false
+		case "text":
+			parts = append(parts, b.Text)
+		default:
+			return true // an image or another block the owner sent
+		}
+	}
+	return !onlyReminders(strings.Join(parts, "\n"))
+}
+
+// onlyReminders: text holds nothing but <system-reminder> blocks and space.
+func onlyReminders(text string) bool {
+	return strings.TrimSpace(reminderBlockRe.ReplaceAllString(text, "")) == ""
 }
 
 // transcriptSize is the transcript's size in bytes, the turn end a Stop

@@ -115,6 +115,20 @@ final class NotDeliveredModelTests: XCTestCase {
         XCTAssertEqual(refused.detail, "Today 10:00", "a refused row shows its time only")
     }
 
+    /// R32 (relay client Phase 3, mockup 7.7): an action the hub's move to Relay left behind says only that, in the
+    /// Mac's name; its Retry stays.
+    func testHubOnRelaySubLine() throws {
+        let model = try model([
+            item("relay", .boardTargetStatus, entity: "workbench_target-415", seq: 1, reason: .hubOnRelay),
+            item("refused", .sessionStop, entity: "terminal_session-10", seq: 2, at: now.addingTimeInterval(-2 * 3_600))
+        ])
+        XCTAssertEqual(model.rows.map(\.detail), ["Acme Mac runs over Relay now", "Today 10:00"])
+        let nameless = NotDeliveredModel(
+            items: [item("relay", .sessionStop, entity: nil, reason: .hubOnRelay)], snapshot: try demoSnapshot(now: now),
+            macName: "", now: now, calendar: .current, retrying: [], errors: [:])
+        XCTAssertEqual(nameless.rows.first?.detail, "Your Mac runs over Relay now")
+    }
+
     func testTheDismissAllConfirmationCountsTheActions() throws {
         let two = try model([
             item("a", .sessionStop, entity: "terminal_session-10", seq: 1),

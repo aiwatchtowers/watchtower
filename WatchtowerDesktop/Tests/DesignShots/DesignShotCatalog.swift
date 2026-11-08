@@ -4,7 +4,7 @@ import SwiftUI
 import XCTest
 @testable import DesignKitCatalog
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 
 /// One rendered shot of the Desktop design kit's reference screens (style
@@ -43,6 +43,16 @@ enum DesignShotCatalog {
             DesignShot(name: "sessions-panel", size: NSSize(width: 300, height: 140)) {
                 AnyView(DesignShotFixtures.sessionsPanel())
             },
+            // U6 (spec 2026-11-05 §3.5): Working beside Working · not watched.
+            DesignShot(name: "session-state-not-watched", size: NSSize(width: 320, height: 0)) {
+                DesignShotFixtures.sessionNotWatched()
+            },
+            DesignShot(name: "session-drag-preview", size: NSSize(width: 300, height: 140)) {
+                DesignShotFixtures.sessionDragPreview(width: 276, busy: false)
+            },
+            DesignShot(name: "session-drag-preview-narrow-busy", size: NSSize(width: 190, height: 140)) {
+                DesignShotFixtures.sessionDragPreview(width: 166, busy: true)
+            },
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
@@ -61,6 +71,15 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
                 AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-composer-ollama-capabilities", size: NSSize(width: 620, height: 0)) {
+                AnyView(ProviderCapabilitiesShotFixtures.ollamaComposer().shotFrame().detailBackground())
+            },
+            DesignShot(name: "workchat-hold-caption", size: NSSize(width: 560, height: 0)) {
+                AnyView(SessionCapsShotFixtures.workchatHoldCaption().shotFrame().detailBackground())
+            },
+            DesignShot(name: "settings-notifications-idle-caption", size: NSSize(width: 620, height: 240)) {
+                AnyView(SessionCapsShotFixtures.notificationSettings().shotFrame().panelBackground())
             },
             DesignShot(name: "workchat-activity-busy", size: NSSize(width: 720, height: 400)) {
                 AnyView(WorkchatLiveProposalShot(model: .busy, narrow: false, agentsOpen: false))
@@ -357,6 +376,11 @@ enum DesignShotCatalog {
             DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
                 SpecReviewShotFixtures.strips()
             },
+            // A question raised from the terminal: the reason as a caption,
+            // the question once, on its card.
+            DesignShot(name: "ask-raised-from-chat", size: NSSize(width: 560, height: 520)) {
+                AnyView(RaisedAskShotFixtures.drawerTop().shotFrame().detailBackground())
+            },
             // Approve / Request changes (#964, mockup 3).
             DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
                 ReviewShotFixtures.approvePopover()
@@ -381,6 +405,16 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "analytics-statistics", size: NSSize(width: 900, height: 1340)) {
                 StatisticsShotFixtures.screen()
+            },
+            // Codex sessions on the Analytics pane (U4, board #975).
+            DesignShot(name: "analytics-codex-blocks", size: NSSize(width: 900, height: 1340)) {
+                CodexAnalyticsShotFixtures.blocks()
+            },
+            DesignShot(name: "analytics-codex-sessions", size: NSSize(width: 900, height: 260)) {
+                CodexAnalyticsShotFixtures.sessions()
+            },
+            DesignShot(name: "analytics-codex-sessions-narrow", size: NSSize(width: 480, height: 260)) {
+                CodexAnalyticsShotFixtures.sessions()
             },
             DesignShot(name: "analytics-coach-edit-sheet", size: NSSize(width: 520, height: 320)) {
                 CoachShotFixtures.screen(.editSheet)
@@ -418,7 +452,7 @@ enum DesignShotCatalog {
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
             }
-        ] + CleanupShotFixtures.Frame.allCases.map { frame in
+        ] + ProviderFallbackShotFixtures.shots + ProviderFallbackShotFixtures.runtimeShots + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
                 CleanupShotFixtures.screen(frame)
@@ -586,6 +620,53 @@ enum DesignShotFixtures {
             .panelSurface()
             Color.clear.detailBackground()
         })
+    }
+
+    /// Two live codex sessions' state lines: one watched, one the session
+    /// host cannot watch (U6), as the sessions panel and the strip draw them.
+    static func sessionNotWatched() -> AnyView {
+        let rows: [(String, SessionSwitcherPresentation.State)] = [
+            ("Billing export", .init(kind: .working, live: true)),
+            ("Login redirect", .init(kind: .working, live: true, watchIssue: "compressed"))
+        ]
+        return AnyView(VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 6) {
+                    SessionLiveDot(state: row.1)
+                    Text(row.0).lineLimit(1)
+                    Spacer(minLength: 8)
+                    SessionStateLabel(state: row.1)
+                }
+            }
+        }
+        .padding(12)
+        .shotFrame()
+        .panelBackground())
+    }
+
+    /// The same preview wrapper and row as a live drag, including a title
+    /// much wider than the narrow panel. No live session or VM is needed.
+    static func sessionDragPreview(width: CGFloat, busy: Bool) -> AnyView {
+        let session = TerminalSession(
+            id: 42, projectID: 1, kind: .codex,
+            title: "acme billing export and invoice reconciliation",
+            titleSource: .user, folderPath: "/tmp/acme",
+            createdAt: "2026-10-01T12:00:00Z", lastActiveAt: "2026-10-01T12:00:00Z"
+        )
+        let row = SessionSwitcherPresentation.Row(
+            session: session, state: busy ? .live(.working) : .notStarted,
+            caption: busy ? "Working" : "Not running", badge: nil, shortcut: nil
+        )
+        let content = TerminalSessionRow(
+            row: row, actions: SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }),
+            reportLine: "#42 · 3/5", reportProgress: 0.6, opensIn: .chat
+        )
+        .panelTab(isSelected: true)
+        let height = ViewRenderProbe.fittingHeight(AnyView(content), width: width)
+        return AnyView(SessionRowDragPreview(size: CGSize(width: width, height: height)) { content }
+            .padding(Spacing.medium)
+            .shotFrame()
+            .panelBackground())
     }
 
     // MARK: - Chat

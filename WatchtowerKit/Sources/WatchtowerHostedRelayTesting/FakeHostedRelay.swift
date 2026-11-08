@@ -6,6 +6,8 @@ import WatchtowerRelayProto
 /// In-memory relay following relay@3a99bd7 `proto/README.md` (R20; where the
 /// README is silent, the Worker's code at that commit). Thread-safe (one lock);
 /// time from a `ManualRelayClock`, so TTLs run when the test advances it.
+/// "Vouched hubs" follows relay@bcca870 (`vouch_hub`, the pending vouch, `HUB_NOT_VOUCHED`
+/// and the hub gate; `FakeHostedRelay+Accounts.swift`).
 ///
 /// The network seams (`http`, `sockets`, the blob store) are in `FakeHostedRelay+Network.swift`,
 /// the faults in `FakeHostedRelay+Faults.swift`.
@@ -161,6 +163,7 @@ public final class FakeHostedRelay: @unchecked Sendable {
     }
 
     private func runSessionOp(_ op: Relay_V1_Request.OneOf_Op, _ session: Session) throws -> Relay_V1_Response {
+        try refuseUnvouched(op, session)
         switch op {
         case .save(let save):
             return try self.save(save.items, session)
@@ -256,6 +259,8 @@ enum RelayTTL {
     static let loginNonce: TimeInterval = 60
     static let session: TimeInterval = 15 * 60
     static let pairingSlot: TimeInterval = 600
+    /// A phone's pending vouch for a hub (Worker `VOUCH_TTL_MS`).
+    static let vouch: TimeInterval = 600
     static let presignedURL: TimeInterval = 15 * 60
     static let mailbox: TimeInterval = 14 * 86_400
     static let tombstone: TimeInterval = 30 * 86_400
@@ -277,6 +282,8 @@ extension FakeHostedRelay {
         var devices: [String: Device] = [:]
         /// Single-use login nonces by device: nonce → expiry.
         var loginNonces: [String: [Data: Date]] = [:]
+        /// Single-use `VOUCH` nonces by phone: nonce → expiry.
+        var vouchNonces: [String: [Data: Date]] = [:]
         var sessions: [String: Session] = [:]
         /// By account id.
         var accounts: [String: Account] = [:]

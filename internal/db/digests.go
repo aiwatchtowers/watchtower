@@ -14,8 +14,49 @@ import (
 // UpsertDigest inserts or replaces a digest based on the unique constraint
 // (channel_id, type, period_from, period_to).
 func (db *DB) UpsertDigest(d Digest) (int64, error) {
-	_, err := db.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	return db.upsertDigest(d, "")
+}
+
+// UpsertDailyDigestAttempt atomically commits the daily output and its local
+// completion receipt. Ordinary upserts preserve this receipt. It is deliberately
+// absent from Digest and wire/replica DTOs.
+func (db *DB) UpsertDailyDigestAttempt(d Digest, attemptID string) (int64, error) {
+	if d.Type != "daily" || d.ChannelID != "" || attemptID == "" {
+		return 0, fmt.Errorf("invalid daily digest attempt")
+	}
+	return db.upsertDigest(d, attemptID)
+}
+
+// DailyDigestAttemptCompleted proves this exact claim committed, irrespective
+// of source freshness, row id, timestamp precision or byte-identical output.
+func (db *DB) DailyDigestAttemptCompleted(from, to float64, attemptID string) (bool, error) {
+	var completed bool
+	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM digests WHERE channel_id = '' AND type = 'daily' AND period_from = ? AND period_to = ? AND daily_attempt_id = ? AND daily_attempt_id != '')`, from, to, attemptID).Scan(&completed)
+	if err != nil {
+		return false, fmt.Errorf("checking daily digest attempt: %w", err)
+	}
+	return completed, nil
+}
+
+func (db *DB) upsertDigest(d Digest, dailyAttemptID string) (int64, error) {
+	id, err := upsertDigestRow(db.DB, d, dailyAttemptID)
+	if err != nil {
+		return 0, err
+	}
+	if d.Situations != "" && d.Situations != "[]" {
+		db.populateDigestParticipants(id, d.Situations)
+	}
+	return id, nil
+}
+
+type digestStore interface {
+	Exec(string, ...any) (sql.Result, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
+func upsertDigestRow(store digestStore, d Digest, dailyAttemptID string) (int64, error) {
+	_, err := store.Exec(`INSERT INTO digests (channel_id, type, period_from, period_to, summary, topics, decisions, action_items, people_signals, situations, running_summary, message_count, model, input_tokens, output_tokens, cost_usd, daily_attempt_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(channel_id, type, period_from, period_to) DO UPDATE SET
 			summary = excluded.summary,
 			topics = excluded.topics,
@@ -29,24 +70,20 @@ func (db *DB) UpsertDigest(d Digest) (int64, error) {
 			input_tokens = excluded.input_tokens,
 			output_tokens = excluded.output_tokens,
 			cost_usd = excluded.cost_usd,
+			daily_attempt_id = CASE WHEN excluded.daily_attempt_id != '' THEN excluded.daily_attempt_id ELSE digests.daily_attempt_id END,
 			created_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`,
 		d.ChannelID, d.Type, d.PeriodFrom, d.PeriodTo,
 		d.Summary, d.Topics, d.Decisions, d.ActionItems, d.PeopleSignals, d.Situations, d.RunningSummary,
-		d.MessageCount, d.Model, d.InputTokens, d.OutputTokens, d.CostUSD)
+		d.MessageCount, d.Model, d.InputTokens, d.OutputTokens, d.CostUSD, dailyAttemptID)
 	if err != nil {
 		return 0, fmt.Errorf("upserting digest: %w", err)
 	}
 	// LastInsertId is unreliable for ON CONFLICT DO UPDATE; query the row explicitly.
 	var id int64
-	err = db.QueryRow(`SELECT id FROM digests WHERE channel_id = ? AND type = ? AND period_from = ? AND period_to = ?`,
+	err = store.QueryRow(`SELECT id FROM digests WHERE channel_id = ? AND type = ? AND period_from = ? AND period_to = ?`,
 		d.ChannelID, d.Type, d.PeriodFrom, d.PeriodTo).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("getting digest id after upsert: %w", err)
-	}
-
-	// Auto-populate digest_participants from situations
-	if d.Situations != "" && d.Situations != "[]" {
-		db.populateDigestParticipants(id, d.Situations)
 	}
 
 	return id, nil
@@ -510,6 +547,112 @@ func (db *DB) ChannelsWithMessagesInRange(slackAccountID int64, from, to float64
 		return nil, fmt.Errorf("querying channels with messages in range: %w", err)
 	}
 	return candidates, nil
+}
+
+// ChannelDigestPeriod is one channel digest's id and its period
+// (From, To], the messages it was written from.
+type ChannelDigestPeriod struct {
+	ID        int64
+	ChannelID string
+	From, To  float64
+}
+
+// ChannelDigestsOverlapping returns every channel digest of the Slack
+// account's channels (namespaced ids, see ChannelsWithMessagesInRange) whose
+// period (period_from, period_to] overlaps (from, to], ordered by channel and
+// period_from.
+func (db *DB) ChannelDigestsOverlapping(slackAccountID int64, from, to float64) ([]ChannelDigestPeriod, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`SELECT id, channel_id, period_from, period_to FROM digests
+		WHERE type = 'channel' AND period_from < ? AND period_to > ?
+		  AND substr(channel_id, 1, ?) = ?
+		ORDER BY channel_id, period_from`, to, from, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("querying channel digests in range: %w", err)
+	}
+	defer rows.Close()
+	var out []ChannelDigestPeriod
+	for rows.Next() {
+		var d ChannelDigestPeriod
+		if err := rows.Scan(&d.ID, &d.ChannelID, &d.From, &d.To); err != nil {
+			return nil, fmt.Errorf("querying channel digests in range: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying channel digests in range: %w", err)
+	}
+	return out, nil
+}
+
+// MaxDigestID returns the highest digests.id, 0 for an empty table. Ids are
+// AUTOINCREMENT, so a digest written later always has a higher one.
+func (db *DB) MaxDigestID() (int64, error) {
+	var id int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM digests`).Scan(&id); err != nil {
+		return 0, fmt.Errorf("reading the highest digest id: %w", err)
+	}
+	return id, nil
+}
+
+// ChannelMessageTimesInRange returns, per channel of the Slack account, the
+// ts_unix of each of its messages in (from, to], ascending.
+func (db *DB) ChannelMessageTimesInRange(slackAccountID int64, from, to float64) (map[string][]float64, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`SELECT channel_id, ts_unix FROM messages
+		WHERE ts_unix > ? AND ts_unix <= ? AND substr(channel_id, 1, ?) = ?
+		ORDER BY channel_id, ts_unix`, from, to, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("querying message times in range: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]float64{}
+	for rows.Next() {
+		var ch string
+		var ts float64
+		if err := rows.Scan(&ch, &ts); err != nil {
+			return nil, fmt.Errorf("querying message times in range: %w", err)
+		}
+		out[ch] = append(out[ch], ts)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying message times in range: %w", err)
+	}
+	return out, nil
+}
+
+// ChannelForwardMarks returns, for each channel of the Slack account that
+// has one, the high-water mark the forward digest starts after: the later of
+// its newest channel digest's period_to and channels.digest_considered_ts
+// (the mark ChannelsWithUndigestedMessages compares against). A channel with
+// neither is absent; the forward digest starts it at the first-run lookback.
+func (db *DB) ChannelForwardMarks(slackAccountID int64) (map[string]float64, error) {
+	prefix := strconv.FormatInt(slackAccountID, 10) + ":"
+	rows, err := db.Query(`SELECT channel_id, MAX(mark) FROM (
+			SELECT channel_id, MAX(period_to) AS mark FROM digests
+			WHERE type = 'channel' AND substr(channel_id, 1, ?) = ?
+			GROUP BY channel_id
+			UNION ALL
+			SELECT id, digest_considered_ts FROM channels
+			WHERE digest_considered_ts > 0 AND substr(id, 1, ?) = ?
+		) GROUP BY channel_id`, len(prefix), prefix, len(prefix), prefix)
+	if err != nil {
+		return nil, fmt.Errorf("querying channel forward marks: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var ch string
+		var mark float64
+		if err := rows.Scan(&ch, &mark); err != nil {
+			return nil, fmt.Errorf("querying channel forward marks: %w", err)
+		}
+		out[ch] = mark
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("querying channel forward marks: %w", err)
+	}
+	return out, nil
 }
 
 // GetDigestDecisionsForChannel returns individual decisions from digests

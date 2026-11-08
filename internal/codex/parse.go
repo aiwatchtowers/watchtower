@@ -1,5 +1,11 @@
 package codex
 
+import (
+	"encoding/json"
+
+	"watchtower/internal/llmusage"
+)
+
 // CodexEvent represents a single JSONL event from the Codex CLI --json output.
 type CodexEvent struct {
 	Type     string      `json:"type"` // thread.started, turn.started, turn.completed, item.started, item.completed, error
@@ -18,6 +24,46 @@ type CodexItem struct {
 	Type    string `json:"type"`    // agent_message, command_execution, mcp_tool_call
 	Content string `json:"content"` // older Codex CLI versions
 	Text    string `json:"text"`    // newer Codex CLI versions (v0.118+)
+	// Status is a tool item's state: in_progress, completed, failed (and
+	// declined for a command_execution).
+	Status string `json:"status"`
+
+	// mcp_tool_call: the server and tool, the call's arguments, and its
+	// result or error.
+	Server    string            `json:"server"`
+	Tool      string            `json:"tool"`
+	Arguments json.RawMessage   `json:"arguments"`
+	Result    *CodexToolResult  `json:"result"`
+	ToolError *CodexItemFailure `json:"error"`
+
+	// command_execution: the shell command, its output and exit code.
+	Command          string `json:"command"`
+	AggregatedOutput string `json:"aggregated_output"`
+	ExitCode         *int   `json:"exit_code"`
+
+	// web_search: the query (empty on the item.started line) and the pages
+	// found.
+	Query   string           `json:"query"`
+	Results []CodexWebResult `json:"results"`
+}
+
+// CodexWebResult is one page a web_search item found.
+type CodexWebResult struct {
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// CodexToolResult is an mcp_tool_call's result: MCP content blocks.
+type CodexToolResult struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// CodexItemFailure is a failed mcp_tool_call's error.
+type CodexItemFailure struct {
+	Message string `json:"message"`
 }
 
 // MessageText returns the agent message text, preferring Text over Content
@@ -37,6 +83,20 @@ type CodexUsage struct {
 	OutputTokens      int `json:"output_tokens"`
 }
 
+// freshInput is the input not served from codex's cache: InputTokens minus
+// CachedInputTokens (at most InputTokens). The run budget debits it, and the
+// ledger records it as fresh input (docs/features/automations.md#budgets).
+func (t *CodexUsage) freshInput() int {
+	return t.InputTokens - min(t.CachedInputTokens, t.InputTokens)
+}
+
+// tokens is the usage as a block: fresh input, the cached part as cache
+// reads, output; codex reports no cache writes and no cost.
+func (t *CodexUsage) tokens() llmusage.Tokens {
+	fresh := t.freshInput()
+	return llmusage.Tokens{Input: int64(fresh), CacheRead: int64(t.InputTokens - fresh), Output: int64(t.OutputTokens)}
+}
+
 // add sums u into the receiver.
 func (t *CodexUsage) add(u *CodexUsage) {
 	t.InputTokens += u.InputTokens
@@ -46,5 +106,9 @@ func (t *CodexUsage) add(u *CodexUsage) {
 
 // CodexError holds error information from a Codex CLI call.
 type CodexError struct {
-	Message string `json:"message"`
+	Type     string `json:"type"`
+	Code     string `json:"code"`
+	Status   int    `json:"status"`
+	ResetsAt int64  `json:"resets_at"`
+	Message  string `json:"message"`
 }

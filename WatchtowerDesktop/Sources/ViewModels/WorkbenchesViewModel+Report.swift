@@ -56,6 +56,18 @@ extension WorkbenchesViewModel {
         return min(max(Double(summary.done) / Double(summary.total), 0), 1)
     }
 
+    /// The mini bar's merged share, drawn after the done share (board #986):
+    /// tasks not done whose branch is merged into their parent's; 0 when
+    /// none is, or the summary has no line for the session.
+    func reportMergedProgress(sessionID: Int64, projectID: Int64) -> Double {
+        Self.reportMergedProgress(sessionReports?.summaries[projectID], sessionID: sessionID)
+    }
+
+    static func reportMergedProgress(_ snapshot: SummarySnapshot?, sessionID: Int64) -> Double {
+        guard let summary = snapshot?.value?[sessionID] else { return 0 }
+        return SessionReportPresentation.mergedFraction(merged: summary.merged, total: summary.total)
+    }
+
     /// A workbench's session rows came on screen (the panel): their list
     /// reloads and the center runs their report lines once more.
     func sessionRowsAppeared(projectID: Int64) async {

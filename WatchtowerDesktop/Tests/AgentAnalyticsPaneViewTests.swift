@@ -161,7 +161,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(all.contains("$15.50"))
         XCTAssertTrue(all.contains("2"), "sessions")
         XCTAssertTrue(all.contains("1.0") && all.contains("avg · peak 1"), "\(all)")
-        XCTAssertTrue(all.contains("1 call priced by estimate"), "\(all)")
+        XCTAssertTrue(all.contains("1 call with no price"), "\(all)")
     }
 
     func testTimeBreakdownLegendAndFootnote() throws {

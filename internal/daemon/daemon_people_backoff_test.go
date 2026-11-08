@@ -3,10 +3,12 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,11 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/guide"
+	"watchtower/internal/providerhealth"
+	"watchtower/internal/providerrouting"
+	"watchtower/internal/providers"
 )
 
 // peopleBackoffTestSetup wires a people pipeline whose every AI call fails over
@@ -134,4 +140,111 @@ func TestDaemon_PeopleBackoff_ResetsNextCalendarDay(t *testing.T) {
 		d.phasePeopleCards(context.Background())
 	}
 	assert.Equal(t, 2*maxDailyAIAttempts, gen.calls, "the new day's own full budget, then nothing")
+}
+
+// Both the metadata-only wait and quota discovered by real router attempts
+// preserve the on-disk poison budget, including its old calendar date.
+func TestDaemon_PeopleProviderDeferredPreservesPersistentMarkers(t *testing.T) {
+	for _, known := range []bool{true, false} {
+		t.Run(fmt.Sprintf("known=%v", known), func(t *testing.T) {
+			d, database, _ := peopleBackoffTestSetup(t)
+			cfg := d.config
+			cfg.AI.Provider = "claude"
+			cfg.AI.Fallback.Enabled = true
+			cfg.AI.Fallback.Provider = "codex"
+			store := providerhealth.New(t.TempDir(), nil)
+			if known {
+				for _, p := range []string{"claude", "codex"} {
+					require.NoError(t, store.RecordQuota(context.Background(), providerhealth.AccountScope(p, ""), &providers.Failure{Provider: p, Category: providers.Quota}))
+				}
+			}
+			calls := 0
+			factory := func(p string) digest.Generator {
+				return deferredPeopleLeaf{call: func() error { calls++; return &providers.Failure{Provider: p, Category: providers.Quota} }}
+			}
+			gen := providerrouting.WrapGenerator(cfg, factory("claude"), factory, providerrouting.GeneratorOptions{Router: &providerrouting.Router{Health: store, Allowed: func(string) error { return nil }}})
+			d.SetPeoplePipeline(guide.New(database, cfg, gen, d.logger))
+			oldDate := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+			require.NoError(t, saveAttemptMarker(d.peopleAttemptsPath(), attemptMarker{date: oldDate, attempts: 2}))
+			d.loadPeopleAttempts()
+			before, err := os.ReadFile(d.peopleAttemptsPath())
+			require.NoError(t, err)
+			d.phasePeopleCards(context.Background())
+			after, err := os.ReadFile(d.peopleAttemptsPath())
+			require.NoError(t, err)
+			require.Equal(t, before, after)
+			require.Equal(t, oldDate, d.peopleAttemptDate)
+			require.Equal(t, 2, d.peopleAttempts)
+			require.True(t, d.lastPeople.IsZero())
+			_, err = os.Stat(d.lastPeoplePath())
+			require.ErrorIs(t, err, os.ErrNotExist)
+			for _, id := range []string{"U1", "U2"} {
+				card, err := database.GetLatestPeopleCard(id)
+				require.NoError(t, err)
+				require.Nil(t, card)
+			}
+			if known {
+				require.Zero(t, calls)
+				var rows int
+				require.NoError(t, database.QueryRow("SELECT count(*) FROM pipeline_runs WHERE pipeline='people'").Scan(&rows))
+				require.Zero(t, rows)
+			} else {
+				require.Equal(t, 2, calls)
+				require.Equal(t, guide.OutcomeDeferred, d.peoplePipe.LastOutcome())
+			}
+			restarted := newDaemon(nil, cfg)
+			restarted.loadPeopleAttempts()
+			require.Equal(t, oldDate, restarted.peopleAttemptDate)
+			require.Equal(t, 2, restarted.peopleAttempts)
+		})
+	}
+}
+
+type deferredPeopleLeaf struct{ call func() error }
+
+func (g deferredPeopleLeaf) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	return "", nil, "", g.call()
+}
+
+type successfulPeopleLeaf struct{ batchCalls int }
+
+func (g *successfulPeopleLeaf) RoutingPreflight(context.Context) error { return nil }
+func (g *successfulPeopleLeaf) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+	source, _ := digest.SourceFromContext(ctx)
+	if source != "people.batch" {
+		return `{"summary":"team"}`, nil, "", nil
+	}
+	g.batchCalls++
+	return `[{"user_id":"U1","summary":"summary"},{"user_id":"U2","summary":"summary"}]`, nil, "", nil
+}
+func TestDaemon_PeopleStampFailureKeepsPendingWindowAndMemory(t *testing.T) {
+	d, database, _ := peopleBackoffTestSetup(t)
+	gen := &successfulPeopleLeaf{}
+	d.SetPeoplePipeline(guide.New(database, d.config, gen, d.logger))
+	// An existing directory makes the final atomic rename fail without touching
+	// permissions or depending on running as a particular OS user.
+	require.NoError(t, os.Mkdir(d.lastPeoplePath(), 0o700))
+	d.phasePeopleCards(context.Background())
+	require.True(t, d.lastPeople.IsZero(), "a failed stamp must not advance the in-memory throttle")
+	require.Zero(t, d.peopleAttempts, "a stamp write failure is not poisoned input")
+	require.Equal(t, 1, gen.batchCalls)
+	pendingPath := filepath.Join(d.config.WorkspaceDir(), "people_pending_window.json")
+	before, err := os.ReadFile(pendingPath)
+	require.NoError(t, err)
+	var status string
+	require.NoError(t, database.QueryRow("SELECT status FROM pipeline_runs WHERE pipeline='people' ORDER BY id DESC LIMIT 1").Scan(&status))
+	require.Equal(t, "error", status)
+	require.NoError(t, os.Remove(d.lastPeoplePath()))
+	restarted := newDaemon(nil, d.config)
+	restarted.SetLogger(d.logger)
+	restarted.SetDB(database)
+	restarted.SetPeoplePipeline(guide.New(database, d.config, gen, d.logger))
+	restarted.phasePeopleCards(context.Background())
+	require.Equal(t, 1, gen.batchCalls, "committed cards must not be regenerated after stamp failure")
+	require.False(t, restarted.lastPeople.IsZero())
+	_, err = os.Stat(pendingPath)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	var descriptor struct{ StartedAt time.Time }
+	require.NoError(t, json.Unmarshal(before, &descriptor))
+	require.Equal(t, descriptor.StartedAt, restarted.lastPeople)
 }

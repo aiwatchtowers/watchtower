@@ -81,7 +81,7 @@ func activeBuiltins(synced, moved map[string]bool) map[string]bool {
 // slotBackends are the slot executor's backends: automationBackends with the
 // daemon's built-in primitives and the shipped default prompts.
 func slotBackends(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen digest.Generator) automations.Backends {
-	b := automationBackends(cfg, database, gen)
+	b := routingBackends(cfg, database, gen)
 	b.Primitives = d.BuiltinPrimitives()
 	b.DefaultPrompt = builtin.DefaultPromptFunc
 	return b
@@ -169,7 +169,7 @@ func cliBuiltinBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 	brief.SetPromptStore(prompts.New(database, nil))
 	plan := dayplan.New(database, cfg, gen, logger)
 	plan.SetPromptStore(prompts.New(database, nil))
-	b := automationBackends(cfg, database, gen)
+	b := routingBackends(cfg, database, gen)
 	b.Primitives = builtin.MorningBriefPrimitives(brief, plan, builtin.MorningBriefHooks{
 		Owner: database.RequireOwner,
 		Items: func(planID int64) (int, error) {

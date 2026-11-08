@@ -15,14 +15,14 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--provider", "codex"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--provider", "codex"])
     }
 
     func testBuildArgsAddsTheBareOwnerInstructionsFlagOnlyWhenAsked() {
         let on = WatchtowerAIService.buildArgs(
             dbPath: nil, model: nil, provider: nil, toolMode: nil, ownerInstructions: true
         )
-        XCTAssertEqual(on, ["ai", "query", "--prompt-stdin", "--owner-instructions"])
+        XCTAssertEqual(on, ["ai", "query", "--prompt-stdin", "--events", "v2", "--owner-instructions"])
         let off = WatchtowerAIService.buildArgs(
             dbPath: nil, model: nil, provider: nil, toolMode: nil, ownerInstructions: false
         )
@@ -59,7 +59,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--model", "gpt-5.4", "--provider", "codex"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--model", "gpt-5.4", "--provider", "codex"])
     }
 
     func testBuildArgsEmitsChatToolModeFlags() {
@@ -67,7 +67,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
         let args = WatchtowerAIService.buildArgs(
             dbPath: "/tmp/w.db", model: nil, provider: nil, toolMode: mode
         )
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db",
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--db-path", "/tmp/w.db",
                               "--tools", "chat", "--surface", "target", "--conversation", "7", "--turn", "t1",
                               "--context-type", "target", "--context-id", "42"])
     }
@@ -85,7 +85,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertFalse(args.contains { $0.contains(secret) || $0.contains("OWNER-TEXT") })
         XCTAssertFalse(args.contains("--system-prompt"))
         XCTAssertFalse(args.contains("--"))
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--provider", "codex"])
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--provider", "codex"])
 
         let payload = WatchtowerAIService.stdinPayload(prompt: message, systemPrompt: secret)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: String])
@@ -136,7 +136,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: "/tmp/w.db", model: nil,
             provider: "codex", toolMode: nil, readFolder: "/work/acme"
         )
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db", "--provider", "codex",
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--db-path", "/tmp/w.db", "--provider", "codex",
                               "--read-folder", "/work/acme"])
         XCTAssertFalse(args.contains("--tools"))
     }
@@ -147,7 +147,7 @@ final class WatchtowerAIServiceTests: XCTestCase {
             dbPath: "/tmp/w.db", model: "m", provider: "claude",
             toolMode: nil
         )
-        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--db-path", "/tmp/w.db",
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--db-path", "/tmp/w.db",
                               "--model", "m", "--provider", "claude"])
         XCTAssertEqual(WatchtowerAIService.buildArgs(
             dbPath: "/tmp/w.db", model: "m", provider: "claude",
@@ -160,43 +160,56 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertEqual(mode.cliArgs, ["--tools", "chat", "--surface", "main", "--conversation", "3", "--turn", "x"])
     }
 
-    // MARK: - parseLine reset contract (the pre-tool preamble fix)
+    // MARK: - parseLine: `ai query --events v2`
 
-    /// A "reset" event clears the accumulator and surfaces `.reset`, so the
-    /// pre-tool preamble ("I need to check…first.") is dropped and never glues
-    /// onto the post-tool answer streamed after it.
-    func testParseLineResetClearsAccumulatorAndEmitsReset() {
-        let service = WatchtowerAIService()
-        var acc = ""
-
-        _ = service.parseLine(#"{"type":"text","text":"I need to check first."}"#, accumulatedText: &acc)
-        XCTAssertEqual(acc, "I need to check first.")
-
-        let ev = service.parseLine(#"{"type":"reset"}"#, accumulatedText: &acc)
-        guard case .reset = ev else {
-            return XCTFail("expected .reset, got \(String(describing: ev))")
-        }
-        XCTAssertEqual(acc, "", "the preamble must be discarded on reset")
-
-        // Text after the reset rebuilds the answer from scratch.
-        _ = service.parseLine(#"{"type":"text","text":"Here is the answer."}"#, accumulatedText: &acc)
-        XCTAssertEqual(acc, "Here is the answer.")
+    /// Every embedded chat asks for protocol v2 — the main chat's events, so
+    /// claude and codex tool calls reach it as steps, with the turn's usage.
+    func testBuildArgsAlwaysAsksForTheV2Events() {
+        let args = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil)
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2"])
     }
 
-    // MARK: - parseLine error line
+    /// A tool call between two messages: both texts stay (no reset in v2,
+    /// CHAT-02), the call becomes a start and an end, and the usage arrives.
+    func testParseLineMapsTheV2TurnOntoStreamEvents() {
+        let lines = [
+            #"{"type":"turn_start","turn_id":"query"}"#,
+            #"{"type":"text_delta","turn_id":"query","text":"Let me check."}"#,
+            #"{"type":"tool_start","turn_id":"query","id":"t1","name":"list_targets","args":{"limit":3}}"#,
+            #"{"type":"tool_end","turn_id":"query","id":"t1","ok":true,"summary":"3 targets"}"#,
+            #"{"type":"text_delta","turn_id":"query","text":"\n\nFound it."}"#,
+            #"{"type":"usage","turn_id":"query","model":"gpt-x","tokens_in":50,"tokens_out":7}"#,
+            #"{"type":"turn_done","turn_id":"query","status":"complete"}"#
+        ]
+        let events = lines.compactMap(WatchtowerAIService.parseLine)
+        XCTAssertEqual(events.count, 5, "turn_start and turn_done carry nothing an embedded chat keeps")
+        var reducer = EmbeddedStreamReducer()
+        for event in events { _ = reducer.apply(event) }
+        XCTAssertEqual(reducer.text, "Let me check.\n\nFound it.", "text streamed before the tool call is kept")
+        guard case .toolStart(let start) = events[1] else { return XCTFail("expected .toolStart, got \(events[1])") }
+        XCTAssertEqual(start, ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: #"{"limit":3}"#))
+        guard case .toolEnd(let end) = events[2] else { return XCTFail("expected .toolEnd, got \(events[2])") }
+        XCTAssertEqual(end, ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "3 targets", sources: []))
+        guard case .usage(let usage) = events[4] else { return XCTFail("expected .usage, got \(events[4])") }
+        XCTAssertEqual(usage, ChatUsage(turnID: "query", tokensIn: 50, tokensOut: 7, model: "gpt-x"))
+    }
 
-    /// `ai query` reports a provider failure as a v1 `error` line and exits 0:
-    /// it surfaces as `.error` with the provider's own text, never as reply text.
-    func testParseLineErrorEmitsErrorEvent() {
-        let service = WatchtowerAIService()
-        var acc = "partial answer"
+    /// A v1 `reset` line means nothing in v2: it never wipes the text.
+    func testParseLineIgnoresTheV1Shapes() {
+        XCTAssertNil(WatchtowerAIService.parseLine(#"{"type":"reset"}"#))
+        XCTAssertNil(WatchtowerAIService.parseLine(#"{"type":"text","text":"x"}"#))
+        XCTAssertNil(WatchtowerAIService.parseLine("not json"))
+    }
 
-        let ev = service.parseLine(#"{"type":"error","error":"claude: not logged in"}"#, accumulatedText: &acc)
-        guard case .error(let message) = ev else {
-            return XCTFail("expected .error, got \(String(describing: ev))")
-        }
-        XCTAssertEqual(message, "claude: not logged in")
-        XCTAssertEqual(acc, "partial answer", "the error line never touches the turn's text")
+    /// The provider's failure is a typed `.failure` with its own text and
+    /// code, never reply text.
+    func testParseLineErrorIsATypedFailure() {
+        guard case .failure(let failure) = WatchtowerAIService.parseLine(
+            #"{"type":"error","turn_id":"query","code":"auth","message":"claude: not logged in","retryable":false}"#
+        ) else { return XCTFail("expected .failure") }
+        XCTAssertEqual(failure.code, .auth)
+        XCTAssertEqual(failure.message, "claude: not logged in")
+        XCTAssertFalse(failure.retryable)
     }
 
     /// Chats not yet on the embedded engine keep rendering `[Error] …` text.
@@ -206,5 +219,22 @@ final class WatchtowerAIServiceTests: XCTestCase {
         }
         XCTAssertEqual(text, "[Error] boom")
         guard case .reset = StreamEvent.reset.foldingErrorIntoText else { return XCTFail("expected .reset") }
+    }
+}
+
+extension WatchtowerAIServiceTests {
+    func testTypedQuotaAndActualRoutingAreNotDiscarded() throws {
+        guard case .failure(let failure) = WatchtowerAIService.parseLine("""
+            {"type":"error","turn_id":"query","message":"Quota reached","code":"rate_limit","reason":"quota_exhausted","retryable":false}
+            """) else { return XCTFail("typed failure was discarded") }
+        XCTAssertEqual(failure.persistenceCode, "quota_exhausted")
+        XCTAssertFalse(EmbeddedChatErrorClassifier.classify(failure).retryable)
+        guard case let .routing(provider, model, routing) = WatchtowerAIService.parseLine("""
+            {"type":"session_ready","provider":"codex","model":"actual-model","preferred_provider":"claude",
+             "routing_mode":"preferred_reserve","reason":"quota_exhausted"}
+            """) else { return XCTFail("actual metadata was discarded") }
+        XCTAssertEqual(provider, "codex")
+        XCTAssertEqual(model, "actual-model")
+        XCTAssertEqual(routing?.preferredProvider, "claude")
     }
 }

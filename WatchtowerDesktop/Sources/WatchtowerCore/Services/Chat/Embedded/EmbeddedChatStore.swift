@@ -13,15 +13,36 @@ package protocol EmbeddedChatStore: AnyObject {
     /// empty `partial` placeholder, atomically.
     /// `provider` is stamped on the reply row (the error card's sign-in hint).
     func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64)
+    func actions(turnID: String) throws -> [AgentAction]
+    func saveActual(messageID: Int64, provider: String, model: String) async throws
     func saveProgress(messageID: Int64, text: String) async throws
     /// `status`: complete | partial | error. A `complete` reply also touches
     /// the conversation (its `updated_at` orders the target's tabs).
     func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws
     @discardableResult
     func append(role: String, text: String) async throws -> Int64
+    /// A reply's tool step, written as it starts and as it ends (CHAT-02's
+    /// "as it happens" for a database chat), and the turn's usage (written
+    /// just before the reply's final state).
+    func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws
+    func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws
+    func saveUsage(messageID: Int64, usage: ChatUsage) async throws
+    /// The stored steps of these replies, by message id.
+    func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]]
     /// The `sqlite` path handed to `ai query --db-path`; nil for a chat that
     /// reads no workspace data.
     var dbPath: String? { get }
+}
+
+extension EmbeddedChatStore {
+    package func actions(turnID: String) throws -> [AgentAction] { [] }
+    package func saveActual(messageID: Int64, provider: String, model: String) async throws {}
+    // A store that keeps no steps or usage (the memory store: its steps are
+    // shown while the turn runs, and a finished row has none).
+    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {}
+    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {}
+    package func saveUsage(messageID: Int64, usage: ChatUsage) async throws {}
+    package func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]] { [:] }
 }
 
 /// The existing `chat_messages`/`chat_conversations` columns, unchanged.
@@ -38,6 +59,21 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
     }
 
     package var dbPath: String? { dbPool.path }
+
+    package func actions(turnID: String) throws -> [AgentAction] {
+        try dbPool.read { db in
+            try AgentActionQueries.fetchByConversation(db, conversationID: conversationID).filter { $0.turnID == turnID }
+        }
+    }
+
+    package func saveActual(messageID: Int64, provider: String, model: String) async throws {
+        guard !provider.isEmpty else { return }
+        let conversationID = conversationID
+        try await dbPool.write { db in
+            try db.execute(sql: "UPDATE chat_messages SET provider = ?, model = ? WHERE id = ? AND conversation_id = ?",
+                           arguments: [provider, model, messageID, conversationID])
+        }
+    }
 
     /// The conversation a context already has, read at once (no write, so
     /// no waiting on the write lock); nil when it has none yet.
@@ -93,6 +129,30 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
                 """, arguments: [toContextType, contextID, now, conversationID])
             return db.changesCount > 0
         }
+    }
+
+    package func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
+        try await dbPool.write { db in
+            try ChatStepQueries.upsertStart(db, messageID: messageID, seq: seq, toolID: start.id, name: start.name,
+                                            argsJSON: start.argsJSON, startedAt: date.timeIntervalSince1970)
+        }
+    }
+
+    package func stepFinished(messageID: Int64, end: ChatToolEnd, at date: Date) async throws {
+        try await dbPool.write { db in
+            try ChatStepQueries.finish(db, messageID: messageID, toolID: end.id, ok: end.ok, summary: end.summary,
+                                       sourcesJSON: ChatSource.encodeList(end.sources), endedAt: date.timeIntervalSince1970)
+        }
+    }
+
+    package func saveUsage(messageID: Int64, usage: ChatUsage) async throws {
+        try await dbPool.write { db in
+            try ChatMessageQueries.saveEmbeddedUsage(db, messageID: messageID, usage: usage)
+        }
+    }
+
+    package func steps(messageIDs: [Int64]) throws -> [Int64: [ChatTurnStep]] {
+        try dbPool.read { db in try ChatStepQueries.fetch(db, messageIDs: messageIDs) }
     }
 
     package func loadMessages() throws -> [ChatMessageRecord] {
@@ -158,17 +218,26 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
         return (ownerID, assistantID)
     }
 
+    package func saveActual(messageID: Int64, provider: String, model: String) async throws {
+        guard !provider.isEmpty else { return }
+        try update(messageID) { row in
+            ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: row.text, createdAt: row.createdAt,
+                              turnID: row.turnID, status: row.status, provider: provider, model: model,
+                              errorCode: row.errorCode, errorMessage: row.errorMessage)
+        }
+    }
+
     package func saveProgress(messageID: Int64, text: String) async throws {
         try update(messageID) { row in
             ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: text, createdAt: row.createdAt,
-                              turnID: row.turnID, status: row.status, provider: row.provider)
+                              turnID: row.turnID, status: row.status, provider: row.provider, model: row.model)
         }
     }
 
     package func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws {
         try update(messageID) { row in
             ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: text, createdAt: row.createdAt,
-                              turnID: row.turnID, status: status, provider: row.provider,
+                              turnID: row.turnID, status: status, provider: row.provider, model: row.model,
                               errorCode: errorCode, errorMessage: errorMessage)
         }
     }

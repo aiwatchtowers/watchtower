@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
+	"watchtower/internal/providers"
 	"watchtower/internal/skills"
 	"watchtower/internal/tools"
 )
@@ -77,12 +78,13 @@ const otherProviderClaudeAILine = "Publishing to claude.ai and claude.ai connect
 const noPastePromptRule = "Never tell the owner to paste a prompt into claude.ai."
 
 // claudeAIPublishing is the On section's publishing part; it takes the
-// publish dir (%s). It overrides the ARTIFACTS contract for pages, decks and
-// docs only — that contract's text stays as it is (CHAT-05).
+// publish dir (%s). Pages, decks and docs stay in-app artifacts unless the
+// owner asks for claude.ai; then it overrides the ARTIFACTS contract for that
+// page, deck or doc only — that contract's text stays as it is (CHAT-05).
 const claudeAIPublishing = claudeAIHeader + `
 You can publish private pages, slide decks and documents to the owner's claude.ai account.
 Publishing:
-- In this chat a page, a deck or a document the owner asks for is published to claude.ai instead of an in-app html or document artifact, unless the owner asks to keep it in the app: pages and decks with the Artifact tool, documents with Claude Docs when that connector is connected (else as a page). Drafts to send (email, Slack, invite), tables, code and long answers stay in-app artifacts; every other ARTIFACTS rule still holds.
+- Pages, decks and documents stay in-app html or document artifacts by default; the app shows them itself. Publish to claude.ai only when the owner explicitly asks for it (names claude.ai or a Claude Doc): pages and decks with the Artifact tool, documents with Claude Docs when that connector is connected (else as a page). A change to a page or doc already published in this chat goes to the same link. Drafts to send (email, Slack, invite), tables, code and long answers always stay in-app artifacts; every other ARTIFACTS rule still holds.
 - Write the page's source file with the Write tool at an absolute path inside %s only, then publish that file by that path. To revise it, write the whole file again and publish it to the same link. Any other path is refused.
 - Published pages and docs are private to the owner. After publishing, answer with the link and one line on what it is.
 - ` + noPastePromptRule + ` When the owner asks for something on claude.ai and the Artifact tool is in your tool list, make it with it — never say you cannot create it there. If the tool is missing, or a publish is refused or fails, say so and give the content as an in-app artifact.`
@@ -424,21 +426,21 @@ func writeProjectTextFiles(b *strings.Builder, files []db.ChatProjectFile) {
 	}
 }
 
-// writeProjectBinaryFiles names the binaries: attached on the Claude backend
-// as far as they fit in one message's encoded cap on their own (the
-// backend's projectBlocks fits them in the same order, but after the owner's
-// own files — a turn whose files leave less room says so in its text),
-// unavailable on any other provider.
+// writeProjectBinaryFiles names the binaries: attached by a transport that
+// takes images and PDFs (the Claude backend) as far as they fit in one
+// message's encoded cap on their own (the backend's projectBlocks fits them
+// in the same order, but after the owner's own files — a turn whose files
+// leave less room says so in its text), unavailable on any other.
 func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, provider string) {
 	if len(files) == 0 {
 		return
 	}
-	if provider != "" && provider != "claude" {
+	if !AttachesProjectFiles(providers.CapsOf(provider)) {
 		names := make([]string, len(files))
 		for i, f := range files {
 			names[i] = f.Name
 		}
-		b.WriteString("Not available in this session (images and PDFs need the Claude provider): " +
+		b.WriteString("Not available in this session (project images and PDFs need a provider that reads both): " +
 			strings.Join(names, ", ") + "\n")
 		return
 	}
@@ -461,3 +463,9 @@ func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, pro
 			MaxTurnAttachmentEncodedBytes>>20, strings.Join(tooLarge, ", "))
 	}
 }
+
+// AttachesProjectFiles reports whether a transport with caps c gets a
+// project's images and PDFs: one that reads both (the Claude backend
+// attaches them to a session's first turn); the routed session's check
+// reads it too.
+func AttachesProjectFiles(c providers.Capabilities) bool { return c.Images && c.PDFs }

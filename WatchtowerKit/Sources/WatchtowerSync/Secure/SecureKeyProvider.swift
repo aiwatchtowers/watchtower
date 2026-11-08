@@ -38,6 +38,16 @@ public protocol SecureKeyProvider: Sendable {
     func deviceSigner() throws -> Curve25519.Signing.PrivateKey
     func hubAgreementPublicKey() throws -> Curve25519.KeyAgreement.PublicKey
     func linkNonce() throws -> Data
+    /// Phone only: the device's agreement key, which opens a keybox sealed to its `dev_kx`.
+    func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey
+    /// Phone only: the hub's signing key (`hub_sig`), which signs every keybox.
+    func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey
+}
+
+extension SecureKeyProvider {
+    /// A hub provider has neither (relay client Phase 3 added them for the phone's switch keybox).
+    public func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { throw SecureTransportError.wrongRole }
+    public func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey { throw SecureTransportError.wrongRole }
 }
 
 public enum SecureTransportError: Error, Equatable {

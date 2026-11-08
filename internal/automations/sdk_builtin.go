@@ -414,14 +414,14 @@ func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, er
 		pc := PrimitiveCall{Name: name, BuiltinID: builtinIDOf(env), Prompt: args.prompt, Args: maps.Clone(args.extra),
 			Trigger: env.Trigger, Input: input, Role: role}
 		var res PrimitiveResult
-		err = env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
+		err = env.meteredAttempts(step, func(ctx context.Context) (ModelUsage, error) {
 			var err error
 			res, err = fn(ctx, pc)
 			if err == nil && res.Status != primitiveDone && res.Status != primitiveSkipped {
 				err = fmt.Errorf("%s returned status %q (want %q or %q)", name, res.Status, primitiveDone, primitiveSkipped)
 			}
 			if err != nil {
-				return primitiveUsage(res.Usage), &SDKError{Name: ErrNamePrimitiveFailed, Message: err.Error()}
+				return primitiveUsage(res.Usage), modelCallError(err, ErrNamePrimitiveFailed, "")
 			}
 			return primitiveUsage(res.Usage), nil
 		})
