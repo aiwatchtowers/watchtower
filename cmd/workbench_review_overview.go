@@ -129,10 +129,6 @@ func runSessionReviewOverview(cmd *cobra.Command) error {
 // or — unless --cached-only — makes the model call and caches it.
 func answerReviewOverview(aiCtx, ctx context.Context, cmd *cobra.Command, database *db.DB, p *db.Workbench, repo *reviewdiff.Repo,
 	tree, base string, in reviewai.Input) error {
-	lenses, _ := reviewdiff.LoadLenses(p.FolderPath)
-	for _, l := range lenses {
-		in.LensIDs = append(in.LensIDs, l.ID)
-	}
 	hash := reviewai.IntentHash(in.Intent, in.Notes)
 	if js, ok, err := database.ReviewOverviewJSON(p.ID, tree, base, hash); err != nil {
 		return failReview(cmd, err)
