@@ -27,7 +27,7 @@ struct SpecReviewMeaningView<AskContext: View>: View {
                     SpecReviewSummaryView(
                         brief: result.brief,
                         theses: result.theses,
-                        onDiscuss: threads == nil ? nil : { _ in },
+                        onDiscuss: threads.map { threads in { threads.open($0.key) } },
                         onReadSpec: onReadSpec.map { read in { _ in read() } }
                     )
                 }

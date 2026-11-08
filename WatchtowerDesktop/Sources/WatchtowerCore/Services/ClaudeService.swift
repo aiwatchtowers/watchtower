@@ -41,7 +41,8 @@ package protocol AIServiceProtocol: Sendable {
     /// runs it; a test double that does not model it falls back to the run
     /// without a folder. `ownerInstructions` is the bare `--owner-instructions`
     /// flag (the CLI adds the owner's chat instructions to the system prompt;
-    /// it carries no content).
+    /// it carries no content). `purpose` is `--purpose`, the usage ledger's
+    /// tag for the run's calls (nil = none).
     func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -51,7 +52,8 @@ package protocol AIServiceProtocol: Sendable {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        ownerInstructions: Bool
+        ownerInstructions: Bool,
+        purpose: String?
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -75,11 +77,12 @@ extension AIServiceProtocol {
             provider: provider,
             toolMode: toolMode,
             readFolder: readFolder,
-            ownerInstructions: false
+            ownerInstructions: false,
+            purpose: nil
         )
     }
 
-    /// A double that models neither flag runs without both.
+    /// A double that models none of the three flags runs without them.
     package func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -89,7 +92,8 @@ extension AIServiceProtocol {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        ownerInstructions: Bool
+        ownerInstructions: Bool,
+        purpose: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,

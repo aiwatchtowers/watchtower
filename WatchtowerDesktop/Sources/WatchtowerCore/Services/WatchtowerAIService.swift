@@ -18,7 +18,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
                model: model, provider: provider, toolMode: toolMode, readFolder: nil,
-               ownerInstructions: false)
+               ownerInstructions: false, purpose: nil)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -31,7 +31,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        ownerInstructions: Bool
+        ownerInstructions: Bool,
+        purpose: String?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
@@ -49,6 +50,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         toolMode: toolMode,
                         readFolder: readFolder,
                         ownerInstructions: ownerInstructions,
+                        purpose: purpose,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -119,13 +121,16 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// resolves, or refuses with exit 2); it never comes with a tool mode —
     /// the CLI refuses the pair. `ownerInstructions` adds the bare
     /// `--owner-instructions` flag (no content: the CLI reads the texts).
+    /// `purpose` adds `--purpose P`, the usage ledger's tag for the run's
+    /// calls (the CLI refuses a value it does not know).
     package static func buildArgs(
         dbPath: String?,
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String? = nil,
-        ownerInstructions: Bool = false
+        ownerInstructions: Bool = false,
+        purpose: String? = nil
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin"]
 
@@ -146,6 +151,9 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         if ownerInstructions {
             args.append("--owner-instructions")
+        }
+        if let purpose, !purpose.isEmpty {
+            args += ["--purpose", purpose]
         }
         return args
     }
@@ -196,6 +204,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         toolMode: ChatToolMode?,
         readFolder: String?,
         ownerInstructions: Bool,
+        purpose: String?,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -207,7 +216,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             provider: provider,
             toolMode: toolMode,
             readFolder: readFolder,
-            ownerInstructions: ownerInstructions
+            ownerInstructions: ownerInstructions,
+            purpose: purpose
         )
 
         let process = Process()

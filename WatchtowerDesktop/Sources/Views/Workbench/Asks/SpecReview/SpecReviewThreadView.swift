@@ -3,16 +3,22 @@ import WatchtowerCore
 
 /// One row of a Discuss thread, in the order it happened (spec 2026-11-08
 /// §3): the owner's words, the assistant's replies, a question the
-/// assistant put to the author, and a finding it proposes.
+/// assistant put to the author, a finding it proposes, a line from
+/// Watchtower, and a reply that failed.
 enum SpecReviewThreadEntry: Identifiable {
     case owner(id: String, text: String)
     case assistant(id: String, text: String)
     case question(SpecReviewQuestionRow)
     case finding(id: String, SpecReviewProposedFinding)
+    case notice(id: String, text: String)
+    /// The embedded chat's error card: what went wrong, the provider's own
+    /// text, and Retry on the last failed reply while nothing runs.
+    case failed(id: String, message: String, detail: String?, canRetry: Bool)
 
     var id: String {
         switch self {
-        case let .owner(id, _), let .assistant(id, _), let .finding(id, _): id
+        case let .owner(id, _), let .assistant(id, _), let .finding(id, _), let .notice(id, _): id
+        case let .failed(id, _, _, _): id
         case let .question(row): "question:\(row.id)"
         }
     }
@@ -28,15 +34,25 @@ struct SpecReviewThreadContent {
     /// The item is gone after a re-run: "from the previous run", readable
     /// only.
     var isOrphaned = false
+    /// The owner's and the assistant's finished messages on disk, for the
+    /// folded line of a thread not loaded in this screen yet.
+    var persistedMessageCount = 0
+    /// The owner's message waits for a free slot (3 embedded turns at once).
+    var isQueued = false
+    /// The thread is being opened (its conversation and the reviewer's data).
+    var isOpening = false
+    /// Opening the thread failed; **Retry** opens it again.
+    var loadError: String?
 
     /// "thread · N": the owner's and the assistant's messages.
     var messageCount: Int {
-        entries.filter {
+        let loaded = entries.filter {
             switch $0 {
             case .owner, .assistant: true
-            case .question, .finding: false
+            case .question, .finding, .notice, .failed: false
             }
         }.count
+        return entries.isEmpty ? persistedMessageCount : loaded
     }
 }
 
@@ -46,8 +62,17 @@ struct SpecReviewThreadContent {
 struct SpecReviewThreads {
     /// An item's thread by key; an empty one when none was started.
     let thread: (String) -> SpecReviewThreadContent
-    var send: (_ key: String, _ text: String) -> Void = { _, _ in }
+    /// False when the thread did not take the message (it stays in the
+    /// composer).
+    var send: (_ key: String, _ text: String) -> Bool = { _, _ in true }
     var addToReview: (_ key: String, _ finding: SpecReviewProposedFinding) -> Void = { _, _ in }
+    /// **Discuss** or the folded line: the thread opens (its conversation,
+    /// the reviewer's data); again after a failure.
+    var open: (_ key: String) -> Void = { _ in }
+    /// **Hide**: the thread folds; a reply in flight keeps going.
+    var hide: (_ key: String) -> Void = { _ in }
+    var retry: (_ key: String) -> Void = { _ in }
+    var stop: (_ key: String) -> Void = { _ in }
 }
 
 extension EnvironmentValues {
@@ -55,9 +80,13 @@ extension EnvironmentValues {
 }
 
 /// Whether a card shows its thread: as the thread itself says (open when
-/// it was left open), or as the owner set it with **Discuss** / **Hide**.
+/// it was left open), or as the owner set it — **Discuss** (the composer
+/// takes the focus), the folded line, **Hide**.
 enum SpecReviewThreadVisibility {
-    case auto, shown, hidden
+    case auto, shown, discussed, hidden
+
+    /// The owner asked for it: open it.
+    var isRequested: Bool { self == .shown || self == .discussed }
 }
 
 /// A card's thread under its buttons: open, or folded to its "thread · N"
@@ -71,16 +100,28 @@ struct SpecReviewCardThreadSection: View {
     var body: some View {
         if let threads {
             let content = threads.thread(key)
-            if visibility == .shown || (visibility == .auto && content.isOpen) {
-                SpecReviewThreadView(
-                    content: content,
-                    placeholder: placeholder,
-                    onSend: { threads.send(key, $0) },
-                    onAddToReview: { threads.addToReview(key, $0) },
-                    onHide: { visibility = .hidden }
-                )
-            } else if content.messageCount > 0 {
-                SpecReviewThreadFoldedLine(count: content.messageCount) { visibility = .shown }
+            Group {
+                if visibility.isRequested || (visibility == .auto && content.isOpen) {
+                    SpecReviewThreadView(
+                        content: content,
+                        placeholder: placeholder,
+                        autoFocus: visibility == .discussed,
+                        onSend: { threads.send(key, $0) },
+                        onAddToReview: { threads.addToReview(key, $0) },
+                        onHide: {
+                            visibility = .hidden
+                            threads.hide(key)
+                        },
+                        onRetry: { threads.retry(key) },
+                        onStop: { threads.stop(key) },
+                        onReopen: { threads.open(key) }
+                    )
+                } else if content.messageCount > 0 {
+                    SpecReviewThreadFoldedLine(count: content.messageCount) { visibility = .shown }
+                }
+            }
+            .onChange(of: visibility) { _, new in
+                if new.isRequested { threads.open(key) }
             }
         }
     }
@@ -110,9 +151,15 @@ struct SpecReviewThreadFoldedLine: View {
 struct SpecReviewThreadView: View {
     let content: SpecReviewThreadContent
     var placeholder = "Ask about this finding"
-    let onSend: (String) -> Void
+    /// The composer takes the focus: on an explicit **Discuss** press only.
+    var autoFocus = false
+    let onSend: (String) -> Bool
     let onAddToReview: (SpecReviewProposedFinding) -> Void
     let onHide: () -> Void
+    var onRetry: () -> Void = {}
+    var onStop: () -> Void = {}
+    /// Opens a thread whose opening failed again.
+    var onReopen: () -> Void = {}
     @State private var draft = ""
 
     var body: some View {
@@ -130,7 +177,26 @@ struct SpecReviewThreadView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             ForEach(content.entries) { row($0) }
-            if content.isReplying {
+            if let error = content.loadError {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Tone.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: Spacing.regular)
+                    Button("Retry", action: onReopen).buttonStyle(.kitSecondary).controlSize(.small)
+                }
+            } else if content.isOpening {
+                HStack(spacing: Spacing.compact) {
+                    ProgressView().controlSize(.mini)
+                    Text("Opening the discussion…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if content.isQueued {
+                Text("Queued: other chats are replying. It starts when one finishes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if content.isReplying {
                 HStack(spacing: Spacing.compact) {
                     ProgressView().controlSize(.mini)
                     Text("The assistant is replying…").font(.caption).foregroundStyle(.secondary)
@@ -139,11 +205,13 @@ struct SpecReviewThreadView: View {
             if !content.isOrphaned {
                 ChatComposerField(
                     text: $draft,
-                    isStreaming: content.isReplying,
+                    isStreaming: content.isReplying || content.isQueued,
                     onSend: send,
+                    onStop: onStop,
                     placeholder: placeholder,
-                    autoFocus: true
+                    autoFocus: autoFocus
                 )
+                .disabled(content.isOpening || content.loadError != nil)
             }
         }
         .padding(Spacing.regular)
@@ -165,14 +233,32 @@ struct SpecReviewThreadView: View {
             SpecReviewAuthorQuestionRow(question: question)
         case let .finding(_, finding):
             SpecReviewProposedFindingCard(finding: finding) { onAddToReview(finding) }
+        case let .notice(_, text):
+            Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        case let .failed(_, message, detail, canRetry):
+            HStack(alignment: .top, spacing: Spacing.compact) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Tone.error)
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    if let detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
+                Spacer(minLength: Spacing.regular)
+                if canRetry {
+                    Button("Retry", action: onRetry).buttonStyle(.kitSecondary).controlSize(.small)
+                }
+            }
+            .padding(Spacing.regular)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .card()
         }
     }
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !content.isReplying else { return }
-        draft = ""
-        onSend(text)
+        guard !text.isEmpty, !content.isReplying, !content.isQueued else { return }
+        if onSend(text) { draft = "" }
     }
 }
 

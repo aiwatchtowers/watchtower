@@ -29,6 +29,17 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertFalse(off.contains("--owner-instructions"))
     }
 
+    func testBuildArgsPurpose() {
+        let tagged = WatchtowerAIService.buildArgs(
+            dbPath: nil, model: nil, provider: nil, toolMode: nil, purpose: "spec_review.discuss"
+        )
+        XCTAssertEqual(tagged, ["ai", "query", "--prompt-stdin", "--purpose", "spec_review.discuss"])
+        for none in [nil, ""] as [String?] {
+            let args = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil, purpose: none)
+            XCTAssertFalse(args.contains("--purpose"))
+        }
+    }
+
     func testBuildArgsOmitsProviderFlagWhenNil() {
         let args = WatchtowerAIService.buildArgs(
             dbPath: nil,

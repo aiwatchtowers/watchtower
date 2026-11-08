@@ -78,11 +78,24 @@ final class SpecReviewModel {
     /// The footer's Approve asked to confirm (unmarked findings, or an
     /// unanswered dispute after an early end).
     var confirmingApprove = false
+    /// The Discuss threads opened on this screen, by item key (spec
+    /// 2026-11-08 §3); their chats live in `chats`.
+    private(set) var threadStates: [String: SpecReviewThreadState] = [:]
+    /// The questions the threads' agent put to the author (Go writes them).
+    private(set) var threadQuestions: [SpecReviewQuestionRow] = []
+    /// Item key → the finished messages its thread holds on disk.
+    private(set) var threadMessageCounts: [String: Int] = [:]
 
     @ObservationIgnored let ask: OwnerAsk
-    @ObservationIgnored private let dbPool: DatabasePool
-    @ObservationIgnored private let cli: WorkbenchCLI
+    @ObservationIgnored let dbPool: DatabasePool
+    @ObservationIgnored let cli: WorkbenchCLI
     @ObservationIgnored private let asks: OwnerAsksViewModel
+    /// The app's embedded chats; nil: this screen has no Discuss threads.
+    @ObservationIgnored let chats: EmbeddedChatCenter?
+    /// The provider a thread opens on: the configured one, at its strong tier.
+    @ObservationIgnored var configuredProvider: () -> AIProvider = {
+        AIProvider.fromConfig(ConfigService().aiProvider)
+    }
     @ObservationIgnored private let pollInterval: Duration
     @ObservationIgnored private let sleep: (Duration) async throws -> Void
     @ObservationIgnored private let now: () -> Date
@@ -96,6 +109,7 @@ final class SpecReviewModel {
         dbPool: DatabasePool,
         cli: WorkbenchCLI,
         asks: OwnerAsksViewModel,
+        chats: EmbeddedChatCenter? = nil,
         pollInterval: Duration = .seconds(3),
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         now: @escaping () -> Date = Date.init
@@ -105,6 +119,7 @@ final class SpecReviewModel {
         self.dbPool = dbPool
         self.cli = cli
         self.asks = asks
+        self.chats = chats
         self.pollInterval = pollInterval
         self.sleep = sleep
         self.now = now
@@ -133,7 +148,9 @@ final class SpecReviewModel {
             }
         } catch {
             lastError = "Could not read the spec review: \(error.localizedDescription)"
+            return
         }
+        await loadThreads()
     }
 
     var isReviewerActive: Bool { row?.status == .queued || row?.status == .running }
@@ -361,10 +378,10 @@ final class SpecReviewModel {
     /// label (spec 2026-11-08 §2): a finished loop's dispute, fix or
     /// unanswered finding; a finding added from a thread; an agreement the
     /// document matches; a check with a concern (fixable) or without one
-    /// (to verify — one the reviewer found not applicable shows no buttons
-    /// at all, `SpecReviewPresentation.checkCardKind`); a thesis. Anything
-    /// else is a finding to act on.
-    func cardKind(for key: String) -> SpecReviewCardKind {
+    /// (to verify); a thesis. Anything else is a finding to act on. Nil for a
+    /// check the reviewer found not applicable: it has no buttons at all
+    /// (`SpecReviewPresentation.checkCardKind`).
+    func cardKind(for key: String) -> SpecReviewCardKind? {
         if isLoop, let row {
             if SpecReviewLoop.disputed(row).contains(where: { $0.item.key == key }) { return .dispute }
             if SpecReviewLoop.unanswered(row).contains(where: { $0.item.key == key }) { return .unanswered }
@@ -376,7 +393,7 @@ final class SpecReviewModel {
             return SpecReviewPresentation.cardKind(for: .agreement(agreement))
         }
         if let check = result.checks.first(where: { $0.key == key }) {
-            return SpecReviewPresentation.checkCardKind(answer: check.answer) ?? .checkToVerify
+            return SpecReviewPresentation.checkCardKind(answer: check.answer)
         }
         if result.theses.contains(where: { $0.key == key }) { return .thesis }
         return .actionable
@@ -511,5 +528,228 @@ final class SpecReviewModel {
         case .approved: pressApprove()
         default: break
         }
+    }
+}
+
+/// One Discuss thread as this screen holds it: whether it is drawn open,
+/// and what its chat runs on once it was opened.
+struct SpecReviewThreadState {
+    var isOpen = false
+    /// Its conversation and the reviewer's data are being fetched.
+    var isOpening = false
+    /// Opening failed (the conversation or `thread-context`); **Retry**
+    /// opens it again.
+    var loadError: String?
+    var context: SpecReviewThreadContext?
+    var conversationID: Int64?
+}
+
+// MARK: - Discuss threads (spec 2026-11-08 §3)
+
+extension SpecReviewModel {
+    /// The threads for the screen's environment; nil without the app's
+    /// embedded chats (no **Discuss** then).
+    var threads: SpecReviewThreads? {
+        guard chats != nil else { return nil }
+        return SpecReviewThreads(
+            thread: { [self] in threadContent($0) },
+            send: { [self] key, text in threadEngine(key)?.send(text) ?? false },
+            open: { [self] in openThread($0) },
+            hide: { [self] in threadStates[$0]?.isOpen = false },
+            retry: { [self] in threadEngine($0)?.retry() },
+            stop: { [self] in threadEngine($0)?.stop() }
+        )
+    }
+
+    /// The thread's conversation key (`SpecReviewThreadKey`).
+    func threadContextID(_ itemKey: String) -> String {
+        SpecReviewThreadKey.contextID(workbenchID: ask.projectID, rootAskID: rootAskID, itemKey: itemKey)
+    }
+
+    /// Every item a thread can be about: the result's findings and checks,
+    /// its theses, the loop's ledger and the findings added from a thread.
+    var threadItemKeys: [String] {
+        var keys = threadFindings.map(\.key) + (row?.ledger.map(\.item.key) ?? [])
+        if let result = row?.result { keys += result.findings.map(\.key) + result.theses.map(\.key) }
+        return keys
+    }
+
+    /// The item is gone after a re-run: its thread is readable only.
+    func isOrphanedItem(_ key: String) -> Bool {
+        !threadItemKeys.contains(key)
+    }
+
+    /// **Discuss** (or the folded line): the thread is drawn open, and on
+    /// its first opening its conversation is found or created and the
+    /// reviewer's data fetched (once; a failure shows **Retry**).
+    func openThread(_ key: String) {
+        guard chats != nil else { return }
+        var state = threadStates[key] ?? SpecReviewThreadState()
+        state.isOpen = true
+        let needsPreparing = state.context == nil && !state.isOpening
+        if needsPreparing {
+            state.isOpening = true
+            state.loadError = nil
+        }
+        threadStates[key] = state
+        if needsPreparing { Task { await prepareThread(key) } }
+    }
+
+    private func prepareThread(_ key: String) async {
+        let askID = ask.id
+        let sessionID = ask.sessionID
+        let workbenchID = ask.projectID
+        do {
+            let conversationID = try await SpecReviewThreadSurface.conversationID(
+                workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool)
+            // An orphaned item's thread only shows what it holds: nothing to fetch.
+            let orphaned = isOrphanedItem(key)
+            let data = orphaned ? "" : try await cli.specReviewThreadContext(askID: askID, itemKey: key)
+            let folders = try await dbPool.read { db in
+                try SpecReviewThreadQueries.readFolders(db, sessionID: sessionID, workbenchID: workbenchID)
+            }
+            let context = SpecReviewThreadContext(
+                workbenchID: workbenchID, rootAskID: rootAskID, askID: askID, itemKey: key, data: data,
+                folder: SpecReviewThreadSurface.readFolder(sessionCwd: folders.sessionCwd,
+                                                           workbenchFolder: folders.workbenchFolder),
+                provider: configuredProvider(),
+                // The chat outlives this screen in the app's center: once the
+                // screen is gone, the item stands as it was when opened.
+                isOrphaned: { [weak self] in self?.isOrphanedItem(key) ?? orphaned },
+                onReply: { [weak self] question, finding in
+                    self?.threadReplied(key: key, question: question, finding: finding)
+                }
+            )
+            threadStates[key, default: SpecReviewThreadState()].context = context
+            threadStates[key]?.conversationID = conversationID
+            threadStates[key]?.isOpening = false
+            _ = threadEngine(key)
+        } catch {
+            threadStates[key, default: SpecReviewThreadState()].isOpening = false
+            threadStates[key]?.loadError = "Couldn't open the discussion: \(error.localizedDescription)"
+        }
+    }
+
+    /// The thread's chat once it was opened, from the app's center (created
+    /// again there if the idle sweep let it go).
+    func threadEngine(_ key: String) -> EmbeddedChatEngine? {
+        guard let chats, let state = threadStates[key], let context = state.context,
+              let conversationID = state.conversationID else { return nil }
+        return chats.engine(for: SpecReviewThreadSurface.spec(context: context, conversationID: conversationID,
+                                                              dbPool: dbPool))
+    }
+
+    /// A completed thread reply's blocks: a question for the author, a
+    /// proposed finding. The proposal is shown from the stored reply; the
+    /// question's row and the message count are read again once the reply
+    /// is saved (this runs before the engine's final write).
+    func threadReplied(key: String, question: String?, finding: SpecReviewProposedFinding?) {
+        let engine = threadEngine(key)
+        Task {
+            await engine?.finished()
+            await loadThreads()
+        }
+    }
+
+    /// Reads the threads' questions and message counts for every item on
+    /// the screen.
+    func loadThreads() async {
+        let byContext = Dictionary(threadItemKeys.map { (threadContextID($0), $0) }) { first, _ in first }
+        let contextIDs = Array(byContext.keys)
+        do {
+            let (questions, counts) = try await dbPool.read { db in
+                (try SpecReviewThreadQueries.questions(db, threads: contextIDs),
+                 try SpecReviewThreadQueries.messageCounts(db, contextIDs: contextIDs))
+            }
+            var byKey: [String: Int] = [:]
+            for (contextID, count) in counts { if let key = byContext[contextID] { byKey[key] = count } }
+            if questions != threadQuestions { threadQuestions = questions }
+            if byKey != threadMessageCounts { threadMessageCounts = byKey }
+        } catch {
+            lastError = "Could not read the discussions: \(error.localizedDescription)"
+        }
+    }
+
+    /// What `key`'s thread shows.
+    func threadContent(_ key: String) -> SpecReviewThreadContent {
+        var content = SpecReviewThreadContent()
+        content.isOrphaned = isOrphanedItem(key)
+        content.persistedMessageCount = threadMessageCounts[key] ?? 0
+        guard let state = threadStates[key] else { return content }
+        content.isOpen = state.isOpen
+        content.isOpening = state.isOpening
+        content.loadError = state.loadError
+        guard let engine = threadEngine(key) else { return content }
+        content.isQueued = engine.isQueued
+        content.isReplying = engine.isBusy
+        let contextID = threadContextID(key)
+        let retryID = engine.canRetry && !engine.isBusy
+            ? engine.messages.last { $0.message.role == "assistant" }?.id : nil
+        content.entries = Self.threadEntries(
+            messages: engine.messages.map(\.message),
+            liveText: { engine.liveTurn?.messageID == $0 ? engine.liveTurn?.text : nil },
+            questions: threadQuestions.filter { $0.thread == contextID },
+            retryID: retryID
+        )
+        return content
+    }
+
+    /// A thread's rows in order: the owner's words, the assistant's replies
+    /// with their blocks taken out (the running one with an open block
+    /// hidden), each reply's proposed finding and its question to the
+    /// author (the question's row, matched by its text; rows no reply names
+    /// come last), Watchtower's lines and failed replies.
+    static func threadEntries(
+        messages: [ChatMessageRecord],
+        liveText: (Int64) -> String?,
+        questions: [SpecReviewQuestionRow],
+        retryID: Int64?
+    ) -> [SpecReviewThreadEntry] {
+        var remaining = questions
+        var out: [SpecReviewThreadEntry] = []
+        for message in messages {
+            let id = "m\(message.id)"
+            switch message.role {
+            case "user":
+                out.append(.owner(id: id, text: message.text))
+            case "system":
+                out.append(.notice(id: id, text: message.text))
+            case "assistant":
+                if let live = liveText(message.id) {
+                    let text = SpecReviewThreadBlocks.parse(live, final: false).text
+                    if !text.isEmpty { out.append(.assistant(id: id, text: text)) }
+                } else if message.status == "error" || (message.status == "partial" && message.id == retryID) {
+                    // A partial row offered Retry is a reply whose error
+                    // could not be written over it.
+                    let failed = message.status == "error"
+                    out.append(.failed(
+                        id: id,
+                        message: failed ? ChatErrorPresentation.message(for: message.errorCode, provider: message.provider)
+                            : "The reply was not saved.",
+                        detail: ChatErrorPresentation.detail(message.errorMessage),
+                        canRetry: message.id == retryID && (!failed || ChatErrorPresentation.isRetryable(message.errorCode))
+                    ))
+                } else {
+                    // A stopped reply is never read for blocks.
+                    let blocks = SpecReviewThreadBlocks.parse(message.text, final: message.status == "complete")
+                    if !blocks.text.isEmpty { out.append(.assistant(id: id, text: blocks.text)) }
+                    if let finding = blocks.finding { out.append(.finding(id: "f\(message.id)", finding)) }
+                    if let question = blocks.question, let index = remaining.firstIndex(where: { $0.question == question }) {
+                        out.append(.question(remaining.remove(at: index)))
+                    }
+                }
+            default:
+                break
+            }
+        }
+        return out + remaining.map { .question($0) }
+    }
+
+    /// The thread's conversation title: the item's own line.
+    private func threadTitle(_ key: String) -> String {
+        if let finding = row?.result?.findings.first(where: { $0.key == key }) { return finding.text }
+        if let thesis = row?.result?.theses.first(where: { $0.key == key }) { return thesis.text }
+        if let entry = row?.ledger.first(where: { $0.item.key == key }) { return entry.item.text }
+        return threadFindings.first { $0.key == key }?.headline ?? key
     }
 }
