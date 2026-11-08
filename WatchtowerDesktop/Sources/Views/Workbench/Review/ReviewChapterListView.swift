@@ -9,13 +9,6 @@ struct ReviewChapterListView: View {
 
     var body: some View {
         List {
-            if model.aiChaptersPending {
-                HStack {
-                    Text("AI chapters are ready").font(.callout)
-                    Spacer(minLength: 4)
-                    Button("Use them") { model.useAIChapters() }.controlSize(.small)
-                }
-            }
             if model.chapters.isEmpty {
                 Text("No changes").foregroundStyle(.secondary)
             }

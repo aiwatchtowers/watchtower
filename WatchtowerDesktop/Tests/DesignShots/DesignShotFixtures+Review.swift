@@ -23,6 +23,19 @@ final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 }
 
+/// The streamed overview (board #1025): the scripted `overview` answer as its one line.
+extension ReviewStubRunner: CLIStreamingRunner {
+    func stream(args: [String]) async throws -> CLIStreamedRun {
+        let answer = try await run(args: args)
+        let line = (try? JSONSerialization.jsonObject(with: answer)).flatMap { try? JSONSerialization.data(withJSONObject: $0) } ?? answer
+        let output = AsyncStream<Data> { c in
+            c.yield(line + Data("\n".utf8))
+            c.finish()
+        }
+        return CLIStreamedRun(output: output, exit: { 0 }, stop: {})
+    }
+}
+
 /// Send's line goes nowhere: the fixtures never send.
 @MainActor
 private final class ReviewNoSink: ReviewLineSink {
@@ -97,6 +110,7 @@ struct ReviewFixture {
             "context": Self.contextJSON(context),
             "diff": Self.diffJSON(files),
             "diff-since": Self.diffJSON(sinceFiles ?? files),
+            "map": Self.mapJSON(files),
             "file": #"{"ok":true,"old":\#(Self.side("a")),"new":\#(Self.side("b"))}"#,
             "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#,
             "approve": #"{"ok":true,"sent":true,"line":"\#(ReviewDeliveryLine.approved(roundID: 2))"}"#
@@ -108,6 +122,7 @@ struct ReviewFixture {
     /// Opens the round and puts its first shown file on screen, as the pane does.
     func open() async {
         await model.open()
+        await model.mapTask?.value
         if let first = model.files.first(where: { $0.collapsedReason == nil }) { await model.select(first.path) }
     }
 
@@ -165,6 +180,21 @@ struct ReviewFixture {
     private static func contextJSON(_ items: [(id: Int64, text: String, intent: String)]) -> String {
         let entries = items.map { #"{"target_id":\#($0.id),"text":"\#($0.text)","intent":"\#($0.intent)"}"# }
         return #"{"ok":true,"items":[\#(entries.joined(separator: ","))]}"#
+    }
+
+    /// Go's map in the fixture's terms: one `dir:<dir>` chapter per directory, in path order.
+    private static func mapJSON(_ files: [File]) -> String {
+        var dirs: [String: [String]] = [:]
+        for file in files {
+            let dir = file.path.split(separator: "/").dropLast().joined(separator: "/")
+            dirs[dir, default: []].append(file.path)
+        }
+        let chapters = dirs.keys.sorted().map { dir -> String in
+            let paths = (dirs[dir] ?? []).map { path -> String in "\"\(path)\"" }.joined(separator: ",")
+            let title = dir.isEmpty ? "(root)" : dir
+            return #"{"key":"dir:\#(dir)","title":"\#(title)","level":"normal","paths":[\#(paths)]}"#
+        }
+        return #"{"ok":true,"map":{"chapters":[\#(chapters.joined(separator: ","))],"files":[]}}"#
     }
 
     private static func diffJSON(_ files: [File]) -> String {

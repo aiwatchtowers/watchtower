@@ -163,33 +163,49 @@ final class ReviewChangesModel {
 
     // The overview, the agent's notes, undo and answers (Plan 3).
     private(set) var overview: OverviewState = .idle
-    /// The overview's load; awaited by tests, replaced when another one starts.
+    /// The overview's task (a cached read, or the streamed run's reader);
+    /// awaited by tests, replaced when another one starts.
     @ObservationIgnored private(set) var overviewTask: Task<Void, Never>?
     /// The diff (base and tree, `ReviewRoundInfo.diffKey`) the overview shown
     /// or loading was asked for; a refresh that may regenerate asks again when
     /// the round's differs (after an Undo, or a move that changed only the base).
     private var overviewDiffKey: String?
-    /// The model call running (Make overview, Retry or Deep's own): a refresh
-    /// or an Undo never cancels it; one landing for an earlier tree is
-    /// followed up (board #585).
-    @ObservationIgnored private var generationID: UUID?
     /// The failure shown came from the model call, not from a cached read:
     /// Retry repeats whichever failed.
     private var failedGenerating = false
+
+    // The map and the streamed overview (board #1025, tech spec §3.5, §3.7, §5).
+    /// The round's map: chapters, levels and the file badges come from it.
+    private(set) var map: MapState = .loading
+    /// The map's load (on open, Refresh and `retryMap`); awaited by tests.
+    @ObservationIgnored private(set) var mapTask: Task<Void, Never>?
+    /// Per chapter key, how its description stands; absent = not asked for yet.
+    private(set) var chapterStates: [String: ChapterRunState] = [:]
+    private(set) var summaryState: ChapterRunState = .pending
+    /// The chapters the streamed runs described or failed, by key.
+    private(set) var streamedChapters: [String: ReviewStreamChapter] = [:]
+    /// Another run holds the branch's lock and this one waits: who (`desktop|agent|cli`, "" unknown).
+    private(set) var waitingFor: String?
+    /// When the running stream last printed a complete line (any line counts).
+    @ObservationIgnored private(set) var lastStreamLine: Date?
+    /// The one overview process of this session (tech spec §3.7).
+    @ObservationIgnored private var run: OverviewRun?
+    @ObservationIgnored private var silenceWatch: Task<Void, Never>?
+    /// Retries pressed while a run was going: one follow-up run after it.
+    @ObservationIgnored private var queuedChapters: [String] = []
+    @ObservationIgnored private var summaryQueued = false
+    /// The overview that starts once the map is in (none = nothing waits for it).
+    @ObservationIgnored private var overviewAfterMap: OverviewStart?
+    /// The silence timer's clock; a test swaps it.
+    @ObservationIgnored var streamClock: any ReviewStreamClock = SystemReviewStreamClock()
+
     /// The session's notes and chapters from the agent (`annotate_changes`).
     private(set) var notes: [ReviewNote] = []
     /// Where the selected file's notes sit on its new side; an unplaced note is absent.
     private(set) var notePlacements: [Int64: ReviewCommentAnchor.Placement] = [:]
-    /// AI chapters arrived while the owner had checks in the shown chapters: kept until `useAIChapters()`.
-    private(set) var aiChaptersPending = false
     private(set) var reverts: [ReviewRevert] = []
     /// Comments the agent answered and resolved (previous and open round), each with Reopen.
     private(set) var agentResolved: [ReviewComment] = []
-    /// The AI chapters in use (empty = none chosen yet).
-    private var appliedAIChapters: [ReviewChapterSpec] = []
-    /// The round's saved `ai:` chapter, waiting for its overview: it stays
-    /// the saved position until the AI chapters are back.
-    private var awaitedAIChapterKey: String?
     /// The last overview that loaded in this round: its coverage and risk
     /// stay while the next tree's overview loads.
     private var lastReadyOverview: ReviewOverview?
@@ -366,13 +382,8 @@ final class ReviewChangesModel {
             pace = ReviewPace(activeSeconds: info.activeSeconds)
             breakHintDismissed = false
             savedActiveSeconds = info.activeSeconds
-            overviewTask?.cancel()
-            generationID = nil
-            overview = .idle
-            aiChaptersPending = false
-            appliedAIChapters = []
-            lastReadyOverview = nil
-            awaitedAIChapterKey = info.chapterKey.hasPrefix("ai:") ? info.chapterKey : nil
+            resetOverview()
+            map = .loading
             try reloadNotes()
             try await loadDiff(info)
             let roundID = info.id
@@ -401,7 +412,8 @@ final class ReviewChangesModel {
             try reloadReverts()
             load = .ready
             noteInteraction()
-            startOverview()
+            // The overview starts once the map is in: never without one (tech spec §3.5).
+            startMap(info, then: .asMode)
             // The next round after a Send keeps the file on screen: its sides come from the new tree.
             if selectedPath != nil { await reloadSides() }
         } catch {
@@ -461,10 +473,18 @@ final class ReviewChangesModel {
             // A refresh that may regenerate asks when the overview was built
             // for another tree (also the one an earlier Undo left). After an
             // Undo, without an overview on screen a new one is asked for
-            // anyway. A model call still running is left to finish
-            // (`startOverview`), and followed up when it lands.
-            // An empty diff drops whatever overview is shown, Undo or not.
-            if !hasChanges || (regenerateOverview ? overviewDiffKey != info.diffKey : diffChanged && !overviewShown) { startOverview() }
+            // anyway. An empty diff drops whatever overview is shown, Undo or not.
+            let wantsOverview = !hasChanges || (regenerateOverview ? overviewDiffKey != info.diffKey : diffChanged && !overviewShown)
+            // This session's own run on an earlier snapshot is stopped (its
+            // finished chapters stay cached) and started on the new one; a run
+            // only waiting for another holder is restarted whatever the refresh.
+            // An Undo leaves a describing run to finish; it is followed up when it lands.
+            var restart = false
+            if let current = run, current.diffKey != info.diffKey, regenerateOverview || current.waiting {
+                stopRun()
+                restart = true
+            }
+            startMap(info, then: restart ? .make : wantsOverview ? .asMode : nil)
             let roundID = info.id
             sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
@@ -836,21 +856,34 @@ final class ReviewChangesModel {
                 try await saveState()
             }
             currentChapterKey = key
-            awaitedAIChapterKey = nil
         }
         let first = chapter.paths.first { path in files.first { $0.path == path }?.collapsedReason == nil } ?? chapter.paths.first
         if let first { await select(first) }
     }
 
-    /// Chapters from the current view's files (the agent's, else the AI's in
-    /// use, else mechanical), and a current chapter that still exists (the
-    /// first one otherwise); checks of a vanished chapter stay in the DB.
+    /// The map's chapters over the current view's files (a chapter with none
+    /// of them is left out), and a current chapter that still exists (the
+    /// first one otherwise; a saved `ai:` key of an older release too).
+    /// Without a map there are no chapters and the saved position is kept.
+    /// Checks of a vanished chapter stay in the DB.
     private func refreshChapters() {
-        chapters = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: appliedAIChapters)
-        if let awaited = awaitedAIChapterKey, chapters.contains(where: { $0.key == awaited }) {
-            currentChapterKey = awaited
-            awaitedAIChapterKey = nil
+        guard case .ready(let ready) = map else {
+            chapters = []
             return
+        }
+        // Collapsed (generated, lock) files cost no reading time.
+        var lines: [String: Int] = [:]
+        for file in files where lines[file.path] == nil {
+            lines[file.path] = file.collapsedReason == nil ? file.additions + file.deletions : 0
+        }
+        chapters = ready.chapters.compactMap { chapter in
+            let paths = chapter.paths.filter { lines[$0] != nil }
+            guard !paths.isEmpty else { return nil }
+            return ReviewChapter(
+                key: chapter.key, title: chapter.title, paths: paths,
+                changedLines: paths.reduce(0) { $0 + (lines[$1] ?? 0) }, core: chapter.core,
+                source: chapter.key.hasPrefix("agent:") ? .agent : .mechanical
+            )
         }
         if let key = currentChapterKey, chapters.contains(where: { $0.key == key }) { return }
         currentChapterKey = chapters.first?.key
@@ -925,64 +958,76 @@ final class ReviewChangesModel {
         }
     }
 
-    // MARK: - Overview and notes
+    // MARK: - Map and overview (board #1025)
 
-    /// Loads the AI overview of the open round; an answer for another round
-    /// is dropped. A failure keeps the chapters as they are. Without
-    /// `generate` only a cached overview is read (no model call): a miss
-    /// drops the old tree's AI state and leaves Make overview on screen
-    /// (`earlier`: the made overview of an earlier tree, shown as such).
-    private func loadOverview(generate: Bool, generation: UUID?, earlier: ReviewOverview?) async {
-        guard let info = round else { return }
-        aiChaptersPending = false
-        let state: OverviewState
-        do {
-            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id, cachedOnly: !generate))
-            if let ready = env.overview {
-                state = .ready(ready)
-            } else if generate {
-                throw Failure(message: "The overview is missing from the answer.")
-            } else {
-                state = .onRequest
-            }
-        } catch {
-            state = .failed(Self.message(error))
-        }
-        if let generation, generationID == generation { generationID = nil }
-        guard !Task.isCancelled, round?.id == info.id else { return }
-        guard round?.diffKey == info.diffKey else {
-            // A model call that ran past a tree (or base) change is followed up for the
-            // new tree: Deep makes its overview; Quick reads its cache and
-            // else shows a made one as being for an earlier version.
-            guard generate else { return }
-            if case .ready(let made) = state {
-                startOverview(earlier: made)
-            } else {
-                startOverview()
-            }
-            return
-        }
-        showOverview(state, generated: generate, earlier: earlier)
+    /// The round's map (`review map`, tech spec §3.5): failed = no answer in
+    /// `WorkbenchCLI.reviewMapTimeout`, a non-zero exit or unreadable JSON.
+    enum MapState: Equatable {
+        case loading
+        case ready(ReviewMap)
+        case failed
     }
 
-    private func showOverview(_ state: OverviewState, generated: Bool, earlier: ReviewOverview?) {
-        switch state {
-        case .ready(let ready):
-            overview = state
-            lastReadyOverview = ready
-            offerAIChapters(ready)
-        case .onRequest:
-            // No risks, chapters or coverage of code that has changed since.
-            lastReadyOverview = nil
-            if !appliedAIChapters.isEmpty {
-                appliedAIChapters = []
-                refreshChapters()
-            }
-            overview = earlier.map { .outdated($0) } ?? .onRequest
-        default:
-            failedGenerating = generated
-            overview = state
+    /// The map could not be built: the file list stays, without chapters.
+    static let mapFailedMessage = "Chapters could not be built — Retry"
+    /// No complete line from the overview process for this long: it is stuck
+    /// (a slow model call still ticks every 30 s; tech spec §3.2, §3.5).
+    static let streamSilenceLimit: TimeInterval = 300
+    static let streamSilentMessage = "The overview stopped answering, so it was stopped."
+    static let streamEndedMessage = "The overview ended without an answer."
+    static let streamUnreadableMessage = "The overview's answer could not be read."
+
+    /// The progress card's line while another run holds the branch (tech spec §5).
+    static func waitingText(by caller: String) -> String {
+        caller == "agent"
+            ? "The agent is describing this branch — chapters appear as it finishes them"
+            : "Another run is describing this branch — chapters appear as it finishes them"
+    }
+
+    var waitingText: String? { waitingFor.map(Self.waitingText) }
+
+    /// A chapter's description: the streamed one, else the last overview's.
+    func chapterDescription(_ key: String) -> String? {
+        streamedChapters[key]?.what ?? lastReadyOverview?.chapters.first { $0.key == key }?.what
+    }
+
+    /// Builds the map again after a failure (the banner's Retry); the
+    /// overview the failed map held back starts once it is in.
+    func retryMap() {
+        guard load == .ready, let info = round, hasChanges else { return }
+        map = .loading
+        refreshChapters()
+        mapTask?.cancel()
+        mapTask = Task { [weak self] in await self?.loadMap(info) }
+    }
+
+    /// Redoes one chapter (`--chapter K`), then the summary. During a run it
+    /// is queued: one follow-up run takes every queued key (tech spec §3.7).
+    func retry(chapter key: String) {
+        guard hasChanges, case .ready = map else { return }
+        guard run == nil else {
+            if !queuedChapters.contains(key) { queuedChapters.append(key) }
+            chapterStates[key] = .queued
+            return
         }
+        startStream(.chapters([key]))
+    }
+
+    /// Redoes the summary from the cached chapters (`--summary`); queued during a run.
+    func retrySummary() {
+        guard hasChanges, case .ready = map else { return }
+        guard run == nil else {
+            summaryQueued = true
+            summaryState = .queued
+            return
+        }
+        startStream(.summary)
+    }
+
+    /// "Describe N remaining" (`--continue`): only the chapters not described yet.
+    func describeRemaining() {
+        guard hasChanges, case .ready = map, run == nil else { return }
+        startStream(.remaining)
     }
 
     /// Repeats what failed: a cached read stays a cached read in Quick.
@@ -990,22 +1035,397 @@ final class ReviewChangesModel {
         startOverview(generate: failedGenerating)
     }
 
-    /// Quick mode's Make overview: one strong-model call for this tree.
+    /// Quick mode's Make overview: the streamed run for this tree.
     func makeOverview() {
         startOverview(generate: true)
-    }
-
-    /// Switches to the AI chapters held back by `aiChaptersPending`.
-    func useAIChapters() {
-        guard case .ready(let ready) = overview else { return }
-        appliedAIChapters = Self.specs(ready)
-        aiChaptersPending = false
-        refreshChapters()
     }
 
     private var overviewShown: Bool {
         if case .ready = overview { return true }
         return false
+    }
+
+    /// Chapters the overview describes: every chapter but "Can skip".
+    private var describableKeys: [String] {
+        guard case .ready(let ready) = map else { return [] }
+        return ready.chapters.filter { !$0.isCollapsed }.map(\.key)
+    }
+
+    /// Drops the overview, its states and the run (a new round, an empty diff).
+    private func resetOverview() {
+        stopRun()
+        overviewTask?.cancel()
+        overview = .idle
+        lastReadyOverview = nil
+        chapterStates = [:]
+        summaryState = .pending
+        streamedChapters = [:]
+        overviewAfterMap = nil
+    }
+
+    /// Which overview waits for the map: the mode's (Deep makes it, Quick
+    /// reads the cache) or the model's whatever the mode (Make overview, a
+    /// restarted run).
+    private enum OverviewStart {
+        case asMode, make
+    }
+
+    /// Reads the round's map in a task of its own; `then` (nil = nothing new)
+    /// starts once it is in. An empty diff has an empty map and no CLI call.
+    private func startMap(_ info: ReviewRoundInfo, then start: OverviewStart?) {
+        mapTask?.cancel()
+        if let start { overviewAfterMap = start }
+        guard hasChanges else {
+            map = .ready(ReviewMap(chapters: [], files: []))
+            refreshChapters()
+            startOverviewAfterMap()
+            return
+        }
+        mapTask = Task { [weak self] in await self?.loadMap(info) }
+    }
+
+    private func loadMap(_ info: ReviewRoundInfo) async {
+        let next: MapState
+        do {
+            let env = try Self.checked(await cli.reviewMap(projectID: projectID, roundID: info.id))
+            guard let ready = env.map else { throw Failure(message: "The map is missing from the answer.") }
+            next = .ready(ready)
+        } catch {
+            // The class only (FILES-01): Go's text may name files.
+            Self.log.error("review map failed: \(error is Failure ? "refused" : "cli", privacy: .public)")
+            next = .failed
+        }
+        guard !Task.isCancelled, round?.id == info.id, round?.diffKey == info.diffKey else { return }
+        map = next
+        refreshChapters()
+        if case .ready = next { startOverviewAfterMap() }
+    }
+
+    private func startOverviewAfterMap() {
+        guard let start = overviewAfterMap else { return }
+        overviewAfterMap = nil
+        startOverview(generate: start == .make)
+    }
+
+    /// Starts the overview of the round's diff, never without a map and never
+    /// beside this session's run (it is followed up when it lands). Deep
+    /// makes the overview by itself (the streamed run); Quick only reads a
+    /// cached one unless the owner asked (`generate`: Make overview, or Retry
+    /// of a failed run).
+    private func startOverview(generate: Bool = false, earlier: ReviewOverview? = nil) {
+        guard hasChanges else {
+            // Nothing to summarise: no CLI call of either kind; a run still going is stopped.
+            resetOverview()
+            overviewDiffKey = round?.diffKey
+            return
+        }
+        guard run == nil, let info = round else { return }
+        guard case .ready = map else {
+            if generate || overviewAfterMap == nil { overviewAfterMap = generate ? .make : .asMode }
+            return
+        }
+        overviewTask?.cancel()
+        overviewDiffKey = info.diffKey
+        if generate || mode == .deep {
+            startStream(.full)
+            return
+        }
+        overviewTask = Task { [weak self] in await self?.readCachedOverview(info, earlier: earlier) }
+    }
+
+    /// Quick mode's cached read: no model call. A miss drops the old tree's
+    /// AI state and leaves Make overview on screen (`earlier`: the made
+    /// overview of an earlier tree, shown as such).
+    private func readCachedOverview(_ info: ReviewRoundInfo, earlier: ReviewOverview?) async {
+        let state: OverviewState
+        do {
+            let env = try Self.checked(await cli.reviewOverview(projectID: projectID, roundID: info.id, cachedOnly: true))
+            state = env.overview.map(OverviewState.ready) ?? .onRequest
+        } catch {
+            state = .failed(Self.message(error))
+        }
+        guard !Task.isCancelled, round?.id == info.id, round?.diffKey == info.diffKey else { return }
+        showOverview(state, generated: false, earlier: earlier)
+    }
+
+    private func showOverview(_ state: OverviewState, generated: Bool, earlier: ReviewOverview?) {
+        switch state {
+        case .ready(let ready):
+            overview = state
+            lastReadyOverview = ready
+            settleDescribed(ready)
+        case .onRequest:
+            // No risks or coverage of code that has changed since.
+            lastReadyOverview = nil
+            chapterStates = [:]
+            summaryState = .pending
+            streamedChapters = [:]
+            overview = earlier.map { .outdated($0) } ?? .onRequest
+        default:
+            failedGenerating = generated
+            overview = state
+        }
+    }
+
+    /// What a run did not report itself, read from the assembled overview: a
+    /// chapter it describes is cached, one in its `incomplete` list (or
+    /// without a description) is not started. Queued ones stay queued.
+    private func settleDescribed(_ ready: ReviewOverview) {
+        let described = Set(ready.chapters.compactMap { $0.what == nil ? nil : $0.key })
+        for key in describableKeys where Self.unsettled(chapterStates[key]) {
+            chapterStates[key] = described.contains(key) && !ready.incomplete.contains(key) ? .cached : .notStarted
+        }
+        if Self.unsettled(summaryState) { summaryState = ready.summary.isEmpty ? .notStarted : .cached }
+    }
+
+    /// Not yet answered by a run: absent, pending, running or waiting.
+    private static func unsettled(_ state: ChapterRunState?) -> Bool {
+        switch state {
+        case nil, .pending?, .running?, .waiting?: true
+        default: false
+        }
+    }
+
+    // The streamed run (tech spec §3.5, §3.7)
+
+    private enum RunKind: Equatable {
+        case full
+        case chapters([String])
+        case summary
+        case remaining
+    }
+
+    private struct OverviewRun {
+        let id = UUID()
+        let roundID: Int64
+        let diffKey: String
+        let kind: RunKind
+        var lastLine: Date
+        var waiting = false
+        var silenced = false
+    }
+
+    private enum RunOutcome {
+        case final(ReviewEnvelope)
+        case failed(String)
+    }
+
+    /// Starts this session's one overview process for `kind`.
+    private func startStream(_ kind: RunKind) {
+        guard run == nil, let info = round else { return }
+        overviewTask?.cancel()
+        overviewDiffKey = info.diffKey
+        let now = streamClock.now
+        let started = OverviewRun(roundID: info.id, diffKey: info.diffKey, kind: kind, lastLine: now)
+        run = started
+        lastStreamLine = now
+        waitingFor = nil
+        markRunning(kind)
+        let stream: AsyncThrowingStream<ReviewStreamEvent, Error> = switch kind {
+        case .full: cli.reviewOverviewStream(projectID: projectID, roundID: info.id)
+        case .chapters(let keys): cli.reviewOverviewStream(projectID: projectID, roundID: info.id, chapters: keys)
+        case .summary: cli.reviewOverviewStream(projectID: projectID, roundID: info.id, summaryOnly: true)
+        case .remaining: cli.reviewOverviewStream(projectID: projectID, roundID: info.id, continue: true)
+        }
+        overviewTask = Task { [weak self] in await self?.consume(stream, runID: started.id) }
+        watchSilence(started.id)
+    }
+
+    private func markRunning(_ kind: RunKind) {
+        let keys: [String]
+        switch kind {
+        case .full:
+            // The spinner of the whole overview; a partial run keeps what is shown.
+            overview = .loading
+            chapterStates = [:]
+            streamedChapters = [:]
+            keys = describableKeys
+        case .chapters(let list):
+            keys = list
+        case .remaining:
+            keys = describableKeys.filter { chapterStates[$0] != .ok && chapterStates[$0] != .cached }
+        case .summary:
+            keys = []
+        }
+        for key in keys { chapterStates[key] = .running }
+        summaryState = .running
+    }
+
+    /// Stops this session's run, if any: its reader is cancelled, which ends
+    /// the stream and terminates the child's process group (finished chapters
+    /// are kept: each is cached as it ends). Never signals another process.
+    private func stopRun() {
+        guard run != nil else { return }
+        run = nil
+        silenceWatch?.cancel()
+        overviewTask?.cancel()
+        waitingFor = nil
+        queuedChapters = []
+        summaryQueued = false
+    }
+
+    private func consume(_ stream: AsyncThrowingStream<ReviewStreamEvent, Error>, runID: UUID) async {
+        var outcome: RunOutcome?
+        do {
+            for try await event in stream {
+                guard run?.id == runID else { return }
+                let now = streamClock.now
+                run?.lastLine = now
+                lastStreamLine = now
+                if let end = apply(event) { outcome = end }
+            }
+        } catch {
+            // Ended without its envelope (killed, crashed, cut mid-line) or never started.
+            Self.log.error("review overview stream ended without an answer: \(String(describing: type(of: error)), privacy: .public)")
+        }
+        guard let finished = run, finished.id == runID else { return }
+        run = nil
+        silenceWatch?.cancel()
+        waitingFor = nil
+        if finished.silenced { outcome = .failed(Self.streamSilentMessage) }
+        land(finished, outcome ?? .failed(Self.streamEndedMessage))
+    }
+
+    /// One stream event into the model's state; the run's outcome when it ends it.
+    private func apply(_ event: ReviewStreamEvent) -> RunOutcome? {
+        switch event {
+        case .map(let ready):
+            if round?.diffKey == run?.diffKey {
+                map = .ready(ready)
+                refreshChapters()
+            }
+        case .mapFailed:
+            map = .failed
+            refreshChapters()
+        case .waiting(let caller):
+            waitingFor = caller
+            run?.waiting = true
+            for (key, state) in chapterStates where state == .running { chapterStates[key] = .waiting }
+            if summaryState == .running { summaryState = .waiting }
+        case .tick:
+            break
+        case .chapter(let chapter):
+            // A part another run cached arrives while waiting; anything else means this run holds the lock.
+            if chapter.state != .cached { stopWaiting() }
+            streamedChapters[chapter.key] = chapter
+            if !queuedChapters.contains(chapter.key) { chapterStates[chapter.key] = chapter.state }
+        case let .summary(ok, error):
+            stopWaiting()
+            if !summaryQueued {
+                summaryState = ok ? .ok : .failed(
+                    text: error?.text ?? ReviewOverviewStreamDecoder.summaryFailedText, detail: error?.detail
+                )
+            }
+        case .final(let env):
+            return .final(env)
+        case .finalUnreadable:
+            return .failed(Self.streamUnreadableMessage)
+        }
+        return nil
+    }
+
+    private func stopWaiting() {
+        guard run?.waiting == true else { return }
+        run?.waiting = false
+        waitingFor = nil
+        for (key, state) in chapterStates where state == .waiting { chapterStates[key] = .running }
+        if summaryState == .waiting { summaryState = .running }
+    }
+
+    /// A run ended: its outcome is shown on the round and diff it was made
+    /// for; one that ran past a diff change is followed up for the new diff
+    /// (Deep makes its overview; Quick reads its cache, else shows the made
+    /// one as being for an earlier version). Then the queued Retries run.
+    private func land(_ finished: OverviewRun, _ outcome: RunOutcome) {
+        guard round?.id == finished.roundID else { return }
+        guard round?.diffKey == finished.diffKey else {
+            queuedChapters = []
+            summaryQueued = false
+            if case .final(let env) = outcome, env.ok, let made = env.overview {
+                startOverview(earlier: made)
+            } else {
+                startOverview()
+            }
+            return
+        }
+        switch outcome {
+        case .final(let env) where env.ok:
+            if let ready = env.overview {
+                showOverview(.ready(ready), generated: true, earlier: nil)
+            } else {
+                // Go found nothing to describe.
+                settleFailed(finished, text: nil, detail: nil)
+                if overview == .loading { overview = .idle }
+            }
+        case .final(let env):
+            failRun(finished, text: env.error ?? "The review command failed.", detail: env.detail)
+        case .failed(let text):
+            failRun(finished, text: text, detail: nil)
+        }
+        startQueued()
+    }
+
+    /// A run that failed as a whole (`busy`, `cancelled`, killed, silent):
+    /// the full run's card shows the text with Retry; a partial run's
+    /// chapters and summary show it on their own lines.
+    private func failRun(_ finished: OverviewRun, text: String, detail: String?) {
+        if finished.kind == .full {
+            settleFailed(finished, text: nil, detail: nil)
+            failedGenerating = true
+            overview = .failed(text)
+        } else {
+            settleFailed(finished, text: text, detail: detail)
+        }
+    }
+
+    /// The run's chapters and summary it did not answer: failed with `text`,
+    /// or not started when there is none.
+    private func settleFailed(_ finished: OverviewRun, text: String?, detail: String?) {
+        let end: ChapterRunState = text.map { .failed(text: $0, detail: detail) } ?? .notStarted
+        for (key, state) in chapterStates where Self.unsettled(state) { chapterStates[key] = end }
+        if Self.unsettled(summaryState) { summaryState = end }
+    }
+
+    /// The one follow-up run after a run ends: every queued chapter (the
+    /// summary is remade after them), else the queued summary.
+    private func startQueued() {
+        if !queuedChapters.isEmpty {
+            let keys = queuedChapters
+            queuedChapters = []
+            summaryQueued = false
+            startStream(.chapters(keys))
+        } else if summaryQueued {
+            summaryQueued = false
+            startStream(.summary)
+        }
+    }
+
+    /// Fails the run after `streamSilenceLimit` without a complete line; every
+    /// line (a tick included) moves the deadline.
+    private func watchSilence(_ id: UUID) {
+        silenceWatch?.cancel()
+        let clock = streamClock
+        silenceWatch = Task { [weak self] in
+            while let deadline = self?.silenceDeadline(id) {
+                if clock.now >= deadline {
+                    self?.silence(id)
+                    return
+                }
+                do { try await clock.sleep(until: deadline) } catch { return }
+            }
+        }
+    }
+
+    private func silenceDeadline(_ id: UUID) -> Date? {
+        guard let run, run.id == id else { return nil }
+        return run.lastLine.addingTimeInterval(Self.streamSilenceLimit)
+    }
+
+    private func silence(_ id: UUID) {
+        guard run?.id == id else { return }
+        Self.log.error("review overview stream silent for \(Int(Self.streamSilenceLimit), privacy: .public) s: stopped")
+        run?.silenced = true
+        overviewTask?.cancel()
     }
 
     /// Every risk the AI overview names for a file.
@@ -1199,7 +1619,7 @@ final class ReviewChangesModel {
         let info = try openRound()
         let mode = pendingMode ?? self.mode
         let phase = pendingPhase ?? self.phase
-        let chapterKey = pendingChapterKey ?? persistedChapterKey
+        let chapterKey = pendingChapterKey ?? currentChapterKey
         let seconds = pace.activeSeconds
         let saved = try await retryingBusy {
             try await db.write {
@@ -1257,66 +1677,6 @@ final class ReviewChangesModel {
     private func reloadNotes() throws {
         let (project, session) = (projectID, sessionID)
         notes = try db.read { try ReviewQueries.notes($0, projectID: project, sessionID: session) }
-    }
-
-    /// The chapter position to save: a saved `ai:` chapter still waiting for
-    /// its overview is kept, not the fallback shown meanwhile.
-    private var persistedChapterKey: String? {
-        awaitedAIChapterKey ?? currentChapterKey
-    }
-
-    private var agentChapterSpecs: [ReviewChapterSpec] {
-        notes.filter { $0.kind == .chapter }.map { ReviewChapterSpec(title: $0.text, paths: $0.paths, core: $0.core, lenses: nil) }
-    }
-
-    private static func specs(_ overview: ReviewOverview) -> [ReviewChapterSpec] {
-        overview.chapters.map { ReviewChapterSpec(title: $0.title, paths: $0.paths, core: $0.core, lenses: $0.lenses) }
-    }
-
-    /// Starts the overview's load, dropping a cached read still running but
-    /// never a model call (it is followed up when it lands). Deep makes the
-    /// overview by itself; Quick only reads a cached one unless the owner
-    /// asked (`generate`: Make overview, or Retry of a failed model call).
-    private func startOverview(generate: Bool = false, earlier: ReviewOverview? = nil) {
-        guard hasChanges else {
-            // Nothing to summarise: no CLI call of either kind. A model call
-            // still running is cancelled, and its result is dropped on landing.
-            overviewTask?.cancel()
-            generationID = nil
-            overviewDiffKey = round?.diffKey
-            overview = .idle
-            lastReadyOverview = nil
-            appliedAIChapters = []
-            aiChaptersPending = false
-            return
-        }
-        guard generationID == nil else { return }
-        overviewTask?.cancel()
-        overviewDiffKey = round?.diffKey
-        let make = generate || mode == .deep
-        let generation = make ? UUID() : nil
-        generationID = generation
-        // The only place that shows the spinner; a cached read keeps what is shown.
-        if make { overview = .loading }
-        overviewTask = Task { [weak self] in await self?.loadOverview(generate: make, generation: generation, earlier: earlier) }
-    }
-
-    /// Switches to the overview's chapters, unless they would replace
-    /// chapters the owner already started on in the Chapters phase (a file
-    /// Viewed or a comment on it). AI chapters the round already used (a
-    /// saved `ai:` position or shown `ai:` chapters) come back.
-    private func offerAIChapters(_ ready: ReviewOverview) {
-        let specs = Self.specs(ready)
-        let shownPaths = Set(chapters.flatMap(\.paths))
-        let candidate = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: specs)
-        let usedAI = awaitedAIChapterKey != nil || chapters.contains { $0.key.hasPrefix("ai:") }
-        let started = shownPaths.contains { isViewed($0) } || comments.contains { $0.path.map(shownPaths.contains) ?? false }
-        if !usedAI, candidate != chapters, phase == .chapters, started {
-            aiChaptersPending = true
-            return
-        }
-        appliedAIChapters = specs
-        refreshChapters()
     }
 
     /// Places the selected file's notes on its loaded new side.
@@ -1476,5 +1836,20 @@ final class ReviewChangesModel {
 
     private static func message(_ error: Error) -> String {
         (error as? Failure)?.message ?? error.localizedDescription
+    }
+}
+
+/// The streamed overview's silence timer reads and waits on this clock (a
+/// test drives a fake one).
+protocol ReviewStreamClock: Sendable {
+    var now: Date { get }
+    func sleep(until deadline: Date) async throws
+}
+
+struct SystemReviewStreamClock: ReviewStreamClock {
+    var now: Date { Date() }
+
+    func sleep(until deadline: Date) async throws {
+        try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
     }
 }

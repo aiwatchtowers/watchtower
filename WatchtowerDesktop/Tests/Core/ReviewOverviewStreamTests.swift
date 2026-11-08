@@ -190,4 +190,23 @@ final class ReviewOverviewStreamTests: XCTestCase {
         XCTAssertFalse(env.ok)
         XCTAssertEqual(env.errorClass, "busy")
     }
+
+    /// The run's log line reads these: counts by reason class, never the text.
+    func testUnreadableLinesAreCountedByReason() {
+        var decoder = ReviewOverviewStreamDecoder()
+        let lines = [
+            #"{"event":"tick"}"#,
+            "not json",
+            #"{"event":"progress"}"#,
+            #"{"event":"chapter","state":"ok"}"#,
+            #"{"event":"chapter","key":"dir:a","state":"ok","risks":"bad"}"#,
+            #"{"event":"map","map":7}"#,
+            #"{"ok":false,"error":"busy now","error_class":"busy"}"#
+        ]
+        _ = decoder.feed(Data((lines.joined(separator: "\n") + "\n").utf8))
+        XCTAssertEqual(decoder.unreadable, ["not_json": 1, "unknown_event": 1, "malformed": 3])
+        XCTAssertFalse(decoder.hasPartialLine)
+        _ = decoder.feed(Data(#"{"ok":tr"#.utf8))
+        XCTAssertTrue(decoder.hasPartialLine)
+    }
 }
