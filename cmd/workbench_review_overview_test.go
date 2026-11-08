@@ -98,7 +98,7 @@ func TestWorkbenchReviewOverview_FailureIsAnEnvelopeAndNotCached(t *testing.T) {
 	useReviewGen(t, g)
 	out := reviewJSON(t, wb, "overview", "--round", round)
 	assert.Equal(t, false, out["ok"])
-	assert.Equal(t, "The AI provider failed on “(root)”.", out["error"], "the owner's sentence, not the provider's words")
+	assert.Equal(t, "The AI provider failed on the overview.", out["error"], "the owner's sentence, not the provider's words")
 	assert.Equal(t, "provider", out["error_class"])
 	assert.Equal(t, "boom", out["detail"])
 	var n int
@@ -115,7 +115,7 @@ func TestWorkbenchReviewOverview_InvalidReplyNotCached(t *testing.T) {
 	useReviewGen(t, g)
 	out := reviewJSON(t, wb, "overview", "--round", round)
 	assert.Equal(t, false, out["ok"])
-	assert.Equal(t, "The AI answer for “(root)” could not be read.", out["error"])
+	assert.Equal(t, "The AI answer for the overview could not be read.", out["error"])
 	assert.Equal(t, "parse", out["error_class"])
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_overviews`).Scan(&n))
