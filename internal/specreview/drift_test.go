@@ -293,3 +293,54 @@ func TestBuildInputs_LegacyLoopHasNoDriftGuards(t *testing.T) {
 	assert.Equal(t, []string{"old text minor"}, bsTexts(r))
 	assert.Nil(t, r.DroppedBy)
 }
+
+// A differs agreement quoting an owner answer that is new since the previous
+// round is news even where the document's text did not change; the same
+// finding quoting an old source is not.
+func TestParse_Round2NewSourcePassesOnUnchangedText(t *testing.T) {
+	differs := func(text, kind, ref, quote string) string {
+		b, _ := json.Marshal(map[string]any{
+			"text": text, "status": "differs", "note": "n", "severity": "major",
+			"source": map[string]string{"kind": kind, "ref": ref, "quote": quote},
+			"where":  map[string]string{"heading": "Behaviour", "quote": keptQuote},
+		})
+		return string(b)
+	}
+	src := loopSources(2)
+	src.NewRefs = map[string]bool{"ask:1": true}
+	raw := `{"summary":"s","agreements":[` +
+		differs("new owner answer", "ask", "ask:1", "keep the state local") + "," +
+		differs("old owner line", "conversation", "entry:1", "mute a channel for a day") + `]}`
+	r := parseOne(t, raw, src)
+	assert.Equal(t, []string{"new owner answer"}, texts(r.Agreements, func(a Agreement) string { return a.Text }))
+	assert.Equal(t, map[string]int{DropUnchangedText: 1}, r.DroppedBy)
+
+	// The rising floor still applies to it.
+	src.LoopRound = 3
+	r = parseOne(t, strings.ReplaceAll(raw, `"major"`, `"minor"`), src)
+	assert.Empty(t, r.Agreements)
+	assert.Equal(t, map[string]int{DropMinorLate: 1, DropUnchangedText: 1}, r.DroppedBy)
+}
+
+// A quote found both in a kept paragraph and in a rewritten one is changed
+// text.
+func TestUnchangedIn_QuoteInBothIsChanged(t *testing.T) {
+	prev := "# Doc\n\nThe mute lasts a day.\n\nOld text here.\n"
+	doc := "# Doc\n\nThe mute lasts a day.\n\nNew text. The mute lasts a day.\n"
+	assert.False(t, unchangedIn(prev, doc)("The mute lasts a day"))
+	assert.True(t, unchangedIn(prev, prev)("The mute lasts a day"))
+}
+
+// A key known along the chain and not closed is carried: the reworded-repeat
+// check does not drop it even when a closed item has its kind and where-quote.
+func TestParse_KnownKeySkipsRewordedRepeat(t *testing.T) {
+	src := loopSources(2)
+	src.Closed = []ClosedItem{{Key: "da:closed000000", Kind: KindDecidedAlone, WhereQuote: changedQuote}}
+	src.KnownKeys = map[string]bool{itemKey("da:", "a known finding", changedQuote): true}
+	raw := `{"summary":"s","decided_alone":[` +
+		decidedJSON("a known finding", changedQuote, "minor") + "," +
+		decidedJSON("a new finding", changedQuote, "minor") + `]}`
+	r := parseOne(t, raw, src)
+	assert.Equal(t, []string{"a known finding"}, daTexts(r))
+	assert.Equal(t, map[string]int{DropDecided: 1}, r.DroppedBy)
+}

@@ -125,7 +125,8 @@ func newDriftGuard(src Sources, chapters []Chapter) *driftGuard {
 // it. kind is an AuthorItem kind; where is nil for a finding with no anchor;
 // srcRef is the ref of an agreement's source ("" for other kinds); chapter is
 // a check's chapter key. An item still open from the previous round, or
-// known along the chain and not closed, is carried and passes untouched.
+// known along the chain and not closed, is carried and passes untouched (the
+// reworded-repeat check included: its key is the same finding, not a new one).
 func (v *validator) drift(kind, key, severity string, where *Anchor, srcRef, chapter string) string {
 	g := v.guard
 	if g == nil || v.src.PrevOpenKeys[key] {
@@ -141,16 +142,17 @@ func (v *validator) drift(kind, key, severity string, where *Anchor, srcRef, cha
 		return DropDecided
 	}
 	if g.changedText && severity != SeverityBlocker {
-		var onChanged bool
+		// A source new since the previous round (an owner answer, a new
+		// ask or comment) is news wherever the document disagrees with
+		// it; without one, an anchored finding needs changed text and an
+		// unanchored one has nothing new (a blind spot has no source).
+		onChanged := srcRef != "" && v.src.NewRefs[srcRef]
 		switch {
+		case onChanged:
 		case kind == KindCheck:
 			onChanged = g.changedChapter[chapter]
 		case where != nil:
 			onChanged = !g.unchanged(where.Quote)
-		default:
-			// No where-quote: only a source that is new since the
-			// previous round is news (a blind spot has none).
-			onChanged = srcRef != "" && v.src.NewRefs[srcRef]
 		}
 		if !onChanged {
 			return DropUnchangedText
