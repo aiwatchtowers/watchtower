@@ -71,7 +71,7 @@ func NewAnswerReviewQuestion(sessionEnv func() string) *Tool {
 				if errors.Is(err, db.ErrQuestionClosed) {
 					return nil, &ValidationError{Msg: db.ErrQuestionClosed.Error(), Err: err}
 				}
-				return nil, err
+				return nil, fmt.Errorf("answering question %d: %w", a.QuestionID, err)
 			}
 			return map[string]any{"question_id": a.QuestionID, "state": "answered"}, nil
 		},
@@ -91,18 +91,18 @@ func questionOfSession(ctx context.Context, d *db.DB, b Binding, id int64, sessi
 		return errQuestionNotFound(id)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reading question %d: %w", id, err)
 	}
 	ask, err := d.GetOwnerAsk(p.ID, q.AskID)
 	if errors.Is(err, db.ErrAskNotFound) {
 		return errQuestionNotFound(id)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reading ask %d of question %d: %w", q.AskID, id, err)
 	}
 	session, err := terminalSessionOf(d, p.ID, sessionEnv)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving the calling session: %w", err)
 	}
 	if !session.Valid || !ask.SessionID.Valid || ask.SessionID.Int64 != session.Int64 {
 		return &ValidationError{Msg: "this question is not for your session"}

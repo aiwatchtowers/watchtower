@@ -151,7 +151,9 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 // round ends it ("owner").
 func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out *db.SpecReview) error {
 	var prevLedger []LedgerEntry
-	prevOpen, err := SeedOf(d, ask)
+	// The seed's notes are already in this round's result: BuildInputs read
+	// the same rows.
+	prevOpen, _, err := SeedOf(d, ask)
 	if err != nil {
 		return err
 	}
@@ -187,7 +189,7 @@ func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out
 // ReadFolder is where the reviewer reads: the session's working directory (its
 // worktree) when it is recorded and still a directory, else the workbench
 // folder, which must be a directory too: the reviewer never runs without one.
-// A Discuss thread reads the same folder (`thread-context --folder-only`).
+// A Discuss thread reads the same folder (`ai query --read-folder-ask`).
 func ReadFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
 	if ask.SessionID.Valid {
 		cwd, err := d.TerminalAgentCwd(ask.SessionID.Int64)

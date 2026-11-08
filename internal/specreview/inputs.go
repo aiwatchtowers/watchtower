@@ -534,15 +534,17 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the previous ask #%d: %w", ask.PreviousAskID.Int64, err)
 	}
 	doc := prev.DocSnapshot
+	// The drift guards compare the whole previous document: only the
+	// prompt's copy is trimmed, so a long document's tail is not "changed".
+	in.src.PrevDoc = prev.DocSnapshot
 	if utf8.RuneCountInString(doc) > maxPrevDocRunes {
 		doc = string([]rune(doc)[:maxPrevDocRunes])
 		in.note("the previous round's document was trimmed to %d characters", maxPrevDocRunes)
 	}
 	in.add("previous_round ask:"+strconv.FormatInt(prev.ID, 10), doc)
-	in.src.PrevDoc = doc
 	if since, err := time.Parse(time.RFC3339, prev.CreatedAt); err == nil {
 		in.src.NewRefs = map[string]bool{}
 		for ref, at := range in.refAt {
@@ -550,14 +552,17 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 				in.src.NewRefs[ref] = true
 			}
 		}
+	} else {
+		in.note("the previous round's ask #%d has no readable filing time: no source counts as new", prev.ID)
 	}
-	seed, err := SeedOf(d, ask)
+	seed, seedNotes, err := SeedOf(d, ask)
 	if err != nil {
 		return err
 	}
+	in.notes = append(in.notes, seedNotes...)
 	loop, err := loopRound(d, ask.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the loop round of ask #%d: %w", ask.ID, err)
 	}
 	switch {
 	case seed != nil:
@@ -625,7 +630,7 @@ func (in *inputs) setLoopRound(d *db.DB, ask *db.OwnerAsk) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the review of ask #%d: %w", ask.ID, err)
 	}
 	if row.Loop == "author" && row.LoopRules >= LoopRulesOpen {
 		in.src.LoopRound = row.Round

@@ -25,10 +25,22 @@ type ClosedItem struct {
 // entry, Author is right. With db.SpecReviewMarkNotUseful it closes a finding.
 const markOK = "ok"
 
+// markComment is the owner's comment mark (Fix included): it reopens a
+// finding closed earlier in the chain.
+const markComment = "comment"
+
+// closedKindAsAgreed is the closed-list kind of an agreement the reviewer
+// found as agreed: dismissing it (Skip, Not useful) says nothing about a
+// later differs/missing finding on the same passage, so its where-quote
+// never matches one (owner ruling on the Discuss branch review).
+const closedKindAsAgreed = "agreement_as_agreed"
+
 // ClosedList is the closed list of askID's review: over every earlier ask of
 // its chain, the ledger entries resolved after a fixed reply (or none), and
 // every key the owner marked ok (Skip, Checked, Author is right on a
-// disputed entry) or Not useful. A key is listed once, in chain order. A
+// disputed entry) or Not useful. A comment mark (Fix) on a later or the
+// same ask reopens a key: it leaves the list until something closes it
+// again. A key is listed once, in the order it was (last) closed. A
 // row whose stored JSON does not decode is an error (BuildInputs notes it
 // instead).
 func ClosedList(d *db.DB, askID int64) ([]ClosedItem, error) {
@@ -79,8 +91,9 @@ func readChain(d *db.DB, askID int64) (chainState, []string, error) {
 		info[key] = it
 	}
 	type rowClose struct {
-		ledger []string // ledger keys resolved after fixed
-		marks  []string // keys marked ok or not useful
+		ledger   []string // ledger keys resolved after fixed
+		marks    []string // keys marked ok or not useful
+		reopened []string // keys with a comment mark
 	}
 	var rows []rowClose
 	for _, id := range ids {
@@ -115,41 +128,69 @@ func readChain(d *db.DB, askID int64) (chainState, []string, error) {
 				}
 			}
 		}
+		threads, err := d.ListSpecReviewThreadFindings(id)
+		if err != nil {
+			return st, nil, err
+		}
+		for _, tf := range threads {
+			var f threadFindingJSON
+			if err := json.Unmarshal([]byte(tf.Finding), &f); err != nil {
+				notes = append(notes, fmt.Sprintf("thread finding %s of ask #%d left out of the closed list: %v", tf.ItemKey, id, err))
+				continue
+			}
+			learn(tf.ItemKey, threadKinds[f.Kind], f.Where)
+		}
 		marks, err := d.ListSpecReviewMarks(id)
 		if err != nil {
 			return st, nil, err
 		}
 		for key, m := range marks {
-			if m.State == markOK || m.State == db.SpecReviewMarkNotUseful {
+			switch m.State {
+			case markOK, db.SpecReviewMarkNotUseful:
 				rc.marks = append(rc.marks, key)
+			case markComment:
+				rc.reopened = append(rc.reopened, key)
 			}
 		}
 		slices.Sort(rc.marks)
 		rows = append(rows, rc)
 	}
-	seen := map[string]bool{}
+	var order []string
+	closed := map[string]bool{}
 	for _, rc := range rows {
 		for _, key := range slices.Concat(rc.ledger, rc.marks) {
-			if seen[key] {
-				continue
+			if !closed[key] {
+				closed[key] = true
+				order = append(order, key)
 			}
-			seen[key] = true
-			it, ok := info[key]
-			if !ok {
-				it = ClosedItem{Key: key}
-			}
-			st.closed = append(st.closed, it)
 		}
+		for _, key := range rc.reopened {
+			if closed[key] {
+				delete(closed, key)
+				order = slices.DeleteFunc(order, func(k string) bool { return k == key })
+			}
+		}
+	}
+	for _, key := range order {
+		it, ok := info[key]
+		if !ok {
+			it = ClosedItem{Key: key}
+		}
+		st.closed = append(st.closed, it)
 	}
 	return st, notes, nil
 }
 
 // learnResult hands learn the kind and anchor of every finding of r, an
-// agreement as agreed and a check without a concern included (the owner
-// may mark those too).
+// agreement as agreed (closedKindAsAgreed) and a check without a concern
+// included (the owner may mark those too).
 func learnResult(r Result, learn func(key, kind string, where *Anchor)) {
 	for _, a := range r.Agreements {
-		learn(a.Key, KindAgreement, a.Where)
+		kind := KindAgreement
+		if a.Status == "as_agreed" {
+			kind = closedKindAsAgreed
+		}
+		learn(a.Key, kind, a.Where)
 	}
 	for _, x := range r.DecidedAlone {
 		learn(x.Key, KindDecidedAlone, &x.Where)

@@ -347,3 +347,79 @@ func TestThreadContextCmd_Blocks(t *testing.T) {
 	_, err = runSpecReview(t, "thread-context", "--ask", itoa(id), "--item", "ag:000000000000")
 	requireExit(t, err, 3, "no such item")
 }
+
+// TestSpecReviewThreadVerbs_RefusedUnderAgentMarkers: filing or closing a
+// question and adding a thread finding are the Desktop's (AGENT-07, ask
+// #593): under every agent marker each is refused before anything is read,
+// and nothing is written.
+func TestSpecReviewThreadVerbs_RefusedUnderAgentMarkers(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			database, id := boundSpecReviewAsk(t)
+			ask, err := database.GetOwnerAskByID(id)
+			require.NoError(t, err)
+			thread := specreview.ThreadContextID(ask.WorkbenchID, id, "ag:0123456789ab")
+			threadRow(t, database, thread, "user", "I want it to end at midnight, not after a day")
+			qid, err := database.FileSpecReviewQuestion(id, thread, "ag:0123456789ab", "why?", time.Now())
+			require.NoError(t, err)
+
+			t.Setenv(marker, "1")
+			_, err = questionCmd(t, "other?", "--ask", itoa(id), "--item", "ag:ba9876543210")
+			require.ErrorContains(t, err, marker)
+			assert.ErrorContains(t, err, "file a spec review question")
+			_, err = questionCmd(t, "", "--close", itoa(qid), "--reason", "gone")
+			require.ErrorContains(t, err, marker)
+			_, err = addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(id), "--thread", thread)
+			require.ErrorContains(t, err, marker)
+			assert.ErrorContains(t, err, "add a finding to a spec review")
+
+			var n int
+			require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM spec_review_questions`).Scan(&n))
+			assert.Equal(t, 1, n, "no question filed")
+			q, err := database.GetSpecReviewQuestion(qid)
+			require.NoError(t, err)
+			assert.Equal(t, "open", q.State, "the open question stays open")
+			rows, err := database.ListSpecReviewThreadFindings(id)
+			require.NoError(t, err)
+			assert.Empty(t, rows)
+		})
+	}
+}
+
+// TestAddFindingCmd_RefusesADifferentFindingWithTheSameKey: the key is the
+// text and the where-quote, so a second block with the same text but
+// another kind or title is refused instead of printing the stored key.
+func TestAddFindingCmd_RefusesADifferentFindingWithTheSameKey(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	ask, err := database.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	thread := specreview.ThreadContextID(ask.WorkbenchID, id, "ag:0123456789ab")
+	threadRow(t, database, thread, "user", "I want it to end at midnight, not after a day")
+	_, err = addFindingCmd(t, ownerQuoteBlock, "--ask", itoa(id), "--thread", thread)
+	require.NoError(t, err)
+
+	other := strings.Replace(ownerQuoteBlock, `"title":"Midnight"`, `"title":"Another title"`, 1)
+	_, err = addFindingCmd(t, other, "--ask", itoa(id), "--thread", thread)
+	requireExit(t, err, 3, "not added: the review already has a different finding with this text")
+	rows, err := database.ListSpecReviewThreadFindings(id)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Contains(t, rows[0].Finding, `"title":"Midnight"`, "the stored finding is unchanged")
+}
+
+// TestThreadContextCmd_AskWithoutAReview: an ask with no spec review (a
+// question ask, a review that was never queued) says so, not "no such item".
+func TestThreadContextCmd_AskWithoutAReview(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	ask, err := database.GetOwnerAskByID(id)
+	require.NoError(t, err)
+	var qid int64
+	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
+		var err error
+		qid, _, err = database.InsertOwnerAsk(tx, db.OwnerAsk{WorkbenchID: ask.WorkbenchID, Kind: "question", Title: "Scope?",
+			Payload: `{"questions":[{"id":"q1","question":"How long?","options":[{"label":"One day"}]}]}`})
+		return err
+	}))
+	_, err = runSpecReview(t, "thread-context", "--ask", itoa(qid), "--item", "da:0123456789ab")
+	requireExit(t, err, 3, "ask "+itoa(qid)+" has no spec review")
+}

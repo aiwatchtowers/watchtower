@@ -9,7 +9,7 @@ import (
 	"watchtower/internal/sqlcipher"
 )
 
-// Spec review threads (00175, spec 2026-11-08 §3): the thread agent's
+// Spec review threads (00178, spec 2026-11-08 §3): the thread agent's
 // questions to the author and the findings the owner added from a thread. Go
 // is the only writer of both tables; the Desktop only reads them.
 

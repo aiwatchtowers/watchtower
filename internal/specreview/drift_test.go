@@ -370,3 +370,24 @@ func TestBuildInputs_LoopRoundHeaderLine(t *testing.T) {
 	l2 := f.queueLoopRoundRules(t, l1.ID, 2, testDoc, LoopRulesLegacy)
 	assert.NotContains(t, message(l2), "loop_round:")
 }
+
+// The drift guards compare the whole previous document: only the prompt's
+// copy is trimmed, so the tail of a long document is not "changed". An
+// unreadable filing time is said, not silently dropped.
+func TestBuildInputs_LongPreviousDocumentAndUnreadableFilingTime(t *testing.T) {
+	f := newFixture(t)
+	long := testDoc + strings.Repeat("Padding line for a long document.\n", maxPrevDocRunes/30)
+	r1 := f.queueLoopRound(t, 0, 1, long)
+	finishRow(t, f.d, r1.ID, "author", `{}`, nil, nil)
+	_, err := f.d.Exec(`UPDATE owner_asks SET created_at = 'not a time' WHERE id = ?`, r1.ID)
+	require.NoError(t, err)
+	r2 := f.queueLoopRound(t, r1.ID, 2, long)
+
+	src, _, notes, err := BuildInputs(context.Background(), f.deps(nil), r2, f.folder)
+	require.NoError(t, err)
+	assert.Equal(t, long, src.PrevDoc, "the whole document, not the prompt's trimmed copy")
+	assert.Nil(t, src.NewRefs)
+	joined := strings.Join(notes, "\n")
+	assert.Contains(t, joined, "trimmed to")
+	assert.Contains(t, joined, "has no readable filing time")
+}

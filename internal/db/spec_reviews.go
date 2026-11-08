@@ -31,7 +31,7 @@ type SpecReview struct {
 	// Author loop (00160). The JSON columns are written by the loop code.
 	Loop, Replies, OpenItems, Ledger, LoopEnd string
 	Round                                     int
-	// LoopRules is the rules the author loop runs under (00174):
+	// LoopRules is the rules the author loop runs under (00177):
 	// 0 = the rules of 2026-10-26, 2 = specreview.LoopRulesOpen.
 	LoopRules int
 }
