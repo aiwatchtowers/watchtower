@@ -202,6 +202,24 @@ final class AutomationSaveFolderTests: XCTestCase {
                                            automationID: automation, suggestionKey: "k"))
     }
 
+    /// Go keeps the `needs-approval` built-in in Needs approval (its route
+    /// is refused): its editor shows no folder line, like its ⋯ has no Move.
+    func testNoLineForTheNeedsApprovalBuiltin() async throws {
+        let slug = InboxFolderQueries.needsApprovalBuiltinID
+        let id = try await pool.write { db in
+            let id = try TestDatabase.insertAutomation(db, slug: slug, name: slug, triggerKind: "sync",
+                                                       triggerSpec: #"{"sync":"x"}"#)
+            try db.execute(sql: "UPDATE automations SET origin = 'builtin', builtin_id = ?, path = ? WHERE id = ?",
+                           arguments: [slug, "builtin:\(slug)", id])
+            return id
+        }
+        vm.refresh()
+        XCTAssertNil(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "Release"), draftContextID: nil,
+                                        automationID: id, suggestionKey: "k"))
+        XCTAssertNotNil(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "Release"),
+                                           draftContextID: nil, automationID: automation, suggestionKey: "k"))
+    }
+
     func testSuggestionResolvesAgainstTheTree() {
         let tree = folderMenu.tree
         XCTAssertEqual(AutomationFolderSuggestion(title: "Q4", parentSlug: "release").route(in: tree),

@@ -575,7 +575,8 @@ package final class AutomationsViewModel {
     /// draft's **+ New Artifact…** started from; nil for none. For a saved
     /// automation (`automationID`) a suggestion an earlier save carried out
     /// (`suggestionKey` spent) counts no more — the owner may have moved it
-    /// since — and none is shown for the folder it is already routed to.
+    /// since — and none is shown for the folder it is already routed to,
+    /// nor for the needs-approval built-in (Go refuses to move it).
     package func editorPlacement(
         suggestion: AutomationFolderSuggestion?,
         draftContextID: String?,
@@ -586,6 +587,9 @@ package final class AutomationsViewModel {
         let tree = inboxFolderTree() ?? .rootOnly
         guard let automationID else { return suggestion.route(in: tree) }
         if let suggestionKey, spentSuggestions[String(automationID)] == suggestionKey { return nil }
+        // Go keeps the needs-approval built-in in Needs approval: no move to promise.
+        if items.first(where: { $0.id == automationID })?.automation.builtinID
+            == InboxFolderQueries.needsApprovalBuiltinID { return nil }
         let route = suggestion.route(in: tree)
         if case let .existing(folderID) = route.destination, tree.routes[automationID] == folderID { return nil }
         return route
