@@ -85,26 +85,16 @@ func publicTime(t *time.Time) *time.Time {
 
 // ReadStatus uses only already-published data. It never fetches or writes.
 func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (*PublicStatus, error) {
-	var st *db.PlanUsageStatus
-	var scope string
-	known := true
-	var ordinary *bool
-	if provider == "codex" {
-		row, err := store.GetCodexPlanUsageStatus()
-		if err != nil {
-			return nil, err
-		}
-		if row == nil {
-			return nil, nil
-		}
-		st, scope, known, ordinary = &row.PlanUsageStatus, row.Scope, row.IdentityKnown, row.OrdinaryUsageAllowed
-	} else {
-		var err error
-		st, err = store.GetPlanUsageStatus()
-		if err != nil || st == nil {
-			return nil, err
-		}
+	source, ok := subscriptionSources[provider]
+	if !ok {
+		return nil, errors.New("plan usage: unknown subscription source")
 	}
+	row, err := source.load(store)
+	if err != nil || row.status == nil {
+		return nil, err
+	}
+	st, known, ordinary := row.status, row.identityKnown, row.ordinaryUsageAllowed
+
 	switch st.State {
 	case "ok", "stale", "unavailable", "error", "disabled":
 	default:
@@ -114,10 +104,8 @@ func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	if provider == "claude" {
-		for i, l := range limits {
-			limits[i] = ClaudeWindowLimit(Limit{Key: l.Key, Label: l.Label, Group: l.Group, Percent: l.Percent, ResetsAt: l.ResetsAt, Projection: l.Projection})
-		}
+	for i, limit := range limits {
+		limits[i] = source.normalize(limit)
 	}
 	plot, err := DecodePlot(st.PlotJSON, st.FetchedAt, limits)
 	if err != nil {
@@ -132,7 +120,7 @@ func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (
 	if !enabled {
 		out.State = "disabled"
 	}
-	if provider == "codex" && !known && st.State != "ok" {
+	if source.identityRequired && !known && st.State != "ok" {
 		return out, nil
 	}
 	if err := json.Unmarshal([]byte(st.BreakdownJSON), &out.Breakdown); err != nil || out.Breakdown == nil {
@@ -149,17 +137,12 @@ func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (
 	}
 	for _, l := range limits {
 		hasSample := false
-		if st.FetchedAt != nil && l.ResetsAt != nil && (provider != "codex" || known) {
+		if st.FetchedAt != nil && l.ResetsAt != nil && (!source.identityRequired || known) {
 			since := st.FetchedAt.Add(-retention)
 			if start, ok := windowStart(l); ok {
 				since = start
 			}
-			var samples []db.PlanUsageSample
-			if provider == "codex" {
-				samples, err = store.CodexPlanUsageHistory(scope, l.Key, since, *st.FetchedAt, *l.ResetsAt)
-			} else {
-				samples, err = store.PlanUsageHistory(l.Key, since, *st.FetchedAt, *l.ResetsAt)
-			}
+			samples, err := source.history(store, row, l.Key, since, *st.FetchedAt, *l.ResetsAt)
 			if err != nil {
 				return nil, err
 			}
@@ -167,7 +150,7 @@ func ReadStatus(store ReadStore, provider string, enabled bool, now time.Time) (
 			out.HistoryAvailable = out.HistoryAvailable || hasSample
 		}
 		projection, err := EvaluateProjection(ProjectionContext{Now: now, FeatureEnabled: enabled, State: st.State, FetchedAt: st.FetchedAt,
-			IdentityRequired: provider == "codex", IdentityKnown: known, HasCurrentSample: hasSample}, l, plot.Limits[l.Key])
+			IdentityRequired: source.identityRequired, IdentityKnown: known, HasCurrentSample: hasSample}, l, plot.Limits[l.Key])
 		if err != nil {
 			return nil, err
 		}
@@ -193,7 +176,7 @@ func safeStoredReason(reason string) string {
 func Collect(ctx context.Context, requested string, refresh, enabled bool, read func(string) (*PublicStatus, error), refreshers map[string]func(context.Context) error) Envelope {
 	names := []string{requested}
 	if requested == "all" {
-		names = []string{"claude", "codex"}
+		names = Sources()
 	}
 	out := Envelope{SchemaVersion: 1, RequestedProvider: requested, RefreshRequested: refresh, FeatureEnabled: enabled, Providers: make([]ProviderResult, len(names))}
 	var wg sync.WaitGroup

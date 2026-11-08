@@ -27,9 +27,7 @@ var usagePlansCmd = &cobra.Command{
 		if len(args) != 0 {
 			return usageError("usage plans accepts no positional arguments")
 		}
-		switch flagUsagePlansProvider {
-		case "all", "claude", "codex":
-		default:
+		if flagUsagePlansProvider != "all" && !planusage.HasSource(flagUsagePlansProvider) {
 			return usageError("invalid plans provider %q", flagUsagePlansProvider)
 		}
 		return nil
@@ -116,7 +114,7 @@ func runUsagePlans(cmd *cobra.Command, _ []string) error {
 		return planusage.ReadStatus(database, provider, currentEnabled, time.Now().UTC())
 	}
 	if openErr != nil && flagUsagePlansNow && enabled {
-		for _, name := range []string{"claude", "codex"} {
+		for _, name := range planusage.Sources() {
 			refreshers[name] = func(context.Context) error { return &planusage.OperationError{Code: "storage", Cause: openErr} }
 		}
 	}

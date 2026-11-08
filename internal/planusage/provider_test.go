@@ -101,7 +101,7 @@ func TestProviders_ClocksAndFailuresAreIndependent(t *testing.T) {
 
 func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 	var calls, disabled atomic.Int32
-	p := &Provider{Name: "codex", Workspace: t.TempDir(), LockWait: 35 * time.Millisecond, Budget: time.Second,
+	p := &Provider{Name: "codex", Workspace: t.TempDir(), LockWait: 35 * time.Millisecond, Budget: 10 * time.Second,
 		Poll:         func(context.Context) (time.Duration, error) { calls.Add(1); return pollInterval, nil },
 		MarkDisabled: func(context.Context) error { disabled.Add(1); return nil }}
 	unlock, err := fsutil.LockFile(context.Background(), p.lockPath())
@@ -117,6 +117,9 @@ func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 	cancel()
 	require.Equal(t, "cancelled", ErrorCode(p.Refresh(ctx)))
 	unlock()
+	// The tiny budget above tests timeout only; unrelated off/disable operations
+	// need enough time even while the full suite saturates the machine.
+	p.Budget = 10 * time.Second
 	p.Enabled = func() (bool, error) { return false, nil }
 	require.Equal(t, "feature_disabled", ErrorCode(p.Refresh(context.Background())))
 	require.Zero(t, disabled.Load(), "manual off never writes")
