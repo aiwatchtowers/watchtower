@@ -88,72 +88,96 @@ struct InboxFolderMenu: View {
     private func folderRow(_ row: InboxFolderRow) -> some View {
         if let draft = content.folderDraft, draft.target == .rename(row.id) {
             draftField(draft, depth: row.depth)
+        } else if row.kind == .owner {
+            // Only an owner folder lifts a drag: the root and Needs approval
+            // never move. A row's kind never changes, so the branch keeps its
+            // identity; read-only is the model's call (`beginDrag`).
+            menuRow(row).onDrag { dragProvider(row) }
         } else {
-            let pending = content.pendingMoveID == row.id
-            let selected = content.selection == row.id
-            HoverReader { hovered in
-                HStack(spacing: Spacing.compact) {
-                    disclosure(row)
-                    Image(systemName: row.systemImage)
-                        .foregroundStyle(row.kind == .owner ? Color.secondary : Color.accentColor)
-                        .frame(width: IconSize.header)
-                    Text(row.title)
-                        .font(.callout.weight(row.kind == .root ? .semibold : .regular))
-                        .lineLimit(1)
-                    if row.hidden {
-                        Text("Hidden").font(.caption).foregroundStyle(.secondary)
+            menuRow(row)
+        }
+    }
+
+    /// The drag of an owner folder: its id as the in-process folder type.
+    private func dragProvider(_ row: InboxFolderRow) -> NSItemProvider {
+        onAction(.beginDrag(row.id))
+        let provider = NSItemProvider()
+        let id = row.id
+        provider.registerDataRepresentation(
+            forTypeIdentifier: UTType.inboxFolder.identifier, visibility: .ownProcess
+        ) { completion in
+            completion(Data(String(id).utf8), nil)
+            return nil
+        }
+        return provider
+    }
+
+    /// A folder row as it reads and takes a drop (every row does).
+    private func menuRow(_ row: InboxFolderRow) -> some View {
+        let pending = content.pendingMoveID == row.id
+        let selected = content.selection == row.id
+        return HoverReader { hovered in
+            HStack(spacing: Spacing.compact) {
+                disclosure(row)
+                Image(systemName: row.systemImage)
+                    .foregroundStyle(row.kind == .owner ? Color.secondary : Color.accentColor)
+                    .frame(width: IconSize.header)
+                Text(row.title)
+                    .font(.callout.weight(row.kind == .root ? .semibold : .regular))
+                    .lineLimit(1)
+                if row.hidden {
+                    Text("Hidden").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: Spacing.small)
+                if pending {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    if row.count >= 1 {
+                        Text("\(row.count)")
+                            .font(.caption)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
                     }
-                    Spacer(minLength: Spacing.small)
-                    if pending {
-                        ProgressView().controlSize(.mini)
-                    } else {
-                        if row.count >= 1 {
-                            Text("\(row.count)")
-                                .font(.caption)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        // The folder's ⋯ (spec: "also its context menu"): on
-                        // the row under the pointer and on the selected one.
-                        if hovered || selected {
-                            InboxMoreMenu(entries: menuEntries(row), help: "\(row.title) Options",
-                                          readOnly: content.isReadOnly) { onAction(.menu(folderID: row.id, $0)) }
-                        }
+                    // The folder's ⋯ (spec: "also its context menu"): on
+                    // the row under the pointer and on the selected one.
+                    if hovered || selected {
+                        InboxMoreMenu(entries: menuEntries(row), help: "\(row.title) Options",
+                                      readOnly: content.isReadOnly) { onAction(.menu(folderID: row.id, $0)) }
                     }
                 }
             }
-            .padding(.leading, Spacing.medium * CGFloat(row.depth))
-            .kitRow(isSelected: selected)
-            .overlay {
-                if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .into) {
-                    RoundedRectangle(cornerRadius: Radius.row)
-                        .strokeBorder(Color.accentColor, lineWidth: Stroke.selection)
-                }
+        }
+        .padding(.leading, Spacing.medium * CGFloat(row.depth))
+        .kitRow(isSelected: selected)
+        .overlay {
+            if content.dropIndicator == InboxFolderDrop(targetID: row.id, placement: .into) {
+                RoundedRectangle(cornerRadius: Radius.row)
+                    .strokeBorder(Color.accentColor, lineWidth: Stroke.selection)
             }
-            .opacity(row.hidden || pending ? 0.5 : 1)
-            .contentShape(Rectangle())
-            .onTapGesture { onAction(.select(row.id)) }
-            .modifier(FolderDragModifier(row: row, draggedID: content.draggedID, indicator: content.dropIndicator,
-                                         onAction: onAction))
-            .contextMenu {
-                InboxMenuItems(entries: menuEntries(row), readOnly: content.isReadOnly) {
-                    onAction(.menu(folderID: row.id, $0))
-                }
+        }
+        .opacity(row.hidden || pending ? 0.5 : 1)
+        .contentShape(Rectangle())
+        .onTapGesture { onAction(.select(row.id)) }
+        .onDrop(of: [.inboxFolder], delegate: FolderDropDelegate(
+            rowID: row.id, draggedID: content.draggedID, indicator: content.dropIndicator, onAction: onAction))
+        .contextMenu {
+            InboxMenuItems(entries: menuEntries(row), readOnly: content.isReadOnly) {
+                onAction(.menu(folderID: row.id, $0))
             }
-            // One VoiceOver element per folder: its default action selects
-            // it, and its ⋯ entries (and Expand/Collapse) are named actions,
-            // so the options never depend on hover.
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
-            .accessibilityAction { onAction(.select(row.id)) }
-            .accessibilityActions {
-                if row.kind == .owner, content.hasChildren(row) {
-                    Button(row.isExpanded ? "Collapse" : "Expand") { onAction(.toggleExpanded(row.id)) }
-                }
-                ForEach(Array(accessibilityEntries(row).enumerated()), id: \.offset) { _, entry in
-                    Button(entry.title) {
-                        if let command = entry.command { onAction(.menu(folderID: row.id, command)) }
-                    }
+        }
+        // One VoiceOver element per folder: its default action selects
+        // it, and its ⋯ entries (and Expand/Collapse) are named actions,
+        // so the options never depend on hover.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { onAction(.select(row.id)) }
+        .accessibilityActions {
+            if row.kind == .owner, content.hasChildren(row) {
+                Button(row.isExpanded ? "Collapse" : "Expand") { onAction(.toggleExpanded(row.id)) }
+            }
+            ForEach(Array(accessibilityEntries(row).enumerated()), id: \.offset) { _, entry in
+                Button(entry.title) {
+                    if let command = entry.command { onAction(.menu(folderID: row.id, command)) }
                 }
             }
         }
@@ -312,42 +336,9 @@ extension UTType {
     static let inboxFolder = UTType(exportedAs: "com.watchtower.inbox-folder", conformingTo: .data)
 }
 
-/// Drag and drop on a folder row (spec "Drag"): every row offers a drag and
-/// takes a drop, before it (its top band) or into it. Which folder may move,
-/// and where, is the model's call: only an owner folder starts a drag, and a
+/// A folder row's drop (spec "Drag"): every row takes one, before it (its
+/// top band) or into it. Where a folder may land is the model's call: a
 /// refused drop draws no indicator and is forbidden.
-private struct FolderDragModifier: ViewModifier {
-    let row: InboxFolderRow
-    let draggedID: Int64?
-    let indicator: InboxFolderDrop?
-    let onAction: (InboxFolderMenuAction) -> Void
-
-    /// Only an owner folder lifts a drag: the root and Needs approval never
-    /// move. A row's kind never changes, so the branch keeps its identity;
-    /// read-only is the model's call (`beginDrag`).
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        let droppable = content.onDrop(of: [.inboxFolder], delegate: FolderDropDelegate(
-            rowID: row.id, draggedID: draggedID, indicator: indicator, onAction: onAction))
-        if row.kind == .owner {
-            droppable.onDrag {
-                onAction(.beginDrag(row.id))
-                let provider = NSItemProvider()
-                let id = row.id
-                provider.registerDataRepresentation(
-                    forTypeIdentifier: UTType.inboxFolder.identifier, visibility: .ownProcess
-                ) { completion in
-                    completion(Data(String(id).utf8), nil)
-                    return nil
-                }
-                return provider
-            }
-        } else {
-            droppable
-        }
-    }
-}
-
 /// Internal (not private) so `InboxFolderDropTests` can check `action(for:)`.
 struct FolderDropDelegate: DropDelegate {
     let rowID: Int64
