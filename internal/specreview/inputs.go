@@ -155,7 +155,10 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	design := len(mockups) > 0 || screenWord.MatchString(ask.DocSnapshot) ||
 		(target != nil && screenWord.MatchString(target.Text+"\n"+target.Intent))
 
-	in.add("review", reviewHeader(ask, t, design))
+	if err := in.setLoopRound(d.DB, ask); err != nil {
+		return Sources{}, "", nil, err
+	}
+	in.add("review", reviewHeader(ask, t, design, in.src.LoopRound))
 	in.add("document", ask.DocSnapshot)
 	in.conversation(ctx, d, ask)
 	if err := in.asks(d.DB, ask); err != nil {
@@ -173,9 +176,6 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	if err := in.previous(d.DB, ask); err != nil {
 		return Sources{}, "", nil, err
 	}
-	if err := in.setLoopRound(d.DB, ask); err != nil {
-		return Sources{}, "", nil, err
-	}
 	if err := in.closed(d.DB, ask); err != nil {
 		return Sources{}, "", nil, err
 	}
@@ -190,9 +190,15 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	return in.src, dataLine + "\n\n" + strings.Join(in.blocks, "\n"), in.notes, nil
 }
 
-func reviewHeader(ask *db.OwnerAsk, t DocType, design bool) string {
+// reviewHeader renders the review block. loopRound is Sources.LoopRound: a
+// loop round under the open-ended rules gets a "loop_round: N" line, so the
+// prompt's round-2 and round-3 rules can be applied; any other review has none.
+func reviewHeader(ask *db.OwnerAsk, t DocType, design bool, loopRound int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "doc_type: %s\npath: %s\ntitle: %s\n", t, ask.DocPath, ask.Title)
+	if loopRound > 0 {
+		fmt.Fprintf(&b, "loop_round: %d\n", loopRound)
+	}
 	if s := strings.TrimSpace(ask.Summary); s != "" {
 		fmt.Fprintf(&b, "summary: %s\n", s)
 	}

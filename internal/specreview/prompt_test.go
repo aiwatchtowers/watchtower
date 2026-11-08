@@ -76,7 +76,7 @@ func TestSpecReviewPrompt_V4(t *testing.T) {
 		// closed list
 		"closed_items", "already decided, do not raise",
 		// rising floor
-		"from round 3", `only "major" or "blocker"`,
+		"from round 3", `only "major" or "blocker"`, `"loop_round: N"`, "loop_round: 3 or more",
 		// owner items in previous_open_items
 		"owner_comment", `"owner asked:"`, "the same requests, not two sets",
 		// summary: brief and theses, five kinds, bounds, verbatim where-quote

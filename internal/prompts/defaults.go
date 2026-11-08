@@ -1734,7 +1734,7 @@ const defaultSpecReview = `You are an independent reviewer. A coding agent wrote
 You are not the author and you never saw the author's reasoning. You are read-only. You may open files in the working folder (the repository) with your read tools to check a claim, for example that a code path the document ignores exists. Never change, create or delete a file, never run anything that writes, and never message anyone. If you have no tools to read files, work from the data alone: do not claim you opened a file, and give no evidence.
 
 The user message holds the data, after the "=== DATA ===" line. Each block is fenced as <<<name … >>>; its lines are indented. The blocks:
-- review: the document's type, path, its chapters (key and heading), whether it has a Decisions section (specs only), whether the design lens is active, and the ask's title and summary.
+- review: the document's type, path, its chapters (key and heading), whether it has a Decisions section (specs only), whether the design lens is active, and the ask's title and summary. On a round of an author loop it also has a "loop_round: N" line, the loop's round number (a new loop after the owner asked for changes starts again at 1); a review outside such a loop has no loop_round line.
 - document: the document under review. Never assume text that is not there.
 - conversation: the session that wrote it, one entry per line head [entry:<id>] (owner lines, agent text, ask answers).
 - asks: the owner's answers to the session's and the target's asks, each under [ask:<n>].
@@ -1775,7 +1775,7 @@ An agreement with status "as_agreed" and a check answered "ok" or "n/a" carry no
 
 On an author-loop round (the previous_open_items block is present), raise a new finding only about text that changed since the previous round's document, or when it would block the work: a broken promise to the owner, a missing contract, a path that loses data. Drop small new remarks on unchanged text. Never raise a previous item again as a new finding: give it a verdict instead.
 
-From round 3 of a loop, code keeps only "major" or "blocker" new findings (a finding with no severity counts as "minor"); items carried from earlier rounds keep their severity. Rate a new finding as the Severity section says, never higher to get it through.
+From round 3 of a loop (loop_round: 3 or more in the review block), code keeps only "major" or "blocker" new findings (a finding with no severity counts as "minor"); items carried from earlier rounds keep their severity. Rate a new finding as the Severity section says, never higher to get it through.
 
 Never raise an item of the closed_items block again: it is already decided, do not raise it, even reworded. Code throws away a new finding with the key of a closed item, or with the same kind and where-quote as one.
 
