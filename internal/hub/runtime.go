@@ -344,6 +344,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishNow(toKinds(kinds)...) },
 		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact, Latency: h.lat,
+		EpochFor: h.phoneEpoch,
 	}
 	if o.Desktop != nil {
 		// One processor per transport, the switcher their Switch; the
@@ -353,7 +354,12 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		}
 	} else {
 		h.proc = actions.NewProcessor(ac)
+		// No switcher: the transport alone says whether the hub is on the
+		// relay (the processor's rule), never a stale hub_meta.transport.
+		tr := h.tr
+		h.kr.SetRelayRule(func(*sql.Tx) (bool, error) { return tr.Kind() == transport.KindRelay, nil })
 	}
+	h.kr.SetHeld(h.isHeld)
 	sweepTemps(o, st)
 	if o.DB != nil {
 		// Registered after the processor exists: the handlers' start may
@@ -1101,7 +1107,10 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	if err := h.center.Sweep(); err != nil {
 		log.Printf("hub: link sweep failed (%s)", errClass(err))
 	}
-	rotated, err := h.kr.RotateIfDue()
+	// Weekly on the relay, every 90 days elsewhere; never inside a running
+	// switch (it begins its own epoch); on the relay not while held or
+	// serving nobody, but for the hold's end (identity.RotateIfDue).
+	rotated, err := h.kr.RotateIfDue(rotationAlso)
 	if err != nil {
 		log.Printf("hub: epoch rotation check failed (%s)", errClass(err))
 	}
@@ -1109,9 +1118,13 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 		h.pub.PublishSoon(slices.AllKinds...)
 	}
 	// Relay sim rule 14: a retired epoch's keys go once every phone acked a
-	// newer one and no held action is sealed in it, 7 days at most.
+	// newer one and no held action is sealed in it, 7 days at most; an epoch
+	// that began on the relay is erased then (ask #1066).
 	if err := h.kr.RetireOld(); err != nil {
 		log.Printf("hub: retiring old epochs failed (%s)", errClass(err))
+	}
+	if _, err := h.kr.EraseExpired(); err != nil {
+		log.Printf("hub: erasing expired relay epochs failed (%s)", errClass(err))
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()

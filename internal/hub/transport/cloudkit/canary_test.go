@@ -68,7 +68,7 @@ func newCanary(t *testing.T) *canary {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys, err := r.kr.KeyboxKeys()
+	keys, err := r.kr.KeyboxKeysFor(secure.ID{})
 	if err != nil {
 		t.Fatal(err)
 	}

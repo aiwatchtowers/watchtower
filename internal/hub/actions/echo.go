@@ -189,15 +189,19 @@ func expectSeq(seq uint64) state.Control {
 
 var expectAbsent = state.Control{Expect: state.ExpectAbsent}
 
-// sealEcho seals a's echo with o for the phone at b, overwriting wireName
-// under expect. Sealing happens before the deciding transaction: the Sealer
+// sealEcho seals a's echo with o for the phone at b (in the epoch phoneSealer
+// picks), overwriting wireName under expect. Sealing happens before the deciding transaction: the Sealer
 // may write the seq ceiling in a transaction of its own.
 func (p *Processor) sealEcho(b mailbox, wireName, plain string, a wire.ActionRequest, o Outcome, expect state.Control) (queued, error) {
 	payload, err := echoPayload(a, o)
 	if err != nil {
 		return queued{}, err
 	}
-	rec, err := p.cfg.Sealer.ToPhone(b.zone, b.id, wireName, kindAction, plain, payload)
+	sealer, err := p.phoneSealer(b)
+	if err != nil {
+		return queued{}, err
+	}
+	rec, err := sealer.ToPhone(b.zone, b.id, wireName, kindAction, plain, payload)
 	if err != nil {
 		return queued{}, fmt.Errorf("actions: sealing an echo: %w", err)
 	}

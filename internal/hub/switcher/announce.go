@@ -95,12 +95,14 @@ func (s *Switcher) drain(ctx context.Context, from transport.Kind) {
 	}
 }
 
-// rotate begins the switch's epoch once: the record gets the new epoch, and
-// switched_at/switched_by the switch, in the rotation's own transaction; a
-// record replaced meanwhile (a later request won) rotates nothing (skipped).
+// rotate begins the switch's epoch once, toward its target (identity.RotateToward:
+// on the relay or not, and the relay keys with it): the record gets the new
+// epoch, and switched_at/switched_by the switch, in the rotation's own
+// transaction; a record replaced meanwhile (a later request won) rotates
+// nothing (skipped).
 func (s *Switcher) rotate(r switchRecord) (skipped bool, err error) {
 	skipped = true
-	err = s.c.Keys.RotateWith(identity.ReasonTransportSwitch, func(tx *sql.Tx) error {
+	err = s.c.Keys.RotateToward(identity.ReasonTransportSwitch, r.Target == transport.KindRelay, func(tx *sql.Tx) error {
 		cur, ok, err := recordTx(tx)
 		if err != nil {
 			return err
@@ -270,6 +272,13 @@ func (s *Switcher) announce(r switchRecord) error {
 		}
 		if err := state.SetMetaTx(tx, MetaTransport, string(r.Target)); err != nil {
 			return err
+		}
+		if r.Target != transport.KindRelay {
+			// Never outlives the relay: an answered read between the
+			// rotation (which removed it) and now may have written it back.
+			if err := state.DeleteMetaTx(tx, state.MetaServingNobodySince); err != nil {
+				return err
+			}
 		}
 		if err := s.oweMarkersTx(tx, r, owed); err != nil {
 			return err

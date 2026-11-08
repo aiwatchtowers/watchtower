@@ -116,10 +116,26 @@ type Phone struct {
 	// (Stored.Creator, on a transport with WriteAs such as the memfake).
 	Creator string
 
+	// EchoEpochs is the epoch each action's last echo read was sealed in.
+	EchoEpochs map[uint64]uint32
+	// Guard, when set, is the Kit's rollback guard on hub records
+	// (RollbackGuard.swift): per wire name the newest (epoch, seq) opened,
+	// epoch first; an older version is dropped unhandled and listed in
+	// RolledBack.
+	Guard      bool
+	RolledBack []string
+	seen       map[string][2]uint64
+
 	// dataKeys is K_data per epoch the phone was given (Keep, Follow:
 	// switch.go); cursors is the mailbox cursor per record store left (Use).
 	dataKeys map[uint32][]byte
 	cursors  map[storeZone]uint64
+
+	// The Kit's ephemeral relay state (relay client Phase 5, ephemeral.go):
+	// current and offered are the two dev_eph private keys, pairs the
+	// wt/relay/v2/ keys of each epoch a keybox named relay_kx for.
+	current, offered *ecdh.PrivateKey
+	pairs            map[uint32]map[secure.Direction][]byte
 }
 
 // New makes a phone with fresh keys.
@@ -458,9 +474,15 @@ func (p *Phone) Sync() (int, error) {
 			if err != nil {
 				continue // the phone's own records
 			}
+			if p.Guard && p.rolledBack(rec) {
+				continue
+			}
 			n++
 			switch f.Kind {
 			case "action":
+				if h, err := secure.ParseHeader(rec.Envelope); err == nil {
+					p.noteEchoEpoch(f, h.Epoch)
+				}
 				if err := p.onEcho(rec, f); err != nil {
 					return n, err
 				}
@@ -685,7 +707,12 @@ func (p *Phone) ownRecord(rec transport.Stored) bool {
 	return err == nil
 }
 
+// relayKey is the stored pair's key of epoch when the phone holds one, else
+// the static wt/relay/v1/ key (the phone's rule for a relay key).
 func (p *Phone) relayKey(dir secure.Direction, epoch uint32) ([]byte, error) {
+	if pair, ok := p.pairs[epoch]; ok {
+		return bytes.Clone(pair[dir]), nil
+	}
 	return secure.RelayKey(p.kx, p.cfg.HubKX, p.nonce, p.cfg.Hub, p.id, epoch, dir)
 }
 
@@ -835,8 +862,7 @@ func (p *Phone) ReadKeybox(zone string) (wire.Keybox, bool, error) {
 			if rec.Name != want {
 				continue
 			}
-			_, f, err := secure.OpenHPKE(rec.Envelope, secure.ClassKeybox, p.kx, secure.KeyboxInfo(p.cfg.Hub, p.id),
-				secure.Context{Zone: secure.ZoneData, WireName: rec.Name}, p.cfg.HubSig)
+			f, err := p.openKeybox(rec)
 			if err != nil {
 				return wire.Keybox{}, false, fmt.Errorf("hubtest: opening the keybox: %w", err)
 			}
@@ -848,6 +874,9 @@ func (p *Phone) ReadKeybox(zone string) (wire.Keybox, bool, error) {
 				meta, err := base64.RawURLEncoding.DecodeString(kb.Keys.MetaKey)
 				if err != nil {
 					return wire.Keybox{}, false, fmt.Errorf("hubtest: keybox meta key: %w", err)
+				}
+				if err := p.takeRelayKX(*kb.Keys); err != nil {
+					return wire.Keybox{}, false, err
 				}
 				p.cfg.MetaKey, p.cfg.Epoch = meta, kb.Keys.Epoch
 			}

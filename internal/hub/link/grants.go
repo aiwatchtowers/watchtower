@@ -88,15 +88,18 @@ func (c *Center) Keyboxes() ([]wire.Keybox, error) {
 		c.beforeKeys()
 	}
 	if keyed {
-		keys, err := c.keys.KeyboxKeys()
-		if err != nil {
-			return nil, fmt.Errorf("link: keybox keys: %w", err)
-		}
 		for i := range linked {
-			if linked[i].Keys != nil {
-				k := keys
-				linked[i].Keys = &k
+			if linked[i].Keys == nil {
+				continue
 			}
+			// Each phone's own: relay_kx names its relay-key pair (Phase 5).
+			// An id that is not a UUID has no relay keys: static, as before.
+			id, _ := secure.ParseID(linked[i].Grant.DeviceID)
+			keys, err := c.keys.KeyboxKeysFor(id)
+			if err != nil {
+				return nil, fmt.Errorf("link: keybox keys: %w", err)
+			}
+			linked[i].Keys = &keys
 		}
 	}
 	room := max(0, MaxGrantRecords-len(linked))

@@ -565,3 +565,40 @@ func TestControlQueueKeepsA64BitRecordVersion(t *testing.T) {
 		t.Fatalf("PendingControls = %+v %v", got, err)
 	}
 }
+
+// A checkpoint a reader blocks reports busy as an error: its WAL is not
+// truncated, so the caller can retry.
+func TestCheckpointBlockedByAReaderIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetMeta("k", "v"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(path) // another process's read-only reader
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	tx, err := other.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v string
+	if err := tx.QueryRow(`SELECT value FROM hub_meta WHERE key = 'k'`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMeta("k", "w"); err != nil { // a frame the reader's snapshot pins
+		t.Fatal(err)
+	}
+	if err := s.Checkpoint(); !errors.Is(err, ErrCheckpointBusy) {
+		t.Fatalf("Checkpoint under a reader = %v, want ErrCheckpointBusy", err)
+	}
+	_ = tx.Rollback()
+	if err := s.Checkpoint(); err != nil {
+		t.Fatalf("Checkpoint with no reader = %v", err)
+	}
+}

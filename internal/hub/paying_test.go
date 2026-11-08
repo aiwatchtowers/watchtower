@@ -922,7 +922,7 @@ func TestAMovedRelayIDPaysForItsProver(t *testing.T) {
 		vouched: func() bool { return true },
 		clock:   now,
 	}
-	h := &hubRuntime{sup: &supervisor{o: Options{Clock: now}}, st: st, acct: r}
+	h := &hubRuntime{sup: &supervisor{o: Options{Clock: now}}, st: st, kr: kr, acct: r}
 	before, err := h.payingByDevice(t.Context())
 	if err != nil || !before[stale] || before[prover] {
 		t.Fatalf("before the record: %v %v", before, err)
