@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providerrouting"
@@ -52,7 +53,14 @@ var (
 	aiFlagContextID         string
 	aiFlagEvents            string
 	aiFlagReadFolder        string
+	// aiFlagPurpose records this query's LLM calls under its own purpose
+	// in the usage ledger (one of queryPurposes; "" keeps the default).
+	aiFlagPurpose string
 )
+
+// queryPurposes are the --purpose values ai query accepts: embedded chats
+// whose turns the usage ledger shows apart from the plain chat.
+var queryPurposes = map[string]bool{"spec_review.discuss": true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
@@ -136,6 +144,21 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
 		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
+	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
+		"record this query's LLM calls under this usage purpose (spec_review.discuss); exit 2 on any other value")
+}
+
+// queryContext tags ctx with the --purpose value for the LLM usage ledger.
+// "" returns ctx unchanged; a value outside queryPurposes is a usage error
+// (exit 2).
+func queryContext(ctx context.Context, purpose string) (context.Context, error) {
+	if purpose == "" {
+		return ctx, nil
+	}
+	if !queryPurposes[purpose] {
+		return nil, usageError("unknown --purpose %q", purpose)
+	}
+	return llmusage.WithPurpose(ctx, purpose), nil
 }
 
 // withOwnerInstructions appends the owner's chat slot to a non-empty system
@@ -293,6 +316,10 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
 	defer cancel()
+	ctx, err = queryContext(ctx, aiFlagPurpose)
+	if err != nil {
+		return err
+	}
 
 	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
 
