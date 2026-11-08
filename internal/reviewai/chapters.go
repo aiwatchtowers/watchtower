@@ -90,6 +90,9 @@ func writeBatch(s *strings.Builder, b Batch, notes []db.ReviewNote) {
 	for _, f := range b.Files {
 		if fileLines(f) == 0 {
 			fmt.Fprintf(s, "%s (+%d −%d) — not shown [chapter %s]\n", f.Path, f.Additions, f.Deletions, chapterOf[f.Path])
+			if n := b.omitted[f.Path]; n > 0 {
+				fmt.Fprintf(s, "(+%d lines not shown)\n", n)
+			}
 			continue
 		}
 		fmt.Fprintf(s, "--- %s (%s, +%d −%d) [chapter %s]\n", f.Path, f.Status, f.Additions, f.Deletions, chapterOf[f.Path])

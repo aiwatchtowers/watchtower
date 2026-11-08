@@ -201,10 +201,10 @@ func (b *Batch) addFile(f reviewdiff.File, n int) {
 		cut.Hunks = append(cut.Hunks, h)
 		left -= len(h.Lines)
 	}
-	if n > 0 {
-		if rest := fileLines(f) - n; rest > 0 {
-			b.omitted[f.Path] = rest
-		}
+	// A readable file the budget cut, even to nothing, says how much is
+	// missing; a binary or collapsed one is "not shown" by name only.
+	if rest := fileLines(f) - n; rest > 0 && shownLines(f) > 0 {
+		b.omitted[f.Path] = rest
 	}
 	b.Files = append(b.Files, cut)
 	b.Lines += n

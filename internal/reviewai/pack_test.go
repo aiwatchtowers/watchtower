@@ -120,7 +120,9 @@ func TestPack_OversizedChapterIsCutDangerFirst(t *testing.T) {
 	// 120 + 7×300 = 2220 lines; h7 shows 280, h8 nothing.
 	assert.Contains(t, out, "--- huge/h7.go")
 	assert.Contains(t, out, "(+70 lines not shown)")
-	assert.Contains(t, out, "huge/h8.go (+350 −0) — not shown")
+	assert.Contains(t, out, "huge/h8.go (+350 −0) — not shown [chapter ")
+	assert.Contains(t, out, "— not shown [chapter "+huge.Chapters[0].Key+"]\n(+350 lines not shown)",
+		"a file the budget cut to nothing says so, unlike a binary one")
 }
 
 func TestPack_UnshownChapterIsNotPackedButDescribed(t *testing.T) {
