@@ -222,3 +222,19 @@ func TestPack_OneBatchListsLeftOutFiles(t *testing.T) {
 	assert.Equal(t, []string{"assets/logo.png"}, sum.Coverage[0].Where)
 	assert.Equal(t, []string{"assets/logo.png"}, sum.OutOfScope)
 }
+
+// Pack's collapsedKey is the map's "Can skip" chapter key (reviewmap keeps
+// its own copy unexported): the two must not drift apart.
+func TestPack_CollapsedKeyMatchesTheMap(t *testing.T) {
+	d := okDiff()
+	d.Files = append(d.Files, reviewdiff.File{Path: "go.sum", Status: "modified", Additions: 40, CollapsedReason: "lockfile"})
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	var keys []string
+	for _, ch := range m.Chapters {
+		if ch.Title == "Can skip" {
+			keys = append(keys, ch.Key)
+		}
+	}
+	require.Len(t, keys, 1)
+	assert.Equal(t, collapsedKey, keys[0])
+}
