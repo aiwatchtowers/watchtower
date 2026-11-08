@@ -25,4 +25,15 @@ func TestCodeQuestionGuard_ChatIngestNeverReadsCodeQuestions(t *testing.T) {
 	ok, err := d.OwnerChatTurnExists(conv, 1720000000, widest)
 	require.NoError(t, err)
 	assert.False(t, ok)
+
+	// A spec review thread (spec 2026-11-08 §3) stays in its card the same way.
+	thread := seedChatConversation(t, d, "spec_review_thread", "1:7:ag:abc")
+	seedChatMessage(t, d, thread, "user", "we decided to drop the cache", 1720000002)
+	assert.NotContains(t, widest, "spec_review_thread")
+	turns, err = d.ListOwnerChatTurns(0, widest)
+	require.NoError(t, err)
+	assert.Empty(t, turns)
+	ok, err = d.OwnerChatTurnExists(thread, 1720000002, widest)
+	require.NoError(t, err)
+	assert.False(t, ok)
 }
