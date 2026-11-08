@@ -758,6 +758,17 @@ final class Bed {
         }
     }
 
+    /// This phone's keybox of `epoch` in the Mac's relay data zone, with its keys or without (a phone the hub does not
+    /// name a reader of the zone yet).
+    func publishRelayKeybox(epoch: UInt32, withKeys: Bool) async throws {
+        let grant = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: hubID, name: "Colleague A's iPhone", scope: .private,
+            linked: true, typingAllowed: true, startSessionsAllowed: true, mayStartSessions: true, orderedActions: 1,
+            transports: ["cloudkit", "relay"], relayDeviceID: mac.deviceID, relayAuthPub: WireBytes.base64URL(macAuthPub))
+        let record = try TestPhone.grantRecord(grant, keys: withKeys ? TestPhone.keyboxKeys(epoch: epoch) : nil, modifiedAt: Date())
+        try await macSave(record, zone: "data/\(mac.deviceID)")
+    }
+
     func publishBriefings(_ ids: [String], on route: TransportKind) async throws {
         let records = ids.map {
             CloudRecordFactory.record(for: SliceRecord(kind: .briefing, id: $0, modifiedAt: Date(), payload: Data("{}".utf8)))
@@ -1117,6 +1128,8 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
     func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
     func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
+    func dropEphemeral(hubID: String) -> Bool { root.dropEphemeral(hubID: hubID) }
+    func relayKeySourceGone(hubID: String) async { await root.relayKeySourceGone(hubID: hubID) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
 
     func relayUse(for link: LinkRecord) async -> RelayUse {

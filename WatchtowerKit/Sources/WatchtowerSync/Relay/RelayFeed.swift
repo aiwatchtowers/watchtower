@@ -278,6 +278,13 @@ public actor RelayFeed {
         parked = false
     }
 
+    /// The phone's key source is gone (relay client Phase 5: a lapse, a lost slot, the hub's word that it runs without
+    /// this phone): the parked mark and the wait's first sighting go, so Now shows no parked row; with
+    /// `waitsForKeybox` false the feed then stops at a pending record with no mark (`waitForKeybox`).
+    public func keySourceGone() throws {
+        try store.endRelayWait()
+    }
+
     /// Drops the consumed relay buffer (events at or below the token just
     /// persisted) from a buffering transport. Safe on the phone: this feed is
     /// its only relay consumer, and the relay hygiene that needs full relay
@@ -494,7 +501,9 @@ public actor RelayFeed {
     @discardableResult
     public func readControls(over side: SecureTransport, handler: @escaping SideHandler) async throws -> Int {
         var deletes: [ConditionalDelete] = []
-        for record in try await side.relayHygieneScan().opened where record.kind == RelayRecordKind.control.rawValue {
+        // A record waiting for its epoch's keybox holds nothing back (relay client Phase 5): the controls behind it are
+        // read now, and it stays for a later pass, once its keys come (no token: each pass reads the whole mailbox).
+        for record in try await side.sideScan().opened where record.kind == RelayRecordKind.control.rawValue {
             guard let control = decode(ControlPayload.self, from: record),
                   control.kind == .transportSwitched || control.kind == .hubOnRelay
                     || (control.kind == .transportSwitchRejected && rejectionHandler != nil) else { continue }
@@ -518,12 +527,13 @@ public actor RelayFeed {
     public func drainMailbox(
         over side: SecureTransport, keepingDeviceRecord: Bool = false, handler: @escaping SideHandler
     ) async throws -> DrainOutcome {
-        let scan = try await side.relayHygieneScan()
+        let scan = try await side.sideScan()
         if !scan.unopenable.isEmpty {
             logger.notice("left mailbox: \(scan.unopenable.count, privacy: .public) records do not open, skipped")
         }
         var deletes: [ConditionalDelete] = []
-        var complete = true
+        // A record waiting for its epoch's keybox is neither handled nor deleted: drained again once its keys come.
+        var complete = scan.pending == 0
         var appliedEcho = false
         for record in scan.opened {
             if record.sealed?.envelopeClass == .relayToPhone {

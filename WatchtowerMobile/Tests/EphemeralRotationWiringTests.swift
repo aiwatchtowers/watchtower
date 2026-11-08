@@ -494,6 +494,8 @@ private final class FollowerMergeFailsOnce: TransportFollowerHost {
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
     func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
     func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
+    func dropEphemeral(hubID: String) -> Bool { root.dropEphemeral(hubID: hubID) }
+    func relayKeySourceGone(hubID: String) async { await root.relayKeySourceGone(hubID: hubID) }
 
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
         merges += 1

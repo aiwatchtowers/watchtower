@@ -10,6 +10,15 @@ protocol RelayLapseTarget: AnyObject {
     @MainActor var isOnRelay: Bool { get }
     /// The entitlement came back: a lapse's kept request is withdrawn. No-op on a session with none.
     @MainActor func lapseEnded() async
+    /// The Mac's relay device id while the session runs over the relay; nil otherwise.
+    @MainActor var relayMacDeviceID: String? { get }
+    /// An answered read shows the Mac in none of this phone's slots (relay client Phase 5).
+    @MainActor func relaySlotLost() async
+}
+
+extension RelayLapseTarget {
+    @MainActor var relayMacDeviceID: String? { nil }
+    @MainActor func relaySlotLost() async {}
 }
 
 extension HubSession: RelayLapseTarget {
@@ -604,8 +613,8 @@ final class RelayAccountCenter {
             readGeneration += 1
             movedAway()
             await lapseRelayMacs()
-        case .control(.slotRemoved, _):
-            await read()
+        case .control(.slotRemoved, _), .forbidden:
+            await slotCheck()
         case .unsupportedVersion, .attestation(.updateRequired):
             updateRequired = true
         case .attestation(.notSupported):
@@ -614,8 +623,24 @@ final class RelayAccountCenter {
             updateRequired = false
             pushRegistrar?.reachable()
             await pass()
-        case .control, .attestation(.retryLater), .forbidden, .reachable(false):
+        case .control, .attestation(.retryLater), .reachable(false):
             break
+        }
+    }
+
+    /// A `FORBIDDEN` or `SLOT_REMOVED` (relay client Phase 5, ask #1081): the account is read, and a relay-route
+    /// hub whose Mac is in none of this phone's slots while it pays hears `relaySlotLost()`. A failed read does
+    /// nothing and waits for the next event; a Mac still in a slot (a hub that has not named this phone a reader
+    /// yet) does nothing; a phone not paying is the lapse's (`apply`).
+    private func slotCheck() async {
+        readGeneration += 1
+        let generation = readGeneration
+        guard let state = await fetchedState(generation: generation), generation == readGeneration else { return }
+        _ = await apply(state)
+        guard state.paying, !state.moved else { return }
+        for target in targets() where target.isOnRelay {
+            guard let mac = target.relayMacDeviceID, !state.macs.contains(mac) else { continue }
+            await target.relaySlotLost()
         }
     }
 

@@ -58,6 +58,10 @@ struct LinkRecord: Codable, Equatable, Sendable {
     /// When the hub told this phone it stays on the relay for another paying phone (`hub_on_relay`, or a move to the
     /// relay this phone cannot follow), while it has not moved since. Absent on every CloudKit link.
     var hubOnRelayAt: Date?
+    /// A relay-only link the relay refuses (relay client Phase 5): set at the first `relayLapsed` (`.lapse`) or
+    /// `slotLost` (`.slot`) with no other route; its `since` starts the link's term. Absent on every other link and
+    /// in every link saved before it. One this build cannot read reads as absent.
+    var relayRefused: RelayRefusedRecord?
 
     /// A `.relay` transport needs `relayMacDeviceID` (it is the route).
     init(
@@ -80,7 +84,8 @@ struct LinkRecord: Codable, Equatable, Sendable {
         leftTransport: TransportKind? = nil,
         relayUpgrade: RelayUpgradeRecord? = nil,
         transportRequest: TransportRequestRecord? = nil,
-        hubOnRelayAt: Date? = nil
+        hubOnRelayAt: Date? = nil,
+        relayRefused: RelayRefusedRecord? = nil
     ) {
         precondition(transport != .relay || relayMacDeviceID != nil, Self.relayWithoutMac)
         self.hubID = hubID
@@ -103,6 +108,7 @@ struct LinkRecord: Codable, Equatable, Sendable {
         self.relayUpgrade = relayUpgrade
         self.transportRequest = transportRequest
         self.hubOnRelayAt = hubOnRelayAt
+        self.relayRefused = relayRefused
     }
 
     /// A `.relay` link without its Mac's relay id does not decode: the row is
@@ -130,6 +136,7 @@ struct LinkRecord: Codable, Equatable, Sendable {
         relayUpgrade = try? container.decodeIfPresent(RelayUpgradeRecord.self, forKey: .relayUpgrade)
         transportRequest = try? container.decodeIfPresent(TransportRequestRecord.self, forKey: .transportRequest)
         hubOnRelayAt = try? container.decodeIfPresent(Date.self, forKey: .hubOnRelayAt)
+        relayRefused = try? container.decodeIfPresent(RelayRefusedRecord.self, forKey: .relayRefused)
         if lacksRelayMac {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: Self.relayWithoutMac))
         }
@@ -161,12 +168,13 @@ struct LinkRecord: Codable, Equatable, Sendable {
         try container.encodeIfPresent(relayUpgrade, forKey: .relayUpgrade)
         try container.encodeIfPresent(transportRequest, forKey: .transportRequest)
         try container.encodeIfPresent(hubOnRelayAt, forKey: .hubOnRelayAt)
+        try container.encodeIfPresent(relayRefused, forKey: .relayRefused)
     }
 
     private enum CodingKeys: String, CodingKey {
         case hubID, macName, scope, ownerName, userRecordName, nonce, dataShareURL, relayShareURL, deviceID, linkedAt
         case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport, relayUpgrade
-        case transportRequest, hubOnRelayAt
+        case transportRequest, hubOnRelayAt, relayRefused
     }
 
     private static let relayWithoutMac = "a relay link without its Mac's relay device id"
@@ -228,6 +236,13 @@ struct LinkRecord: Codable, Equatable, Sendable {
         guard let relayMacDeviceID, offersCloudKit else { return nil }
         return transport == .relay ? cloudKitRoute : .hostedRelay(macDeviceID: relayMacDeviceID)
     }
+}
+
+/// Why and since when the relay refuses a relay-only link (relay client Phase 5): the link's term runs from `since`
+/// (Task 17 reads it; no merge clears it).
+struct RelayRefusedRecord: Codable, Equatable, Sendable {
+    let since: Date
+    var cause: RelayRefusal
 }
 
 /// A link written to the Mac and not answered yet (spec §2.3 step 5). Kept

@@ -23,6 +23,12 @@ protocol TransportFollowerHost: AnyObject {
     /// Erases the hub's two private ephemeral keys, stored pairs kept (`HubLinkKeys.clearingEphemeral`); false when the
     /// Keychain could not be written.
     func clearEphemeral(hubID: String) -> Bool
+    /// Erases the hub's private ephemeral keys and every stored pair (`HubLinkKeys.droppingEphemeral`): an opened
+    /// `hub_on_relay` proves the hub cleared them. false when the Keychain could not be written.
+    func dropEphemeral(hubID: String) -> Bool
+    /// The phone's relay key source is gone (a lapse, a lost slot, the hub's word that it runs without this phone):
+    /// the feed's parked mark goes and the feed stops silently at a pending record (`HubSession.keySourceGone`).
+    func relayKeySourceGone(hubID: String) async
     /// Saves `link` on its registry row in one write; false when it was not written.
     func persistRoute(_ link: LinkRecord) -> Bool
     /// Puts the hub's session on its row's route once the session's current fetch ended.
@@ -128,7 +134,8 @@ final class TransportFollower {
         }
         let state = FollowerState(
             route: link.transport ?? .cloudKit, newestEpoch: epoch, canUseRelay: canUseRelay,
-            leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link))
+            leftTransport: link.leftTransport, relaySwitchRequested: Self.upgradeRequested(link),
+            hasOtherRoute: link.offersCloudKit)
         let (next, commands) = TransportFollowerPolicy.decide(input, state: state, now: now())
         guard !commands.isEmpty else {
             Self.logger.notice("transport input left for a later pass")
@@ -167,6 +174,19 @@ final class TransportFollower {
         var decided = false
         var answered = false
         var requestSwitch: (target: TransportKind, reason: String)?
+        var withdraw = false
+        var dropEphemeral = false
+        var refused: RelayRefusal?
+
+        /// Relay client Phase 5's commands: withdraw, drop the keys, start the term.
+        mutating func takeReaderStatus(_ command: FollowerCommand) {
+            switch command {
+            case .withdrawUnechoed: withdraw = true
+            case .dropEphemeral: dropEphemeral = true
+            case .markRefused(let cause): refused = cause
+            default: break
+            }
+        }
     }
 
     /// The commands gathered into one plan.
@@ -189,6 +209,7 @@ final class TransportFollower {
                 plan.decided = true
             case .markHandled: plan.handled = true
             case .ignore: plan.decided = true
+            case .withdrawUnechoed, .dropEphemeral, .markRefused: plan.takeReaderStatus(command)
             }
         }
         return plan
@@ -210,6 +231,7 @@ final class TransportFollower {
             return false
         }
         guard await moveOutbox(plan, moves: moves) else { return false }
+        await keySource(input, plan, host: host)
         let effects = RequestEffects(plan: plan, moves: moves)
         if let move = plan.move, !persist(move, next: next, link: link, effects: effects, host: host) {
             // Nothing moved: the session goes on on its route, so its outbox writes there again.
@@ -223,9 +245,7 @@ final class TransportFollower {
         }
         // After the merge, so a kill before it keeps the keys the keybox may be sealed to. A pass read again after a
         // failed clear answers `requestAnswered` on iCloud and clears then.
-        if next.route == .cloudKit, plan.move != nil || plan.answered || plan.merge, !host.clearEphemeral(hubID: hubID) {
-            return false
-        }
+        guard eraseKeys(plan, next: next, input: input, host: host) else { return false }
         if let ack = plan.ack, let newest = host.newestEpoch(hubID: hubID), newest >= ack {
             await acknowledge(ack, offering: next.route == .relay, host: host)
         }
@@ -258,6 +278,8 @@ final class TransportFollower {
     /// to Not delivered. false when the replica could not be written.
     private func moveOutbox(_ plan: Plan, moves: Bool) async -> Bool {
         do {
+            // Before anything is listed: a withdrawn action can never be applied, so its Retry cannot run it twice.
+            if plan.withdraw { try await outbox.withdrawUnechoed() }
             if moves { await outbox.holdFlushes() }
             if plan.resend, let target = plan.move?.to { try await outbox.resendUnechoed(onNewTransport: target) }
             if plan.listUndelivered { try await outbox.listUnechoedAsUndelivered(reason: .hubOnRelay) }
@@ -285,6 +307,35 @@ final class TransportFollower {
             try await outbox.enqueueEpochAck(epoch: epoch, nextKX: nextKX)
         } catch {
             Self.logger.warning("epoch_ack not queued: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// After the merge, so a kill before it keeps the keys the keybox may be sealed to: an opened `hub_on_relay` drops
+    /// every relay key (the hub cleared them before it wrote the notice); a follow to iCloud erases the private keys,
+    /// stored pairs kept; a lost slot erases nothing. false when the Keychain could not be written.
+    private func eraseKeys(_ plan: Plan, next: FollowerState, input: FollowerInput, host: any TransportFollowerHost) -> Bool {
+        if plan.dropEphemeral { return host.dropEphemeral(hubID: hubID) }
+        guard next.route == .cloudKit, plan.move != nil || plan.answered || plan.merge, !Self.keepsKeys(input) else { return true }
+        return host.clearEphemeral(hubID: hubID)
+    }
+
+    /// A lapse, a lost slot or the hub's word that it runs without this phone ends its relay key source.
+    private func keySource(_ input: FollowerInput, _ plan: Plan, host: any TransportFollowerHost) async {
+        if Self.endsKeySource(input, plan) { await host.relayKeySourceGone(hubID: hubID) }
+    }
+
+    /// A lost slot erases no key, even when the phone moves to iCloud for it: the hub may not have acted yet, and a slot
+    /// given back meanwhile must still open a keybox sealed to the offer (F17). Its `hub_on_relay` drops them later.
+    private static func keepsKeys(_ input: FollowerInput) -> Bool {
+        if case .slotLost = input { return true }
+        return false
+    }
+
+    /// A lapse, a lost slot or the hub's word that it runs without this phone ends its relay key source.
+    private static func endsKeySource(_ input: FollowerInput, _ plan: Plan) -> Bool {
+        switch input {
+        case .relayLapsed, .slotLost: true
+        default: plan.listUndelivered
         }
     }
 
@@ -346,8 +397,11 @@ final class TransportFollower {
         let setsHubOnRelay: Bool
         /// A later move, or the hub's answer for where it runs, ends that.
         let clearsHubOnRelay: Bool
+        /// A relay-only link the relay refuses starts its term, once (`LinkRecord.relayRefused`).
+        let refused: RelayRefusal?
 
         init(plan: Plan, moves: Bool) {
+            refused = plan.refused
             let routeMoved = plan.move != nil
             setsHubOnRelay = plan.listUndelivered
             clearsRequest = moves || plan.answered || plan.listUndelivered
@@ -357,6 +411,7 @@ final class TransportFollower {
         }
 
         func apply(to link: inout LinkRecord, at date: Date) {
+            if let refused, link.relayRefused == nil { link.relayRefused = RelayRefusedRecord(since: date, cause: refused) }
             if clearsRequest { link.transportRequest = nil }
             if setsHubOnRelay {
                 link.hubOnRelayAt = date

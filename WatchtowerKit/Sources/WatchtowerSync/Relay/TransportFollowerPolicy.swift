@@ -36,6 +36,9 @@ public struct FollowerState: Equatable, Sendable {
     /// the relay in that epoch (a lapse moved the phone back to iCloud without a new one), and the phone moves as for a
     /// newer epoch.
     public var relaySwitchRequested: Bool
+    /// The link has an iCloud route to fall back to (relay client Phase 5): the hub offers CloudKit. false on a
+    /// relay-only link, which `hub_on_relay` cannot reach and which stays on the relay when refused.
+    public var hasOtherRoute: Bool
 
     public init(
         route: TransportKind,
@@ -45,7 +48,8 @@ public struct FollowerState: Equatable, Sendable {
         relayUnreachableSince: Date? = nil,
         otherMailboxPolledAt: Date? = nil,
         relaySwitchRequested: Bool = false,
-        lapseRequested: Bool = false
+        lapseRequested: Bool = false,
+        hasOtherRoute: Bool = true
     ) {
         self.route = route
         self.newestEpoch = newestEpoch
@@ -55,7 +59,14 @@ public struct FollowerState: Equatable, Sendable {
         self.otherMailboxPolledAt = otherMailboxPolledAt
         self.relaySwitchRequested = relaySwitchRequested
         self.lapseRequested = lapseRequested
+        self.hasOtherRoute = hasOtherRoute
     }
+}
+
+/// Why the relay refuses a relay-only link (relay client Phase 5, `LinkRecord.relayRefused`): its subscription
+/// ended (`lapse`), or its Mac is in none of its slots while the subscription stands (`slot`).
+public enum RelayRefusal: String, Codable, Sendable {
+    case lapse, slot
 }
 
 // The announcements keep every field flat, so each case label names one.
@@ -72,6 +83,9 @@ public enum FollowerInput: Sendable {
     case oldMailboxDrained(TransportKind)
     /// The relay refused the phone because its subscription ended (sim rule 16).
     case relayLapsed
+    /// The relay account answered with this hub's Mac in none of this phone's slots while it is on the relay (relay
+    /// client Phase 5: a `FORBIDDEN` or `SLOT_REMOVED`, then a read). The hub stops naming it a reader.
+    case slotLost
 }
 // swiftlint:enable enum_case_associated_values_count
 
@@ -97,6 +111,15 @@ public enum FollowerCommand: Equatable, Sendable {
     case markHandled(controlID: String)
     /// Ask the hub to move this phone to `target`, with the hub's own `reason` (the lapse: `lapseReason`).
     case requestSwitch(target: TransportKind, reason: String)
+    /// Relay client Phase 5: every action without an echo is withdrawn (its own record deleted under the version it
+    /// wrote), then listed as Not delivered with `refused`, so a later Retry cannot apply it twice. An echo met on the
+    /// way is applied instead; a refused delete leaves the row `sent` for the next event or the 24 h sweep.
+    case withdrawUnechoed
+    /// An opened `hub_on_relay` proves the hub cleared this phone's relay keys: the private ephemeral keys and every
+    /// stored pair go (`HubLinkKeys.droppingEphemeral`).
+    case dropEphemeral
+    /// A relay-only link the relay refuses: the link's term starts (`LinkRecord.relayRefused`, its `since` kept).
+    case markRefused(RelayRefusal)
     /// Nothing to do, and nothing to keep.
     case ignore
 }
@@ -140,7 +163,9 @@ public enum TransportFollowerPolicy {
             // The hub may know of a lapse before the phone does (Go `hubWithoutUs` always obeys); only an unknown
             // answer leaves the control for a later pass.
             if state.canUseRelay == .unknown { return (state, []) }
-            return withoutHub(state, controlID: controlID, now: now)
+            // Opened, so sealed by the hub: it cleared this phone's relay keys first (relay client Phase 5).
+            let (next, commands) = withoutHub(state, controlID: controlID, now: now)
+            return (next, insert(.dropEphemeral, before: controlID, in: commands))
         case let .relayReachable(reachable, at):
             return outage(state, reachable: reachable, at: at, now: now)
         case let .oldMailboxDrained(kind):
@@ -148,12 +173,48 @@ public enum TransportFollowerPolicy {
             if next.leftTransport == kind { next.leftTransport = nil }
             return (next, [])
         case .relayLapsed:
-            var next = state
-            next.canUseRelay = .no
-            guard state.route == .relay, !state.lapseRequested else { return (next, [.ignore]) }
-            next.lapseRequested = true
-            return (next, [.requestSwitch(target: .cloudKit, reason: lapseReason)])
+            return relayLapsed(state)
+        case .slotLost:
+            return slotLost(state, now: now)
         }
+    }
+
+    /// The relay refused this phone because its subscription ended (sim rule 16): ask the hub for iCloud once. A
+    /// relay-only link (relay client Phase 5) also withdraws and lists now, since no `hub_on_relay` can reach it; its
+    /// route stays and no key is erased (the hub may not have acted yet).
+    private static func relayLapsed(_ state: FollowerState) -> (state: FollowerState, commands: [FollowerCommand]) {
+        var next = state
+        next.canUseRelay = .no
+        guard state.route == .relay else { return (next, [.ignore]) }
+        let commands: [FollowerCommand] = state.hasOtherRoute ? [] : [.withdrawUnechoed, .markRefused(.lapse)]
+        guard !state.lapseRequested else { return (next, commands + [.ignore]) }
+        next.lapseRequested = true
+        return (next, commands + [.requestSwitch(target: .cloudKit, reason: lapseReason)])
+    }
+
+    /// The Mac is in none of this phone's slots (relay client Phase 5, ask #1081): withdraw every unechoed action,
+    /// then, with an iCloud route, move as `withoutHub` does without waiting for `hub_on_relay` (its unechoed rows are
+    /// listed when that notice comes); with none, stay and start the link's term. No key is erased: a slot given back
+    /// before the hub acts must still open a keybox sealed to the offer.
+    private static func slotLost(_ state: FollowerState, now: Date) -> (state: FollowerState, commands: [FollowerCommand]) {
+        guard state.route == .relay else { return (state, [.ignore]) }
+        guard state.hasOtherRoute else { return (state, [.withdrawUnechoed, .markRefused(.slot), .ignore]) }
+        var next = state
+        next.route = .cloudKit
+        next.leftTransport = .relay
+        next.lapseRequested = false
+        return (next, [
+            .withdrawUnechoed, .moveRoute(to: .cloudKit, epoch: state.newestEpoch, by: "", at: now),
+            .drainMailbox(on: .relay), .ignore
+        ])
+    }
+
+    /// `command` placed right before the control's `markHandled` (the control is decided last).
+    private static func insert(_ command: FollowerCommand, before controlID: String, in commands: [FollowerCommand]) -> [FollowerCommand] {
+        var out = commands
+        let at = out.firstIndex(of: .markHandled(controlID: controlID)) ?? out.endIndex
+        out.insert(command, at: at)
+        return out
     }
 
     /// A same-epoch `transport_switched{relay}` on iCloud while the phone's own relay request waits: the hub's answer

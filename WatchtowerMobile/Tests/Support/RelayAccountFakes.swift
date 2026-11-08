@@ -20,8 +20,17 @@ final class FakeLapseTarget: RelayLapseTarget {
     private(set) var lapseParked = false
     private var parkedLapse: CheckedContinuation<Void, Never>?
 
-    init(isOnRelay: Bool) {
+    /// The Mac's relay id (`relayMacDeviceID`); `slotLosses` counts `relaySlotLost()` (relay client Phase 5).
+    var relayMacDeviceID: String?
+    private(set) var slotLosses = 0
+
+    init(isOnRelay: Bool, relayMacDeviceID: String? = nil) {
         self.isOnRelay = isOnRelay
+        self.relayMacDeviceID = relayMacDeviceID
+    }
+
+    func relaySlotLost() async {
+        slotLosses += 1
     }
 
     func releaseEnd() {
