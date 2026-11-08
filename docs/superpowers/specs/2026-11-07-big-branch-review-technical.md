@@ -40,9 +40,13 @@ may be another history. Uncommitted files of the snapshot have no commit. Walk:
   skipped.
 - Any other merge is a **lane merge**: its lane name is parsed from the subject — `Merge pull
   request #N from <owner>/<branch>`, `Merge (remote-tracking )?branch '(origin/)?<b>'( into
-  '?<t>'?)?`, `Merge (origin/)?<b>[: ]`; when the parsed source equals the lane being walked,
-  the `into` target names the lane instead (a fast-forward of the parent back into a lane).
+  '?<t>'?)?`, `Merge (origin/)?<b>[: ]`; the lane is named by the source.
   Unparsed → `lane:?`. Recurse into the second parent with `excl = [first parent, base]`.
+- **A fast-forwarded reverse merge:** a merge M on lane L whose parsed source is L and whose
+  `into` target T is another lane (T merged L into itself, then L fast-forwarded to M): the
+  commits reachable from M^1 and not from M^2 or `base` are lane T (walked as a lane, tip
+  M^1, `excl = [M^2, base]`, nested merges included), and L's own walk continues from M^2.
+  The walk therefore runs segment by segment (one first-parent walk per segment).
 - A lane is an **integration lane** when its own first-parent walk contains lane merges (the
   top branch always is). A direct commit on an integration lane is labelled by its subject's
   tag, first match wins: Jira-style key `[A-Z][A-Z0-9]{1,9}-\d+` (validated against
@@ -56,8 +60,8 @@ may be another history. Uncommitted files of the snapshot have no commit. Walk:
   Its other lanes are kept as `also` labels.
 - Files changed in the snapshot but in no commit (uncommitted work, or a branch whose history
   could not be read) have no lane.
-- Bounds: at most 2,000 first-parent commits and 200 lanes per walk; past them the remaining
-  files have no lane (no error). The whole map has a 20 s budget; on timeout every file falls
+- Bounds: at most 2,000 first-parent commits and 200 lanes across the whole attribution; past
+  them the remaining files have no lane (no error) and `map.lanes_partial = true`. The whole map has a 20 s budget; on timeout every file falls
   back to the package grouping and `map.lanes_partial = true`.
 
 **Lane titles.** In order: a board target of this workbench whose `branch` equals the lane's
