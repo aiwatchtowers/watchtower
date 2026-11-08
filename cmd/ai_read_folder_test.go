@@ -250,6 +250,15 @@ func TestAIQueryReadFolder_AcceptsARegisteredSessionWorktree(t *testing.T) {
 			assert.Equal(t, "ToolSearch,Read,Grep,Glob,LS", parts[3])
 		})
 	}
+	t.Run("other letter case on a case-insensitive volume", func(t *testing.T) {
+		other := filepath.Join(filepath.Dir(wt), strings.ToUpper(filepath.Base(wt)))
+		if _, err := os.Stat(other); err != nil {
+			t.Skip("case-sensitive volume")
+		}
+		code, stdout, stderr := f.run(t, "--read-folder", other)
+		require.Equal(t, 0, code, stderr)
+		assert.Equal(t, wt, strings.Split(firstText(t, stdout), "|")[0], "cwd is the folder as it is on disk")
+	})
 	t.Run("the workbench folder still", func(t *testing.T) {
 		code, stdout, stderr := f.run(t, "--read-folder", f.folder)
 		require.Equal(t, 0, code, stderr)
@@ -337,23 +346,51 @@ func TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(fakeAdmin, "gitdir"), []byte(filepath.Join(outsideAdmin, ".git")+"\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(fakeAdmin, "commondir"), []byte(gitDir+"\n"), 0o644))
 
-	for name, dir := range map[string]string{
-		"recorded root replaced by a symlink": replaced,
-		"recorded main checkout":              repoRoot,
-		"forged pointer at the git dir":       atGitDir,
-		"forged pointer at another admin dir": reusedAdmin,
-		"git dir symlinked into a folder":     symlinked,
-		"forged admin dir outside the repo":   outsideAdmin,
-		"unrecorded worktree":                 unrecorded,
-		"another workbench's worktree":        foreign,
-		"folder inside a worktree":            sub,
-		"symlink into a worktree":             linkIn,
-		"sibling of a recorded worktree":      sibling,
+	// A ".git" directory dressed up as a linked work tree's admin dir.
+	dirPlant, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dirPlant, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dirPlant, ".git", "commondir"), []byte(gitDir+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dirPlant, ".git", "gitdir"), []byte(filepath.Join(dirPlant, ".git")+"\n"), 0o644))
+	f.recordWorktree(t, f.folder, dirPlant)
+	// Malformed: a ".git" file naming nothing, and a real worktree whose
+	// commondir is empty.
+	malformedGit, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(malformedGit, ".git"), []byte("nonsense\n"), 0o644))
+	f.recordWorktree(t, f.folder, malformedGit)
+	badCommon := readFolderWorktree(t, gitDir, "badcommon")
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, "worktrees", "badcommon", "commondir"), []byte("\n"), 0o644))
+	f.recordWorktree(t, f.folder, badCommon)
+
+	const (
+		notRecorded = "not recorded by any workbench session"
+		notLinked   = "not a linked worktree"
+		otherRepo   = "a worktree of another repository"
+		unreadable  = "unreadable"
+		notGitFile  = "its .git is not a gitdir file"
+	)
+	for name, c := range map[string]struct{ dir, reason string }{
+		"recorded root replaced by a symlink": {replaced, notRecorded},
+		"recorded main checkout":              {repoRoot, notGitFile},
+		"forged pointer at the git dir":       {atGitDir, notLinked},
+		"forged pointer at another admin dir": {reusedAdmin, notLinked},
+		"git dir symlinked into a folder":     {symlinked, notGitFile},
+		"forged admin dir outside the repo":   {outsideAdmin, notLinked},
+		"git dir planted as .git directory":   {dirPlant, notGitFile},
+		"malformed .git file":                 {malformedGit, unreadable},
+		"malformed commondir":                 {badCommon, unreadable},
+		"unrecorded worktree":                 {unrecorded, notRecorded},
+		"another workbench's worktree":        {foreign, otherRepo},
+		"folder inside a worktree":            {sub, notRecorded},
+		"symlink into a worktree":             {linkIn, notRecorded},
+		"sibling of a recorded worktree":      {sibling, notRecorded},
 	} {
 		t.Run(name, func(t *testing.T) {
-			code, stdout, stderr := f.run(t, "--read-folder", dir)
+			code, stdout, stderr := f.run(t, "--read-folder", c.dir)
 			assert.Equal(t, 2, code)
 			assert.Contains(t, stderr, "--read-folder")
+			assert.Contains(t, stderr, c.reason, "the refusal names why")
 			assert.Empty(t, stdout, "no provider ran")
 		})
 	}
