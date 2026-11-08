@@ -7,6 +7,9 @@ struct InboxRowActionsView: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
 
+    /// A proposal's own summary beside its buttons: one line, cut at this width.
+    static let summaryWidth: CGFloat = 280
+
     var body: some View {
         HStack(spacing: Spacing.compact) {
             buttons
@@ -73,7 +76,15 @@ struct InboxRowActionsView: View {
         case .reminder:
             Button("Done") { onPress(.done) }
             Button("Snooze 1h") { onPress(.snoozeHour) }
-        case let .action(buttons):
+        case let .action(summary, buttons):
+            Text(summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: Self.summaryWidth, alignment: .trailing)
+                .help(summary)
+                .accessibilityIdentifier("inboxRow.actionSummary")
             ForEach(buttons, id: \.self) { button in
                 actionButton(button)
             }

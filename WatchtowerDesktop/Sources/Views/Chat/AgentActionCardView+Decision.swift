@@ -62,4 +62,20 @@ extension AgentActionCardView {
         }
         return (approves ? [.approve] : []) + [.reject, .edit]
     }
+
+    /// The proposal's own words on one line, what an Inbox row shows next
+    /// to its buttons: the tool's name and the card's summary of the args.
+    static func rowSummary(for action: AgentAction) -> String {
+        if action.tool == SaveAutomationCardModel.tool { return SaveAutomationCardModel(action: action).title }
+        let detail: [String] = if let connector = ConnectorCallProposal(action: action) {
+            [connector.server, connector.toolName]
+        } else if action.isSessionApplied {
+            [] // unreadable: the card falls back to raw args, the row to the name
+        } else if let slack = SlackSendProposal(action: action) {
+            [slack.recipientLine, slack.text]
+        } else {
+            summaryLines(for: action)
+        }
+        return ([title(for: action)] + detail).filter { !$0.isEmpty }.joined(separator: " · ")
+    }
 }

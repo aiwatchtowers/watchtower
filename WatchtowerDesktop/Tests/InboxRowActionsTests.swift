@@ -134,7 +134,7 @@ final class InboxRowActionsTests: XCTestCase {
         }
         let vm = await strip()
         let hooks = InboxRefHooks(vm: vm, navScreens: [], sessionHoldsCall: { _ in sessionHolds })
-        guard case let .action(buttons)? = hooks.content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
+        guard case let .action(_, buttons)? = hooks.content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
             return nil
         }
         return buttons
@@ -146,6 +146,21 @@ final class InboxRowActionsTests: XCTestCase {
         // A failed apply: Retry only, as the card (Go refuses `actions dismiss` on it).
         let failed = try await actionButtons(status: "failed", error: "archived")
         XCTAssertEqual(failed, [.retry])
+    }
+
+    /// The row carries the proposal's own words, whatever the look's row title says.
+    func testActionRowShowsTheProposalsOwnSummary() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue",
+                                               argsJSON: #"{"project_key":"ACME","issue_type":"Task","summary":"Fix the link"}"#)
+        }
+        let vm = await strip()
+        guard case let .action(summary, _)? = hooks(vm).content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
+            return XCTFail("no native actions")
+        }
+        XCTAssertTrue(summary.contains("ACME"), summary)
+        XCTAssertTrue(summary.contains("Fix the link"), summary)
+        XCTAssertTrue(summary.hasPrefix(AgentActionCardView.title(for: vm.feed.proposals[0])), summary)
     }
 
     /// A pending `save_automation` is saved in the editor only: Open Draft and Reject, never Approve.

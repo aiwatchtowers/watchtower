@@ -110,7 +110,8 @@ struct InboxRefHooks {
             return feed.reminders.contains { $0.id == ref.id } ? .reminder : nil
         case .action:
             guard let action = feed.proposals.first(where: { $0.id == ref.id }) else { return nil }
-            return .action(buttons: AgentActionCardView.rowButtons(for: action, sessionHolds: sessionHoldsCall(action)))
+            return .action(summary: AgentActionCardView.rowSummary(for: action),
+                           buttons: AgentActionCardView.rowButtons(for: action, sessionHolds: sessionHoldsCall(action)))
         }
     }
 
