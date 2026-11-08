@@ -204,11 +204,11 @@
 
 **Interfaces — Produces:**
 - `struct ReviewMap: Decodable` (§2.6 keys), `enum ReviewDangerLevel: String { case breaking, significant, normal }`.
-- `enum ReviewStreamEvent { case map(ReviewMap), waiting(by: String), chapter(key: String, state: ChapterRunState, what: String?, risks: [ReviewRisk], error: ReviewRunError?), summary(ok: Bool, error: ReviewRunError?), final(ReviewEnvelope) }`; `struct ReviewOverviewStreamDecoder { mutating func feed(_ data: Data) -> [ReviewStreamEvent] }` (line-buffered; a partial last line held, Review Focus 5).
+- `enum ReviewStreamEvent { case map(ReviewMap), waiting(by: String), tick, chapter(key: String, state: ChapterRunState, what: String?, risks: [ReviewRisk], error: ReviewRunError?), summary(ok: Bool, error: ReviewRunError?), final(ReviewEnvelope) }`; `struct ReviewOverviewStreamDecoder { mutating func feed(_ data: Data) -> [ReviewStreamEvent] }` (line-buffered; a partial last line held, Review Focus 5).
 - `enum ChapterRunState { case pending, running, queued, waiting, ok, cached, failed(text: String, detail: String?), notStarted }`.
 - `enum ReviewChapterList { static func sections(_ map: ReviewMap) -> [Section]; static func counter(map:, isViewed:) -> (chapters: Int, files: Int); static func next(map:, isViewed:) -> String?; static func showsList(_ map: ReviewMap) -> Bool }` (single non-noise chapter → false).
 
-- [ ] Tests: fixtures decode; sections Breaking-and-significant / Other / Can skip; counter excludes `collapsed`; next in danger order; one-chapter map hides the list; decoder across split reads and a truncated last line.
+- [ ] Tests: fixtures decode; sections Breaking-and-significant / Other / Can skip; counter excludes `collapsed`; next in danger order; one-chapter map hides the list; decoder across split reads and a truncated last line; `{"event":"tick"}` decodes to `.tick` and an unknown event name decodes to `.tick` too (any complete line counts as life).
 - [ ] `make test-swift FILTER='ReviewMap|ReviewOverviewStream|ReviewChapterList'` → PASS. Commit.
 
 ### Task 11: ReviewChangesModel — map-driven, streamed, Retry queue
@@ -222,7 +222,7 @@
 
 **Interfaces — Produces:** on the model: `map: MapState` (`.loading | .ready(ReviewMap) | .failed`), `chapterStates: [String: ChapterRunState]`, `summaryState`, `waitingFor: String?`, `retry(chapter:)`, `retrySummary()`, `describeRemaining()`, `retryMap()`.
 
-- [ ] Tests (fake CLI): map on open and Refresh; map failure / 60 s silence → `.failed`, file list still shown, `retryMap` rebuilds; stream fills states; Retry during a run → `queued`, one follow-up `--chapter` run with all queued keys; Refresh during own run terminates it and keeps cached; Refresh while `waiting` restarts the waiter, never signals another pid; `busy` → card text with Retry; 5-min stream silence → failed; state survives navigating away and back (`reviewModels`); saved `ai:` chapter key → first chapter; a failed chapter keeps the owner sentence and the provider's `detail` apart (`failed(text, detail)`).
+- [ ] Tests (fake CLI): map on open and Refresh; map failure / 60 s silence → `.failed`, file list still shown, `retryMap` rebuilds; stream fills states; Retry during a run → `queued`, one follow-up `--chapter` run with all queued keys; Refresh during own run terminates it and keeps cached; Refresh while `waiting` restarts the waiter, never signals another pid; `busy` → card text with Retry; 5-min stream silence → failed, while a fake stream of only `tick` lines every 30 s for 10 min (fake clock) never trips it — the silence timer resets on every complete line, recognised or not; state survives navigating away and back (`reviewModels`); saved `ai:` chapter key → first chapter; a failed chapter keeps the owner sentence and the provider's `detail` apart (`failed(text, detail)`).
 - [ ] `make test-swift FILTER='ReviewChangesModel|ReviewChapters'` → PASS. Commit.
 
 ### Task 12: Branch review views
