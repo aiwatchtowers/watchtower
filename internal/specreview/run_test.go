@@ -640,3 +640,80 @@ func TestReveal_OwnerShowNowFirstRoundRunning(t *testing.T) {
 	assert.Equal(t, "", row.Loop, "the finished reviewer leaves it a plain review")
 	assert.Empty(t, row.OpenItems)
 }
+
+// seededReply is the reviewer on round 1 after the owner's Request changes:
+// the margin comment is fixed, the commented blind spot is not (and is raised
+// again, on unchanged text: a carried item the drift guards let through), the
+// thread finding gets no verdict, and one new minor blind spot on unchanged
+// text is dropped.
+func seededReply(marginKey, seedKey string) string {
+	return `{"summary":"After changes.","agreements":[],"decided_alone":[],"checks":[],"resolved":[],
+  "blind_spots":[
+    {"text":"Muted threads","why":"still not named","severity":"minor","where":{"heading":"Behaviour","quote":"` + seedQuote + `"}},
+    {"text":"Unrelated nit","why":"old text","severity":"minor","where":{"heading":"Behaviour","quote":"` + seedQuote + `"}}],
+  "verdicts":[
+    {"key":"` + marginKey + `","verdict":"resolved","note":"says what expires now"},
+    {"key":"` + seedKey + `","verdict":"open","note":"threads still unnamed"}]}`
+}
+
+func TestRun_SeededRound1VerdictsOwnerItems(t *testing.T) {
+	f := newFixture(t)
+	f.feed = []sessionfeed.Entry{{ID: "e1", Kind: sessionfeed.KindOwner, Text: "Please let me mute a channel for a day."}}
+	first, second := seededChain(t, f, "changes", runDoc, 1)
+	agent := &fakeAgent{out: seededReply(marginKey, seedKey)}
+	require.NoError(t, Run(context.Background(), f.deps(agent), second))
+
+	assert.Contains(t, agent.user, fmt.Sprintf("<<<previous_open_items ask:%d\n", first))
+	assert.Contains(t, agent.user, "["+seedKey+"] blind_spot: Muted threads — owner asked: Name the threads — author: fixed\n")
+	assert.Contains(t, agent.user, "["+marginKey+"] owner_comment: Say what expires — author: fixed\n")
+	assert.Contains(t, agent.user, "[tf:thread00000] blind_spot: Expiry after a restart — author: fixed\n")
+	assert.NotContains(t, agent.user, "<<<previous_findings")
+
+	row, open, ledger := loopColumns(t, f.d, second)
+	assert.Equal(t, "done", row.Status)
+	assert.Equal(t, "author", row.Loop, "round 1 never stalls: the loop goes on")
+	assert.Equal(t, "", row.LoopEnd)
+	var res Result
+	require.NoError(t, json.Unmarshal([]byte(row.Result), &res))
+	assert.Equal(t, map[string]int{DropUnchangedText: 1}, res.DroppedBy, "only the new nit is dropped, never the carried owner item")
+	assert.Len(t, res.Verdicts, 2)
+
+	require.Len(t, ledger, 1)
+	assert.Equal(t, [2]string{marginKey, VerdictResolved}, [2]string{ledger[0].Key, ledger[0].Verdict})
+	assert.Equal(t, KindOwnerComment, ledger[0].Kind)
+	assert.Equal(t, 1, ledger[0].Settled)
+	require.Len(t, open, 2, "the open owner item once, the thread finding without a verdict")
+	assert.Equal(t, seedKey, open[0].Key)
+	assert.Equal(t, "Name the threads", open[0].Note)
+	assert.Equal(t, "tf:thread00000", open[1].Key)
+}
+
+func TestReveal_SeededRoundFailedShowsOwnerItems(t *testing.T) {
+	f := newFixture(t)
+	_, second := seededChain(t, f, "changes", runDoc, 1)
+	require.Error(t, Run(context.Background(), f.deps(&fakeAgent{err: errors.New("boom")}), second))
+
+	row, open, ledger := loopColumns(t, f.d, second)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, "owner", row.Loop)
+	assert.Equal(t, EndReviewerFailed, row.LoopEnd)
+	assert.Empty(t, open)
+	keys := []string{}
+	for _, e := range ledger {
+		keys = append(keys, e.Key)
+		assert.Equal(t, VerdictUnsettled, e.Verdict)
+		assert.Equal(t, "The fix was not checked: the reviewer failed", e.VerdictNote)
+		assert.Equal(t, 1, e.Settled)
+	}
+	assert.Equal(t, []string{seedKey, marginKey, "tf:thread00000"}, keys, "the owner's items, not the previous loop's")
+
+	// Show Now on a seeded round 1 the reviewer has not finished shows the
+	// owner's items too, rather than turning the ask into a plain review.
+	f2 := newFixture(t)
+	_, second2 := seededChain(t, f2, "changes", runDoc, 1)
+	require.NoError(t, Reveal(f2.d, second2, EndOwner, runNow))
+	row2, _, ledger2 := loopColumns(t, f2.d, second2)
+	assert.Equal(t, "owner", row2.Loop)
+	require.Len(t, ledger2, 3)
+	assert.Equal(t, "The fix was not checked: you opened the review before it was", ledger2[0].VerdictNote)
+}

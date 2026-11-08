@@ -93,13 +93,15 @@ func planAfterSpec(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs, ses
 // replies. With replies, the previous ask must be an open ask whose review is
 // in the author loop and every key one of its open items; without replies a
 // previous ask in the author loop advances the round, a previous review the
-// owner already has (loop 'owner') starts no hidden loop — the re-round is a
-// classic visible review —, anything else starts round 1 under
-// LoopRulesOpen. An advanced round keeps the previous row's loop_rules; a
-// round past MaxRoundsFor(those rules) starts no loop either. Replies on an
-// ask that will not loop are refused (in fileAsk, where loop is known; Scope
-// passes loop=false and checks only the previous ask). Called from Scope and
-// again in fileAsk (the loop may have been revealed in between).
+// owner already has (specreview.OwnerHas) starts a new hidden loop only when
+// the owner answered it with Request changes (round 1 then opens with the
+// owner's items, specreview.SeedOf) — otherwise the re-round is a classic
+// visible review —, anything else starts round 1 under LoopRulesOpen. An
+// advanced round keeps the previous row's loop_rules; a round past
+// MaxRoundsFor(those rules) starts no loop either. Replies on an ask that
+// will not loop are refused (in fileAsk, where loop is known; Scope passes
+// loop=false and checks only the previous ask). Called from Scope and again
+// in fileAsk (the loop may have been revealed in between).
 func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.SpecLoopStart, error) {
 	var row *db.SpecReview
 	if prev != nil {
@@ -122,8 +124,10 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 	}
 	start := &db.SpecLoopStart{Round: 1, LoopRules: specreview.LoopRulesOpen}
 	switch {
-	case row != nil && ownerHas(row):
-		return nil, nil
+	case row != nil && specreview.OwnerHas(row):
+		if !specreview.AnsweredChanges(prev) {
+			return nil, nil
+		}
 	case row != nil && row.Loop == "author":
 		// A loop keeps the rules it started with.
 		start.Round, start.LoopRules = row.Round+1, row.LoopRules
@@ -149,7 +153,7 @@ func specLoopStart(d *db.DB, a askOwnerArgs, prev *db.OwnerAsk, loop bool) (*db.
 // round.
 func checkRepliesAgainst(replies []reviewReply, prev *db.OwnerAsk, row *db.SpecReview) error {
 	switch {
-	case row != nil && ownerHas(row):
+	case row != nil && specreview.OwnerHas(row):
 		return &ValidationError{Msg: errOwnerHasReview}
 	case prev == nil || row == nil || row.Loop == "":
 		return &ValidationError{Msg: "review_replies: previous_ask_id is not a spec review in the author loop — file without review_replies"}
@@ -172,13 +176,6 @@ func checkRepliesAgainst(replies []reviewReply, prev *db.OwnerAsk, row *db.SpecR
 		}
 	}
 	return nil
-}
-
-// ownerHas: the owner already has this review — its loop ended, or Show Now
-// turned a first round into a plain review (loop ”, loop_end owner). A
-// re-round after it is a classic visible review.
-func ownerHas(row *db.SpecReview) bool {
-	return row.Loop == "owner" || row.LoopEnd == specreview.EndOwner
 }
 
 func decodeAuthorItems(row *db.SpecReview) ([]specreview.AuthorItem, error) {

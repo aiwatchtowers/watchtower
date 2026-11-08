@@ -145,13 +145,17 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 }
 
 // advanceLoop sets out's loop columns from NextRound: the previous round's
-// open items and ledger (read from the previous ask's row) and this row's
-// replies. The loop stays with the author ("author") until the round ends
-// it ("owner").
+// open items and ledger (read from the previous ask's row), or on round 1 of
+// a loop after the owner's Request changes the owner's items (SeedOf), and
+// this row's replies. The loop stays with the author ("author") until the
+// round ends it ("owner").
 func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out *db.SpecReview) error {
 	var prevLedger []LedgerEntry
-	var prevOpen []AuthorItem
-	if row.Round >= 2 && ask.PreviousAskID.Valid {
+	prevOpen, err := SeedOf(d, ask)
+	if err != nil {
+		return err
+	}
+	if prevOpen == nil && row.Round >= 2 && ask.PreviousAskID.Valid {
 		prev, err := d.GetSpecReview(ask.PreviousAskID.Int64)
 		if err != nil && !errors.Is(err, db.ErrSpecReviewNotFound) {
 			return err

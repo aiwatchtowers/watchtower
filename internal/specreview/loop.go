@@ -174,8 +174,10 @@ type RoundOutcome struct {
 
 // NextRound applies round's reviewer result r to the previous round's open
 // items and ledger, given the author's replies, under the loop's rules. Round
-// 1 opens r's findings. From round 2: a missing reply counts as fixed;
-// resolved settles the item, disputed after a disagree settles it as
+// 1 opens r's findings; round 1 of a loop after the owner's Request changes
+// carries the owner's items (SeedOf) as prevOpen and settles them as a later
+// round would. From round 2 (and for those items): a missing reply counts as
+// fixed; resolved settles the item, disputed after a disagree settles it as
 // disputed, anything else (disputed after fixed, open, no verdict) keeps it
 // open with the reply. New findings skip every key already known. Nothing
 // open ends the loop as settled; at MaxRoundsFor(rules) what is still open
@@ -187,7 +189,7 @@ func NextRound(round int, rules int, prevOpen []AuthorItem, prevLedger []LedgerE
 	ledger := append([]LedgerEntry{}, prevLedger...)
 	open := []AuthorItem{}
 	progress := false
-	if round <= 1 {
+	if round <= 1 && len(prevOpen) == 0 {
 		open = Findings(r, 1)
 	} else {
 		replyOf := map[string]Reply{}
@@ -254,11 +256,12 @@ func NextRound(round int, rules int, prevOpen []AuthorItem, prevLedger []LedgerE
 // the last finished round's ledger plus its open items as unsettled. A done
 // row is that round; any other row (failed, skipped, queued, running) falls
 // back to the previous ask's row, whose open items this row's replies
-// answered (a missing reply counts as fixed). An item the author disagreed
-// with keeps the reason; an item the author said it fixed in a round the
-// reviewer never finished was not checked, so its note says so; any other
-// item was not answered. A row not in
-// the author loop is left as it is.
+// answered (a missing reply counts as fixed); on round 1 of a loop after the
+// owner's Request changes, the owner's items (SeedOf) take that place. An
+// item the author disagreed with keeps the reason; an item the author said
+// it fixed in a round the reviewer never finished was not checked, so its
+// note says so; any other item was not answered. A row not in the author
+// loop is left as it is.
 func Reveal(d *db.DB, askID int64, end string, now time.Time) error {
 	row, err := d.GetSpecReview(askID)
 	if err != nil {
@@ -275,17 +278,30 @@ func Reveal(d *db.DB, askID int64, end string, now time.Time) error {
 			return err
 		}
 	} else {
-		prev, err := previousRow(d, askID)
+		ask, err := d.GetOwnerAskByID(askID)
 		if err != nil {
 			return err
 		}
-		if prev == nil && end == EndOwner {
+		// Round 1 of a loop after the owner's Request changes answers the
+		// owner's items, not the previous loop's.
+		seed, err := SeedOf(d, ask)
+		if err != nil {
+			return err
+		}
+		var prev *db.SpecReview
+		if seed == nil {
+			if prev, err = previousRow(d, ask); err != nil {
+				return err
+			}
+		}
+		if prev == nil && len(seed) == 0 && end == EndOwner {
 			// Show Now on a first round the reviewer has not finished: no
 			// loop to show yet, so the ask becomes a plain review and its
 			// findings land on the findings screen.
 			_, err = d.LeaveSpecLoop(askID, end)
 			return err
 		}
+		open = seed
 		if prev != nil {
 			if ledger, open, err = decodeLoop(prev); err != nil {
 				return err
@@ -342,13 +358,9 @@ func uncheckedNote(end string) string {
 	return "The fix was not checked"
 }
 
-// previousRow is the review row of askID's previous ask; nil when the ask has
+// previousRow is the review row of ask's previous ask; nil when the ask has
 // none or that row is gone.
-func previousRow(d *db.DB, askID int64) (*db.SpecReview, error) {
-	ask, err := d.GetOwnerAskByID(askID)
-	if err != nil {
-		return nil, err
-	}
+func previousRow(d *db.DB, ask *db.OwnerAsk) (*db.SpecReview, error) {
 	if !ask.PreviousAskID.Valid {
 		return nil, nil
 	}
