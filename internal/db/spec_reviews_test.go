@@ -360,3 +360,45 @@ func TestSpecLoopsToSweep_OpenAuthorRowsOnly(t *testing.T) {
 	assert.Equal(t, "queued", rows[0].Status)
 	assert.False(t, rows[0].SessionBound)
 }
+
+func TestSpecReviewChain_RootFirst(t *testing.T) {
+	d := openTestDB(t)
+	a1 := newReviewAsk(t, d)
+	first, err := d.GetOwnerAskByID(a1)
+	require.NoError(t, err)
+	next := func(prev int64) int64 {
+		return mustInsertAsk(t, d, OwnerAsk{WorkbenchID: first.WorkbenchID, Kind: "review", Title: "spec",
+			DocPath: "docs/spec.md", DocType: "spec", PreviousAskID: sql.NullInt64{Int64: prev, Valid: true}})
+	}
+	a2 := next(a1)
+	a3 := next(a2)
+
+	chain, err := d.SpecReviewChain(a3)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a1, a2, a3}, chain)
+
+	chain, err = d.SpecReviewChain(a2)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a1, a2}, chain)
+
+	chain, err = d.SpecReviewChain(a1)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a1}, chain)
+}
+
+func TestSpecReviewChain_CycleIsCapped(t *testing.T) {
+	d := openTestDB(t)
+	a1 := newReviewAsk(t, d)
+	first, err := d.GetOwnerAskByID(a1)
+	require.NoError(t, err)
+	a2 := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: first.WorkbenchID, Kind: "review", Title: "spec",
+		DocPath: "docs/spec.md", DocType: "spec", PreviousAskID: sql.NullInt64{Int64: a1, Valid: true}})
+	// A cycle no writer makes: the walk still ends.
+	_, err = d.Exec(`UPDATE owner_asks SET previous_ask_id = ? WHERE id = ?`, a2, a1)
+	require.NoError(t, err)
+
+	chain, err := d.SpecReviewChain(a2)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(chain), specReviewChainMaxDepth+1)
+	assert.Equal(t, a2, chain[len(chain)-1])
+}

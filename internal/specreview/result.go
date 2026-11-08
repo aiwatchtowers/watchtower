@@ -182,6 +182,11 @@ type Sources struct {
 	// PrevOpenKeys is the previous round's open items of an author loop:
 	// the only keys a verdict may name.
 	PrevOpenKeys map[string]bool
+	// Closed is the review chain's closed list (ClosedList): findings that
+	// never come back.
+	Closed []ClosedItem
+	// KnownKeys is every key in a ledger or an open list along the chain.
+	KnownKeys map[string]bool
 }
 
 // Severity levels of a finding.

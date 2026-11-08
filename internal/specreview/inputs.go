@@ -162,6 +162,9 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	if err := in.previous(d.DB, ask); err != nil {
 		return Sources{}, "", nil, err
 	}
+	if err := in.closed(d.DB, ask); err != nil {
+		return Sources{}, "", nil, err
+	}
 	in.mockups(root, mockups)
 	if design {
 		in.styleGuide(root)
@@ -542,6 +545,26 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	}
 	if b.Len() > 0 {
 		in.add("previous_comments", b.String())
+	}
+	return nil
+}
+
+// closed fills the chain's closed list and known keys and renders the list,
+// one line per item, as what is already decided.
+func (in *inputs) closed(d *db.DB, ask *db.OwnerAsk) error {
+	st, notes, err := readChain(d, ask.ID)
+	if err != nil {
+		return err
+	}
+	in.notes = append(in.notes, notes...)
+	in.src.Closed, in.src.KnownKeys = st.closed, st.known
+	var b strings.Builder
+	for _, it := range st.closed {
+		line := fmt.Sprintf("[%s] %s: %s", oneLineText(it.Key), it.Kind, oneLineText(it.WhereQuote))
+		b.WriteString(strings.TrimRight(line, " ") + "\n")
+	}
+	if b.Len() > 0 {
+		in.add("closed_items", b.String())
 	}
 	return nil
 }
