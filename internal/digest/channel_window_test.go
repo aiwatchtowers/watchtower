@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 )
 
 // channelKeyedGenerator fails every call whose prompt names failChannel and
@@ -34,7 +35,7 @@ func (g *channelKeyedGenerator) Generate(_ context.Context, systemPrompt, userMe
 	if g.failChannel != "" && strings.Contains(systemPrompt+userMessage, g.failChannel) {
 		return "", nil, "", fmt.Errorf("simulated AI failure for #%s", g.failChannel)
 	}
-	return g.response, &Usage{Model: "test-model", InputTokens: 10, OutputTokens: 5}, "mock-session", nil
+	return g.response, &Usage{Model: "test-model", Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "mock-session", nil
 }
 
 func (g *channelKeyedGenerator) recover() {
@@ -135,7 +136,7 @@ func (g *promptCapturingGenerator) Generate(ctx context.Context, systemPrompt, u
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.prompts = append(g.prompts, systemPrompt+userMessage)
-	return g.responses[sourceFromContext(ctx)], &Usage{Model: "test-model", InputTokens: 10, OutputTokens: 5}, "mock-session", nil
+	return g.responses[sourceFromContext(ctx)], &Usage{Model: "test-model", Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "mock-session", nil
 }
 
 func (g *promptCapturingGenerator) prompt(t *testing.T, i int) string {

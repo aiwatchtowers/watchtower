@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net"
 	"os"
 	"os/signal"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"watchtower/internal/sessionagent"
 )
 
 // DiscardHangup catches SIGHUP and drops it, so the host survives the hangup
@@ -71,6 +74,14 @@ type Options struct {
 	afterReap func()
 	// checkTimeout replaces CheckTimeout (tests only).
 	checkTimeout time.Duration
+	// CodexWatch opens the store of a codex launch's database for its
+	// rollout watch (spec 2026-11-05 §3.5); nil = the host watches nothing.
+	// Its error is logged, so it must carry no path (FILES-01).
+	CodexWatch func(dbPath string) (CodexWatchStore, error)
+	// Logf receives the watch's lines; nil = the standard logger.
+	Logf func(format string, args ...any)
+	// codexWatchEvery replaces CodexWatchEvery (tests only).
+	codexWatchEvery time.Duration
 }
 
 // Server owns hosted sessions and serves clients over a listener.
@@ -96,6 +107,12 @@ func NewServer(opts Options) *Server {
 	}
 	if opts.checkTimeout <= 0 {
 		opts.checkTimeout = CheckTimeout
+	}
+	if opts.codexWatchEvery <= 0 {
+		opts.codexWatchEvery = CodexWatchEvery
+	}
+	if opts.Logf == nil {
+		opts.Logf = log.Printf
 	}
 	return &Server{
 		opts:     opts,
@@ -376,9 +393,18 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 		return nil
 	}
 	key := sessionKey{row: req.Row, run: req.Run}
+	// The watch's store opens before the session starts, outside s.mu, so
+	// the Launched reply already says whether the host watches the run.
+	store := s.openCodexWatch(req)
+	closeStore := func() {
+		if store != nil {
+			_ = store.Close()
+		}
+	}
 	s.mu.Lock()
 	if _, ok := s.sessions[key]; ok {
 		s.mu.Unlock()
+		closeStore()
 		c.sendError(fmt.Sprintf("launch: session row %d run %q already exists", req.Row, req.Run))
 		return nil
 	}
@@ -386,9 +412,11 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 	sess, err := startSession(req, launch, s.opts.RingSize, s.opts.Now())
 	if err != nil {
 		s.mu.Unlock()
+		closeStore()
 		c.sendError(err.Error())
 		return nil
 	}
+	sess.watched = store != nil
 	if s.opts.signalGroup != nil {
 		sess.signal = s.opts.signalGroup
 	}
@@ -410,11 +438,42 @@ func (s *Server) launch(c *conn, bound *session, p []byte) *session {
 	s.notify()
 
 	go sess.readLoop()
+	if store != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		sess.stopWatch = cancel
+		p, _ := sessionagent.PullerOf(req.Watch.Agent) // openCodexWatch checked it
+		watch := NewCodexWatch(req.Row, req.Watch.Agent, p, store, p.HomeOf(req.Env), s.opts.Logf)
+		go func() {
+			defer cancel()
+			watch.run(ctx, s.opts.codexWatchEvery, s.opts.Now)
+		}()
+	}
 	go s.watch(sess)
 	if req.Detach {
 		return nil
 	}
 	return sess
+}
+
+// openCodexWatch opens the store of a launch whose Watch names a
+// rollout-watched agent and its database; nil = the run is not watched,
+// which its SessionInfo.Watched says, so the app's bridge covers it. A
+// store that does not open logs one line (Options.CodexWatch's error is
+// path-free, FILES-01).
+func (s *Server) openCodexWatch(req LaunchReq) CodexWatchStore {
+	w := req.Watch
+	if s.opts.CodexWatch == nil || w == nil || w.Database == "" {
+		return nil
+	}
+	if _, pulls := sessionagent.PullerOf(w.Agent); !pulls {
+		return nil
+	}
+	store, err := s.opts.CodexWatch(w.Database)
+	if err != nil {
+		s.opts.Logf("session-host: codex watch: session %d: not watched: %v", req.Row, err)
+		return nil
+	}
+	return store
 }
 
 // lookup returns the session of (row, run), or nil.
@@ -520,6 +579,9 @@ func (s *Server) stop(c *conn, p []byte) {
 // that did read it forgets the run.
 func (s *Server) watch(sess *session) {
 	code := sess.wait()
+	if sess.stopWatch != nil {
+		sess.stopWatch()
+	}
 	sess.mu.Lock()
 	sess.exited = true
 	sess.code = code

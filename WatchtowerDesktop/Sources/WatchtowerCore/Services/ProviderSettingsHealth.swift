@@ -9,7 +9,9 @@ package final class ProviderSettingsHealth {
     package private(set) var busy = false
     package private(set) var failed = false
     private var operation = 0
-    package init() {}
+    /// The rows the pair is read from (`reserve_peer`).
+    @ObservationIgnored private let catalog: AIModelCatalog
+    package init(catalog: AIModelCatalog = .shared) { self.catalog = catalog }
     package func invalidate() { operation += 1; status = nil; busy = false; failed = false }
     package func refresh(read: () async throws -> ChatRoutingStatus) async {
         operation += 1
@@ -43,29 +45,30 @@ package final class ProviderSettingsHealth {
                             + "Saved quota blocks remain until a real request succeeds.",
                          action: Self.check, emphasis: .neutral)
         }
-        let preferred: ProviderFallbackPreview.Provider = status.preferredProvider == "codex" ? .codex : .claude
+        let pair = catalog.fallbackPair(preferred: status.preferredProvider)
+        let preferred = pair?.preferred ?? catalog.fallbackSide(status.preferredProvider)
         let primary = status.provider(status.preferredProvider)
-        let reserve = status.provider(preferred.other.rawValue.lowercased())
+        let reserve = pair.flatMap { status.provider($0.reserve.id) }
         let next = primary?.nextProbeAt?.formatted(date: .abbreviated, time: .shortened)
-        if primary?.state == "quota_wait", reserve?.state == "quota_wait", status.enabled {
-            return ProviderFallbackPreview(preferred: preferred, state: .bothLimited, nextCheck: next).copy
+        if let pair, primary?.state == "quota_wait", reserve?.state == "quota_wait", status.enabled {
+            return ProviderFallbackPreview(pair: pair, state: .bothLimited, nextCheck: next).copy
         }
         if primary?.state == "probe_leased" {
-            if status.enabled, reserve?.state == "available" {
-                return ProviderFallbackPreview(preferred: preferred, state: .probing, nextCheck: next).copy
+            if let pair, status.enabled, reserve?.state == "available" {
+                return ProviderFallbackPreview(pair: pair, state: .probing, nextCheck: next).copy
             }
-            return .init(title: "Checking \(preferred.rawValue)'s recovery",
+            return .init(title: "Checking \(preferred.name)'s recovery",
                          detail: "A waiting safe request is checking availability. Other requests may remain unavailable.",
                          action: nil, emphasis: .neutral, busy: true)
         }
         if primary?.state == "quota_wait" {
-            return .init(title: "\(preferred.rawValue) reached its limit",
+            return .init(title: "\(preferred.name) reached its limit",
                          detail: "Supported new requests may use the reserve when enabled."
                             + (next.map { " Next recovery check: \($0)." } ?? " The reset time is unknown."),
                          action: Self.check, emphasis: .warning)
         }
-        if reserve?.state == "quota_wait" {
-            return .init(title: "\(preferred.other.rawValue) reached its limit",
+        if let pair, reserve?.state == "quota_wait" {
+            return .init(title: "\(pair.reserve.name) reached its limit",
                          detail: "The preferred provider has no saved quota block. Reserve availability is checked on real requests.",
                          action: Self.check, emphasis: .warning)
         }

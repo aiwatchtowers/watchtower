@@ -1,0 +1,3 @@
+# An unsupported cell must start nothing: any launch of this fixture fails.
+#! stderr fakecli: an unsupported cell started a child
+#! exit 99

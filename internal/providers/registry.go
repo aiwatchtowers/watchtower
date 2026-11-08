@@ -6,9 +6,14 @@
 package providers
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
+	"slices"
+	"strings"
 
 	"watchtower/internal/config"
+	"watchtower/internal/providers/caps"
 )
 
 // Provider describes one AI backend.
@@ -29,6 +34,8 @@ type Provider struct {
 	// suggest them (e.g. claude's opus). Not serialized directly: `ai models`
 	// folds it into the same `models` field the live listing uses.
 	KnownModels []string `json:"-"`
+	// Caps is what the provider's transport offers (capabilities.go).
+	Caps Capabilities `json:"capabilities"`
 }
 
 // registry order is the display order in UIs.
@@ -61,6 +68,52 @@ var registry = []Provider{
 		// UI/CLI surfaces prompt the user to pick from the live list.
 		LiveModels: true,
 	},
+}
+
+// init fills each row's Caps from the capability table by its id; a
+// registry id without a row is a bug, caught at start.
+func init() {
+	for i := range registry {
+		c, ok := caps.For(registry[i].ID)
+		if !ok {
+			panic("providers: no capability row for " + registry[i].ID)
+		}
+		registry[i].Caps = c
+	}
+}
+
+// IDs is every registered provider id, in display order.
+func IDs() []string {
+	out := make([]string, len(registry))
+	for i, p := range registry {
+		out[i] = p.ID
+	}
+	return out
+}
+
+// CheckRegistryRows compares a per-provider table's row ids with the
+// registry: every registered provider without a row in table and every
+// row of no registered provider, one sorted problem each; nil when they
+// match. The TestLLMTRANSPORT01_* completeness tests call it for each
+// table a new provider must fill (docs/features/adding-a-harness.md).
+func CheckRegistryRows(table string, rows []string) error {
+	ids := IDs()
+	var problems []string
+	for _, id := range ids {
+		if !slices.Contains(rows, id) {
+			problems = append(problems, fmt.Sprintf("provider %q has no row in %s", id, table))
+		}
+	}
+	for _, r := range rows {
+		if !slices.Contains(ids, r) {
+			problems = append(problems, fmt.Sprintf("%s has a row %q that is no registered provider", table, r))
+		}
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	slices.Sort(problems)
+	return errors.New(strings.Join(problems, "; "))
 }
 
 // All returns the registry in display order.

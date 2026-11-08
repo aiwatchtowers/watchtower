@@ -1596,9 +1596,9 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	if err != nil {
 		digestSpinner.Stop(fmt.Sprintf("Digest error: %v", err))
 	} else if n > 0 {
-		if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
+		if usage != nil && (usage.InputTokens() > 0 || usage.OutputTokens() > 0) {
 			digestSpinner.Stop(fmt.Sprintf("Generated %d digest(s) (%d+%d tokens)",
-				n, usage.InputTokens, usage.OutputTokens))
+				n, usage.InputTokens(), usage.OutputTokens()))
 		} else {
 			digestSpinner.Stop(fmt.Sprintf("Generated %d digest(s)", n))
 		}

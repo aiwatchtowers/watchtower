@@ -562,7 +562,7 @@ func batchUsagePerUser(usage *digest.Usage, users int) (int, int) {
 	if usage == nil || users <= 0 {
 		return 0, 0
 	}
-	return usage.InputTokens / users, usage.OutputTokens / users
+	return usage.InputTokens() / users, usage.OutputTokens() / users
 }
 
 // coveredUsers returns the users that already have an AI-produced card for the
@@ -655,12 +655,12 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
 
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
-		p.LastStepInputTokens += usage.InputTokens
-		p.LastStepOutputTokens += usage.OutputTokens
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
+		p.LastStepInputTokens += usage.InputTokens()
+		p.LastStepOutputTokens += usage.OutputTokens()
 	}
 
 	result, err := parsePeopleCardResult(raw)
@@ -700,8 +700,8 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	}
 	if usage != nil {
 		card.Model = usage.Model
-		card.InputTokens = usage.InputTokens
-		card.OutputTokens = usage.OutputTokens
+		card.InputTokens = usage.InputTokens()
+		card.OutputTokens = usage.OutputTokens()
 		card.CostUSD = 0
 	}
 
@@ -822,10 +822,10 @@ func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEn
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
 
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
 	}
 
 	results, err := parseBatchCardResult(raw)
@@ -957,12 +957,12 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
 
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
-		p.LastStepInputTokens += usage.InputTokens
-		p.LastStepOutputTokens += usage.OutputTokens
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
+		p.LastStepInputTokens += usage.InputTokens()
+		p.LastStepOutputTokens += usage.OutputTokens()
 	}
 
 	result, err := parseTeamSummaryResult(raw)
@@ -983,8 +983,8 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 	}
 	if usage != nil {
 		s.Model = usage.Model
-		s.InputTokens = usage.InputTokens
-		s.OutputTokens = usage.OutputTokens
+		s.InputTokens = usage.InputTokens()
+		s.OutputTokens = usage.OutputTokens()
 		s.CostUSD = 0
 	}
 

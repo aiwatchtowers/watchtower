@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":529,\"error\":{\"type\":\"overloaded_error\",\"message\":\"OWNER-VISIBLE: overloaded\"}}"},"synthetic":true}
+#! exit 1

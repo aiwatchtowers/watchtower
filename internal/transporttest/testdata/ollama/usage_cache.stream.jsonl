@@ -1,0 +1,5 @@
+# expect-usage fresh=1007 read=0 write=0 out=20
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Three words exactly."}}],"synthetic":true}
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"synthetic":true}
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1007,"completion_tokens":20,"total_tokens":1027},"synthetic":true}
+data: [DONE]

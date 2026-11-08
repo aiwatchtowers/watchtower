@@ -59,6 +59,16 @@ final class SessionDetailWiringTests: XCTestCase {
         XCTAssertEqual(SessionDetailModel.agentName(.init(rawValue: "")), "")
     }
 
+    /// A7b: the session line of an agent this app version does not know says
+    /// so, never a Claude Code name or a bare id that reads as one it knows.
+    func testTheAgentLabelSaysAnUnknownAgentIsNotSupported() {
+        XCTAssertEqual(SessionDetailModel.agentLabel(.claudeCode), "Claude Code")
+        XCTAssertEqual(SessionDetailModel.agentLabel(.codexCLI), "Codex")
+        XCTAssertEqual(SessionDetailModel.agentLabel(.init(rawValue: "gemini_cli")),
+                       "gemini_cli (not supported by this version)")
+        XCTAssertEqual(SessionDetailModel.agentLabel(.init(rawValue: "")), "Unknown agent (not supported by this version)")
+    }
+
     func testTheReportShowsProgressSegmentsAndSummary() throws {
         let report = try XCTUnwrap(try model(11).report)
         XCTAssertEqual(report.progressLabel, "2 / 5 targets")
@@ -234,7 +244,7 @@ final class SessionDetailWiringTests: XCTestCase {
             "live", "stateKind", "stateCaption", "stateCaptionClipped", "stateTone", "stateGlyph", "isRing", "openAsks",
             "oldestAskID", "closedAsks", "finishSummary", "finishSummaryClipped", "agentError", "agentErrorClipped",
             "reportTargetID", "reportDone", "reportTotal", "reportMerged", "reportMergedStale", "reportPRLine",
-            "reportPRLineClipped"
+            "reportPRLineClipped", "watchIssue", "watchHelp", "phone"
         ])
     }
 

@@ -114,4 +114,27 @@ final class ChatEventTests: XCTestCase {
         XCTAssertNil(ChatEvent.parse(#"{"type":"tool_paused","turn_id":"t","id":"a","action_id":1}"#))
         XCTAssertNil(ChatEvent.parse(#"{"type":"TOOL_WAIT","turn_id":"t","id":"a","message":"m","action_id":1}"#))
     }
+
+    /// The v2 usage event's split keys (Go `internal/chat/events.go`):
+    /// tokens_in stays all input, the split rides beside it.
+    func testUsageWithSplitKeysDecodes() {
+        let line = #"{"type":"usage","turn_id":"t","tokens_in":245,"tokens_out":7,"model":"m","#
+            + #""fresh_in":10,"cache_read":200,"cache_write":35,"cost_usd":0.125,"estimated":true}"#
+        XCTAssertEqual(ChatEvent.parse(line),
+                       .usage(ChatUsage(turnID: "t", tokensIn: 245, tokensOut: 7, model: "m",
+                                        freshIn: 10, cacheRead: 200, cacheWrite: 35, costUSD: 0.125, estimated: true)))
+    }
+
+    /// An older hub's usage line (no split keys) still decodes: no split,
+    /// no cost, not estimated.
+    func testUsageWithoutSplitKeysDecodes() {
+        guard case let .usage(usage)? = ChatEvent.parse(#"{"type":"usage","turn_id":"t","tokens_in":5,"tokens_out":7,"model":"m"}"#)
+        else { return XCTFail("usage line did not decode") }
+        XCTAssertEqual(usage.tokensIn, 5)
+        XCTAssertEqual(usage.freshIn, 0)
+        XCTAssertEqual(usage.cacheRead, 0)
+        XCTAssertEqual(usage.cacheWrite, 0)
+        XCTAssertNil(usage.costUSD)
+        XCTAssertFalse(usage.estimated)
+    }
 }

@@ -155,7 +155,7 @@ func TestTwoQuotaAndHookCompletionBeforeReserveAdmission(t *testing.T) {
 	}}
 	r := Router{Allowed: func(string) error { return nil }}
 	_, err := r.Run(context.Background(), req, func(ctx context.Context, a Attempt) (Result, error) {
-		llmusage.Record(ctx, llmusage.Call{Provider: a.Provider, Model: a.Model, Input: 13, Estimated: true})
+		llmusage.Record(ctx, llmusage.Call{Provider: a.Provider, Model: a.Model, Tokens: llmusage.Tokens{Input: 13, Estimated: true}})
 		return Result{}, quota(a.Provider)
 	})
 	var deferred *Deferred

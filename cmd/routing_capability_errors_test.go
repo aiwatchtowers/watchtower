@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/providerhealth"
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/sqlcipher"
 )
 
@@ -157,7 +158,7 @@ func TestQueryReserveCapabilityOpenErrorPreservesPathCause(t *testing.T) {
 	cfg := &config.Config{AI: config.AIConfig{Provider: "claude", Fallback: config.AIFallbackConfig{Enabled: true, Provider: "codex"}}}
 	parent := filepath.Join(t.TempDir(), "not-a-directory")
 	require.NoError(t, os.WriteFile(parent, []byte("synthetic"), 0o600))
-	leaf, cleanupClient, err := newQueryClient(cfg, filepath.Join(parent, "chat.db"))
+	leaf, cleanupClient, err := newQueryClient(cfg, filepath.Join(parent, "chat.db"), transport.Options{})
 	require.NoError(t, err)
 	defer cleanupClient()
 	routed := leaf.(*toolRouteProvider)

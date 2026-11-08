@@ -1,0 +1,2 @@
+#! status 401
+{"error":{"message":"OWNER-VISIBLE: unauthorized","type":"authentication_error"},"synthetic":true}

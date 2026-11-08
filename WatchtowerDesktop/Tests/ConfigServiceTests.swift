@@ -3,10 +3,63 @@ import Testing
 import Yams
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 @Suite("ConfigService")
 struct ConfigServiceTests {
+    /// The fallback pair is the catalog's reserve_peer: the shared catalog
+    /// holds the Go-written rows, as after the app's launch read.
+    init() { ProviderCatalogFixture.seedShared() }
+
+    @Test("The reserve pair comes from the catalog; a catalog without reserve_peer hides the reserve")
+    func testReservePairComesFromCatalog() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let paired = ConfigService(configPath: path)
+        #expect(paired.reservePeer == "codex")
+        paired.selectPreferredProvider("codex")
+        #expect(paired.aiFallbackProvider == "claude")
+
+        let unpaired = AIModelCatalog(providers: ProviderCatalogFixture.providers().map { row in
+            var row = row
+            if let caps = row.capabilities {
+                row.capabilities = ProviderCapabilities(
+                    tools: caps.tools, images: caps.images, pdfs: caps.pdfs, readFolder: caps.readFolder)
+            }
+            return row
+        })
+        let service = ConfigService(configPath: makeTempConfig("ai: {provider: claude}"), catalog: unpaired)
+        #expect(service.reservePeer == nil)
+        #expect(service.reserveModel("strong") == nil)
+        service.aiFallbackProvider = "codex"
+        service.aiFallbackEnabled = true
+        service.selectPreferredProvider("codex")
+        #expect(service.aiFallbackProvider == nil)
+        #expect(!service.aiFallbackEnabled)
+    }
+
+    @Test("Before the catalog is read a provider switch turns the reserve off and an enabled fallback is refused")
+    func testUnreadCatalogKeepsGoLoadable() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let service = ConfigService(configPath: path, catalog: AIModelCatalog())
+        service.selectPreferredProvider("codex")
+        #expect(!service.aiFallbackEnabled)
+        #expect(service.aiFallbackProvider == nil)
+        service.aiFallbackProvider = "claude"
+        service.aiFallbackEnabled = true
+        #expect(throws: (any Error).self) { try service.save() }
+    }
+
+    @Test("Before the catalog is read a save of other settings keeps the file's enabled fallback")
+    func testUnreadCatalogSavesOtherSettings() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let service = ConfigService(configPath: path, catalog: AIModelCatalog())
+        service.aiWorkers = 3
+        try service.save()
+        let saved = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(saved.contains("enabled: true"))
+    }
+
     @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
     func reserveBuckets(provider: String) throws {
         let other = provider == "claude" ? "codex" : "claude"
@@ -116,8 +169,8 @@ struct ConfigServiceTests {
     @Test("Invalid enabled reserve pair is refused before saving")
     func invalidReservePairPreservesFile() throws {
         let cases = [
-            ("codex", "Reserve must be a different Claude or Codex provider"),
-            ("ollama", "Enabled fallback requires different Claude and Codex providers"),
+            ("codex", "Reserve must be a different provider that has a reserve pair"),
+            ("ollama", "Enabled fallback requires the preferred provider's reserve pair"),
             ("unknown", "Unknown AI provider")
         ]
         for (destination, reason) in cases {

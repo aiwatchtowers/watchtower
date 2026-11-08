@@ -111,7 +111,7 @@ struct AutomationEditorPanel: View {
                 segments: AutomationEditorMode.allCases.map { mode in
                     let off = mode == .chat && !hasTools
                     return KitSegment(value: mode, title: mode.title, isEnabled: !off,
-                                      help: off ? AutomationEditorChatSurface.unavailableHelp : nil)
+                                      help: off ? AutomationEditorChatSurface.unavailableHelp() : nil)
                 }
             )
             if let key, AutomationDraftFooter.showsCompactSave(hidden: draftHidden, canSave: editor.canSave(key)) {

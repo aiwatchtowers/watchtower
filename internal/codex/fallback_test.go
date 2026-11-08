@@ -18,7 +18,7 @@ import (
 )
 
 func TestFailureEnvelopeIdentity(t *testing.T) {
-	output := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"ok"},"error":{"message":"usage limit reached"}}`)
+	output := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"ok"},"error":{"message":"usage limit reached"}}` + "\n" + `{"type":"turn.completed"}`)
 	if err := failedTurn("m", output); err != nil {
 		t.Fatalf("content established CLI failure: %v", err)
 	}
@@ -60,7 +60,6 @@ func TestGeneratorQuotaTypedAcrossExitCodes(t *testing.T) {
 				t.Fatal("lost CLI exit cause")
 			}
 			client := NewClient("m", "", bin)
-			client.SetProcessGroup(true)
 			_, _, err = client.QuerySync(context.Background(), "", "prompt", "")
 			if !errors.As(err, &failure) || failure.Category != providers.Quota {
 				t.Fatalf("client failure=%+v err=%v", failure, err)
@@ -198,7 +197,7 @@ printf '%s\n' "$@" >"$WT_PROFILE_CAPTURE/args"
 printf '%s' "$CODEX_HOME" >"$WT_PROFILE_CAPTURE/home"
 printf '%s' "$OPENAI_BASE_URL" >"$WT_PROFILE_CAPTURE/transport"
 cat >"$WT_PROFILE_CAPTURE/stdin"
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -343,13 +342,15 @@ if [ "$snapshot" = enabled ] || [ "$snapshot_v2" = enabled ]; then
  printf helper >"$WT_SNAPSHOT_CAPTURE/helper"
 fi
 cat >/dev/null
-printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"ok"}}' '{"type":"turn.completed"}'
 `
 	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	// Prove the fake catches shell_tool=false without independent snapshot flags.
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// The deadline is only a hang guard over three short stub runs; a tight
+	// one fails a correct run on a loaded machine.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "-c", "features.shell_tool=false")
 	digest.IsolateChild(cmd, nil)

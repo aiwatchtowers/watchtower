@@ -1396,16 +1396,16 @@ func (d *Daemon) phaseChannelDigests(ctx context.Context) {
 		switch {
 		case err != nil:
 			d.logger.Printf("digest error: %v", err)
-		case n > 0 && usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0):
-			d.logger.Printf("generated %d digest(s) (%d+%d tokens)", n, usage.InputTokens, usage.OutputTokens)
+		case n > 0 && usage != nil && (usage.InputTokens() > 0 || usage.OutputTokens() > 0):
+			d.logger.Printf("generated %d digest(s) (%d+%d tokens)", n, usage.InputTokens(), usage.OutputTokens())
 		case n > 0:
 			d.logger.Printf("generated %d digest(s)", n)
 		}
 		stats := pipelineRunStats{items: n, err: err}
 		if usage != nil {
-			stats.inTok = usage.InputTokens
-			stats.outTok = usage.OutputTokens
-			stats.totalAPI = usage.TotalAPITokens
+			stats.inTok = usage.InputTokens()
+			stats.outTok = usage.OutputTokens()
+			stats.totalAPI = usage.TotalAPITokens()
 		}
 		return stats
 	})

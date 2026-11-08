@@ -17,6 +17,7 @@ struct SessionRowView: View {
             }
         }
         .accessibilityElement(children: .combine)
+        .accessibilityHint(row.watchHint ?? "")
     }
 }
 

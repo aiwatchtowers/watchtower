@@ -107,20 +107,22 @@ func routedSessionBackend(cmd *cobra.Command, cfg *config.Config, database *db.D
 				return m
 			}
 			req.CheckCapability = func(p string, _ providers.InvocationProfile) (bool, error) {
-				if p == "claude" {
-					return true, nil
-				}
-				if requiredClaudeAI.mode.On || len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0 {
+				caps, known := providers.CapsFor(p)
+				switch {
+				case !known:
+					return false, fmt.Errorf("no capability row for provider %q", p)
+				case requiredClaudeAI.mode.On && !caps.ClaudeAITools:
+					return false, nil
+				case !chat.AttachesProjectFiles(caps) && len(chat.ProjectAttachments(project, cmd.ErrOrStderr())) > 0:
 					return false, nil
 				}
-				if supported, err := sessionTextAttachmentCapability(c.Attachments); err != nil || !supported {
+				if supported, err := sessionAttachmentCapability(caps, c.Attachments); err != nil || !supported {
 					return supported, err
 				}
 				if p != cfg.AI.Provider {
 					return reserveConnectionsCapable(cfg, database, p)
 				}
-
-				return p == "codex" || p == "ollama", nil
+				return true, nil
 			}
 
 			return req, reason, nil
@@ -173,26 +175,35 @@ func buildSessionActual(ctx context.Context, cmd *cobra.Command, cfg *config.Con
 	return policyCheckedBackend{Backend: backend, provider: p, mounted: mounted, claudeAIOn: claudeAI.mode.On, end: cancel}, nil
 }
 
-// A connection omitted by Codex's existing env-isolation rules cannot be
-// silently dropped by a reserve selection. This performs no model/tool probe.
+// A connection the reserve's launch environment cannot carry
+// (quickConnectionEnv, codexEnvSkips) cannot be silently dropped by a
+// reserve selection. This performs no model/tool probe.
 func reserveConnectionsCapable(cfg *config.Config, database *db.DB, provider string) (bool, error) {
-	if provider != "codex" {
+	env := quickConnectionEnv(provider)
+	if env == nil {
 		return true, nil
 	}
 	conns, err := database.ListEnabledExternalConnections()
 	if err != nil {
 		return false, fmt.Errorf("listing reserve Quick Connections: %w", err)
 	}
-	return len(codexEnvSkips(cfg, conns, os.Environ())) == 0, nil
+	return len(codexEnvSkips(cfg, conns, env)) == 0, nil
 }
 
-func sessionTextAttachmentCapability(attachments []chat.Attachment) (bool, error) {
-	_, err := chat.InlineTextAttachments("", attachments)
+// sessionAttachmentCapability reports whether a transport with caps takes
+// the turn's files: one that takes images and PDFs takes every kind (its
+// own size checks run at the turn); a replay transport takes them as
+// chat.TurnAttachments does (a PDF never).
+func sessionAttachmentCapability(caps providers.Capabilities, attachments []chat.Attachment) (bool, error) {
+	if chat.AttachesProjectFiles(caps) {
+		return true, nil
+	}
+	_, _, err := chat.TurnAttachments("", attachments, chat.AttachmentCapsOf(caps))
 	if err == nil {
 		return true, nil
 	}
 	var rejection *chat.AttachmentError
-	if errors.As(err, &rejection) && rejection.RequiresClaude {
+	if errors.As(err, &rejection) && rejection.CapabilityMissing {
 		return false, nil
 	}
 	return false, fmt.Errorf("checking turn attachments: %w", err)

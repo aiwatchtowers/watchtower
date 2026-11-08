@@ -117,7 +117,7 @@ final class TerminalSessionSliceTests: XCTestCase {
             optionalKeys: ["title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
                            "finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
                            "report_total", "report_merged", "report_merged_stale", "report_pr_line",
-                           "report_pr_line_clipped"]
+                           "report_pr_line_clipped", "watch_issue", "watch_help"]
         )
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
         XCTAssertEqual(payload["agent"] as? String, "claude_code")
@@ -190,7 +190,13 @@ final class TerminalSessionSliceTests: XCTestCase {
             Case(name: "failed with an empty error", live: true, seed: { db, id, _ in
                 try self.setState(db, id, state: "waiting", failedError: "")
             }, expected: .failed, wire: "failed"),
-            Case(name: "not started", live: false, seed: { _, _, _ in }, expected: .notStarted, wire: "not_started")
+            Case(name: "not started", live: false, seed: { _, _, _ in }, expected: .notStarted, wire: "not_started"),
+            // G5 (U6): a working codex row the Mac cannot watch.
+            Case(name: "working, not watched", live: true, seed: { db, id, _ in
+                try self.setState(db, id, state: "working")
+                try db.execute(sql: "UPDATE terminal_sessions SET kind = 'codex', agent_watch_issue = 'compressed' WHERE id = ?",
+                               arguments: [id])
+            }, expected: .working, wire: "working")
         ]
         let seeded = try dbPool.write { db -> [(Case, Int64)] in
             let project = try TestDatabase.insertWorkbench(db)
@@ -229,6 +235,9 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(byName["agents working"]?["state_caption"] as? String, "2 agents working")
         XCTAssertEqual(byName["agents working"]?["state_tone"] as? String, "green")
         XCTAssertEqual(byName["agents working"]?["state_glyph"] as? String, "person.2.fill")
+        XCTAssertEqual(byName["working, not watched"]?["state_caption"] as? String, "Working · not watched")
+        XCTAssertEqual(byName["working, not watched"]?["watch_issue"] as? String, "compressed")
+        XCTAssertNil(byName["working"]?["watch_issue"], "a watched session carries no watch_issue")
     }
 
     /// #411: a count lowered to zero shows Agents working for the policy's
@@ -361,6 +370,50 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(published[codex]?["agent"] as? String, "codex_cli")
         XCTAssertEqual(TerminalSessionSlice.wireAgent(.claude), "claude_code")
         XCTAssertEqual(TerminalSessionSlice.wireAgent(.codex), "codex_cli")
+    }
+
+    /// Each session carries what the hub takes from the phone for its agent
+    /// (U5): the Kit fixture `phone_caps.json`'s row, the table Go's
+    /// `TestSessionPublishesItsPhoneCaps` and the Kit are pinned to as well.
+    func testSessionPublishesItsPhoneCaps() throws {
+        let ids = try dbPool.write { db -> [String: Int64] in
+            let project = try TestDatabase.insertWorkbench(db)
+            return ["claude": try SliceSeed.insertSession(db, projectID: project),
+                    "codex": try SliceSeed.insertSession(db, projectID: project, kind: "codex")]
+        }
+        let published = try payloads(slice(live: []))
+        let rows = try XCTUnwrap(try SliceJSON.kitFixture("workbench/phone_caps.json")["agents"] as? [String: Any])
+        XCTAssertEqual(Set(rows.keys), Set(ids.keys))
+        for (kind, id) in ids {
+            let phone = try XCTUnwrap(published[id]?["phone"] as? NSDictionary, kind)
+            XCTAssertEqual(phone, rows[kind] as? NSDictionary, kind)
+        }
+    }
+
+    /// A not-watched session carries the Mac's tooltip text for its issue
+    /// (U6), so the phone shows it as given: the Kit fixture
+    /// `watch_help.json`, the table Go's `TestWatchHelpMatchesKitFixture`
+    /// is pinned to as well; a watched session carries none.
+    func testWatchHelpMatchesTheKitFixture() throws {
+        let issues = try XCTUnwrap(try SliceJSON.kitFixture("workbench/watch_help.json")["issues"] as? [String: String])
+        let (ids, watched) = try dbPool.write { db -> ([String: Int64], Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            var ids: [String: Int64] = [:]
+            for issue in issues.keys {
+                let id = try SliceSeed.insertSession(db, projectID: project, kind: "codex")
+                try self.setState(db, id, state: "working")
+                try db.execute(sql: "UPDATE terminal_sessions SET agent_watch_issue = ? WHERE id = ?", arguments: [issue, id])
+                ids[issue] = id
+            }
+            let watched = try SliceSeed.insertSession(db, projectID: project, kind: "codex")
+            try self.setState(db, watched, state: "working")
+            return (ids, watched)
+        }
+        let published = try payloads(slice(live: Set(ids.values).union([watched])))
+        for (issue, id) in ids {
+            XCTAssertEqual(published[id]?["watch_help"] as? String, issues[issue], issue)
+        }
+        XCTAssertNil(published[watched]?["watch_help"])
     }
 
     /// Codex rows count like Claude rows: published (a codex row with no

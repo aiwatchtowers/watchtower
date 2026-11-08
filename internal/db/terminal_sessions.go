@@ -44,7 +44,7 @@ type TerminalSession struct {
 	TitleSource     string
 	FolderPath      string
 	ClaudeSessionID sql.NullString // the agent's own session id (Claude Code or Codex); NULL on a codex row until its first SessionStart
-	TranscriptPath  sql.NullString // agent_transcript_path; read on codex rows only (Claude readers keep their own lookup)
+	TranscriptPath  sql.NullString // agent_transcript_path; GetTerminalSession leaves it unread (sessionagent.LoadSession, TerminalTranscriptPath)
 	WorktreeBranch  sql.NullString // worktree_branch: the wt/<slug> branch of the worktree Watchtower created for this row; NULL = none
 	AgentState      sql.NullString
 	AgentStateAt    time.Time     // zero when never reported
@@ -98,17 +98,26 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	if failedAt.Valid {
 		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
 	}
-	// Only a codex row reads agent_transcript_path: a codex row exists only
-	// once 00109 added the column, so the readers that open a database
-	// without migrating it (`workbench asks`, the Claude hooks) keep working
-	// on a 00108 database.
-	if s.Kind == string(agentkind.Codex) {
-		if err := db.QueryRow(`SELECT agent_transcript_path FROM terminal_sessions WHERE id = ?`, id).
-			Scan(&s.TranscriptPath); err != nil {
-			return nil, fmt.Errorf("reading terminal session %d transcript path: %w", id, err)
-		}
-	}
 	return &s, nil
+}
+
+// TerminalTranscriptPath reads row id's agent_transcript_path, the path the
+// agent's SessionStart reported. GetTerminalSession leaves it out: the
+// column is 00109's, and the readers that open a database without migrating
+// it (`workbench asks`, the Claude hooks) keep working on a 00108 database.
+// The session adapter reads it for an agent that keeps the path
+// (sessionagent.LoadSession), whose rows exist only once 00109 ran. A
+// missing row is ErrTerminalSessionNotFound.
+func (db *DB) TerminalTranscriptPath(id int64) (sql.NullString, error) {
+	var path sql.NullString
+	err := db.QueryRow(`SELECT agent_transcript_path FROM terminal_sessions WHERE id = ?`, id).Scan(&path)
+	if errors.Is(err, sql.ErrNoRows) {
+		return path, ErrTerminalSessionNotFound
+	}
+	if err != nil {
+		return path, fmt.Errorf("reading terminal session %d transcript path: %w", id, err)
+	}
+	return path, nil
 }
 
 // PlacedSession is a session row Watchtower started in a worktree it
@@ -551,6 +560,33 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// RestampCodexPromptTurn moves a working codex row's agent_state_at to at:
+// a prompt over a turn that never ended (Codex fires no Stop on a failed
+// turn, board #959), which SetTerminalAgentState treats as a repeat. The
+// session probe records a failure only when its task_complete is later than
+// agent_state_at, so a failed turn's error never lands on the next prompt's
+// turn. Writes only on workbench workbenchID's codex row id running
+// sessionID, reading working with an older (or unreadable) stamp and not
+// finished (a prompt over a finished row is a state change that
+// SetTerminalAgentState stamps itself); nothing else changes. False when a
+// guard held it back.
+func (db *DB) RestampCodexPromptTurn(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
+	stamp := AgentStateStamp(at)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state_at = ?
+		WHERE id = ? AND project_id = ? AND kind = ? AND claude_session_id = ? AND agent_state = 'working'
+		  AND finished_at IS NULL
+		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
+		stamp, id, workbenchID, string(agentkind.Codex), sessionID, stamp)
+	if err != nil {
+		return false, fmt.Errorf("restamping terminal session %d prompt: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("restamping terminal session %d prompt: %w", id, err)
 	}
 	return n > 0, nil
 }

@@ -49,10 +49,10 @@ func TestRecordFillsDefaults(t *testing.T) {
 	SetSink(sink)
 
 	ctx := WithPurpose(context.Background(), "digest.channel")
-	Record(ctx, Call{Provider: "claude", Model: "claude-haiku-5-5", Input: 1000, Output: 100, OK: true})
+	Record(ctx, Call{Provider: "claude", Model: "claude-haiku-5-5", OK: true, Tokens: Tokens{Input: 1000, Output: 100}})
 
 	ctx2 := WithAutomation(WithSurface(context.Background(), "chat"), 7, 42)
-	Record(ctx2, Call{Provider: "codex", Model: "gpt-5.6-sol", Input: 10})
+	Record(ctx2, Call{Provider: "codex", Model: "gpt-5.6-sol", Tokens: Tokens{Input: 10}})
 
 	require.Len(t, sink.calls, 2)
 	a, b := sink.calls[0], sink.calls[1]
@@ -78,7 +78,7 @@ func TestRecordFillsDefaults(t *testing.T) {
 	assert.Equal(t, int64(42), *b.AutomationRunID)
 
 	// a short model name is priced through pricing.Resolve
-	Record(context.Background(), Call{Model: "haiku", Input: 1})
+	Record(context.Background(), Call{Model: "haiku", Tokens: Tokens{Input: 1}})
 	require.Len(t, sink.calls, 3)
 	assert.NotNil(t, sink.calls[2].EstCostUSD)
 }
@@ -101,17 +101,18 @@ func TestRecordSpoolsWithoutSink(t *testing.T) {
 	SetSpoolPath(path)
 
 	ctx := WithPurpose(context.Background(), "media.describe")
-	Record(ctx, Call{Provider: "claude", Model: "claude-opus-5-5", Input: 5, Output: 6, OK: true})
-	Record(ctx, Call{Provider: "ollama", Model: "llama", Estimated: true})
+	Record(ctx, Call{Provider: "claude", Model: "claude-opus-5-5", OK: true, Tokens: Tokens{Input: 5, Output: 6}})
+	Record(ctx, Call{Provider: "ollama", Model: "llama", Tokens: Tokens{Estimated: true}})
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
 	allowed := map[string]bool{}
-	ct := reflect.TypeFor[Call]()
-	for i := range ct.NumField() {
-		allowed[strings.Split(ct.Field(i).Tag.Get("json"), ",")[0]] = true
+	for _, f := range reflect.VisibleFields(reflect.TypeFor[Call]()) {
+		if !f.Anonymous { // the embedded Tokens block's keys are flat
+			allowed[strings.Split(f.Tag.Get("json"), ",")[0]] = true
+		}
 	}
 
 	f, err := os.Open(path)
@@ -149,7 +150,7 @@ func TestUnwritableSpoolFallsBack(t *testing.T) {
 	SetFallback(func(c Call) error { got = append(got, c); return nil })
 
 	ctx := WithPurpose(context.Background(), "automation.llm")
-	Record(ctx, Call{Model: "claude-opus-5-5", Input: 3})
+	Record(ctx, Call{Model: "claude-opus-5-5", Tokens: Tokens{Input: 3}})
 	require.Len(t, got, 1)
 	assert.Equal(t, "automation.llm", got[0].Purpose)
 	assert.Equal(t, int64(3), got[0].Input)

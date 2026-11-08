@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tools"
 )
 
@@ -54,7 +55,7 @@ func newDraftFixture(t *testing.T) *draftFixture {
 	}
 	return &draftFixture{
 		d:       d,
-		gen:     &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}},
+		gen:     &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}},
 		reg:     reg,
 		fakeReg: reg,
 	}
@@ -188,7 +189,7 @@ func TestDraftAutomation_BoundsMinOfRecipeAnd50k5min(t *testing.T) {
 		{"budget:\n  tokens: 1000\n  minutes: 1\n", 600, 600, 1},
 	} {
 		f := newDraftFixture(t)
-		f.gen.Usage = []digest.Usage{{InputTokens: tc.in, OutputTokens: tc.out}}
+		f.gen.Usage = []digest.Usage{{Tokens: llmusage.Tokens{Input: int64(tc.in), Output: int64(tc.out)}}}
 		res, _ := f.call(t, map[string]any{"recipe_text": recipeText([]string{"llm:light"}, tc.budget, `llm("a"); llm("b"); llm("c"); return 1`)})
 		if res.DryRun == nil || res.DryRun.Status != db.RunBudgetExceeded {
 			t.Fatalf("%q: dry run = %+v; want budget_exceeded", tc.budget, res.DryRun)

@@ -225,9 +225,9 @@ func runTune(cmd *cobra.Command, args []string) error {
 	tuneGen := prompts.GenerateFunc(func(ctx context.Context, systemPrompt, userMessage string) (string, error) {
 		raw, usage, _, err := gen.Generate(digest.WithSource(ctx, "prompts.tune"), systemPrompt, userMessage, "")
 		if usage != nil {
-			totalInTok += usage.InputTokens
-			totalOutTok += usage.OutputTokens
-			totalAPITok += usage.TotalAPITokens
+			totalInTok += usage.InputTokens()
+			totalOutTok += usage.OutputTokens()
+			totalAPITok += usage.TotalAPITokens()
 		}
 		return raw, err
 	})

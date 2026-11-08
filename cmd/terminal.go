@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/terminal"
 )
 
@@ -64,12 +65,9 @@ func defaultTerminalCodexHome() string {
 	return filepath.Join(home, ".codex")
 }
 
-// terminalAgentHome is the home dir under which kind's transcripts live.
-func terminalAgentHome(kind agentkind.Kind) string {
-	if kind == agentkind.Codex {
-		return terminalCodexHome()
-	}
-	return terminalClaudeDir()
+// terminalAgentHomes resolves each agent's home dir, through the test seams.
+func terminalAgentHomes() sessionagent.Homes {
+	return sessionagent.Homes{Claude: terminalClaudeDir, Codex: terminalCodexHome}
 }
 
 const terminalTitleOwnerChars = 2000
@@ -117,7 +115,7 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	sess, err := database.GetTerminalSession(id)
+	sess, err := sessionagent.LoadSession(database, id)
 	if err != nil {
 		return err
 	}
@@ -219,9 +217,10 @@ func terminalOwnerText(cmd *cobra.Command, kind agentkind.Kind, sessionID, store
 }
 
 func readTerminalOwnerText(kind agentkind.Kind, sessionID, storedPath string) (string, error) {
-	tr, err := terminal.OpenTranscript(kind, sessionID, storedPath, terminalAgentHome(kind))
-	if err != nil {
-		return "", err
+	a, ok := sessionagent.For(kind)
+	if !ok {
+		return "", fmt.Errorf("not an agent kind: %q", kind)
 	}
-	return tr.OwnerText(terminalTitleOwnerChars)
+	row := sessionagent.Row{SessionID: sessionID, TranscriptPath: storedPath, Home: a.Home(terminalAgentHomes())}
+	return a.Transcript(row).OwnerText(terminalTitleOwnerChars)
 }

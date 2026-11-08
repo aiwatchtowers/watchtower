@@ -34,7 +34,7 @@ final class ProviderRoutingApplicationTests: XCTestCase {
         XCTAssertEqual(model.phase, .failed)
         XCTAssertEqual(model.savedRevision, "new")
         XCTAssertEqual(model.confirmed?.revision, "old")
-        XCTAssertEqual(model.copy?.title, ProviderFallbackPreview(preferred: .claude, state: .applyError).copy.title)
+        XCTAssertEqual(model.copy?.title, ProviderFallbackPreview(state: .applyError).copy.title)
         XCTAssertFalse(model.copy?.detail.contains("still uses its previous") ?? true)
         current = try status("newest", ack: "newest", version: "latest", ackVersion: "latest")
         await model.applyLatest()

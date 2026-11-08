@@ -5,11 +5,12 @@ import WatchtowerCore
 /// skills by invocations (top 10, then Show all) and the ones never used.
 struct AgentAnalyticsSkillsView: View {
     let skills: AgentSkillsReport?
+    var codex: AgentAnalyticsCodexShare = .none
 
     static let shownRows = 10
 
     var body: some View {
-        AgentAnalyticsBlock(title: "Skills", lead: skills?.lead, state: state) {
+        AgentAnalyticsBlock(title: "Skills", lead: skills?.lead, state: state, codex: codex) {
             if let skills { measured(skills) }
         }
     }

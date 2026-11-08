@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // exStart is the executor tests' fake now: noon UTC.
@@ -82,7 +83,7 @@ func newExFixture(t *testing.T, o exOpts) *exFixture {
 	t.Helper()
 	d := openExDB(t, o.fileDB)
 	if o.gen == nil {
-		o.gen = &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+		o.gen = &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	}
 	ws := t.TempDir()
 	f := &exFixture{d: d, clock: automationstest.NewFakeClock(exStart), gen: o.gen, reg: fakeTools(),
@@ -331,7 +332,7 @@ type blockingGen struct {
 
 func newBlockingGen() *blockingGen {
 	return &blockingGen{entered: make(chan struct{}, 16), release: make(chan struct{}),
-		usage: digest.Usage{InputTokens: 10, OutputTokens: 5}}
+		usage: digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}
 }
 
 func (g *blockingGen) Generate(ctx context.Context, _, _, sessionID string) (string, *digest.Usage, string, error) {
@@ -394,7 +395,7 @@ func fakeGenCalls(t *testing.T, g digest.Generator) int {
 }
 
 func usageGen(in, out int) *automationstest.FakeGenerator {
-	return &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: in, OutputTokens: out}}}
+	return &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: int64(in), Output: int64(out)}}}}
 }
 
 func mustContain(t *testing.T, what, got, want string) {

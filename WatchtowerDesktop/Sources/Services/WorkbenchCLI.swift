@@ -624,23 +624,41 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         codex?.state == .notSetUp
     }
 
-    /// Whether the skill the agent's session reads knows the group first
-    /// prompt (board #476): Claude Code's `group_prompt`, or the codex
-    /// part's; a CLI without a codex part ships a skill that knows it.
-    func skillKnowsGroupPrompt(_ agent: AgentKind) -> Bool {
-        switch agent {
-        case .claude: groupPrompt
-        case .codex: codex?.groupPrompt ?? true
-        }
+    /// One agent's part of the folder's install.
+    struct AgentPart: Equatable {
+        /// The agent's CLI is there to launch.
+        let found: Bool
+        /// The agent's skill copy is in the folder (current or not).
+        let skill: Bool
+        /// The skill copy knows the group first prompt (board #476).
+        let groupPrompt: Bool
     }
 
-    /// Whether the agent's CLI is there to launch: `claude_found`, or the
-    /// codex part's `found` (a CLI without a codex part cannot launch Codex).
+    /// Each agent's part, decoded from the status's shape: Claude Code's is
+    /// the top level (`claude_found`, `skill`, `group_prompt`; the format
+    /// predates Codex), Codex's the `codex` object. A CLI older than Codex
+    /// support has no codex part. This is the decoder of the CLI's per-agent
+    /// JSON (an LLMTRANSPORT-01 `permanent:` kind of mapping, written as a
+    /// table the guard does not scan): consumers read a part, never the kind.
+    var agentParts: [AgentKind: AgentPart] {
+        var parts: [AgentKind: AgentPart] = [
+            .claude: AgentPart(found: claudeFound, skill: skill != "missing", groupPrompt: groupPrompt)
+        ]
+        if let codex { parts[.codex] = AgentPart(found: codex.found, skill: codex.skill, groupPrompt: codex.groupPrompt) }
+        return parts
+    }
+
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (board #476); an agent with no part (a CLI that predates it)
+    /// ships a skill that knows it.
+    func skillKnowsGroupPrompt(_ agent: AgentKind) -> Bool {
+        agentParts[agent]?.groupPrompt ?? true
+    }
+
+    /// Whether the agent's CLI is there to launch; an agent with no part (a
+    /// CLI that predates it) cannot be launched.
     func agentFound(_ agent: AgentKind) -> Bool {
-        switch agent {
-        case .claude: claudeFound
-        case .codex: codex?.found ?? false
-        }
+        agentParts[agent]?.found ?? false
     }
 
     /// The header's Codex setup control (board #399): nil unless codex is
@@ -1011,26 +1029,23 @@ struct WorkbenchCLI {
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`)
     /// for `agent`'s session: a Claude worktree skips Codex's install (it
-    /// starts Codex's app-server); nil installs both.
+    /// starts Codex's app-server). Always named: the CLI's "no `--agent`"
+    /// installs every agent's integration, which no session asks for (A7b).
     /// A refusal or failure exits 0 with the envelope's `refused`/`error`.
-    func worktreeCreate(projectID: Int64, name: String, agent: AgentKind?) async throws -> WorktreeCreateResult {
-        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name]
-            + Self.worktreeAgentArgs(agent) + ["--json"]
+    func worktreeCreate(projectID: Int64, name: String, agent: AgentKind) async throws -> WorktreeCreateResult {
+        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name,
+                    "--agent", agent.rawValue, "--json"]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
     }
 
     /// Re-creates a placed worktree at `path` on `branch` when it is gone from
     /// disk; `agent` as for `worktreeCreate`.
-    func worktreeEnsure(projectID: Int64, path: String, branch: String, agent: AgentKind?) async throws -> WorktreeCreateResult {
+    func worktreeEnsure(projectID: Int64, path: String, branch: String, agent: AgentKind) async throws -> WorktreeCreateResult {
         let args = ["workbench", "worktree", "ensure", "--workbench", String(projectID),
-                    "--path", path, "--branch", branch] + Self.worktreeAgentArgs(agent) + ["--json"]
+                    "--path", path, "--branch", branch, "--agent", agent.rawValue, "--json"]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
-    }
-
-    private static func worktreeAgentArgs(_ agent: AgentKind?) -> [String] {
-        agent.map { ["--agent", $0.rawValue] } ?? []
     }
 
     /// Drops the placed worktree at `path` from the workbench's records.

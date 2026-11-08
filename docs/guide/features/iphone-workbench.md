@@ -10,7 +10,7 @@ You leave your desk while an agent works through a target. On the phone you foll
 
 The phone never gets terminal output. The Mac sends the session's dialog only while the screen is open, plus five minutes, and refreshes it every few seconds while the agent works. You see your lines, the agent's text, subagents and Watchtower's notes, never tool calls; the newest 300 entries, with **N earlier messages — open on the Mac** above them.
 
-A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes no lines or **Finish** from the phone: write to it on the Mac. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
+A Claude Code session takes your line while it works and reads it at its next step. A Codex session takes your line when it is idle: while it works, the Mac holds the line and sends it once Codex stops (an older Mac shows no field for Codex: write to it on the Mac). If the Mac refuses a line, the line shows the Mac's reason, for example **The session is not running on the Mac**. Writing needs **Type into sessions from this phone** and the Mac's **Allow…**; see [Let the phone do more](iphone.md#let-the-phone-do-more).
 
 ## Using it
 
@@ -89,7 +89,7 @@ While a session runs and the phone has been in touch in the last 24 hours, the M
 - **Unlock this iPhone to see the chat.**: the chat is sealed until the phone is unlocked.
 - **Your Mac is asleep · last seen 40 min ago. New lines go when it wakes.** above the chat, **Waiting for your Mac** under the field and your line, and a state line that reads **as of 40 min ago**: the Mac has not checked in for over 35 minutes. The line goes when it is back.
 - **Answer the request above** or **Needs approval on the Mac** instead of the field: the agent waits on a permission prompt, and nothing else goes to it until that is answered.
-- No field at all: typing is off for this phone; the bar says why, with **Turn On**. On a Codex session the bar says **Write to Codex sessions on the Mac.**
+- No field at all: typing is off for this phone; the bar says why, with **Turn On**. On a Codex session with a Mac that has not been updated, the bar says **Write to Codex sessions on the Mac.**
 - **Confirm on the Mac** beside an automation: it changed since you last confirmed it; confirm it in the Mac's Automations tab. **Off** means it is turned off there. **Not allowed**: the Mac has not allowed this phone to start sessions. If the Mac refuses a run, the row shows why in red; **Dismiss** clears it.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
