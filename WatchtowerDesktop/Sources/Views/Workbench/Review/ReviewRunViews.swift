@@ -83,7 +83,7 @@ struct ReviewRunCard: View {
         } else if let progress {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    if progress.remaining == 0, progress.title != "Summary ready" {
+                    if progress.running {
                         ProgressView().controlSize(.mini)
                     }
                     Text(progress.title).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)

@@ -94,6 +94,7 @@ final class ReviewMapPresentationTests: XCTestCase {
         let card = try XCTUnwrap(Pres.progress(keys: ["a"], states: ["a": .ok], summary: .running, waiting: nil))
         XCTAssertEqual(card.title, "Writing the summary")
         XCTAssertEqual(card.body, "The chapter is described.")
+        XCTAssertTrue(card.running)
     }
 
     func testProgressAfterTheRunCountsFailedAndNotReached() throws {
@@ -103,9 +104,11 @@ final class ReviewMapPresentationTests: XCTestCase {
         XCTAssertEqual(card.title, "Summary ready")
         XCTAssertEqual(card.body, "1 chapter failed, 2 were not reached · they are listed as not covered.")
         XCTAssertEqual(card.remaining, 2)
+        XCTAssertFalse(card.running, "a settled card has no spinner")
         XCTAssertEqual(Pres.describeRemainingTitle(card.remaining), "Describe 2 remaining")
         let clean = try XCTUnwrap(Pres.progress(keys: ["a"], states: ["a": .cached], summary: .cached, waiting: nil))
         XCTAssertNil(clean.body)
+        XCTAssertFalse(clean.running)
     }
 
     func testNoCardBeforeARunOrOnASummaryFailure() {

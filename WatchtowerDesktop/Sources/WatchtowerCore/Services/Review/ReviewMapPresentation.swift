@@ -189,6 +189,15 @@ package enum ReviewMapPresentation {
         package let body: String?
         /// Chapters the run did not reach: **Describe N remaining** (0 = no button).
         package let remaining: Int
+        /// A run still goes (the card's spinner); false once the summary is in.
+        package let running: Bool
+
+        fileprivate init(title: String, body: String?, remaining: Int = 0, running: Bool = true) {
+            self.title = title
+            self.body = body
+            self.remaining = remaining
+            self.running = running
+        }
     }
 
     /// The card while a run goes, after it settles, or nil when there is nothing to
@@ -202,7 +211,7 @@ package enum ReviewMapPresentation {
         let done = all.filter { $0 == .ok || $0 == .cached }.count
         let total = keys.count
         if let waiting {
-            return Progress(title: waiting, body: "\(done) of \(total) done.", remaining: 0)
+            return Progress(title: waiting, body: "\(done) of \(total) done.")
         }
         let describing = all.filter { $0 == .running || $0 == .waiting }.count
         let queued = all.filter { $0 == .queued }.count
@@ -213,19 +222,18 @@ package enum ReviewMapPresentation {
             return Progress(
                 title: "Describing chapters — \(done) of \(total) done",
                 body: "Summary waits for \(left) \(left == 1 ? "chapter" : "chapters") (\(parts.joined(separator: ", "))). "
-                    + "Chapters fill in as they finish.",
-                remaining: 0
+                    + "Chapters fill in as they finish."
             )
         }
         if summary == .running || summary == .waiting || summary == .queued {
             let line = done == total ? allDescribed(total) + "." : "\(done) of \(total) chapters are described."
-            return Progress(title: "Writing the summary", body: line, remaining: 0)
+            return Progress(title: "Writing the summary", body: line)
         }
         guard summaryIn(summary) else { return nil }
         let failed = all.filter { if case .failed = $0 { true } else { false } }.count
         let notReached = all.filter { $0 == .notStarted }.count
         return Progress(title: "Summary ready", body: notCoveredLine(failed: failed, notReached: notReached),
-                        remaining: notReached)
+                        remaining: notReached, running: false)
     }
 
     /// `1 chapter failed, 2 were not reached · they are listed as not covered.`; nil when none.
