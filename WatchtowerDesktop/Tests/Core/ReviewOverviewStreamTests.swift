@@ -49,6 +49,10 @@ final class ReviewOverviewStreamTests: XCTestCase {
             "dir:api", "lane:ABC-1-login", "dir:", "dir:internal/db/migrations", "agent:1", "lane:task-b", "collapsed"
         ])
         XCTAssertEqual(env.overview?.coverage.map(\.source), [.lane, .lane])
+        // Go writes `"what":""` for an undescribed chapter: it reads as nil.
+        XCTAssertEqual(env.overview?.chapters.map(\.what), [
+            "about dir:api", "about lane:ABC-1-login", "about dir:", "about dir:internal/db/migrations", "about agent:1", nil, nil
+        ])
     }
 
     func testGoldenAcrossSplitReads() throws {

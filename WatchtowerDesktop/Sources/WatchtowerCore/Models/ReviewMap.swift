@@ -2,7 +2,7 @@ import Foundation
 
 /// A chapter's or a file's danger level in the review map (Go `reviewmap.Level`).
 /// Never mixed with a risk's `low|medium|high` (`ReviewOverview.Risk.Level`).
-package enum ReviewDangerLevel: String, Decodable, Equatable, Sendable {
+package enum ReviewDangerLevel: String, Decodable, Sendable {
     case breaking, significant, normal
 }
 

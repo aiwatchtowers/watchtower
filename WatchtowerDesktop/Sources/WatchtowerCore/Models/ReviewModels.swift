@@ -262,7 +262,7 @@ package struct ReviewEnvelope: Decodable, Sendable {
     package let placeMissing: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// `review overview`: the chapters the overview could not see (tech spec §3.4).
     package let incomplete: [String]?
-    /// `review overview`: the failure's class (`timeout|provider|parse|cancelled|too_large|busy`,
+    /// `review overview`: the failure's class (`timeout|provider|parse|cancelled|too_large|busy|missing_parts`,
     /// tech spec §3.6); `error` is then the owner's sentence and `detail` the provider's own text.
     package let errorClass: String?
     package let detail: String?
@@ -339,7 +339,7 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
 
     package struct Chapter: Decodable, Equatable, Sendable {
         /// The map chapter's key, level and description (tech spec §3.4); nil on an
-        /// overview cached before the map existed.
+        /// overview cached before the map existed. An undescribed chapter's empty `what` reads as nil.
         package let key: String?
         package let title: String
         package let level: ReviewDangerLevel?
@@ -416,7 +416,7 @@ extension ReviewOverview.Chapter {
             level: try c.decodeIfPresent(ReviewDangerLevel.self, forKey: .level),
             paths: try c.decodeIfPresent([String].self, forKey: .paths) ?? [],
             core: try c.decodeIfPresent(Bool.self, forKey: .core) ?? false,
-            what: try c.decodeIfPresent(String.self, forKey: .what),
+            what: try c.decodeIfPresent(String.self, forKey: .what).flatMap { $0.isEmpty ? nil : $0 },
             lenses: try c.decodeIfPresent([String].self, forKey: .lenses) ?? []
         )
     }
