@@ -18,8 +18,9 @@ const (
 // Chapter is one chapter of the map. Key is "agent:<n>", "collapsed",
 // "lane:<lane>", "lane:<lane>/<dir>[#N]" or "dir:<dir>[#N]". Level is the
 // highest of its files' ("collapsed" is always normal); Core is true for a
-// breaking chapter and for an agent chapter marked core. Lane, TargetID and JiraKey are set on a lane
-// chapter (the last two when the lane's ticket was found).
+// breaking chapter and for an agent chapter marked core. Lane, TargetID and
+// JiraKey are set on a lane chapter (the last two when the lane's ticket was
+// found).
 type Chapter struct {
 	Key            string         `json:"key"`
 	Title          string         `json:"title"`
@@ -113,7 +114,7 @@ func Build(in Input) Map {
 		Files:         files,
 		LanesPartial:  in.Attribution.Partial,
 		DiffTruncated: in.Diff.Truncated,
-		Notes:         nonNil(slices.Clone(in.Patterns.Notes)),
+		Notes:         nonNil(in.Patterns.Notes),
 	}
 }
 
@@ -193,18 +194,18 @@ func buildChapters(in Input) []Chapter {
 func laneChapters(name string, lane Lane, paths []string, lines map[string]int) []Chapter {
 	title := cmp.Or(lane.Title, name)
 	parts := splitByDir(paths, lines)
-	mk := func(key, title string, paths []string, n int) Chapter {
+	mk := func(key, chTitle string, chPaths []string, n int) Chapter {
 		return Chapter{
-			Key: key, Title: title, Paths: paths, ChangedLines: n,
+			Key: key, Title: chTitle, Paths: chPaths, ChangedLines: n,
 			Lane: name, TargetID: lane.TargetID, JiraKey: lane.JiraKey,
 		}
 	}
-	if sumLines(paths, lines) <= maxChapterLines {
+	if total := sumLines(paths, lines); total <= maxChapterLines {
 		var all []string
 		for _, part := range parts {
 			all = append(all, part.paths...)
 		}
-		return []Chapter{mk("lane:"+name, title, all, sumLines(all, lines))}
+		return []Chapter{mk("lane:"+name, title, all, total)}
 	}
 	out := make([]Chapter, 0, len(parts))
 	for _, part := range parts {
