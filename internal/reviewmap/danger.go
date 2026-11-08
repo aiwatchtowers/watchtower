@@ -30,6 +30,9 @@ func (l Level) String() string {
 	return "normal"
 }
 
+// MarshalText writes the level as its name ("breaking", …) in the map's JSON.
+func (l Level) MarshalText() ([]byte, error) { return []byte(l.String()), nil }
+
 // Signal ids, in the order Signals reports them.
 const (
 	sigMigrationEdited = "migration_edited"
