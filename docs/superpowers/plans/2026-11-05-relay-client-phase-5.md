@@ -279,7 +279,7 @@ Ending the link needs those two answered account reads and nothing else. No feed
 
 | Surface | Which links | Held purchase | Its action |
 |---|---|---|---|
-| Needs-Relay banner, on Now (`.moved` and `.free`) | Cause `.lapse`, no `macMoved` | "This iPhone paid, but Relay hasn't seen it. Tap Restore Purchases to keep the link to <Mac>." | **Restore Purchases** on the card: `.restore`, which `.moved` already has and `.free` gains while a purchase is held (pending ask #1104). `RelaySubscriptionPress.restore` starts the restore and opens the screen, and `restore()` submits what StoreKit holds |
+| Needs-Relay banner, on Now (`.moved` and `.free`) | Cause `.lapse`, no `macMoved` | "This iPhone paid, but Relay hasn't seen it. Tap Restore Purchases to keep the link to <Mac>." | **Restore Purchases** on the card: `.restore`, which `.moved` already has and `.free` gains while a purchase is held (ask #1104). `RelaySubscriptionPress.restore` starts the restore and opens the screen, and `restore()` submits what StoreKit holds |
 | S59, on Now | Cause `.slot`, or `macMoved`, the cause `.lapse` included | Never: a purchase brings neither back | **Forget This Mac** |
 | Quiet row on Now | Any other refused Mac; and the Mac on screen when its banner carries no line, as with "Update Watchtower…" or an unknown phase | On a needs-Relay link: "This iPhone paid, but Relay hasn't seen it. See Settings → Macs." Otherwise never | The row opens Settings → Macs. It has no button of its own |
 | Its row in Settings → Macs | Every refused Mac | On a needs-Relay link: "This iPhone paid, but Relay hasn't seen it. Open the Relay card on this screen." Otherwise never | The screen's own Relay card: **Restore Purchases** on `.moved`; on `.free`, the card opens the subscription screen, which has it |
@@ -290,7 +290,7 @@ The date does not move, whether the refusal came with the app open or closed. It
 
 **When it ends, the link goes by today's `unlinkRow`, the path Forget takes:** the farewell, then `remove_slot`, each kept and retried at launch when refused, the Keychain item with every key (ask #1086), the replica's files and the Not delivered rows go, recordings stay, and the row leaves Settings → Macs. The notice is `LinkNotice.after(wipe, macName:, otherwise: .relayEnded(macName, notSent))`, so a recording problem still comes first, as on every removal: "The link to <Mac> ended after 21 days without Relay. Link it again to see its data." and, with rows lost, today's "Not sent" count. S60.
 
-**Several links can end in one foreground: when a subscription ends, every relay-only Mac has much the same date.** `LinkingViewModel` has one `notice`, and `report` overwrites it. So the term never calls `report`. Each end appends its `LinkNotice.after` to a new `termNotices` queue, and the `notice` the screens read is `termNotices.first ?? storedNotice`. `dismissNotice` removes the first, and the next shows. Nothing else touches the queue, so a scan, a finished link or `.stale` cannot clear one unread. So every Mac gets its own reason, recording problem or "Not sent" count, one at a time, with no new text. Like every notice it lives in memory: a process killed with notices still queued loses them (pending ask #1104). `testTwoLinksEndingInOneForegroundEachGetTheirNotice`, `testNoNotSentCountIsLostWhenLinksEndTogether`, `testARecordingProblemKeepsItsPlaceInTheQueue`, `testAnotherNoticeDoesNotOverwriteAQueuedOne`.
+**Several links can end in one foreground: when a subscription ends, every relay-only Mac has much the same date.** `LinkingViewModel` has one `notice`, and `report` overwrites it. So the term never calls `report`. Each end appends its `LinkNotice.after` to a new `termNotices` queue, and the `notice` the screens read is `termNotices.first ?? storedNotice`. `dismissNotice` removes the first, and the next shows. Nothing else touches the queue, so a scan, a finished link or `.stale` cannot clear one unread. So every Mac gets its own reason, recording problem or "Not sent" count, one at a time, with no new text. Like every notice it lives in memory: a process killed with notices still queued loses them (ask #1104). `testTwoLinksEndingInOneForegroundEachGetTheirNotice`, `testNoNotSentCountIsLostWhenLinksEndTogether`, `testARecordingProblemKeepsItsPlaceInTheQueue`, `testAnotherNoticeDoesNotOverwriteAQueuedOne`.
 
 **The cost: a person whose refusal still stands when it runs has no history of that Mac on this phone and its unsent actions are gone, and they must link it again, even if they pay afterwards.** With no link, no new action can be made for it, and a stored keybox has nothing to merge into.
 
@@ -922,7 +922,7 @@ Task 13, Task 0 ─ Task 17 ─ Task 11 (PR C)
 
 ### Task 17: The left-behind phone's banner and the term
 
-**Depends on:** Task 13; Task 0, seen by the owner; the owner's answers on the three rows under "Agent decisions for the owner"
+**Depends on:** Task 13; Task 0, seen by the owner
 
 **Files:**
 - Modify: `WatchtowerMobile/Sources/App/Relay/RelayAccountCenter.swift` (a read that sets the mark, and `termCheck()`), `WatchtowerMobile/Sources/App/LinkStore.swift` (`macMoved`), `WatchtowerKit/Sources/WatchtowerSync/Relay/TransportFollowerPolicy.swift` (a command, on `slotLost`, `switched` or `marker` toward iCloud with no other route), `WatchtowerMobile/Sources/App/Hubs/TransportFollower.swift`, `WatchtowerMobile/Sources/Features/Now/RelayBannerModel.swift`, `NowModel.swift` and `NowView.swift` (the row for another Mac), `WatchtowerMobile/Sources/Features/Settings/MacsModel.swift` and `MacsView.swift` (the row's line), `WatchtowerMobile/Sources/Features/Onboarding/LinkNotice.swift`, `LinkingViewModel.swift` (`unlinkRow` at the term), `WatchtowerMobile/Sources/App/Hubs/HubSession.swift` (the check in the foreground), `WatchtowerMobile/Tests/ScreenshotTourTests.swift` (S59, S60, S61). The banner is the plain, calm card of ask #1040, not amber
@@ -1049,17 +1049,18 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | The term acts only in the foreground, with a phone never opened keeping its keys with no limit | ask #1098 |
 | An undelivered purchase or renewal is sent first (ask #1040, point 5), and only answered account reads end a link | decided by the agent, reviews of asks #1090, #1092, #1095 and #1097 |
 | The link ends only after two answered reads at least 5 minutes apart | ask #1100 |
-| A purchase the relay has not seen, and `transferLimit`, `notImplemented` and `updateRequired`, hold the term while the row is current, so keys can outlive 21 days. The past-date line on Now's row and the Settings row for the three refusals is the amendment pending ask #1104 | ask #1100 |
+| A purchase the relay has not seen, and `transferLimit`, `notImplemented` and `updateRequired`, hold the term while the row is current, so keys can outlive 21 days. The past-date line on Now's row and the Settings row for the three refusals amends this (ask #1104) | ask #1100 |
 | On a known move with the cause `.lapse`, a held purchase does not hold the term | ask #1100 |
 | S58 stays as it is, though its advice to open the Mac does not help a phone whose Mac moved with a marker it cannot open | ask #1100 |
-| Past the date, Now's row and the Settings row say why a link waits on a refused row | decided by the agent, review of ask #1102; **amends ask #1100's "no warning line past the date" for these three refusals, pending ask #1104** |
+| Past the date, Now's row and the Settings row say why a link waits on a refused row | ask #1104, amending ask #1100's "no warning line past the date" for these three refusals |
 | A phone that pays and holds the Mac in a slot, with the Mac moved to iCloud, has no term: S59 and **Forget This Mac**, keys kept until pressed. If the marker does not open, it has no S59 either. Narrows "the term ends the link" (ask #1093) and the keys' term (ask #1082) to phones the relay refuses | ask #1098 |
 | A renewal does not hold the term, and no purchase holds S59's terms. A refusal counts only from the send at the term. "Restore Purchases" is named only beside its button | decided by the agent after reading `RelayAccountCenter`, reviews of asks #1094, #1095, #1097 and #1099 |
 | A refused link warns from the first refusal with a fixed date, `since + 21 days` (S61), on Now for any Mac and on its Settings row. The date is the link's term, so ask #1077's rule on numbers does not touch it. A person back past the date sees the line first, and the link ends at a later opening, by the two-read rule of ask #1100 | the warning asked for in ask #1094; the timing decided by the agent |
 | No local notification of the link's end date | ask #1098 |
 | A failed account read waits, with no cap, so a phone whose reads never answer keeps its keys | ask #1093 |
 | S60 names 21 days and S61 a date. That is the link's term, not an exposure bound, so ask #1077's rule on numbers does not touch it; the wording is the agent's, and the owner checks it on Task 0's frame | decided by the agent, review of ask #1089 |
-| Links ending together queue their notices, one at a time, with no new text; the queue lives in memory | decided by the agent, review of ask #1099; **the memory part pending ask #1104** |
+| The needs-Relay banner on `.free` gains **Restore Purchases** while a purchase is held | ask #1104 |
+| Links ending together queue their notices, one at a time, with no new text; the queue lives in memory | decided by the agent, review of ask #1099; the queue living in memory: ask #1104 |
 | One mark: each answered read clears it on paying with a slot, and else sets `.lapse` or `.slot` by what it shows, keeping `since`. A known move is a separate flag for S59, cleared only on a marker toward the relay | decided by the agent, reviews of asks #1089, #1090 and #1095 |
 | A phone with no key source does not park or show S58; its feed stops until a merge, a foreground or a launch, with nothing on Now but the banner it already has | ask #1082's comment; mechanism by the agent |
 | Before listing, a written action is withdrawn through today's `withdrawUnanswered`, so a Retry cannot run it twice | decided by the agent after reading `retry`; ask #1082's comment |
@@ -1076,16 +1077,6 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | No phone screen or text but the parked row, the banner of ask #1081, the term's warning line and its notice | decided by the agent; relay design §7 item 5 |
 
 ## Still waiting on later owner steps
-
-### Agent decisions for the owner
-
-None is settled in Decisions. All three went to the owner as ask #1104; Task 17 waits for its answers.
-
-1. **`termNotices` lives in memory, like every notice.** Consequence: a process killed while notices are still queued loses them, and a Mac that ended is gone with no reason and no "Not sent" count. Recommendation: keep it in memory, because the term runs only in the foreground, the queue holds seconds of work, and saving it would add a stored state that no other notice has.
-2. **The needs-Relay banner on `.free` gains Restore Purchases while a purchase is held.** Consequence: a new action on an existing card, shown only while this phone paid and the relay has not seen it. Recommendation: add it, because the line tells the person to tap Restore Purchases and the card must have that button.
-3. **Past the date, Now's row and the Settings row say why a link waits on a refused row** (`transferLimit`, `notImplemented`, `updateRequired`): "This iPhone paid, but Relay hasn't accepted it. The link to <Mac> stays while that purchase is current." Consequence: one more string on those two rows, so a second Mac does not sit silent past its date. Recommendation: add it, because without it a Mac the person does not open shows nothing at all while its term is held. **This amends ask #1100's answer in one part:** #1100 held the term for these three refusals with no warning line past the date; this row adds one on those two rows, pending ask #1104.
-
-### Other later steps
 
 - **The numeric thresholds in "Measuring the cost."** The owner sets them before the measuring run; the controller asks.
 - **Frames S58, S59, S60 and S61.** Shown to the owner before Tasks 16 and 17 (Task 0).
