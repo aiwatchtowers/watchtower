@@ -30,6 +30,9 @@ type InMemoryKeySource struct {
 	seq      uint64
 	handed   [][]byte
 	metaErr  error
+	// keyboxTo, when set, is the keybox recipient in place of dev_kx (the
+	// phone's offered ephemeral key, relay client Phase 5).
+	keyboxTo *ecdh.PublicKey
 }
 
 func newKeySource(t *testing.T) *InMemoryKeySource {
@@ -78,7 +81,25 @@ func (s *InMemoryKeySource) KeyboxRecipient(device ID) (*ecdh.PublicKey, error) 
 	if device != s.k.deviceID {
 		return nil, fmt.Errorf("unknown device %s", device)
 	}
+	if s.keyboxTo != nil {
+		return s.keyboxTo, nil
+	}
 	return s.k.devKX.PublicKey(), nil
+}
+
+// fixtureEphemeral is the Kit fixture's ephemeral pair (E2EFixtureKeys.hubEph,
+// devEph): the hub's drawn hub_eph and the phone's offered dev_eph.
+func fixtureEphemeral(t *testing.T) (hubEph, devEph *ecdh.PrivateKey) {
+	t.Helper()
+	hubEph, err := ecdh.X25519().NewPrivateKey(run(0x81, 0xA0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	devEph, err = ecdh.X25519().NewPrivateKey(run(0x91, 0xB0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hubEph, devEph
 }
 
 // memGuard is relay_seen in memory; records counts every Record call.
@@ -617,6 +638,24 @@ func sealGoVectors(t *testing.T) goSealedFile {
 	r, err = s.Keybox("DataZone", dev, boxFrame.Payload)
 	add("keybox", ClassKeybox, r, err, boxFrame, "DataZone", fixtureHubID)
 
+	// Relay client Phase 5: a keybox sealed to the phone's offered ephemeral
+	// key, naming the pair of this epoch's wt/relay/v2/ keys in relay_kx.
+	hubEph, devEph := fixtureEphemeral(t)
+	kxBox, err := hubwire.Marshal(hubwire.Keybox{
+		Grant: hubwire.DeviceGrant{DeviceID: dev.String(), HubID: fixtureHubID.String(), Name: "Acme iPhone", Scope: "private",
+			Linked: true, StartSessionsAllowed: true},
+		Keys: &hubwire.KeyboxKeys{Epoch: 1, DataKey: base64URL(dataKey), AlertKey: base64URL(alertKey), MetaKey: base64URL(metaKey),
+			RelayKX: &hubwire.KeyboxRelayKX{HubPub: base64URL(hubEph.PublicKey().Bytes()), DevicePub: base64URL(devEph.PublicKey().Bytes())}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kxFrame := InnerFrame{Kind: "device_grant", ID: "device_grant-" + dev.String(), Payload: kxBox}
+	ks.keyboxTo = devEph.PublicKey()
+	r, err = s.Keybox("DataZone", dev, kxFrame.Payload)
+	ks.keyboxTo = nil
+	add("keyboxRelayKX", ClassKeybox, r, err, kxFrame, "DataZone", fixtureHubID)
+
 	// The relay push: no zone record, the AAD names AlertPushWireName in the
 	// data zone (the Kit's AlertOpener.open(wireName: "alert-push", …)).
 	push := WorkAlertFields{Event: "ask", Key: "ask-42", WorkbenchID: 7, WorkbenchName: "Acme", SessionID: int64p(9),
@@ -686,7 +725,11 @@ func TestWriteGoSealed(t *testing.T) {
 		case ClassRelayToPhone:
 			h, f, err = OpenSymmetric(env, []EnvelopeClass{ClassRelayToPhone}, ctx, nil, func(Header) ([]byte, error) { return h2p, nil })
 		case ClassKeybox:
-			h, f, err = OpenHPKE(env, ClassKeybox, k.devKX, KeyboxInfo(fixtureHubID, k.deviceID), ctx, hubSigPub)
+			recipient := k.devKX
+			if name == "keyboxRelayKX" {
+				_, recipient = fixtureEphemeral(t)
+			}
+			h, f, err = OpenHPKE(env, ClassKeybox, recipient, KeyboxInfo(fixtureHubID, k.deviceID), ctx, hubSigPub)
 		default:
 			t.Fatalf("%s: class %d", name, c.Class)
 		}

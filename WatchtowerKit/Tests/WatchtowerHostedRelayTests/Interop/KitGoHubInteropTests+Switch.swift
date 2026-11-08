@@ -679,7 +679,7 @@ actor KitFollower {
                 let box = try await phone.keybox(over: try inner(route)) { ($0.keys?.epoch ?? 0) >= ack }
                 try phone.link.merge(try XCTUnwrap(box.keys))
             }
-            try await outbox.enqueueEpochAck(epoch: ack)
+            try await outbox.enqueueEpochAck(epoch: ack, nextKX: nil)
         }
         if case .marker = input { return true }
         return handled

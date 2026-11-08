@@ -148,7 +148,7 @@ final class KitGoHubInteropTests: HostedRelayScenarioCase {
         handoff.step = "epoch_ack"
         let grantKeys = try XCTUnwrap(grantBox.keys)
         try link.merge(grantKeys)
-        let queued = try await outbox.enqueueEpochAck(epoch: grantKeys.epoch)
+        let queued = try await outbox.enqueueEpochAck(epoch: grantKeys.epoch, nextKX: nil)
         XCTAssertTrue(queued)
         _ = try await outbox.flush()
 

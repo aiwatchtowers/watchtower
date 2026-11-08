@@ -421,6 +421,50 @@ extension RelayFeedTests {
         XCTAssertEqual(try rig.rows().map(\.actionSeq), [2])
     }
 
+    /// The side reader reads around a record whose keybox has not come (plan, "The phone's rule for a relay key",
+    /// the pending row): a `hub_on_relay` behind it is handled, the pending record is neither handled nor deleted,
+    /// and the drain stays incomplete while it is there.
+    func testTheSideReaderReadsAroundARecordWaitingForItsKeybox() async throws {
+        let rig = try await OrderedRig.make()
+        try EphemeralLink.make(rig.keys, epochs: [1])
+        let onRelay = await rig.hub.control(.hubOnRelay)
+        try await rig.hub.writeControl(onRelay)
+        rig.hub.keys.currentEpochValue = 2
+        let pending = await rig.hub.control(.transportSwitchRejected)
+        try await rig.hub.writeControl(pending)
+        let log = ControlLog()
+
+        let read = try await rig.feed.readControls(over: rig.phone) { control in
+            await log.add(control)
+            return true
+        }
+
+        XCTAssertEqual(read, 1)
+        let told = await log.all.map(\.id)
+        XCTAssertEqual(told, [onRelay.id], "the control behind the pending record is handled")
+        XCTAssertTrue(try rig.store.isControlHandled(id: onRelay.id))
+        XCTAssertFalse(try rig.store.isControlHandled(id: pending.id))
+        let left = try await rig.mailboxNames()
+        XCTAssertEqual(left, [try rig.wire(pending)], "the pending record is not deleted")
+
+        let drain = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+
+        XCTAssertEqual(drain, .incomplete, "the drain stays incomplete while the pending record is there")
+        let afterDrain = try await rig.mailboxNames()
+        XCTAssertEqual(afterDrain, [try rig.wire(pending)])
+
+        rig.keys.isLocked = true
+        do {
+            _ = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+            XCTFail("a locked keychain still stops the whole scan")
+        } catch SecureTransportError.keysUnavailable {}
+        rig.keys.isLocked = false
+
+        try EphemeralLink.add(rig.keys, epoch: 2)
+        let settled = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+        XCTAssertEqual(settled, .drained, "once the keybox merges, the record opens and goes")
+    }
+
     /// The owner's ruling on review round 1: on CloudKit the drain keeps the phone's own `device` record (both hubs'
     /// cleanup keeps that lane); on the relay it goes with the rest (rule 15).
     func testADrainOnCloudKitKeepsTheDeviceRecord() async throws {

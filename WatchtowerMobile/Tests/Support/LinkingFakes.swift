@@ -286,11 +286,42 @@ final class FakeLinkHost: LinkHost {
     private(set) var keyMergeHubIDs: [String] = []
     /// Whether each merge raised the newest epoch, in call order.
     private(set) var keyMergeRaised: [Bool] = []
+    /// Whether each merge dropped the newest epoch's relay pair, in call order.
+    private(set) var keyMergeDropped: [Bool] = []
+    /// How many keybox merges the flow asked for.
+    private(set) var mergeCalls = 0
+    /// When true, `mergeKeybox` waits until it is set false again, before it reads the link (a merge held mid-way).
+    var parksMerge = false
 
-    func keysMerged(hubID: String, newestEpochRaised: Bool) {
+    /// As the session's merge on a link that does not reseal (`HubSession.mergeKeybox`): `merging` inside one
+    /// `updateHubLink` of `keys`; nil when no link is stored.
+    /// The reseal each merge asked for, in call order.
+    private(set) var mergeReseals: [KeyboxMergeReseal] = []
+
+    func mergeKeybox(
+        _ keyboxKeys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal
+    ) async throws -> KeyboxMerge? {
+        mergeCalls += 1
+        mergeReseals.append(reseal)
+        while parksMerge {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        guard let keys, let hub = UUID(uuidString: hubID), let device = try keys.deviceID() else { return nil }
+        let identity = try keys.identity()
+        var merged: KeyboxMerge?
+        guard try keys.updateHubLink(hubID, { current in
+            let merge = try current.merging(keyboxKeys, identity: identity, hubID: hub, deviceID: device, now: now)
+            merged = merge
+            return merge.keys
+        }) != nil else { return nil }
+        return merged
+    }
+
+    func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async {
         keyMerges += 1
         keyMergeHubIDs.append(hubID)
         keyMergeRaised.append(newestEpochRaised)
+        keyMergeDropped.append(droppedNewestPair)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {

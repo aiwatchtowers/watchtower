@@ -1,5 +1,15 @@
 {
   "deviceID" : "880B6D06-8852-6316-76C4-9A1A29E1EB29",
+  "ephemeralRelayKeys" : {
+    "deviceEphemeralPublic" : "9cced751b301bbd16c4fb8deddd82f18925d71ed90c844fa0158f845b0fa7f4b",
+    "hubEphemeralPublic" : "883186b800b41d5cf0429695da9b3cc4f328ebcd184a6e482fa578c103f06c77",
+    "keys" : {
+      "h2p/1" : "a60c0390462377af2512ddf83c8832e92fa13ff559eccdba50d389c269b624ac",
+      "h2p/2" : "eb7a1e84568d9ad6b08b53f1279e02b0db02f43f9e062411d9951208cde67e94",
+      "p2h/1" : "dbfec05b45e618d12e0863f647256b9578e1fde9d36e4ad28026ea27e768098f",
+      "p2h/2" : "caac59dff7a0906edff407a05b57d40425ca05e38d8d9a98517e179e7465806f"
+    }
+  },
   "linkCodeTag" : "0GEMg43fGCCeagM08YLnng",
   "recordNames" : {
     "data/owner_ask/42" : "6dcqzt5hh7xi2ftr3rimxhibgy",
