@@ -845,6 +845,19 @@ final class LinkingViewModel {
         }
     }
 
+    /// The follower's drop on an opened `hub_on_relay` (relay client Phase 5): the hub cleared this phone's relay keys,
+    /// so both private ephemeral keys and every stored pair go. true when done or no link is left; false when the
+    /// Keychain could not be written (locked).
+    func dropEphemeral(hubID: String) -> Bool {
+        do {
+            _ = try keys.updateHubLink(hubID) { $0.droppingEphemeral() }
+            return true
+        } catch {
+            Self.logger.error("ephemeral keys not dropped: \(String(describing: error), privacy: .public)")
+            return false
+        }
+    }
+
     /// The newest epoch the Keychain holds for `hubID`; nil when it cannot be read (locked) or holds none.
     func newestEpoch(hubID: String) -> UInt32? {
         do {

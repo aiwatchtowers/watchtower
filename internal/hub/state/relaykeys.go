@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -98,6 +99,48 @@ func ClearDeviceKX(tx *sql.Tx, device string) error {
 		return fmt.Errorf("clearing a phone's relay keys: %w", err)
 	}
 	return deleteRelayKeys(tx, device)
+}
+
+// ClearDeviceKX is ClearDeviceKX in a transaction of its own (the
+// switcher's lapse and lost reader), reporting whether the phone had an
+// offer or a relay-key row to lose.
+func (s *Store) ClearDeviceKX(device string) (bool, error) {
+	had := false
+	err := s.write(func(tx *sql.Tx) error {
+		var err error
+		if had, err = hasDeviceKX(tx, device); err != nil {
+			return err
+		}
+		return ClearDeviceKX(tx, device)
+	})
+	return had, err
+}
+
+// HasDeviceKX reports whether device has an offer or a relay-key row: the
+// phone has ephemeral state on this hub. Read-only; no key material is read.
+func (s *Store) HasDeviceKX(device string) (bool, error) { return hasDeviceKX(s.db, device) }
+
+func hasDeviceKX(q interface {
+	QueryRow(string, ...any) *sql.Row
+}, device string) (bool, error) {
+	var n int
+	if err := q.QueryRow(`SELECT (SELECT COUNT(*) FROM devices WHERE device_id = ? COLLATE NOCASE AND kx_offer IS NOT NULL)
+		+ (SELECT COUNT(*) FROM epoch_relay_keys WHERE device_id = ? COLLATE NOCASE)`, device, device).Scan(&n); err != nil {
+		return false, fmt.Errorf("reading a phone's relay keys: %w", err)
+	}
+	return n > 0, nil
+}
+
+// LapsePending reports whether a lapse of device waits for the switcher
+// (MetaLapsePending): from queueLapse on, its keys are out of the data zone.
+func (s *Store) LapsePending(device string) (bool, error) {
+	pending := false
+	err := s.ReadTx(context.Background(), func(tx *sql.Tx) error {
+		var err error
+		pending, err = lapsePending(tx, device)
+		return err
+	})
+	return pending, err
 }
 
 func deleteRelayKeys(tx *sql.Tx, device string) error {

@@ -1507,3 +1507,53 @@ actor RecordingConditionalTransport: ConditionalTransport {
         return try await inner.delete(items)
     }
 }
+
+// MARK: - Withdrawn at once when the relay refuses this phone (relay client Phase 5, Task 13)
+
+extension ActionOutboxOrderedTests {
+    func testSlotLostWithdrawsThenLists() async throws {
+        let phone = try await makePhone()
+        let sent = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let stored = try XCTUnwrap(row(phone, sent.id))
+        let queued = try await insert(phone)
+
+        let listed = try await phone.outbox.withdrawUnechoed()
+
+        XCTAssertEqual(Set(listed), [sent.id, queued.id], "every unechoed row, at once: no 24 h wait")
+        let deletes = await phone.recorder.conditionalDeletes
+        XCTAssertEqual(deletes.map(\.names), [[stored.wireName]], "only the written one had a record to delete")
+        let left = try await current(phone, stored.wireName)
+        XCTAssertNil(left, "withdrawn: the hub can never apply it")
+        XCTAssertEqual(try pending(phone, sent.id)?.undeliveredReason, .refused)
+        XCTAssertEqual(try pending(phone, queued.id)?.undeliveredReason, .refused)
+    }
+
+    func testARefusedDeleteKeepsTheRowSent() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        await phone.inner.refuseNext(.permanent(code: "forbidden"), count: 1)
+
+        let listed = try await phone.outbox.withdrawUnechoed()
+
+        XCTAssertTrue(listed.isEmpty)
+        XCTAssertEqual(try row(phone, one.id)?.delivery, .sent, "left for the next event or the 24 h sweep")
+        let again = try await phone.outbox.withdrawUnechoed()
+        XCTAssertEqual(again, [one.id], "the next event withdraws it")
+    }
+
+    /// F39b: the hub read the action just before: its echo is met on the way, applied, and the row is not listed.
+    func testAnEchoMetOnWithdrawalIsAppliedNotListed() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        try await hubWrites(phone, echo(one.id, seq: 1, status: .applied, message: nil))
+
+        let listed = try await phone.outbox.withdrawUnechoed()
+
+        XCTAssertTrue(listed.isEmpty, "not listed, so no Retry can run it twice")
+        XCTAssertNotEqual(try pending(phone, one.id)?.delivery, .undelivered, "the echo was taken")
+        XCTAssertNil(try pending(phone, one.id)?.undeliveredReason)
+    }
+}

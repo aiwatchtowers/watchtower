@@ -100,6 +100,10 @@ actor SimPhone {
     private var rejected: TimeInterval = 0
     private(set) var lastSwitch = SimSwitchInfo()
     private(set) var hubOnRelay = false
+    /// The policy's `dropEphemeral` ran (an opened `hub_on_relay`); the sim holds no keys, so it is only recorded.
+    private(set) var droppedEphemeral = false
+    /// The policy's `markRefused`: a relay-only link the relay refuses.
+    private(set) var refused: RelayRefusal?
     private var nextCtl = 0
     private var offline = false
     private var loseNext = false
@@ -112,7 +116,7 @@ actor SimPhone {
         // link, so a same-epoch `transport_switched{relay}` is only handled here.
         self.follower = FollowerState(
             route: TransportKind(cfg.current), newestEpoch: 1, canUseRelay: cfg.mailbox[.relay] != nil ? .yes : .no,
-            relaySwitchRequested: false)
+            relaySwitchRequested: false, hasOtherRoute: cfg.mailbox[.cloudkit] != nil && cfg.transports[.cloudkit] != nil)
     }
 
     // MARK: - State
@@ -211,6 +215,11 @@ actor SimPhone {
     /// The relay refused a write because the subscription ended: back to CloudKit (§6).
     private func lapsed() async {
         await follow(.relayLapsed)
+    }
+
+    /// The relay account answered with the hub's Mac in none of this phone's slots (relay client Phase 5).
+    func slotLost() async {
+        await follow(.slotLost)
     }
 
     /// Writes the pending transport_switch to every transport that lacks it.
@@ -427,6 +436,31 @@ actor SimPhone {
         outItems = []
     }
 
+    /// The relay client Phase 5 commands: the sim holds no keys, so a drop is only recorded.
+    private func readerStatus(_ command: FollowerCommand) async {
+        switch command {
+        case .withdrawUnechoed: await withdrawUnechoed()
+        case .dropEphemeral: droppedEphemeral = true
+        case let .markRefused(cause): refused = cause
+        default: break
+        }
+    }
+
+    /// Every action without an echo has its record deleted on the relay, then is listed as undelivered; one whose
+    /// delete is refused stays (relay client Phase 5).
+    private func withdrawUnechoed() async {
+        var kept: [OutItem] = []
+        for item in outItems {
+            let outcome = await transport(.relay).delete(mailbox(.relay), [SimDeleteItem(name: Sim.actionName(item.seq), expect: .none)])
+            if case .refused = outcome.first {
+                kept.append(item)
+                continue
+            }
+            markUndelivered(item.seq)
+        }
+        outItems = kept
+    }
+
     private func markUndelivered(_ seq: UInt64) {
         if !undelivered.contains(where: { $0.seq == seq }) {
             undelivered.append(SimUndelivered(seq: seq, payload: history[seq] ?? ""))
@@ -495,6 +529,8 @@ actor SimPhone {
                 break // `sync` drains `follower.leftTransport` at the end of every pass
             case let .pollOtherMailbox(on):
                 await read(SimKind(on))
+            case .withdrawUnechoed, .dropEphemeral, .markRefused:
+                await readerStatus(command)
             }
         }
         return commands

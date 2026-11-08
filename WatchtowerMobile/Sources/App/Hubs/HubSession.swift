@@ -401,6 +401,10 @@ final class HubSession {
     /// This link reseals its own sealed bytes across epochs (ask #1066): a relay route, or a link that has moved
     /// routes. An iCloud-only link keeps today's bytes: its static keys exist for every epoch.
     @ObservationIgnored let resealsAcrossEpochs: Bool
+    /// The phone has no relay key source for this hub (relay client Phase 5): the relay refused it (a lapse, a lost
+    /// slot) or its link carries `relayRefused`. While set, `SecureTransport.waitsForKeybox` is false, so a record
+    /// waiting for a keybox stops the feed silently, with no parked mark. Read with no hop to the main actor.
+    @ObservationIgnored private let noKeySource: OSAllocatedUnfairLock<Bool>
     /// A return to the foreground owes the relay feed a resume (it may have parked): taken by the next fetch, right
     /// before the feed reads, so no fetch of the return can run ahead of it.
     @ObservationIgnored private var feedResumeOwed = false
@@ -507,7 +511,7 @@ final class HubSession {
         self.secure = secure
         sealKeys = sealed.keys
         (hasDeviceKeys, keyStore) = (sealed.hasDeviceKeys, sealed.hasDeviceKeys ? keys?.store : nil)
-        resealsAcrossEpochs = Self.resealsAcrossEpochs(route: route, link: link)
+        (resealsAcrossEpochs, noKeySource) = (Self.resealsAcrossEpochs(route: route, link: link), Self.keySourceFlag(link, secure))
         self.hubLink = hubLink
 
         // Each fetch reaches CloudKit once (`remoteFetch`); the hydrator and
@@ -1610,9 +1614,50 @@ final class HubSession {
 
     /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared, so
     /// the Mac does not move behind the phone's back and a later lapse asks anew. An owner's request is left alone.
+    /// The key source is back unless the link still carries `relayRefused` (cleared by an answered read), and a
+    /// stopped feed reads again.
     func lapseEnded() async {
         await transportRequester?.lapseEnded()
+        guard linkOnRow?()?.relayRefused == nil else { return }
+        noKeySource.withLock { $0 = false }
+        await feed.resumeIfParked()
     }
+
+    /// The relay account answered with this hub's Mac in none of this phone's slots while it is on the relay (relay
+    /// client Phase 5, `RelayAccountCenter`): `TransportFollowerPolicy.decide(.slotLost)` withdraws its unechoed
+    /// actions and, with an iCloud route, moves there.
+    func relaySlotLost() async {
+        await transportRequester?.slotLost()
+    }
+
+    /// The Mac's relay device id while this session runs over the relay; nil on iCloud.
+    var relayMacDeviceID: String? {
+        if case .hostedRelay(let mac) = route { return mac }
+        return nil
+    }
+
+    /// The relay key source is gone (the follower, on a lapse, a lost slot or `hub_on_relay`): the parked mark goes,
+    /// and a record waiting for a keybox stops the feed silently until a merge, a foreground or a launch. No key is
+    /// erased: the hub may not have acted yet, and a slot given back must still open a keybox sealed to the offer.
+    func keySourceGone() async {
+        noKeySource.withLock { $0 = true }
+        do {
+            try await feed.keySourceGone()
+        } catch {
+            Self.logger.error("the parked mark was not cleared: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// The no-key-source flag, wired into `secure`'s `waitsForKeybox` (false while set); set at start for a link the relay
+    /// refuses.
+    private static func keySourceFlag(_ link: LinkRecord?, _ secure: SecureTransport) -> OSAllocatedUnfairLock<Bool> {
+        let flag = OSAllocatedUnfairLock(initialState: link?.relayRefused != nil)
+        secure.setWaitsForKeybox { !flag.withLock { $0 } }
+        return flag
+    }
+
+    /// Whether `SecureTransport.waitsForKeybox` answers yes (a test reads it).
+    var waitsForKeybox: Bool { secure.waitsForKeybox() }
 
     /// The request toward iCloud, or the end it came to, as the hub's row holds it.
     var transportRequest: TransportRequestRecord? { transportRequester?.record }

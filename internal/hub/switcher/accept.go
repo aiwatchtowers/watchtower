@@ -275,10 +275,15 @@ func (s *Switcher) staleAnswer(dev state.Device, follows bool) (wire.Control, ui
 	if err != nil {
 		return wire.Control{}, 0, false, err
 	}
-	epoch := s.sealEpochFor(dev, current, s.epochBeforeLastSwitch())
 	if !follows {
-		return wire.Control{Kind: wire.ControlHubOnRelay}, epoch, true, nil
+		// The phone is no reader: its relay keys go before the notice is sealed, so hub_on_relay is static and the
+		// phone's drop of its stored pairs matches the hub (relay client Phase 5).
+		if _, err := s.c.Store.ClearDeviceKX(dev.ID); err != nil {
+			return wire.Control{}, 0, false, err
+		}
+		return wire.Control{Kind: wire.ControlHubOnRelay}, s.sealEpochFor(dev, current, s.epochBeforeLastSwitch()), true, nil
 	}
+	epoch := s.sealEpochFor(dev, current, s.epochBeforeLastSwitch())
 	if dev.AckedEpoch >= current {
 		return wire.Control{}, 0, false, nil
 	}

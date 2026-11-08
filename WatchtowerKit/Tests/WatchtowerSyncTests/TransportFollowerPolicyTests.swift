@@ -115,7 +115,8 @@ final class TransportFollowerPolicyTests: XCTestCase {
         XCTAssertEqual(next, start, "no route move, no epoch adopted")
 
         let (_, viaHub) = TransportFollowerPolicy.decide(.hubOnRelay(controlID: "c-1"), state: start, now: base)
-        XCTAssertEqual(commands, viaHub, "the same answer as hub_on_relay")
+        // The same answer as hub_on_relay, but for the keys: only an opened hub_on_relay proves the hub cleared them.
+        XCTAssertEqual(viaHub, [.listUnechoedAsUndelivered, .dropEphemeral, .markHandled(controlID: "c-1")])
     }
 
     func testUnknownPayingDecidesNothingAndKeepsTheControl() {
@@ -137,6 +138,7 @@ final class TransportFollowerPolicyTests: XCTestCase {
             .moveRoute(to: .cloudKit, epoch: 2, by: "", at: base),
             .listUnechoedAsUndelivered,
             .drainMailbox(on: .relay),
+            .dropEphemeral,
             .markHandled(controlID: "c-9")
         ])
         XCTAssertEqual(next.route, .cloudKit)
@@ -146,7 +148,7 @@ final class TransportFollowerPolicyTests: XCTestCase {
         // A phone already on CloudKit only lists.
         let free = state(route: .cloudKit, epoch: 2, canUseRelay: .no)
         let (stayed, listed) = TransportFollowerPolicy.decide(.hubOnRelay(controlID: "c-9"), state: free, now: base)
-        XCTAssertEqual(listed, [.listUnechoedAsUndelivered, .markHandled(controlID: "c-9")])
+        XCTAssertEqual(listed, [.listUnechoedAsUndelivered, .dropEphemeral, .markHandled(controlID: "c-9")])
         XCTAssertEqual(stayed, free)
 
     }
@@ -159,6 +161,7 @@ final class TransportFollowerPolicyTests: XCTestCase {
             .moveRoute(to: .cloudKit, epoch: 2, by: "", at: base),
             .listUnechoedAsUndelivered,
             .drainMailbox(on: .relay),
+            .dropEphemeral,
             .markHandled(controlID: "c-9")
         ])
         XCTAssertEqual(next.route, .cloudKit)

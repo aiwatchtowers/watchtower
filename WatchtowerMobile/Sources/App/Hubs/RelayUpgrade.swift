@@ -277,6 +277,9 @@ protocol RelayUpgradeHost: AnyObject {
     func rewriteDeviceRecord(hubID: String) async -> Bool
     /// A transport to the relay Mac `mac` on the hub's relay store, on the process's one relay session (R2).
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport
+    /// Opens this phone's sealed keybox `sealed` from the Mac's relay data zone and merges its epoch keys (relay client
+    /// Phase 5, "Coming back"); false when it does not open, carries no keys yet, or could not be stored.
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> Bool
 }
 
 /// Runs one hub's upgrade to the relay (steps 0–5 of Task 19). A pass does what it can and returns: the first checks,
@@ -517,8 +520,14 @@ final class RelayUpgrader {
         _ run: inout Run, mac: String, host: any RelayUpgradeHost, session: HubSession
     ) async -> RelayUpgradeRefusal? {
         let since = run.upgrade.slotSince ?? now()
-        let read = await withSide(mac, host: host, session: session) { side, _ in await Self.readData(side) }
-        guard read == .read else {
+        let device = session.linkedDevice?.deviceID
+        let read = await withSide(mac, host: host, session: session) { side, _ in await Self.readData(side, keyboxOf: device) }
+        // Relay client Phase 5, "Coming back": the keybox found there is merged before the request, so the phone's
+        // newest epoch is the hub's current one and its request is not sealed in a retired epoch. A read with no keys
+        // yet (the hub has not named it a reader, or its lapse has not ended) counts as not read.
+        var merged = false
+        if case .read(let sealed?)? = read { merged = await host.mergeKeybox(sealed, hubID: hubID) }
+        guard merged else {
             if now().timeIntervalSince(since) >= RelayUpgrade.readerWaitLimit {
                 Self.logger.notice("relay upgrade: the Mac did not name this phone a reader within the wait")
                 return end(.readerNotConfirmed, &run)
@@ -671,17 +680,21 @@ final class RelayUpgrader {
     }
 
     private enum DataRead {
-        case read
+        /// Read; this phone's sealed keybox there, if any.
+        case read(Data?)
         case notYet
     }
 
     /// One read of the Mac's data zone on the relay: `FORBIDDEN` is "not a reader yet" (as R5); any other failure
     /// is retried at the next pass too.
-    private static func readData(_ side: SideTransport) async -> DataRead {
+    private static func readData(_ side: SideTransport, keyboxOf device: String?) async -> DataRead {
         guard let relay = side.transport as? HostedRelayTransport else { return .notYet }
         do {
             try await relay.pull(only: [.data])
-            return .read
+            guard let device, let id = UUID(uuidString: device) else { return .read(nil) }
+            let name = Keybox.recordName(deviceID: id.uuidString)
+            let records = try await relay.changes(in: .data, since: nil).changed
+            return .read(records.last { $0.recordName == name }?.payload)
         } catch HostedRelayError.server(code: .forbidden, _) {
             logger.notice("relay upgrade: not a reader of the Mac's data zone yet")
             return .notYet

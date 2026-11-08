@@ -45,6 +45,9 @@ public protocol SecureKeyProvider: Sendable {
     /// Phone only: the private keys a keybox may be sealed to, in the order to try them (relay client Phase 5):
     /// the offered ephemeral key, the current one, then `dev_kx`.
     func keyboxRecipients() throws -> [Curve25519.KeyAgreement.PrivateKey]
+    /// Phone only: the static `wt/relay/v1/` key of `epoch`, whatever the link holds for it (relay client Phase 5:
+    /// the one exception to the key rule, which opens `hub_on_relay` alone).
+    func staticRelayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey
 }
 
 extension SecureKeyProvider {
@@ -52,6 +55,9 @@ extension SecureKeyProvider {
     public func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { throw SecureTransportError.wrongRole }
     public func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey { throw SecureTransportError.wrongRole }
     public func keyboxRecipients() throws -> [Curve25519.KeyAgreement.PrivateKey] { throw SecureTransportError.wrongRole }
+    public func staticRelayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        throw SecureTransportError.wrongRole
+    }
 }
 
 public enum SecureTransportError: Error, Equatable {

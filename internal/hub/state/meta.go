@@ -26,6 +26,11 @@ const (
 	// "<device id>@<unix seconds>" comma-joined; only the switcher writes it.
 	// A phone listed here offers no relay key (SetKXOffer).
 	MetaLapsePending = "lapse_pending"
+	// MetaReaderLostOwed is the device ids, comma-joined and sorted, whose
+	// ReaderLost cleared their relay keys and did not finish (the lapsed mark,
+	// hub_on_relay); only the switcher writes it, and its departure check
+	// finishes them, across a restart too.
+	MetaReaderLostOwed = "reader_lost_owed"
 	// MetaServingNobodySince is when an answered relay account read first
 	// showed no linked phone in a slot or no phone paying (unix seconds,
 	// decimal); the runtime writes it at each answered read on the relay, a

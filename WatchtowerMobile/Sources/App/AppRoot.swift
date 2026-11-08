@@ -1236,6 +1236,11 @@ extension AppRoot: RelayUpgradeHost {
         }
     }
 
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> Bool {
+        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return false }
+        return await linking.mergeSwitchKeys(keybox, hubID: hubID)
+    }
+
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {
         try factory.makeSide(hubID, .hostedRelay(macDeviceID: mac))
     }
@@ -1284,6 +1289,14 @@ extension AppRoot: TransportFollowerHost {
 
     func clearEphemeral(hubID: String) -> Bool {
         linking.clearEphemeral(hubID: hubID)
+    }
+
+    func dropEphemeral(hubID: String) -> Bool {
+        linking.dropEphemeral(hubID: hubID)
+    }
+
+    func relayKeySourceGone(hubID: String) async {
+        await env.session(hubID)?.keySourceGone()
     }
 
     func persistRoute(_ link: LinkRecord) -> Bool {

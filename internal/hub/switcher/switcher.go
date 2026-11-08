@@ -118,7 +118,12 @@ type Config struct {
 	// AccountPhones (optional) is a fresh read of the relay account's phones
 	// that hold this Mac in a slot, linked here or not; an error is
 	// undecided (rule 16, asks #1075, #1079; othersPay decides over it).
-	AccountPhones  func(ctx context.Context) ([]AccountPhone, error)
+	AccountPhones func(ctx context.Context) ([]AccountPhone, error)
+	// Slotted (optional) is a fresh read of the relay device ids of the
+	// phones holding this Mac in a slot, linked here or not; ErrNotFresh when
+	// the reader answered from an earlier read, any other error unknown
+	// (checkDeparted, departed.go).
+	Slotted        func(ctx context.Context) ([]string, error)
 	OldSideTimeout time.Duration
 	Clock          func() time.Time
 	// OnSwitched (nil = none) sees each switch once its commit moved the
@@ -161,6 +166,8 @@ type Switcher struct {
 	lapseMu sync.Mutex // one lapse decision at a time (entitlement.go)
 	npMu    sync.Mutex // the no-payer check (nopayer.go)
 	np      noPayer
+	dpMu    sync.Mutex // the departure check (departed.go)
+	dp      departures
 
 	boMu    sync.Mutex // the failed-Step backoff
 	boDelay time.Duration
@@ -216,6 +223,7 @@ func New(c Config) (*Switcher, error) {
 		}
 	}
 	s.loadPending()
+	s.loadOwed()
 	return s, nil
 }
 
@@ -469,6 +477,7 @@ func (s *Switcher) PollOther(ctx context.Context) {
 	// read inside its window from the last one, and G2 alone refuses that
 	// (a lapse recheck first would make every G2 read land in the window).
 	s.checkNoPayer(ctx)  // G2: nobody pays any more
+	s.checkDeparted(ctx) // a phone gone from its slot while the hub stays
 	s.recheckLapsed(ctx) // sim rule 16: a lapsed phone that pays again
 	if s.Pending() && s.stepDue() {
 		s.Kick()

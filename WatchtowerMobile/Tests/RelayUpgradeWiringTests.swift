@@ -169,6 +169,49 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(again.slotSince, bed.clock.now)
     }
 
+    // MARK: - Coming back (relay client Phase 5, Task 13)
+
+    /// The keybox found at the reader wait is merged before the request, so the request is sealed in the hub's current
+    /// epoch however long the phone was away.
+    func testAwaitReaderMergesTheKeyboxBeforeTheRequest() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed, keyboxEpoch: 2)
+        var newestAtQueue: UInt32?
+        session.relayUpgrader?.queue = { session, id in
+            newestAtQueue = try? bed.keys.hubLink(TestE2E.hubID.uuidString)?.epochs.map(\.epoch).max()
+            _ = try await session.outbox.enqueueSwitchRequest(target: .relay, id: id)
+        }
+        let outcome = await session.upgradeToRelay()
+        XCTAssertNil(outcome.refusal)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
+        XCTAssertEqual(newestAtQueue, 2, "the keybox's epoch was merged before the request was queued")
+    }
+
+    func testAwaitReaderWithNoKeysYetKeepsWaiting() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed, withKeys: false)
+        let outcome = await session.upgradeToRelay()
+        XCTAssertNil(outcome.refusal)
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .awaitingReader, "a read with no keys counts as not read")
+        let none = try await switchRequests(bed, session)
+        XCTAssertTrue(none.isEmpty)
+
+        try await bed.publishRelayKeybox(epoch: 1, withKeys: true)
+        bed.clock.advance(31)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested, "the keys came: the request goes")
+    }
+
+    func testAwaitReaderLimitStillEndsInReaderNotConfirmed() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed, withKeys: false)
+        let outcome = await session.upgradeToRelay()
+        XCTAssertNil(outcome.refusal)
+        bed.clock.advance(RelayUpgrade.readerWaitLimit + 1)
+        await bed.root.resumeRelayUpgrades()
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.refusal, .readerNotConfirmed)
+    }
+
     // MARK: - The checks
 
     func testAnUnknownAccountStateIsANoOpAndRetried() async throws {
@@ -458,6 +501,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         try await bed.writeSwitch(target: .cloudKit, epoch: 3, on: .relay)
         let back = try await bed.fetchAndFollow(onRelay)
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
+        try await bed.publishRelayKeybox(epoch: 3, withKeys: true) // the hub's data zone holds its current epoch
 
         let outcome = await back.upgradeToRelay()
 
@@ -527,6 +571,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
         try await bed.writeSwitch(target: .cloudKit, epoch: 3, on: .relay)
         let back = try await bed.fetchAndFollow(onRelay)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .switched)
+        try await bed.publishRelayKeybox(epoch: 3, withKeys: true) // the hub's data zone holds its current epoch
         bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
 
         let outcome = await back.upgradeToRelay()
@@ -750,9 +795,11 @@ final class RelayUpgradeWiringTests: XCTestCase {
         return session
     }
 
-    /// The Mac names the phone a reader of its data zone (its `set_hub_readers`).
-    private func allowReader(_ bed: Bed) async throws {
+    /// The Mac names the phone a reader of its data zone (its `set_hub_readers`), and its keybox there carries keys
+    /// (relay client Phase 5: the reader wait merges it before the request).
+    private func allowReader(_ bed: Bed, keyboxEpoch: UInt32 = 1, withKeys: Bool = true) async throws {
         try await bed.fake.pair(mac: bed.mac.deviceID, phones: [bed.phone.deviceID])
+        try await bed.publishRelayKeybox(epoch: keyboxEpoch, withKeys: withKeys)
     }
 
     /// One fetch, then the passes it started.

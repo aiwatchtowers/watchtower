@@ -383,7 +383,7 @@ extension ActionOutbox {
         return ids.count
     }
 
-    private static func message(for reason: UndeliveredReason) -> String {
+    static func message(for reason: UndeliveredReason) -> String {
         switch reason {
         case .refused: refusedMessage
         case .noAnswer: noAnswerMessage
@@ -661,17 +661,29 @@ extension ActionOutbox {
     // MARK: 24 h without an answer (Ruling 5)
 
     /// Every ordered row `queued` or `sent` since before `cutoff` (by its first write's `sent_at`, else `created_at`) is withdrawn and
-    /// listed as Not delivered with `no_answer`. A never-written row is listed at once; a written one first has its
-    /// own record deleted under the version it wrote, so a later Retry cannot apply the action twice. An echo met
-    /// on the way is applied instead (not listed); a refusal leaves the row for the next sweep.
-    func withdrawUnanswered(before cutoff: Date) async throws -> [String] {
+    /// listed as Not delivered with `reason` (the 24 h sweep's `no_answer`). A never-written row is listed at once; a
+    /// written one first has its own record deleted under the version it wrote, so a later Retry cannot apply the
+    /// action twice. An echo met on the way is applied instead (not listed); a refusal leaves the row for the next
+    /// sweep or event.
+    func withdrawUnanswered(before cutoff: Date, reason: UndeliveredReason = .noAnswer) async throws -> [String] {
         var listed: [String] = []
         for row in try store.outboxRows([.queued, .sent]) where (row.sentAt ?? row.createdAt) < cutoff {
             guard try await withdraw(row) else { continue }
-            try store.markUndelivered(actionIDs: [row.actionID], reason: .noAnswer, message: Self.noAnswerMessage)
+            try store.markUndelivered(actionIDs: [row.actionID], reason: reason, message: Self.message(for: reason))
             listed.append(row.actionID)
         }
         return listed
+    }
+
+    /// Relay client Phase 5: the relay refused this phone (a lapse with no other route, its Mac gone from its
+    /// slots): every unechoed ordered row is withdrawn now and listed with `refused`, on the chain after any flush
+    /// in flight (`withdrawUnanswered`). Returns the listed ids. A conditional transport only (the relay route).
+    @discardableResult
+    public func withdrawUnechoed() async throws -> [String] {
+        try await onChain {
+            guard self.transport.isConditional else { return [] }
+            return try await self.withdrawUnanswered(before: .distantFuture, reason: .refused)
+        }.value
     }
 
     /// true once the row's record is gone (or was never written).

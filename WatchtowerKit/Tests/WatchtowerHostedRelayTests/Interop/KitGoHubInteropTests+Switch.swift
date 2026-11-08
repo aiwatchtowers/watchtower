@@ -660,7 +660,8 @@ actor KitFollower {
             case .sendEpochAck(let epoch): ack = epoch
             case .listUnechoedAsUndelivered: _ = try await outbox.listUnechoedAsUndelivered(reason: .hubOnRelay)
             case .markHandled, .ignore, .requestAnswered: handled = true
-            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch: break
+            // Losing reader status (Phase 5) is not part of the interop scenarios: no slot is lost there.
+            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch, .withdrawUnechoed, .dropEphemeral, .markRefused: break
             }
         }
         if move?.to == .relay || commands.contains(.requestAnswered) { relayRequested = false }

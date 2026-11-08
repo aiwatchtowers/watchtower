@@ -199,6 +199,12 @@ final class TransportRequester {
         _ = await follower.handle(.relayLapsed)
     }
 
+    /// The relay account answered with the Mac in none of this phone's slots (relay client Phase 5): the policy
+    /// withdraws and, with an iCloud route, moves there.
+    func slotLost() async {
+        _ = await follower.handle(.slotLost)
+    }
+
     /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared. An
     /// owner's request is left alone. While a lapse's refusal stays on the record, a later lapse notice asks nothing
     /// new, so Task 6 calls this (`HubSession.lapseEnded()`) when the entitlement returns.

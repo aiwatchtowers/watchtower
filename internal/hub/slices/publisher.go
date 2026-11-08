@@ -236,6 +236,14 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 	p.poke()
 }
 
+// Dirty reports whether k waits for a publish (PublishSoon or PublishNow
+// marked it and no cycle has diffed it since).
+func (p *Publisher) Dirty(k Kind) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dirty[k] || p.nowDirty[k]
+}
+
 // PublishNow marks kinds dirty for an applied phone action: they are due at
 // once instead of after the debounce, so a steady stream of actions is not
 // held to MaxDebounceWait; kinds PublishSoon marked keep their debounce.
