@@ -359,15 +359,19 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     /// The full-scan view of RelayZone: the opened records (`changes` semantics, own h2p echoes included) plus every
     /// record nobody here can open or the rollback guard refuses, by wire name, plaintext `modifiedAt` and reason.
     /// Reports nothing through `onRejected`.
-    /// A record whose epoch's keybox has not come yet throws `keysUnavailable`, as a lock does.
-    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord]) {
+    /// A record whose epoch's keybox has not come yet (the phone) is in neither list, only counted in `pending`: it is
+    /// neither handled nor deleted, and the records around it are read (the plan's pending row: the side reader holds
+    /// nothing back and drops nothing). A locked keychain still throws `keysUnavailable` for the whole scan.
+    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord], pending: Int) {
         let batch = try await inner.changes(in: .relay, since: nil)
         var opened: [CloudRecord] = []
         var unopenable: [UnopenableRecord] = []
+        var pending = 0
         for record in batch.changed {
             let outcome: OpenOutcome
             do { outcome = try open(record) } catch SecureTransportError.epochKeysPending {
-                throw SecureTransportError.keysUnavailable
+                pending += 1
+                continue
             }
             switch outcome {
             case .opened(let plain): opened.append(plain)
@@ -382,7 +386,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
                     origin: record.origin))
             }
         }
-        return (opened, unopenable)
+        return (opened, unopenable, pending)
     }
 
     /// Deletes by wire name (records that never opened have no plain name).
