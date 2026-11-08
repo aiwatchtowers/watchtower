@@ -285,7 +285,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let keys = try TestPhone.keys()
         let env = try await orderedSession(over: transport, keys: keys)
 
-        env.keysMerged(newestEpochRaised: false)
+        await env.keysMerged(newestEpochRaised: false, droppedNewestPair: false)
         try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -295,10 +295,10 @@ final class OrderedActionsWiringTests: XCTestCase {
         link.epochs.append(EpochKeys(
             epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
         try keys.store.saveHubLink(link)
-        env.keysMerged(newestEpochRaised: true)
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
         try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
-        env.keysMerged(newestEpochRaised: true)
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
         try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
 

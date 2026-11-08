@@ -22,19 +22,35 @@ import Foundation
 // a row nothing moved (sealed before a raise that ran without this hook) can be past its key at a merge; that one is
 // listed Not delivered and never sent (F7). A moved row's earlier copy left in the mailbox in a gone epoch is written
 // over by the flush (`isRecordInGoneEpoch`).
+/// Which own rows a keybox merge reseals (relay client Phase 5).
+public enum KeyboxMergeReseal: Equatable, Sendable {
+    /// Every own row sealed in an epoch below the merged newest: a fetched merge, so every row sits in the newest
+    /// epoch, which no link write trims.
+    case belowNewest
+    /// Only the own rows sealed in an epoch this merge itself drops (retention): a switch's keybox, so a switch moves
+    /// every other unechoed action with the same bytes (sim rule 13). The next fetched merge moves the rest.
+    case droppedEpochs
+}
+
 extension ActionOutbox {
     /// Merges `keybox` into the link of `hubID` in `keys` (as `HubLinkKeys.merging` does) and keeps this phone's own
     /// rows readable across it. Returns the merge, nil when the link is gone (nothing written). A locked keychain
     /// throws `keysUnavailable` with nothing written; a refused merge (`KeyboxKeysError`) throws with nothing written.
+    /// `reseal` picks the rows moved: every row below the newest (a fetched merge), or only those in an epoch this
+    /// merge drops (a switch's keybox).
     @discardableResult
     public func mergeKeybox(
-        _ keybox: KeyboxKeys, into keys: any PhoneKeyStore, hubID: String, now: Date
+        _ keybox: KeyboxKeys,
+        into keys: any PhoneKeyStore,
+        hubID: String,
+        now: Date,
+        reseal: KeyboxMergeReseal = .belowNewest
     ) async throws -> KeyboxMerge? {
-        try await onChain { try await self.performMerge(keybox, into: keys, hubID: hubID, now: now) }.value
+        try await onChain { try await self.performMerge(keybox, into: keys, hubID: hubID, now: now, reseal: reseal) }.value
     }
 
     private func performMerge(
-        _ keybox: KeyboxKeys, into keys: any PhoneKeyStore, hubID: String, now: Date
+        _ keybox: KeyboxKeys, into keys: any PhoneKeyStore, hubID: String, now: Date, reseal: KeyboxMergeReseal
     ) async throws -> KeyboxMerge? {
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         let hub = try WireBytes.hubUUID(hubID)
@@ -43,7 +59,14 @@ extension ActionOutbox {
             let identity = try keys.identity()
             try promoteStagedReseals(link: link, identity: identity, hub: hub, device: device)
             let merge = try link.merging(keybox, identity: identity, hubID: hub, deviceID: device, now: now)
-            try await stageOwnReseals(from: link, to: merge.keys, identity: identity, hub: hub, device: device)
+            let only: Set<UInt32>?
+            switch reseal {
+            case .belowNewest: only = nil
+            case .droppedEpochs:
+                only = Set(link.epochs.map(\.epoch)).subtracting(merge.keys.retained(now: now).epochs.map(\.epoch))
+            }
+            try await stageOwnReseals(
+                from: link, to: merge.keys, only: only, identity: identity, hub: hub, device: device)
             var saved: KeyboxMerge?
             guard let stored = try keys.updateHubLink(hubID, { current in
                 let merged = try current.merging(keybox, identity: identity, hubID: hub, deviceID: device, now: now)
@@ -61,8 +84,14 @@ extension ActionOutbox {
     /// holds and sealed under `merged`'s newest epoch, with a fresh envelope seq; the new envelopes are staged. Every
     /// row then sits in the newest epoch, which no link write ever trims (retention also runs on writes that are no
     /// merge, `withOffer` say, and drops a previous epoch 7 days after it was superseded).
+    /// `only`: the epochs whose rows move (nil: every epoch below the newest).
     func stageOwnReseals(
-        from link: HubLinkKeys, to merged: HubLinkKeys, identity: DeviceIdentityKeys, hub: UUID, device: UUID
+        from link: HubLinkKeys,
+        to merged: HubLinkKeys,
+        only: Set<UInt32>?,
+        identity: DeviceIdentityKeys,
+        hub: UUID,
+        device: UUID
     ) async throws {
         guard let target = merged.epochs.last?.epoch,
               let targetKey = try merged.ownRelayKey(epoch: target, identity: identity, hub: hub, device: device)
@@ -70,7 +99,7 @@ extension ActionOutbox {
         var staged: [StagedReseal] = []
         for row in try store.ownSealedRows() {
             guard let header = try? Envelope.parse(row.envelope).header, header.envelopeClass == .relayToHub,
-                  header.senderID == device, header.epoch < target,
+                  header.senderID == device, header.epoch < target, only?.contains(header.epoch) ?? true,
                   let oldKey = try link.ownRelayKey(epoch: header.epoch, identity: identity, hub: hub, device: device)
             else { continue }
             let context = EnvelopeContext(zone: .relay, wireName: row.wireName)

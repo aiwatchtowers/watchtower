@@ -1080,8 +1080,8 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let phone = try await makePhone()
         try raiseEpoch(phone, to: 2)
 
-        let first = try await phone.outbox.enqueueEpochAck(epoch: 2)
-        let second = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let first = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
+        let second = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
         _ = try await phone.outbox.flush()
 
         XCTAssertTrue(first)
@@ -1095,7 +1095,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertTrue(try phone.store.queuedControls().isEmpty)
 
         try raiseEpoch(phone, to: 3)
-        let third = try await phone.outbox.enqueueEpochAck(epoch: 3)
+        let third = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: nil)
         _ = try await phone.outbox.flush()
         XCTAssertTrue(third)
         let both = try await epochAcks(phone)
@@ -1105,20 +1105,20 @@ final class ActionOutboxOrderedTests: XCTestCase {
     func testEpochAckNeverGoesDown() async throws {
         let phone = try await makePhone()
         try raiseEpoch(phone, to: 3)
-        _ = try await phone.outbox.enqueueEpochAck(epoch: 3)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: nil)
         _ = try await phone.outbox.flush()
-        let lower = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let lower = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
         XCTAssertFalse(lower)
         XCTAssertTrue(try phone.store.queuedControls().isEmpty, "a lower epoch is never queued")
 
         // An unsent ack for a lower epoch is replaced by the newer one.
         await phone.inner.refuseNext(.unreachable, count: 1)
         try raiseEpoch(phone, to: 4)
-        _ = try await phone.outbox.enqueueEpochAck(epoch: 4)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 4, nextKX: nil)
         await phone.outbox.drain()
         XCTAssertEqual(try phone.store.queuedControls().map(\.kind), [.epochAck], "the ack for 4 waits, refused")
         try raiseEpoch(phone, to: 5)
-        _ = try await phone.outbox.enqueueEpochAck(epoch: 5)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 5, nextKX: nil)
         await phone.outbox.drain()
         _ = try await phone.outbox.flush()
         let acks = try await epochAcks(phone)
@@ -1128,7 +1128,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
     func testNoEpochAckToALegacyHub() async throws {
         let phone = try await makePhone(ordered: false)
         try raiseEpoch(phone, to: 2)
-        let queued = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let queued = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
         _ = try await phone.outbox.flush()
         XCTAssertFalse(queued)
         XCTAssertTrue(try phone.store.queuedControls().isEmpty)

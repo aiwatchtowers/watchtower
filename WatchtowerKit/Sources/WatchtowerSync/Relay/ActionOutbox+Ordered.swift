@@ -219,7 +219,7 @@ extension ActionOutbox {
     /// like any phone record, under the newest epoch's key; the hub retains that epoch. A hub on today's path gets
     /// none. Returns whether an ack was queued.
     @discardableResult
-    public func enqueueEpochAck(epoch: UInt32, nextKX: Data? = nil) async throws -> Bool {
+    public func enqueueEpochAck(epoch: UInt32, nextKX: Data?) async throws -> Bool {
         let queued = try await onChain { try await self.queueEpochAck(epoch, nextKX: nextKX) }.value
         if queued { requestFlush() }
         return queued

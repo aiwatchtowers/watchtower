@@ -123,10 +123,17 @@ protocol LinkHost: AnyObject {
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// Merges a keybox's `keys` into `hubID`'s stored link through its session (`HubSession.mergeKeybox`: one
+    /// `updateHubLink`, and on a link that reseals across epochs the outbox's merge, which keeps this phone's own rows
+    /// readable). nil when no link is stored or no session runs: nothing written. Throws as the merge does (a locked
+    /// keychain, a refused keybox), with nothing written. `now` stamps the epoch it supersedes. `reseal`: a fetched
+    /// keybox moves every own row below the newest, a switch's only the rows of an epoch it drops (sim rule 13).
+    func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge?
     /// Epoch keys of `hubID` joined the Keychain: the rows its replica
-    /// stored but could not open yet are opened now. `newestEpochRaised`:
-    /// the newest epoch went up, so an ordered hub gets `epoch_ack`.
-    func keysMerged(hubID: String, newestEpochRaised: Bool)
+    /// stored but could not open yet are opened now, and a parked relay feed reads again. `newestEpochRaised`:
+    /// the newest epoch went up, so an ordered hub gets `epoch_ack`. `droppedNewestPair`: the hub cleared this
+    /// phone's relay keys, so the offer goes out again.
+    func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async
     /// The link completed: adds or updates the row, sets the device on the
     /// session (writes on) and activates it. Throws `HubRegistryError.full`
     /// for a new hub when every slot is taken.
