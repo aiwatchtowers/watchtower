@@ -147,6 +147,45 @@ final class InboxReplyTests: XCTestCase {
         XCTAssertNil(vm.replyDrafts[Int(id)], "the composer closes once proposed")
     }
 
+    /// Typing or Cancel while the propose runs changes nothing: the text
+    /// that went to Needs approval is the text the composer showed.
+    func testComposerHoldsStillWhileTheProposeRuns() async throws {
+        let id = try await slackItem()
+        let runner = FakeCLIRunner(stdout: Self.proposed)
+        let vm = await strip(runner)
+        let handler = InboxRowActionHandler(vm: vm)
+        type("On it", on: id, handler)
+        let seen = SeenTexts()
+        runner.onRun = { _ in
+            await MainActor.run {
+                vm.editReply(Int(id), text: "On it, and more")
+                vm.cancelReply(Int(id))
+                seen.value.append(vm.replyDrafts[Int(id)]?.text)
+            }
+        }
+
+        await handler.press(.proposeReply, on: InboxRef(kind: .inboxItem, id: id))
+
+        XCTAssertEqual(seen.value, ["On it"], "no edit and no Cancel while the propose runs")
+        XCTAssertNil(vm.replyDrafts[Int(id)], "proposed: the composer closes")
+    }
+
+    func testComposerFieldAndCancelWaitWhileBusy() throws {
+        let busy = InboxRowActionsContent(
+            kind: .inboxItem(openLabel: nil, openEnabled: false, canReply: true, showsHandToAgent: true),
+            state: .busy, reply: .composing(text: "On it", error: nil))
+        let footer = InboxRowActionsFooter(content: busy)
+        XCTAssertTrue(try footer.inspect().find(ViewType.TextField.self).isDisabled())
+        XCTAssertTrue(try footer.inspect().find(button: "Cancel").isDisabled())
+        XCTAssertTrue(try footer.inspect().find(button: "Propose Reply").isDisabled())
+
+        var idle = busy
+        idle.state = .idle
+        let open = InboxRowActionsFooter(content: idle)
+        XCTAssertFalse(try open.inspect().find(ViewType.TextField.self).isDisabled())
+        XCTAssertFalse(try open.inspect().find(button: "Cancel").isDisabled())
+    }
+
     func testCancelAndEmptyTextProposeNothing() async throws {
         let id = try await slackItem()
         let runner = FakeCLIRunner(stdout: Self.proposed)
@@ -312,4 +351,9 @@ final class InboxReplyTests: XCTestCase {
         let vm = await strip()
         XCTAssertNil(try messageReply(vm, mail))
     }
+}
+
+/// What the composer held, read from inside a fake CLI run (main actor only).
+private final class SeenTexts: @unchecked Sendable {
+    var value: [String?] = []
 }

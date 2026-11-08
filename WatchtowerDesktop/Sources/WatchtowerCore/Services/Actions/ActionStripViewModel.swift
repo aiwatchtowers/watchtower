@@ -845,12 +845,17 @@ package final class ActionStripViewModel {
         replyDrafts[itemID] = InboxReplyDraft()
     }
 
+    /// Typing in the composer; held still while its propose runs, so the
+    /// text that goes to Needs approval is the text on screen.
     package func editReply(_ itemID: Int, text: String) {
+        guard !isWriting(.message(itemID)) else { return }
         replyDrafts[itemID]?.text = text
     }
 
-    /// Cancel or Esc: the composer closes, nothing proposed.
+    /// Cancel or Esc: the composer closes, nothing proposed. Not while its
+    /// propose runs: the proposal would land with the composer gone.
     package func cancelReply(_ itemID: Int) {
+        guard !isWriting(.message(itemID)) else { return }
         replyDrafts[itemID] = nil
     }
 
@@ -868,6 +873,7 @@ package final class ActionStripViewModel {
               let tool = InboxReplyPolicy.tool(for: item),
               let args = InboxReplyPolicy.args(for: item, text: body, host: host) else { return }
         let runner = cliRunner
+        let sent = replyDrafts[itemID]?.text
         await pendingWrites.run(CardKey.card(.message(itemID))) {
             replyDrafts[itemID]?.error = nil
             guard let runner = runner ?? ProcessCLIRunner.makeDefault() else {
@@ -883,7 +889,8 @@ package final class ActionStripViewModel {
             } catch {
                 failure = Self.replyRefusal(AutomationsViewModel.message(for: error))
             }
-            if failure == nil { replyDrafts[itemID] = nil }
+            // Only the text that was sent: a newer one is never dropped without a word.
+            if failure == nil, replyDrafts[itemID]?.text == sent { replyDrafts[itemID] = nil }
             await refresh()
             if let failure { replyDrafts[itemID]?.error = failure }
         }
