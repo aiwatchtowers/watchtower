@@ -180,3 +180,39 @@ func TestLoadPatterns(t *testing.T) {
 		refused(t, dir, ".watchtower/review-map.md: not UTF-8, not read")
 	})
 }
+
+// This repository's own .watchtower/review-map.md (tech spec §2.4) parses
+// whole — every line a heading or a glob, no note — and sorts its files.
+func TestPatterns_ThisRepositorysFile(t *testing.T) {
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := LoadPatterns(root)
+	if len(p.Notes) > 0 || len(p.Breaking) == 0 {
+		t.Fatalf("notes %v, breaking %v", p.Notes, p.Breaking)
+	}
+	for path, want := range map[string]Level{
+		"docs/inventory/review.md":                Breaking,
+		"internal/reviewdiff/guard_test.go":       Breaking,
+		"cmd/slack_team_guard_test.go":            Breaking,
+		"internal/prompts/defaults.go":            Breaking,
+		"internal/db/schema.sql":                  Significant,
+		"internal/tools/workbench_finish_gate.go": Significant,
+		"cmd/workbench_review_map.go":             Significant,
+	} {
+		if level, skip, ok := p.Match(path); !ok || skip || level != want {
+			t.Errorf("%s: level %v skip %v ok %v, want %v", path, level, skip, ok, want)
+		}
+	}
+	for _, path := range []string{"WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift",
+		"internal/db/testdata/schema_v73.golden", "WatchtowerKit/Sources/WatchtowerRelayProto/relay.pb.swift",
+		"internal/hub/transport/relay/relayv1/relay.pb.go"} {
+		if _, skip, ok := p.Match(path); !ok || !skip {
+			t.Errorf("%s: not Can skip", path)
+		}
+	}
+	if _, _, ok := p.Match("internal/reviewmap/map.go"); ok {
+		t.Error("an ordinary file matched a pattern")
+	}
+}

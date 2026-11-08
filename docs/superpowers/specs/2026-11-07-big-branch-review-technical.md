@@ -40,9 +40,20 @@ may be another history. Uncommitted files of the snapshot have no commit. Walk:
   skipped.
 - Any other merge is a **lane merge**: its lane name is parsed from the subject — `Merge pull
   request #N from <owner>/<branch>`, `Merge (remote-tracking )?branch '(origin/)?<b>'( into
-  '?<t>'?)?`, `Merge (origin/)?<b>[: ]`; when the parsed source equals the lane being walked,
-  the `into` target names the lane instead (a fast-forward of the parent back into a lane).
-  Unparsed → `lane:?`. Recurse into the second parent with `excl = [first parent, base]`.
+  '?<t>'?)?`, `Merge (origin/)?<b>[: ]`; the lane is named by the source.
+  `Merge tag …`, `Merge commit …`, `Merge branches …` and anything else unparsed → `lane:?`.
+  An octopus merge walks its second parent only and sets `lanes_partial` (v1). Each commit
+  counts once in the
+  whole attribution (a global seen set; the first lane that reaches it in walk order keeps
+  it), so a lane merged into two places is not double-counted.
+- Lane titles come from a `TitleSource` that can fail: on error the attribution is partial and
+  no tag is validated against the (empty) title maps — a Jira key stays only when it is in the
+  branch name, `#N` is not a tag. Recurse into the second parent with `excl = [first parent, base]`.
+- **A fast-forwarded reverse merge:** a merge M on lane L whose parsed source is L and whose
+  `into` target T is another lane (T merged L into itself, then L fast-forwarded to M): the
+  commits reachable from M^1 and not from M^2 or `base` are lane T (walked as a lane, tip
+  M^1, `excl = [M^2, base]`, nested merges included), and L's own walk continues from M^2.
+  The walk therefore runs segment by segment (one first-parent walk per segment).
 - A lane is an **integration lane** when its own first-parent walk contains lane merges (the
   top branch always is). A direct commit on an integration lane is labelled by its subject's
   tag, first match wins: Jira-style key `[A-Z][A-Z0-9]{1,9}-\d+` (validated against
@@ -56,8 +67,8 @@ may be another history. Uncommitted files of the snapshot have no commit. Walk:
   Its other lanes are kept as `also` labels.
 - Files changed in the snapshot but in no commit (uncommitted work, or a branch whose history
   could not be read) have no lane.
-- Bounds: at most 2,000 first-parent commits and 200 lanes per walk; past them the remaining
-  files have no lane (no error). The whole map has a 20 s budget; on timeout every file falls
+- Bounds: at most 2,000 first-parent commits and 200 lanes across the whole attribution; past
+  them the remaining files have no lane (no error) and `map.lanes_partial = true`. The whole map has a 20 s budget; on timeout every file falls
   back to the package grouping and `map.lanes_partial = true`.
 
 **Lane titles.** In order: a board target of this workbench whose `branch` equals the lane's
@@ -174,7 +185,12 @@ ticket found in §2.1 (a board target or a Jira issue; title + intent / summary)
 `source`: `session` or `lane`. Coverage entries carry the item's `source`. The owner sees
 coverage of every item; the finish gate (§4) checks only `source: session` items, so its
 strictness does not change. A round with no session has only lane items (it had none).
-`IntentHash` covers both lists.
+`IntentHash` (the `review_overviews` key) covers the session items only, byte-identical to
+today's hash: lane items go to the model and into the assembled JSON but are not part of the
+key, so a lane ticket whose title or summary changes later does not hide the cached overview
+from the finish gate (which needs no map). The map lists every lane the attribution found
+(`lanes: [{name, title, target_id?, jira_key?}]`), and lane intent items come from that list,
+not from the chapters, so a lane whose files all went into an agent chapter keeps its item.
 
 Chapter description (both prompts): `{key, what (≤ 600 runes), risks: [{path, level, why}]}`
 with risk `level` in today's `low|medium|high` (the map's `breaking|significant|normal` is a
@@ -384,7 +400,8 @@ the model and never waits (§3.7).
   fixtures → no noise in any batch, ≤ 2,500 lines per batch, every non-noise chapter in
   exactly one batch.
 - One batch failing (stub generator returns an error / hangs past its budget) → other
-  chapters `ok`, `incomplete` lists the failed ones, nothing in `review_overviews`; `--chapter`
+  chapters `ok`, `incomplete` lists the failed ones, the summary is made and the assembled row
+  is written with `incomplete` (zero described chapters → nothing in `review_overviews`); `--chapter`
   redoes only it and then assembles.
 - Cache: Refresh after editing one file redoes only its chapter; parts survive a new process.
 - One run at a time: two processes on one folder with a stub generator that counts calls —
@@ -404,5 +421,19 @@ the model and never waits (§3.7).
 - Lane attribution reads commit subjects only, not bodies or trailers.
 - Squash-merged lanes leave no lane merge; their tags (if any) are the only signal.
 - `api_removed` is line-based and misses a removed exported name split over several lines.
+- `api_removed` keys a declaration by its bare name: Swift `init`/`subscript` overloads share
+  one key, Go methods of different receivers collide, `<<T` in a generic operator reads as
+  `<`, and exported names inside grouped `const (`/`var (`/`type (` blocks and removed struct
+  fields are not detected.
+- A folder round's head branch (used for the `into` rule on the top lane and for Jira keys in
+  the branch name) is the folder's branch at the time of the map, not stored with `head_sha`;
+  a branch renamed after the round only changes those labels.
+- With no default branch found (a trunk/develop-only repo), base syncs cannot be told from
+  lanes: the map keeps the attribution, sets `lanes_partial` and says so in a note.
+- Go compares paths byte for byte, Swift by canonical equivalence: a path not in NFC (for
+  example committed from Linux) may fall into another `dir:x#N` part than the Swift builder
+  put it in, and an agent chapter path written in another normalization is dropped.
+- In `.watchtower/review-map.md` a glob without `/` matches a top-level file only (`**/` for
+  any depth); a path matching both a danger section and **Can skip** takes the danger level.
 - The summary of a multi-batch branch judges coverage from chapter descriptions, not the
   diff; it may say `partial` where a full read would say `done` (the agent can hand over).

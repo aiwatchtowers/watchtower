@@ -168,15 +168,49 @@ func TestPack_HaveSkipsDescribedChaptersOnlyWhenMultiBatch(t *testing.T) {
 	assert.Equal(t, all-len(have), left)
 }
 
-func TestPack_NothingToShow(t *testing.T) {
+// Carry-over (Task 9): a diff of only "Can skip" files has nothing to
+// describe — no call; the run writes an assembled overview with a fixed
+// summary and every intent item not_found, so the finish gate is never stuck.
+func TestPack_OnlySkippableFilesAssembleWithoutACall(t *testing.T) {
 	d := reviewdiff.Diff{Files: []reviewdiff.File{{Path: "package-lock.json", Additions: 9, CollapsedReason: "lockfile"}}}
-	assert.Empty(t, Pack(reviewmap.Build(reviewmap.Input{Diff: d}), d, nil))
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	assert.Empty(t, Pack(m, d, nil))
 	g := &countGen{}
-	_, err := New(g).Run(context.Background(), newMemStore(), reviewmap.Build(reviewmap.Input{Diff: d}), d, nil, nil, RunOptions{})
+	store, ev := newMemStore(), &events{}
+	intent := []IntentItem{{Text: "Bump the lock file"}, {Text: "Lane ticket", Source: SourceLane}}
+	o, err := New(g).Run(context.Background(), store, m, d, intent, nil, RunOptions{Tree: "t", Base: "b", Emit: ev.emit})
+	require.NoError(t, err)
+	assert.Zero(t, g.calls)
+	assert.Equal(t, "Only files that can be skipped changed.", o.Summary)
+	assert.Equal(t, []Coverage{
+		{Index: 1, Item: "Bump the lock file", Status: "not_found", Where: []string{}, Source: SourceSession},
+		{Index: 2, Item: "Lane ticket", Status: "not_found", Where: []string{}, Source: SourceLane},
+	}, o.Coverage)
+	assert.Empty(t, o.Incomplete)
+	require.Len(t, o.Chapters, 1)
+	assert.Equal(t, "collapsed", o.Chapters[0].Key)
+	assert.Equal(t, o, store.overview(t), "the assembled overview is written")
+	last := ev.all[len(ev.all)-1]
+	assert.Equal(t, "summary", last.Event)
+	assert.Equal(t, StateOK, last.State)
+}
+
+// A diff whose only reviewable files lie past the diff's size limit (no
+// hunks; a binary file is "Can skip") has no chapter the AI can read:
+// too_large, no call, nothing written.
+func TestPack_OnlyFilesPastTheCapIsTooLarge(t *testing.T) {
+	d := reviewdiff.Diff{Truncated: true, Files: []reviewdiff.File{{Path: "server/big.go", Status: "modified", Additions: 900},
+		{Path: "package-lock.json", Additions: 9, CollapsedReason: "lockfile"}}}
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	g := &countGen{}
+	store := newMemStore()
+	_, err := New(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{})
 	var re *RunError
 	require.ErrorAs(t, err, &re)
 	assert.Equal(t, ClassTooLarge, re.Class)
+	assert.Equal(t, "No chapter has a diff the AI can read: its files lie past the diff's size limit.", re.Text)
 	assert.Zero(t, g.calls)
+	assert.Empty(t, store.overviews)
 }
 
 func TestOverview_BigBranchCallsPerBatchThenSummary(t *testing.T) {

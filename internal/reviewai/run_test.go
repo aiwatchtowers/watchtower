@@ -524,6 +524,56 @@ func TestRun_ErrorTextsVerbatim(t *testing.T) {
 	assert.Equal(t, "claude CLI failed: quota reached", failure(ClassProvider, "api", 0, redacted).Detail,
 		"detail is the provider's full text, not the fingerprinted Error()")
 	assert.Empty(t, failure(ClassParse, "api", 0, nil).Detail)
+	// The one full call is the whole overview, not a chapter (carry-over, Task 9).
+	assert.Equal(t, "The overview did not finish in 5 min.", failure(ClassTimeout, overviewTitle, CallBudget(2500), cause).Text)
+	assert.Equal(t, "The AI provider failed on the overview.", failure(ClassProvider, overviewTitle, 0, cause).Text)
+	assert.Equal(t, "The AI answer for the overview could not be read.", failure(ClassParse, overviewTitle, 0, cause).Text)
+}
+
+// Carry-over (Task 9): the one full call failing is the run's error, and it
+// names the overview, not the first chapter.
+func TestRun_FullCallFailureNamesTheOverview(t *testing.T) {
+	d := okDiff()
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	keys := batchKeysOf(Pack(m, d, nil))
+	require.Len(t, keys, 1)
+	store := newMemStore()
+	_, err := New(&keyGen{fail: map[string]bool{keys[0][0]: true}}).Run(context.Background(), store, m, d, okIntent(), nil, RunOptions{})
+	var re *RunError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, ClassProvider, re.Class)
+	assert.Equal(t, "The AI provider failed on the overview.", re.Text)
+	assert.Equal(t, "provider exploded", re.Detail)
+	assert.Empty(t, store.overviews)
+}
+
+// A full call whose reply leaves every chapter out is a parse error of the
+// call, so it names the
+// overview too, not the first chapter.
+func TestRun_FullCallLeavingEveryChapterOutNamesTheOverview(t *testing.T) {
+	d := okDiff()
+	m := reviewmap.Build(reviewmap.Input{Diff: d})
+	keys := batchKeysOf(Pack(m, d, nil))
+	require.Len(t, keys, 1)
+	skip := map[string]bool{}
+	for _, k := range keys[0] {
+		skip[k] = true
+	}
+	_, err := New(&keyGen{skip: skip}).Run(context.Background(), newMemStore(), m, d, okIntent(), nil, RunOptions{})
+	var re *RunError
+	require.ErrorAs(t, err, &re)
+	assert.Equal(t, ClassParse, re.Class)
+	assert.Equal(t, "The AI answer for the overview could not be read.", re.Text)
+}
+
+// Carry-over (Task 9): a call the run's ceiling cut names the ceiling's
+// minutes, not its own budget's.
+func TestTimeoutBudget_NamesWhatCutTheCall(t *testing.T) {
+	live := context.Background()
+	cut, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.Equal(t, 3*time.Minute, timeoutBudget(live, 3*time.Minute, 12*time.Minute), "the call's own budget ran out")
+	assert.Equal(t, 12*time.Minute, timeoutBudget(cut, 3*time.Minute, 12*time.Minute), "the run's ceiling cut the call")
 }
 
 // PartHash covers the chapter's files and its own notes and the prompt,
