@@ -68,11 +68,7 @@ extension WorkbenchCLI {
 
     /// The round's instant map (no AI, writes nothing): chapters in reading order, danger, lanes.
     func reviewMap(projectID: Int64, roundID: Int64) async throws -> ReviewEnvelope {
-        let args = ["workbench", "review", "map", "--workbench", String(projectID), "--round", String(roundID), "--json"]
-        let data = try await runner.run(args: args, timeout: Self.reviewMapTimeout)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(ReviewEnvelope.self, from: data)
+        try await review(["map", "--workbench", String(projectID), "--round", String(roundID)], timeout: Self.reviewMapTimeout)
     }
 
     /// The overview's streamed run as Desktop (`--caller desktop`): one event

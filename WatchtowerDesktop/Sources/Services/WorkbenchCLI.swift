@@ -930,7 +930,7 @@ struct WorkbenchCLI {
 
     /// Every review call prints one envelope; a refusal is `ok: false` with
     /// `error` at exit 0, not a throw.
-    private func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
+    func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
         let full = ["workbench", "review"] + args + ["--json"]
         let data: Data
         if let timeout {
