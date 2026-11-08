@@ -120,7 +120,11 @@ func (db *DB) UpdateReviewRoundTree(id int64, tree, head string) error {
 	if err != nil {
 		return fmt.Errorf("refreshing review round %d: %w", id, err)
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("refreshing review round %d: %w", id, err)
+	}
+	if n != 1 {
 		return fmt.Errorf("review round %d: %w", id, ErrReviewRoundNotOpen)
 	}
 	return nil
