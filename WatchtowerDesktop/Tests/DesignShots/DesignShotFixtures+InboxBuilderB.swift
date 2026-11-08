@@ -21,34 +21,23 @@ enum InboxBuilderBShotFixtures {
 
     // MARK: - Folder menu
 
+    /// Drawn from `InboxFolderMenuModel` since Task 11
+    /// (`InboxFolderMenuShotFixtures`); the menu's other uses below stay on
+    /// plain rows.
     private static var menuShots: [DesignShot] {
-        let menu: [(String, InboxFolderMenuContent)] = [
-            ("inbox-b-menu-hidden-shown", hiddenShown),
-            ("inbox-b-menu-new-folder", InboxFolderMenuContent(
-                rows: [root, approvals], selection: 1,
-                folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release acme 2.0"))),
-            ("inbox-b-menu-drag", InboxFolderMenuContent(
-                rows: [root, approvals, team, release(depth: 1, count: 2)], selection: 1,
-                dropIndicator: InboxFolderDrop(targetID: 3, placement: .before))),
-            ("inbox-b-menu-changed", InboxFolderMenuContent(
-                rows: [root, approvals, release(depth: 1, count: 2)], selection: 1, note: .menuChanged)),
-            ("inbox-b-menu-cli-unavailable", InboxFolderMenuContent(
-                rows: [root, approvals, release(depth: 1, count: 2)], selection: 1, note: .cliUnavailable)),
-            ("inbox-b-menu-write-refused", InboxFolderMenuContent(
-                rows: [root, approvals, shortRelease], selection: 1,
-                folderDraft: InboxFolderDraft(.create(parent: 1), title: "Release",
-                                              error: #"a folder named "Release" already exists here"#))),
-            ("inbox-b-menu-move-pending", InboxFolderMenuContent(
-                rows: [root, approvals, release(depth: 1, count: 2), team], selection: 1, pendingMoveID: 3)),
-            ("inbox-b-folder-delete-confirm", InboxFolderMenuContent(
-                rows: fullTree, selection: 3,
-                deleteConfirmation: InboxFolderDeleteSummary(folderID: 3, title: "Release acme 2.0", folders: 1,
-                                                             automations: 3, artifacts: 5)))
-        ]
+        let names = ["inbox-b-menu-hidden-shown", "inbox-b-menu-new-folder", "inbox-b-menu-drag",
+                     "inbox-b-menu-changed", "inbox-b-menu-cli-unavailable", "inbox-b-menu-write-refused",
+                     "inbox-b-menu-move-pending", "inbox-b-folder-delete-confirm"]
         return [
             DesignShot(name: "inbox-b-menu-root", size: NSSize(width: 1180, height: 640)) { inboxRoot() }
-        ] + menu.map { name, content in
-            DesignShot(name: name, size: NSSize(width: 260, height: 300)) { menuColumn(content) }
+        ] + names.map { name in
+            DesignShot(name: name, size: NSSize(width: 260, height: 300)) {
+                do {
+                    return menuColumn(try InboxFolderMenuShotFixtures.content(name))
+                } catch {
+                    return DesignShotFixtures.failure(error)
+                }
+            }
         }
     }
 
@@ -58,25 +47,26 @@ enum InboxBuilderBShotFixtures {
     private static let team = InboxFolderRow(id: 5, kind: .owner, title: "Team", icon: "person.2", depth: 1, count: 0)
     private static let blockers = InboxFolderRow(id: 4, kind: .owner, title: "Blockers", icon: "shippingbox",
                                                  depth: 2, count: 1)
-    private static let shortRelease = InboxFolderRow(id: 3, kind: .owner, title: "Release", icon: "flag", depth: 1,
-                                                     count: 0)
     private static func release(depth: Int, count: Int) -> InboxFolderRow {
         InboxFolderRow(id: 3, kind: .owner, title: "Release acme 2.0", icon: "flag", depth: depth, count: count)
     }
 
     private static var fullTree: [InboxFolderRow] { [root, approvals, release(depth: 1, count: 2), blockers, team] }
 
-    private static var hiddenShown: InboxFolderMenuContent {
-        let oldSprint = InboxFolderRow(id: 6, kind: .owner, title: "Old sprint", icon: "shippingbox", depth: 1,
-                                       count: 4, hidden: true)
-        return InboxFolderMenuContent(rows: [root, approvals, release(depth: 1, count: 2), oldSprint], selection: 1,
-                                      showsHidden: true)
-    }
-
     private static func menuColumn(_ content: InboxFolderMenuContent) -> AnyView {
         AnyView(InboxFolderMenu(content: content)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .detailBackground())
+    }
+
+    /// The root's menu from the model; a fixture failure fails the shot.
+    private static var rootMenu: InboxFolderMenuContent {
+        do {
+            return try InboxFolderMenuShotFixtures.content("inbox-b-menu-root")
+        } catch {
+            XCTFail("design shot fixture failed: \(error)")
+            return InboxFolderMenuContent(rows: fullTree, selection: 1)
+        }
     }
 
     /// The whole Inbox: the menu, the root's list, the selected artifact
@@ -86,7 +76,7 @@ enum InboxBuilderBShotFixtures {
             inboxHeader
             Divider()
             HStack(spacing: 0) {
-                InboxFolderMenu(content: InboxFolderMenuContent(rows: fullTree, selection: 1))
+                InboxFolderMenu(content: rootMenu)
                     .frame(width: PaneWidth.sideListIdeal)
                 Divider()
                 InboxFolderContentList(content: rootList(selection: "weekly"))

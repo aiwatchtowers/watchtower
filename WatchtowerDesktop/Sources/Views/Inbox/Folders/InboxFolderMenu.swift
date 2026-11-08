@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WatchtowerCore
 
 /// What a press in the menu asks for.
@@ -13,6 +14,11 @@ enum InboxFolderMenuAction: Equatable {
     case confirmDelete(Int64)
     case cancelDelete
     case menu(folderID: Int64, InboxMenuCommand)
+    /// An owner folder's drag starts, hovers over a drop (nil: over none)
+    /// and drops.
+    case beginDrag(Int64)
+    case dragOver(InboxFolderDrop?)
+    case drop(InboxFolderDrop)
 }
 
 /// The Inbox's first column (spec "The Inbox screen" 1): the root and its
@@ -42,6 +48,9 @@ struct InboxFolderMenu: View {
                                 dropLine(depth: row.depth)
                             }
                             folderRow(row)
+                            if let refusal = content.refusal, refusal.folderID == row.id {
+                                refusalLine(refusal.message, depth: row.depth)
+                            }
                             if let draft = content.folderDraft, case let .create(parentID) = draft.target,
                                let parent = draftParent(parentID), lastVisibleDescendant(of: parent) == row.id {
                                 draftField(draft, depth: parent.depth + 1)
@@ -120,6 +129,7 @@ struct InboxFolderMenu: View {
             .opacity(row.hidden || pending ? 0.5 : 1)
             .contentShape(Rectangle())
             .onTapGesture { onAction(.select(row.id)) }
+            .modifier(FolderDragModifier(row: row, readOnly: content.isReadOnly, onAction: onAction))
             .contextMenu {
                 InboxMenuItems(entries: menuEntries(row), readOnly: content.isReadOnly) {
                     onAction(.menu(folderID: row.id, $0))
@@ -264,6 +274,10 @@ struct InboxFolderMenu: View {
             }
             .buttonStyle(.kitQuiet)
             .disabled(content.isReadOnly)
+            if let refusal = content.refusal,
+               !content.visibleRows.contains(where: { $0.id == refusal.folderID }) {
+                refusalLine(refusal.message, depth: 0)
+            }
             if let note = content.note {
                 Text(note.text)
                     .font(.caption)
@@ -274,6 +288,66 @@ struct InboxFolderMenu: View {
             }
         }
         .padding(.top, Spacing.regular)
+    }
+}
+
+/// A refused write's message, under the row it was about.
+private func refusalLine(_ message: String, depth: Int) -> some View {
+    Text(message)
+        .font(.caption)
+        .foregroundStyle(Tone.error)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.leading, Spacing.medium * CGFloat(depth) + Spacing.regular)
+        .padding(.horizontal, Spacing.regular)
+}
+
+/// Drag and drop on a folder row (spec "Drag"): an owner folder drags; every
+/// row takes a drop, before it (its top band) or into it. Whether a drop is
+/// allowed is the model's call: a refused one draws no indicator.
+private struct FolderDragModifier: ViewModifier {
+    let row: InboxFolderRow
+    let readOnly: Bool
+    let onAction: (InboxFolderMenuAction) -> Void
+
+    func body(content: Content) -> some View {
+        if readOnly {
+            content
+        } else if row.kind == .owner {
+            content
+                .onDrag {
+                    onAction(.beginDrag(row.id))
+                    return NSItemProvider(object: String(row.id) as NSString)
+                }
+                .onDrop(of: [.text], delegate: FolderDropDelegate(rowID: row.id, onAction: onAction))
+        } else {
+            content.onDrop(of: [.text], delegate: FolderDropDelegate(rowID: row.id, onAction: onAction))
+        }
+    }
+}
+
+private struct FolderDropDelegate: DropDelegate {
+    let rowID: Int64
+    let onAction: (InboxFolderMenuAction) -> Void
+
+    /// The top of a row places the folder before it; the rest, into it.
+    private static let beforeBand: CGFloat = 8
+
+    private func drop(_ info: DropInfo) -> InboxFolderDrop {
+        InboxFolderDrop(targetID: rowID, placement: info.location.y < Self.beforeBand ? .before : .into)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        onAction(.dragOver(drop(info)))
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        onAction(.dragOver(nil))
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        onAction(.drop(drop(info)))
+        return true
     }
 }
 

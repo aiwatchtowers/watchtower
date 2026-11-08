@@ -80,9 +80,16 @@ package final class ActionStripViewModel {
     /// a change re-reads, since the read gates today's placeholder on them.
     package var disabledFeatures: Set<String> = [] {
         didSet {
+            folderMenu.approvalsEnabled = !disabledFeatures.contains(Self.approvalsFeatureID)
             if disabledFeatures != oldValue { Task { await refresh() } }
         }
     }
+    /// The Inbox's folder menu (inbox builder B): here so a folder write
+    /// still running when the Inbox leaves the screen lands in the state it
+    /// finds on return. Every `refresh()` re-reads it.
+    package let folderMenu: InboxFolderMenuModel
+    /// Needs approval's feature (`approval-cards`).
+    package static let approvalsFeatureID = "approval-cards"
 
     private let dbPool: DatabasePool
     /// nil = the installed CLI, found at press time.
@@ -128,6 +135,8 @@ package final class ActionStripViewModel {
         self.filter = defaults.string(forKey: Self.filterKey).flatMap(InboxFilter.init(rawValue:)) ?? .all
         self.dayDone = defaults.string(forKey: Self.dayDoneKey)
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
+        self.folderMenu = InboxFolderMenuModel(
+            dbPool: dbPool, runner: { cliRunner ?? ProcessCLIRunner.makeDefault() }, clock: clock)
     }
 
     /// The Inbox sidebar badge: the sum of the counts of every folder the
@@ -142,17 +151,8 @@ package final class ActionStripViewModel {
     /// it (its table missing counts 0); any other read error is thrown,
     /// never folded into 0.
     nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
-        let tree = try InboxFolderQueries.tree(db)
-        let waitingForMe = try InboxFolderQueries.waitingForMe(db)
-        // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
-        // list never counts beside the Messages entry it gives way to.
-        let artifacts = waitingForMe.withoutStandInArtifacts(try InboxFolderQueries.artifactsByFolder(db, tree: tree))
-        let refs = InboxFolderCounts.refs(of: artifacts)
-        let refState = try InboxRefState.read(db, refs: Array(refs.values.joined()), nowUTC: nowUTC)
-        let legacy = try legacyCounts(db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
-        let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy)
-        return InboxFolderCounts.badge(counts: counts, tree: tree)
+        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC)
+        return InboxFolderCounts.badge(counts: snapshot.counts, tree: snapshot.tree)
     }
 
     /// The badge's terms from before the folders, by the folder that shows
@@ -228,6 +228,10 @@ package final class ActionStripViewModel {
             repeat {
                 refreshAgain = false
                 await readFeed()
+                await folderMenu.reload()
+                // A failed folder read keeps the previous tree; the strip's
+                // error line says so, as for its own read.
+                if lastError == nil { lastError = folderMenu.readError }
             } while refreshAgain
             refreshTask = nil
         }

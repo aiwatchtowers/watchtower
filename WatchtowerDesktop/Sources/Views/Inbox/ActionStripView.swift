@@ -216,9 +216,20 @@ struct ActionStripActionsView: View {
     @State private var newIdea = InboxNewIdeaDraft()
     @State private var backfillRange = InboxIdeaBackfillRange(from: Date(), to: Date())
 
+    /// The folder menu (inbox builder B), then the list and reading pane.
     var body: some View {
+        HSplitView {
+            InboxFolderMenuColumn(model: vm.folderMenu, onOpenAux: openAux)
+                .frame(minWidth: PaneWidth.sideListMin, idealWidth: PaneWidth.sideListIdeal,
+                       maxWidth: PaneWidth.sideListMax, maxHeight: .infinity)
+            inbox
+                .frame(minWidth: PaneWidth.detailMin, maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var inbox: some View {
         let isEmpty = vm.sections.isEmpty
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             if let message = vm.lastError {
                 errorBanner(message)
             }

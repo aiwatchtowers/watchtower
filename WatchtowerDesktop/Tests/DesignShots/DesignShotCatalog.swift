@@ -478,6 +478,7 @@ enum DesignShotFixtures {
         CleanupShotFixtures.cleanUp()
         AgentSettingsShotFixtures.cleanUp()
         CoachShotFixtures.cleanUp()
+        InboxFolderMenuShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil

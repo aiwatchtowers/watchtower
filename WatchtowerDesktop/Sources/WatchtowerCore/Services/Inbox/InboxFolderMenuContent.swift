@@ -1,10 +1,9 @@
 import Foundation
 
 /// A folder of the Inbox menu (spec "The model" → Folders): the root, Needs
-/// approval, or one of the owner's.
-package enum InboxFolderKind: String, Equatable, Sendable {
-    case root, approvals, owner
-}
+/// approval, or one of the owner's. One type with the folder read's
+/// (`InboxFolder.Kind`), so a row is built from a folder without mapping.
+package typealias InboxFolderKind = InboxFolder.Kind
 
 /// One row of the folder menu, in tree order. `depth` is 0 for the root;
 /// a row's children are the rows right after it with a greater depth.
@@ -87,21 +86,30 @@ package struct InboxFolderDrop: Equatable, Sendable {
     }
 }
 
-/// The inline Delete… confirmation under a folder row: what moves to the
-/// root.
+/// The inline Delete… confirmation under a folder row: what moves up to
+/// the folder's parent (the root, "Inbox", for a top-level folder).
 package struct InboxFolderDeleteSummary: Equatable, Sendable {
     package let folderID: Int64
     package let title: String
     package let folders: Int
     package let automations: Int
     package let artifacts: Int
+    package let parentTitle: String
 
-    package init(folderID: Int64, title: String, folders: Int, automations: Int, artifacts: Int) {
+    package init(
+        folderID: Int64,
+        title: String,
+        folders: Int,
+        automations: Int,
+        artifacts: Int,
+        parentTitle: String = "Inbox"
+    ) {
         self.folderID = folderID
         self.title = title
         self.folders = folders
         self.automations = automations
         self.artifacts = artifacts
+        self.parentTitle = parentTitle
     }
 
     package var text: String {
@@ -110,7 +118,7 @@ package struct InboxFolderDeleteSummary: Equatable, Sendable {
         guard !parts.isEmpty else { return "Delete “\(title)”? It is empty." }
         let list = parts.count == 1 ? parts[0]
             : parts.dropLast().joined(separator: ", ") + " and " + (parts.last ?? "")
-        return "Delete “\(title)”? Its \(list) move to Inbox."
+        return "Delete “\(title)”? Its \(list) move to \(parentTitle)."
     }
 
     private static func count(_ value: Int, _ noun: String) -> String? {
@@ -138,6 +146,19 @@ package struct InboxFolderDraft: Equatable, Sendable {
     }
 }
 
+/// A refused (or unconfirmed) folder write outside the title field: the
+/// CLI's message under the row it was about, or under the menu when that
+/// row is not on screen. The next edit clears it.
+package struct InboxFolderMenuRefusal: Equatable, Sendable {
+    package let folderID: Int64?
+    package let message: String
+
+    package init(folderID: Int64?, message: String) {
+        self.folderID = folderID
+        self.message = message
+    }
+}
+
 /// Everything the menu draws, as plain values (plan Task 1): Task 11's
 /// `InboxFolderMenuModel` builds it from the folder read and its writes.
 package struct InboxFolderMenuContent: Equatable, Sendable {
@@ -147,6 +168,8 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package var dropIndicator: InboxFolderDrop?
     package var deleteConfirmation: InboxFolderDeleteSummary?
     package var folderDraft: InboxFolderDraft?
+    /// A refused write's message; a draft's own refusal is `folderDraft.error`.
+    package var refusal: InboxFolderMenuRefusal?
     /// A dropped folder sits dimmed in its new place while the move runs;
     /// the menu is read-only meanwhile.
     package var pendingMoveID: Int64?
@@ -164,6 +187,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         dropIndicator: InboxFolderDrop? = nil,
         deleteConfirmation: InboxFolderDeleteSummary? = nil,
         folderDraft: InboxFolderDraft? = nil,
+        refusal: InboxFolderMenuRefusal? = nil,
         pendingMoveID: Int64? = nil,
         showsHidden: Bool = false,
         icons: [InboxFolderIcon] = [],
@@ -175,6 +199,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         self.dropIndicator = dropIndicator
         self.deleteConfirmation = deleteConfirmation
         self.folderDraft = folderDraft
+        self.refusal = refusal
         self.pendingMoveID = pendingMoveID
         self.showsHidden = showsHidden
         self.icons = icons
