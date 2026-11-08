@@ -177,7 +177,7 @@ An all-zero shared secret is refused on either side.
 |---|---|---|
 | Present, with a stored pair | — | the stored pair |
 | Present, no pair | — | static (`wt/relay/v1/`) |
-| Absent | no (iCloud, a hub without the hub half, before the first offer) | static, any epoch, as today |
+| Absent | no (iCloud, or before the first offer; an unanswered offer already counts as ephemeral state, even to a hub without the hub half) | static, any epoch, as today |
 | Absent, epoch above the newest held | yes | `epochKeysPending`: on the active route the batch replays with its token kept, **for at most `keyboxWaitCap` = 1 h from the first sighting** (`relay_wait_since` in replica meta). Then the feed **parks**: token kept, nothing skipped, no more fetches until a merge, a foreground or a launch. In the side reader it holds nothing back and drops nothing: the look handles what it can open behind it, and keeps its token at that batch, so the record is read again once the keys come. While `waitsForKeybox` is false (no key source) the feed parks at once with no row |
 | Absent, epoch at or below the newest held | yes | `epochKeysGone`: the record is dropped, the feed moves on |
 
@@ -442,7 +442,7 @@ Task 13, Task 0 ─ Task 17 ─ Task 11 (PR C)
 
 **No code starts until this plan is approved.** Task 0 is a mockup, not code, and may run first, so the owner can see the frames. Go and Kit are parallel lanes after Task 1. Each Swift lane gets its own worktree and simulator.
 
-**PRs into `feature/relay-client-next`, in this merge order:** Plan = this plan and Task 0, from `relay-p5/plan`. A = Tasks 1, 7–10, 15, 16 (the phone first: its offers go to a hub that ignores them, the "new phone, old hub" row, and no Release build is on a relay route). B = Tasks 2–6, plus Task 14 (the hub now rotates weekly on the relay, and the phones on this branch already have Tasks 8 and 9). C = Tasks 13, 17, 11, 12. **PR B does not merge before PR A:** other lanes on this branch would otherwise run a weekly hub with phones that can lose uploads.
+**PRs into `feature/relay-client-next`, in this merge order:** Plan = this plan and Task 0, from `relay-p5/plan`. A = Tasks 1, 7–10, 15, 16 (the phone first: its offers go to a hub that ignores them, the "new phone, old hub" row, and no Release build is on a relay route). Against today's hub one thing differs: once the phone has offered, a record that outruns its keybox waits and resolves on the merge, or parks with S58 if the keybox is refused (F21). B = Tasks 2–6, plus Task 14 (the hub now rotates weekly on the relay, and the phones on this branch already have Tasks 8 and 9). C = Tasks 13, 17, 11, 12. **PR B does not merge before PR A:** other lanes on this branch would otherwise run a weekly hub with phones that can lose uploads.
 
 ---
 

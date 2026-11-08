@@ -18,10 +18,12 @@ import Foundation
 // 4. promote: each row still holding its old envelope takes the new one in one transaction, keeping its state. A
 //    kill between 3 and 4 leaves the stage, and step 1 of the next merge (they run after every fetch) applies it.
 //
-// A `queued`/`sent` row moved this way stays sendable: the hub answers it applied, or expired by its age window. Only
-// a row nothing moved (sealed before a raise that ran without this hook) can be past its key at a merge; that one is
-// listed Not delivered and never sent (F7). A moved row's earlier copy left in the mailbox in a gone epoch is written
-// over by the flush (`isRecordInGoneEpoch`).
+// A `queued`/`sent` row moved out of an epoch the link still holds stays sendable: the hub answers it applied, or
+// expired by its age window. A row sealed in an epoch the merge drops is past its key, whichever way it was left there
+// (a raise that ran without this hook, or a `.droppedEpochs` merge that kept its epoch until a later merge dropped
+// it): it is resealed like the rest, then listed Not delivered and never sent (F7; the hub has retired that epoch
+// too). A moved row's earlier copy left in the mailbox in a gone epoch is written over by the flush
+// (`isRecordInGoneEpoch`).
 /// Which own rows a keybox merge reseals (relay client Phase 5).
 public enum KeyboxMergeReseal: Equatable, Sendable {
     /// Every own row sealed in an epoch below the merged newest: a fetched merge, so every row sits in the newest

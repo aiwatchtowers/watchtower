@@ -181,6 +181,9 @@ final class ActionOutboxResealTests: XCTestCase {
 
         XCTAssertEqual(try phone.keys.hubLink(hubID)?.epochs.map(\.epoch), [2, 3, 4])
         XCTAssertEqual(try epoch(of: try listed(phone, old), phone), 4, "the dropped epoch's row moved")
+        XCTAssertEqual(
+            try listed(phone, old)?.delivery, .undelivered,
+            "past its key: listed Not delivered, whichever mode left it in the dropped epoch (F7)")
         let keptAfter = try XCTUnwrap(phone.store.outboxRows([.queued, .sent, .settled, .undelivered]).first { $0.actionID == kept })
         XCTAssertEqual(keptAfter.envelope, keptBefore.envelope, "the kept epoch's row keeps its bytes")
 
