@@ -344,3 +344,29 @@ func TestParse_KnownKeySkipsRewordedRepeat(t *testing.T) {
 	assert.Equal(t, []string{"a known finding"}, daTexts(r))
 	assert.Equal(t, map[string]int{DropDecided: 1}, r.DroppedBy)
 }
+
+// The review block carries "loop_round: N" on a loop round under the
+// open-ended rules, so the prompt's round rules can be applied; a review
+// outside a loop and a loop under the legacy rules have no such line.
+func TestBuildInputs_LoopRoundHeaderLine(t *testing.T) {
+	f := newFixture(t)
+	message := func(a *db.OwnerAsk) string {
+		t.Helper()
+		_, msg, _, err := BuildInputs(context.Background(), f.deps(nil), a, f.folder)
+		require.NoError(t, err)
+		return msg
+	}
+
+	assert.NotContains(t, message(f.ask(t, "spec", testDoc)), "loop_round:")
+
+	r1 := f.queueLoopRound(t, 0, 1, testDoc)
+	assert.Contains(t, message(r1), "loop_round: 1\n")
+	finishRow(t, f.d, r1.ID, "author", `{}`, nil, nil)
+	r2 := f.queueLoopRound(t, r1.ID, 2, testDoc)
+	assert.Contains(t, message(r2), "loop_round: 2\n")
+
+	l1 := f.queueLoopRoundRules(t, 0, 1, testDoc, LoopRulesLegacy)
+	finishRow(t, f.d, l1.ID, "author", `{}`, nil, nil)
+	l2 := f.queueLoopRoundRules(t, l1.ID, 2, testDoc, LoopRulesLegacy)
+	assert.NotContains(t, message(l2), "loop_round:")
+}
