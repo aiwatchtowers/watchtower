@@ -27,13 +27,16 @@ import (
 	"watchtower/internal/logcanary"
 )
 
-// testKeys is a KeySource with one hub signing key and one alert key.
+// testKeys is a KeySource with one hub signing key and one alert key per
+// epoch (current is 1 unless set; an epoch in gone has no keys left).
 type testKeys struct {
-	sig   ed25519.PrivateKey
-	kx    *ecdh.PrivateKey
-	alert []byte
-	mu    sync.Mutex
-	seq   uint64
+	sig     ed25519.PrivateKey
+	kx      *ecdh.PrivateKey
+	alert   []byte
+	mu      sync.Mutex
+	seq     uint64
+	current uint32
+	gone    map[uint32]bool
 }
 
 func newTestKeys(t *testing.T) *testKeys {
@@ -51,16 +54,29 @@ func newTestKeys(t *testing.T) *testKeys {
 	return k
 }
 
-func (k *testKeys) HubID() secure.ID              { return secure.ID{0xa, 0xb} }
-func (k *testKeys) CurrentEpoch() (uint32, error) { return 1, nil }
+func (k *testKeys) HubID() secure.ID { return secure.ID{0xa, 0xb} }
+func (k *testKeys) CurrentEpoch() (uint32, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return max(k.current, 1), nil
+}
 func (k *testKeys) NextSeq() (uint64, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.seq++
 	return k.seq, nil
 }
-func (k *testKeys) DataKey(uint32) ([]byte, error)     { return bytes.Clone(k.alert), nil }
-func (k *testKeys) AlertKey(uint32) ([]byte, error)    { return bytes.Clone(k.alert), nil }
+func (k *testKeys) DataKey(uint32) ([]byte, error) { return bytes.Clone(k.alert), nil }
+func (k *testKeys) AlertKey(e uint32) ([]byte, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.gone[e] {
+		return nil, errors.New("epoch erased")
+	}
+	b := bytes.Clone(k.alert)
+	b[0] ^= byte(e)
+	return b, nil
+}
 func (k *testKeys) MetaKey() ([]byte, error)           { return bytes.Clone(k.alert), nil }
 func (k *testKeys) RelayDevices() ([]secure.ID, error) { return nil, nil }
 func (k *testKeys) Signer() ed25519.PrivateKey         { return k.sig }
@@ -228,11 +244,13 @@ type rig struct {
 	dir     string
 	st      *state.Store
 	sealer  *secure.Sealer
+	keys    *testKeys
 	clock   *fakeClock
 	send    *fakeSend
 	away    *fakeAway
 	mu      sync.Mutex
 	targets []Target
+	epochOf map[string]uint32 // EpochFor per device (absent = 0)
 	refresh int
 	// refreshGate, when set, holds every RefreshAccount until it closes (or
 	// its ctx ends).
@@ -252,8 +270,9 @@ func newRig(t *testing.T, phones ...string) *rig {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	clock := newFakeClock()
+	keys := newTestKeys(t)
 	r := &rig{
-		t: t, dir: dir, st: st, sealer: secure.NewSealer(newTestKeys(t)), clock: clock,
+		t: t, dir: dir, st: st, sealer: secure.NewSealer(keys), keys: keys, clock: clock,
 		send: newFakeSend(clock), away: &fakeAway{away: true}, settles: make(chan settled, 512),
 	}
 	for _, ph := range phones {
@@ -282,6 +301,11 @@ func (r *rig) newPusher() *Pusher {
 				case <-ctx.Done():
 				}
 			}
+		},
+		EpochFor: func(device string) uint32 {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.epochOf[device]
 		},
 		Away:  r.away,
 		Clock: r.clock.Now,
@@ -1124,5 +1148,94 @@ func TestEligibleSkipsAPhoneWithWorkAlertsOff(t *testing.T) {
 	want := []Target{{DeviceID: "phone-b", RelayID: "relay-b"}}
 	if !slices.Equal(got, want) {
 		t.Fatalf("Eligible = %v; want %v", got, want)
+	}
+}
+
+// ---- the epoch a push is sealed in (relay client Phase 5, Task 5) ----
+
+// sealedEpochs opens every envelope the fake relay got with the test keys and
+// returns each relay id's epoch and envelope.
+func (r *rig) sealedEpochs() map[string]struct {
+	epoch uint32
+	env   []byte
+} {
+	r.t.Helper()
+	r.send.mu.Lock()
+	seen := slices.Clone(r.send.seen)
+	r.send.mu.Unlock()
+	out := map[string]struct {
+		epoch uint32
+		env   []byte
+	}{}
+	for _, c := range seen {
+		h, _, err := secure.OpenSymmetric(c.env, []secure.EnvelopeClass{secure.ClassAlert},
+			secure.Context{Zone: secure.ZoneData, WireName: secure.AlertPushWireName}, r.keys.sig.Public().(ed25519.PublicKey),
+			func(h secure.Header) ([]byte, error) { return r.keys.AlertKey(h.Epoch) })
+		if err != nil {
+			r.t.Fatalf("the push to %s does not open: %v", c.relay, err)
+		}
+		out[c.relay] = struct {
+			epoch uint32
+			env   []byte
+		}{h.Epoch, c.env}
+	}
+	return out
+}
+
+// TestAlertPushSealedOncePerEpochItsPhonesHold: phones on the same epoch
+// share one seal; a phone on another gets its own, in the epoch EpochFor
+// names (0 = the current one).
+func TestAlertPushSealedOncePerEpochItsPhonesHold(t *testing.T) {
+	r := newRig(t, "phone-a", "phone-b", "phone-c")
+	r.keys.current = 3
+	r.epochOf = map[string]uint32{"phone-a": 2, "phone-c": 2}
+	r.start()
+	r.enqueue("ask-1")
+	r.nextN(3)
+	got := r.sealedEpochs()
+	a, b, c := got["relay-phone-a"], got["relay-phone-b"], got["relay-phone-c"]
+	if a.epoch != 2 || c.epoch != 2 || b.epoch != 3 {
+		t.Fatalf("sealed in epochs a=%d b=%d c=%d, want 2, 3, 2", a.epoch, b.epoch, c.epoch)
+	}
+	if !bytes.Equal(a.env, c.env) {
+		t.Fatal("two phones on one epoch got two seals, want one")
+	}
+}
+
+// TestAlertPushInAnEpochGoneIsSealedInTheCurrentOne: an epoch whose keys left
+// between EpochFor and the seal falls back to the current epoch, the rule's
+// answer past retention; the push still goes.
+func TestAlertPushInAnEpochGoneIsSealedInTheCurrentOne(t *testing.T) {
+	r := newRig(t, "phone-a")
+	r.keys.current = 3
+	r.keys.gone = map[uint32]bool{2: true}
+	r.epochOf = map[string]uint32{"phone-a": 2}
+	r.start()
+	r.enqueue("ask-1")
+	if s := r.next(); s.outcome != state.AlertAccepted {
+		t.Fatalf("settled %+v, want accepted", s)
+	}
+	if e := r.sealedEpochs()["relay-phone-a"].epoch; e != 3 {
+		t.Fatalf("sealed in epoch %d, want the current 3", e)
+	}
+}
+
+// TestAFailedSealSettlesOnlyItsEpochsPhones: when one epoch's seal fails the
+// phones on it settle failed and the others are still pushed.
+func TestAFailedSealSettlesOnlyItsEpochsPhones(t *testing.T) {
+	r := newRig(t, "phone-a", "phone-b")
+	r.keys.current = 3
+	r.keys.gone = map[uint32]bool{3: true} // the current epoch does not seal
+	r.epochOf = map[string]uint32{"phone-a": 2}
+	r.start()
+	r.enqueue("ask-1")
+	got := r.nextN(2)
+	slices.SortFunc(got, func(x, y settled) int { return strings.Compare(x.device, y.device) })
+	want := []settled{{"ask-1", "phone-a", "accepted", ""}, {"ask-1", "phone-b", "failed", ""}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("settled %v; want %v", got, want)
+	}
+	if n := r.send.count("relay-phone-b"); n != 0 {
+		t.Fatalf("send_alert to the phone whose seal failed %d times", n)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/alerts"
+	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/slices"
@@ -40,11 +41,31 @@ func (h *hubRuntime) newPusher(sealer *secure.Sealer) {
 	}
 	h.push = alerts.New(alerts.Config{
 		Store: h.st, Sealer: sealer, Send: send, Targets: h.pushTargets, RefreshAccount: h.refreshForPush,
-		Away: h.sup.o.awayInput(), Clock: h.sup.o.Clock,
+		Away: h.sup.o.awayInput(), Clock: h.sup.o.Clock, EpochFor: alertEpochFor(h.st, h.kr),
 	})
 	if c, ok := h.relayT().(connectNotifier); ok {
 		// Once per WebSocket connect, never per zone marker or overflow.
 		c.OnConnected(h.pushReconnected)
+	}
+}
+
+// alertEpochFor is the pusher's EpochFor: a phone's acked epoch while the hub
+// retains it (Keyring.AckedEpochRetained), offering or not, since a locked
+// phone's notification extension holds only the K_alert of the epochs it had
+// at its last unlock (relay client Phase 5, F11); else 0, the current epoch.
+// An unreadable device or keyring reads as 0, today's sealing.
+func alertEpochFor(st *state.Store, kr *identity.Keyring) func(device string) uint32 {
+	return func(device string) uint32 {
+		d, ok, err := st.Device(device)
+		var e uint32
+		if err == nil && ok {
+			e, err = kr.AckedEpochRetained(d)
+		}
+		if err != nil {
+			log.Printf("hub alerts: the epoch of %s's push unreadable (%s), sealed in the current epoch", device, errClass(err))
+			return 0
+		}
+		return e
 	}
 }
 
