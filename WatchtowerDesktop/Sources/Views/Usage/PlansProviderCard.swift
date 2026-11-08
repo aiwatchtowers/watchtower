@@ -11,7 +11,7 @@ struct PlansProviderCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.large) {
             HStack {
-                Image(systemName: provider.id == .claude ? "sparkle" : "terminal").foregroundStyle(providerColor)
+                Image(systemName: provider.id.subscription.icon).foregroundStyle(providerColor)
                 Text(card.title).font(.headline)
                 Text(provider.planLabel).font(.caption).foregroundStyle(.secondary)
                 Spacer()
@@ -55,7 +55,7 @@ struct PlansProviderCard: View {
         .card()
     }
 
-    private var providerColor: Color { Tone.status(provider.id == .claude ? "purple" : "teal") }
+    private var providerColor: Color { Tone.status(provider.id.subscription.tint) }
     private func rawPercent(_ item: PlansLimitPresentation) -> Double? {
         provider.status?.limits.first { $0.key == item.key }?.percent
     }

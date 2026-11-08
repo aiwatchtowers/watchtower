@@ -49,7 +49,7 @@ struct PlansChartCard: View {
         }.padding(Spacing.page).frame(maxWidth: .infinity, alignment: .leading).card()
     }
 
-    private var color: Color { Tone.status(provider.id == .claude ? "purple" : "teal") }
+    private var color: Color { Tone.status(provider.id.subscription.tint) }
 }
 
 /// Only maps published points to display coordinates. It never estimates a rate or endpoint.

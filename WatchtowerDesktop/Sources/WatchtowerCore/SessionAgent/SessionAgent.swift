@@ -13,6 +13,8 @@ import Foundation
 package protocol SessionAgent: Sendable {
     /// The agent kind the adapter serves.
     var kind: AgentKind { get }
+    /// The adapter's published subscription quota contract.
+    var subscriptionUsage: SubscriptionUsagePolicy { get }
     /// The agent's capability row.
     var caps: AgentSessionCaps { get }
     /// The agent's raw value on the phone's wire (the Kit's
@@ -104,5 +106,14 @@ package struct AgentTranscriptLookups {
     ) {
         self.claude = claude
         self.codex = codex
+    }
+}
+
+extension PlanUsageProvider {
+    package var subscription: SubscriptionUsagePolicy {
+        switch self {
+        case .claude: ClaudeSessionAgent().subscriptionUsage
+        case .codex: CodexSessionAgent().subscriptionUsage
+        }
     }
 }

@@ -18,7 +18,7 @@ struct PlansMenuPanel: View {
                 Text(model.freshness).font(.caption2).foregroundStyle(.secondary)
             }
             ForEach(model.providers) { provider in
-                if provider.id == .claude { claude(provider) } else { codex(provider) }
+                if provider.id.subscription.layout == .compact { claude(provider) } else { codex(provider) }
             }
             HStack {
                 Button(PlansScreenCopy.open, action: openPlans).buttonStyle(.kitQuiet)

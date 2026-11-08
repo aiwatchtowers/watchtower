@@ -2,7 +2,7 @@ import Foundation
 
 package enum PlanUsageProvider: String, Codable, CaseIterable, Sendable {
     case claude, codex
-    package var title: String { self == .claude ? "Claude" : "Codex" }
+    package var title: String { subscription.title }
 }
 
 package enum PlanUsageStorageError: Error { case invalidSnapshot }
@@ -94,7 +94,7 @@ extension PlanUsageStatus {
     package var historyAvailable: Bool { limits.contains { !currentHistory(for: $0).isEmpty } }
 
     package func currentHistory(for limit: PlanUsageLimit) -> [PlanUsageSample] {
-        guard let fetchedAt, let reset = limit.resetsAt, provider != .codex || identityKnown else { return [] }
+        guard let fetchedAt, let reset = limit.resetsAt, !provider.subscription.scopedIdentity || identityKnown else { return [] }
         let start: Date
         if let minutes = limit.windowDurationMinutes, minutes > 0, minutes <= PlanUsageWindow.maximumMinutes {
             start = reset.addingTimeInterval(-Double(minutes) * 60)
@@ -128,7 +128,7 @@ extension PlanUsageStatus {
         if !enabled || state == "disabled" { return "disabled" }
         if let fetchedAt, fetchedAt > now.addingTimeInterval(60) { return "clock_skew" }
         guard state == "ok", let fetchedAt, now.timeIntervalSince(fetchedAt) <= 900 else { return "stale" }
-        if provider == .codex && !identityKnown { return "identity_unknown" }
+        if provider.subscription.scopedIdentity && !identityKnown { return "identity_unknown" }
         guard let duration = limit.windowDurationMinutes, duration > 0, duration <= PlanUsageWindow.maximumMinutes else {
             return "missing_window_duration"
         }
@@ -167,7 +167,8 @@ package struct PlansEnvelope: Decodable, Sendable {
     package static func decode(_ data: Data) throws -> Self {
         try validateWireKeys(data)
         let envelope = try PlanUsageDates.decoder.decode(Self.self, from: data)
-        guard envelope.schemaVersion == 1, ["all", "claude", "codex"].contains(envelope.requestedProvider) else {
+        guard envelope.schemaVersion == 1,
+              envelope.requestedProvider == "all" || PlanUsageProvider(rawValue: envelope.requestedProvider) != nil else {
             throw PlanUsageStorageError.invalidSnapshot
         }
         let expected: [PlanUsageProvider] = envelope.requestedProvider == "all" ? [.claude, .codex] :

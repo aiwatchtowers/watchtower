@@ -72,7 +72,7 @@ package enum PlansPresentation {
         case "unsupported_cli": return "Update Codex to read subscription limits, then retry."
         case "unsupported_auth": return "Sign in to Codex with a ChatGPT account, then retry."
         case "no_credentials", "token_expired", "http_401":
-            return "Open \(provider == .claude ? "Claude Code" : "Codex") and sign in, then retry."
+            return "Open \(provider.subscription.signInApplication) and sign in, then retry."
         case "feature_disabled": return reasonText("disabled")
         case "busy": return "Another refresh is running. Try again shortly."
         case "timeout": return "The refresh timed out. Try again."
@@ -149,12 +149,12 @@ package enum PlansPresentation {
         if status.ordinaryUsageAllowed == false { return "Codex usage is currently restricted" }
         if status.state != "ok" { return errorText(status.reason, provider: provider) }
         if stale { return "Saved limits are out of date. Refresh to update." }
-        if provider == .codex && !status.identityKnown { return reasonText("identity_unknown") }
+        if provider.subscription.scopedIdentity && !status.identityKnown { return reasonText("identity_unknown") }
         return "Subscription limits and forecast"
     }
 
     package static func visibleLimits(_ status: PlanUsageStatus, now: Date) -> [PlanUsageLimit] {
-        if status.provider == .claude { return PlanUsagePresentation.visibleLimits(status) }
+        if status.provider.subscription.retainsSavedLimits { return PlanUsagePresentation.visibleLimits(status) }
         guard !isStale(status, now: now), status.state == "ok" else { return [] }
         return status.limits
     }
@@ -201,7 +201,8 @@ package enum PlansPresentation {
 
     package static func tray(_ status: PlanUsageStatus, now: Date) throws -> [String] {
         let limits = visibleLimits(status, now: now)
-        let selected = status.provider == .claude ? ["session", "weekly_all"].compactMap { key in limits.first { $0.key == key } } : limits
+        let selected = status.provider.subscription.retainsSavedLimits ?
+            ["session", "weekly_all"].compactMap { key in limits.first { $0.key == key } } : limits
         return try selected.map {
             let item = try limit($0, status: status, now: now)
             return "\(status.provider.title) · \(item.title): \(item.percent) · \(item.reset) · \(item.forecast)"

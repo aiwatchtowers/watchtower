@@ -132,7 +132,7 @@ struct PlansContent: View {
                     }
                 }
             }
-            if let claude = model.providers.first(where: { $0.id == .claude }),
+            if let claude = model.providers.first(where: { $0.id.subscription.suppliesSurfaceBreakdown }),
                let rows = claude.status?.breakdown, !rows.isEmpty, !claude.presentation.limits.isEmpty {
                 VStack(alignment: .leading, spacing: Spacing.medium) {
                     Text(PlansScreenCopy.breakdown).font(.headline)

@@ -55,7 +55,7 @@ package struct PlansPopupPresentation: Sendable {
             let state = menu.providers[index]
             let selected: String?
             var selectionFailed = false
-            if provider.id == .codex, let status = provider.status, screen.enabled {
+            if provider.id.subscription.layout == .grouped, let status = provider.status, screen.enabled {
                 do { selected = try PlansPresentation.mostRestrictive(status, now: screen.now)?.key } catch {
                     selected = nil
                     selectionFailed = true
@@ -69,7 +69,7 @@ package struct PlansPopupPresentation: Sendable {
                                         provider.status?.ordinaryUsageAllowed == false) ? .warning : .muted,
                                       action: selectionFailed ? "Retry \(provider.presentation.title)" : state.action,
                                       canRefresh: state.canRefresh,
-                                      compactUsage: provider.id == .claude && screen.enabled ?
+                                      compactUsage: provider.id.subscription.layout == .compact && screen.enabled ?
                                         PlanUsagePresentation.menuBarText(provider.status) : nil,
                                       primaryForecast: message == nil ? provider.primary?.forecast : nil,
                                       primaryTone: provider.primary?.line == nil && provider.primary?.tone == .normal ?
@@ -87,9 +87,11 @@ package struct PlansPopupPresentation: Sendable {
         }
         for item in limits {
             guard let raw = provider.status?.limits.first(where: { $0.key == item.key }) else { continue }
-            let bucket = provider.id == .codex ? PlansQuotaBucket.identifier(item.key) : nil
+            let bucket = provider.id.subscription.layout == .grouped ? PlansQuotaBucket.identifier(item.key) : nil
             let groupID = bucket.map { "bucket:\($0)" } ?? "opaque:\(item.key)"
-            let title = bucket.map { bucketTitle($0, label: raw.label, minutes: raw.windowDurationMinutes) } ?? raw.label
+            let title = bucket.map {
+                bucketTitle($0, label: raw.label, minutes: raw.windowDurationMinutes, policy: provider.id.subscription)
+            } ?? raw.label
             let quota = PlansPopupQuota(
                 id: item.key, duration: PlansPresentation.duration(raw.windowDurationMinutes),
                 percent: item.percent, reset: item.reset,
@@ -101,21 +103,22 @@ package struct PlansPopupPresentation: Sendable {
                 groups[index].quotas.append(quota)
             } else { groups.append(PlansPopupGroup(id: groupID, title: title, quotas: [quota])) }
         }
-        if let index = groups.firstIndex(where: { $0.id == "bucket:codex" }), index != 0 {
+        if let bucket = provider.id.subscription.defaultQuotaBucket,
+           let index = groups.firstIndex(where: { $0.id == "bucket:\(bucket)" }), index != 0 {
             let main = groups.remove(at: index)
             groups.insert(main, at: 0)
         }
         return groups
     }
 
-    private static func bucketTitle(_ bucket: String, label: String, minutes: Int?) -> String {
+    private static func bucketTitle(_ bucket: String, label: String, minutes: Int?, policy: SubscriptionUsagePolicy) -> String {
         let parts = label.components(separatedBy: " · ")
         if parts.count > 1 {
             let windowNames = ["Weekly", "5 hours", "5-hour window", "\(minutes ?? 0) minutes"]
             if windowNames.contains(parts[0]) { return parts.dropFirst().joined(separator: " · ") }
             if let last = parts.last, windowNames.contains(last) { return parts.dropLast().joined(separator: " · ") }
         }
-        return bucket == "codex" ? PlanUsageProvider.codex.title : bucket
+        return bucket == policy.defaultQuotaBucket ? policy.title : bucket
     }
 }
 

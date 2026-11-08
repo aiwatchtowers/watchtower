@@ -23,7 +23,8 @@ package struct PlansMenuPresentation: Sendable {
             } else if card.isRefreshing {
                 message = provider.status == nil ? card.summary : "Refreshing \(card.title) limits…"
             } else if provider.hasError || provider.status == nil || card.isStale ||
-                        provider.status?.ordinaryUsageAllowed == false || (provider.id == .codex && provider.status?.identityKnown != true) {
+                        provider.status?.ordinaryUsageAllowed == false ||
+                        (provider.id.subscription.scopedIdentity && provider.status?.identityKnown != true) {
                 message = card.summary
             } else { message = nil }
             let action: String

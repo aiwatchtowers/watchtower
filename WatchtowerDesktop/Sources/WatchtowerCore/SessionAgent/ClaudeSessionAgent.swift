@@ -6,6 +6,13 @@ import Foundation
 package struct ClaudeSessionAgent: SessionAgent {
     package init() {}
 
+    package var subscriptionUsage: SubscriptionUsagePolicy {
+        SubscriptionUsagePolicy(title: "Claude", signInApplication: "Claude Code",
+                                statusTable: "plan_usage_status", samplesTable: "plan_usage_samples",
+                                storage: .legacy, defaultQuotaBucket: nil, layout: .compact, tint: "purple", icon: "sparkle",
+                                suppliesSurfaceBreakdown: true, sendsNotifications: true)
+    }
+
     package var kind: AgentKind { .claude }
 
     package var caps: AgentSessionCaps {

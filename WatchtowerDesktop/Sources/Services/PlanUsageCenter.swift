@@ -21,8 +21,9 @@ final class PlanUsageCenter {
     static let menuBarKey = "planUsage.showInMenuBar"
     static let featureID = "claude-plan-limits"
 
-    private(set) var status: PlanUsageStatus?
-    private(set) var codexStatus: PlanUsageStatus?
+    private var snapshots: [PlanUsageProvider: PlanUsageStatus] = [:]
+    var status: PlanUsageStatus? { snapshots[.claude] }
+    var codexStatus: PlanUsageStatus? { snapshots[.codex] }
     private(set) var readErrors: [PlanUsageProvider: PlansOperationError] = [:]
     private(set) var refreshErrors: [PlanUsageProvider: PlansOperationError] = [:]
     private(set) var refreshingProviders: Set<PlanUsageProvider> = []
@@ -107,7 +108,7 @@ final class PlanUsageCenter {
     }
 
     func providerStatus(_ provider: PlanUsageProvider) -> PlanUsageStatus? {
-        provider == .claude ? status : codexStatus
+        snapshots[provider]
     }
 
     func providerError(_ provider: PlanUsageProvider) -> PlansOperationError? {
@@ -133,13 +134,13 @@ final class PlanUsageCenter {
             // Stopped while the read ran: drop the result.
             guard !Task.isCancelled, epoch == generation else { return }
             presentationNow = now()
-            if provider == .claude { status = fresh } else { codexStatus = fresh }
+            snapshots[provider] = fresh
             if clearOlderRefreshError, fresh?.state == "ok", fresh?.fetchedAt != previousFetched {
                 refreshErrors[provider] = nil
             }
             loadedProviders.insert(provider)
             readErrors[provider] = nil
-            if provider == .claude, let fresh {
+            if provider.subscription.sendsNotifications, let fresh {
                 notify(fresh)
                 onStatus?(fresh)
             }
@@ -147,7 +148,7 @@ final class PlanUsageCenter {
             guard !Task.isCancelled, epoch == generation else { return }
             presentationNow = now()
             // Hide the failed provider's retained values instead of freezing them as current.
-            if provider == .claude { status = nil } else { codexStatus = nil }
+            snapshots[provider] = nil
             loadedProviders.insert(provider)
             readErrors[provider] = PlansOperationError(code: "storage")
             NSLog("PlanUsageCenter: %@ snapshot read failed", provider.rawValue)

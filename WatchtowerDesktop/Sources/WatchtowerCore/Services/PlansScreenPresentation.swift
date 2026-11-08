@@ -12,7 +12,7 @@ package struct PlansScreenProvider: Identifiable, Sendable {
     package let summaryNeeded: Bool
     package let hasError: Bool
     package var id: PlanUsageProvider { presentation.provider }
-    package var planLabel: String { id == .codex && presentation.limits.isEmpty ? "" : presentation.plan }
+    package var planLabel: String { id.subscription.scopedIdentity && presentation.limits.isEmpty ? "" : presentation.plan }
     package var primary: PlansLimitPresentation? {
         presentation.limits.first { duration($0) == 10080 } ?? presentation.limits.first
     }
@@ -38,7 +38,7 @@ package struct PlansScreenPresentation: Sendable {
     package var hasLimits: Bool { providers.contains { !$0.presentation.limits.isEmpty } }
     package var hasDetails: Bool {
         providers.contains { !$0.otherLimits.isEmpty ||
-            ($0.id == .claude && !$0.presentation.limits.isEmpty && $0.status?.breakdown.isEmpty == false)
+            ($0.id.subscription.suppliesSurfaceBreakdown && !$0.presentation.limits.isEmpty && $0.status?.breakdown.isEmpty == false)
         }
     }
     package var isLoading: Bool { isRefreshing && !hasLimits }
@@ -77,7 +77,7 @@ package struct PlansScreenPresentation: Sendable {
         }
         if !hasLimits { return "Sign in to Claude Code or Codex, then refresh to load your subscription limits." }
         if let only = soleAvailableProvider {
-            let missing = only.id == .claude ? PlanUsageProvider.codex : .claude
+            let missing = providers.first { $0.id != only.id }?.id ?? only.id
             return "\(missing.title) limits aren't available yet. Refresh \(missing.title) to add them."
         }
         return "Subscription percentages are tracked separately. Each forecast ends at its own reset."
@@ -104,15 +104,16 @@ package struct PlansScreenPresentation: Sendable {
     ) {
         self.now = now
         self.enabled = enabled
+        let snapshots = [PlanUsageProvider.claude: claude, .codex: codex].compactMapValues { $0 }
         providers = PlanUsageProvider.allCases.map { provider in
-            let status = provider == .claude ? claude : codex
+            let status = snapshots[provider]
             let isRefreshing = enabled && refreshing.contains(provider)
             do {
                 let card = try PlansPresentation.card(provider: provider, status: status, error: errors[provider],
                                                       refreshing: isRefreshing, now: now, enabled: enabled)
                 let hasError = errors[provider] != nil || ["error", "unavailable"].contains(status?.state ?? "")
                 let showsSummary = hasError || card.isStale || status?.ordinaryUsageAllowed == false ||
-                    (provider == .codex && status?.identityKnown != true)
+                    (provider.subscription.scopedIdentity && status?.identityKnown != true)
                 return PlansScreenProvider(presentation: card, status: status, summaryNeeded: showsSummary, hasError: hasError)
             } catch {
                 // One invalid snapshot must not suppress the other subscription.
