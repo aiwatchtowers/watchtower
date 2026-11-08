@@ -108,19 +108,13 @@ final class SecureTransportStaticExceptionTests: XCTestCase {
             payload: Data("{\"device_id\":\"\(TestE2E.deviceID.uuidString)\",\"id\":\"a1\",\"status\":\"applied\"}".utf8))])
         try await inner.save([try staticControl(.hubOnRelay, epoch: 4, over: phone)])
 
-        let scan = try await phone.sideScan()
+        let scan = try await phone.relayHygieneScan()
         XCTAssertEqual(scan.pending, 1, "the echo waits")
         XCTAssertEqual(scan.opened.map(\.kind), [RelayRecordKind.control.rawValue], "the notice behind it is read")
         XCTAssertTrue(scan.unopenable.isEmpty, "nothing dropped")
-        do {
-            _ = try await phone.relayHygieneScan()
-            XCTFail("the hub's hygiene scan still stops at a pending record")
-        } catch let error as SecureTransportError {
-            XCTAssertEqual(error, .keysUnavailable)
-        }
         // The keybox comes: the echo is read on the next pass.
         try EphemeralLink.add(store, epoch: 4)
-        let after = try await phone.sideScan()
+        let after = try await phone.relayHygieneScan()
         XCTAssertEqual(after.pending, 0)
         XCTAssertEqual(Set(after.opened.map(\.kind)), [RelayRecordKind.action.rawValue, RelayRecordKind.control.rawValue])
     }

@@ -285,6 +285,25 @@ final class EphemeralRotationWiringTests: XCTestCase {
         XCTAssertEqual(after, before, "no ack with next_kx")
     }
 
+    /// The offer's own interleaving (final review, Minor 1): an ack's task passed the route check, then waited on the
+    /// outbox while the follower moved the row to iCloud and cleared the keys. When it resumes it draws nothing, so
+    /// no offer outlives the clear on an iCloud link.
+    func testAnOfferResumedAfterTheMoveToICloudDrawsNothing() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let session = try await bed.orderedSession()
+        XCTAssertNotNil(try offer(bed))
+        var link = try XCTUnwrap(try bed.row()?.link)
+        link.setCloudKit(left: .relay)
+        XCTAssertTrue(bed.root.persistRoute(link))
+        XCTAssertTrue(bed.root.clearEphemeral(hubID: hubID))
+
+        let drawn = try await session.relayOffer()
+
+        XCTAssertNil(drawn)
+        XCTAssertNil(try offer(bed), "no offer drawn after the clear")
+        XCTAssertFalse(try XCTUnwrap(try bed.keys.hubLink(hubID)).hasEphemeralState)
+    }
+
     /// A shutdown cancels the raise's upload pass and waits for it.
     func testAShutdownEndsTheUploadKick() async throws {
         let bed = try await Bed.make(self, on: .relay)
@@ -327,6 +346,18 @@ final class EphemeralRotationWiringTests: XCTestCase {
         try await session.uploadKick?.value(within: 60, "session.uploadKick")
 
         XCTAssertEqual(try session.store.phoneRecording(id: id)?.isUploadStuck, true, "still waits for the owner")
+    }
+
+    /// Nothing on an iCloud-only link changes (ask #1066): a raise starts no upload pass there (final review, Minor 5).
+    func testARaiseOnAnICloudOnlyLinkStartsNoUploadPass() async throws {
+        let bed = try await Bed.make(self, on: .cloudKit)
+        let session = try await bed.orderedSession()
+        XCTAssertFalse(session.resealsAcrossEpochs)
+        let before = session.uploadKick
+
+        await merge(bed, keybox(epoch: 2))
+
+        XCTAssertEqual(session.uploadKick, before, "no upload pass on a raise")
     }
 
     // MARK: - Refusals

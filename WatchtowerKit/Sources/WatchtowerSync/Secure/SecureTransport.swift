@@ -359,22 +359,10 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     /// The full-scan view of RelayZone: the opened records (`changes` semantics, own h2p echoes included) plus every
     /// record nobody here can open or the rollback guard refuses, by wire name, plaintext `modifiedAt` and reason.
     /// Reports nothing through `onRejected`.
-    /// A record whose epoch's keybox has not come yet throws `keysUnavailable`, as a lock does.
-    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord]) {
-        let scan = try await scanRelay(skippingPending: false)
-        return (scan.opened, scan.unopenable)
-    }
-
-    /// The side reader's scan of another transport's mailbox (relay client Phase 5): a record whose epoch's keybox
-    /// has not come yet holds nothing back and is dropped from nothing; it is only counted (`pending`), so the
-    /// controls behind it (`hub_on_relay`) are read now and the record itself once its keys come.
-    func sideScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord], pending: Int) {
-        try await scanRelay(skippingPending: true)
-    }
-
-    private func scanRelay(
-        skippingPending: Bool
-    ) async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord], pending: Int) {
+    /// A record whose epoch's keybox has not come yet (the phone) is in neither list, only counted in `pending`: it is
+    /// neither handled nor deleted, and the records around it are read (the plan's pending row: the side reader holds
+    /// nothing back and drops nothing). A locked keychain still throws `keysUnavailable` for the whole scan.
+    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord], pending: Int) {
         let batch = try await inner.changes(in: .relay, since: nil)
         var opened: [CloudRecord] = []
         var unopenable: [UnopenableRecord] = []
@@ -382,7 +370,6 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         for record in batch.changed {
             let outcome: OpenOutcome
             do { outcome = try open(record) } catch SecureTransportError.epochKeysPending {
-                guard skippingPending else { throw SecureTransportError.keysUnavailable }
                 pending += 1
                 continue
             }

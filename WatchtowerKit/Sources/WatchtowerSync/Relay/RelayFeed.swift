@@ -486,7 +486,7 @@ public actor RelayFeed {
         /// Every hub record was handled and everything left was deleted.
         case drained
         /// Something stays (a transport control the follower left undecided, a record that changed since it was
-        /// read, one without a known wire name): drained again on a later pass.
+        /// read, one without a known wire name, one waiting for its keybox): drained again on a later pass.
         case incomplete
         /// The transport refused the deletes (sim rule 16: a lapsed or forbidden relay account).
         case refused(TransportRefusal)
@@ -503,7 +503,7 @@ public actor RelayFeed {
         var deletes: [ConditionalDelete] = []
         // A record waiting for its epoch's keybox holds nothing back (relay client Phase 5): the controls behind it are
         // read now, and it stays for a later pass, once its keys come (no token: each pass reads the whole mailbox).
-        for record in try await side.sideScan().opened where record.kind == RelayRecordKind.control.rawValue {
+        for record in try await side.relayHygieneScan().opened where record.kind == RelayRecordKind.control.rawValue {
             guard let control = decode(ControlPayload.self, from: record),
                   control.kind == .transportSwitched || control.kind == .hubOnRelay
                     || (control.kind == .transportSwitchRejected && rejectionHandler != nil) else { continue }
@@ -521,18 +521,22 @@ public actor RelayFeed {
     /// phone's own leftovers included, except its `device` record when `keepingDeviceRecord` (CloudKit: both hubs'
     /// cleanup keeps that lane). Nothing is written there: a `resend_from` read there resends on this feed's own
     /// outbox, never on `side`. A record that does not open (another phone's on a shared CloudKit zone, a hello, or
-    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. A throw (a locked keychain, the
+    /// one sealed in an epoch whose keys are gone) is counted in the log and skipped. One sealed in an epoch whose keybox
+    /// has not come stays, unhandled, and keeps the drain `incomplete`. A throw (a locked keychain, the
     /// transport unreachable) leaves the rest for a later pass. An `applied` echo settled here fires
     /// `onActionApplied` once, after the deletes, as a poll does.
     public func drainMailbox(
         over side: SecureTransport, keepingDeviceRecord: Bool = false, handler: @escaping SideHandler
     ) async throws -> DrainOutcome {
-        let scan = try await side.sideScan()
+        let scan = try await side.relayHygieneScan()
         if !scan.unopenable.isEmpty {
             logger.notice("left mailbox: \(scan.unopenable.count, privacy: .public) records do not open, skipped")
         }
+        if scan.pending > 0 {
+            logger.notice("left mailbox: \(scan.pending, privacy: .public) records wait for their keybox, kept")
+        }
         var deletes: [ConditionalDelete] = []
-        // A record waiting for its epoch's keybox is neither handled nor deleted: drained again once its keys come.
+        // A record waiting for its keybox stays, unhandled: the mailbox is not drained while it is there.
         var complete = scan.pending == 0
         var appliedEcho = false
         for record in scan.opened {

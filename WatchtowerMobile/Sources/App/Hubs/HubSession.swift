@@ -1321,15 +1321,16 @@ final class HubSession {
     }
 
     /// The link flow merged new epoch keys into the Keychain (`AppRoot.keysMerged`): the rows they unlock are
-    /// opened and a parked relay feed reads again. When the newest epoch went up, stale recordings are re-armed and
-    /// sent, and an ordered hub gets `epoch_ack` for it (the outbox sends none to a hub on today's path, and never one
-    /// for an epoch it already acknowledged). `droppedNewestPair` (the hub cleared this phone's relay keys) puts the
-    /// offer out again: the ack's carried offer is forgotten first (`offerAgain`), so the same epoch is due once more.
-    /// A locked keychain or a missing link leaves it to the next raise.
+    /// opened and a parked relay feed reads again. When the newest epoch went up, an ordered hub gets `epoch_ack` for
+    /// it (the outbox sends none to a hub on today's path, and never one for an epoch it already acknowledged), and on
+    /// a link that reseals across epochs stale recordings are re-armed and sent (an iCloud-only link starts no upload
+    /// pass, ask #1066). `droppedNewestPair` (the hub cleared this phone's relay keys) puts the offer out again: the
+    /// ack's carried offer is forgotten first (`offerAgain`), so the same epoch is due once more. A locked keychain or
+    /// a missing link leaves it to the next raise.
     func keysMerged(newestEpochRaised: Bool, droppedNewestPair: Bool) async {
         indexStoredRows()
         await feed.resumeIfParked()
-        if newestEpochRaised { kickUploads() }
+        if newestEpochRaised, resealsAcrossEpochs { kickUploads() }
         guard newestEpochRaised || droppedNewestPair else { return }
         acknowledgeNewestEpoch(offerAgain: droppedNewestPair)
     }
@@ -1362,8 +1363,8 @@ final class HubSession {
         return merged
     }
 
-    /// The uploader's pass after a raise: rows sealed in an older epoch are re-armed (Task 9, a link that reseals
-    /// only), then every waiting recording goes out.
+    /// The uploader's pass after a raise, on a link that reseals across epochs only: rows sealed in an older epoch
+    /// are re-armed (Task 9), then every waiting recording goes out.
     private func kickUploads() {
         guard !stopped else { return }
         let previous = uploadKick
@@ -1421,9 +1422,11 @@ final class HubSession {
     /// This phone's offer for the hub (relay client Phase 5): the one the link holds, else a fresh key drawn and saved
     /// in the Keychain (`withOffer`, one `updateHubLink`). nil while the outbox is not on the ordered path (no ack
     /// would carry it, so none is drawn), and when no link is stored. Throws `KeyStoreError.locked` while locked.
+    /// The route is read again after the outbox hop: a follow to iCloud may have moved the row and cleared the keys
+    /// meanwhile, and an offer drawn then would outlive the clear on an iCloud link (nil, nothing drawn).
     func relayOffer() async throws -> Data? {
-        guard let keyStore, try await outbox.orderedActions() else { return nil }
-        return try keyStore.updateHubLink(hubID) { $0.withOffer().0 }?.offeredKX?.publicKey
+        guard let keyStore, try await outbox.orderedActions(), offersOnItsRoute else { return nil }
+        return try keyStore.updateHubLink(hubID) { [self] in offersOnItsRoute ? $0.withOffer().0 : $0 }?.offeredKX?.publicKey
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed

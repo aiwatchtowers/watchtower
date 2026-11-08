@@ -187,7 +187,16 @@ func noteServingNobody(kr *identity.Keyring, st *state.Store, acct *relayv1.Acco
 	} else if serves == !ok || (!serves && validSince(v)) {
 		return nil
 	}
+	if servingNobodyBeforeWrite != nil {
+		servingNobodyBeforeWrite()
+	}
 	return st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		// "On the relay" decided again under the write lock: a switch to
+		// iCloud that committed since the plain read removed the mark, and
+		// the mark never outlives the relay.
+		if on, err := kr.OnRelayTx(tx); err != nil || !on {
+			return err
+		}
 		if serves {
 			return state.DeleteMetaTx(tx, state.MetaServingNobodySince)
 		}
@@ -198,6 +207,10 @@ func noteServingNobody(kr *identity.Keyring, st *state.Store, acct *relayv1.Acco
 		return state.SetMetaTx(tx, state.MetaServingNobodySince, strconv.FormatInt(now.Unix(), 10))
 	})
 }
+
+// servingNobodyBeforeWrite, when set, runs between noteServingNobody's plain
+// read and its write transaction: the tests' seam for a commit in between.
+var servingNobodyBeforeWrite func()
 
 // validSince: a stored relay_serving_nobody_since is a number (one that is
 // not is written afresh).
