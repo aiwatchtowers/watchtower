@@ -221,6 +221,33 @@ final class AutomationSaveFolderTests: XCTestCase {
         XCTAssertTrue(routeCalls.isEmpty, "the next save never moves it back")
     }
 
+    /// The spent store is shared defaults: the same automation id in two
+    /// workspaces keeps its own entry, so one never overwrites the other's.
+    func testSpentSuggestionsAreKeptPerWorkspace() async throws {
+        let suggestion = AutomationFolderSuggestion(title: "Release")
+        let workspaceA = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults,
+                                              workspace: "/acme/a")
+        let workspaceB = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults,
+                                              workspace: "/acme/b")
+        for model in [workspaceA, workspaceB] {
+            model.inboxFolderTree = vm.inboxFolderTree
+            model.routeSavedAutomation = vm.routeSavedAutomation
+            model.refresh()
+        }
+        await workspaceA.routeEditorSave(key: automation, landed: automation, draftContextID: nil,
+                                         editor: editorCenter(), route: nil, spending: "entry-a")
+        XCTAssertNotNil(workspaceB.editorPlacement(suggestion: suggestion, draftContextID: nil,
+                                                   automationID: automation, suggestionKey: "entry-a"),
+                        "workspace B never spent entry A")
+        await workspaceB.routeEditorSave(key: automation, landed: automation, draftContextID: nil,
+                                         editor: editorCenter(), route: nil, spending: "entry-b")
+        XCTAssertNil(workspaceA.editorPlacement(suggestion: suggestion, draftContextID: nil,
+                                                automationID: automation, suggestionKey: "entry-a"),
+                     "B's save kept A's entry")
+        XCTAssertNil(workspaceB.editorPlacement(suggestion: suggestion, draftContextID: nil,
+                                                automationID: automation, suggestionKey: "entry-b"))
+    }
+
     /// Only a press that saves spends, and only an entry that names a folder.
     func testOnlyASavingPressWithAFolderSpends() {
         let suggestion = AutomationFolderSuggestion(title: "Release")

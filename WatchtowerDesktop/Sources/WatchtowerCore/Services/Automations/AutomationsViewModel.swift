@@ -63,8 +63,10 @@ package final class AutomationsViewModel {
     /// A selection made before its row was loaded; the next refresh reveals its group.
     private var pendingRevealID: Int64?
     nonisolated package static let collapsedSectionsKey = "automations.collapsedSections"
-    /// Automation id → the chat entry (`AutomationDraftEntry.suggestionKey`)
-    /// whose folder suggestion a landed save already carried out.
+    /// `<workspace>|<automation id>` → the chat entry
+    /// (`AutomationDraftEntry.suggestionKey`) whose folder suggestion a
+    /// landed save already carried out; the defaults are shared across
+    /// workspaces, whose automation ids overlap.
     nonisolated package static let spentSuggestionsKey = "automations.spentFolderSuggestions"
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
@@ -161,6 +163,8 @@ package final class AutomationsViewModel {
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let failureWatch: AutomationFailureWatch?
     @ObservationIgnored private let defaults: UserDefaults
+    /// Scopes the per-workspace state in `defaults` (the database path).
+    @ObservationIgnored private let workspace: String
     /// The app is active with a visible key window: only then does an open
     /// card count as seen.
     @ObservationIgnored private let isOwnerLooking: () -> Bool
@@ -179,6 +183,7 @@ package final class AutomationsViewModel {
         cli: AutomationsCLI,
         failureWatch: AutomationFailureWatch? = nil,
         defaults: UserDefaults = .standard,
+        workspace: String? = nil,
         isOwnerLooking: @escaping () -> Bool = { true },
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -187,6 +192,7 @@ package final class AutomationsViewModel {
         self.cli = cli
         self.failureWatch = failureWatch
         self.defaults = defaults
+        self.workspace = workspace ?? dbPool.path
         collapse = AutomationListCollapse(collapsed: Set(defaults.stringArray(forKey: Self.collapsedSectionsKey) ?? []))
         self.isOwnerLooking = isOwnerLooking
         self.now = now
@@ -586,7 +592,7 @@ package final class AutomationsViewModel {
         guard let suggestion else { return draftContextID.flatMap { newDraftRoutes[$0] } }
         let tree = inboxFolderTree() ?? .rootOnly
         guard let automationID else { return suggestion.route(in: tree) }
-        if let suggestionKey, spentSuggestions[String(automationID)] == suggestionKey { return nil }
+        if let suggestionKey, spentSuggestions[spentKey(automationID)] == suggestionKey { return nil }
         // Go keeps the needs-approval built-in in Needs approval: no move to promise.
         if items.first(where: { $0.id == automationID })?.automation.builtinID
             == InboxFolderQueries.needsApprovalBuiltinID { return nil }
@@ -610,9 +616,11 @@ package final class AutomationsViewModel {
         defaults.dictionary(forKey: Self.spentSuggestionsKey) as? [String: String] ?? [:]
     }
 
+    private func spentKey(_ automationID: Int64) -> String { "\(workspace)|\(automationID)" }
+
     private func spend(_ suggestionKey: String, for automationID: Int64) {
         var spent = spentSuggestions
-        spent[String(automationID)] = suggestionKey
+        spent[spentKey(automationID)] = suggestionKey
         defaults.set(spent, forKey: Self.spentSuggestionsKey)
     }
 
