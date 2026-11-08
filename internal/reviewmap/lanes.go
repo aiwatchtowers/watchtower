@@ -55,9 +55,11 @@ type LaneTitles struct {
 
 // TitleSource looks lanes' titles up (Task 5 wires the database). It is
 // called once per attribution, after the walk; a nil TitleSource finds
-// nothing.
+// nothing. On an error the attribution is partial and validates no tag:
+// every Jira key is kept only when the lane's branch name carries it and
+// no board ref is a tag.
 type TitleSource interface {
-	Titles(branches []string, jiraKeys []string, boardRefs []int64) LaneTitles
+	Titles(branches []string, jiraKeys []string, boardRefs []int64) (LaneTitles, error)
 }
 
 // Attribution maps the files committed on the branch to lanes. FileLane is
@@ -98,7 +100,7 @@ func attribute(ctx context.Context, repo *reviewdiff.Repo, base, head, headBranc
 	defer cancel()
 	w := &walker{
 		repo: repo, defaultTip: defaultTip,
-		commitsLeft: maxCommits, lanesLeft: maxLanes,
+		commitsLeft: maxCommits, lanesLeft: maxLanes, seen: map[string]bool{},
 	}
 	if base != "" && base != reviewdiff.EmptyTree {
 		w.base = base
@@ -137,6 +139,7 @@ type walker struct {
 	commitsLeft, lanesLeft int
 	partial                bool
 	seq                    int
+	seen                   map[string]bool // direct commits recorded so far
 	records                []record
 	lanes                  []*walkLane
 }
@@ -209,7 +212,8 @@ func (w *walker) walk(ctx context.Context, lane *walkLane, tip string, exclude [
 				if err := w.walkLane(ctx, seg.merges[i], c.Parents[1], withRev(exclude, c.Parents[0])); err != nil {
 					return err
 				}
-			case len(c.Parents) < 2:
+			case len(c.Parents) < 2 && !w.seen[c.SHA]:
+				w.seen[c.SHA] = true
 				w.seq++
 				w.records = append(w.records, record{seq: w.seq, lane: lane, subject: c.Subject, files: seg.files[c.SHA]})
 			}
@@ -307,8 +311,9 @@ func mergeBranch(name string) string {
 
 // attribution labels the records, looks the titles up once and counts.
 func (w *walker) attribution(src TitleSource) Attribution {
-	titles := w.titles(src)
-	a := Attribution{FileLane: map[string]string{}, Also: map[string][]string{}, Lanes: map[string]Lane{}, Partial: w.partial}
+	titles, err := w.titles(src)
+	a := Attribution{FileLane: map[string]string{}, Also: map[string][]string{}, Lanes: map[string]Lane{},
+		Partial: w.partial || err != nil}
 	type touch struct{ count, last int }
 	touches := map[string]map[string]*touch{}
 	for _, r := range w.records {
@@ -372,10 +377,10 @@ func label(r record, titles LaneTitles) (name string, tag bool) {
 }
 
 // titles asks src once for every branch, Jira key and board ref the walk
-// saw.
-func (w *walker) titles(src TitleSource) LaneTitles {
+// saw; on an error it finds nothing.
+func (w *walker) titles(src TitleSource) (LaneTitles, error) {
 	if src == nil {
-		return LaneTitles{}
+		return LaneTitles{}, nil
 	}
 	var branches, keys []string
 	var refs []int64
@@ -394,7 +399,11 @@ func (w *walker) titles(src TitleSource) LaneTitles {
 			refs = append(refs, boardRefID(m))
 		}
 	}
-	return src.Titles(sortedUnique(branches), sortedUnique(keys), sortedUnique(refs))
+	titles, err := src.Titles(sortedUnique(branches), sortedUnique(keys), sortedUnique(refs))
+	if err != nil {
+		return LaneTitles{}, err
+	}
+	return titles, nil
 }
 
 func sortedUnique[T string | int64](s []T) []T {
@@ -446,6 +455,11 @@ var (
 	mergeBranchRe = regexp.MustCompile(`^Merge (?:remote-tracking )?branch '(?:origin/)?([^']+)'(?: into '?([^'\s]+)'?)?`)
 	mergeBareRe   = regexp.MustCompile(`^Merge (?:origin/)?([^\s:]+)[: ]`)
 
+	// notABranch: words a bare merge subject starts with that name no
+	// branch (`Merge tag 'v1'`, `Merge commit '<sha>'`, `Merge branches
+	// 'a' and 'b'`); such a merge is unparsed.
+	notABranch = map[string]bool{"tag": true, "commit": true, "branches": true}
+
 	jiraKeyRe  = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-\d+\b`)
 	boardRefRe = regexp.MustCompile(`#(\d{2,6})\b`)
 	planTagRe  = regexp.MustCompile(`\(([A-Z]{1,2}\d+[a-z]?)\b`)
@@ -467,7 +481,7 @@ func parseMerge(subject string) (source, into string) {
 	if m := mergeBranchRe.FindStringSubmatch(subject); m != nil {
 		return m[1], m[2]
 	}
-	if m := mergeBareRe.FindStringSubmatch(subject); m != nil {
+	if m := mergeBareRe.FindStringSubmatch(subject); m != nil && !notABranch[m[1]] {
 		return m[1], ""
 	}
 	return unparsedLane, ""

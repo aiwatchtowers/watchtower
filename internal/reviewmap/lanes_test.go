@@ -2,6 +2,7 @@ package reviewmap
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,14 +95,15 @@ func (r *laneRepo) open() *reviewdiff.Repo {
 
 type fakeTitles struct {
 	t     LaneTitles
+	err   error
 	calls int
 	got   [3]any
 }
 
-func (f *fakeTitles) Titles(branches, keys []string, refs []int64) LaneTitles {
+func (f *fakeTitles) Titles(branches, keys []string, refs []int64) (LaneTitles, error) {
 	f.calls++
 	f.got = [3]any{branches, keys, refs}
-	return f.t
+	return f.t, f.err
 }
 
 func newFakeTitles() *fakeTitles {
@@ -349,6 +351,9 @@ func TestParseMerge(t *testing.T) {
 		{"Merge origin/lane/t2: conflicts resolved", "lane/t2", ""},
 		{"Merge lane/t3 into feature", "lane/t3", ""},
 		{"Merged everything", "?", ""},
+		{"Merge tag 'v1.2'", "?", ""},
+		{"Merge commit 'abc123' into feature/x", "?", ""},
+		{"Merge branches 'feature/a' and 'feature/b'", "?", ""},
 		{"fix: things", "?", ""},
 	} {
 		if source, into := parseMerge(c.subject); source != c.source || into != c.into {
@@ -488,6 +493,58 @@ func TestAttribute_OctopusMergeIsPartial(t *testing.T) {
 	}
 	if !a.Partial {
 		t.Errorf("octopus merge: Partial = false, FileLane = %v", a.FileLane)
+	}
+}
+
+func TestAttribute_FailingTitlesIsPartialAndValidatesNoTag(t *testing.T) {
+	r := newLaneRepo(t)
+	r.checkout("-b", "feature/QQ-5-top")
+	r.commit("ABC-9 synced key", "jira.go")
+	r.commit("QQ-5 in the branch name", "qq.go")
+	r.commit("polish #1234", "board.go")
+	r.commit("feat(review): scoped", "scope.go")
+	titles := newFakeTitles()
+	titles.err = errors.New("database is locked")
+	a, err := Attribute(context.Background(), r.open(), r.rev("main"), r.rev("HEAD"), "feature/QQ-5-top", r.rev("main"),
+		titles, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"qq.go": "QQ-5", "scope.go": "review"}
+	if !reflect.DeepEqual(a.FileLane, want) || !a.Partial {
+		t.Errorf("FileLane = %v (partial %v), want %v and partial", a.FileLane, a.Partial, want)
+	}
+	if a.Lanes["QQ-5"].Title != "QQ-5" {
+		t.Errorf("lane QQ-5 = %+v, want its name as the title", a.Lanes["QQ-5"])
+	}
+}
+
+func TestAttribute_LanesSharingCommitsCountThemOnce(t *testing.T) {
+	// a and b both fork from x's commit and are merged into the top without
+	// merging each other: x's commit counts once, in a (reached first), so
+	// b's own later commit wins shared.go's tie.
+	r := newLaneRepo(t)
+	r.checkout("-b", "feature/x")
+	r.commit("x1", "shared.go")
+	r.checkout("-b", "feature/a")
+	r.commit("a1", "a.go")
+	r.checkout("feature/x")
+	r.checkout("-b", "feature/b")
+	r.commit("b1", "shared.go")
+	r.checkout("main")
+	r.checkout("-b", "feature/top")
+	r.merge("feature/a", "Merge branch 'feature/a' into feature/top")
+	r.merge("feature/b", "Merge branch 'feature/b' into feature/top")
+	a, err := Attribute(context.Background(), r.open(), r.rev("main"), r.rev("HEAD"), "feature/top", r.rev("main"),
+		newFakeTitles(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.FileLane["shared.go"]; got != "feature/b" {
+		t.Errorf("shared.go lane = %q, want feature/b (x1 counted twice?)", got)
+	}
+	if got := a.Also["shared.go"]; !reflect.DeepEqual(got, []string{"feature/a"}) {
+		t.Errorf("shared.go also = %v, want [feature/a]", got)
 	}
 }
 
