@@ -383,6 +383,24 @@ final class InboxFolderMenuModelTests: XCTestCase {
         XCTAssertNil(model.deleteSummary(ids.approvals), "Needs approval is never deleted")
     }
 
+    func testAnOpenDeleteConfirmationRecountsOnEachRead() async throws {
+        let ids = try XCTUnwrap(self.ids)
+        let model = await model(answering())
+        model.askDelete(ids.release)
+        XCTAssertEqual(model.deleteConfirmation?.folders, 1)
+
+        try pool.write { db in
+            _ = try InboxFolderFixtures.folder(db, parent: ids.release, slug: "later", position: 1)
+        }
+        await model.reload()
+        XCTAssertEqual(model.deleteConfirmation?.folders, 2, "the numbers follow the tree")
+
+        model.askDelete(ids.team)
+        try pool.write { try $0.execute(sql: "DELETE FROM inbox_folders WHERE id = ?", arguments: [ids.team]) }
+        await model.reload()
+        XCTAssertNil(model.deleteConfirmation, "the folder is gone")
+    }
+
     func testDeletingTheSelectedFolderSelectsItsParent() async throws {
         let ids = try XCTUnwrap(self.ids)
         let cli = answering()

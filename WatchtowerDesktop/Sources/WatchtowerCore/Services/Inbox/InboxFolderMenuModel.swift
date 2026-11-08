@@ -130,7 +130,8 @@ package final class InboxFolderMenuModel {
         let tree = read.tree
         if let selected = selection, tree.folder(selected) == nil { selection = nil }
         collapsed = collapsed.filter { tree.folder($0) != nil }
-        if let summary = deleteConfirmation, tree.folder(summary.folderID) == nil { deleteConfirmation = nil }
+        // An open confirmation re-counts from this read (nil once the folder is gone).
+        if let summary = deleteConfirmation { deleteConfirmation = deleteSummary(summary.folderID) }
         if let draft, !draftTargetExists(draft.target, in: tree) { self.draft = nil }
     }
 
