@@ -42,9 +42,13 @@ may be another history. Uncommitted files of the snapshot have no commit. Walk:
   request #N from <owner>/<branch>`, `Merge (remote-tracking )?branch '(origin/)?<b>'( into
   '?<t>'?)?`, `Merge (origin/)?<b>[: ]`; the lane is named by the source.
   `Merge tag …`, `Merge commit …`, `Merge branches …` and anything else unparsed → `lane:?`.
-  Every second-and-later parent of an octopus merge is walked. Each commit counts once in the
+  An octopus merge walks its second parent only and sets `lanes_partial` (v1). Each commit
+  counts once in the
   whole attribution (a global seen set; the first lane that reaches it in walk order keeps
-  it), so a lane merged into two places is not double-counted. Recurse into the second parent with `excl = [first parent, base]`.
+  it), so a lane merged into two places is not double-counted.
+- Lane titles come from a `TitleSource` that can fail: on error the attribution is partial and
+  no tag is validated against the (empty) title maps — a Jira key stays only when it is in the
+  branch name, `#N` is not a tag. Recurse into the second parent with `excl = [first parent, base]`.
 - **A fast-forwarded reverse merge:** a merge M on lane L whose parsed source is L and whose
   `into` target T is another lane (T merged L into itself, then L fast-forwarded to M): the
   commits reachable from M^1 and not from M^2 or `base` are lane T (walked as a lane, tip
