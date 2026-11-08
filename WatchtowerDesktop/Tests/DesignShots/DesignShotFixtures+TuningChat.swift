@@ -244,8 +244,8 @@ enum TuningChatTexts {
     static let abDiscarded = "A/B discarded · digest.channel"
     static let abRemoved = "This A/B was removed with its source data"
     static let proposeRefused = "Not proposed: with today's additions digest.channel would pass 600 characters."
-    static let conversationRemoved = "This conversation was removed with the source data it read. "
-        + "Its open proposals were withdrawn; accepted ones stay."
+    static let conversationRemoved = "This conversation was removed: data it read was deleted, made private or purged. "
+        + "Proposals built on that data are withdrawn unless accepted."
     static let showAccepted = "Show in Accepted edits"
     /// The owner's text kept in the composer after the conversation was removed (mockup only).
     static let keptDraft = "Also check why digest.daily repeats the channel names"
