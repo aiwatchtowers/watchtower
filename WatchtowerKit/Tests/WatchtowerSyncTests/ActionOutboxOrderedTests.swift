@@ -1227,6 +1227,171 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertEqual(skips, [2], "the order skips the row listed as Not delivered")
     }
 
+    // MARK: - The offer on epoch_ack and keys past retention (relay client Phase 5, Task 8)
+
+    private func ackOffers(_ phone: Phone) async throws -> [String?] {
+        try await writtenControls(phone).filter { $0.kind == .epochAck }.map(\.nextKX)
+    }
+
+    private func offer(_ byte: UInt8) -> Data {
+        Data(repeating: byte, count: 32)
+    }
+
+    func testTheSameEpochWithANewOfferIsDue() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 2)
+        let queued1 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
+        XCTAssertTrue(queued1)
+        XCTAssertTrue(try phone.store.epochAckDue(2, nextKX: offer(1)), "an offer this epoch's ack has not carried")
+
+        let queued2 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertTrue(queued2)
+        XCTAssertTrue(try phone.store.epochAckDue(2, nextKX: offer(2)))
+        let queued3 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(2))
+        XCTAssertTrue(queued3)
+        await phone.outbox.drain()
+        _ = try await phone.outbox.flush()
+
+        let acks = try await writtenControls(phone).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.map(\.epoch), [2, 2, 2])
+        XCTAssertEqual(
+            Set(acks.map(\.nextKX)), [nil, WireBytes.base64URL(offer(1)), WireBytes.base64URL(offer(2))],
+            "one ack per offer inside the same epoch")
+    }
+
+    func testTheSameEpochSameOfferIsNotDue() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 2)
+        let queued4 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertTrue(queued4)
+
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: offer(1)))
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: nil), "no offer adds nothing to the same epoch")
+        let queued5 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertFalse(queued5)
+
+        // A keybox dropped the stored pair: the same offer goes once more.
+        try await phone.outbox.offerAgain()
+        XCTAssertTrue(try phone.store.epochAckDue(2, nextKX: offer(1)))
+        let queued6 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertTrue(queued6)
+        let queued7 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertFalse(queued7, "once")
+    }
+
+    func testALowerEpochIsNeverDue() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 3)
+        let queued8 = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: offer(1))
+        XCTAssertTrue(queued8)
+
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: offer(2)))
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: nil))
+        try await phone.outbox.offerAgain()
+        let queued9 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertFalse(queued9)
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+        let acked = try await epochAcks(phone)
+        XCTAssertEqual(acked, [3], "only the ack for 3")
+    }
+
+    func testAnUnsentAckIsReplacedKeepingTheNewestOffer() async throws {
+        let phone = try await makePhone()
+        await phone.inner.refuseNext(.unreachable, count: 1)
+        try raiseEpoch(phone, to: 2)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        await phone.outbox.drain()
+        XCTAssertEqual(try phone.store.queuedControls().map(\.kind), [.epochAck], "the ack for 2 waits, refused")
+
+        try raiseEpoch(phone, to: 3)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: offer(2))
+        await phone.outbox.drain()
+        _ = try await phone.outbox.flush()
+
+        let acks = try await writtenControls(phone).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.map(\.epoch), [3])
+        XCTAssertEqual(acks.map(\.nextKX), [WireBytes.base64URL(offer(2))])
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+    }
+
+    /// F8: the ack carrying the offer is lost (purged, never read). The hub keeps sealing to the old offer, and the
+    /// next raise's ack carries the same offer again, with no new record.
+    func testALostAckResendsTheOfferAtTheNextRaise() async throws {
+        let phone = try await makePhone()
+        let offered = try EphemeralLink.make(phone.keys, epochs: [2])
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offered.publicKey)
+        _ = try await phone.outbox.flush()
+        // The relay's TTL purges it unread.
+        let written = try await phone.inner.changes(in: .relay, since: nil).changed.map(\.recordName)
+        try await phone.inner.delete(recordNames: written, in: .relay)
+
+        try EphemeralLink.add(phone.keys, epoch: 3)
+        let queued10 = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: offered.publicKey)
+        XCTAssertTrue(queued10)
+        _ = try await phone.outbox.flush()
+
+        let acks = try await writtenControls(phone).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.map(\.epoch), [3])
+        XCTAssertEqual(acks.map(\.nextKX), [WireBytes.base64URL(offered.publicKey)], "the same offer, carried again")
+        XCTAssertEqual(try phone.keys.hubLink(hubID)?.offeredKX, offered, "the offer is still held")
+    }
+
+    /// A hub that never consumes the offer (it predates the hub half, or never rotates with it) sends static
+    /// keyboxes: the phone keeps its offer, holds no pair and reads every epoch's echoes under the static keys.
+    func testAHubThatNeverConsumesStaysStatic() async throws {
+        let phone = try await makePhone()
+        let offered = try EphemeralLink.make(phone.keys, epochs: [1])
+        for epoch: UInt32 in [2, 3] {
+            let keys = KeyboxKeys(
+                epoch: epoch, dataKey: WireBytes.base64URL(Data(repeating: 1, count: 32)),
+                alertKey: WireBytes.base64URL(Data(repeating: 2, count: 32)),
+                metaKey: WireBytes.base64URL(TestE2E.metaKey.withUnsafeBytes { Data($0) }))
+            _ = try phone.keys.updateHubLink(hubID) { link in
+                try link.merging(
+                    // Real time: the store keeps epochs superseded within the last 7 days of the clock.
+                    keys, identity: TestE2E.deviceIdentity, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, now: Date()
+                ).keys
+            }
+            let queued11 = try await phone.outbox.enqueueEpochAck(epoch: epoch, nextKX: offered.publicKey)
+            XCTAssertTrue(queued11)
+            _ = try await phone.outbox.flush()
+            let id = try await insert(phone)
+            _ = try await phone.outbox.flush()
+            let hub = TestE2E.hub(epoch: epoch)
+            try await TestE2E.hubTransport(hub, inner: phone.inner).save([CloudRecordFactory.orderedRecord(
+                for: echo(id.id, seq: id.seq, status: .applied), actionSeq: id.seq, deviceID: TestE2E.deviceID, modifiedAt: base)])
+            let opened = try await phone.secure.changes(in: .relay, since: nil).changed
+            let applied = opened.first { $0.sealed?.envelopeClass == .relayToPhone && $0.recordName.hasSuffix("-\(id.seq)") }
+            XCTAssertEqual(applied?.sealed?.epoch, epoch, "the static echo of epoch \(epoch) opens")
+        }
+        let link = try XCTUnwrap(phone.keys.hubLink(hubID))
+        XCTAssertEqual(link.offeredKX, offered)
+        XCTAssertNil(link.currentKX)
+        XCTAssertTrue(link.epochs.allSatisfy { $0.relayKeys == nil })
+        let ackedOffers = try await ackOffers(phone)
+        XCTAssertEqual(ackedOffers, Array(repeating: WireBytes.base64URL(offered.publicKey), count: 2))
+    }
+
+    /// F7: a row sealed in an epoch whose keys the phone no longer holds cannot be resealed (`reseal` is nil): Not
+    /// delivered, and the order skips it.
+    func testAnOutboxRowPastItsKeyIsNotDelivered() async throws {
+        let phone = try await makePhone()
+        let old = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let stored = try XCTUnwrap(try row(phone, old.id))
+        try EphemeralLink.make(phone.keys, epochs: [3, 4])
+
+        let resealed = try await phone.secure.reseal(ownEnvelope: stored.envelope, wireName: stored.wireName, modifiedAt: base)
+        XCTAssertNil(resealed, "epoch 1's keys are gone")
+        let fresh = try await insert(phone)
+        try await phone.outbox.resendFrom(1)
+
+        XCTAssertEqual(try row(phone, old.id)?.delivery, .undelivered)
+        XCTAssertEqual(try row(phone, fresh.id)?.delivery, .sent)
+        let skips = try await writtenControls(phone).filter { $0.kind == .skipTo }.map(\.seq)
+        XCTAssertEqual(skips, [2])
+    }
+
     // MARK: - A switch request's reason (relay client Phase 4 Task 5)
 
     func testASwitchRequestWithoutAReasonHasNoReasonKey() async throws {
