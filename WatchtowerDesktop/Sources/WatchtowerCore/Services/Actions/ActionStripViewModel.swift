@@ -52,10 +52,14 @@ package final class ActionStripViewModel {
     /// The filter bar's segment, remembered per viewer.
     package var filter: InboxFilter {
         didSet {
-            defaults.set(filter.rawValue, forKey: Self.filterKey)
+            if !showingLegacyList { defaults.set(filter.rawValue, forKey: Self.filterKey) }
             rebuildSections()
         }
     }
+    /// A legacy list or a route sets the filter for this session only: the
+    /// remembered filter is the owner's own choice, never a legacy entry's
+    /// or a route's (`showSessionFilter`).
+    private var showingLegacyList = false
     /// The Tracks filter's Stopped fold is open (per session).
     package var showsStopped = false {
         didSet { rebuildSections() }
@@ -213,7 +217,9 @@ package final class ActionStripViewModel {
     /// reaction phase's last check), inside one read off the main thread. The
     /// only thing that can surface a row a subprocess (CLI action commands,
     /// the daemon's phases, an automation run) wrote. Reads only (STRIP-02).
-    /// A selected card that is gone now gives way to the next row still listed.
+    /// A selected card that is gone now gives way to the next row still listed;
+    /// a selected folder entry to the next entry, shown in the pane but never
+    /// marked read (only the owner's gesture writes a read mark).
     ///
     /// Calls never overlap: a call while a read is under way waits for it and
     /// then for one more read, so every caller returns after a read that
@@ -228,10 +234,6 @@ package final class ActionStripViewModel {
             repeat {
                 refreshAgain = false
                 await readFeed()
-                await folderMenu.reload()
-                // A failed folder read keeps the previous tree; the strip's
-                // error line says so, as for its own read.
-                if lastError == nil { lastError = folderMenu.readError }
             } while refreshAgain
             refreshTask = nil
         }
@@ -247,6 +249,10 @@ package final class ActionStripViewModel {
         let dayLimit = dayLimit
         let disabledFeatures = disabledFeatures
         do {
+            // The feed, the labels and the folders in one read: the folder
+            // menu, its counts and every folder's entries see the same
+            // moment as the cards (the render-time check, spec "What 'open'
+            // means").
             let snapshot = try await dbPool.read { db in
                 let feed = try InboxFeedQueries.read(
                     db, nowUTC: nowUTC, dayLimit: dayLimit, disabledFeatures: disabledFeatures)
@@ -255,17 +261,183 @@ package final class ActionStripViewModel {
                 return (
                     feed: feed,
                     labels: Self.labels(for: feed.proposals, runLabels: runLabels),
-                    lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands")
+                    lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands"),
+                    folders: try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC)
                 )
             }
             let before = sections
+            let entriesBefore = folderEntries.map(\.id)
             feed = snapshot.feed
             actionLabels = snapshot.labels
             lastReactionCheck = snapshot.lastCheck
+            folderMenu.receive(snapshot.folders)
+            hasRead = true
+            firstReadError = nil
             rebuildSections()
             keepSelectionListed(was: before)
+            keepEntryListed(was: entriesBefore)
         } catch {
+            // The previous feed, tree and entries stay under the error line.
             lastError = error.localizedDescription
+            folderMenu.receiveFailure(error.localizedDescription)
+            if !hasRead { firstReadError = error.localizedDescription }
+        }
+    }
+
+    // MARK: - Folders (inbox builder B)
+
+    /// A read has landed: before it the folders show nothing (not even
+    /// today's placeholder day, which waits on the read's owner check),
+    /// and the Inbox a spinner rather than its empty state.
+    package private(set) var hasRead = false
+
+    /// Why no read has landed yet: the Inbox shows an error state with
+    /// Try Again in place of its spinner. Cleared by the first read that lands.
+    package private(set) var firstReadError: String?
+
+    /// The selected folder's entries (`InboxFolderEntries`), from the last read.
+    package var folderEntries: [InboxFolderEntry] {
+        guard hasRead, let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) else { return [] }
+        return InboxFolderEntries.build(folder: folder, entryInputs)
+    }
+
+    /// What the selected folder's entries are composed from.
+    package var entryInputs: InboxFolderEntries.Inputs {
+        InboxFolderEntries.Inputs(
+            feed: feed, folders: folderMenu.snapshot,
+            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), dayDone: dayDone,
+            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
+    }
+
+    /// The date of a day entry's id (`day:<yyyy-MM-dd>`), else nil.
+    private static func dayOfEntry(_ id: String) -> String? {
+        id.hasPrefix("day:") ? String(id.dropFirst("day:".count)) : nil
+    }
+
+    /// The selected folder's list column.
+    package var folderList: InboxFolderListContent {
+        let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
+        let inputs = entryInputs
+        let rows = folderEntries.map { InboxFolderEntries.row($0, inputs) }
+        return InboxFolderListContent(
+            folderKind: folder.kind, folderTitle: folder.title, rows: rows, selection: entrySelection)
+    }
+
+    /// The entry the reading pane shows (`InboxFolderEntry.id`); nil = none.
+    package private(set) var entrySelection: String?
+
+    /// The legacy list opened from the root (Track my threads, Idea finder,
+    /// Messages): today's list for it, with its own reading pane.
+    package private(set) var legacyList: InboxFilter?
+
+    package var selectedEntry: InboxFolderEntry? {
+        guard let entrySelection else { return nil }
+        return folderEntries.first { $0.id == entrySelection }
+    }
+
+    /// The menu picked a folder: its list, nothing selected yet.
+    package func selectFolder(_ id: Int64) {
+        folderMenu.select(id)
+        entrySelection = nil
+        legacyList = nil
+        selection = nil
+    }
+
+    /// Opens an entry: an artifact or a day writes its read mark on opening
+    /// (`select`); a legacy list opens today's list for it.
+    package func selectEntry(_ id: String?) async {
+        guard let opening = showEntry(id) else { return }
+        await select(opening)
+    }
+
+    /// `selectEntry` without its read mark: selects the entry, opens a
+    /// legacy entry's list, and returns the card whose opening `select`
+    /// still has to write (an artifact or a day), else nil.
+    private func showEntry(_ id: String?) -> InboxSelection? {
+        entrySelection = id
+        guard let entry = selectedEntry else { return nil }
+        if let list = entry.legacyList {
+            openLegacy(list)
+            return nil
+        }
+        switch entry {
+        case let .artifact(card):
+            selection = .output(card.id)
+            return .output(card.id)
+        case let .legacyDay(card):
+            selection = .day(card.date)
+            return .day(card.date)
+        case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice:
+            selection = nil
+            return nil
+        }
+    }
+
+    /// Opens today's list for a legacy entry (its filter's list and pane).
+    package func openLegacy(_ list: InboxFilter) {
+        legacyList = list
+        showSessionFilter(list)
+        selection = nil
+    }
+
+    private func showSessionFilter(_ list: InboxFilter) {
+        showingLegacyList = true
+        filter = list
+        showingLegacyList = false
+    }
+
+    /// Back from a legacy list to its folder.
+    package func closeLegacy() {
+        legacyList = nil
+        selection = nil
+    }
+
+    /// The selected entry left the folder (done elsewhere, auto-resolved,
+    /// closed): the next entry of the old list still listed, else the one
+    /// above it, else none — as `keepSelectionListed` does for cards.
+    private func keepEntryListed(was before: [String]) {
+        guard let current = entrySelection else { return }
+        let listed = folderEntries.map(\.id)
+        guard !listed.contains(current) else { return }
+        guard let index = before.firstIndex(of: current) else {
+            entrySelection = nil
+            return
+        }
+        let below = before[(index + 1)...].first(where: listed.contains)
+        // A click's path without its write: a legacy entry's list opens, an
+        // artifact or a day is selected, and no read mark is written — a
+        // poll or refresh never marks anything read (STRIP-02).
+        _ = showEntry(below ?? before[..<index].last(where: listed.contains))
+    }
+
+    // MARK: - Needs approval's note
+
+    /// The note's press state (Turn On under way, its failure).
+    package let approvalsNote = NeedsApprovalNoteModel()
+
+    /// The note Needs approval shows (off, stopped, last run failed), or nil.
+    package var approvalsNoteState: NeedsApprovalNoteContent.State? {
+        folderMenu.snapshot.needsApproval.noteState(featureOn: !disabledFeatures.contains(Self.approvalsFeatureID))
+    }
+
+    package var approvalsNoteContent: NeedsApprovalNoteContent? {
+        approvalsNote.content(approvalsNoteState)
+    }
+
+    /// The note's button: Turn On (off, stopped) through `turnOn` — the
+    /// built-in card's own `AppState.setBuiltinEnabled(["approval-cards"],
+    /// on: true)` — or Run History through `runHistory(automation, run)`.
+    package func pressApprovalsNote(
+        turnOn: () async -> String?,
+        runHistory: (Int64, Int64?) -> Void
+    ) async {
+        guard let state = approvalsNoteState else { return }
+        switch state {
+        case .off, .stopped:
+            await approvalsNote.turnOn(on: state, turnOn) { await refresh() }
+        case .lastRunFailed:
+            guard let target = NeedsApprovalNoteModel.runHistory(folderMenu.snapshot.needsApproval) else { return }
+            runHistory(target.automationID, target.runID)
         }
     }
 
@@ -302,8 +474,56 @@ package final class ActionStripViewModel {
     /// Tracks filter's Stopped fold; a merged idea opens the idea it was
     /// merged into. Anything else not listed selects nothing, so the pane
     /// never opens on a card the next refresh would drop.
+    ///
+    /// Until the routes name folders (Task 16), the folders follow the
+    /// filter: Tracks, Ideas and Messages open their legacy list over the
+    /// root; a day, an automation card, a proposal, a reminder or a notice
+    /// opens the folder that lists it with its entry selected.
     package func open(_ filter: InboxFilter, select item: InboxSelection?) async {
-        self.filter = filter
+        await openFilter(filter, select: item)
+        followRoute(filter, item: selection)
+    }
+
+    /// The folder and entry for a route that named a filter and a card.
+    private func followRoute(_ filter: InboxFilter, item: InboxSelection?) {
+        let tree = folderMenu.tree
+        legacyList = nil
+        let list: InboxFilter? = switch (filter, item) {
+        case (.tracks, _), (_, .track?): .tracks
+        case (.ideas, _), (_, .idea?): .ideas
+        case (.messages, _), (_, .message?): .messages
+        default: nil
+        }
+        if let list {
+            // The card stays selected: its kind's list holds it too.
+            folderMenu.select(tree.root.id)
+            entrySelection = InboxFolderEntry.legacyID(list)
+            legacyList = list
+            showSessionFilter(list)
+            return
+        }
+        switch item {
+        case .proposal?, .reminder?, .builtinNotice?:
+            folderMenu.select((tree.approvals ?? tree.root).id)
+            entrySelection = nil
+        case let .output(id)?:
+            let folder = folderMenu.snapshot.cards.first { $0.value.contains { $0.id == id } }?.key ?? tree.root.id
+            folderMenu.select(folder)
+            entrySelection = "artifact:\(id)"
+        case let .day(date)?:
+            folderMenu.select(tree.root.id)
+            entrySelection = "day:\(date)"
+        case .track?, .idea?, .message?, nil:
+            folderMenu.select(tree.root.id)
+            entrySelection = nil
+        }
+        if let entrySelection, !folderEntries.contains(where: { $0.id == entrySelection }) {
+            self.entrySelection = nil
+        }
+    }
+
+    private func openFilter(_ filter: InboxFilter, select item: InboxSelection?) async {
+        showSessionFilter(filter)
         await refresh()
         switch item {
         case .track(let id)?:

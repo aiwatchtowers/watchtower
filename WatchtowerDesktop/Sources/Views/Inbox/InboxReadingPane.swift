@@ -41,6 +41,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let dayCard: (InboxDayCard) -> DayCard
     let trackCard: (InboxTrackCard) -> TrackCard
     let ideaCard: (Idea) -> IdeaCard
+    /// Drawn as one card of Needs approval's stack (`stackedInApprovals()`).
+    private(set) var inApprovals = false
 
     init(
         item: InboxListItem?,
@@ -78,6 +80,19 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.dayCard = dayCard
         self.trackCard = trackCard
         self.ideaCard = ideaCard
+    }
+
+    /// This pane as one card of Needs approval's stack: no scrolling column
+    /// of its own (the stack scrolls). An automation card
+    /// there is the `needs-approval` recipe's look of an approval: its Done
+    /// and Dismiss would close the artifact, not the approval, so they are
+    /// left out until inbox builder B Task 13, whose ref hooks add Approve,
+    /// Reject and Edit… under the recipe's card. A reminder keeps its Done
+    /// and Snooze (today's reminder functions).
+    func stackedInApprovals() -> Self {
+        var pane = self
+        pane.inApprovals = true
+        return pane
     }
 
     /// The pane's one readable column (style guide: "one readable column").
@@ -119,8 +134,15 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         }
     }
 
+    /// The card in the pane's scrolling column; in Needs approval's stack,
+    /// the card alone: the stack scrolls and pads its cards itself.
+    @ViewBuilder
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
-        InboxCardColumn(content: content)
+        if inApprovals {
+            content()
+        } else {
+            InboxCardColumn(content: content)
+        }
     }
 
     private var nothingSelected: some View {
@@ -150,12 +172,14 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                     MarkdownView(text: card.body)
                 }
                 InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
+                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches,
+                                 showsDoneDismiss: !inApprovals)
                     .padding(.top, Spacing.small)
             case let .artifact(result, cardActions):
                 InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
                                   navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
+                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches,
+                                  showsDoneDismiss: !inApprovals)
             }
         }
     }

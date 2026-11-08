@@ -20,6 +20,9 @@ struct InboxCardButtons: View {
     var workbenches: [Workbench] = []
     /// False: only the common row (the card's actions are drawn with its blocks).
     var drawsOwnActions = true
+    /// False: no Done or Dismiss in the common row (a card in Needs
+    /// approval, `InboxReadingPane.stackedInApprovals()`).
+    var showsDoneDismiss = true
 
     /// An agent press waiting for the owner's workbench: the action's index
     /// (the button it is anchored to) and its task.
@@ -129,8 +132,10 @@ struct InboxCardButtons: View {
             isWriting: isWriting,
             onCommand: onCommand
         ) {
-            Button("Done", action: onDone)
-            Button("Dismiss", action: onDismiss)
+            if showsDoneDismiss {
+                Button("Done", action: onDone)
+                Button("Dismiss", action: onDismiss)
+            }
         }
     }
 }

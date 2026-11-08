@@ -55,6 +55,8 @@ struct InboxArtifactCard: View {
     let onDone: () -> Void
     let onDismiss: () -> Void
     let workbenches: [Workbench]
+    /// False: no Done or Dismiss (`InboxCardButtons.showsDoneDismiss`).
+    var showsDoneDismiss = true
 
     /// An agent press waiting for the owner's workbench.
     @State private var pickingTask: String?
@@ -81,7 +83,7 @@ struct InboxArtifactCard: View {
             }
             InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
                              onDone: onDone, onDismiss: onDismiss, workbenches: workbenches,
-                             drawsOwnActions: false)
+                             drawsOwnActions: false, showsDoneDismiss: showsDoneDismiss)
                 .padding(.top, Spacing.small)
         }
     }

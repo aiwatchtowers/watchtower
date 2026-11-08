@@ -122,21 +122,80 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertThrowsError(try sut.inspect().find(text: "Track this"), "a disabled mapping is omitted")
     }
 
-    /// An empty filter other than All shows its own empty state; the cheat
-    /// sheet stays behind `?` there.
+    /// An empty legacy list (opened from the root, as a route to Messages
+    /// does) shows its own empty state; the cheat sheet stays behind `?` there.
     func testEmptyFilterShowsItsOwnEmptyState() async throws {
         let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let vm = ActionStripViewModel(dbPool: try makePool(), cliRunner: FakeCLIRunner(), defaults: defaults)
         await vm.refresh()
-        vm.filter = .messages
+        vm.openLegacy(.messages)
         let sut = view(vm, rows: [], feature: .off)
 
         XCTAssertNoThrow(try sut.inspect().find(text: "No messages waiting"))
         XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
         XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyFilter"))
+    }
+
+    /// Before the first read the Inbox shows a spinner, never "empty" and
+    /// the cheat sheet for a moment.
+    func testBeforeTheFirstReadNoEmptyStateFlashes() async throws {
+        let vm = ActionStripViewModel(dbPool: try makePool(), cliRunner: FakeCLIRunner())
+        let sut = view(vm, rows: [], feature: .off)
+
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheet"))
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.folderList"))
+
+        await vm.refresh()
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self), "after the read: the empty root")
+    }
+
+    /// The very first read fails: the reason and Try Again in place of the
+    /// spinner, which would otherwise never end; Try Again's read lands.
+    func testAFailedFirstReadShowsItsErrorNotASpinner() async throws {
+        // An artifact, so the read reaches the folder view broken below.
+        let pool = try makePool { db in
+            let automation = try TestDatabase.insertAutomation(db, slug: "weekly", name: "Weekly mail roundup")
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run)
+        }
+        let original = try await pool.read { db in
+            try XCTUnwrap(String.fetchOne(
+                db, sql: "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'inbox_artifact_folders'"))
+        }
+        try await pool.write { db in
+            try db.execute(sql: "DROP VIEW inbox_artifact_folders")
+            try db.execute(sql: "CREATE VIEW inbox_artifact_folders AS SELECT 1 AS unrelated")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        let sut = view(vm, rows: [], feature: .off)
+
+        await vm.refresh()
+
+        XCTAssertFalse(vm.hasRead)
+        XCTAssertNotNil(vm.firstReadError)
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.readFailed"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "The Inbox could not be read"))
+        XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self), "never the empty Inbox")
+
+        try await pool.write { db in
+            try db.execute(sql: "DROP VIEW inbox_artifact_folders")
+            try db.execute(sql: original)
+        }
+        try sut.inspect().find(button: "Try Again").tap()
+        await vm.refresh()
+
+        XCTAssertTrue(vm.hasRead)
+        XCTAssertNil(vm.firstReadError)
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.readFailed"))
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.loading"))
+        XCTAssertEqual(vm.outputRows.count, 1, "the read landed")
     }
 
     func testFeatureStateFollowsTheLoadedFeatureList() {
