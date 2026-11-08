@@ -32,9 +32,10 @@ func TestChaptersGolden(t *testing.T) {
 		Cases []struct {
 			Name  string `json:"name"`
 			Files []struct {
-				Path      string `json:"path"`
-				Additions int    `json:"additions"`
-				Deletions int    `json:"deletions"`
+				Path            string  `json:"path"`
+				Additions       int     `json:"additions"`
+				Deletions       int     `json:"deletions"`
+				CollapsedReason *string `json:"collapsed_reason"`
 			} `json:"files"`
 			Agent []struct {
 				Title string   `json:"title"`
@@ -50,19 +51,43 @@ func TestChaptersGolden(t *testing.T) {
 		t.Run(c.Name, func(t *testing.T) {
 			var in Input
 			for _, f := range c.Files {
-				in.Diff.Files = append(in.Diff.Files, reviewdiff.File{
-					Path: f.Path, Status: "modified", Additions: f.Additions, Deletions: f.Deletions,
-				})
+				df := reviewdiff.File{Path: f.Path, Status: "modified", Additions: f.Additions, Deletions: f.Deletions}
+				// Swift zeroes a file's cost from collapsed_reason, Go from
+				// IsNoise: a case is valid only where the two agree.
+				require.Equal(t, f.CollapsedReason != nil, IsNoise(df, Patterns{}), "noise rule disagrees on %s", f.Path)
+				in.Diff.Files = append(in.Diff.Files, df)
 			}
 			for _, a := range c.Agent {
 				in.AgentChapters = append(in.AgentChapters, db.ReviewNote{Kind: "chapter", Text: a.Title, Paths: a.Paths, Core: a.Core})
 			}
 			var got []goldenChapter
 			for _, ch := range buildChapters(in) {
-				got = append(got, goldenChapter{ch.Key, ch.Title, ch.Paths, ch.ChangedLines, ch.Core})
+				got = append(got, goldenChapter{
+					Key: ch.Key, Title: ch.Title, Paths: ch.Paths, ChangedLines: ch.ChangedLines, Core: ch.Core,
+				})
 			}
 			assert.Equal(t, c.Chapters, got)
+			assertEveryFileOnce(t, in, Build(in))
 		})
+	}
+}
+
+// assertEveryFileOnce: every diff file is in exactly one chapter, and its
+// FileInfo names that chapter.
+func assertEveryFileOnce(t *testing.T, in Input, m Map) {
+	t.Helper()
+	owner := map[string]string{}
+	for _, ch := range m.Chapters {
+		for _, p := range ch.Paths {
+			_, dup := owner[p]
+			require.False(t, dup, "%s is in two chapters", p)
+			owner[p] = ch.Key
+		}
+	}
+	require.Len(t, owner, len(in.Diff.Files))
+	for _, f := range m.Files {
+		require.NotEmpty(t, f.Chapter, f.Path)
+		require.Equal(t, owner[f.Path], f.Chapter, f.Path)
 	}
 }
 
@@ -274,19 +299,6 @@ func mapKeys(m map[string]any) []string {
 	return out
 }
 
-func ExampleBuild() {
-	m := Build(Input{Diff: reviewdiff.Diff{Files: []reviewdiff.File{
-		{Path: "internal/db/migrations/00001_init.sql", Status: "modified", Additions: 2},
-		{Path: "README.md", Status: "modified", Additions: 40},
-	}}})
-	for _, c := range m.Chapters {
-		fmt.Println(c.Key, c.Level, c.Core)
-	}
-	// Output:
-	// dir:internal/db/migrations breaking true
-	// dir: normal false
-}
-
 func TestBuild_CanSkipIsNormalWhateverItsFiles(t *testing.T) {
 	m := Build(Input{Diff: reviewdiff.Diff{Files: []reviewdiff.File{
 		{Path: "internal/x/testdata/old_test.go", Status: "deleted", Deletions: 30},
@@ -300,4 +312,17 @@ func TestBuild_CanSkipIsNormalWhateverItsFiles(t *testing.T) {
 	assert.Equal(t, "collapsed", m.Files[0].Chapter)
 	assert.Equal(t, Breaking, m.Files[0].Level)
 	assert.Equal(t, []string{"test_deleted"}, m.Files[0].Signals)
+}
+
+func ExampleBuild() {
+	m := Build(Input{Diff: reviewdiff.Diff{Files: []reviewdiff.File{
+		{Path: "internal/db/migrations/00001_init.sql", Status: "modified", Additions: 2},
+		{Path: "README.md", Status: "modified", Additions: 40},
+	}}})
+	for _, c := range m.Chapters {
+		fmt.Println(c.Key, c.Level, c.Core)
+	}
+	// Output:
+	// dir:internal/db/migrations breaking true
+	// dir: normal false
 }
