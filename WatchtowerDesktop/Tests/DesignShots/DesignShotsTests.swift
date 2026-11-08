@@ -148,3 +148,10 @@ extension DesignShotsTests {
         }
     }
 }
+
+extension DesignShotsTests {
+    /// The big-branch review frames only (board #1025), for iterating on them.
+    func testBigBranchReviewShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("big-branch-") })
+    }
+}

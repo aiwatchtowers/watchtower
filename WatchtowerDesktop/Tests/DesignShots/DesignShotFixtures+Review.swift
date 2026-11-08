@@ -10,9 +10,15 @@ import WatchtowerTestSupport
 /// (`args[2]`); an unscripted one fails as Go's would.
 final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let answers: [String: String]
+    /// The streamed overview's lines (board #1025); nil = the `overview` answer as its one line.
+    private let streamLines: [String]?
+    /// The scripted stream ends after its lines; false keeps the run going (a shot of a run in progress).
+    private let streamEnds: Bool
 
-    init(_ answers: [String: String]) {
+    init(_ answers: [String: String], streamLines: [String]? = nil, streamEnds: Bool = true) {
         self.answers = answers
+        self.streamLines = streamLines
+        self.streamEnds = streamEnds
     }
 
     /// `diff --since` answers from `diff-since` when that is scripted.
@@ -20,6 +26,24 @@ final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
         var sub = args.count > 2 ? args[2] : ""
         if sub == "diff", args.contains("--since"), answers["diff-since"] != nil { sub = "diff-since" }
         return Data((answers[sub] ?? #"{"ok":false,"error":"unscripted \#(sub)"}"#).utf8)
+    }
+}
+
+/// The streamed overview (board #1025): the scripted `overview` answer as its one line.
+extension ReviewStubRunner: CLIStreamingRunner {
+    func stream(args: [String]) async throws -> CLIStreamedRun {
+        let lines: [Data]
+        if let streamLines {
+            lines = streamLines.map { Data($0.utf8) }
+        } else {
+            let answer = try await run(args: args)
+            lines = [(try? JSONSerialization.jsonObject(with: answer)).flatMap { try? JSONSerialization.data(withJSONObject: $0) } ?? answer]
+        }
+        let ends = streamEnds
+        let (output, c) = AsyncStream<Data>.makeStream()
+        for line in lines { c.yield(line + Data("\n".utf8)) }
+        if ends { c.finish() }
+        return CLIStreamedRun(output: output, exit: { 0 }, stop: { c.finish() })
     }
 }
 
@@ -60,7 +84,10 @@ struct ReviewFixture {
         mode: String = "quick",
         phase: String = "",
         drafts: Int = 0,
-        overview: String? = nil
+        overview: String? = nil,
+        map: String? = nil,
+        stream: [String]? = nil,
+        streamEnds: Bool = true
     ) throws {
         let (pool, path) = try TestDatabase.createPool()
         let lastActive = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-240))
@@ -97,10 +124,11 @@ struct ReviewFixture {
             "context": Self.contextJSON(context),
             "diff": Self.diffJSON(files),
             "diff-since": Self.diffJSON(sinceFiles ?? files),
+            "map": map ?? Self.mapJSON(files),
             "file": #"{"ok":true,"old":\#(Self.side("a")),"new":\#(Self.side("b"))}"#,
             "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#,
             "approve": #"{"ok":true,"sent":true,"line":"\#(ReviewDeliveryLine.approved(roundID: 2))"}"#
-        ])
+        ], streamLines: stream, streamEnds: streamEnds)
         model = ReviewChangesModel(projectID: projectID, sessionID: session.id, cli: WorkbenchCLI(runner: runner), db: pool,
                                    lineDelivery: ReviewNoSink()) { false }
     }
@@ -108,6 +136,7 @@ struct ReviewFixture {
     /// Opens the round and puts its first shown file on screen, as the pane does.
     func open() async {
         await model.open()
+        await model.mapTask?.value
         if let first = model.files.first(where: { $0.collapsedReason == nil }) { await model.select(first.path) }
     }
 
@@ -167,6 +196,21 @@ struct ReviewFixture {
         return #"{"ok":true,"items":[\#(entries.joined(separator: ","))]}"#
     }
 
+    /// Go's map in the fixture's terms: one `dir:<dir>` chapter per directory, in path order.
+    private static func mapJSON(_ files: [File]) -> String {
+        var dirs: [String: [String]] = [:]
+        for file in files {
+            let dir = file.path.split(separator: "/").dropLast().joined(separator: "/")
+            dirs[dir, default: []].append(file.path)
+        }
+        let chapters = dirs.keys.sorted().map { dir -> String in
+            let paths = (dirs[dir] ?? []).map { path -> String in "\"\(path)\"" }.joined(separator: ",")
+            let title = dir.isEmpty ? "(root)" : dir
+            return #"{"key":"dir:\#(dir)","title":"\#(title)","level":"normal","paths":[\#(paths)]}"#
+        }
+        return #"{"ok":true,"map":{"chapters":[\#(chapters.joined(separator: ","))],"files":[]}}"#
+    }
+
     private static func diffJSON(_ files: [File]) -> String {
         let entries = files.map { file in
             let collapsed = file.collapsed.map { #","collapsed_reason":"\#($0)""# } ?? ""
@@ -186,7 +230,7 @@ struct ReviewFixture {
 /// default branch with uncommitted edits, and Deep's Meaning. Each fixture is built once and reused for light and dark.
 @MainActor
 enum ReviewShotFixtures {
-    private static var built: [String: (fixture: ReviewFixture, identity: ReviewSessionIdentity)] = [:]
+    static var built: [String: (fixture: ReviewFixture, identity: ReviewSessionIdentity)] = [:]
 
     static func cleanUp() {
         built.values.forEach { $0.fixture.cleanUp() }
@@ -222,14 +266,14 @@ enum ReviewShotFixtures {
      "chapters":[]}
     """
 
-    private static func worktree() -> SessionPlace {
+    static func worktree() -> SessionPlace {
         .worktree(name: "capsule-corners", root: URL(fileURLWithPath: "/tmp/acme-capsule-corners"),
                   status: WorkbenchGitStatus(branch: "feature/capsule-corners", dirty: true, changes: 2))
     }
 
     /// `chat` adds the agent chat panel (#962); the shots have no session
     /// control, so it shows its "not running" line.
-    private static func pane(
+    static func pane(
         _ key: String,
         chat: Bool = false,
         codeRoot: CodeRoot? = nil,

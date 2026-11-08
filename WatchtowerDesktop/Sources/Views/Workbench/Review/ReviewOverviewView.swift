@@ -31,21 +31,32 @@ struct ReviewOverviewView<Extra: View>: View {
                 if style == .compact { extra() }
             }
         case .loading:
-            HStack(spacing: Spacing.compact) {
-                ProgressView().controlSize(.small)
-                Text("Preparing the AI overview…").font(.callout).foregroundStyle(.secondary)
+            if style == .full, !model.describableKeys.isEmpty {
+                // The streamed run: how far it is, chapter by chapter (board #1025).
+                ReviewRunCard(model: model, framed: false)
+            } else {
+                HStack(spacing: Spacing.compact) {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing the AI overview…").font(.callout).foregroundStyle(.secondary)
+                }
             }
-        case let .failed(reason):
-            HStack(alignment: .top, spacing: Spacing.compact) {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
-                Text("The AI overview failed: \(reason)").font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: Spacing.small)
-                Button("Retry") { model.retryOverview() }.buttonStyle(.kitSecondary).controlSize(.small)
-            }
+        case let .failed(reason, detail):
+            ReviewFailureNotice(text: "The AI overview failed: \(reason)", detail: detail) { model.retryOverview() }
         case let .ready(overview):
-            switch style {
-            case .full: full(overview)
-            case .compact: compact(overview)
+            if case let .failed(text, detail) = model.summaryState {
+                // The summary failed, the chapters stay (mockup frame 2c): its own Retry.
+                ReviewFailureNotice(text: text, lines: [model.summaryFailedLine, ReviewMapPresentation.summaryRetryNote],
+                                    detail: detail) { model.retrySummary() }
+            }
+            if case .failed = model.summaryState, overview.summary.isEmpty {
+                // No summary to show under the notice.
+                if style == .compact { extra() }
+            } else {
+                // A follow-up run (a Retry, Describe N remaining) that failed keeps the summary it had.
+                switch style {
+                case .full: full(overview)
+                case .compact: compact(overview)
+                }
             }
         }
     }
@@ -85,14 +96,15 @@ struct ReviewOverviewView<Extra: View>: View {
     }
 
     private func full(_ overview: ReviewOverview) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(overview.summary).font(.callout).textSelection(.enabled)
             if !overview.coverage.isEmpty {
-                Text("Does it cover the intent?").font(.caption.weight(.semibold))
-                ForEach(Array(overview.coverage.enumerated()), id: \.offset) { _, entry in coverageRow(entry) }
+                Text("Does it cover the goal?").font(.caption.weight(.semibold))
+                coverage(overview.coverage)
             }
+            notCovered
             if !overview.outOfScope.isEmpty {
-                Text("Outside the intent").font(.caption.weight(.semibold))
+                Text("Outside the goal").font(.caption.weight(.semibold))
                 ForEach(overview.outOfScope, id: \.self) { path in
                     fileLink(path, path: path)
                 }
@@ -103,12 +115,71 @@ struct ReviewOverviewView<Extra: View>: View {
         }
     }
 
+    /// The session's own items, then the lanes' tickets (tech spec §3.1); an
+    /// overview without sources lists them as one group.
+    @ViewBuilder private func coverage(_ entries: [ReviewOverview.Coverage]) -> some View {
+        let session = entries.filter { $0.source != .lane }
+        let lanes = entries.filter { $0.source == .lane }
+        if lanes.isEmpty {
+            ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in coverageRow(entry) }
+        } else {
+            if !session.isEmpty {
+                Text("This session's ticket").font(.caption).foregroundStyle(.secondary)
+                ForEach(Array(session.enumerated()), id: \.offset) { _, entry in coverageRow(entry) }
+            }
+            Text("Lane tickets").font(.caption).foregroundStyle(.secondary)
+            ForEach(Array(lanes.enumerated()), id: \.offset) { _, entry in coverageRow(entry) }
+        }
+    }
+
+    /// The chapters that failed or the run did not reach (business spec item 4):
+    /// the summary saw only their titles, files and signals.
+    @ViewBuilder private var notCovered: some View {
+        if case .ready(let map) = model.map {
+            let missing = map.chapters.filter { chapter in
+                !chapter.isCollapsed && model.notDescribed(chapter.key)
+            }
+            if !missing.isEmpty {
+                Text("Not covered").font(.caption.weight(.semibold))
+                ForEach(missing) { chapter in notCoveredRow(chapter) }
+            }
+        }
+    }
+
+    private func notCoveredRow(_ chapter: ReviewMap.Chapter) -> some View {
+        let hint = ReviewMapPresentation.chapterHint(chapter)
+        let files = "\(chapter.paths.count) \(chapter.paths.count == 1 ? "file" : "files")"
+        let line = ([chapter.title, files] + (hint.isEmpty ? [] : [hint]) + ["not described"]).joined(separator: " · ")
+        return HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            Text("–").foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(line).font(.callout)
+            Spacer(minLength: Spacing.small)
+            // A chapter with none of its files in this view (a later round's Since) has nothing to open.
+            if model.chapters.contains(where: { $0.key == chapter.key }) {
+                Button("Open chapter") { openChapter(chapter.key) }
+                    .buttonStyle(.kitQuiet)
+                    .font(.caption)
+            }
+        }
+    }
+
+    /// Deep's Meaning has no diff: the chapter opens in Chapters.
+    private func openChapter(_ key: String) {
+        Task {
+            // A failure lands in lastError; the first one stops here so the next call does not clear it.
+            do {
+                if model.mode == .deep, model.phase != .chapters { try await model.setPhase(.chapters) }
+                try await model.selectChapter(key)
+            } catch {}
+        }
+    }
+
     private func coverageRow(_ entry: ReviewOverview.Coverage) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Image(systemName: Self.icon(entry.status))
                 .foregroundStyle(Self.color(entry.status))
                 .accessibilityLabel(Self.label(entry.status))
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(entry.item).font(.callout)
                 ForEach(entry.where, id: \.self) { place in
                     fileLink(place, path: ReviewPresentation.coveragePath(place, files: model.files))
