@@ -424,12 +424,11 @@ package final class InboxFolderMenuModel {
     }
 
     /// The drag is over `drop`: its indicator, only where the drop is allowed.
+    /// Written only on a change: SwiftUI calls this on every pointer move.
     package func dragOver(_ drop: InboxFolderDrop?) {
-        guard let draggedID, let drop, canDrop(draggedID, onto: drop) else {
-            dropIndicator = nil
-            return
-        }
-        dropIndicator = drop
+        var allowed: InboxFolderDrop?
+        if let draggedID, let drop, canDrop(draggedID, onto: drop) { allowed = drop }
+        if dropIndicator != allowed { dropIndicator = allowed }
     }
 
     package func endDrag() {
