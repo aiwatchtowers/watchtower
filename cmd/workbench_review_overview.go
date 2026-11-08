@@ -139,6 +139,11 @@ func checkOverviewFlags() error {
 	return nil
 }
 
+// staleChapterText answers a streamed run asked for a chapter the map it
+// just built does not have (the Desktop's map is older): the map event before
+// it carries the chapters to retry from.
+const staleChapterText = "The chapters changed since this was asked for; retry from the chapters shown now."
+
 // overviewJob is what one overview command works on: the place, its map
 // and diff, and the intent (the session's items, then the lane items) and
 // notes the overview is made for.
@@ -168,16 +173,22 @@ func runWorkbenchReviewOverview(cmd *cobra.Command, _ []string) error {
 		emit = s.emit
 	}
 	job, ok, err := loadOverviewJob(cmd, ctx)
+	if err != nil && emit != nil { // the Desktop reads only stdout: the refusal is the last line
+		return failReview(cmd, err)
+	}
 	if err != nil || !ok {
 		return err
 	}
-	for _, key := range reviewFlagChapters { // never a summary-only run by a typo or a stale key
-		if !slices.ContainsFunc(job.m.Chapters, func(ch reviewmap.Chapter) bool { return ch.Key == key }) {
-			return usageError("unknown chapter %s", key)
-		}
-	}
 	if emit != nil {
 		emit(reviewai.Event{Event: "map", Map: &job.m})
+	}
+	for _, key := range reviewFlagChapters { // never a summary-only run by a typo or a stale key
+		if !slices.ContainsFunc(job.m.Chapters, func(ch reviewmap.Chapter) bool { return ch.Key == key }) {
+			if emit != nil { // the map above is the one to retry from
+				return writeReview(cmd, reviewEnvelope{Error: staleChapterText})
+			}
+			return usageError("unknown chapter %s", key)
+		}
 	}
 	if len(job.diff.Files) == 0 { // nothing changed: nothing to describe
 		return writeReview(cmd, reviewEnvelope{OK: true})

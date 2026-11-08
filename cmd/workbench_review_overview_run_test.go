@@ -433,24 +433,40 @@ func TestWorkbenchReviewOverview_CachedIncomplete(t *testing.T) {
 	assert.False(t, readable)
 }
 
-// An unknown --chapter key is a usage error before any model call, never a
-// summary-only run.
+// An unknown --chapter key is refused before any model call, never a
+// summary-only run: a usage error, or — streamed, where the Desktop reads
+// only stdout and its key may be older than the map just built — the new
+// map, then the refusal as the envelope.
 func TestWorkbenchReviewOverview_UnknownChapterRefused(t *testing.T) {
 	_, wb, s, _, _ := mapFixture(t)
 	r := startRound(t, wb, s)
+	round := itoa(int64(r["id"].(float64)))
 	g := &keyReviewGen{}
 	useReviewGenerator(t, g)
-	for _, args := range [][]string{
-		{"--json", "--chapter", "lane:nope"},
-		{"--json", "--stream", "--chapter", "lane:task-b", "--chapter", "lane:nope"},
-	} {
-		_, _, err := runWorkbench(t, append([]string{"review", "overview", "--workbench", itoa(wb),
-			"--round", itoa(int64(r["id"].(float64)))}, args...)...)
-		resetSetFlags(workbenchReviewCmd.Commands()...)
-		var ec *exitCodeError
-		require.ErrorAs(t, err, &ec, args)
-		assert.Equal(t, 2, ec.code)
-		assert.EqualError(t, err, "unknown chapter lane:nope")
-	}
+	_, _, err := runWorkbench(t, "review", "overview", "--workbench", itoa(wb), "--round", round, "--json", "--chapter", "lane:nope")
+	resetSetFlags(workbenchReviewCmd.Commands()...)
+	var ec *exitCodeError
+	require.ErrorAs(t, err, &ec)
+	assert.Equal(t, 2, ec.code)
+	assert.EqualError(t, err, "unknown chapter lane:nope")
+
+	lines := overviewStreamLines(t, wb, "--round", round, "--chapter", "lane:task-b", "--chapter", "lane:nope")
+	require.GreaterOrEqual(t, len(lines), 2, lines)
+	assert.Contains(t, lines[0], `"event":"map"`)
+	var env map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &env))
+	assert.Equal(t, false, env["ok"])
+	assert.Equal(t, staleChapterText, env["error"])
 	assert.Zero(t, g.calls, "no model call")
+}
+
+// A streamed run refused before its map (here: a round not on the
+// workbench) still ends with the envelope, so the Desktop shows Go's words.
+func TestWorkbenchReviewOverview_StreamRefusalIsTheLastLine(t *testing.T) {
+	_, wb, _, _, _ := mapFixture(t)
+	lines := overviewStreamLines(t, wb, "--round", "999999")
+	var env map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &env))
+	assert.Equal(t, false, env["ok"])
+	assert.Equal(t, "review round 999999 is not on this workbench", env["error"])
 }
