@@ -71,6 +71,52 @@ final class ReviewIdentityPresentationTests: XCTestCase {
         XCTAssertNil(noRound.size)
     }
 
+    /// Board #1012: a round on the task branch's tip names that branch and
+    /// its base although the folder is on main, and no uncommitted edits.
+    func testBranchTipRoundNamesTheBranchNotTheFolder() throws {
+        let json = """
+        {"id":1,"status":"open","mode":"quick","source":"pr","branch":"feature/x","folderRoot":"/tmp/acme",
+         "baseSha":"abc1234def5678","baseLabel":"origin/main","treeSha":"t1","prevRoundId":0,"prevTreeSha":"","prevTreeLost":false}
+        """
+        let round = try JSONDecoder().decode(ReviewRoundInfo.self, from: Data(json.utf8))
+        let status = WorkbenchGitStatus(branch: "main", head: "abc1234", dirty: true, changes: 3)
+        let line = Identity.branchLine(place: .main, status: status, round: round, files: files([(3, 1)]), stale: false)
+        XCTAssertTrue(line.branchTip)
+        XCTAssertFalse(line.onDefaultBranch)
+        XCTAssertEqual(line.branch, "feature/x")
+        XCTAssertEqual(line.base, "main")
+        XCTAssertEqual(line.size, "1 file · +3 −1")
+        XCTAssertNil(line.uncommitted, "the folder's edits are not in a branch-tip round")
+        XCTAssertEqual(line.place, "main folder")
+
+        let empty = Identity.branchLine(place: .main, status: status, round: round, files: [], stale: false)
+        XCTAssertNil(empty.size)
+        XCTAssertEqual(Identity.emptyDescription(empty), "No commits on feature/x past main.")
+    }
+
+    func testFolderRoundDecodesAsNotABranchTip() throws {
+        let round = try round(baseLabel: "origin/main")
+        XCTAssertEqual(round.source, "session")
+        XCTAssertEqual(round.branch, "")
+        XCTAssertFalse(round.isBranchTip)
+    }
+
+    /// Go's `reviewdiff.NoCommonBase`: the base is the empty tree and the help says why.
+    func testNoCommonBaseExplainsTheEmptyTree() throws {
+        let line = Identity.branchLine(
+            place: .main, status: WorkbenchGitStatus(branch: "island"),
+            round: try round(baseLabel: ReviewRoundInfo.noCommonBaseLabel, baseSha: "4b825dc642cb6eb9a060e54bf8d69288fbee4904"),
+            files: files([(1, 0)]), stale: false
+        )
+        XCTAssertEqual(line.base, "no common base")
+        XCTAssertEqual(line.baseHelp, Identity.noCommonBaseHelp)
+    }
+
+    func testBranchTipSourceMirrorsGo() throws {
+        XCTAssertEqual(ReviewRoundInfo.branchTipSource, "pr", "Go db.ReviewSourceBranch")
+        XCTAssertEqual(ReviewRoundInfo.noCommonBaseLabel, "no common base", "Go reviewdiff.NoCommonBase")
+    }
+
     func testUnknownPlaceReadsAsMainFolder() {
         let status = WorkbenchGitStatus(branch: "feature/x")
         XCTAssertEqual(Identity.branchLine(place: .unknown, status: status, round: nil, files: [], stale: false).place, "main folder")

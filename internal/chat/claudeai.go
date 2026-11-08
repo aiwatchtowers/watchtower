@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"watchtower/internal/policy"
+	"watchtower/internal/providers"
 )
 
 // ClaudeAIMode turns on the warm Claude session's claude.ai tools: publishing
@@ -53,7 +54,7 @@ func ClaudeAIAvailability(env []string, provider, surface string) (on bool, reas
 	if !policy.ClaudeAIToolsAllowed() { // AllowClaudeAITools (#608), checked first
 		return false, claudeAIPolicyOff
 	}
-	if provider != "claude" {
+	if !providers.CapsOf(provider).ClaudeAITools {
 		return false, "claude.ai tools need the Claude provider."
 	}
 	if surface != "main" {

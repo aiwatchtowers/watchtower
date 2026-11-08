@@ -47,11 +47,11 @@ func statusSpans(ctx context.Context, d *db.DB, workbenchID int64) (map[int64]sp
 // The session's own target is a phase only when it is a flat ticket: with
 // sub-parents its phase would repeat the report's progress, so its own leaves
 // count in progress, now and next only.
-func (s scope) phases(spans map[int64]span) []Phase {
+func (s scope) phases(spans map[int64]span, states map[string]db.PRState) []Phase {
 	parents := s.phaseParents(spans)
 	out := make([]Phase, 0, len(parents))
 	for _, p := range parents {
-		out = append(out, s.phaseOf(p, spans))
+		out = append(out, s.phaseOf(p, spans, states))
 	}
 	return out
 }
@@ -87,13 +87,16 @@ func movedPastTodo(e *boardEntry, spans map[int64]span) bool {
 
 // phaseOf is parent p's Phase: its counted leaves' progress and span, and its
 // own leaf children as items.
-func (s scope) phaseOf(p *boardEntry, spans map[int64]span) Phase {
+func (s scope) phaseOf(p *boardEntry, spans map[int64]span, states map[string]db.PRState) Phase {
 	ph := Phase{TargetID: p.id(), Text: p.target.Text, Items: []Item{}}
 	finished := ""
 	for _, l := range s.b.leavesUnder(p.id()) {
 		ph.Total++
-		if l.target.Status == "done" {
+		switch {
+		case l.target.Status == "done":
 			ph.Done++
+		case s.b.mergedLeaf(l, states):
+			ph.Merged++
 		}
 		sp := spans[l.id()]
 		if sp.started != "" && (ph.StartedAt == "" || sp.started < ph.StartedAt) {

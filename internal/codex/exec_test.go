@@ -47,6 +47,7 @@ func TestQuerySync_ParsesJSONLOutput(t *testing.T) {
 	stdout := strings.Join([]string{
 		`{"type":"item.completed","item":{"type":"agent_message","text":"Hello, world!"}}`,
 		`{"type":"usage","usage":{"input_tokens":42,"output_tokens":17}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
@@ -58,7 +59,7 @@ func TestQuerySync_ParsesJSONLOutput(t *testing.T) {
 	if out != "Hello, world!" {
 		t.Errorf("output = %q", out)
 	}
-	if usage == nil || usage.InputTokens != 42 || usage.OutputTokens != 17 {
+	if usage == nil || usage.InputTokens() != 42 || usage.OutputTokens() != 17 {
 		t.Errorf("usage = %+v", usage)
 	}
 }
@@ -103,6 +104,7 @@ func TestQuery_StreamsAgentMessages(t *testing.T) {
 		`{"type":"item.started","item":{"type":"agent_message","text":"Hello "}}`,
 		`{"type":"item.updated","item":{"type":"agent_message","text":"world"}}`,
 		`{"type":"item.completed","item":{"type":"agent_message","text":"!"}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
@@ -122,8 +124,9 @@ func TestQuery_StreamsAgentMessages(t *testing.T) {
 	if sid != "" {
 		t.Errorf("expected empty session ID for codex (--ephemeral), got %q", sid)
 	}
-	if !strings.Contains(got.String(), "Hello") || !strings.Contains(got.String(), "world") {
-		t.Errorf("missing streamed text, got %q", got.String())
+	// One id-less message's stages are one message: no separator inside it.
+	if got.String() != "Hello world!" {
+		t.Errorf("streamed text = %q, want %q", got.String(), "Hello world!")
 	}
 }
 
@@ -138,6 +141,7 @@ func TestQuery_ToolBoundaryDropsPreamble(t *testing.T) {
 		`{"type":"item.started","item":{"type":"mcp_tool_call","id":"t1"}}`,
 		`{"type":"item.completed","item":{"type":"mcp_tool_call","id":"t1"}}`,
 		`{"type":"item.completed","item":{"type":"agent_message","text":"Here is the answer."}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
@@ -189,6 +193,7 @@ func TestGenerate_ParsesJSONL(t *testing.T) {
 	stdout := strings.Join([]string{
 		`{"type":"item.completed","item":{"type":"agent_message","text":"Generated text"}}`,
 		`{"type":"usage","usage":{"input_tokens":10,"output_tokens":5}}`,
+		`{"type":"turn.completed"}`,
 	}, "\n")
 	bin := fakeCodexScript(t, stdout, "", 0)
 
@@ -206,8 +211,8 @@ func TestGenerate_ParsesJSONL(t *testing.T) {
 	if usage == nil || usage.Model != "gpt-5.4" {
 		t.Errorf("usage = %+v", usage)
 	}
-	if usage.InputTokens != 10 || usage.OutputTokens != 5 {
-		t.Errorf("usage tokens = %d/%d", usage.InputTokens, usage.OutputTokens)
+	if usage.InputTokens() != 10 || usage.OutputTokens() != 5 {
+		t.Errorf("usage tokens = %d/%d", usage.InputTokens(), usage.OutputTokens())
 	}
 }
 

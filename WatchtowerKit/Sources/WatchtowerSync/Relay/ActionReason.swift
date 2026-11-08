@@ -36,4 +36,9 @@ public enum ActionReason: String, Codable, CaseIterable, Sendable {
     /// An allow the phone may not give: the request was shortened, or edits a settings file (`PermissionAllowBlock`).
     /// Deny still works; the request stays pending for the Mac.
     case answerOnMac = "answer_on_mac"
+    /// The Mac or the session's agent cannot do this for the phone (a Codex
+    /// session's permission prompt or Interrupt, a recording on a host without
+    /// the transcriber); the echo's message says what to do. An older phone
+    /// decodes it to nil and shows that message (plan 2026-11-05 Task G7).
+    case notSupported = "not_supported"
 }

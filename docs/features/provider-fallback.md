@@ -189,7 +189,9 @@ same run budget and one dense SDK step per call. A legacy generator or primitive
 that never enters routing keeps its aggregate accounting; routed calls do not
 also debit that aggregate. Cooldown/admission refusals create no synthetic leaf.
 
-Leaf facts take precedence over aggregate result usage. Authoritative non-estimated
+Leaf facts take precedence over aggregate result usage. An attempt debits a leaf
+call's fresh `Input` plus `Output`; its cache reads and writes stay in the leaf
+ledger only, matching the unrouted path ([automation budgets](automations.md#budgets)). Authoritative non-estimated
 zeros remain zero, including parsed zero-usage envelopes and children that never
 started. Missing usage is estimated
 from the submitted system/user input and available partial output, marked
@@ -406,7 +408,20 @@ the selected provider's strong model and account, possibly spending paid quota.
 It uses the current form's model and CLI path without saving them, testing the
 light model, or falling back to another provider. The existing `ai test` command
 now invokes the canonical isolated no-tools batch leaf: no owner startup hooks,
-MCP tools or shell snapshots. Its additive `--cli-path` override is test-only;
+MCP tools or shell snapshots. For codex the request carries a system prompt
+naming a fresh nonce, delivered the way every codex call delivers it (the
+`model_instructions_file`, or stdin on a codex too old for one), and an answer
+without the nonce (matched case-insensitively) fails as `invalid_output`
+(with a content-free stderr line) and the owner-readable error "Codex
+answered but ignored Watchtower's instructions. Update the Codex CLI, or
+check its config, and test again.", so a broken system-prompt path fails the
+test. The Desktop shows that message after a bare "Connection test failed."
+(`ProviderConnection.testFailureMessage`: an `invalid_output` message names
+its own next step, so the generic "Retry the explicit test…" advice that
+precedes every other failure is left out). The MCP tool mount is not part of
+the probe (it stays tool-less); the
+opt-in `scripts/check-codex-features.sh --live` covers it with a real codex
+run. Its additive `--cli-path` override is test-only;
 HTTP providers reject that flag and retain their direct HTTP test. Local Settings
 tests retain one request per distinct light/strong model against the form URL.
 Failures cross into Desktop as sanitized messages plus a typed `error_code`, not

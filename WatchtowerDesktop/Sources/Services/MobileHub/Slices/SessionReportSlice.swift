@@ -147,9 +147,13 @@ struct SessionReportSlice: SliceSource {
             }
         }
 
+        /// `merged` (board #986, published since #1017): tasks not done
+        /// whose branch is merged into their parent's; always sent. Optional
+        /// only so a payload stored by an older build still reads back.
         struct Progress: Codable, Equatable, Sendable {
             let done: Int
             let total: Int
+            let merged: Int?
         }
 
         struct Ask: Codable, Equatable, Sendable {
@@ -185,13 +189,15 @@ struct SessionReportSlice: SliceSource {
             let text: String
             let done: Int
             let total: Int
+            /// As `Progress.merged`.
+            let merged: Int?
             let startedAt: String
             let finishedAt: String
             var items: [Item]
             var itemsMore: Int?
 
             enum CodingKeys: String, CodingKey {
-                case text, done, total, items
+                case text, done, total, merged, items
                 case targetID = "target_id"
                 case startedAt = "started_at"
                 case finishedAt = "finished_at"
@@ -255,7 +261,7 @@ struct SessionReportSlice: SliceSource {
                 createdAt: session.createdAt, lastActiveAt: session.lastActiveAt, agentState: session.agentState,
                 agentStateAt: session.agentStateAt, finishedAt: session.finishedAt, finishSummary: text(session.finishSummary)
             ),
-            progress: .init(done: report.progress.done, total: report.progress.total),
+            progress: .init(done: report.progress.done, total: report.progress.total, merged: report.progress.merged),
             onYou: onYou.items.map {
                 .init(id: $0.id, kind: $0.kind, title: text($0.title), targetID: $0.targetID, createdAt: $0.createdAt)
             },
@@ -269,7 +275,7 @@ struct SessionReportSlice: SliceSource {
             phases: phases.items.map { phase in
                 let items = SliceClip.list(phase.items, limit: maxPhaseItems)
                 return .init(
-                    targetID: phase.targetID, text: text(phase.text), done: phase.done, total: phase.total,
+                    targetID: phase.targetID, text: text(phase.text), done: phase.done, total: phase.total, merged: phase.merged,
                     startedAt: phase.startedAt, finishedAt: phase.finishedAt, items: items.items.map(item), itemsMore: items.more
                 )
             },

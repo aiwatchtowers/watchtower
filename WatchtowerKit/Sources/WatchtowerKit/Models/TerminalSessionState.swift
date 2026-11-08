@@ -62,6 +62,44 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         public static let knownValues: [Self] = [.claudeCode, .codexCLI]
     }
 
+    /// What the Mac's hub takes from the phone for this session (the
+    /// `phone` key, spec 2026-11-05-llm-transport-independence §3.5, U5): the
+    /// phone shows the composer, the permission card and Interrupt by it.
+    /// The hubs derive it from the session capability row (Go
+    /// `sessionagent.Caps.Phone`, the Desktop's `AgentSessionCaps.phone`);
+    /// the Kit fixture `phone_caps.json` pins both and `init(_:)` to one table.
+    public struct PhoneCaps: Decodable, Hashable, Sendable {
+        /// Lines and the finish request (PROJ-16).
+        public let input: Bool
+        /// A line goes in while the agent works; otherwise the Mac holds it
+        /// until the agent is idle (a Codex session).
+        public let inputWhileWorking: Bool
+        /// The phone answers a held permission prompt (PROJ-21).
+        public let permissionAnswer: Bool
+        /// The phone's one Esc (PROJ-21).
+        public let interrupt: Bool
+
+        public init(input: Bool, inputWhileWorking: Bool, permissionAnswer: Bool, interrupt: Bool) {
+            self.input = input
+            self.inputWhileWorking = inputWhileWorking
+            self.permissionAnswer = permissionAnswer
+            self.interrupt = interrupt
+        }
+
+        /// `caps`' phone half, by the hubs' rule.
+        public init(_ caps: AgentSessionCapabilities) {
+            self.init(
+                input: caps.phoneInput,
+                inputWhileWorking: caps.phoneInput && caps.takesLineWhileWorking,
+                permissionAnswer: caps.permissionWait,
+                interrupt: caps.takesInterrupt
+            )
+        }
+
+        /// Takes nothing from the phone.
+        public static let none = Self(input: false, inputWhileWorking: false, permissionAnswer: false, interrupt: false)
+    }
+
     public let id: Int64
     public let workbenchID: Int64
     /// Cap 200.
@@ -96,14 +134,32 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
     /// The failed turn's error ("" when none or unknown). Cap 60.
     public let agentError: String
     public let agentErrorClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
-    /// The session-report summary (`#<target> · <done>/<total> · <pr line>`);
+    /// The session-report summary (`#<target> · <done>/<total> · <merged> · <pr line>`);
     /// absent until the hub's first summary run for the session.
     public let reportTargetID: Int64?
     public let reportDone: Int?
     public let reportTotal: Int?
+    /// Tasks not done whose branch is merged into their parent's (board
+    /// #986, #1008); absent from a Mac before #1008, read as 0.
+    public let reportMerged: Int?
+    /// The merge ref could not be checked, so `reportMerged` counts the last
+    /// ones known; only ever `true`, absent = checked (or an older Mac).
+    public let reportMergedStale: Bool? // swiftlint:disable:this discouraged_optional_boolean
     /// Cap 120.
     public let reportPRLine: String?
     public let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// Why the Mac cannot watch this working session (`missing`,
+    /// `permission`, `compressed`, `unreadable`; spec 2026-11-05 §3.5): the
+    /// caption then reads "Working · not watched". Absent when watched, and
+    /// from a Mac older than the field.
+    public let watchIssue: String?
+    /// The Mac's tooltip for `watchIssue` (why in words, and when watching
+    /// starts again): the phone shows it as given. Absent when watched.
+    public let watchHelp: String?
+    /// Absent from a Mac older than the key: the phone then keeps that
+    /// Mac's rule (lines, permission answers and Interrupt for Claude Code
+    /// sessions only).
+    public let phone: PhoneCaps?
 
     // convertFromSnakeCase maps "*_id" -> "*Id" and "report_pr_line" ->
     // "reportPrLine", so those keys use that form.
@@ -117,8 +173,18 @@ public struct TerminalSessionState: SliceMirror, Identifiable {
         case oldestAskID = "oldestAskId"
         case closedAsks, finishSummary, finishSummaryClipped, agentError, agentErrorClipped
         case reportTargetID = "reportTargetId"
-        case reportDone, reportTotal
+        case reportDone, reportTotal, reportMerged, reportMergedStale
         case reportPRLine = "reportPrLine"
         case reportPRLineClipped = "reportPrLineClipped"
+        case watchIssue, watchHelp, phone
+    }
+}
+
+extension TerminalSessionState {
+    /// The report line's merged share, worded as the Mac's session row
+    /// (`SessionReportPresentation.rowCaption`, board #986/#1008) through
+    /// `MergedShareText`.
+    public var reportMergedText: String? {
+        MergedShareText.text(merged: reportMerged ?? 0, total: reportTotal ?? 0, stale: reportMergedStale == true)
     }
 }

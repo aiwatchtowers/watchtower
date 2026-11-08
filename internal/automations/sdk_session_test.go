@@ -426,7 +426,7 @@ func TestSession_Validation(t *testing.T) {
 		{"no options", ``, "options"},
 		{"prompt too long", `{prompt: "a".repeat(16385)}`, "4096"},
 		{"title too long", `{prompt: "x", title: "é".repeat(81)}`, "80"},
-		{"unknown agent", `{prompt: "x", agent: "x"}`, "agent"},
+		{"unknown agent", `{prompt: "x", agent: "x"}`, "is not supported by this version (claude or codex)"},
 		{"unknown wait", `{prompt: "x", wait: "later"}`, "wait"},
 		{"unknown option", `{prompt: "x", cwd: "/tmp"}`, "cwd"},
 		{"prompt over the journal's args", `{prompt: "a".repeat(5000)}`, "4096"},
@@ -533,5 +533,70 @@ func TestSession_NoRunIsNotAvailable(t *testing.T) {
 	}
 	if want := "NotAvailable|session() needs the automation executor"; out != want {
 		t.Fatalf("script returned %#v; want %q", out, want)
+	}
+}
+
+// N6 (ask #516): a session the Mac cannot watch (agent_watch_issue on a
+// working row) ends the wait at once with not_watched and the reason, by
+// default; the step is journalled ok and the run log carries the reason.
+func TestSessionWait_NotWatchedEndsAtOnceWithReason(t *testing.T) {
+	s := newSessFixture(t, "codex")
+	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+	sess := s.launch(t, runID, p.StepID)
+	s.waitReason(t, runID, db.WaitSession)
+	s.setSession(t, sess, `kind = 'codex', agent_state = 'working', agent_state_at = '2026-10-14T12:30:00.000Z'`)
+	if done, err := automations.SessionReady(s.d, runID, p.StepID); err != nil || done {
+		t.Fatalf("ready = (%v, %v) on a watched working row; want still waiting", done, err)
+	}
+	s.setSession(t, sess, `agent_watch_issue = 'compressed', agent_watch_issue_at = '2026-10-14T12:30:02.000Z'`)
+	out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
+	if out["status"] != "not_watched" || out["reason"] != "compressed" || out["summary"] != "" || out["session_id"] != float64(sess) {
+		t.Fatalf("script got %v; want {session_id %d, status not_watched, summary \"\", reason compressed}", out, sess)
+	}
+	if _, has := out["error"]; has {
+		t.Fatalf("script got an error key: %v", out)
+	}
+	st := s.sessionStep(t, runID)
+	if st.Status != automations.StepOK || st.FinishedAt == nil || !strings.Contains(st.ResultSummary, `"not_watched"`) {
+		t.Fatalf("step = %+v; want closed ok, journalled with not_watched (AUTO-11)", st)
+	}
+	var logs []string
+	for _, step := range s.steps(t, runID) {
+		if step.Kind == automations.StepKindLog {
+			logs = append(logs, step.ArgsJSON)
+		}
+	}
+	if len(logs) != 1 || !strings.Contains(logs[0], "not watched") || !strings.Contains(logs[0], "compressed") {
+		t.Fatalf("log steps = %v; want one line naming the reason", logs)
+	}
+}
+
+// A failure written before the watch issue ends the wait with error: the
+// ends are read deleted, finished, failed, then not watched.
+func TestSessionWait_FailureBeforeWatchIssueEndsWithError(t *testing.T) {
+	s := newSessFixture(t, "codex")
+	runID, p := s.startSession(t, s.seedSession(t, []string{"session:start"}, "", sessScript))
+	sess := s.launch(t, runID, p.StepID)
+	s.waitReason(t, runID, db.WaitSession)
+	s.setSession(t, sess, `kind = 'codex', agent_state = 'working', agent_failed_at = '2026-10-14T12:30:00.000Z', `+
+		`agent_error = 'usage_limit_exceeded', agent_watch_issue = 'missing'`)
+	out := summaryObject(t, s.finish(t, runID, db.RunSucceeded, ""))
+	if out["status"] != "error" || out["error"] != "usage_limit_exceeded" {
+		t.Fatalf("script got %v; want error usage_limit_exceeded", out)
+	}
+	if _, has := out["reason"]; has {
+		t.Fatalf("an error end carries a reason: %v", out)
+	}
+}
+
+// N6 has no opt-in flag: an unknown notWatched option is refused like any
+// unknown option.
+func TestSessionWait_NoNotWatchedOptionKey(t *testing.T) {
+	for _, opts := range []string{`{prompt: "x", notWatched: "wait"}`, `{prompt: "x", not_watched: true}`} {
+		rep := sessDryRun(t, []string{"session:start"}, `session(`+opts+`)`, sessWorkbenchScope)
+		st := onlySessionStep(t, rep.Steps)
+		if st.Status != automations.StepError || !strings.Contains(st.Error, "unknown option") {
+			t.Fatalf("%s: step = %s %q; want an unknown-option ValidationError", opts, st.Status, st.Error)
+		}
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchcheck"
 )
 
@@ -84,7 +85,7 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	}
 	agent, flagErr := hookAgentFor(cmd, workbenchCheckFlagAgent)
 	if workbenchCheckFlagStopHook {
-		if flagErr == nil && agent == agentkind.Codex {
+		if flagErr == nil && launchHooks(agent) {
 			runCodexStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 			return nil
 		}
@@ -99,8 +100,8 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	if flagErr != nil {
 		return flagErr
 	}
-	if agent == agentkind.Codex {
-		return errors.New("--agent codex runs only with --stop-hook")
+	if launchHooks(agent) {
+		return fmt.Errorf("--agent %s runs only with --stop-hook", agent)
 	}
 	id, err := parseWorkbenchID(strings.TrimSpace(workbenchCheckFlagWorkbench))
 	if err != nil {
@@ -179,38 +180,8 @@ func printCheckReport(w io.Writer, rep workbenchcheck.Report) {
 	}
 }
 
-// backgroundTask is one entry of a hook input's background_tasks; every
-// other field is ignored.
-type backgroundTask struct{ ID, Type string }
-
-// backgroundTasks is a hook input's background_tasks, decoded tolerantly so
-// a malformed field never fails the whole input: absent, null or not an
-// array leaves present false (an older Claude Code, or a shape we do not
-// know); an array sets it, and an entry that is no object, or whose id or
-// type is no string, is kept with those fields empty.
-type backgroundTasks struct {
-	present bool
-	list    []backgroundTask
-}
-
-func (b *backgroundTasks) UnmarshalJSON(data []byte) error {
-	var raw []json.RawMessage
-	if json.Unmarshal(data, &raw) != nil || raw == nil {
-		*b = backgroundTasks{}
-		return nil //nolint:nilerr // not an array reads as absent, never a failed input
-	}
-	list := make([]backgroundTask, len(raw))
-	for i, entry := range raw {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal(entry, &fields) != nil {
-			continue
-		}
-		_ = json.Unmarshal(fields["id"], &list[i].ID)
-		_ = json.Unmarshal(fields["type"], &list[i].Type)
-	}
-	*b = backgroundTasks{present: true, list: list}
-	return nil
-}
+// backgroundTasks is a hook input's background_tasks (sessionagent).
+type backgroundTasks = sessionagent.BackgroundTasks
 
 // backgroundAgents counts the background agents tasks reports as working
 // (spec 2026-10-10-session-background-agents-design §11.3): every subagent
@@ -226,12 +197,12 @@ func (b *backgroundTasks) UnmarshalJSON(data []byte) error {
 // the stamps of its async hooks say. ok is false
 // when the field was absent, null or not an array.
 func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string) (n int64, ok bool) {
-	if !tasks.present {
+	if !tasks.Present {
 		return 0, false
 	}
-	listed := make(map[string]bool, len(tasks.list))
+	listed := make(map[string]bool, len(tasks.List))
 	var teammates int64
-	for _, task := range tasks.list {
+	for _, task := range tasks.List {
 		listed[task.ID] = true
 		switch task.Type {
 		case "subagent", "workflow":
@@ -389,7 +360,7 @@ func recordCodexStopState(database *db.DB, row db.TerminalSession, in hookEvent,
 		turn.background = sql.NullInt64{Int64: n, Valid: true}
 	}
 	state, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, row.ID, row.WorkbenchID.Int64, in.SessionID, state, "", nil, false, at, turn)
+	return recordAgentEvent(database, row.ID, row.WorkbenchID.Int64, in, agentStateWrite{state: state, at: at, turn: turn})
 }
 
 // markStopTurnEnd records the turn end before the drift check, which can
@@ -538,7 +509,7 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 	}
 	state, _ := agentStateFor("Stop", "")
 	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, cwd: hookCwd("Stop", "", in.Cwd)}
-	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
+	return recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: state, at: at, turn: turn})
 }
 
 // workbenchHasStateHooks reports whether workbench id's folder has its core

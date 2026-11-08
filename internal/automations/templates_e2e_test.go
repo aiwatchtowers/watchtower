@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tools"
 )
 
@@ -136,7 +137,7 @@ func TestTemplates_DryRunE2E(t *testing.T) {
 }
 
 func runPersonalDryRun(t *testing.T, c personalDryRun) {
-	gen := &automationstest.FakeGenerator{Replies: []string{"- a summary"}, Usage: []digest.Usage{{InputTokens: 120, OutputTokens: 30}}}
+	gen := &automationstest.FakeGenerator{Replies: []string{"- a summary"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 120, Output: 30}}}}
 	f := newTplFixture(t, gen)
 	a := f.installTemplate(t, c.name, c.params)
 	req := db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerDryRun}

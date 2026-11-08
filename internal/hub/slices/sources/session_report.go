@@ -76,7 +76,8 @@ type SummaryFetch func(ctx context.Context, workbenchID int64) ([]sessionreport.
 // the report in-process as `workbench session-report --session S --json`
 // does (sessionreport.SessionRefs, Refresh, Build; git and gh in their own
 // process group, killed at the timeout); Summaries nil is
-// sessionreport.Summaries (`--summary`: the DB and the PR cache only);
+// sessionreport.Summaries (the DB and the PR cache only — unlike `--summary`,
+// which first refreshes the merge verdicts with git, board #986);
 // Active nil is always (the hub's linked-phone gate); Now nil is time.Now.
 // OnChange (nil = none) is called after a report or a workbench's summaries
 // were stored: the hub publishes session_report, session_timeline and
@@ -617,7 +618,8 @@ func (r *SessionReportRunner) runSummaries(ctx context.Context, listed []windowe
 		default:
 			byID := make(map[int64]ReportSummary, len(rows))
 			for _, s := range rows {
-				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total, PRLine: s.PRLine}
+				byID[s.SessionID] = ReportSummary{TargetID: s.TargetID, Done: s.Done, Total: s.Total,
+					Merged: s.Merged, MergedStale: s.MergedStale, PRLine: s.PRLine}
 			}
 			r.summaries.store(id, byID)
 			r.changed()
@@ -760,9 +762,15 @@ type reportSession struct {
 	FinishSummary string `json:"finish_summary"`
 }
 
+// reportCount is the report's progress. Merged (board #986, published
+// since #1017) counts tasks not done whose branch is merged into their
+// parent's. This hub always sends the key (0 when none); the phone's
+// decoder treats it as optional and reads a missing key — an older Mac's
+// slice — as 0.
 type reportCount struct {
-	Done  int `json:"done"`
-	Total int `json:"total"`
+	Done   int `json:"done"`
+	Total  int `json:"total"`
+	Merged int `json:"merged"`
 }
 
 type reportAsk struct {
@@ -792,6 +800,7 @@ type reportPhase struct {
 	Text       string       `json:"text"`
 	Done       int          `json:"done"`
 	Total      int          `json:"total"`
+	Merged     int          `json:"merged"` // as reportCount.Merged
 	StartedAt  string       `json:"started_at"`
 	FinishedAt string       `json:"finished_at"`
 	Items      []reportItem `json:"items"`
@@ -847,7 +856,7 @@ func cappedReport(rep sessionreport.Report) reportPayload {
 			CreatedAt: s.CreatedAt, LastActiveAt: s.LastActiveAt, AgentState: s.AgentState,
 			AgentStateAt: s.AgentStateAt, FinishedAt: s.FinishedAt, FinishSummary: reportText(s.FinishSummary),
 		},
-		Progress: reportCount{Done: rep.Progress.Done, Total: rep.Progress.Total},
+		Progress: reportCount{Done: rep.Progress.Done, Total: rep.Progress.Total, Merged: rep.Progress.Merged},
 		OnYou:    make([]reportAsk, len(onYou)), OnYouMore: onYouMore,
 		Now: make([]reportNow, len(now)), NowMore: nowMore,
 		Next: reportItems(next), NextMore: nextMore,
@@ -864,7 +873,7 @@ func cappedReport(rep sessionreport.Report) reportPayload {
 	for i, ph := range phases {
 		items, more := clipList(ph.Items, maxReportPhaseItems)
 		p.Phases[i] = reportPhase{
-			TargetID: ph.TargetID, Text: reportText(ph.Text), Done: ph.Done, Total: ph.Total,
+			TargetID: ph.TargetID, Text: reportText(ph.Text), Done: ph.Done, Total: ph.Total, Merged: ph.Merged,
 			StartedAt: ph.StartedAt, FinishedAt: ph.FinishedAt, Items: reportItems(items), ItemsMore: more,
 		}
 	}

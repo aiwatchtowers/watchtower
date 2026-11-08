@@ -1,13 +1,13 @@
 package ai
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -21,19 +21,29 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
+	"watchtower/internal/streamline"
 )
 
 // Usage holds token metrics from an AI call.
 type Usage struct {
-	InputTokens    int
-	OutputTokens   int
-	TotalAPITokens int
-	// CostUSD is the CLI's total_cost_usd when it reports one (QuerySync);
-	// 0 = not reported.
-	CostUSD float64
+	llmusage.Tokens
 }
+
+// InputTokens is the fresh (uncached) input.
+func (u Usage) InputTokens() int { return int(u.Input) }
+
+// OutputTokens is the output tokens.
+func (u Usage) OutputTokens() int { return int(u.Output) }
+
+// TotalAPITokens is every input token, cache reads and writes included.
+func (u Usage) TotalAPITokens() int { return int(u.AllInput()) }
+
+// CostUSD is the provider's reported cost (claude's total_cost_usd); 0 = not
+// reported.
+func (u Usage) CostUSD() float64 { return u.ReportedCost() }
 
 // cliUsage is the nested usage object in the Claude CLI JSON response.
 type cliUsage struct {
@@ -48,6 +58,12 @@ type cliUsage struct {
 	} `json:"cache_creation"`
 }
 
+// tokens is the envelope's usage as a block, the cache writes split by TTL.
+func (u cliUsage) tokens() llmusage.Tokens {
+	return llmusage.ClaudeTokens(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens,
+		u.CacheCreation.FiveMin, u.CacheCreation.OneHour, u.OutputTokens)
+}
+
 // resultUsage is the usage a result envelope or result stream event
 // reports: the LLM usage ledger's numbers (recordClaude).
 type resultUsage struct {
@@ -55,6 +71,17 @@ type resultUsage struct {
 	Usage   cliUsage `json:"usage"`
 	// ModelUsage is the per-model usage keyed by the model's full name.
 	ModelUsage map[string]json.RawMessage `json:"modelUsage"`
+}
+
+// tokens is the result's usage block with its reported cost (one claude
+// child per call, so total_cost_usd is this call's own).
+func (r resultUsage) tokens() llmusage.Tokens {
+	t := r.Usage.tokens()
+	if r.CostUSD > 0 {
+		cost := r.CostUSD
+		t.ReportedCostUSD = &cost
+	}
+	return t
 }
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
@@ -178,12 +205,18 @@ type Client struct {
 	// when childEnvSet (SetChildEnv).
 	childEnv    []string
 	childEnvSet bool
-	// processGroup runs the child in its own process group, killed as a
-	// group on cancel (SetProcessGroup).
-	processGroup bool
 	// maxTurns, when > 0, is passed as --max-turns (SetMaxTurns).
 	maxTurns int
+	// toolEvents streams tool calls and the turn's usage as chunks
+	// (EmitToolEvents) instead of a boundary per tool call.
+	toolEvents bool
 }
+
+// EmitToolEvents switches Query onto the chat events `ai query --events v2`
+// renders (transport.Options.ToolEvents): each tool call a start and an end chunk,
+// the turn's usage last, and no ToolBoundary — text streamed before a call is
+// kept, and the text of a later message starts after a blank line.
+func (c *Client) EmitToolEvents() { c.toolEvents = true }
 
 // SetWatchtowerTools narrows --allowedTools from the whole `mcp__watchtower`
 // server to one mcp__watchtower__<name> token per name (an automation's
@@ -196,11 +229,6 @@ func (c *Client) SetWatchtowerTools(names []string) {
 // SetChildEnv replaces the inherited environment of the child with env (the
 // rich PATH is still appended last). Unset = os.Environ() as today.
 func (c *Client) SetChildEnv(env []string) { c.childEnv, c.childEnvSet = env, true }
-
-// SetProcessGroup runs the child in its own process group and kills the
-// whole group on cancel or deadline: SIGINT, then SIGKILL after the grace
-// period. Off = today's behaviour (only the child is signalled).
-func (c *Client) SetProcessGroup(v bool) { c.processGroup = v }
 
 // SetMaxTurns passes --max-turns n to the CLI; 0 = no limit flag.
 func (c *Client) SetMaxTurns(n int) { c.maxTurns = n }
@@ -221,7 +249,7 @@ func (c *Client) childEnviron() []string {
 	return append(env, "PATH="+claude.RichPATH())
 }
 
-// GroupKillGrace is how long a process-group child (SetProcessGroup, an
+// GroupKillGrace is how long a CLI child (ConfigureChild, e.g. an
 // automation's agent() child) has between SIGINT and the group's SIGKILL. It
 // stays under the automation sandbox's 2 s AbandonGrace, so a cancelled or
 // stopped run's call returns — the whole group dead — before the run would
@@ -229,21 +257,16 @@ func (c *Client) childEnviron() []string {
 // leave a SIGINT-ignoring child behind.
 const GroupKillGrace = time.Second
 
-// ConfigureChild applies the cancel policy to cmd: SIGINT then SIGKILL after
-// grace via WaitDelay, or, with group, a process group of its own that is
-// interrupted and then killed as a whole (the leader's grandchildren
-// included) after GroupKillGrace — group mode ignores grace. Shared with the
-// codex client. The caller runs the returned reap once cmd.Wait has
-// returned (or the child never started): a cancelled group's pending
-// SIGKILL is then sent at once and its timer stopped, so the group is dead
-// when the call returns — even when WaitDelay ended the wait first — and no
-// timer outlives the call to signal a reused process group id later.
-func ConfigureChild(cmd *exec.Cmd, group bool, grace time.Duration) (reap func()) {
-	if !group {
-		cmd.WaitDelay = grace
-		cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
-		return func() {}
-	}
+// ConfigureChild applies the one cancel policy of every CLI child (spec
+// 2026-11-05 §3.4: group-only, so no caller can forget it): a process group
+// of its own that is interrupted and then killed as a whole (the leader's
+// grandchildren included) after GroupKillGrace. Shared with the codex
+// client. The caller runs the returned reap once cmd.Wait has returned (or
+// the child never started): a cancelled group's pending SIGKILL is then
+// sent at once and its timer stopped, so the group is dead when the call
+// returns — even when WaitDelay ended the wait first — and no timer
+// outlives the call to signal a reused process group id later.
+func ConfigureChild(cmd *exec.Cmd) (reap func()) {
 	cmd.WaitDelay = GroupKillGrace
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var mu sync.Mutex
@@ -700,7 +723,11 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		defer close(sidCh)
 
 		args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "stream-json")
-		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+		// runCtx ends the child when the read below fails, so the run never
+		// waits on a claude blocked writing into a pipe nobody reads.
+		runCtx, cancelRun := context.WithCancel(ctx)
+		defer cancelRun()
+		cmd := exec.CommandContext(runCtx, c.claudeCmd, args...)
 		_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
 		if err != nil {
 			errCh <- err
@@ -732,8 +759,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
-		// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
-		reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+		// The group gets SIGINT, then SIGKILL after GroupKillGrace.
+		reap := ConfigureChild(cmd)
 		defer reap()
 		cmd.Dir = c.workDir()
 		cmd.Env = c.childEnviron()
@@ -754,9 +781,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		}
 		closePayloads()
 
-		scanner := bufio.NewScanner(stdout)
-		// Allow up to 1MB lines for large context responses
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		// Lines up to maxStreamLine are read (a tool result can carry
+		// megabytes); a longer one is skipped and counted (L1).
+		lines := streamline.NewWithLimit(stdout, maxStreamLine)
+		defer logSkippedLines(lines)
 
 		// lastResult (declared above) remembers the most recent "result"
 		// event: its usage for the ledger, and its is_error/result fields —
@@ -767,18 +795,29 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 		// errorEnvelopeMessage for the same pattern on the batch path).
 
 		var limits providers.ClaudeLimitTracker
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line == "" {
+		chatEvents := newChatEventState()
+		for {
+			line, readErr := lines.Next()
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				cancelRun()
+				_ = cmd.Wait()
+				fail(fmt.Errorf("reading claude output: %w", readErr))
+				return
+			}
+			if len(line) == 0 {
 				continue
 			}
 
 			var event streamEvent
-			if err := json.Unmarshal([]byte(line), &event); err != nil {
+			if err := json.Unmarshal(line, &event); err != nil {
+				lines.MarkUndecodable()
 				continue
 			}
 
-			hint := limits.Observe([]byte(line))
+			hint := limits.Observe(line)
 			if event.Type == "result" {
 				event.limit = hint
 				captured := event
@@ -786,6 +825,20 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 				if event.SessionID != "" {
 					sidCh <- event.SessionID
 				}
+			}
+
+			if c.toolEvents {
+				for _, chunk := range chatEvents.chunks(&event) {
+					streamed.WriteString(chunk.Text)
+					select {
+					case textCh <- chunk:
+					case <-ctx.Done():
+						_ = cmd.Wait()
+						fail(ctx.Err())
+						return
+					}
+				}
+				continue
 			}
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
@@ -818,10 +871,18 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 			}
 		}
 
-		if err := scanner.Err(); err != nil {
-			_ = cmd.Wait()
-			fail(fmt.Errorf("reading claude output: %w", err))
-			return
+		// A tool whose result was in a skipped line still gets its end, with
+		// a reason, so no step stays running (the codex rule).
+		if c.toolEvents && lines.Skipped() > 0 {
+			for _, chunk := range chatEvents.closeOpen("claude's report of this tool's result could not be read") {
+				select {
+				case textCh <- chunk:
+				case <-ctx.Done():
+					_ = cmd.Wait()
+					fail(ctx.Err())
+					return
+				}
+			}
 		}
 
 		waitErr := cmd.Wait()
@@ -837,10 +898,55 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 		if waitErr != nil {
 			fail(classifyError(waitErr, stderrBuf.String()))
+			return
+		}
+
+		// A clean exit without a result event never ends as a blank or
+		// partial "complete" turn (L12): the answer may be cut short, and a
+		// skipped line may have been the answer or the result itself. Codex
+		// and the batch path refuse the same run.
+		if lastResult == nil {
+			err := errNoResultEvent
+			if n := lines.Skipped(); n > 0 {
+				err = fmt.Errorf("%w (%d line(s) over %d bytes skipped)", err, n, maxStreamLine)
+			}
+			fail(noResultFailure(err, stderrBuf.String()))
 		}
 	}()
 
 	return textCh, errCh, sidCh
+}
+
+// errNoResultEvent fails a claude run that exited cleanly without its
+// result event.
+var errNoResultEvent = errors.New("claude output had no result event")
+
+// noResultFailure is the typed failure of a claude run that exited 0
+// without its result (L12): claude's stderr rides along (redacted in logs)
+// and decides the category when it is one of the CLI's own auth or
+// rate-limit diagnostics, else invalid_output (providers.CleanExitFailure).
+func noResultFailure(cause error, stderr string) error {
+	stderr = strings.TrimSpace(stderr)
+	if stderr != "" {
+		cause = logredact.Errorf("%w (stderr: %s)", cause, logredact.Text(stderr))
+	}
+	return providers.CleanExitFailure("claude", stderr, cause)
+}
+
+// maxStreamLine is the longest stream-json line Query decodes
+// (streamline.MaxLine); a variable so tests can lower it.
+var maxStreamLine = streamline.MaxLine
+
+// logSkippedLines logs how many lines of claude's stream-json output were
+// skipped as over the limit or were not a JSON event (counts, never
+// content: FILES-01); nothing for none.
+func logSkippedLines(lines *streamline.Reader) {
+	if n := lines.Skipped(); n > 0 {
+		log.Printf("claude: skipped %d stream-json line(s) over %d bytes", n, maxStreamLine)
+	}
+	if n := lines.Undecodable(); n > 0 {
+		log.Printf("claude: %d undecodable stream-json line(s) ignored", n)
+	}
 }
 
 // QuerySync sends a non-streaming request via the Claude Code CLI and returns
@@ -860,7 +966,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}
-	reap := ConfigureChild(cmd, c.processGroup, 5*time.Second)
+	reap := ConfigureChild(cmd)
 	defer reap()
 	cmd.Dir = c.workDir()
 	cmd.Env = c.childEnviron()
@@ -894,10 +1000,17 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, classifyError(err, stderrBuf.String())
 	}
 
+	// A clean exit must leave a result object (L12): empty output, an array
+	// without a result event, another event or plain text is never handed
+	// back as the answer. --output-format json always prints JSON, so no
+	// caller gets plain text; the parse error describes the output, never
+	// echoes it.
 	resp, err := parseCLIOutput(output)
+	if err == nil && resp.Type != "result" {
+		err = logredact.Errorf("claude CLI output is a %q object, not a result", logredact.Text(resp.Type))
+	}
 	if err != nil {
-		// Fallback: treat as plain text if JSON parsing fails (e.g. old CLI version)
-		return strings.TrimRight(string(output), "\n"), nil, nil // intentional fallback to plain text
+		return "", nil, noResultFailure(fmt.Errorf("%w: %w", errNoResultEvent, err), stderrBuf.String())
 	}
 	envelope = &resp.resultUsage
 
@@ -905,13 +1018,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 		return "", nil, providers.ClaudeResultFailure(resp.Type, resp.Subtype, resp.IsError, resp.Error, resp.Result, resp.limit, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result)))
 	}
 
-	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
-	usage := &Usage{
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		TotalAPITokens: totalAPI,
-		CostUSD:        resp.CostUSD,
-	}
+	usage := &Usage{Tokens: resp.tokens()}
 
 	return strings.TrimRight(resp.Result, "\n"), usage, nil
 }
@@ -926,17 +1033,169 @@ type streamEvent struct {
 	Message   *streamMessage `json:"message"`
 	Result    string         `json:"result"`
 	IsError   bool           `json:"is_error"`
+	// ParentToolUseID is set on a subagent's events.
+	ParentToolUseID string `json:"parent_tool_use_id"`
 	// resultUsage is filled on a "result" event only.
 	resultUsage
 }
 
 type streamMessage struct {
+	ID      string          `json:"id"`
+	Model   string          `json:"model"`
 	Content []streamContent `json:"content"`
 }
 
+// streamContent is one content block: text, a tool_use (ID, Name, Input) on
+// an assistant event, a tool_result (ToolUseID, Content, IsError) on a user
+// event.
 type streamContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// claudeInternalTools are Claude Code's own plumbing tools (ToolSearch loads
+// deferred MCP tool schemas). They are not steps the owner asked for, so they
+// never surface as tool steps. They stay allowed: hiding ToolSearch would
+// leave the deferred watchtower tools unloadable.
+var claudeInternalTools = map[string]bool{"ToolSearch": true}
+
+// IsClaudeInternalTool reports whether a raw Claude tool name is one of
+// Claude Code's plumbing tools, never shown as a step.
+func IsClaudeInternalTool(name string) bool { return claudeInternalTools[name] }
+
+// ToolResultText flattens a tool_result's content: a string, or the text
+// parts of a content array; "" for any other shape.
+func ToolResultText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		if p.Type == "text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// chatEventState maps one run's stream-json events onto the chat-event
+// chunks (EmitToolEvents). It is not chat.ClaudeTranslator (the warm
+// session's, which reads partial-message deltas and cannot be imported
+// here): this one reads whole messages, so the two must hide the same tools
+// (IsClaudeInternalTool) and separate messages alike. A subagent's events
+// are dropped, as the translator drops them.
+type chatEventState struct {
+	model  string
+	names  map[string]string // tool_use id → raw name, until its result
+	order  []string          // tool_use ids in names, in call order
+	hidden map[string]bool   // tool_use ids of Claude-internal tools
+	// textMessage is the id of the message that last emitted text and
+	// afterTool records a tool call since then: a later message's text, or
+	// any text after a tool call, starts after a blank line, as the
+	// translator separates messages.
+	textMessage          string
+	wroteText, afterTool bool
+}
+
+func newChatEventState() *chatEventState {
+	return &chatEventState{names: map[string]string{}, hidden: map[string]bool{}}
+}
+
+func (s *chatEventState) chunks(e *streamEvent) []StreamChunk {
+	if e.ParentToolUseID != "" {
+		return nil
+	}
+	switch e.Type {
+	case "assistant":
+		if e.Message == nil {
+			return nil
+		}
+		if e.Message.Model != "" {
+			s.model = e.Message.Model
+		}
+		var out []StreamChunk
+		for _, b := range e.Message.Content {
+			switch b.Type {
+			case "text":
+				if b.Text == "" {
+					continue
+				}
+				text := b.Text
+				if s.wroteText && (s.afterTool || e.Message.ID != s.textMessage) {
+					text = "\n\n" + text
+				}
+				s.wroteText, s.afterTool, s.textMessage = true, false, e.Message.ID
+				out = append(out, StreamChunk{Text: text})
+			case "tool_use":
+				s.afterTool = true
+				if IsClaudeInternalTool(b.Name) {
+					s.hidden[b.ID] = true
+					continue
+				}
+				s.names[b.ID] = b.Name
+				s.order = append(s.order, b.ID)
+				args := b.Input
+				if len(args) == 0 {
+					args = json.RawMessage("{}")
+				}
+				out = append(out, StreamChunk{Tool: &ToolEvent{ID: b.ID, Name: b.Name, Args: args}})
+			}
+		}
+		return out
+	case "user":
+		if e.Message == nil {
+			return nil
+		}
+		var out []StreamChunk
+		for _, b := range e.Message.Content {
+			if b.Type != "tool_result" {
+				continue
+			}
+			if s.hidden[b.ToolUseID] {
+				delete(s.hidden, b.ToolUseID)
+				continue
+			}
+			name := s.names[b.ToolUseID]
+			delete(s.names, b.ToolUseID)
+			out = append(out, StreamChunk{Tool: &ToolEvent{ID: b.ToolUseID, Name: name, Done: true,
+				OK: !b.IsError, Result: ToolResultText(b.Content)}})
+		}
+		return out
+	case "result":
+		return []StreamChunk{{Usage: &TurnUsage{Model: s.model, Tokens: e.tokens()}}}
+	}
+	return nil
+}
+
+// closeOpen ends every tool still waiting for its result as failed with
+// reason, in call order.
+func (s *chatEventState) closeOpen(reason string) []StreamChunk {
+	var out []StreamChunk
+	for _, id := range s.order {
+		if name, open := s.names[id]; open {
+			delete(s.names, id)
+			out = append(out, StreamChunk{Tool: &ToolEvent{ID: id, Name: name, Done: true, Result: reason}})
+		}
+	}
+	s.order = nil
+	return out
 }
 
 // extractText returns the text content from a stream event, if any.

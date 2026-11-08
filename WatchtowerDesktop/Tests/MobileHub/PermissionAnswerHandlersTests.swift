@@ -393,14 +393,19 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertNil(try row(id)?["decided_by"] as String?)
     }
 
-    /// Codex keeps "Needs approval on the Mac": its rows are not the phone's.
-    func testAnAnswerForACodexSessionIsNotFound() async throws {
+    /// A board session whose agent has no permission wait is refused
+    /// `not_supported` with the owner-readable message (S4, PROJ-21
+    /// amended): Codex keeps "Needs approval on the Mac", the row stays pending.
+    func testCodexRefusedAsNotSupported() async throws {
         let session = try await liveSession(kind: .codex)
         let id = try await request(session)
 
         let outcome = try await makeHandlers().handle(answer(session, request: id))
 
-        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertEqual(outcome.reason, .notSupported)
+        XCTAssertEqual(
+            outcome.errorMessage, "Codex sessions can't answer this permission from the phone yet. Answer it on the Mac."
+        )
         XCTAssertEqual(try row(id)?["status"], "pending")
     }
 
@@ -504,13 +509,18 @@ final class PermissionAnswerHandlersTests: XCTestCase {
         XCTAssertTrue(typed.isEmpty)
     }
 
-    func testInterruptOfACodexSessionIsNotFound() async throws {
+    /// Interrupt is a PROJ-21 kind: no Esc into a session whose agent has
+    /// no permission wait (an Esc could land on a prompt Watchtower cannot see).
+    func testInterruptOfACodexSessionIsNotSupported() async throws {
         let session = try await liveSession(kind: .codex)
         setState(session, .working)
 
         let outcome = try await makeHandlers().handle(interrupt(session))
 
-        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertEqual(outcome.reason, .notSupported)
+        XCTAssertEqual(
+            outcome.errorMessage, "Codex sessions can't be interrupted from the phone yet. Stop it on the Mac."
+        )
         XCTAssertTrue(typed.isEmpty)
     }
 

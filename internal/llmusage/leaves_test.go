@@ -21,7 +21,7 @@ import (
 // a same-package record* helper that does). A function that runs claude or
 // codex for a model answer never belongs here: it records.
 var knownNonLLMExec = map[string]string{
-	"agentlog.WorktreeRoots":             "git worktree list",
+	"agentfiles.WorktreeRoots":           "git worktree list",
 	"auth.IsCertTrusted":                 "security verify-cert on the local TLS certificate",
 	"auth.OpenBrowser":                   "opens the OAuth URL in the browser (open / xdg-open)",
 	"auth.TrustCert":                     "security import / add-trusted-cert of the local TLS certificate",
@@ -50,6 +50,7 @@ var knownNonLLMExec = map[string]string{
 	"extract.(*helperOCR).run":           "the Vision OCR helper",
 	"extract.runCodesign":                "codesign --verify of the OCR helper",
 	"gitbin.run":                         "git",
+	"main.spawnGrandchild":               "the transport contract suite's fake CLI (internal/transporttest/fakecli) starting its own copy to hold stdout",
 	"media.runSips":                      "sips image conversion",
 	"oauthpage.openURL":                  "/usr/bin/open of an OAuth page",
 	"ownerconfirm.codesign":              "codesign of the Desktop app",

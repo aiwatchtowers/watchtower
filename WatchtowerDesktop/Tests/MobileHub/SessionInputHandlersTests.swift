@@ -119,7 +119,8 @@ final class SessionInputHandlersTests: XCTestCase {
     private var typed: [[UInt8]] { processes.flatMap(\.inputs) }
 
     private func makeHandlers(
-        lateEcho: RelayProcessor.LateEcho? = nil
+        lateEcho: RelayProcessor.LateEcho? = nil,
+        caps: @escaping (AgentKind) -> AgentSessionCaps = AgentSessionCaps.of
     ) throws -> SessionInputHandlers {
         let log = try XCTUnwrap(echoes)
         let clock = try XCTUnwrap(clock)
@@ -129,22 +130,28 @@ final class SessionInputHandlersTests: XCTestCase {
             status: { [weak self] in self?.statuses[$0] },
             deviceGrant: { MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
             lateEcho: lateEcho ?? { action, outcome in await log.append(action, outcome) },
-            now: { clock.now } // swiftlint:disable:this trailing_closure
+            now: { clock.now },
+            caps: caps
         )
     }
 
-    /// A workbench with one running `claude` session.
-    private func liveSession() async throws -> Int64 {
+    /// A workbench with one running agent session (`claude` by default).
+    private func liveSession(kind: TerminalSession.Kind = .claude) async throws -> Int64 {
         let acme = folder.path
         let session = try await pool.write { db -> TerminalSession in
             let project = try TestDatabase.insertWorkbench(db, folder: acme)
             return try TerminalSessionQueries.create(db, .init(
-                projectID: project, kind: .claude, title: "Ship it", folderPath: acme,
+                projectID: project, kind: kind, title: "Ship it", folderPath: acme,
                 claudeSessionID: UUID().uuidString.lowercased()
             ))
         }
         workbenchID = try XCTUnwrap(session.projectID)
-        center.start(session, fresh: true)
+        if kind == .codex {
+            // Stubbed launch args: no real `codex` runs.
+            center.start(session, fresh: true, codex: CodexLaunchArgs(binary: "/usr/bin/true", pathPrepend: "", args: []))
+        } else {
+            center.start(session, fresh: true)
+        }
         XCTAssertTrue(center.liveIDs.contains(session.id))
         return session.id
     }
@@ -313,27 +320,61 @@ final class SessionInputHandlersTests: XCTestCase {
         XCTAssertEqual(outcome.result, ["delivery": .string("submitted")])
     }
 
-    /// Send while busy is Claude only. A Codex session is not a board
-    /// session of this handler: it is refused before any line check (the
-    /// busy hold of `lineCheck` is never reached for it), and nothing types.
-    func testProj16_AWorkingCodexSessionStillHoldsTheLine() async throws {
-        let acme = folder.path
-        let session = try await pool.write { db -> TerminalSession in
-            let project = try TestDatabase.insertWorkbench(db, folder: acme)
-            return try TerminalSessionQueries.create(db, .init(
-                projectID: project, kind: .codex, title: "Codex", folderPath: acme,
-                claudeSessionID: UUID().uuidString.lowercased()
-            ))
-        }
-        workbenchID = try XCTUnwrap(session.projectID)
-        setState(session.id, .working)
+    /// A working Codex session holds the phone's line until it stops: Codex
+    /// takes a line mid-turn, but an MCP form it opens mid-turn raises no
+    /// state (plan Task G7 spikes (a), (c)). Nothing types meanwhile.
+    func testProj16_AWorkingCodexSessionHoldsTheLineUntilIdle() async throws {
+        let session = try await liveSession(kind: .codex)
+        setState(session, .working)
 
-        let outcome = try await makeHandlers().handle(input(session.id, "Also update the changelog"))
+        let outcome = try await makeHandlers().handle(input(session, "Also update the changelog"))
 
-        XCTAssertEqual(outcome.status, .failed)
-        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertEqual(outcome.status, .held)
+        XCTAssertEqual(outcome.reason, .agentBusy)
         XCTAssertTrue(pastes.isEmpty)
         XCTAssertTrue(typed.isEmpty)
+    }
+
+    /// The other side of the same gate: a Codex row that reported every
+    /// mid-turn dialog takes the line while it works, sent while busy.
+    func testACodexRowThatTakesLinesWhileWorkingGetsTheLine() async throws {
+        let session = try await liveSession(kind: .codex)
+        setState(session, .working)
+        let fullRow: (AgentKind) -> AgentSessionCaps = { _ in AgentSessionCaps.of(AgentKind.claude) }
+
+        let outcome = try await makeHandlers(caps: fullRow).handle(input(session, "Also update the changelog"))
+
+        XCTAssertEqual(outcome.result, ["delivery": .string("submitted"), "while_busy": .bool(true)])
+        XCTAssertEqual(pastes, ["Also update the changelog"])
+    }
+
+    /// A board session whose agent takes no phone input is refused
+    /// `not_supported` with the owner-readable message, never "no longer
+    /// exists" (S4, PROJ-16 amended); nothing types.
+    func testCodexRefusedAsNotSupported() async throws {
+        let session = try await liveSession(kind: .codex)
+        setState(session, .stopped)
+        let noPhoneInput: (AgentKind) -> AgentSessionCaps = { $0 == .codex ? .none : AgentSessionCaps.of($0) }
+        let handlers = try makeHandlers(caps: noPhoneInput)
+
+        for action in [input(session, "Also update the changelog"), finish(session)] {
+            let outcome = try await handlers.handle(action)
+            XCTAssertEqual(outcome.status, .failed)
+            XCTAssertEqual(outcome.reason, .notSupported)
+            XCTAssertEqual(
+                outcome.errorMessage, "Codex sessions can't take messages from the phone yet. Type it on the Mac."
+            )
+        }
+        XCTAssertTrue(pastes.isEmpty)
+        XCTAssertTrue(typed.isEmpty)
+    }
+
+    /// not_found keeps its meaning: a session id with no board row.
+    func testADeletedSessionIsStillNotFound() async throws {
+        let outcome = try await makeHandlers().handle(input(9999, "Hello"))
+
+        XCTAssertEqual(outcome.reason, .notFound)
+        XCTAssertEqual(outcome.errorMessage, "This session no longer exists on the Mac")
     }
 
     /// I-5: a session at a permission prompt never gets a phone line, not

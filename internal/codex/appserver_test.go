@@ -32,6 +32,10 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		os.Exit(runFakeAppServer(mode))
 	}
+	if nonce := os.Getenv(liveMCPNonceEnv); nonce != "" && len(os.Args) > 1 && os.Args[1] == "mcp" {
+		os.Exit(runFakeMCPServer(nonce)) // live_test.go: mounted as the watchtower server
+	}
+	liveCodexHome = os.Getenv("CODEX_HOME")
 	// No test runs a real `codex --version`: every binary counts as one
 	// with model_instructions_file, except where a test restores the real
 	// probe against a fake codex (instructions_test.go).

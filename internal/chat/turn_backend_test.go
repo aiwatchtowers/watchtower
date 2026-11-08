@@ -109,6 +109,8 @@ func TestTurnBackend_ReplaysHistoryAndStreams(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(user, "why?"), "the running turn is not replayed as history")
 }
 
+// The runtime B (agentloop) shape of tool chunks; the codex path is
+// TestTurnBackend_CodexToolCallsBecomeSteps.
 func TestTurnBackend_ToolChunksBecomeSteps(t *testing.T) {
 	d, conv := seedConversation(t)
 	fq := &fakeQuerier{chunks: []ai.StreamChunk{
@@ -159,7 +161,8 @@ func TestTurnBackend_CancelEndsInterrupted(t *testing.T) {
 }
 
 // TestTurnBackend_AttachmentRejectedBeforeTheCall uses a real (existing) PNG
-// so the rejection exercises the "images/PDFs need Claude" textOnly branch,
+// so the rejection exercises the capability branch (a querier that takes
+// no images),
 // not a "file not found" short-circuit (task-20-review.md Important I1 item 5).
 func TestTurnBackend_AttachmentRejectedBeforeTheCall(t *testing.T) {
 	d, conv := seedConversation(t)
@@ -172,7 +175,7 @@ func TestTurnBackend_AttachmentRejectedBeforeTheCall(t *testing.T) {
 	e := h.next(EventError)
 	assert.Equal(t, CodeAttachmentUnsupported, e.Code)
 	assert.False(t, e.Retryable)
-	assert.Contains(t, e.Message, "Claude", "rejected via the textOnly branch, not a file-not-found error")
+	assert.Contains(t, e.Message, "need a provider that reads them", "rejected by capability, not a file-not-found error")
 	require.NoError(t, h.finish())
 	calls, _, _ := fq.seen()
 	assert.Zero(t, calls, "nothing reaches the provider")
@@ -212,4 +215,34 @@ func TestChunkEvents(t *testing.T) {
 	require.NotNil(t, failed[0].OK)
 	assert.False(t, *failed[0].OK)
 	assert.Contains(t, failed[0].Summary, "no target")
+}
+
+// linkAttachment stores a file as sent with message messageID, the way the
+// Desktop links a turn's attachments to the owner's row.
+func linkAttachment(t *testing.T, d *db.DB, conv, messageID int64, name, mime, path string) {
+	t.Helper()
+	_, err := d.Exec(`INSERT INTO chat_attachments (conversation_id, message_id, name, mime, size, path, sha256, created_at)
+		VALUES (?, ?, ?, ?, 0, ?, '', 1)`, conv, messageID, name, mime, path)
+	require.NoError(t, err)
+}
+
+// A stateless provider starts fresh every turn: a text file sent on turn 1
+// is still in the prompt of turn 2, re-read from disk through the replay.
+func TestTurnBackend_EarlierTurnsTextAttachmentReachesTheNextTurn(t *testing.T) {
+	d, conv := seedConversation(t)
+	var first int64
+	require.NoError(t, d.QueryRow(`SELECT id FROM chat_messages WHERE turn_id = 't1' AND role = 'user'`).Scan(&first))
+	linkAttachment(t, d, conv, first, "a.csv", "text/csv", writeAttachmentFixture(t, "a.csv", []byte("a,b\n1,2")))
+
+	fq := &fakeQuerier{chunks: []ai.StreamChunk{{Text: "3"}}}
+	h := startSession(t, NewTurnBackend(fq, d, conv), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "why?"})
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
+
+	_, _, user := fq.seen()
+	assert.Contains(t, user, "<file name=\"a.csv\">\na,b\n1,2\n</file>")
+	assert.Contains(t, user, "Owner: what slipped?\n  · attached: a.csv\n")
+	assert.Less(t, strings.Index(user, "<file name=\"a.csv\">"), strings.Index(user, "why?"))
 }

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/db"
 )
 
@@ -131,7 +133,7 @@ func TestReplayFromDB_UsesActivePathAndSteps(t *testing.T) {
 		VALUES (?, 1, 'x', 'search_knowledge', 1, '2 results', 1)`, a)
 	require.NoError(t, err)
 
-	out, err := ReplayFromDB(d, conv, "t2")
+	out, err := ReplayFromDB(d, conv, "t2", nil)
 	require.NoError(t, err)
 	assert.Contains(t, out, "Owner: what slipped?")
 	assert.Contains(t, out, "  · step: search_knowledge: 2 results")
@@ -170,7 +172,7 @@ func TestReplayFailedEmptyAssistantIncludesOnlyPriorPathReceipts(t *testing.T) {
 	require.NoError(t, d.Close())
 	d, err = db.Open(path)
 	require.NoError(t, err)
-	out, err := ReplayFromDB(d, 1, "current")
+	out, err := ReplayFromDB(d, 1, "current", nil)
 	require.NoError(t, err)
 	require.Contains(t, out, "create_target: failed")
 	require.Contains(t, out, "persisted receipt; do not repeat")
@@ -184,8 +186,144 @@ func TestReplayFailedEmptyAssistantIncludesOnlyPriorPathReceipts(t *testing.T) {
 	require.NoError(t, err)
 	_, err = d.Exec(`UPDATE chat_messages SET turn_id='regenerate' WHERE id=4`)
 	require.NoError(t, err)
-	out, err = ReplayFromDB(d, 1, "regenerate")
+	out, err = ReplayFromDB(d, 1, "regenerate", nil)
 	require.NoError(t, err)
 	require.NotContains(t, out, "current_tool")
 	require.NotContains(t, out, "current question")
+}
+
+// Earlier turns' text files are replayed newest first within the byte
+// budget; what does not fit, an image and a file gone from disk are named
+// with the reason instead, and the running turn's files are never replayed.
+func TestReplayFiles_NewestFirstWithinBudget(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, data []byte) string {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(p, data, 0o600))
+		return p
+	}
+	hist := []db.ChatMessage{
+		msg(1, "user", "old", "t1"), msg(2, "assistant", "ok", "t1"),
+		msg(3, "user", "new", "t2"), msg(4, "assistant", "ok", "t2"),
+	}
+	files := map[int64][]db.ChatProjectFile{
+		1: {{Name: "old.csv", Mime: "text/csv", Path: write("old.csv", []byte(strings.Repeat("o", 60)))}},
+		3: {
+			{Name: "new.csv", Mime: "text/csv", Path: write("new.csv", []byte(strings.Repeat("n", 60)))},
+			{Name: "shot.png", Mime: "image/png", Path: write("shot.png", fixturePNG)},
+			{Name: "gone.txt", Mime: "text/plain", Path: filepath.Join(dir, "gone.txt")},
+		},
+	}
+	out, _ := replayFiles(hist, files, nil, 100)
+	assert.True(t, strings.HasPrefix(out, replayFilesHeader+"\n"), out)
+	assert.True(t, strings.HasSuffix(out, replayFilesFooter+"\n\n"), out)
+	assert.Contains(t, out, "<file name=\"new.csv\">\n"+strings.Repeat("n", 60)+"\n</file>")
+	assert.NotContains(t, out, strings.Repeat("o", 60), "the older file is over the budget")
+	assert.Contains(t, out, `[file "old.csv" not replayed: over the replay's 100-byte budget for earlier files]`)
+	assert.Contains(t, out, `[file "shot.png" not replayed: images and PDFs are not replayed]`)
+	assert.Contains(t, out, `[file "gone.txt" not replayed: file not found or unreadable]`)
+	assert.Less(t, strings.Index(out, "new.csv"), strings.Index(out, "old.csv"), "newest first")
+
+	none, _ := replayFiles(hist, nil, nil, 100)
+	assert.Empty(t, none, "no files → no block")
+}
+
+func TestReplayFromDB_ReplaysEarlierTextFiles(t *testing.T) {
+	d, conv := seedConversation(t)
+	ids := map[string]int64{}
+	for _, turn := range []string{"t1", "t2"} {
+		var id int64
+		require.NoError(t, d.QueryRow(`SELECT id FROM chat_messages WHERE role = 'user' AND turn_id = ?`, turn).Scan(&id))
+		ids[turn] = id
+	}
+	linkAttachment(t, d, conv, ids["t1"], "a.csv", "text/csv", writeAttachmentFixture(t, "a.csv", []byte("a,b\n1,2")))
+	linkAttachment(t, d, conv, ids["t2"], "now.csv", "text/csv", writeAttachmentFixture(t, "now.csv", []byte("sent with the running turn")))
+
+	out, err := ReplayFromDB(d, conv, "t2", nil)
+	require.NoError(t, err)
+	assert.Contains(t, out, "<file name=\"a.csv\">\na,b\n1,2\n</file>")
+	assert.NotContains(t, out, "now.csv", "the running turn's files travel with the turn, not the replay")
+	assert.Less(t, strings.Index(out, replayFilesFooter), strings.Index(out, replayHeader), "files first, the transcript ends the block")
+}
+
+// A file sent again shares its stored copy (one per content): it is replayed
+// once, at its newest place, never inlined twice or noted as over the budget.
+func TestReplayFiles_ResentFileIsReplayedOnce(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "a.csv")
+	require.NoError(t, os.WriteFile(p, []byte(strings.Repeat("a", 60)), 0o600))
+	f := db.ChatProjectFile{Name: "a.csv", Mime: "text/csv", Path: p, Size: 60}
+	hist := []db.ChatMessage{msg(1, "user", "here", "t1"), msg(2, "assistant", "ok", "t1"), msg(3, "user", "again", "t2")}
+	out, _ := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {f}, 3: {f}}, nil, 100)
+	assert.Equal(t, 1, strings.Count(out, `<file name="a.csv">`), out)
+	assert.NotContains(t, out, "not replayed")
+}
+
+// The stored size rules a file out before it is read.
+func TestReplayFiles_StoredSizeOverBudgetIsNotRead(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "big.csv") // never created: a read would say "unreadable"
+	hist := []db.ChatMessage{msg(1, "user", "here", "t1")}
+	out, _ := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {{Name: "big.csv", Mime: "text/csv", Path: gone, Size: 101}}}, nil, 100)
+	assert.Contains(t, out, `[file "big.csv" not replayed: over the replay's 100-byte budget for earlier files]`)
+}
+
+// A file the owner attaches again with the running turn travels inlined
+// with the turn: the replay leaves it out instead of sending it twice.
+func TestReplayFromDB_FileResentWithTheTurnIsNotReplayed(t *testing.T) {
+	d, conv := seedConversation(t)
+	var id int64
+	require.NoError(t, d.QueryRow(`SELECT id FROM chat_messages WHERE role = 'user' AND turn_id = 't1'`).Scan(&id))
+	p := writeAttachmentFixture(t, "a.csv", []byte("a,b\n1,2"))
+	linkAttachment(t, d, conv, id, "a.csv", "text/csv", p)
+
+	out, err := ReplayFromDB(d, conv, "t2", []Attachment{{Path: p, Mime: "text/csv", Name: "a.csv"}})
+	require.NoError(t, err)
+	assert.NotContains(t, out, `<file name="a.csv">`)
+	assert.NotContains(t, out, "not replayed")
+	assert.Contains(t, out, "  · attached: a.csv", "the transcript still says where it was first sent")
+}
+
+// The files a replay leaves out are counted by class for the log line
+// (counts only, FILES-01): gone or unreadable, refused (here: not UTF-8);
+// images and PDFs, left out on purpose, and budget misses are not counted.
+func TestReplayFiles_CountsLeftOutFiles(t *testing.T) {
+	dir := t.TempDir()
+	png := filepath.Join(dir, "shot.png")
+	require.NoError(t, os.WriteFile(png, fixturePNG, 0o600))
+	latin := filepath.Join(dir, "latin1.txt")
+	require.NoError(t, os.WriteFile(latin, []byte("caf\xe9 au lait"), 0o600))
+	hist := []db.ChatMessage{msg(1, "user", "here", "t1")}
+	_, skips := replayFiles(hist, map[int64][]db.ChatProjectFile{1: {
+		{Name: "secret-plan.txt", Mime: "text/plain", Path: filepath.Join(dir, "secret-plan.txt")},
+		{Name: "gone.csv", Mime: "text/csv", Path: filepath.Join(dir, "gone.csv")},
+		{Name: "latin1.txt", Mime: "text/plain", Path: latin},
+		{Name: "shot.png", Mime: "image/png", Path: png},
+		{Name: "big.csv", Mime: "text/csv", Path: filepath.Join(dir, "big.csv"), Size: 101},
+	}}, nil, 100)
+	assert.Equal(t, replaySkips{unreadable: 2, rejected: 1}, skips)
+}
+
+// The turn backend hands the turn's attachments to the replay: a file sent
+// again with the turn reaches codex once, inlined with the turn.
+func TestTurnBackend_ResentFileReachesTheProviderOnce(t *testing.T) {
+	d, conv := seedConversation(t)
+	var id int64
+	require.NoError(t, d.QueryRow(`SELECT id FROM chat_messages WHERE role = 'user' AND turn_id = 't1'`).Scan(&id))
+	p := writeAttachmentFixture(t, "a.csv", []byte("a,b\n1,2"))
+	linkAttachment(t, d, conv, id, "a.csv", "text/csv", p)
+	stdin := filepath.Join(t.TempDir(), "stdin")
+	bin := filepath.Join(t.TempDir(), "codex")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n"+
+		`if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi`+"\n"+
+		"cat > '"+stdin+"'\n"+
+		`echo '{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"ok"}}'`+"\n"+
+		`echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'`+"\n"), 0o755))
+
+	h := startSession(t, NewTurnBackend(codex.NewClient("gpt-x", "", bin), d, conv), nil)
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again", Attachments: []Attachment{{Path: p, Mime: "text/csv", Name: "a.csv"}}})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+	sent, err := os.ReadFile(stdin)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(sent), `<file name="a.csv">`), string(sent))
 }

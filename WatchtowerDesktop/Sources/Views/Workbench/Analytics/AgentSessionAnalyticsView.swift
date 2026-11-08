@@ -82,7 +82,7 @@ struct AgentSessionAnalyticsView: View {
         let session = detail.session
         var parts = [AgentAnalyticsFormat.moment(session.startedAt)]
         if !session.oldFormat { parts.append("active \(AgentAnalyticsFormat.duration(detail.time.activeMS))") }
-        parts.append(AgentAnalyticsFormat.cost(session.costUSD))
+        parts.append(AgentAnalyticsFormat.sessionCost(session))
         if !session.model.isEmpty { parts.append(session.model) }
         if !session.branch.isEmpty { parts.append(session.branch) }
         return parts.joined(separator: " · ")

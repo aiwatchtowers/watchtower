@@ -140,6 +140,7 @@ case "$input" in
 *` + marker + `*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"got:` + marker + `"}}' ;;
 *) echo '{"type":"item.completed","item":{"type":"agent_message","text":"marker-missing"}}' ;;
 esac
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -168,6 +169,7 @@ case "$input" in
 *` + marker + `*) echo '{"type":"item.completed","item":{"type":"agent_message","text":"got:` + marker + `"}}' ;;
 *) echo '{"type":"item.completed","item":{"type":"agent_message","text":"marker-missing"}}' ;;
 esac
+echo '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -250,7 +252,7 @@ func TestQuerySync_SmallPromptsNeverReachArgv(t *testing.T) {
 	useRealVersionProbe(t)
 	body := `#!/bin/sh
 [ "$1" = "--version" ] && { echo "codex-cli 0.145.0"; exit 0; }
-reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; exit 0; }
+reply() { echo '{"type":"item.completed","item":{"type":"agent_message","text":"'"$1"'"}}'; echo '{"type":"turn.completed"}'; exit 0; }
 case "$*" in *MARKER-566*) reply on-argv ;; esac
 input=$(cat)
 case "$input" in *` + userMarker + `*) ;; *) reply user-missing ;; esac

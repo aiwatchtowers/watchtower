@@ -892,8 +892,8 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID string,
 	model := "auto"
 	if usage != nil && len(items) > 0 {
 		model = usage.Model
-		inputTokens = usage.InputTokens / len(items)
-		outputTokens = usage.OutputTokens / len(items)
+		inputTokens = usage.InputTokens() / len(items)
+		outputTokens = usage.OutputTokens() / len(items)
 	}
 
 	// Fallback related digest IDs for items without usable source_refs.
@@ -1254,9 +1254,9 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 	}
 
 	if usage != nil {
-		p.totalInputTokens.Add(int64(usage.InputTokens))
-		p.totalOutputTokens.Add(int64(usage.OutputTokens))
-		p.totalAPITokens.Add(int64(usage.TotalAPITokens))
+		p.totalInputTokens.Add(int64(usage.InputTokens()))
+		p.totalOutputTokens.Add(int64(usage.OutputTokens()))
+		p.totalAPITokens.Add(int64(usage.TotalAPITokens()))
 	}
 
 	results, err := parseBatchTracksResult(raw)

@@ -40,6 +40,7 @@ import (
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
 	"watchtower/internal/media"
+	"watchtower/internal/powerstate"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -916,6 +917,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
 	d.SetDB(database)
+	// #880: no scheduled cycle starts in a Power Nap dark wake.
+	d.SetFullWakeProbe(powerstate.Probe)
 	if al != nil {
 		defer al.Close()
 		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
@@ -1593,9 +1596,9 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	if err != nil {
 		digestSpinner.Stop(fmt.Sprintf("Digest error: %v", err))
 	} else if n > 0 {
-		if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
+		if usage != nil && (usage.InputTokens() > 0 || usage.OutputTokens() > 0) {
 			digestSpinner.Stop(fmt.Sprintf("Generated %d digest(s) (%d+%d tokens)",
-				n, usage.InputTokens, usage.OutputTokens))
+				n, usage.InputTokens(), usage.OutputTokens()))
 		} else {
 			digestSpinner.Stop(fmt.Sprintf("Generated %d digest(s)", n))
 		}

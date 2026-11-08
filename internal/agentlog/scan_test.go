@@ -24,6 +24,7 @@ type fixture struct {
 	d      *db.DB // watchtower.db
 	al     *agentlogdb.DB
 	claude string
+	codex  string // CODEX_HOME: a temp dir, never the owner's ~/.codex
 	folder string
 	wb     int64
 }
@@ -44,7 +45,7 @@ func newFixture(t *testing.T) *fixture {
 	wb, err := d.CreateWorkbench("app", folder)
 	require.NoError(t, err)
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
-	return &fixture{t: t, dir: dir, d: d, al: al, claude: t.TempDir(), folder: folder, wb: wb}
+	return &fixture{t: t, dir: dir, d: d, al: al, claude: t.TempDir(), codex: t.TempDir(), folder: folder, wb: wb}
 }
 
 // write appends content to the transcript of session sid whose cwd is cwd.
@@ -61,7 +62,7 @@ func (f *fixture) write(cwd, rel, content string) string {
 }
 
 func (f *fixture) scan() *Result {
-	r, err := Scan(context.Background(), f.d, f.al, f.wb, Options{ClaudeDir: f.claude})
+	r, err := Scan(context.Background(), f.d, f.al, f.wb, Options{ClaudeDir: f.claude, CodexHome: f.codex})
 	require.NoError(f.t, err)
 	return r
 }

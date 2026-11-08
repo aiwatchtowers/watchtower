@@ -25,16 +25,32 @@ import (
 // Call is one finished (or failed) model call; the JSON tags are the
 // llm_calls column names and the spool's line keys.
 type Call struct {
-	CallID          string   `json:"call_id"`
-	OperationID     string   `json:"operation_id,omitempty"`
-	Attempt         int      `json:"attempt,omitempty"`
-	ConfigRevision  string   `json:"config_revision,omitempty"`
-	At              string   `json:"at"`
-	Surface         string   `json:"surface"`
-	Purpose         string   `json:"purpose"`
-	Process         string   `json:"process"`
-	Provider        string   `json:"provider"`
-	Model           string   `json:"model"`
+	CallID         string `json:"call_id"`
+	OperationID    string `json:"operation_id,omitempty"`
+	Attempt        int    `json:"attempt,omitempty"`
+	ConfigRevision string `json:"config_revision,omitempty"`
+	At             string `json:"at"`
+	Surface        string `json:"surface"`
+	Purpose        string `json:"purpose"`
+	Process        string `json:"process"`
+	Provider       string `json:"provider"`
+	Model          string `json:"model"`
+	Tokens
+	EstCostUSD      *float64 `json:"est_cost_usd"`
+	DurationMS      int64    `json:"duration_ms"`
+	OK              bool     `json:"ok"`
+	AutomationID    *int64   `json:"automation_id"`
+	AutomationRunID *int64   `json:"automation_run_id"`
+}
+
+// Tokens is one model call's (or turn's) usage block, the same on every
+// transport (spec 2026-11-05-llm-transport-independence-design.md §3.2):
+// Input is fresh input, the cache reads and writes ride beside it, and a
+// transport without a cache split (OpenAI-compatible prompt_tokens) fills
+// Input whole. ReportedCostUSD is the provider's own cost (nil = none);
+// Estimated marks length/4 numbers. The JSON tags are the llm_calls column
+// names, flat in Call's spool line.
+type Tokens struct {
 	Input           int64    `json:"input_tokens"`
 	CacheRead       int64    `json:"cache_read_tokens"`
 	CacheWrite5m    int64    `json:"cache_write_5m_tokens"`
@@ -42,11 +58,39 @@ type Call struct {
 	Output          int64    `json:"output_tokens"`
 	Estimated       bool     `json:"usage_estimated"`
 	ReportedCostUSD *float64 `json:"reported_cost_usd"`
-	EstCostUSD      *float64 `json:"est_cost_usd"`
-	DurationMS      int64    `json:"duration_ms"`
-	OK              bool     `json:"ok"`
-	AutomationID    *int64   `json:"automation_id"`
-	AutomationRunID *int64   `json:"automation_run_id"`
+}
+
+// AllInput is every input token: fresh plus cache reads and writes.
+func (t Tokens) AllInput() int64 { return t.Input + t.CacheRead + t.CacheWrite5m + t.CacheWrite1h }
+
+// ReportedCost is the provider's reported cost, 0 when it reported none.
+func (t Tokens) ReportedCost() float64 {
+	if t.ReportedCostUSD == nil {
+		return 0
+	}
+	return *t.ReportedCostUSD
+}
+
+// CacheWrite is both cache writes, 5 m and 1 h.
+func (t Tokens) CacheWrite() int64 { return t.CacheWrite5m + t.CacheWrite1h }
+
+// Add sums o into t: every count, the estimate flag, and the reported costs
+// (nil only while neither side reported one; a lower bound when only some
+// parts reported a cost).
+func (t *Tokens) Add(o Tokens) {
+	t.Input += o.Input
+	t.CacheRead += o.CacheRead
+	t.CacheWrite5m += o.CacheWrite5m
+	t.CacheWrite1h += o.CacheWrite1h
+	t.Output += o.Output
+	t.Estimated = t.Estimated || o.Estimated
+	if o.ReportedCostUSD != nil {
+		sum := *o.ReportedCostUSD
+		if t.ReportedCostUSD != nil {
+			sum += *t.ReportedCostUSD
+		}
+		t.ReportedCostUSD = &sum
+	}
 }
 
 // Sink stores a recorded call (the daemon's database writer).

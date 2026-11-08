@@ -31,6 +31,7 @@ import (
 	"watchtower/internal/guide"
 	"watchtower/internal/historybackfill"
 	"watchtower/internal/ideas"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/memory"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -231,7 +232,7 @@ func (g *countingGenerator) Generate(_ context.Context, _, _, _ string) (string,
 	defer g.mu.Unlock()
 	g.calls++
 	return `{"summary":"s","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`,
-		&digest.Usage{Model: "m", InputTokens: 1, OutputTokens: 1}, "", nil
+		&digest.Usage{Model: "m", Tokens: llmusage.Tokens{Input: 1, Output: 1}}, "", nil
 }
 
 func (g *countingGenerator) count() int {

@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
+	"watchtower/internal/providers/transport"
 )
 
 // writeMarkerStub writes an executable that records it ran by creating
@@ -68,7 +69,7 @@ func TestProviderPolicy_GeneratorRefusesNoFallback(t *testing.T) {
 	}
 	require.ErrorIs(t, <-errs, policy.ErrNotAllowed)
 
-	_, _, err = newQueryClient(cfg, "")
+	_, _, err = newQueryClient(cfg, "", transport.Options{})
 	require.ErrorIs(t, err, policy.ErrNotAllowed)
 
 	_, statErr := os.Stat(marker)

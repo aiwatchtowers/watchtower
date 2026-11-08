@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"watchtower/internal/rollout"
 )
 
 const liveWindow = 4 << 20
@@ -67,16 +69,13 @@ func LiveOf(c Conversation, sidechain bool, now time.Time) (*Live, error) {
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("live transcript is not a regular file")
 	}
-	tail, err := readTail(c.Path, liveWindow)
+	tail, cut, err := readTailCut(c.Path, liveWindow)
 	if err != nil {
 		return nil, err
 	}
-	if bytes.HasPrefix(tail, zstdMagic) {
-		return nil, fmt.Errorf("compressed transcript activity unavailable")
-	}
 	live := &Live{ObservedAt: now.UTC(), Conversation: c.AgentSessionID, TurnActive: true, Agents: []LiveAgent{}, AgentsState: "known"}
 	r := liveReader{live: live, agents: map[string]*LiveAgent{}, codex: c.Codex, sidechain: sidechain, path: c.Path}
-	if st.Size() > liveWindow {
+	if cut {
 		live.AgentsState = "unknown"
 	}
 	// Only newline-terminated records are committed to a rollout.
@@ -484,13 +483,14 @@ func codexChildPath(parentPath, parentID, childID string) (string, bool) {
 		if e != nil || !strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) {
 			continue
 		}
-		f, e := os.Open(path)
+		f, _, e := rollout.Open(path)
 		if e != nil {
 			continue
 		}
-		// Metadata is first; read only a small fixed prefix, never arbitrary file data.
+		// Metadata is first; read only a small fixed prefix, never arbitrary
+		// file data (of a compressed child, only its first decompressed bytes).
 		buf := make([]byte, 64<<10)
-		n, _ := f.Read(buf)
+		n, _ := io.ReadFull(f, buf)
 		_ = f.Close()
 		first, _, ok := bytes.Cut(buf[:n], []byte{'\n'})
 		if !ok {

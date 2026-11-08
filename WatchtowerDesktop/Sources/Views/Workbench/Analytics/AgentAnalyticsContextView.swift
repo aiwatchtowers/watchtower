@@ -6,12 +6,13 @@ import WatchtowerCore
 /// compactions, and the instruction files' size on disk.
 struct AgentAnalyticsContextView: View {
     let context: AgentContextReport?
+    var codex: AgentAnalyticsCodexShare = .none
     let actions: AgentAnalyticsActions
 
     static let shownGrowth = 6
 
     var body: some View {
-        AgentAnalyticsBlock(title: "Context", lead: context?.lead, state: state) {
+        AgentAnalyticsBlock(title: "Context", lead: context?.lead, state: state, codex: codex) {
             if let context { measured(context) }
         } footer: {
             // Compactions and the files on disk show in any state.

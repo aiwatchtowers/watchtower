@@ -1,22 +1,20 @@
 import XCTest
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 final class QuickConnectionsProviderNoticeTests: XCTestCase {
 
-    func testClaudeProviderShowsNoCaption() {
-        XCTAssertNil(QuickConnectionsProviderNotice.caption(forProvider: "claude"))
-    }
-
-    /// The codex chat mounts Quick Connections in its own CODEX_HOME (#594).
-    func testCodexProviderShowsNoCaption() {
-        XCTAssertNil(QuickConnectionsProviderNotice.caption(forProvider: "codex"))
-    }
-
-    func testNonClaudeProvidersShowCaptionNamingClaude() {
-        let caption = QuickConnectionsProviderNotice.caption(forProvider: "ollama")
-        XCTAssertNotNil(caption)
-        XCTAssertTrue(caption?.contains("claude") == true)
-        XCTAssertTrue(caption?.contains("codex") == true)
+    /// The caption follows the provider's capability row (the Go table):
+    /// claude, codex and ollama (runtime B) take the connections.
+    @MainActor
+    func testCaptionFollowsTheCapabilityRow() {
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        for id in ["claude", "codex", "ollama"] {
+            XCTAssertNil(QuickConnectionsProviderNotice.caption(capabilities: catalog.capabilities(for: id)), id)
+        }
+        XCTAssertNotNil(QuickConnectionsProviderNotice.caption(capabilities: catalog.capabilities(for: "lmstudio")),
+                        "a provider with no row takes nothing")
+        XCTAssertNil(QuickConnectionsProviderNotice.caption(capabilities: nil), "no caption before the catalog is read")
     }
 
     func testCodexImportNoticeShowsOnceForCodexUsersWithServers() {
@@ -26,11 +24,5 @@ final class QuickConnectionsProviderNoticeTests: XCTestCase {
         XCTAssertNil(notice.codexImportNotice(forProvider: "claude", dismissed: false, codexServers: 2))
         XCTAssertNil(notice.codexImportNotice(forProvider: "codex", dismissed: false, codexServers: 0))
         XCTAssertNil(notice.codexImportNotice(forProvider: "codex", dismissed: false, codexServers: nil))
-    }
-
-    func testUnknownOrAbsentProviderWarnsByDefault() {
-        XCTAssertNotNil(QuickConnectionsProviderNotice.caption(forProvider: nil))
-        XCTAssertNotNil(QuickConnectionsProviderNotice.caption(forProvider: ""))
-        XCTAssertNotNil(QuickConnectionsProviderNotice.caption(forProvider: "something-new"))
     }
 }

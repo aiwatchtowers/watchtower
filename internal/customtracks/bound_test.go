@@ -9,6 +9,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 func loadTrack(t *testing.T, d *db.DB, id int) db.Track {
@@ -250,7 +251,7 @@ type usageGenerator struct{ mockGenerator }
 
 func (g *usageGenerator) Generate(ctx context.Context, sys, user, sess string) (string, *digest.Usage, string, error) {
 	out, _, model, err := g.mockGenerator.Generate(ctx, sys, user, sess)
-	return out, &digest.Usage{InputTokens: 120, OutputTokens: 30, CostUSD: 0.5}, model, err
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 120, Output: 30, ReportedCostUSD: new(0.5)}}, model, err
 }
 
 func TestAccumulatedUsage_GrowsWithEveryModelCall(t *testing.T) {

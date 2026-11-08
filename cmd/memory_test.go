@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/memory"
 )
 
@@ -29,7 +30,7 @@ import (
 type cmdMemFakeGen struct{ reply string }
 
 func (g cmdMemFakeGen) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-	return g.reply, &digest.Usage{InputTokens: 10, OutputTokens: 5, Model: "haiku"}, "", nil
+	return g.reply, &digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "", nil
 }
 
 func cmdFakeGen(reply string) digest.Generator { return cmdMemFakeGen{reply: reply} }

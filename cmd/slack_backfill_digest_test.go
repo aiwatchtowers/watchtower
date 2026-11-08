@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/slackbackfill"
 	"watchtower/internal/sync"
 )
@@ -40,7 +41,7 @@ func (g *backfillGen) Generate(_ context.Context, _, _, _ string) (string, *dige
 	defer g.mu.Unlock()
 	g.n++
 	return `{"summary":"s","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`,
-		&digest.Usage{Model: "m", InputTokens: 1, OutputTokens: 1}, "", nil
+		&digest.Usage{Model: "m", Tokens: llmusage.Tokens{Input: 1, Output: 1}}, "", nil
 }
 
 func (g *backfillGen) calls() int {

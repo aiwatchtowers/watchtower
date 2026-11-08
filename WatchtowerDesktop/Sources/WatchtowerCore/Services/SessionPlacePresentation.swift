@@ -46,6 +46,55 @@ package enum SessionPlacePresentation {
         }
     }
 
+    /// The session row's place line (board #987): the place, led by the
+    /// branch the session's work merges into when that is not the branch
+    /// the agent's terminal sits on, plus its lane worktrees.
+    /// `⎇ feature/x · 3 lanes` (the terminal's place moves to the help),
+    /// `⎇ 2 target branches`, `main folder · main · 1 lane`. No target
+    /// branch and no lanes = `placeLabel`. The header's crumb keeps
+    /// `placeLabel`: it sits beside the branch button of the page's root.
+    package static func rowLabel(
+        _ place: SessionPlace,
+        mainStatus: WorkbenchGitStatus?,
+        stale: Bool = false,
+        targetBranch: SessionTargetBranch?,
+        lanes: [String] = []
+    ) -> PlaceLabel {
+        let base = placeLabel(place, mainStatus: mainStatus, stale: stale)
+        let lanesText = lanes.isEmpty ? "" : " · " + (lanes.count == 1 ? "1 lane" : "\(lanes.count) lanes")
+        let lanesHelp = lanes.isEmpty ? [] : ["Lane worktrees: " + lanes.joined(separator: ", ")]
+        switch targetBranch {
+        case nil:
+            return PlaceLabel(text: base.text + lanesText, systemImage: base.systemImage,
+                              help: ([base.help] + lanesHelp).joined(separator: "\n"))
+        case let .one(branch) where branch == placeBranch(place, mainStatus: mainStatus):
+            return PlaceLabel(text: base.text + lanesText, systemImage: base.systemImage,
+                              help: (["Target branch: \(branch)", base.help] + lanesHelp).joined(separator: "\n"))
+        case let .one(branch):
+            return PlaceLabel(text: "⎇ \(branch)" + lanesText, systemImage: worktreeSymbol,
+                              help: (["Target branch: \(branch)", "Terminal: \(base.text)", base.help] + lanesHelp)
+                                  .joined(separator: "\n"))
+        case let .several(branches):
+            return PlaceLabel(text: "⎇ \(branches.count) target branches" + lanesText, systemImage: worktreeSymbol,
+                              help: (["Target branches: " + branches.joined(separator: ", "),
+                                      "Terminal: \(base.text)", base.help] + lanesHelp).joined(separator: "\n"))
+        }
+    }
+
+    /// The branch the place's checkout is on; nil when it is detached, not
+    /// read, or the worktree is gone.
+    private static func placeBranch(_ place: SessionPlace, mainStatus: WorkbenchGitStatus?) -> String? {
+        let status: WorkbenchGitStatus?
+        switch place {
+        case .unknown, .main: status = mainStatus
+        case let .worktree(_, _, worktreeStatus): status = worktreeStatus
+        case .removed: status = nil
+        }
+        guard let status, WorkbenchBranchPresentation.showsButton(status), !status.detached,
+              !status.branch.isEmpty else { return nil }
+        return status.branch
+    }
+
     private static func withBranch(_ prefix: String, _ status: WorkbenchGitStatus?) -> String {
         guard let status, WorkbenchBranchPresentation.showsButton(status) else { return prefix }
         let branch = WorkbenchBranchPresentation.label(status).text

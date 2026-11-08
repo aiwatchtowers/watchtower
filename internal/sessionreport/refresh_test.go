@@ -372,8 +372,9 @@ func TestRefresh_CacheFreshness(t *testing.T) {
 			viewed = append(viewed, strings.Fields(c)[2])
 		}
 	}
-	if strings.Join(viewed, ",") != "12,14" {
-		t.Fatalf("re-checked %v, want 12,14", viewed)
+	// Least recently checked first: pr:14 (11 min) before pr:12 (61 s).
+	if strings.Join(viewed, ",") != "14,12" {
+		t.Fatalf("re-checked %v, want 14,12", viewed)
 	}
 
 	// Nothing stale: no process at all.

@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/workbenchgit"
 )
 
@@ -49,7 +50,7 @@ func init() {
 	ensure.Flags().StringVar(&workbenchWorktreeFlagBranch, "branch", "", "its wt/… branch")
 	for _, c := range []*cobra.Command{create, ensure} {
 		c.Flags().StringVar(&workbenchWorktreeFlagAgent, "agent", "",
-			"the agent the worktree is for (claude or codex): claude skips codex's install; empty installs both")
+			"the agent the worktree is for ("+agentkind.Choices("or")+"): one without launch hooks (claude) skips codex's install; empty installs both")
 	}
 	workbenchCmd.AddCommand(workbenchWorktreeCmd)
 }
@@ -73,14 +74,17 @@ func worktreeTarget(ctx context.Context) (id int64, o workbenchgit.Options, refu
 	return id, o, refused, detail, nil
 }
 
-// worktreeAgent is --agent: "" (both integrations), claude or codex.
+// worktreeAgent is --agent: "" (every integration — a hand-run command; the
+// Desktop always names its session's agent) or an agent kind. Any other
+// value — a newer version's kind — is refused as not supported before
+// anything is made or installed, never treated as "".
 func worktreeAgent() (agentkind.Kind, error) {
 	if workbenchWorktreeFlagAgent == "" {
 		return "", nil
 	}
-	k, ok := agentkind.Parse(workbenchWorktreeFlagAgent)
-	if !ok {
-		return "", fmt.Errorf("--agent must be claude or codex, got %q", workbenchWorktreeFlagAgent)
+	k, err := agentkind.ParseOrRefuse(workbenchWorktreeFlagAgent)
+	if err != nil {
+		return "", fmt.Errorf("--agent: %w", err)
 	}
 	return k, nil
 }
@@ -212,7 +216,11 @@ func installWorktreeIntegration(ctx context.Context, id int64, folder string, ag
 	if cfgErr != nil {
 		cfg = &config.Config{}
 	}
-	if agent != agentkind.Claude && devpack.CodexFound(cfg, codexFindBinary) {
+	// Codex's launch hooks need their trust step in the new folder; a
+	// Claude-only worktree skips it, any other (or no) agent gets it.
+	a, known := sessionagent.For(agent)
+	needsLaunchHookTrust := !known || a.Caps().LaunchHooks
+	if needsLaunchHookTrust && devpack.CodexFound(cfg, codexFindBinary) {
 		ctx, cancel := codexShutdownContext(ctx)
 		defer cancel()
 		_, codexErr := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))

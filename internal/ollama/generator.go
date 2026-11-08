@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,7 +12,7 @@ import (
 	"time"
 
 	"watchtower/internal/digest"
-	"watchtower/internal/logredact"
+	"watchtower/internal/providers"
 )
 
 // Generator implements digest.Generator using the Ollama OpenAI-compatible API.
@@ -51,12 +52,12 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 		Stream:   false,
 	})
 	if err != nil {
-		return "", nil, "", fmt.Errorf("marshaling request: %w", err)
+		return "", nil, "", providers.WithFailure("ollama", providers.Unknown, fmt.Errorf("marshaling request: %w", err))
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.baseURL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", nil, "", fmt.Errorf("creating request: %w", err)
+		return "", nil, "", providers.WithFailure("ollama", providers.Unknown, fmt.Errorf("creating request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -72,17 +73,17 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 
 	resp, err := g.http.Do(req)
 	if err != nil {
-		return "", nil, "", fmt.Errorf("ollama request failed: %w", err)
+		return "", nil, "", providers.OllamaRequestFailure(fmt.Errorf("ollama request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", nil, "", logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
+		return "", nil, "", statusFailure(resp.StatusCode, b)
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", nil, "", fmt.Errorf("decoding ollama response: %w", err)
+		return "", nil, "", providers.OllamaRequestFailure(fmt.Errorf("decoding ollama response: %w", err))
 	}
 
 	// A 200 response can still carry an inline error object with zero choices
@@ -90,27 +91,22 @@ func (g *Generator) Generate(ctx context.Context, systemPrompt, userMessage, _ s
 	// either error envelope) — report it directly instead of the generic
 	// "no choices" below, which would otherwise hide the real reason.
 	if errObj := result.asError(); errObj != nil {
-		return "", nil, "", fmt.Errorf("ollama returned an error: %s", formatChatError(errObj))
+		return "", nil, "", inlineFailure(errObj)
 	}
 
 	if len(result.Choices) == 0 {
-		return "", nil, "", fmt.Errorf("ollama returned no choices")
+		return "", nil, "", providers.WithFailure("ollama", providers.InvalidOutput, errors.New("ollama returned no choices"))
 	}
 
 	text = strings.TrimSpace(result.Choices[0].Message.Content)
 	if text == "" {
-		return "", nil, "", fmt.Errorf("ollama returned empty result")
+		return "", nil, "", providers.WithFailure("ollama", providers.InvalidOutput, errors.New("ollama returned empty result"))
 	}
 	ok = true
 
 	var usage *digest.Usage
 	if result.Usage != nil {
-		usage = &digest.Usage{
-			Model:          model,
-			InputTokens:    result.Usage.PromptTokens,
-			OutputTokens:   result.Usage.CompletionTokens,
-			TotalAPITokens: result.Usage.TotalTokens,
-		}
+		usage = &digest.Usage{Model: model, Tokens: result.Usage.tokens()}
 	}
 
 	return text, usage, "", nil

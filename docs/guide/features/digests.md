@@ -73,7 +73,7 @@ action: nav:digests
 2. Use **Unread / All** and the search field. Meeting recaps have no unread state, so they appear only under **All**.
 3. In **Digests**, **Select** lets you mark many read or rate them at once. Inside a digest, **Create task** on a topic or decision makes a [target](targets.md).
 4. In **Decisions**, open a row for its mentions chronology with links back to each source. **Supersede** or **Reverse** changes its status, **Mark all read** clears the unread dots, and **New Decision** records one yourself.
-5. Digests are marked read automatically when you have read the channel in Slack.
+5. A digest from the last 7 days is marked read automatically when you have read its channel in Slack. An older unread digest stays unread until you mark it, unless a newer digest of the same channel is checked and your Slack reading covers it too.
 
 ## When it's empty or wrong
 

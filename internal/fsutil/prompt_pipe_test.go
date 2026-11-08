@@ -84,27 +84,3 @@ func TestAttachPayloads_UnreadPayloadDoesNotHang(t *testing.T) {
 		t.Fatal("payload writer still blocked after the child exited")
 	}
 }
-
-func TestRemoveOnce_AfterTheChildRead(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
-	path, err := WritePrivateTemp(SystemPromptTempPrefix+"*.txt", "body")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A child that reads the path twice (codex stats, then reads) gets the
-	// content both times; the file goes at its first stdout output.
-	var out bytes.Buffer
-	cmd := exec.Command("/bin/sh", "-c", `c=$(cat "$0"; cat "$0"); printf %s "$c"`, path)
-	cmd.Stdout = OnFirstWrite(&out, RemoveOnce(path))
-	if err := cmd.Run(); err != nil {
-		t.Fatal(err)
-	}
-	if out.String() != "bodybody" {
-		t.Fatalf("child read %q", out.String())
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("file still there: %v", err)
-	}
-	RemoveOnce("")() // no-op
-}

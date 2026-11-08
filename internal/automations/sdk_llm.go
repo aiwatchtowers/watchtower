@@ -279,7 +279,7 @@ func generateTier(ctx context.Context, g digest.Generator, tier, user string) (s
 // estimate of ceil((promptBytes+replyBytes)/4) tokens, the reply's share
 // counted as output. A reported dollar cost is kept for display only.
 func modelUsage(u *digest.Usage, promptBytes, replyBytes int) ModelUsage {
-	if u == nil || (u.InputTokens == 0 && u.OutputTokens == 0) {
+	if u == nil || (u.Input == 0 && u.Output == 0) {
 		total := int64(promptBytes+replyBytes+3) / 4
 		out := min(total, int64(replyBytes+3)/4)
 		return ModelUsage{InputTokens: total - out, OutputTokens: out, Estimated: true}
@@ -292,9 +292,10 @@ func reportedUsage(u *digest.Usage) ModelUsage {
 	if u == nil {
 		return ModelUsage{}
 	}
-	mu := ModelUsage{InputTokens: int64(u.InputTokens), OutputTokens: int64(u.OutputTokens)}
-	if u.CostUSD > 0 {
-		cost := u.CostUSD
+	// AUTO-08 (ask #488): fresh input plus output; the cache stays in the
+	// leaf ledger.
+	mu := ModelUsage{InputTokens: u.Input, OutputTokens: u.Output}
+	if cost := u.ReportedCost(); cost > 0 {
 		mu.ReportedUSD = &cost
 	}
 	return mu

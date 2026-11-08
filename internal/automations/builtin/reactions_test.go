@@ -8,6 +8,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/reactioncmd"
 )
 
@@ -171,7 +172,7 @@ func TestReactions_EndDuringComposeIsStranded(t *testing.T) {
 // reaction.compose reports the compose call's usage as its own, dispatched
 // or not, so the run row, Costs and the token budget see it.
 func TestReactions_ComposeReportsUsage(t *testing.T) {
-	usage := digest.Usage{InputTokens: 120, OutputTokens: 30}
+	usage := digest.Usage{Tokens: llmusage.Tokens{Input: 120, Output: 30}}
 	want := automations.PrimitiveUsage{InputTokens: 120, OutputTokens: 30}
 	p := &fakeDispatcher{out: reactioncmd.Outcome{Status: "dispatched", ActionID: 1, Step: reactioncmd.StepFinalize, Usage: usage}}
 	s := NewReactionSlot()

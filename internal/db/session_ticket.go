@@ -74,3 +74,32 @@ func (db *DB) InTicketSubtree(projectID, targetID, id int64) (bool, error) {
 	}
 	return in, nil
 }
+
+// maxTicketDepth bounds TicketBranchChain's walk up (a cycle ends there).
+const maxTicketDepth = 64
+
+// TicketBranchChain is the trimmed branch of targetID and of each of its
+// ancestors on workbench projectID's board, the target first ("" for a
+// target without one); empty when targetID is not on that board.
+func (db *DB) TicketBranchChain(projectID, targetID int64) ([]string, error) {
+	rows, err := db.Query(`WITH RECURSIVE up(id, parent_id, branch, depth) AS (
+			SELECT id, parent_id, TRIM(branch), 0 FROM targets WHERE id = ?1 AND project_id = ?2
+			UNION ALL
+			SELECT t.id, t.parent_id, TRIM(t.branch), up.depth + 1 FROM targets t JOIN up ON t.id = up.parent_id
+			WHERE t.project_id = ?2 AND up.depth < ?3
+		)
+		SELECT branch FROM up ORDER BY depth`, targetID, projectID, maxTicketDepth)
+	if err != nil {
+		return nil, fmt.Errorf("reading the branches above target %d: %w", targetID, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var b string
+		if err := rows.Scan(&b); err != nil {
+			return nil, fmt.Errorf("reading the branches above target %d: %w", targetID, err)
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
