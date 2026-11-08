@@ -124,3 +124,41 @@ func TestTranscriptSize(t *testing.T) {
 		assert.False(t, ok, "%q", p)
 	}
 }
+
+// interruptedTurnEnd reads the interrupted turn's end from the call's
+// tool_use on: the start of the first user message without a tool result,
+// else the end of the last whole line; a line still being written, a call
+// before from, and a missing file each answer as documented.
+func TestInterruptedTurnEnd(t *testing.T) {
+	head := transcriptPrompt("go") + transcriptToolUse("toolu_A") + transcriptToolUse("toolu_B") + transcriptToolResult("toolu_A")
+	n := func(s string) int64 { return int64(len(s)) }
+	marker := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted]"}]}}` + "\n"
+	for _, tc := range []struct {
+		name          string
+		text, id      string
+		from, want    int64
+		found, wantOK bool
+	}{
+		{"no follow-up: the last whole line", head, "toolu_B", 0, n(head), true, true},
+		{"a line still being written", head + `{"type":"user"`, "toolu_B", 0, n(head), true, true},
+		{"the next prompt", head + transcriptPrompt("next") + transcriptToolUse("toolu_C"), "toolu_B", 0, n(head), true, true},
+		{"the marker after the call's result", head + transcriptToolResult("toolu_B") + marker + transcriptPrompt("x"), "toolu_B", 0,
+			n(head + transcriptToolResult("toolu_B")), true, true},
+		{"the call before from", head + transcriptPrompt("next"), "toolu_B", n(head), 0, false, true},
+		{"from mid-line skips that line", head, "toolu_B", n(transcriptPrompt("go")+transcriptToolUse("toolu_A")) + 3, 0, false, true},
+		{"not in the transcript", head, "toolu_Z", 0, 0, false, true},
+		{"no id", head, "", 0, 0, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTranscript(t, tc.text)
+			end, found, ok := interruptedTurnEnd(path, tc.id, tc.from)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.found, found)
+			if found {
+				assert.Equal(t, tc.want, end)
+			}
+		})
+	}
+	_, _, ok := interruptedTurnEnd(filepath.Join(t.TempDir(), "gone.jsonl"), "toolu_B", 0)
+	assert.False(t, ok, "a missing transcript is unreadable")
+}

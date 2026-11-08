@@ -143,6 +143,75 @@ func toolCallEntry(line []byte, toolUseID string) toolEntry {
 	return noToolEntry
 }
 
+// interruptedTurnEnd is the end of the turn tool call toolUseID was
+// interrupted in (board #1019), read from offset from (a turn end, or 0)
+// over at most transcriptLookahead bytes: after the call's tool_use entry,
+// the offset where the first user message starts that carries no tool
+// result — the interrupt's marker or the owner's next prompt — else the end
+// of the last whole line read (a line still being written is left out). A
+// tool result, of this call or a parallel one, never ends the turn: those
+// entries are the turn's own. found is false when the span holds no
+// tool_use entry of the call; ok is false when the transcript cannot be read.
+func interruptedTurnEnd(path, toolUseID string, from int64) (end int64, found, ok bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false, false
+	}
+	defer f.Close()
+	if toolUseID == "" {
+		return 0, false, true
+	}
+	partial := false
+	if from > 0 {
+		var prev [1]byte
+		if _, err := f.ReadAt(prev[:], from-1); err != nil {
+			return 0, false, false
+		}
+		partial = prev[0] != '\n'
+	}
+	r := bufio.NewReader(io.NewSectionReader(f, from, transcriptLookahead))
+	id := []byte(toolUseID)
+	pos := from
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return 0, false, false
+		}
+		if !bytes.HasSuffix(line, []byte{'\n'}) {
+			return pos, found, true // the end of the span, or a line still being written
+		}
+		switch {
+		case partial:
+		case !found:
+			found = bytes.Contains(line, id) && toolCallEntry(line, toolUseID) == toolUseEntry
+		case opensUserTurn(line):
+			return pos, true, true
+		}
+		partial = false
+		pos += int64(len(line))
+	}
+}
+
+// opensUserTurn says whether a transcript line is a user message that
+// carries no tool result: an owner's prompt, or Claude Code's interrupt
+// marker, either way the start of what follows the interrupted turn.
+func opensUserTurn(line []byte) bool {
+	var entry transcriptLine
+	if json.Unmarshal(line, &entry) != nil || entry.Type != "user" {
+		return false
+	}
+	var blocks []transcriptBlock
+	if json.Unmarshal(entry.Message.Content, &blocks) != nil {
+		return true // a plain-text prompt
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			return false
+		}
+	}
+	return true
+}
+
 // transcriptSize is the transcript's size in bytes, the turn end a Stop
 // records; ok is false when it cannot be read.
 func transcriptSize(path string) (size int64, ok bool) {

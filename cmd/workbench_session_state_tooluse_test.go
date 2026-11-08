@@ -800,3 +800,53 @@ func TestProj11_InterruptWithNoTranscriptPathIsSilent(t *testing.T) {
 	assert.Equal(t, "waiting", s.AgentState.String)
 	assert.Equal(t, stored.TurnEnd, s.TurnEnd)
 }
+
+// Board #1019 (codex verify): the interrupt's turn end comes from the
+// transcript, not its size. The owner's next prompt was a repeat (`working`
+// over `working`, the time order unmoved) and is already in the transcript
+// with its first tool call when the late interrupt hook runs: the turn end
+// stops before that prompt, so the next turn's tool result still records.
+func TestProj11_LateInterruptAfterARepeatedPromptKeepsTheNextTurn(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	appendTranscript(t, transcript, transcriptToolResult("toolu_B"))
+	before, ok := transcriptSize(transcript)
+	require.True(t, ok)
+	appendTranscript(t, transcript, transcriptPrompt("next"), transcriptToolUse("toolu_C"), transcriptToolResult("toolu_C"))
+	recordToolEvent(t, pid, at, 5, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row), "the prompt is a repeat")
+
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, sql.NullInt64{Int64: before, Valid: true}, s.TurnEnd, "the turn end stops before the next prompt")
+
+	recordToolEvent(t, pid, at, 6, toolEventPayload("PostToolUse", "toolu_C", transcript, ""))
+	s, err = database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "working", s.AgentState.String, "the next turn's tool result was taken for the interrupted turn's")
+	assert.True(t, s.ToolRun)
+}
+
+// Board #1019 (codex verify): the stored turn end is where the interrupted
+// turn ends in the transcript — before Claude Code's interrupt marker after
+// the call's result — not the transcript's size; the interrupted turn's
+// parallel call, resulting after the marker, is still its own.
+func TestProj11_InterruptTurnEndIsTheCallsPlaceNotTheSize(t *testing.T) {
+	database, pid, row, at, transcript := interruptFixture(t)
+	appendTranscript(t, transcript, transcriptToolResult("toolu_B"))
+	want, ok := transcriptSize(transcript)
+	require.True(t, ok)
+	appendTranscript(t, transcript,
+		`{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}`+"\n",
+		transcriptToolResult("toolu_A"), transcriptPrompt("next"), transcriptToolUse("toolu_C"))
+	size, _ := transcriptSize(transcript)
+	require.Greater(t, size, want)
+
+	recordToolEvent(t, pid, at, 4, interrupted("toolu_B", transcript))
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, sql.NullInt64{Int64: want, Valid: true}, s.TurnEnd)
+	recordToolEvent(t, pid, at, 5, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
+	assert.Equal(t, "waiting", storedAgentState(t, database, row), "the interrupted turn's parallel result wrote")
+}

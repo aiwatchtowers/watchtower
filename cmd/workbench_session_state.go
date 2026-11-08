@@ -702,36 +702,35 @@ func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64
 // (board #1019): no Stop follows an interrupt, and the tool hooks are async,
 // so a parallel call's PostToolUse or the interrupted call's own PreToolUse
 // can start after the interrupt's hook and would turn its `waiting` back
-// into `working` though the agent is idle. The transcript's size, as the
-// Stop's (recordStopTurnEnd), places every tool call of the interrupted turn
-// before it — but only when the transcript places the interrupted call
-// itself: after the stored turn end (place, toolCallAfterStop), or, with no
-// turn end stored yet, anywhere in the transcript. Otherwise the turn end
-// stays and the time order alone decides, with a turnEndNotMoved saying why
-// (one stderr line, no content; none for an input with no transcript path).
-// The size is read when this async hook runs, not at the Esc: the next
-// prompt may already be in the transcript, and its turn's first calls placed
-// before the turn end. The time order bounds that: once the next prompt's
-// `working` is stored, the interrupt, stamped before it, writes nothing and
-// stores no turn end (TestProj11_LateInterruptMovesNothing).
+// into `working` though the agent is idle. The turn end is read from the
+// transcript itself, never its size at the time this async hook runs
+// (interruptedTurnEnd): from the interrupted call's tool_use on, the start of
+// the first user message that is not a tool result — the interrupt's marker
+// or the owner's next prompt — else the end of the last whole line. Every
+// tool call of the interrupted turn sits before it and a later turn's calls
+// after it, even when the next prompt (whose `working` may have been a
+// repeat that left the time order unmoved) is already in the transcript. It
+// is searched from the stored turn end, where the transcript must place the
+// interrupted call after it (place, toolCallAfterStop), or with none stored
+// from the transcript's start. Otherwise the turn end stays and the time
+// order alone decides, with a turnEndNotMoved saying why (one stderr line, no
+// content; none for an input with no transcript path).
 func interruptTurnEnd(row *db.TerminalSession, turn hookTurn, place toolCallPlace) (sql.NullInt64, error) {
-	size, ok := transcriptSize(turn.transcriptPath)
-	switch {
-	case turn.transcriptPath == "":
+	if turn.transcriptPath == "" {
 		return sql.NullInt64{}, nil // no transcript to place it in
+	}
+	from := int64(0)
+	if row.TurnEnd.Valid {
+		from = row.TurnEnd.Int64
+	}
+	end, found, ok := interruptedTurnEnd(turn.transcriptPath, turn.toolUseID, from)
+	switch {
 	case !ok:
 		return sql.NullInt64{}, turnEndNotMoved{"transcript unreadable"}
-	}
-	if !row.TurnEnd.Valid {
-		place = toolCallTurn(turn.transcriptPath, turn.toolUseID, size)
-		if place == toolCallBeforeStop { // found in the transcript
-			place = toolCallAfterStop
-		}
-	}
-	if place != toolCallAfterStop {
+	case !found, row.TurnEnd.Valid && place != toolCallAfterStop:
 		return sql.NullInt64{}, turnEndNotMoved{"interrupted call not placed in the transcript"}
 	}
-	return sql.NullInt64{Int64: size, Valid: true}, nil
+	return sql.NullInt64{Int64: end, Valid: true}, nil
 }
 
 // interruptMovesTurnEnd: an interrupt whose turn end would differ from the
