@@ -317,6 +317,27 @@ final class ReviewerCenterTests: XCTestCase {
     }
 
     /// Two sessions on one branch open the same thread.
+    /// A deleted workbench's reviewer engines stop and its threads are
+    /// forgotten; another workbench's stay.
+    func testWorkbenchRemovedDropsItsEnginesAndThreads() async throws {
+        let h = try harness()
+        let context = ReviewerSurface.Context(projectID: h.projectID, branch: "feature/a", branchLabel: "feature/a",
+                                              readFolder: "/tmp", inWorktree: false, tipTree: nil)
+        let (center, _) = try await engine(h, context: context, ai: ScriptedAIService())
+        let other = ReviewerCenter.ThreadID(projectID: h.projectID + 1, branch: "feature/a")
+        await center.open(other)
+        let mine = ReviewerCenter.ThreadID(projectID: h.projectID, branch: "feature/a")
+        guard case let .ready(conversationID) = center.threads[mine] else { return XCTFail("no thread") }
+        let key = EmbeddedChatKey(contextType: ReviewerSurface.contextType,
+                                  contextID: ReviewerSurface.contextID(projectID: h.projectID, branch: "feature/a"),
+                                  conversationID: conversationID)
+        XCTAssertNotNil(center.embeddedChats.loaded(key))
+        center.workbenchRemoved(h.projectID)
+        XCTAssertNil(center.embeddedChats.loaded(key), "the engine stopped")
+        XCTAssertNil(center.threads[mine])
+        XCTAssertNotNil(center.threads[other], "another workbench's thread stays")
+    }
+
     func testTwoSessionsOnOneBranchShareTheThread() async throws {
         let h = try harness()
         let center = Self.center(h, ai: ScriptedAIService())

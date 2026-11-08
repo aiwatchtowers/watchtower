@@ -99,6 +99,16 @@ final class ReviewerCenter {
                                                        reader: reader, map: map))
     }
 
+    /// The workbench was deleted (its threads cascade with it, migration
+    /// 00180): its reviewer engines stop without a word and its threads are forgotten.
+    func workbenchRemoved(_ workbenchID: Int64) {
+        for id in threads.keys where id.projectID == workbenchID {
+            embeddedChats.dropContext(type: ReviewerSurface.contextType,
+                                      id: ReviewerSurface.contextID(projectID: id.projectID, branch: id.branch))
+            threads[id] = nil
+        }
+    }
+
     /// Send to author: the answer becomes one design comment in the open
     /// round — the owner's own write through the review's comment path.
     /// Nothing else is written, and nothing reaches the session otherwise.
