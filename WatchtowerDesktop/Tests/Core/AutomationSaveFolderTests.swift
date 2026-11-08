@@ -260,8 +260,12 @@ final class AutomationSaveFolderTests: XCTestCase {
         XCTAssertTrue(Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false).pressSaves)
         XCTAssertTrue(Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
                                   isBuiltin: true).pressSaves)
-        XCTAssertTrue(Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
-                                  showsAllFields: false).pressSaves, "still a save while it is checked")
+        XCTAssertFalse(Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
+                                   showsAllFields: false).pressSaves, "can't show everything: the save is off")
+        XCTAssertFalse(Footer.make(isNew: true, bytesChanged: true, enabled: false, needsConfirmation: false,
+                                   showsAllFields: false, hasErrors: true).pressSaves, "has errors: the save is off")
+        XCTAssertFalse(Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
+                                   showsAllFields: false, hasErrors: true, isBuiltin: true).pressSaves)
     }
 
     // MARK: - The cache entry

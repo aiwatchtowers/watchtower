@@ -81,11 +81,12 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     package let secondary: Action?
     package let hint: String
 
-    /// The footer's press writes the recipe (a save, not a confirm of
-    /// unchanged bytes, and not the "No changes to save" state): only then
-    /// does the Changed row show the Inbox folder line, which the save sets.
+    /// The footer's press writes the recipe (an enabled save, not a confirm
+    /// of unchanged bytes nor a save turned off — no changes, has errors,
+    /// can't show everything): only then does the Changed row show the
+    /// Inbox folder line, which the save sets.
     package var pressSaves: Bool {
-        primary.saves && hint != Self.noChangesHint
+        primary.saves && primaryEnabled
     }
 
     /// The primary button's title on `step`: **Save Look** for a save on
