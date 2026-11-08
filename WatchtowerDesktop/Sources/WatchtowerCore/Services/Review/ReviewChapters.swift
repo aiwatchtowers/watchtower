@@ -7,11 +7,11 @@ package struct ReviewChapter: Equatable, Sendable, Identifiable {
     package let paths: [String]
     package let changedLines: Int
     package let core: Bool
-    /// Who split the diff: the session's agent, the overview model, or the mechanical rule.
+    /// Who split the diff: the session's agent, or the map's mechanical rule.
     package let source: Source
     package var id: String { key }
 
-    package enum Source: String, Sendable { case agent, ai, mechanical }
+    package enum Source: String, Sendable { case agent, mechanical }
 
     package init(
         key: String,

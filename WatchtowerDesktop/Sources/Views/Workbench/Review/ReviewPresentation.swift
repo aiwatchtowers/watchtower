@@ -106,7 +106,6 @@ enum ReviewPresentation {
     static func sourceCaption(_ source: ReviewChapter.Source) -> String? {
         switch source {
         case .agent: "by the agent"
-        case .ai: "by AI"
         case .mechanical: nil
         }
     }
