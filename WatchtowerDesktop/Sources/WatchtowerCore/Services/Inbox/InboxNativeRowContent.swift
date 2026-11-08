@@ -127,6 +127,8 @@ package struct InboxRowActionsContent: Equatable {
     /// What would carry the row's writes is not there yet (an idea's
     /// `IdeasViewModel`): its writes are drawn disabled, never dead.
     package var writesUnavailable: Bool
+    /// A proposal row's failed verb (`AgentActionFeed.RowError.verb`).
+    package var failedVerb: String?
 
     package init(
         kind: Kind,
@@ -134,7 +136,8 @@ package struct InboxRowActionsContent: Equatable {
         reply: Reply? = nil,
         isPreview: Bool = false,
         cliMissing: Bool = false,
-        writesUnavailable: Bool = false
+        writesUnavailable: Bool = false,
+        failedVerb: String? = nil
     ) {
         self.kind = kind
         self.state = state
@@ -142,15 +145,34 @@ package struct InboxRowActionsContent: Equatable {
         self.isPreview = isPreview
         self.cliMissing = cliMissing
         self.writesUnavailable = writesUnavailable
+        self.failedVerb = failedVerb
     }
 
     package var isBusy: Bool { state == .busy }
 
-    /// The footer's **Retry** under a failed press, unless the row's own
-    /// buttons already have one (a failed apply's Retry): one Retry a row.
+    /// The footer's **Retry** under a failed press. A proposal's repeats
+    /// its failed verb only while the row still offers that press (an
+    /// Approve whose execution then failed has left the pending state), and
+    /// never beside the row's own Retry: one Retry a row.
     package var footerOffersRetry: Bool {
-        if case let .action(_, buttons) = kind, buttons.contains(.retry) { return false }
-        return true
+        guard case let .action(_, buttons) = kind else { return true }
+        guard !buttons.contains(.retry), let failedVerb else { return false }
+        return Self.actionRetry(verb: failedVerb, buttons: buttons) != nil
+    }
+
+    /// The press a proposal's footer **Retry** repeats for its failed
+    /// `verb` (`AgentActionFeed.RowError.verb`), nil when the row's current
+    /// buttons no longer offer it.
+    package static func actionRetry(verb: String, buttons: [ActionButton]) -> InboxRowPress? {
+        let button: ActionButton? = switch verb {
+        case "approve": .approve
+        case "reject": .reject
+        case "apply": .retry
+        case "dismiss": .dismiss
+        default: nil
+        }
+        guard let button, buttons.contains(button) else { return nil }
+        return button.press
     }
 
     /// The footer's line while the CLI is missing (the folder menu's words).

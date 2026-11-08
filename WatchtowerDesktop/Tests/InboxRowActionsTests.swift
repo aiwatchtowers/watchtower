@@ -285,12 +285,42 @@ final class InboxRowActionsTests: XCTestCase {
     /// A failed apply with a press error shows one Retry: the row's own.
     func testFailedProposalRowShowsOneRetry() {
         let failed = InboxRowActionsContent(kind: .action(summary: "Create a task", buttons: [.retry]),
-                                            state: .failed(message: "the CLI timed out"))
+                                            state: .failed(message: "the CLI timed out"), failedVerb: "apply")
         XCTAssertFalse(failed.footerOffersRetry)
         let pending = InboxRowActionsContent(kind: .action(summary: "Create a task", buttons: [.approve, .reject, .edit]),
-                                             state: .failed(message: "the CLI timed out"))
+                                             state: .failed(message: "the CLI timed out"), failedVerb: "approve")
         XCTAssertTrue(pending.footerOffersRetry, "a failed Approve is repeated from the footer")
         XCTAssertTrue(InboxRowActionsContent(kind: .reminder, state: .failed(message: "busy")).footerOffersRetry)
+    }
+
+    /// Approved, then execution failed: the footer never repeats Approve on a row no longer pending.
+    func testFooterRetryNeverApprovesARowThatLeftPending() {
+        XCTAssertNil(InboxRowActionsContent.actionRetry(verb: "approve", buttons: [.retry]))
+        XCTAssertNil(InboxRowActionsContent.actionRetry(verb: "approve", buttons: [.dismiss]))
+        XCTAssertEqual(InboxRowActionsContent.actionRetry(verb: "approve", buttons: [.approve, .reject, .edit]),
+                       .approve)
+        let dismissRow = InboxRowActionsContent(kind: .action(summary: "claude.ai Gmail", buttons: [.dismiss]),
+                                                state: .failed(message: "refused"), failedVerb: "approve")
+        XCTAssertFalse(dismissRow.footerOffersRetry)
+    }
+
+    func testFooterRetryAfterApproveThenFailedApplyDoesNotApproveAgain() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db, status: "pending") }
+        let runner = FakeCLIRunner(error: Failure())
+        let vm = await strip(runner)
+        let ref = InboxRef(kind: .action, id: id)
+        await handler(vm).press(.approve, on: ref)
+        XCTAssertEqual(vm.actionFeed.rowErrors[id]?.verb, "approve")
+        // The approval landed after all and its execution failed.
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE agent_actions SET status = 'failed', error = 'archived' WHERE id = ?",
+                           arguments: [id])
+        }
+        await vm.refresh()
+        XCTAssertEqual(hooks(vm).content(ref, .inbox)?.footerOffersRetry, false)
+        await handler(vm).press(.retryFailedPress, on: ref)
+        XCTAssertEqual(runner.invocations.filter { $0.prefix(2) == ["actions", "approve"] }.count, 1,
+                       "no second Approve on a failed proposal")
     }
 
     func testDuplicatesSuppressedPerKind() {

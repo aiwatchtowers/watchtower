@@ -97,7 +97,8 @@ struct InboxRefHooks {
         guard let kind = kind(ref) else { return nil }
         return InboxRowActionsContent(kind: kind, state: state(ref), isPreview: mode == .preview,
                                       cliMissing: mode != .preview && vm.folderMenu.isCLIMissing,
-                                      writesUnavailable: ref.kind == .idea && !ideasAvailable)
+                                      writesUnavailable: ref.kind == .idea && !ideasAvailable,
+                                      failedVerb: ref.kind == .action ? vm.actionFeed.rowErrors[ref.id]?.verb : nil)
     }
 
     private func kind(_ ref: InboxRef) -> InboxRowActionsContent.Kind? {
@@ -206,6 +207,8 @@ struct InboxRowActionHandler {
     var onEditAction: (Int64) -> Void = { _ in }
     /// **Open Draft** on a pending `save_automation` (`AppState.openSaveProposalDraft`).
     var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
+    /// `AgentActionCardView.sessionHoldsCall` for a proposal (a connector call).
+    var sessionHoldsCall: (AgentAction) -> Bool = { _ in false }
     var navScreens: Set<String> = []
     var now: () -> Date = { Date() }
 
@@ -227,15 +230,15 @@ struct InboxRowActionHandler {
     /// other row's as it was kept with its error.
     private func retry(_ ref: InboxRef) async {
         if ref.kind == .action {
-            guard let verb = vm.actionFeed.rowErrors[ref.id]?.verb else { return }
-            let again: InboxRowPress? = switch verb {
-            case "approve": .approve
-            case "reject": .reject
-            case "apply": .retry
-            case "dismiss": .dismiss
-            default: nil
-            }
-            if let again { await action(again, id: ref.id) }
+            // The failed verb again, only while the row still offers it: an
+            // Approve whose execution then failed is not approved twice.
+            guard let verb = vm.actionFeed.rowErrors[ref.id]?.verb,
+                  let action = vm.feed.proposals.first(where: { $0.id == ref.id }),
+                  let again = InboxRowActionsContent.actionRetry(
+                      verb: verb,
+                      buttons: AgentActionCardView.rowButtons(for: action, sessionHolds: sessionHoldsCall(action)))
+            else { return }
+            await self.action(again, id: ref.id)
             return
         }
         guard let failed = vm.rowErrors[ref.selection]?.press, failed != .retryFailedPress else { return }

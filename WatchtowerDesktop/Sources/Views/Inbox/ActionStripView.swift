@@ -489,6 +489,7 @@ struct ActionStripActionsView: View {
             onIdeaMadeTask: onGoToTarget,
             onEditAction: { editingActions.insert($0) },
             onOpenSaveDraft: onOpenSaveDraft,
+            sessionHoldsCall: { sessionHoldsCall?($0) ?? false },
             navScreens: navScreens,
             now: { now ?? Date() }
         )
