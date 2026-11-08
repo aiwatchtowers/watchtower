@@ -325,7 +325,7 @@ struct ActionStripActionsView: View {
     /// The empty root keeps the cheat sheet inline while nothing in the
     /// Inbox waits (every folder's count is 0); then its `?` is not shown.
     private var showsInlineCheatSheet: Bool {
-        vm.legacyList == nil && aux == nil && folderKind == .root && vm.folderEntries.isEmpty
+        vm.hasRead && vm.legacyList == nil && aux == nil && folderKind == .root && vm.folderEntries.isEmpty
             && vm.folderMenu.snapshot.counts.values.allSatisfy { $0 == 0 }
     }
 
@@ -376,7 +376,16 @@ struct ActionStripActionsView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let list = vm.legacyList {
+        if !vm.hasRead, let reason = vm.firstReadError {
+            // The first read failed: say so, never a spinner that never ends.
+            Self.firstReadFailure(reason) { Task { await vm.refresh() } }
+        } else if !vm.hasRead {
+            // Nothing read yet: no "empty" or cheat sheet for a moment.
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityIdentifier("inbox.loading")
+        } else if let list = vm.legacyList {
             legacySplit(list)
         } else if folderKind == .approvals {
             if let aux {
@@ -714,6 +723,19 @@ struct ActionStripActionsView: View {
     private func openContext(_ action: AgentAction) -> (() -> Void)? {
         guard let onOpenAutomationRun, let runID = ActionStripViewModel.automationRunID(action) else { return nil }
         return { onOpenAutomationRun(runID) }
+    }
+
+    /// The Inbox when its first read failed: the reason and Try Again.
+    static func firstReadFailure(_ reason: String, onTryAgain: @escaping () -> Void) -> some View {
+        FeatureEmptyState(
+            copy: EmptyStateCopy(
+                icon: "exclamationmark.triangle", title: "The Inbox could not be read", landsHere: reason,
+                feature: nil, primaryAction: .tabAction(label: "Try Again")),
+            readiness: nil, syncLine: nil, turnOnError: nil, isTurningOn: false,
+            onAction: { _ in onTryAgain() },
+            extra: { EmptyView() }
+        )
+        .accessibilityIdentifier("inbox.readFailed")
     }
 
     /// The `IdeasView` house pattern: a write failure

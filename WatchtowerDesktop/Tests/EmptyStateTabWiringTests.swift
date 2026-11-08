@@ -204,10 +204,12 @@ final class EmptyStateTabWiringTests: XCTestCase {
         XCTAssertNoThrow(try picking.inspect().find(text: "Pick a folder to start a workbench. Claude Code sets it up from there."))
     }
 
-    func testInboxEmptyKeepsCheatSheet() throws {
+    func testInboxEmptyKeepsCheatSheet() async throws {
         let (pool, path) = try TestDatabase.createPool()
         dbPath = path
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        // The empty state is drawn once a read has landed (a spinner before).
+        await vm.refresh()
         let view = ActionStripActionsView(
             vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
             onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, emptyState: context)

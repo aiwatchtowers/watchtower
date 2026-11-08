@@ -83,7 +83,13 @@ package enum HomeFeedQueries {
         } ?? []
         let cutoff = now.addingTimeInterval(-windowHours * 3600)
         data.outputs = readSource(.automations, db, tables: ["automation_outputs", "automations"], failed: &data.failed) {
-            try AutomationQueries.fetchInboxOutputs(db, since: cutoff, limit: rowLimit, includeRead: false)
+            // The `needs-approval` built-in's cards are drawn only through
+            // the open approvals they show (APPROVAL-01, as the Inbox's
+            // folders): the proposals source already lists every open one,
+            // and a card whose approval has closed must never show.
+            try AutomationQueries.fetchInboxOutputs(
+                db, since: cutoff, limit: rowLimit, includeRead: false,
+                excludingAutomation: try InboxFolderQueries.needsApproval(db).automationID)
         } ?? []
         data.targets = readSource(.targets, db, tables: ["targets"], failed: &data.failed) {
             try dueTargets(db, today: today)
