@@ -56,6 +56,7 @@ func init() {
 	f = workbenchSpecReviewThreadContextCmd.Flags()
 	f.Int64Var(&specReviewThreadContextFlagAsk, "ask", 0, "owner ask id")
 	f.StringVar(&specReviewThreadContextFlagItem, "item", "", "the item key of the thread")
+	f.BoolVar(&specReviewThreadContextFlagDir, "folder-only", false, "print only the folder the reviewer read")
 	_ = workbenchSpecReviewThreadContextCmd.MarkFlagRequired("ask")
 	_ = workbenchSpecReviewThreadContextCmd.MarkFlagRequired("item")
 	workbenchSpecReviewCmd.AddCommand(workbenchSpecReviewThreadContextCmd)
@@ -171,11 +172,13 @@ var workbenchSpecReviewAddFindingCmd = &cobra.Command{
 }
 
 var workbenchSpecReviewThreadContextCmd = &cobra.Command{
-	Use:   "thread-context --ask N --item K",
+	Use:   "thread-context --ask N --item K [--folder-only]",
 	Short: "Print the Discuss thread agent's context for item K of ask N's review",
 	Long: "Prints, as fenced data blocks, the document snapshot, the item with its quotes, the whole\n" +
 		"stored result, the ledger, the author's replies and the conversation and asks blocks the\n" +
-		"reviewer was given. The database is opened read-only. Exit 3 \"no such item\" for an unknown key.",
+		"reviewer was given. The database is opened read-only. Exit 3 \"no such item\" for an unknown key.\n" +
+		"With --folder-only, prints only \"read_folder: <dir>\": the folder the reviewer read (the session's\n" +
+		"recorded working directory, else the workbench folder), for the thread's ai query --read-folder.",
 	Args: cobra.NoArgs,
 	RunE: runSpecReviewThreadContext,
 }
@@ -185,6 +188,7 @@ var (
 	specReviewAddFindingFlagThread  string
 	specReviewThreadContextFlagAsk  int64
 	specReviewThreadContextFlagItem string
+	specReviewThreadContextFlagDir  bool
 )
 
 // specReviewContextFeed reads a session's chat for thread-context; tests swap it.
@@ -274,6 +278,18 @@ func runSpecReviewThreadContext(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 	id, item := specReviewThreadContextFlagAsk, strings.TrimSpace(specReviewThreadContextFlagItem)
+	if specReviewThreadContextFlagDir {
+		ask, err := database.GetOwnerAskByID(id)
+		if err != nil {
+			return fmt.Errorf("loading ask %d: %w", id, err)
+		}
+		dir, err := specreview.ReadFolder(database, ask)
+		if err != nil {
+			return fmt.Errorf("the folder of ask %d: %w", id, err)
+		}
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "read_folder: %s\n", dir)
+		return err
+	}
 	out, err := specreview.ThreadContext(ctx, specreview.Deps{DB: database, Feed: specReviewContextFeed(database)}, id, item)
 	if errors.Is(err, specreview.ErrNoSuchItem) || errors.Is(err, db.ErrSpecReviewNotFound) {
 		return &exitCodeError{code: 3, err: fmt.Errorf("ask %d: no such item %s", id, item)}

@@ -272,3 +272,34 @@ func TestListTerminalSessionActivity_EverySessionWithItsCwd(t *testing.T) {
 		t.Fatalf("standalone row = %+v", got[1])
 	}
 }
+
+func TestIsSessionFolder_ExactRecordedFoldersOnly(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, wb, "claude", agentStateUUID)
+	if _, err := d.RecordSessionWorktree(ctx, nil, id, "/tmp/example/wt", "feat/x", ledgerAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_cwd = ? WHERE id = ?`, "/tmp/example/cwd", id); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		paths []string
+		want  bool
+	}{
+		{[]string{"/tmp/example/wt"}, true},
+		{[]string{"/tmp/example/cwd"}, true},
+		{[]string{"/elsewhere", "/tmp/example/wt"}, true},
+		{[]string{"/tmp/example/wt/sub"}, false},
+		{[]string{"/tmp/example"}, false},
+		{[]string{"/TMP/example/wt"}, false},
+		{[]string{""}, false},
+		{nil, false},
+	} {
+		got, err := d.IsSessionFolder(ctx, tc.paths...)
+		if err != nil || got != tc.want {
+			t.Errorf("IsSessionFolder(%q) = %v, %v; want %v", tc.paths, got, err, tc.want)
+		}
+	}
+}

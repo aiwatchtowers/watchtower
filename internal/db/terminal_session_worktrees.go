@@ -242,3 +242,26 @@ func (db *DB) ListTerminalSessionActivity(ctx context.Context) ([]TerminalSessio
 	}
 	return out, nil
 }
+
+// IsSessionFolder reports whether one of paths is, exactly, a folder a
+// workbench session's agent works in: a terminal session's recorded working
+// directory (agent_cwd) or a recorded session worktree root. A subfolder of
+// one is not; empty paths never match. `ai query --read-folder` uses it to
+// accept the folder the spec reviewer read (specreview.ReadFolder).
+func (db *DB) IsSessionFolder(ctx context.Context, paths ...string) (bool, error) {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		var has bool
+		err := db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM terminal_sessions WHERE agent_cwd = ?)
+			OR EXISTS (SELECT 1 FROM terminal_session_worktrees WHERE root = ?)`, p, p).Scan(&has)
+		if err != nil {
+			return false, fmt.Errorf("looking up session folder %s: %w", p, err)
+		}
+		if has {
+			return true, nil
+		}
+	}
+	return false, nil
+}

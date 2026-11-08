@@ -610,7 +610,9 @@ type readFolderConfigurable interface{ SetReadFolder(dir string) }
 
 // resolveReadFolder resolves --read-folder to the folder of a workbench in
 // the database at dbPath: absolute, symlinks resolved, an existing directory
-// bound to a workbench (a subfolder is not). "" without the flag. Any
+// bound to a workbench or, exactly, a folder a session of one works in — its
+// recorded working directory or worktree, where the spec reviewer reads (a
+// subfolder of either is not). "" without the flag. Any
 // refusal is a usage error (exit 2), as is combining it with --tools: a
 // read-folder run mounts no write tool.
 func resolveReadFolder(dbPath string) (string, error) {
@@ -637,13 +639,23 @@ func resolveReadFolder(dbPath string) (string, error) {
 	}
 	defer func() { _ = database.Close() }()
 	wb, err := database.WorkbenchByFolder(resolved)
-	if err != nil {
-		if errors.Is(err, db.ErrWorkbenchNotFound) {
-			return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
-		}
+	if err == nil {
+		return wb.FolderPath, nil
+	}
+	if !errors.Is(err, db.ErrWorkbenchNotFound) {
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
-	return wb.FolderPath, nil
+	// The folder a spec review thread reads is the reviewer's: the session's
+	// recorded working directory or worktree (specreview.ReadFolder). The
+	// ledger stores resolved roots; agent_cwd is the path as the hook saw it.
+	ok, err := database.IsSessionFolder(context.Background(), resolved, abs)
+	if err != nil {
+		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
+	}
+	if !ok {
+		return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
+	}
+	return resolved, nil
 }
 
 // mcpConfigurable is implemented by the CLI-backed providers (claude, codex)

@@ -175,3 +175,65 @@ func firstText(t *testing.T, lines []string) string {
 	t.Fatalf("no text event in %v", lines)
 	return ""
 }
+
+// recordSessionFolders gives the fixture's workbench a terminal session whose
+// agent works in cwd and that recorded worktree root, and returns both,
+// symlink-resolved.
+func (f readFolderFixture) recordSessionFolders(t *testing.T) (cwd, root string) {
+	t.Helper()
+	var err error
+	cwd, err = filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	root, err = filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	defer func() { _ = database.Close() }()
+	wb, err := database.WorkbenchByFolder(f.folder)
+	require.NoError(t, err)
+	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, agent_cwd)
+		VALUES (?, 'claude', 's', ?, 'agent-1', ?)`, wb.ID, f.folder, cwd)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = database.RecordSessionWorktree(t.Context(), nil, id, root, "feat/x", "2026-10-12T12:00:00.000Z")
+	require.NoError(t, err)
+	return cwd, root
+}
+
+// TestAIQueryReadFolder_AcceptsASessionFolder: the folder the spec reviewer
+// read — a session's recorded working directory or worktree, named through a
+// symlink too — is accepted and becomes the run's cwd; a subfolder of one is
+// refused like any other folder.
+func TestAIQueryReadFolder_AcceptsASessionFolder(t *testing.T) {
+	f := newReadFolderFixture(t)
+	cwd, root := f.recordSessionFolders(t)
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(root, link))
+
+	for name, tc := range map[string]struct{ arg, want string }{
+		"agent cwd":       {cwd, cwd},
+		"worktree":        {root, root},
+		"worktree link":   {link, root},
+		"workbench still": {f.folder, f.folder},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, "--read-folder", tc.arg)
+			require.Equal(t, 0, code, stderr)
+			parts := strings.Split(firstText(t, stdout), "|")
+			require.Len(t, parts, 4)
+			assert.Equal(t, tc.want, parts[0], "cwd")
+		})
+	}
+
+	sub := filepath.Join(root, "sub")
+	require.NoError(t, os.Mkdir(sub, 0o755))
+	for name, dir := range map[string]string{"worktree subdir": sub, "unrelated folder": t.TempDir()} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, "--read-folder", dir)
+			assert.Equal(t, 2, code)
+			assert.Contains(t, stderr, "not a workbench folder")
+			assert.Empty(t, stdout, "no provider ran")
+		})
+	}
+}
