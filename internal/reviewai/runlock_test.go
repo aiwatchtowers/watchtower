@@ -161,6 +161,34 @@ func TestRunLock_CancelledWaitIsNotBusy(t *testing.T) {
 	assert.False(t, errors.As(err, &busy))
 }
 
+// A reader in the instant between the holder's flock and its line still
+// hears the holder; a released lock names no one.
+func TestRunLock_HolderWrittenJustAfterTheLock(t *testing.T) {
+	path := LockPath(t.TempDir(), 1, "/repo")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	unlock, ok, err := fsutil.TryLockFile(path)
+	require.NoError(t, err)
+	require.True(t, ok)
+	written := make(chan struct{})
+	go func() {
+		defer close(written)
+		time.Sleep(10 * time.Millisecond)
+		_ = os.WriteFile(path, []byte(`{"by":"desktop"}`), 0o600)
+	}()
+	_, err = AcquireRun(context.Background(), path, "cli", nil)
+	<-written
+	unlock()
+	var busy *BusyError
+	require.ErrorAs(t, err, &busy)
+	assert.Equal(t, "desktop", busy.Holder.By)
+
+	release, err := AcquireRun(context.Background(), path, "agent", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "agent", ReadHolder(path).By)
+	release()
+	assert.Equal(t, Holder{}, ReadHolder(path), "a released lock names no one")
+}
+
 // An unreadable lock file is the zero holder: "Another run".
 func TestRunLock_UnreadableHolder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.lock")

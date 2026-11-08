@@ -23,6 +23,9 @@ const (
 	// LockWaitEvery is how often a waiting run hears OnWait (it re-reads
 	// the part rows the holder writes).
 	LockWaitEvery = 5 * time.Second
+	// holderSettle is how long a reader that finds no holder waits before
+	// it reads once more: the holder writes its line just after its flock.
+	holderSettle = 50 * time.Millisecond
 )
 
 // Owner texts of class busy (tech spec §3.7).
@@ -95,7 +98,7 @@ func AcquireRun(ctx context.Context, path, by string, wait *LockWait) (release f
 		return holdAs(path, by, unlock), nil
 	}
 	if wait == nil {
-		return nil, &BusyError{Holder: ReadHolder(path)}
+		return nil, &BusyError{Holder: holderNow(path)}
 	}
 	return waitRun(ctx, path, by, *wait)
 }
@@ -123,7 +126,7 @@ func waitRun(ctx context.Context, path, by string, wait LockWait) (func(), error
 	}()
 	tick := time.NewTicker(wait.Every)
 	defer tick.Stop()
-	wait.OnWait(ReadHolder(path))
+	wait.OnWait(holderNow(path))
 	for {
 		select {
 		case r := <-got:
@@ -137,19 +140,34 @@ func waitRun(ctx context.Context, path, by string, wait LockWait) (func(), error
 			}
 			return nil, r.err
 		case <-tick.C:
-			wait.OnWait(ReadHolder(path))
+			wait.OnWait(holderNow(path))
 		}
 	}
 }
 
-// holdAs writes the holder's line into the lock file; a failed write only
-// leaves a waiter without the holder's name.
+// holdAs writes the holder's line into the lock file. The file outlives
+// the lock (fsutil), so release empties it first, and a failed write
+// empties it too: a reader finds no holder rather than an earlier one.
 func holdAs(path, by string, unlock func()) func() {
 	b, _ := json.Marshal(Holder{By: by, StartedAt: time.Now().UTC()})
 	if err := os.WriteFile(path, b, 0o600); err != nil {
+		_ = os.Truncate(path, 0)
 		log.Printf("reviewai: overview run lock: holder not written")
 	}
-	return unlock
+	return func() {
+		_ = os.Truncate(path, 0)
+		unlock()
+	}
+}
+
+// holderNow is the Holder a held lock names, read once more after
+// holderSettle when it names none yet.
+func holderNow(path string) Holder {
+	if h := ReadHolder(path); h.By != "" {
+		return h
+	}
+	time.Sleep(holderSettle)
+	return ReadHolder(path)
 }
 
 // ReadHolder is the Holder the lock file at path names; the zero Holder
