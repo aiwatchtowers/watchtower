@@ -186,8 +186,8 @@ final class ReviewChangesModel {
     private(set) var streamedChapters: [String: ReviewStreamChapter] = [:]
     /// Another run holds the branch's lock and this one waits: who (`desktop|agent|cli`, "" unknown).
     private(set) var waitingFor: String?
-    /// When the running stream last printed a complete line (any line counts).
-    @ObservationIgnored private(set) var lastStreamLine: Date?
+    /// When the running stream last printed a complete line (any line counts), on `streamClock`.
+    var lastStreamLine: Date? { run?.lastLine }
     /// The one overview process of this session (tech spec §3.7).
     @ObservationIgnored private var run: OverviewRun?
     @ObservationIgnored private var silenceWatch: Task<Void, Never>?
@@ -1221,7 +1221,6 @@ final class ReviewChangesModel {
         let now = streamClock.now
         let started = OverviewRun(roundID: info.id, diffKey: info.diffKey, kind: kind, lastLine: now)
         run = started
-        lastStreamLine = now
         waitingFor = nil
         markRunning(kind)
         let stream: AsyncThrowingStream<ReviewStreamEvent, Error> = switch kind {
@@ -1283,7 +1282,6 @@ final class ReviewChangesModel {
                 guard run?.id == runID else { return }
                 let now = streamClock.now
                 run?.lastLine = now
-                lastStreamLine = now
                 if let end = apply(event) { outcome = end }
             }
         } catch {
