@@ -71,6 +71,9 @@ type world struct {
 	payReads  int    // account reads made through Paying
 	noSeal    string // the phone whose hub-to-phone key is out of reach (sealFailing)
 	onPayRead func() // runs inside a Paying read (the host closing meanwhile)
+	// zoneOut: the phones (uppercase ids) the runtime's KeysInZone keeps out
+	// of the data zone's keys (a free phone on the relay).
+	zoneOut map[string]bool
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -134,14 +137,19 @@ func newWorld(t *testing.T, flavour string) *world {
 	}, actions.KindOptions{})
 	sealer := secure.NewSealer(w.keys)
 	opener := secure.NewOpener(w.keys, w.keys)
-	w.center = link.NewCenter(link.Config{Store: st, Keys: w.keys, Opener: opener, Clock: w.clock})
+	w.center = link.NewCenter(link.Config{Store: st, Keys: w.keys, Opener: opener, Clock: w.clock,
+		KeysInZone: func(device string) bool {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+			return !w.zoneOut[strings.ToUpper(device)]
+		}})
 	w.cfg = switcher.Config{
 		Store: st, Keys: w.keys, Relay: w.relay, CloudKit: w.ck,
 		Actions: actions.Config{
 			Store: st, Sealer: sealer, Opener: opener, Keys: w.keys, Dispatcher: disp,
 			HubRelayID: hubRelayID, Clock: w.clock, Links: w.center,
 		},
-		Keyboxes: w.center.Keyboxes,
+		KeyboxesAll: w.center.KeyboxesAll,
 		Paying: func(ctx context.Context) (map[string]bool, error) {
 			w.mu.Lock()
 			w.payReads++
@@ -246,7 +254,7 @@ func (w *world) rebuild(mut func(*switcher.Config)) {
 // paying for the relay.
 func (w *world) addPhone(pays bool) *hubtest.Phone {
 	w.t.Helper()
-	kk, err := w.keys.KeyboxKeys()
+	kk, err := w.keys.KeyboxKeysFor(secure.ID{})
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -550,7 +558,7 @@ func TestSwitchRotatesEpochOnce(t *testing.T) {
 		again, err := switcher.New(switcher.Config{Store: w.st, Keys: w.keys, Relay: w.relay, CloudKit: w.ck,
 			Actions: actions.Config{Store: w.st, Sealer: secure.NewSealer(w.keys), Opener: secure.NewOpener(w.keys, w.keys),
 				Keys: w.keys, Dispatcher: actions.NewDispatcher(), HubRelayID: hubRelayID, Clock: w.clock},
-			Keyboxes: w.center.Keyboxes})
+			KeyboxesAll: w.center.KeyboxesAll})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -576,7 +584,7 @@ func TestSwitchResumesAfterTheRotation(t *testing.T) {
 		crashing, err := switcher.New(switcher.Config{Store: w.st, Keys: w.keys, Relay: w.relay, CloudKit: w.ck,
 			Actions: actions.Config{Store: w.st, Sealer: secure.NewSealer(w.keys), Opener: secure.NewOpener(w.keys, w.keys),
 				Keys: w.keys, Dispatcher: actions.NewDispatcher(), HubRelayID: hubRelayID, Clock: w.clock},
-			Keyboxes: func() ([]wire.Keybox, error) {
+			KeyboxesAll: func() ([]wire.Keybox, error) {
 				calls++
 				return nil, errors.New("the hub stops here")
 			}})

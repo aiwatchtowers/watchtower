@@ -19,6 +19,7 @@ import (
 
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/alerts"
+	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/secure"
 	hubslices "watchtower/internal/hub/slices"
@@ -179,6 +180,7 @@ type pushWorld struct {
 	pub    *hubslices.Publisher
 	device string
 	logs   *logcanary.Sink
+	saved  atomic.Int32 // OnAlertSaved calls
 }
 
 const pushZone = "data/hubpushtest"
@@ -216,7 +218,11 @@ func newPushWorld(t *testing.T, send *scriptedAlerts, extra ...hubslices.Source)
 	t.Cleanup(w.push.Stop)
 	w.pub = hubslices.NewPublisher(hubslices.Config{
 		Store: st, Transport: w.tr, Sealer: sealer, DataZone: pushZone, Sources: append([]hubslices.Source{w.src}, extra...),
-		Clock: w.clock.Now, OnAlertSaved: w.push.Enqueue, Away: alwaysAway{},
+		Clock: w.clock.Now, Away: alwaysAway{},
+		OnAlertSaved: func(key string, f secure.WorkAlertFields, at time.Time) {
+			w.saved.Add(1)
+			w.push.Enqueue(key, f, at)
+		},
 	})
 	return w
 }
@@ -673,4 +679,209 @@ func TestFarewellOverTheRelay(t *testing.T) {
 			t.Fatalf("devices %d: the row stays for the owner", got)
 		}
 	})
+}
+
+// ---- sealed in an epoch the phone holds (relay client Phase 5, Task 5) ----
+
+// envelopeAlerts accepts every send_alert and hands its envelope out per
+// relay device id.
+type envelopeAlerts struct{ calls chan [2]string }
+
+func (e *envelopeAlerts) SendAlert(_ context.Context, relayID string, p secure.Push) error {
+	e.calls <- [2]string{relayID, string(p.Envelope())}
+	return nil
+}
+
+// pushEnvelopes enqueues key's push to phones over r's keyring through the
+// runtime's EpochFor (alertEpochFor) and returns each phone's envelope.
+func (r *relayKeysRig) pushEnvelopes(key string, phones ...*hubtest.Phone) map[string][]byte {
+	r.t.Helper()
+	send := &envelopeAlerts{calls: make(chan [2]string, len(phones))}
+	targets := make([]alerts.Target, 0, len(phones))
+	for _, ph := range phones {
+		targets = append(targets, alerts.Target{DeviceID: ph.ID().String(), RelayID: ph.RelayDeviceID()})
+	}
+	p := alerts.New(alerts.Config{
+		Store: r.st, Sealer: secure.NewSealer(r.kr), Send: send, Clock: r.clock,
+		Targets:  func(context.Context) ([]alerts.Target, error) { return targets, nil },
+		EpochFor: alertEpochFor(r.st, r.kr),
+	})
+	if err := p.Start(context.Background()); err != nil {
+		r.t.Fatal(err)
+	}
+	defer p.Stop()
+	p.Enqueue(key, workAlert(key), r.clock())
+	out := map[string][]byte{}
+	for range phones {
+		select {
+		case c := <-send.calls:
+			out[c[0]] = []byte(c[1])
+		case <-time.After(5 * time.Second):
+			r.t.Fatalf("send_alert to %d of %d phones", len(out), len(phones))
+		}
+	}
+	return out
+}
+
+// ack is the phone's epoch_ack of epoch as the hub stored it.
+func (r *relayKeysRig) ack(ph *hubtest.Phone, epoch uint32) {
+	r.t.Helper()
+	if err := r.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		return state.AckEpoch(tx, ph.ID().String(), epoch)
+	}); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// opensHeld opens env as ph's notification extension does, with the alert
+// keys it held at its last unlock, and returns the epoch it was sealed in.
+func opensHeld(t *testing.T, ph *hubtest.Phone, key string, env []byte) uint32 {
+	t.Helper()
+	h, f, err := ph.OpenHeldAlertPush(env)
+	if err != nil {
+		t.Fatalf("a locked phone does not open the push: %v", err)
+	}
+	if f.ID != "ask_alert-"+key {
+		t.Fatalf("opened %s, want the alert %s", f.ID, key)
+	}
+	return h.Epoch
+}
+
+// TestAlertPushSealedInAnEpochThePhoneHolds (F11): a phone that acked epoch
+// e and stayed locked across the rotation to e+1 opens the push with its
+// K_alert[e], whether it offered a relay key or not.
+func TestAlertPushSealedInAnEpochThePhoneHolds(t *testing.T) {
+	for _, offering := range []bool{false, true} {
+		t.Run(fmt.Sprintf("offering=%v", offering), func(t *testing.T) {
+			r := newRelayKeysRig(t, "relay")
+			ph := r.phone()
+			if offering {
+				r.offer(ph)
+			}
+			r.keybox(ph) // its last unlock
+			r.ack(ph, 1)
+			r.advance(week)
+			r.rotateIfDue(true)
+			if r.epoch() != 2 {
+				t.Fatalf("epoch %d after the rotation, want 2", r.epoch())
+			}
+			env := r.pushEnvelopes("ask-1", ph)[ph.RelayDeviceID()]
+			if e := opensHeld(t, ph, "ask-1", env); e != 1 {
+				t.Fatalf("sealed in epoch %d, want the acked 1", e)
+			}
+		})
+	}
+}
+
+// TestAlertPushFallsBackToCurrentAfterRetention: once the acked epoch left
+// retention the push is sealed in the current epoch (the phone, unlocked
+// since, holds it; one locked that long gets the content-free notice).
+func TestAlertPushFallsBackToCurrentAfterRetention(t *testing.T) {
+	r := newRelayKeysRig(t, "relay")
+	ph := r.phone()
+	r.keybox(ph)
+	r.ack(ph, 1)
+	r.advance(week)
+	r.rotateIfDue(true)
+	r.advance(week + time.Hour)
+	r.rotateIfDue(true)
+	if r.epoch() != 3 {
+		t.Fatalf("epoch %d, want 3", r.epoch())
+	}
+	r.keybox(ph) // unlocked at last; its ack has not reached the hub
+	env := r.pushEnvelopes("ask-1", ph)[ph.RelayDeviceID()]
+	if e := opensHeld(t, ph, "ask-1", env); e != 3 {
+		t.Fatalf("sealed in epoch %d, want the current 3", e)
+	}
+}
+
+// TestTwoPhonesOnDifferentEpochsGetTheirOwnSeal: two locked phones that
+// acked different retained epochs each get the push in their own epoch, and
+// neither seal opens with the other phone's held keys alone.
+func TestTwoPhonesOnDifferentEpochsGetTheirOwnSeal(t *testing.T) {
+	r := newRelayKeysRig(t, "relay")
+	a, b := r.phone(), r.phone()
+	r.keybox(a)
+	r.ack(a, 1) // a stays locked from here on
+	if err := r.kr.Rotate(identity.ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	r.keybox(b)
+	r.ack(b, 2)
+	r.advance(time.Hour)
+	if err := r.kr.Rotate(identity.ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	if r.epoch() != 3 {
+		t.Fatalf("epoch %d, want 3", r.epoch())
+	}
+	envs := r.pushEnvelopes("ask-1", a, b)
+	if e := opensHeld(t, a, "ask-1", envs[a.RelayDeviceID()]); e != 1 {
+		t.Fatalf("a's push sealed in epoch %d, want 1", e)
+	}
+	if e := opensHeld(t, b, "ask-1", envs[b.RelayDeviceID()]); e != 2 {
+		t.Fatalf("b's push sealed in epoch %d, want 2", e)
+	}
+	if _, _, err := a.OpenHeldAlertPush(envs[b.RelayDeviceID()]); err == nil {
+		t.Fatal("a opens b's push, sealed in an epoch a never held")
+	}
+}
+
+// TestRotationAt7DaysSendsNoSecondAlert: an open ask through three weekly
+// rotations on the relay is handed to the pusher once (one OnAlertSaved, the
+// alert's signal on the relay) and gets exactly one send_alert; each
+// rotation reseals it.
+func TestRotationAt7DaysSendsNoSecondAlert(t *testing.T) {
+	send := &scriptedAlerts{calls: make(chan string, 16)}
+	w := newPushWorld(t, send)
+	if err := w.st.SetMeta(state.MetaTransport, "relay"); err != nil {
+		t.Fatal(err)
+	}
+	w.src.set(t, workAlert("ask-1"))
+	w.cycle(hubslices.KindAskAlert)
+	w.nextCall()
+	w.waitLog(w.settledLine("ask-1", "accepted"))
+	for i := range 3 {
+		w.clock.advance(week)
+		if due, err := w.kr.RotateIfDue(rotationAlso); err != nil || !due {
+			t.Fatalf("rotation %d: RotateIfDue = %v, %v", i+1, due, err)
+		}
+		if rep, err := w.pub.Cycle(context.Background(), nil); err != nil || rep.Saved == 0 {
+			t.Fatalf("rotation %d: the cycle resealed nothing: %+v, %v", i+1, rep, err)
+		}
+	}
+	if e, _ := w.kr.CurrentEpoch(); e != 4 {
+		t.Fatalf("epoch %d, want 4", e)
+	}
+	time.Sleep(200 * time.Millisecond) // a second push would have gone by now
+	if got := send.sent(); len(got) != 1 {
+		t.Fatalf("send_alert %v, want exactly one", got)
+	}
+	if n := w.saved.Load(); n != 1 {
+		t.Fatalf("OnAlertSaved %d times, want 1", n)
+	}
+}
+
+// TestAlertEpochForUnreadableReadsAsCurrent: an unknown device or an
+// unreadable sidecar seals in the current epoch (0), today's sealing.
+func TestAlertEpochForUnreadableReadsAsCurrent(t *testing.T) {
+	r := newRelayKeysRig(t, "relay")
+	ph := r.phone()
+	r.ack(ph, 1)
+	if err := r.kr.Rotate(identity.ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	epochFor := alertEpochFor(r.st, r.kr)
+	if e := epochFor(ph.ID().String()); e != 1 {
+		t.Fatalf("EpochFor = %d, want the acked 1", e)
+	}
+	if e := epochFor("unknown-device"); e != 0 {
+		t.Fatalf("EpochFor of an unknown device = %d, want 0", e)
+	}
+	if err := r.st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if e := epochFor(ph.ID().String()); e != 0 {
+		t.Fatalf("EpochFor over a closed sidecar = %d, want 0", e)
+	}
 }

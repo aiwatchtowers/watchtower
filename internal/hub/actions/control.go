@@ -3,8 +3,10 @@ package actions
 import (
 	"bytes"
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -104,9 +106,9 @@ func (p *Processor) SealControlFor(device string, c wire.Control, epoch uint32) 
 		if !sameID(device, b.id) {
 			continue
 		}
-		sealer := p.cfg.Sealer
-		if epoch != 0 {
-			sealer = sealer.InEpoch(epoch)
+		sealer, err := p.sealerIn(b, epoch)
+		if err != nil {
+			return state.Control{}, false, err
 		}
 		q, err := p.sealControlIn(sealer, b, c)
 		if err != nil {
@@ -132,12 +134,37 @@ func (p *Processor) QueueOf(device string) (queue string, ok bool, err error) {
 	return "", false, nil
 }
 
-// sealControl seals c as a hub control c-<uuid> for b's phone: a new id, and
-// device_id and hub_id naming the phone and this hub. It is queued with
+// sealControl seals c as a hub control c-<uuid> for b's phone (in the epoch
+// phoneSealer picks): a new id, and device_id and hub_id naming the phone and
+// this hub. It is queued with
 // ExpectAbsent (a new record).
 func (p *Processor) sealControl(b mailbox, c wire.Control) (queued, error) {
 	c.ID = ""
-	return p.sealControlIn(p.cfg.Sealer, b, c)
+	sealer, err := p.phoneSealer(b)
+	if err != nil {
+		return queued{}, err
+	}
+	return p.sealControlIn(sealer, b, c)
+}
+
+// phoneSealer is the Sealer for b's phone: pinned to the epoch EpochFor names
+// for it (a phone that offered a relay key: its acked epoch while retained,
+// relay client Phase 5), else the current one.
+func (p *Processor) phoneSealer(b mailbox) (*secure.Sealer, error) { return p.sealerIn(b, 0) }
+
+// sealerIn is the Sealer for b's phone in epoch, or, for 0, in the epoch
+// phoneSealer picks.
+func (p *Processor) sealerIn(b mailbox, epoch uint32) (*secure.Sealer, error) {
+	if epoch == 0 && p.cfg.EpochFor != nil {
+		var err error
+		if epoch, err = p.cfg.EpochFor(b.id.String()); err != nil {
+			return nil, fmt.Errorf("actions: the epoch to seal in: %w", err)
+		}
+	}
+	if epoch == 0 {
+		return p.cfg.Sealer, nil
+	}
+	return p.cfg.Sealer.InEpoch(epoch), nil
 }
 
 // sealControlIn is sealControl with sealer (the Sealer, or one pinned to an
@@ -288,7 +315,11 @@ func (p *Processor) skipTo(ctx context.Context, b mailbox, rec transport.Stored,
 
 // epochAck records the newest hub epoch the phone confirmed (never lowered;
 // an epoch the hub has not reached is ignored). Phase 3's key retirement
-// reads it (sim rule 14).
+// reads it (sim rule 14). Its next_kx, the phone's relay key offer (relay
+// client Phase 5), is checked here and stored in the same transaction only
+// while the hub is on the relay (onRelayTx) and the phone is not lapsed
+// (state.SetKXOffer); an unusable offer is logged by its class and ignored,
+// and the ack counts either way.
 func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Stored, o secure.Opened, c wire.Control) error {
 	current, err := p.cfg.Keys.CurrentEpoch()
 	if err != nil {
@@ -299,12 +330,82 @@ func (p *Processor) epochAck(ctx context.Context, b mailbox, rec transport.Store
 		return p.markRead(ctx, b, rec, o)
 	}
 	epoch, device := *c.Epoch, b.id.String()
+	var offer []byte
+	if c.NextKX != nil {
+		if offer, err = offeredKey(*c.NextKX); err != nil {
+			log.Printf("hub: epoch_ack of device %s offers an unusable relay key (%v): offer ignored", b.id, err)
+		}
+	}
 	return p.decide(ctx, b, func(tx *sql.Tx) error {
 		if err := mark(tx, b, rec.Name, o); err != nil {
 			return err
 		}
-		return state.AckEpoch(tx, device, epoch)
+		if err := state.AckEpoch(tx, device, epoch); err != nil {
+			return err
+		}
+		if offer == nil {
+			return nil
+		}
+		on, err := p.onRelayTx(tx)
+		if err != nil || !on {
+			return err
+		}
+		_, err = state.SetKXOffer(tx, device, offer, epoch)
+		return err
 	})
+}
+
+// onRelayTx reports whether an offer read by this processor may be stored:
+// the processor reads the relay (an offer read off the iCloud mailbox, by a
+// desktop hub's other processor or mid-switch, never is), and the hub runs on
+// it. With a switcher that is hub_meta.transport, read in the caller's
+// transaction so a switch away committed before it wins (absent: not known,
+// nothing stored). A hub without a switcher (headless, relay-only) never
+// switches, so its processor's transport alone decides and a stale meta value
+// is ignored.
+func (p *Processor) onRelayTx(tx *sql.Tx) (bool, error) {
+	if p.cfg.Transport.Kind() != transport.KindRelay {
+		return false, nil
+	}
+	if p.cfg.Switch == nil {
+		return true, nil
+	}
+	v, ok, err := state.MetaTx(tx, state.MetaTransport)
+	if err != nil {
+		return false, err
+	}
+	return ok && v == string(transport.KindRelay), nil
+}
+
+// Classes of an unusable relay key offer (logged; the bytes never are).
+var (
+	errOfferEncoding = errors.New("not unpadded base64url")
+	errOfferKey      = errors.New("not a 32-byte X25519 key")
+	errOfferLowOrder = errors.New("a low-order key: its exchange is all zero")
+)
+
+// offeredKey decodes and checks an epoch_ack's next_kx: 32 bytes of unpadded
+// base64url, an X25519 public key whose test exchange with a fresh key is not
+// all zero (crypto/ecdh refuses that result).
+func offeredKey(s string) ([]byte, error) {
+	pub, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, errOfferEncoding
+	}
+	peer, err := ecdh.X25519().NewPublicKey(pub)
+	if err != nil {
+		return nil, errOfferKey
+	}
+	probe, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("drawing a test key: %w", err)
+	}
+	shared, err := probe.ECDH(peer)
+	if err != nil {
+		return nil, errOfferLowOrder
+	}
+	clear(shared)
+	return pub, nil
 }
 
 // requestSwitch hands a phone's transport_switch to the hub's switcher

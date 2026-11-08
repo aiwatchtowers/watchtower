@@ -532,6 +532,7 @@ var hubMetaKeys = map[string]string{
 	state.MetaSyncGeneration:      "counter",
 	state.MetaWorkAlertsStartedAt: "timestamp",
 	state.MetaWorkAlertsAwaySince: "timestamp",
+	state.MetaServingNobodySince:  "timestamp",
 	"handlers_held_asks":          "id", // ask, session and run ids
 	"hygiene_last_run":            "timestamp",
 }

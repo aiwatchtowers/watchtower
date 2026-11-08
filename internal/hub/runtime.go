@@ -95,6 +95,7 @@ type zoneWatcher interface {
 // keyring, the transport, the link center, the processor and the publisher,
 // one worker goroutine and the publisher's.
 type hubRuntime struct {
+	stuck   stuckRotationNote // the daily stuck-rotation log line
 	sup     *supervisor
 	st      *state.Store
 	lat     *measure.Recorder // the content-free latency samples (RC §10)
@@ -318,6 +319,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 	var pub *slices.Publisher
 	h.center = link.NewCenter(link.Config{
 		Store: st, Keys: h.kr, Opener: opener, Host: hostInfo(o, name, authPub), Clock: o.Clock,
+		KeysInZone: h.keysInZone,
 		Publish: func(kinds ...string) {
 			pub.PublishSoon(toKinds(kinds)...)
 			h.devicesChanged(kinds)
@@ -344,6 +346,7 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		HubRelayID: h.relayID, Clock: o.Clock, Links: h.center,
 		Nudge: func(kinds []string) { pub.PublishNow(toKinds(kinds)...) },
 		Hello: h.cloudKitHello, HelloWanted: h.center.WantsHellos, Contact: h.noteContact, Latency: h.lat,
+		EpochFor: h.phoneEpoch,
 	}
 	if o.Desktop != nil {
 		// One processor per transport, the switcher their Switch; the
@@ -353,7 +356,19 @@ func newHubRuntime(ctx context.Context, s *supervisor, mode, name string) (*hubR
 		}
 	} else {
 		h.proc = actions.NewProcessor(ac)
+		// No switcher: the transport alone says whether the hub is on the
+		// relay (the processor's rule), never a stale hub_meta.transport.
+		tr := h.tr
+		h.kr.SetRelayRule(func(*sql.Tx) (bool, error) { return tr.Kind() == transport.KindRelay, nil })
 	}
+	// The rule is known now (the switcher stored its transport): a current
+	// epoch with no on_relay (a new sidecar's epoch 1) takes the hub's, so it
+	// is erased at its retention end on the relay and an offline unlink reads
+	// it (a headless sidecar has no hub_meta.transport).
+	if err := h.kr.StampCurrentEpoch(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrStartFailed, err)
+	}
+	h.kr.SetHeld(h.isHeld)
 	sweepTemps(o, st)
 	if o.DB != nil {
 		// Registered after the processor exists: the handlers' start may
@@ -1101,17 +1116,25 @@ func (h *hubRuntime) housekeeping(ctx context.Context) {
 	if err := h.center.Sweep(); err != nil {
 		log.Printf("hub: link sweep failed (%s)", errClass(err))
 	}
-	rotated, err := h.kr.RotateIfDue()
+	// Weekly on the relay, every 90 days elsewhere; never inside a running
+	// switch (it begins its own epoch); on the relay not while held or
+	// serving nobody, but for the hold's end (identity.RotateIfDue).
+	rotated, err := h.kr.RotateIfDue(rotationAlso)
 	if err != nil {
 		log.Printf("hub: epoch rotation check failed (%s)", errClass(err))
 	}
 	if rotated {
 		h.pub.PublishSoon(slices.AllKinds...)
 	}
+	h.stuck.check(h.kr, h.st, time.Now())
 	// Relay sim rule 14: a retired epoch's keys go once every phone acked a
-	// newer one and no held action is sealed in it, 7 days at most.
+	// newer one and no held action is sealed in it, 7 days at most; an epoch
+	// that began on the relay is erased then (ask #1066).
 	if err := h.kr.RetireOld(); err != nil {
 		log.Printf("hub: retiring old epochs failed (%s)", errClass(err))
+	}
+	if _, err := h.kr.EraseExpired(); err != nil {
+		log.Printf("hub: erasing expired relay epochs failed (%s)", errClass(err))
 	}
 	ctx, cancel := context.WithTimeout(ctx, opTimeout)
 	defer cancel()
@@ -1263,4 +1286,33 @@ func (h *hubRuntime) typingRequested(device, name string) {
 		return
 	}
 	h.sup.notifyDesktop(ControlAnswer{Event: EventTypingRequest, OK: true, DeviceID: device, Name: name})
+}
+
+// stuckRotationAfter: a relay hub's epoch rotates weekly, so one past this
+// age means the rotation is held back (a running switch, held, or serving
+// nobody before the hold's end).
+const stuckRotationAfter = 14 * 24 * time.Hour
+
+// stuckRotationNote logs, at most once a day, that a relay hub's epoch is
+// past stuckRotationAfter. The housekeeping goroutine is its only caller.
+type stuckRotationNote struct{ last time.Time }
+
+func (n *stuckRotationNote) check(kr *identity.Keyring, st *state.Store, now time.Time) {
+	if !n.last.IsZero() && now.Sub(n.last) < 24*time.Hour {
+		return
+	}
+	if on, err := kr.OnRelay(); err != nil || !on {
+		return
+	}
+	epochs, err := st.Epochs()
+	if err != nil || len(epochs) == 0 {
+		return
+	}
+	cur := epochs[len(epochs)-1]
+	age := now.Sub(cur.CreatedAt)
+	if age < stuckRotationAfter {
+		return
+	}
+	n.last = now
+	log.Printf("hub: epoch rotation is stuck: epoch %d is %d days old on the relay", cur.Epoch, int(age/(24*time.Hour)))
 }

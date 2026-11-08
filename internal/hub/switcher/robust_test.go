@@ -24,8 +24,8 @@ import (
 // between the rotation and the announce, as the hub sees it).
 func (w *world) failingKeyboxes(n *atomic.Int32) {
 	w.rebuild(func(c *switcher.Config) {
-		boxes := c.Keyboxes
-		c.Keyboxes = func() ([]wire.Keybox, error) {
+		boxes := c.KeyboxesAll
+		c.KeyboxesAll = func() ([]wire.Keybox, error) {
 			if n.Add(-1) >= 0 {
 				return nil, errors.New("the hub stops here")
 			}
@@ -170,8 +170,8 @@ func TestASwitchSurvivesARotationBeforeItsAnnounceAndAnUnsealablePhone(t *testin
 		n.Store(1)
 		ghost := secure.DeviceID(mustKey(t))
 		w.rebuild(func(c *switcher.Config) {
-			inner := c.Keyboxes
-			c.Keyboxes = func() ([]wire.Keybox, error) {
+			inner := c.KeyboxesAll
+			c.KeyboxesAll = func() ([]wire.Keybox, error) {
 				if n.Add(-1) >= 0 {
 					return nil, errors.New("the hub stops here")
 				}
@@ -221,7 +221,7 @@ func TestAFailingStepBacksOff(t *testing.T) {
 	a := w.addPhone(true)
 	var calls atomic.Int32
 	w.rebuild(func(c *switcher.Config) {
-		c.Keyboxes = func() ([]wire.Keybox, error) {
+		c.KeyboxesAll = func() ([]wire.Keybox, error) {
 			calls.Add(1)
 			return nil, errors.New("always")
 		}
@@ -382,8 +382,8 @@ func TestAKeylessPhoneIsSkipped(t *testing.T) {
 	eachFlavour(t, func(t *testing.T, w *world) {
 		a, keyless := w.addPhone(true), w.addPhone(true)
 		w.rebuild(func(c *switcher.Config) {
-			inner := c.Keyboxes
-			c.Keyboxes = func() ([]wire.Keybox, error) {
+			inner := c.KeyboxesAll
+			c.KeyboxesAll = func() ([]wire.Keybox, error) {
 				boxes, err := inner()
 				for i := range boxes {
 					if boxes[i].Grant.DeviceID == keyless.ID().String() {

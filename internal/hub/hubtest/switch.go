@@ -48,7 +48,8 @@ func (p *Phone) Use(store Records, mailbox string) {
 func (p *Phone) Epoch() uint32 { return p.cfg.Epoch }
 
 // Keep gives the phone a keybox's keys: K_meta, the epoch it seals in and
-// K_data of every epoch named (kept alongside those it already holds).
+// K_data and K_alert of every epoch named (kept alongside those it already
+// holds).
 func (p *Phone) Keep(k wire.KeyboxKeys) error {
 	b64 := base64.RawURLEncoding
 	meta, err := b64.DecodeString(k.MetaKey)
@@ -59,16 +60,34 @@ func (p *Phone) Keep(k wire.KeyboxKeys) error {
 	if err != nil {
 		return fmt.Errorf("hubtest: keybox data key: %w", err)
 	}
+	alert, err := b64.DecodeString(k.AlertKey)
+	if err != nil {
+		return fmt.Errorf("hubtest: keybox alert key: %w", err)
+	}
 	if p.dataKeys == nil {
 		p.dataKeys = map[uint32][]byte{}
 	}
+	if p.alertKeys == nil {
+		p.alertKeys = map[uint32][]byte{}
+	}
 	p.dataKeys[k.Epoch] = data
+	p.alertKeys[k.Epoch] = alert
 	if k.PreviousEpoch != nil && k.PreviousDataKey != nil {
 		prev, err := b64.DecodeString(*k.PreviousDataKey)
 		if err != nil {
 			return fmt.Errorf("hubtest: keybox previous data key: %w", err)
 		}
 		p.dataKeys[*k.PreviousEpoch] = prev
+	}
+	if k.PreviousEpoch != nil && k.PreviousAlertKey != nil {
+		prev, err := b64.DecodeString(*k.PreviousAlertKey)
+		if err != nil {
+			return fmt.Errorf("hubtest: keybox previous alert key: %w", err)
+		}
+		p.alertKeys[*k.PreviousEpoch] = prev
+	}
+	if err := p.takeRelayKX(k); err != nil {
+		return err
 	}
 	p.cfg.MetaKey, p.cfg.Epoch = meta, k.Epoch
 	return nil

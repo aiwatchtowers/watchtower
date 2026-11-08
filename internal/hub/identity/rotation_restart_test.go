@@ -22,7 +22,7 @@ func TestKeyring_AKilledRotationResumesOnTheSameEpoch(t *testing.T) {
 	c := newClock()
 	k := newKeyring(t, st, c)
 	c.advance(RotationAge)
-	if rotated, err := k.RotateIfDue(); err != nil || !rotated {
+	if rotated, err := k.RotateIfDue(nil); err != nil || !rotated {
 		t.Fatalf("RotateIfDue at 90 days = %v, %v", rotated, err)
 	}
 	data2, err := k.DataKey(2)
@@ -31,11 +31,11 @@ func TestKeyring_AKilledRotationResumesOnTheSameEpoch(t *testing.T) {
 	}
 
 	restarted := newKeyring(t, st, c)
-	if rotated, err := restarted.RotateIfDue(); err != nil || rotated {
+	if rotated, err := restarted.RotateIfDue(nil); err != nil || rotated {
 		t.Fatalf("the committed rotation was repeated: %v, %v", rotated, err)
 	}
 	c.advance(24 * time.Hour)
-	if rotated, err := restarted.RotateIfDue(); err != nil || rotated {
+	if rotated, err := restarted.RotateIfDue(nil); err != nil || rotated {
 		t.Fatalf("a day later: %v, %v", rotated, err)
 	}
 	if cur, err := restarted.CurrentEpoch(); err != nil || cur != 2 {

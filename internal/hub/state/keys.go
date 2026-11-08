@@ -13,7 +13,9 @@ import (
 // Reason is why the epoch began ("" for epoch 1 and rows written before
 // sidecar migration 00010). RetireAfter, set when the epoch is retired, is
 // when its relay-lane keys stop being accepted (nil on an older row: its
-// retention is read from RetiredAt).
+// retention is read from RetiredAt). OnRelay is whether the epoch began on the
+// relay, written when it begins (nil on a row written before sidecar migration
+// 00016: such a row is never erased, EraseEpoch).
 type Epoch struct {
 	Epoch       uint32
 	SealedKeys  []byte
@@ -22,6 +24,7 @@ type Epoch struct {
 	RetiredAt   *time.Time
 	Reason      string
 	RetireAfter *time.Time
+	OnRelay     *bool
 }
 
 // querier is what a read needs: the database or a transaction.
@@ -38,7 +41,7 @@ func (s *Store) Epochs() ([]Epoch, error) { return epochs(s.db) }
 func EpochsTx(tx *sql.Tx) ([]Epoch, error) { return epochs(tx) }
 
 func epochs(q querier) ([]Epoch, error) {
-	rows, err := q.Query(`SELECT epoch, sealed_keys, created_at, first_seq, retired_at, reason, retire_after FROM hub_epochs ORDER BY epoch`)
+	rows, err := q.Query(`SELECT epoch, sealed_keys, created_at, first_seq, retired_at, reason, retire_after, on_relay FROM hub_epochs ORDER BY epoch`)
 	if err != nil {
 		return nil, fmt.Errorf("listing epochs: %w", err)
 	}
@@ -53,8 +56,9 @@ func epochs(q querier) ([]Epoch, error) {
 			retiredF sql.NullFloat64
 			reason   sql.NullString
 			afterF   sql.NullFloat64
+			onRelay  sql.NullBool
 		)
-		if err := rows.Scan(&epoch, &e.SealedKeys, &created, &first, &retiredF, &reason, &afterF); err != nil {
+		if err := rows.Scan(&epoch, &e.SealedKeys, &created, &first, &retiredF, &reason, &afterF, &onRelay); err != nil {
 			return nil, fmt.Errorf("reading an epoch: %w", err)
 		}
 		if epoch < 0 || epoch > math.MaxUint32 {
@@ -72,6 +76,9 @@ func epochs(q querier) ([]Epoch, error) {
 			t := fromReal(afterF.Float64)
 			e.RetireAfter = &t
 		}
+		if onRelay.Valid {
+			e.OnRelay = &onRelay.Bool
+		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -87,7 +94,7 @@ func InsertEpoch(tx *sql.Tx, e Epoch) error {
 	if err != nil {
 		return err
 	}
-	var retired, after, reason any
+	var retired, after, reason, onRelay any
 	if e.RetiredAt != nil {
 		retired = toReal(*e.RetiredAt)
 	}
@@ -97,9 +104,21 @@ func InsertEpoch(tx *sql.Tx, e Epoch) error {
 	if e.Reason != "" {
 		reason = e.Reason
 	}
-	if _, err := tx.Exec(`INSERT INTO hub_epochs (epoch, sealed_keys, created_at, first_seq, retired_at, reason, retire_after) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		int64(e.Epoch), e.SealedKeys, toReal(e.CreatedAt), first, retired, reason, after); err != nil {
+	if e.OnRelay != nil {
+		onRelay = *e.OnRelay
+	}
+	if _, err := tx.Exec(`INSERT INTO hub_epochs (epoch, sealed_keys, created_at, first_seq, retired_at, reason, retire_after, on_relay) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		int64(e.Epoch), e.SealedKeys, toReal(e.CreatedAt), first, retired, reason, after, onRelay); err != nil {
 		return fmt.Errorf("writing an epoch: %w", err)
+	}
+	return nil
+}
+
+// StampEpochOnRelay sets epoch's on_relay to onRelay when it has none, in the
+// caller's transaction; a stamped row is left as it is.
+func StampEpochOnRelay(tx *sql.Tx, epoch uint32, onRelay bool) error {
+	if _, err := tx.Exec(`UPDATE hub_epochs SET on_relay = ? WHERE epoch = ? AND on_relay IS NULL`, onRelay, int64(epoch)); err != nil {
+		return fmt.Errorf("stamping an epoch's on_relay: %w", err)
 	}
 	return nil
 }

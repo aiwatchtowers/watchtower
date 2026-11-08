@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -68,8 +69,12 @@ type Config struct {
 	RefreshAccount func(ctx context.Context)
 	// Away is the work-alert policy's owner-away input, checked before every
 	// send, retries included. Nil reads as always away; an error as away.
-	Away  platform.Away
-	Clock func() time.Time
+	Away platform.Away
+	// EpochFor is the epoch a phone's push is sealed in: one whose K_alert
+	// the phone holds while locked (its acked epoch while the hub retains
+	// it), 0 for the current one. Nil reads as 0 for every phone.
+	EpochFor func(device string) uint32
+	Clock    func() time.Time
 	// Timer waits d between retries (nil = a real timer): a channel that
 	// fires once and a stop func.
 	Timer func(d time.Duration) (<-chan time.Time, func())
@@ -235,18 +240,9 @@ func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time
 	if len(begun) == 0 {
 		return
 	}
-	push, err := p.c.Sealer.AlertPush(key, fields)
-	if err != nil {
-		outcome := state.AlertFailed
-		if errors.Is(err, secure.ErrAlertTooLarge) {
-			outcome = state.AlertTooLarge
-		}
-		log.Printf("hub alerts: push of %s not sealed (%s)", key, errClass(err))
-		xs := make([]state.AlertPushSettle, 0, len(begun))
-		for _, d := range begun {
-			xs = append(xs, state.AlertPushSettle{Key: key, Device: d, Outcome: outcome})
-		}
-		p.settleAll(xs)
+	pushOf, failed := p.seal(key, fields, begun)
+	p.settleAll(failed)
+	if len(pushOf) == 0 {
 		return
 	}
 	if p.beforeQueue != nil {
@@ -256,6 +252,10 @@ func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time
 	var refused []state.AlertPushSettle
 	p.mu.Lock()
 	for _, d := range begun {
+		push, ok := pushOf[d]
+		if !ok {
+			continue // settled by seal
+		}
 		reason := ""
 		switch {
 		case !p.running || p.ctx.Err() != nil: // stopped, or Start's ctx ended: the senders are gone
@@ -280,6 +280,56 @@ func (p *Pusher) Enqueue(key string, fields secure.WorkAlertFields, savedAt time
 	}
 	p.mu.Unlock()
 	p.settleAll(refused)
+}
+
+// seal seals key's push once per distinct epoch among devices (EpochFor) and
+// returns each device's push; the devices of an epoch whose seal failed come
+// back as settles (too_large, else failed), and the others keep theirs. An
+// older epoch that no longer seals (its keys left retention between EpochFor
+// and the seal) falls back to the current one, the rule's own answer past
+// retention.
+func (p *Pusher) seal(key string, fields secure.WorkAlertFields, devices []string) (map[string]secure.Push, []state.AlertPushSettle) {
+	byEpoch := map[uint32][]string{}
+	for _, d := range devices {
+		var e uint32
+		if p.c.EpochFor != nil {
+			e = p.c.EpochFor(d)
+		}
+		byEpoch[e] = append(byEpoch[e], d)
+	}
+	pushOf := make(map[string]secure.Push, len(devices))
+	var failed []state.AlertPushSettle
+	for _, e := range slices.Sorted(maps.Keys(byEpoch)) {
+		push, err := p.sealIn(e, key, fields)
+		if err != nil && e != 0 && !errors.Is(err, secure.ErrAlertTooLarge) {
+			log.Printf("hub alerts: push of %s not sealed in epoch %d (%s), sealed in the current epoch", key, e, errClass(err))
+			push, err = p.sealIn(0, key, fields)
+		}
+		if err != nil {
+			outcome := state.AlertFailed
+			if errors.Is(err, secure.ErrAlertTooLarge) {
+				outcome = state.AlertTooLarge
+			}
+			log.Printf("hub alerts: push of %s not sealed (%s)", key, errClass(err))
+			for _, d := range byEpoch[e] {
+				failed = append(failed, state.AlertPushSettle{Key: key, Device: d, Outcome: outcome})
+			}
+			continue
+		}
+		for _, d := range byEpoch[e] {
+			pushOf[d] = push
+		}
+	}
+	return pushOf, failed
+}
+
+// sealIn seals key's push in epoch (0 = the current one).
+func (p *Pusher) sealIn(epoch uint32, key string, fields secure.WorkAlertFields) (secure.Push, error) {
+	s := p.c.Sealer
+	if epoch != 0 {
+		s = s.InEpoch(epoch)
+	}
+	return s.AlertPush(key, fields)
 }
 
 // Reconnected wakes the pushes waiting after the relay answered UNAVAILABLE:

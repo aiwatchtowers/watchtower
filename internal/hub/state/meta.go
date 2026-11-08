@@ -22,6 +22,17 @@ const (
 	// whose relay mailbox refused the hub's write as over quota, until a
 	// write to that phone's mailbox succeeds or the phone is unlinked.
 	MetaMailboxFullPhones = "mailbox_full_phones"
+	// MetaLapsePending is the relay lapses waiting for the switcher's Step,
+	// "<device id>@<unix seconds>" comma-joined; only the switcher writes it.
+	// A phone listed here offers no relay key (SetKXOffer).
+	MetaLapsePending = "lapse_pending"
+	// MetaServingNobodySince is when an answered relay account read first
+	// showed no linked phone in a slot or no phone paying (unix seconds,
+	// decimal); the runtime writes it at each answered read on the relay, a
+	// rotation toward iCloud removes it, and the keyring's rotation check
+	// reads it: while it is set no age rotation runs, and 14 days after it
+	// the hub rotates once and clears every relay key (relay client Phase 5).
+	MetaServingNobodySince = "relay_serving_nobody_since"
 )
 
 // Meta reads one hub_meta value; ok is false when the key is unset.
@@ -53,6 +64,14 @@ func SetMetaTx(tx *sql.Tx, key, value string) error {
 	if _, err := tx.Exec(`INSERT INTO hub_meta (key, value) VALUES (?, ?)
 		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value); err != nil {
 		return fmt.Errorf("writing hub_meta %s: %w", key, err)
+	}
+	return nil
+}
+
+// DeleteMetaTx removes one hub_meta value in the caller's transaction.
+func DeleteMetaTx(tx *sql.Tx, key string) error {
+	if _, err := tx.Exec(`DELETE FROM hub_meta WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("removing hub_meta %s: %w", key, err)
 	}
 	return nil
 }

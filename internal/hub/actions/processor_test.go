@@ -102,6 +102,13 @@ func newWorld(t *testing.T, kind transport.Kind) *world {
 	w.proc = NewProcessor(Config{
 		Store: st, Transport: tr, Sealer: w.sealer, Opener: opener, Keys: w.keys,
 		Dispatcher: w.disp, HubRelayID: hubRelayID, Clock: w.clock, Links: w.links,
+		EpochFor: func(device string) (uint32, error) { // the runtime's wiring
+			d, ok, err := st.Device(device)
+			if err != nil || !ok {
+				return 0, err
+			}
+			return w.keys.PhoneEpoch(d)
+		},
 	})
 	w.tr = tr
 	w.phone = w.addPhone()

@@ -17,7 +17,7 @@ func (w *world) retire() {
 		w.t.Fatal(err)
 	}
 	w.advance(identity.PreviousEpochGrace)
-	kk, err := w.keys.KeyboxKeys()
+	kk, err := w.keys.KeyboxKeysFor(w.phone.ID())
 	if err != nil {
 		w.t.Fatal(err)
 	}
@@ -169,4 +169,88 @@ func TestASkippedActionIsAnsweredExpired(t *testing.T) {
 		w.settle()
 		w.wantCalls("test_noop:2")
 	})
+}
+
+// F21: a phone that offered a key and acked epoch e still opens its echoes
+// while its keybox for the next epoch is stuck: they are sealed in e (its
+// acked epoch, retained) rather than in the new epoch's keys it cannot hold.
+func TestEchoSealedInAckedEpochWhileKeyboxIsStuck(t *testing.T) {
+	w := relayWorld(t)
+	if _, err := w.phone.AckEpoch(1); err != nil {
+		t.Fatal(err)
+	}
+	w.settle()
+	if d := w.device(w.phone); d.KXOffer == nil {
+		t.Fatal("the offer was not stored")
+	}
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil { // epoch 2, keys for the offer
+		t.Fatal(err)
+	}
+	if _, ok, _ := w.st.EpochRelayKeys(2, w.phone.ID().String()); !ok {
+		t.Fatal("the rotation derived no keys for the offer")
+	}
+	seq := w.act("test_noop") // the phone never got epoch 2's keybox
+	w.settle()
+	w.wantCalls("test_noop:1")
+	w.wantEcho(seq, wire.StatusApplied, "")
+	if got := w.phone.EchoEpochs[seq]; got != 1 {
+		t.Fatalf("echo sealed in epoch %d, want the acked 1", got)
+	}
+}
+
+// A phone that never offered gets today's sealing: the current epoch, with
+// static keys it derives for any epoch.
+func TestNeverOfferedPhoneSealsInCurrentEpoch(t *testing.T) {
+	w := relayWorld(t)
+	w.ackWithOffer("") // no usable offer: the ack counts, nothing stored
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil {
+		t.Fatal(err)
+	}
+	seq := w.act("test_noop")
+	w.settle()
+	w.wantEcho(seq, wire.StatusApplied, "")
+	if got := w.phone.EchoEpochs[seq]; got != 2 {
+		t.Fatalf("echo sealed in epoch %d, want the current 2", got)
+	}
+}
+
+// An epoch_ack with an offer read after the hub rotated (its keybox reached
+// the phone first): a late echo that replaces a held echo sealed in the new
+// epoch is not sealed back in the acked one, which the phone's rollback guard
+// (epoch first) would drop as older.
+func TestALateAckDoesNotMoveALateEchoBackAnEpoch(t *testing.T) {
+	w := relayWorld(t)
+	w.phone.Guard = true
+	seen := heldThenLate(w)
+	if err := w.keys.Rotate(identity.ReasonManual); err != nil { // epoch 2: no offer yet, static
+		t.Fatal(err)
+	}
+	kk, err := w.keys.KeyboxKeysFor(w.phone.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.phone.Keep(kk); err != nil {
+		t.Fatal(err)
+	}
+	seq := w.act("session_input")
+	w.settle()
+	w.wantEcho(seq, wire.StatusHeld, "agent_busy")
+	if got := w.phone.EchoEpochs[seq]; got != 2 {
+		t.Fatalf("held echo in epoch %d, want 2", got)
+	}
+	if _, err := w.phone.AckEpoch(1); err != nil { // the ack of epoch 1, read only now
+		t.Fatal(err)
+	}
+	w.settle()
+	if d := w.device(w.phone); d.KXOffer == nil || d.AckedEpoch != 1 {
+		t.Fatalf("offer %x, acked %d", d.KXOffer, d.AckedEpoch)
+	}
+	if err := w.proc.LateEcho(w.ctx, *seen, Outcome{Status: wire.StatusApplied}); err != nil {
+		t.Fatal(err)
+	}
+	w.settle()
+	if len(w.phone.RolledBack) != 0 {
+		t.Fatalf("the phone's guard dropped %v", w.phone.RolledBack)
+	}
+	w.wantEcho(seq, wire.StatusApplied, "")
 }

@@ -116,11 +116,46 @@ type Phone struct {
 	// (Stored.Creator, on a transport with WriteAs such as the memfake).
 	Creator string
 
+	// EchoEpochs is the epoch each action's last echo read was sealed in.
+	EchoEpochs map[uint64]uint32
+	// Dropped names every hub record Sync read and could not open in an
+	// epoch at or below the one the phone seals in (the Kit's
+	// epochKeysGone: those keys never come, so the record is dropped).
+	// With RequeueOnDrop each batch that dropped one writes the whole
+	// outbox again once, in order (the Kit's requeueUnechoedAfterDrop).
+	Dropped       []string
+	RequeueOnDrop bool
+	// Guard, when set, is the Kit's rollback guard on hub records
+	// (RollbackGuard.swift): per wire name the newest (epoch, seq) opened,
+	// epoch first; an older version is dropped unhandled and listed in
+	// RolledBack.
+	Guard      bool
+	RolledBack []string
+	seen       map[string][2]uint64
+
 	// dataKeys is K_data per epoch the phone was given (Keep, Follow:
-	// switch.go); cursors is the mailbox cursor per record store left (Use).
-	dataKeys map[uint32][]byte
-	cursors  map[storeZone]uint64
+	// switch.go), alertKeys K_alert the same way (the alert material a
+	// locked phone's notification extension holds); cursors is the mailbox
+	// cursor per record store left (Use).
+	dataKeys  map[uint32][]byte
+	alertKeys map[uint32][]byte
+	cursors   map[storeZone]uint64
+
+	// The Kit's ephemeral relay state (relay client Phase 5, ephemeral.go):
+	// current and offered are the two dev_eph private keys, pairs the
+	// wt/relay/v2/ keys of each epoch a keybox named relay_kx for.
+	current, offered *ecdh.PrivateKey
+	pairs            map[uint32]map[secure.Direction][]byte
+	// pairPubs is each held pair's publics (hub_pub, device_pub); cleared
+	// the epochs a static keybox dropped a pair of (or marked static on a
+	// link with ephemeral state), with the dropped publics (nil when none
+	// was held): the Kit's relayKeysCleared.
+	pairPubs map[uint32]relayPubs
+	cleared  map[uint32]relayPubs
 }
+
+// relayPubs is one epoch's ephemeral publics, hub's and device's.
+type relayPubs struct{ hub, device []byte }
 
 // New makes a phone with fresh keys.
 func New(cfg Config) (*Phone, error) {
@@ -453,14 +488,26 @@ func (p *Phone) Sync() (int, error) {
 		if err != nil {
 			return n, err
 		}
+		dropped := false
 		for _, rec := range b.Changed {
 			f, err := p.open(rec.Name, rec.Envelope)
 			if err != nil {
-				continue // the phone's own records
+				// The phone's own records, or a hub record it cannot open.
+				if p.goneEpoch(rec) {
+					p.Dropped = append(p.Dropped, rec.Name)
+					dropped = true
+				}
+				continue
+			}
+			if p.Guard && p.rolledBack(rec) {
+				continue
 			}
 			n++
 			switch f.Kind {
 			case "action":
+				if h, err := secure.ParseHeader(rec.Envelope); err == nil {
+					p.noteEchoEpoch(f, h.Epoch)
+				}
 				if err := p.onEcho(rec, f); err != nil {
 					return n, err
 				}
@@ -481,10 +528,23 @@ func (p *Phone) Sync() (int, error) {
 			}
 		}
 		p.cursor = b.NewSeq
+		if dropped && p.RequeueOnDrop {
+			if err := p.ResendOutbox(); err != nil {
+				return n, err
+			}
+		}
 		if !b.More {
 			return n, nil
 		}
 	}
+}
+
+// goneEpoch reports a hub record to this phone, sealed in an epoch at or
+// below the one the phone seals in, which it cannot open: its keys are gone.
+func (p *Phone) goneEpoch(rec transport.Stored) bool {
+	h, err := secure.ParseHeader(rec.Envelope)
+	return err == nil && h.Class == secure.ClassRelayToPhone && h.Hub == p.cfg.Hub &&
+		h.Sender == p.cfg.Hub && h.Epoch <= p.cfg.Epoch
 }
 
 // Records is every live record name in the mailbox.
@@ -685,7 +745,12 @@ func (p *Phone) ownRecord(rec transport.Stored) bool {
 	return err == nil
 }
 
+// relayKey is the stored pair's key of epoch when the phone holds one, else
+// the static wt/relay/v1/ key (the phone's rule for a relay key).
 func (p *Phone) relayKey(dir secure.Direction, epoch uint32) ([]byte, error) {
+	if pair, ok := p.pairs[epoch]; ok {
+		return bytes.Clone(pair[dir]), nil
+	}
 	return secure.RelayKey(p.kx, p.cfg.HubKX, p.nonce, p.cfg.Hub, p.id, epoch, dir)
 }
 
@@ -835,8 +900,7 @@ func (p *Phone) ReadKeybox(zone string) (wire.Keybox, bool, error) {
 			if rec.Name != want {
 				continue
 			}
-			_, f, err := secure.OpenHPKE(rec.Envelope, secure.ClassKeybox, p.kx, secure.KeyboxInfo(p.cfg.Hub, p.id),
-				secure.Context{Zone: secure.ZoneData, WireName: rec.Name}, p.cfg.HubSig)
+			f, err := p.openKeybox(rec)
 			if err != nil {
 				return wire.Keybox{}, false, fmt.Errorf("hubtest: opening the keybox: %w", err)
 			}
@@ -848,6 +912,9 @@ func (p *Phone) ReadKeybox(zone string) (wire.Keybox, bool, error) {
 				meta, err := base64.RawURLEncoding.DecodeString(kb.Keys.MetaKey)
 				if err != nil {
 					return wire.Keybox{}, false, fmt.Errorf("hubtest: keybox meta key: %w", err)
+				}
+				if err := p.takeRelayKX(*kb.Keys); err != nil {
+					return wire.Keybox{}, false, err
 				}
 				p.cfg.MetaKey, p.cfg.Epoch = meta, kb.Keys.Epoch
 			}
@@ -904,6 +971,21 @@ func (p *Phone) OpenAlertPush(zone string, env []byte) (secure.InnerFrame, error
 			return base64.RawURLEncoding.DecodeString(k)
 		})
 	return f, err
+}
+
+// OpenHeldAlertPush opens a send_alert envelope as a locked phone's
+// notification extension does: with only the K_alert of the epochs the phone
+// was given by its last Keep (its alert material), never the zone's keybox.
+func (p *Phone) OpenHeldAlertPush(env []byte) (secure.Header, secure.InnerFrame, error) {
+	return secure.OpenSymmetric(env, []secure.EnvelopeClass{secure.ClassAlert},
+		secure.Context{Zone: secure.ZoneData, WireName: secure.AlertPushWireName}, p.cfg.HubSig,
+		func(h secure.Header) ([]byte, error) {
+			k, ok := p.alertKeys[h.Epoch]
+			if !ok {
+				return nil, fmt.Errorf("hubtest: the phone holds no alert key for epoch %d", h.Epoch)
+			}
+			return bytes.Clone(k), nil
+		})
 }
 
 // OpenData opens every live hub record of the data zone (slices and alerts)

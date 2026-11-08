@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 )
 
@@ -47,7 +48,7 @@ func TestRetainedHoldsEveryEpochWithin7Days(t *testing.T) {
 		}
 	}
 	// The keybox keeps its two-epoch shape: the newest retired one.
-	kk, err := k.KeyboxKeys()
+	kk, err := k.KeyboxKeysFor(secure.ID{})
 	if err != nil || kk.Epoch != 3 || kk.PreviousEpoch == nil || *kk.PreviousEpoch != 2 {
 		t.Fatalf("keybox keys %+v %v", kk, err)
 	}
@@ -96,7 +97,7 @@ func TestRetentionCapIs7Days(t *testing.T) {
 			if got := retained(t, k); !slices.Equal(got, []uint32{3}) {
 				t.Fatalf("retained %v", got)
 			}
-			if kk, _ := k.KeyboxKeys(); kk.PreviousEpoch != nil {
+			if kk, _ := k.KeyboxKeysFor(secure.ID{}); kk.PreviousEpoch != nil {
 				t.Fatal("the keybox carries a retired epoch past 7 days")
 			}
 		})

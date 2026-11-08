@@ -109,6 +109,11 @@ type Config struct {
 	// Mac's iCloud user comes from the bridge (transport.CloudUser).
 	Container string
 	Sweep     Sweep
+	// KeysInZone (nil = always) says whether device's keybox in the data zone
+	// carries the epoch keys (Keyboxes; KeyboxesAll ignores it). The runtime
+	// keeps them out for a phone that cannot read the relay's data zone. It
+	// is called with the center's lock held, so it must not call the center.
+	KeysInZone func(device string) bool
 }
 
 // Center is the hub's linking state machine. Its methods are safe for
@@ -142,6 +147,8 @@ type Center struct {
 	// section, told from unlock (guarded by mu).
 	onRelayID  func(device string)
 	relayNamed []string
+	// keysInZone is Config.KeysInZone (nil = always).
+	keysInZone func(device string) bool
 	// beforeKeys is a test seam: run by Keyboxes between the device read
 	// and the key read.
 	beforeKeys func()
@@ -198,7 +205,7 @@ func NewCenter(c Config) *Center {
 		st: c.Store, keys: c.Keys, opener: c.Opener, host: c.Host, clock: c.Clock,
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
 		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
-		container: c.Container, sweep: c.Sweep, shareTimeout: ShareTimeout,
+		container: c.Container, sweep: c.Sweep, shareTimeout: ShareTimeout, keysInZone: c.KeysInZone,
 	}
 }
 
@@ -469,6 +476,10 @@ func removeDevice(tx *sql.Tx, device string, at time.Time) (bool, error) {
 		if _, err := tx.Exec(q, device); err != nil {
 			return false, err
 		}
+	}
+	// The offer went with the row; its per-epoch relay keys go too.
+	if err := state.ClearDeviceKX(tx, device); err != nil {
+		return false, err
 	}
 	if agreement != nil {
 		if _, err := tx.Exec(`INSERT INTO revoked_devices (device_id, name, scope, agreement_key, removed_at) VALUES (?, ?, ?, ?, ?)`,

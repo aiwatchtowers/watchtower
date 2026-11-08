@@ -90,11 +90,21 @@ func (s *Store) WithSecureDeleteTx(ctx context.Context, fn func(*sql.Tx) error) 
 	return nil
 }
 
-// Checkpoint copies the WAL into the file and truncates it (adoption, so no
-// blanked text stays behind in the log).
+// ErrCheckpointBusy is returned when a checkpoint could not finish (a reader or writer held
+// it back), so the WAL may still hold what it was meant to remove.
+var ErrCheckpointBusy = errors.New("state: the checkpoint was blocked")
+
+// Checkpoint copies the WAL into the file and truncates it (adoption and the
+// relay epoch erasure, so no blanked text or erased key stays behind in the
+// log). SQLite reports a checkpoint a reader blocks as busy, not as an error:
+// that is ErrCheckpointBusy.
 func (s *Store) Checkpoint() error {
-	if _, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+	var busy, logFrames, done int
+	if err := s.db.QueryRow(`PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busy, &logFrames, &done); err != nil {
 		return fmt.Errorf("checkpointing the hub state: %w", err)
+	}
+	if busy != 0 {
+		return ErrCheckpointBusy
 	}
 	return nil
 }

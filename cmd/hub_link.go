@@ -66,6 +66,9 @@ type hubPhoneJSON struct {
 	// Alerts is the outcome class of the phone's last settled alert push in
 	// the last 7 days, "" for none.
 	Alerts *string `json:"alerts"`
+	// Keys is the key scheme of the phone's relay lane in the current epoch:
+	// "ephemeral" when the epoch holds a relay-key row for it, else "static".
+	Keys string `json:"keys"`
 }
 
 // hubUnlinkJSON is `hub unlink --json` (pinned keys).
@@ -203,6 +206,7 @@ func runHubStatus(cmd *cobra.Command, _ []string) error {
 		line += "\n" + hubNoICloudLine
 	}
 	out := hubStatusJSON{Status: s, Recordings: rec, KeptRecordings: kept, Name: hub.DisplayName(dir), Transcriber: hubTranscriberSeen(dir)}
+	out.Epoch, out.EpochAgeDays = hubEpochFacts(dir, time.Now())
 	return hubPrint(cmd, asJSON, out, line)
 }
 
@@ -217,6 +221,27 @@ type hubStatusJSON struct {
 	// Transcriber: a Desktop transcriber ever sent a heartbeat (recordings
 	// can be turned on); false before one did or with no sidecar.
 	Transcriber bool `json:"transcriber"`
+	// Epoch is the current key epoch and EpochAgeDays its age in whole days;
+	// null when the sidecar or its epochs cannot be read.
+	Epoch        *uint32 `json:"epoch"`
+	EpochAgeDays *int    `json:"epoch_age_days"`
+}
+
+// hubEpochFacts reads the current epoch and its age from the sidecar
+// read-only; nil, nil when there is none.
+func hubEpochFacts(dir string, now time.Time) (*uint32, *int) {
+	st, err := state.OpenReadOnly(dir)
+	if err != nil {
+		return nil, nil
+	}
+	defer func() { _ = st.Close() }()
+	epochs, err := st.Epochs()
+	if err != nil || len(epochs) == 0 {
+		return nil, nil
+	}
+	cur := epochs[len(epochs)-1]
+	days := max(int(now.Sub(cur.CreatedAt)/(24*time.Hour)), 0)
+	return &cur.Epoch, &days
 }
 
 // hubTranscriberSeen reads whether a Desktop heartbeat ever arrived; any
@@ -286,10 +311,23 @@ func hubPhoneRows(cmd *cobra.Command, st *state.Store, dir string, devices []sta
 	}
 	onRelay := serr == nil && (status.State == hub.StateRunning || status.State == hub.StatePaused) &&
 		status.Transport == wire.TransportRelay && status.PayingPhones != nil
+	var ephemeral []string
+	if epochs, eerr := st.Epochs(); eerr != nil {
+		warn("the epochs", eerr)
+	} else if len(epochs) > 0 {
+		var kerr error
+		if ephemeral, kerr = st.EpochRelayKeyDevices(epochs[len(epochs)-1].Epoch); kerr != nil {
+			warn("the relay keys", kerr)
+		}
+	}
 	heldWarned := false
 	out := make([]hubPhoneJSON, 0, len(devices))
 	for _, d := range devices {
 		p := hubPhone(d, active)
+		p.Keys = "static"
+		if slices.ContainsFunc(ephemeral, func(id string) bool { return strings.EqualFold(id, d.ID) }) {
+			p.Keys = "ephemeral"
+		}
 		if n, err := st.HeldCount(d.ID); err == nil {
 			if d.ResendRequestedFrom > 0 {
 				n++ // the open gap
