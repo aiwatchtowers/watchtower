@@ -26,8 +26,8 @@ struct InboxRefHooks {
     }
 
     /// The hooks over `content` (nil: no native actions): the buttons at the
-    /// row's trailing edge, a failed press's line or the Reply composer
-    /// under it, an idea row's own press. The design shots draw through it too.
+    /// row's trailing edge, a proposal's summary, a failed press's line or
+    /// the Reply composer under it, an idea row's own press. The design shots draw through it too.
     static func make(
         isShown: @escaping (InboxRef) -> Bool,
         content: @escaping (InboxRef, ArtifactRenderMode) -> InboxRowActionsContent?,
@@ -51,9 +51,7 @@ struct InboxRefHooks {
             nativeKinds: { ref in content(inboxRef(ref), .inbox) == nil ? [] : nativeKinds(ref.kind) },
             nativeFooter: { ref, mode in
                 let inbox = inboxRef(ref)
-                guard let content = content(inbox, mode),
-                      content.state != .idle || content.reply != nil || content.cliMissing
-                else { return nil }
+                guard let content = content(inbox, mode), content.hasFooter else { return nil }
                 return AnyView(InboxRowActionsFooter(content: content) { onPress(inbox, $0) })
             },
             open: { ref in

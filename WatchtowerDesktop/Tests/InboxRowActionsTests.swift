@@ -153,19 +153,33 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(failed, [.retry])
     }
 
-    /// The row carries the proposal's own words, whatever the look's row title says.
+    /// The row carries the proposal's own words under its line, whatever the
+    /// look's row title says, without the tool's name the row or card shows.
     func testActionRowShowsTheProposalsOwnSummary() async throws {
         let id = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, tool: "create_jira_issue",
                                                argsJSON: #"{"project_key":"ACME","issue_type":"Task","summary":"Fix the link"}"#)
         }
         let vm = await strip()
-        guard case let .action(summary, _)? = hooks(vm).content(InboxRef(kind: .action, id: id), .inbox)?.kind else {
-            return XCTFail("no native actions")
-        }
+        let hooks = hooks(vm)
+        let content = try XCTUnwrap(hooks.content(InboxRef(kind: .action, id: id), .inbox))
+        let summary = try XCTUnwrap(content.actionSummary)
         XCTAssertTrue(summary.contains("ACME"), summary)
         XCTAssertTrue(summary.contains("Fix the link"), summary)
-        XCTAssertTrue(summary.hasPrefix(AgentActionCardView.title(for: vm.feed.proposals[0])), summary)
+        XCTAssertFalse(summary.contains(AgentActionCardView.title(for: vm.feed.proposals[0])), summary)
+        XCTAssertEqual(content.state, .idle)
+        XCTAssertNotNil(hooks.hooks.nativeFooter(ArtifactRef(kind: .action, id: id), .inbox),
+                        "an idle proposal row draws its summary under the line")
+    }
+
+    /// A proposal with nothing readable in its args keeps the tool's name as its words.
+    func testActionRowSummaryFallsBackToTheToolTitle() async throws {
+        let id = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: ConnectorCallProposal.tool, argsJSON: "{}")
+        }
+        let vm = await strip()
+        let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == id })
+        XCTAssertEqual(AgentActionCardView.rowSummary(for: action), AgentActionCardView.title(for: action))
     }
 
     /// A pending `save_automation` is saved in the editor only: Open Draft and Reject, never Approve.

@@ -63,8 +63,9 @@ extension AgentActionCardView {
         return (approves ? [.approve] : []) + [.reject, .edit]
     }
 
-    /// The proposal's own words on one line, what an Inbox row shows next
-    /// to its buttons: the tool's name and the card's summary of the args.
+    /// The proposal's own words, what an Inbox row shows under its line:
+    /// the card's summary of the args. The tool's name, which the row or its
+    /// card already shows, only when there is nothing else to say.
     static func rowSummary(for action: AgentAction) -> String {
         if action.tool == SaveAutomationCardModel.tool { return SaveAutomationCardModel(action: action).title }
         let detail: [String] = if let connector = ConnectorCallProposal(action: action) {
@@ -76,6 +77,7 @@ extension AgentActionCardView {
         } else {
             summaryLines(for: action)
         }
-        return ([title(for: action)] + detail).filter { !$0.isEmpty }.joined(separator: " · ")
+        let words = detail.filter { !$0.isEmpty }
+        return words.isEmpty ? title(for: action) : words.joined(separator: " · ")
     }
 }

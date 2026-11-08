@@ -59,9 +59,9 @@ package struct InboxRowActionsContent: Equatable {
         /// A due reminder: Done, Snooze 1h.
         case reminder
         /// A proposal: its own summary (`AgentActionCardView.rowSummary`),
-        /// drawn next to Approve whatever the look's row says (A's
-        /// contract item 3), and the buttons its native card offers today
-        /// (`AgentActionCardView.rowButtons`).
+        /// drawn under the row's line next to Approve whatever the look's
+        /// row says (A's contract item 3), and the buttons its native card
+        /// offers today (`AgentActionCardView.rowButtons`).
         case action(summary: String, buttons: [ActionButton])
     }
 
@@ -149,6 +149,20 @@ package struct InboxRowActionsContent: Equatable {
     }
 
     package var isBusy: Bool { state == .busy }
+
+    /// A proposal's own summary, drawn under the row's line; nil for any other kind.
+    package var actionSummary: String? {
+        guard case let .action(summary, _) = kind, !summary.isEmpty else { return nil }
+        return summary
+    }
+
+    /// Whether the row has anything under its line (`InboxRowActionsFooter`).
+    package var hasFooter: Bool {
+        state != .idle || reply != nil || showsCLIMissingLine || actionSummary != nil
+    }
+
+    /// The footer's missing-CLI line.
+    package var showsCLIMissingLine: Bool { cliMissing }
 
     /// The footer's **Retry** under a failed press. A proposal's repeats
     /// its failed verb only while the row still offers that press (an

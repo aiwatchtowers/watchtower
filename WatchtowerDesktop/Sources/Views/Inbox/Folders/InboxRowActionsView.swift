@@ -7,9 +7,6 @@ struct InboxRowActionsView: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
 
-    /// A proposal's own summary beside its buttons: one line, cut at this width.
-    static let summaryWidth: CGFloat = 280
-
     var body: some View {
         HStack(spacing: Spacing.compact) {
             buttons
@@ -78,15 +75,8 @@ struct InboxRowActionsView: View {
         case .reminder:
             Button("Done") { onPress(.done) }.disabled(content.isOff(.done))
             Button("Snooze 1h") { onPress(.snoozeHour) }.disabled(content.isOff(.snoozeHour))
-        case let .action(summary, buttons):
-            Text(summary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: Self.summaryWidth, alignment: .trailing)
-                .help(summary)
-                .accessibilityIdentifier("inboxRow.actionSummary")
+        case let .action(_, buttons):
+            // The proposal's own summary sits under the row's line, full width (`InboxRowActionsFooter`).
             ForEach(buttons, id: \.self) { button in
                 actionButton(button)
                     .disabled(content.isOff(button.press))
@@ -142,9 +132,10 @@ struct InboxRowActionsView: View {
     }
 }
 
-/// What sits under a row with a `ref`: a failed press's error with
-/// **Retry**, the Reply composer (or its refusal), or "Reply waiting for
-/// approval". Nothing for an idle row.
+/// What sits under a row with a `ref`: a proposal's own summary, the
+/// missing-CLI line on a row with a press that needs the CLI, a failed
+/// press's error with **Retry**, the Reply composer (or its refusal), or
+/// "Reply waiting for approval". Nothing for an idle row without these.
 struct InboxRowActionsFooter: View {
     let content: InboxRowActionsContent
     var onPress: (InboxRowPress) -> Void = { _ in }
@@ -155,7 +146,18 @@ struct InboxRowActionsFooter: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
-            if content.cliMissing {
+            if let summary = content.actionSummary {
+                // Next to Approve whatever the look's row says (A's contract item 3), with the row's full width.
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .help(summary)
+                    .accessibilityIdentifier("inboxRow.actionSummary")
+            }
+            if content.showsCLIMissingLine {
                 Text(InboxRowActionsContent.cliMissingMessage)
                     .font(.caption)
                     .foregroundStyle(.secondary)

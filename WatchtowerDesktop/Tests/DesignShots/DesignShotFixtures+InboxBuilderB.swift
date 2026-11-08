@@ -142,14 +142,14 @@ enum InboxBuilderBShotFixtures {
         StandInRow(title: "Create a Jira issue",
                    subtitle: "ACME · “Checklist link broken on the release page” · from your :ticket: reaction",
                    actions: InboxRowActionsContent(kind: .action(
-                       summary: "Create a Jira issue · Project: ACME · Task · Summary: Checklist link broken",
+                       summary: "Project: ACME · Task · Summary: Checklist link broken",
                        buttons: [.approve, .reject, .edit])))
     }
 
     private static func linearFailedRow() -> StandInRow {
         StandInRow(title: "Create a Linear issue", subtitle: "failed: the team was archived", tone: .danger,
                    actions: InboxRowActionsContent(kind: .action(
-                       summary: "Create a Linear issue · Team: ACME · Title: Release notes", buttons: [.retry])))
+                       summary: "Team: ACME · Title: Release notes", buttons: [.retry])))
     }
 
     private static func reminderRow() -> StandInRow {
