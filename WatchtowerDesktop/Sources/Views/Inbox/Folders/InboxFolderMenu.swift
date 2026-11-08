@@ -375,7 +375,8 @@ private struct FolderDropDelegate: DropDelegate {
               let provider = info.itemProviders(for: [.inboxFolder]).first else { return false }
         let onAction = onAction
         provider.loadDataRepresentation(forTypeIdentifier: UTType.inboxFolder.identifier) { data, _ in
-            guard let data, let id = Int64(String(decoding: data, as: UTF8.self)), id == draggedID else { return }
+            guard let data, let text = String(bytes: data, encoding: .utf8), let id = Int64(text),
+                  id == draggedID else { return }
             DispatchQueue.main.async { onAction(.drop(dragged: id, drop)) }
         }
         return true
