@@ -223,6 +223,23 @@ final class InboxFolderMenuModelTests: XCTestCase {
         XCTAssertNil(model.deleteConfirmation)
     }
 
+    func testReadOnlyUntilTheFirstRead() async {
+        let cli = answering()
+        let model = InboxFolderMenuModel(dbPool: pool) { cli }
+
+        XCTAssertEqual(model.tree.revision, 0)
+        XCTAssertTrue(model.isReadOnly)
+        XCTAssertTrue(model.content.isReadOnly)
+        model.beginCreate(parent: nil)
+        XCTAssertNil(model.draft)
+        await model.setIcon(ids.team, icon: "bolt")
+        XCTAssertTrue(cli.invocations.isEmpty, "no write at revision 0")
+
+        await model.reload()
+        XCTAssertFalse(model.isReadOnly)
+        XCTAssertFalse(model.content.isReadOnly)
+    }
+
     func testBinaryGoneAtThePressSetsTheCLINote() async {
         let cli = ScriptedFolderCLI { _ in throw CLIRunnerError.binaryNotFound }
         let model = await model(cli)

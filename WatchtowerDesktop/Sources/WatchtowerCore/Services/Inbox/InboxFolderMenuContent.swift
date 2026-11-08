@@ -168,6 +168,9 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
     package var dropIndicator: InboxFolderDrop?
     /// The folder a live drag carries; nil = no drop is taken.
     package var draggedID: Int64?
+    /// The model has edits off for a reason the menu draws no line for (a
+    /// write runs, no tree read yet).
+    package var editsOff: Bool
     package var deleteConfirmation: InboxFolderDeleteSummary?
     package var folderDraft: InboxFolderDraft?
     /// A refused write's message; a draft's own refusal is `folderDraft.error`.
@@ -188,6 +191,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         note: InboxFolderMenuNote? = nil,
         dropIndicator: InboxFolderDrop? = nil,
         draggedID: Int64? = nil,
+        editsOff: Bool = false,
         deleteConfirmation: InboxFolderDeleteSummary? = nil,
         folderDraft: InboxFolderDraft? = nil,
         refusal: InboxFolderMenuRefusal? = nil,
@@ -201,6 +205,7 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         self.note = note
         self.dropIndicator = dropIndicator
         self.draggedID = draggedID
+        self.editsOff = editsOff
         self.deleteConfirmation = deleteConfirmation
         self.folderDraft = folderDraft
         self.refusal = refusal
@@ -210,8 +215,9 @@ package struct InboxFolderMenuContent: Equatable, Sendable {
         self.approvalsEnabled = approvalsEnabled
     }
 
-    /// No edit, drag or menu write: the CLI is missing or a move runs.
-    package var isReadOnly: Bool { note == .cliUnavailable || pendingMoveID != nil }
+    /// No edit, drag or menu write: the CLI is missing, a move runs, or the
+    /// model has edits off.
+    package var isReadOnly: Bool { editsOff || note == .cliUnavailable || pendingMoveID != nil }
 
     /// The rows drawn. `rows` is the whole tree; this is the one place that
     /// leaves out a collapsed folder's descendants and — unless Show Hidden

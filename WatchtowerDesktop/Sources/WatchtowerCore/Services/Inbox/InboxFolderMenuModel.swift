@@ -100,8 +100,10 @@ package final class InboxFolderMenuModel {
 
     package var tree: InboxFolderTree { snapshot.tree }
 
-    /// No edit, drag or write: the CLI is missing or a write runs.
-    package var isReadOnly: Bool { cliMissing || isBusy }
+    /// No edit, drag or write: the CLI is missing, a write runs, or no tree
+    /// has been read yet (revision 0: nothing to compare-and-set against —
+    /// before the first read, or a database without the folder tables).
+    package var isReadOnly: Bool { cliMissing || isBusy || tree.revision < 1 }
 
     /// The folder the Inbox shows (the root when none is selected).
     package var selectedFolderID: Int64 { selection ?? tree.root.id }
@@ -166,7 +168,8 @@ package final class InboxFolderMenuModel {
         return InboxFolderMenuContent(
             rows: rows, selection: selectedFolderID,
             note: cliMissing ? .cliUnavailable : note,
-            dropIndicator: dropIndicator, draggedID: draggedID, deleteConfirmation: deleteConfirmation, folderDraft: draft,
+            dropIndicator: dropIndicator, draggedID: draggedID, editsOff: isReadOnly,
+            deleteConfirmation: deleteConfirmation, folderDraft: draft,
             refusal: draft == nil ? refusal : nil, pendingMoveID: pendingMoveID, showsHidden: showsHidden,
             icons: Self.icons, approvalsEnabled: approvalsEnabled)
     }
@@ -353,7 +356,7 @@ package final class InboxFolderMenuModel {
         fromDraft: Bool = false,
         _ call: @escaping (InboxFoldersCLI, Int64) async throws -> Void
     ) async -> Bool {
-        guard !isBusy else { return false }
+        guard !isBusy, tree.revision >= 1 else { return false }
         guard let runner = runner() else {
             cliMissing = true
             setNote(.cliUnavailable)
