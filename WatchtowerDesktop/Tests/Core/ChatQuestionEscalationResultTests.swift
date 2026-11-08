@@ -110,7 +110,7 @@ final class ChatQuestionEscalationResultTests: XCTestCase {
             XCTAssertEqual(code.isTransient, contract.transient.contains(raw), raw)
         }
         let files = try FileManager.default.contentsOfDirectory(atPath: Self.goldens.path)
-            .filter { $0.hasSuffix(".json") && $0 != "contract.json" }
+            .filter { $0.hasSuffix(".json") && !["contract.json", "summaries.json"].contains($0) }
         XCTAssertEqual(
             Set(files),
             Set(contract.errorCodes.map { "\($0).json" } + ["filed_quick.json", "filed_full.json", "gone.json"]),
