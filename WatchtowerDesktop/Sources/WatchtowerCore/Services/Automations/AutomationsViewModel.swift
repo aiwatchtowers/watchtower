@@ -92,6 +92,8 @@ package final class AutomationsViewModel {
         @MainActor (_ automationID: Int64, _ folderID: Int64, _ reread: Bool) async -> String? = { _, _, _ in nil }
     /// The folder each new draft started from **+ New Artifact…** goes to on
     /// save, by the draft's context id (`showEditor` takes it from the New flow).
+    /// v1 limit: memory only — a draft saved after an app restart is filed
+    /// with no route (and no failure line).
     package private(set) var newDraftRoutes: [String: InboxNewArtifactRoute] = [:]
     /// The folder a template's install from **+ New Artifact…** goes to, by
     /// `AutomationTemplatePanels.key` (`showTemplate` takes it from the New flow).
@@ -507,6 +509,7 @@ package final class AutomationsViewModel {
     /// longer a row) and the panel empties. A draft never drafted by the
     /// assistant has no cached draft; its in-memory draft is the editor center's.
     package func discardDraft(contextID: String) async {
+        newDraftRoutes[contextID] = nil
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
         guard let row = draftRows.first(where: { $0.contextID == contextID }) else { return }
         draftRows.removeAll { $0.contextID == contextID }

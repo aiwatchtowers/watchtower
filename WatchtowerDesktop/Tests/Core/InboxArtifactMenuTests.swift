@@ -553,6 +553,15 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertEqual(vm.routeFailures[ids.owner]?.reason, InboxFolderMenuModel.routeMenuChanged)
     }
 
+    /// A New flow's draft discarded: its folder goes with it.
+    func testDiscardedNewArtifactDraftDropsItsRoute() async {
+        vm.showEditor(.newDraft(contextID: "draft-f", scope: .personal, startText: nil),
+                      route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        XCTAssertEqual(vm.newDraftRoutes.keys.sorted(), ["draft-f"])
+        await vm.discardDraft(contextID: "draft-f")
+        XCTAssertTrue(vm.newDraftRoutes.isEmpty)
+    }
+
     func testNewArtifactRouteConflictShowsTryAgain() async {
         wireRoute()
         runner.on("route") { _ in throw Self.failure("the Inbox menu changed (revision 8, expected 7)") }
