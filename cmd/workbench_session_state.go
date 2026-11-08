@@ -617,7 +617,7 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
 	if turn.stop && turn.tasks.present {
-		turns, err := database.TerminalAgentTurns(row.ID)
+		turns, err := readTerminalAgentTurns(database, row.ID)
 		if err != nil {
 			return err
 		}
@@ -761,6 +761,10 @@ func interruptMovesTurnEnd(row *db.TerminalSession, turn hookTurn) bool {
 type turnEndNotMoved struct{ reason string }
 
 func (e turnEndNotMoved) Error() string { return "interrupt: turn end not moved: " + e.reason }
+
+// readTerminalAgentTurns is the Stop's read of the row's agent turns, made
+// only with background_tasks to count against them; a seam for tests.
+var readTerminalAgentTurns = (*db.DB).TerminalAgentTurns
 
 // setTerminalAgentState is the state's write; a seam for tests.
 var setTerminalAgentState = (*db.DB).SetTerminalAgentState

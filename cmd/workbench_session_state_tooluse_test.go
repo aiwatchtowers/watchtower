@@ -850,3 +850,33 @@ func TestProj11_InterruptTurnEndIsTheCallsPlaceNotTheSize(t *testing.T) {
 	recordToolEvent(t, pid, at, 5, toolEventPayload("PostToolUse", "toolu_A", transcript, ""))
 	assert.Equal(t, "waiting", storedAgentState(t, database, row), "the interrupted turn's parallel result wrote")
 }
+
+// A Stop reads the row's agent turns only to count its background_tasks
+// against them: a Stop without the key never reads them, so a failing read
+// cannot cost it its `waiting`; one with the key does read them.
+func TestProj11_StopWithoutBackgroundTasksNeverReadsTheTurns(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	orig := readTerminalAgentTurns
+	t.Cleanup(func() { readTerminalAgentTurns = orig })
+	reads := 0
+	readTerminalAgentTurns = func(*db.DB, int64) (db.AgentTurns, error) {
+		reads++
+		return db.AgentTurns{}, errors.New("turns unreadable")
+	}
+	transcript := writeTranscript(t, transcriptPrompt("go"), transcriptReply("done"))
+
+	recordToolEvent(t, pid, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	require.Equal(t, "working", storedAgentState(t, database, row))
+	s := hookStep(t, database, pid, row, at, 2, stopPayload(transcript)) // requires an empty stderr
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Zero(t, reads, "a Stop without background_tasks read the turns")
+
+	recordToolEvent(t, pid, at, 3, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	at(4)
+	_, errOut := stopHookIO(t, strconv.FormatInt(pid, 10),
+		strings.TrimSuffix(stopPayload(transcript), "}")+`,"background_tasks":[{"id":"a1","type":"subagent"}]}`)
+	assert.Equal(t, 1, reads, "a Stop with background_tasks counts them against the turns")
+	assert.Contains(t, errOut, "turns unreadable")
+}
