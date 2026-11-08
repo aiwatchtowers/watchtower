@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	goslices "slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -942,9 +943,21 @@ func (h *hubRuntime) syncReaders(ctx context.Context, rt transport.Transport, vo
 			}
 			return rs.SetReadersFrom(ctx, st, linked)
 		}
+		rl, lists := rt.(readerLister)
+		var before []string
+		if lists {
+			before = rl.Readers()
+		}
 		if err := h.center.SyncReaders(ctx, set); err != nil {
 			h.noteNotVouched(err)
 			log.Printf("hub: readers not synced (%s)", errClass(err))
+			return
+		}
+		// A phone that became a reader (or stopped being one) gets its
+		// data-zone keybox with (or without) keys now, not at the next
+		// full diff (KeysInZone reads the list).
+		if lists && h.pub != nil && !goslices.Equal(before, rl.Readers()) {
+			h.pub.PublishSoon(slices.KindDeviceGrant)
 		}
 	}
 }

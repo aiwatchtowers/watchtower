@@ -107,6 +107,17 @@ func (h *hubRuntime) switcherConfig(ac actions.Config) switcher.Config {
 			}
 			return out, nil
 		}
+		c.Slotted = func(ctx context.Context) ([]string, error) {
+			acct, err := h.followed(h.acct.Fresh(ctx))
+			if err != nil {
+				return nil, err
+			}
+			out := make([]string, 0, len(acct.GetPhones()))
+			for _, p := range acct.GetPhones() {
+				out = append(out, p.GetPhoneDeviceId())
+			}
+			return out, nil
+		}
 		c.AnyPaying = func(ctx context.Context) (bool, error) {
 			acct, err := h.followed(h.acct.Fresh(ctx))
 			if err != nil {

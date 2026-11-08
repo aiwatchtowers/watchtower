@@ -3,6 +3,7 @@ package switcher
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/hub/actions"
+	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -155,6 +157,15 @@ const metaLapsePending = state.MetaLapsePending
 // read there would burn the pass and starve every phone behind it (a request
 // toward the relay and a stale write's answer wait for the Step the same way,
 // asks.go). The ids and times are kept in hub_meta, so a restart does not lose a lapse that was waiting.
+//
+// It is also the one place a lapsing phone's relay keys go (relay client
+// Phase 5, asks #1081 and #1101): after lapse_pending names it, and before any
+// account read, its offer and every relay-key row of it are deleted in their
+// own transaction, whatever the read later decides. From that commit every
+// key for this phone in every epoch is static, and SetKXOffer refuses an ack
+// read meanwhile (lapse_pending, then relay_lapsed_at), so a retry finds
+// nothing to clear. Its data-zone keybox loses its keys (the runtime's
+// KeysInZone reads lapse_pending too), published soon.
 func (s *Switcher) queueLapse(device string, asked bool) error {
 	id := canonical(device)
 	s.mu.Lock()
@@ -169,8 +180,25 @@ func (s *Switcher) queueLapse(device string, asked bool) error {
 	req.asked = req.asked || asked
 	err := s.savePendingLocked()
 	s.mu.Unlock()
+	err = errors.Join(err, s.clearKeys(id))
 	s.Kick()
 	return err
+}
+
+// clearKeys deletes device's relay offer and relay-key rows (a lapse, a lost
+// reader) and has its data-zone keybox published again without keys.
+func (s *Switcher) clearKeys(device string) error {
+	had, err := s.c.Store.ClearDeviceKX(device)
+	if err != nil {
+		return fmt.Errorf("switcher: clearing a phone's relay keys: %w", err)
+	}
+	if had {
+		log.Printf("hub: the relay keys of device %s are cleared: its keys are static from now on", device)
+	}
+	if s.c.Publisher != nil {
+		s.c.Publisher.PublishSoon(slices.KindDeviceGrant)
+	}
+	return nil
 }
 
 // savePendingLocked writes the waiting lapses' device ids and times (s.mu
@@ -532,7 +560,7 @@ func (s *Switcher) owe(device string, stay bool) error {
 		log.Printf("hub: %d echoes owed to device %s move to its CloudKit mailbox", moved, canonical(device))
 	}
 	if told {
-		log.Printf("hub: the relay entitlement of device %s lapsed; another phone pays, the hub stays on the relay", canonical(device))
+		log.Printf("hub: device %s is no longer a relay reader (a lapse while another phone pays, or its slot is gone): the hub stays on the relay", canonical(device))
 	}
 	return nil
 }
