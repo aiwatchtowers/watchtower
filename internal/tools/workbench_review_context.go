@@ -9,11 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewai"
+	"watchtower/internal/reviewmap"
 )
 
 // ReviewContextItem is one thing the owner asked a session for: a target it
@@ -143,4 +146,71 @@ func ReviewOverviewInput(ctx context.Context, d *db.DB, p *db.Workbench, session
 		return in, err
 	}
 	return in, nil
+}
+
+// maxLaneDescriptionRunes clips a lane's Jira description in its intent
+// item.
+const maxLaneDescriptionRunes = 600
+
+// LaneIntent is one intent item per distinct lane of map m with a ticket
+// (tech spec §3.1), in map order: a board target of workbench p (its text
+// and intent), else a synced Jira issue (its key and summary, the
+// description clipped). Source is lane. A lane whose ticket is gone gives
+// none.
+func LaneIntent(d *db.DB, p *db.Workbench, m reviewmap.Map) ([]reviewai.IntentItem, error) {
+	seen := map[string]bool{}
+	var lanes []reviewmap.Chapter
+	var jiraKeys []string
+	for _, ch := range m.Chapters {
+		if ch.Lane == "" || seen[ch.Lane] || (ch.TargetID == 0 && ch.JiraKey == "") {
+			continue
+		}
+		seen[ch.Lane] = true
+		lanes = append(lanes, ch)
+		if ch.JiraKey != "" {
+			jiraKeys = append(jiraKeys, ch.JiraKey)
+		}
+	}
+	issues, err := d.GetJiraIssuesByKeysMap(jiraKeys)
+	if err != nil {
+		return nil, fmt.Errorf("reading lane tickets: %w", err)
+	}
+	var out []reviewai.IntentItem
+	for _, ch := range lanes {
+		if ch.TargetID != 0 {
+			t, err := d.GetTargetByID(int(ch.TargetID))
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return nil, fmt.Errorf("reading lane target %d: %w", ch.TargetID, err)
+			}
+			if err == nil && t != nil && t.WorkbenchID.Valid && t.WorkbenchID.Int64 == p.ID {
+				out = append(out, reviewai.IntentItem{Text: t.Text, Intent: t.Intent, Source: reviewai.SourceLane})
+				continue
+			}
+		}
+		if is, ok := issues[ch.JiraKey]; ok && ch.JiraKey != "" {
+			out = append(out, reviewai.IntentItem{Text: ch.JiraKey + " " + is.Summary,
+				Intent: clipRunes(strings.TrimSpace(is.DescriptionText), maxLaneDescriptionRunes), Source: reviewai.SourceLane})
+		}
+	}
+	return out, nil
+}
+
+// WithLaneIntent is the overview's intent (tech spec §3.1): the session's
+// items, then the lane items that are not one of them already (a lane of
+// the session's own target).
+func WithLaneIntent(session, lanes []reviewai.IntentItem) []reviewai.IntentItem {
+	out := slices.Clone(session)
+	for _, l := range lanes {
+		if !slices.ContainsFunc(session, func(s reviewai.IntentItem) bool { return s.Text == l.Text && s.Intent == l.Intent }) {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+func clipRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	return string([]rune(s)[:n])
 }

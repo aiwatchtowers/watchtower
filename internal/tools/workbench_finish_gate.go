@@ -29,6 +29,12 @@ import (
 // a var for tests.
 var finishGateBudget = 30 * time.Second
 
+// SessionLaneIntent gives the lane items (LaneIntent) of a session's folder
+// as it stands, so the gate reads the overview cached under the intent the
+// overview command made it for. The map is built in cmd, which sets this;
+// nil gives no lane items.
+var SessionLaneIntent func(ctx context.Context, d *db.DB, p *db.Workbench, session int64) ([]reviewai.IntentItem, error)
+
 // maxListedLeaves caps the open leaves a refusal lists.
 const maxListedLeaves = 20
 
@@ -191,6 +197,13 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if err != nil {
 		return fmt.Errorf("finish check: reading the session's intent: %w", err)
 	}
+	if SessionLaneIntent != nil {
+		lanes, err := SessionLaneIntent(gitCtx, d, p, session)
+		if err != nil {
+			return fmt.Errorf("finish check: reading the branch's lanes: %w", err)
+		}
+		in.Intent = WithLaneIntent(in.Intent, lanes)
+	}
 	js, ok, err := d.ReviewOverviewJSON(p.ID, snap.Tree, snap.Base, reviewai.IntentHash(in.Intent, in.Notes))
 	if err != nil {
 		return fmt.Errorf("finish check: %w", err)
@@ -221,10 +234,10 @@ func missingOverviewRefusal(workbenchID, session int64) string {
 		"file one ask_owner that says so and pass it as handover_ask_id"
 }
 
-// uncoveredItems lists every intent item without a done coverage entry: a
-// partial or not_found one with its status, an item the overview left out as
-// missing. A pass needs an affirmative done for each item, never only the
-// absence of a bad one.
+// uncoveredItems lists every session intent item without a done coverage
+// entry: a partial or not_found one with its status, an item the overview
+// left out as missing. A pass needs an affirmative done for each item,
+// never only the absence of a bad one. Lane items never gate.
 func uncoveredItems(intent []reviewai.IntentItem, coverage []reviewai.Coverage) []string {
 	byIndex := map[int]reviewai.Coverage{}
 	for _, c := range coverage {
@@ -232,6 +245,9 @@ func uncoveredItems(intent []reviewai.IntentItem, coverage []reviewai.Coverage) 
 	}
 	var open []string
 	for i, it := range intent {
+		if it.Source == reviewai.SourceLane {
+			continue // the owner's view only (tech spec §4)
+		}
 		c, ok := byIndex[i+1]
 		switch {
 		case !ok:
