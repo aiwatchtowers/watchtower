@@ -69,6 +69,13 @@ package struct ReviewOverviewStreamDecoder {
         return d
     }()
 
+    /// Lines that could not be read as what they claim, by reason class (`not_json`,
+    /// `unknown_event`, `malformed`): counts only, for the run's log line (FILES-01).
+    package private(set) var unreadable: [String: Int] = [:]
+
+    /// Bytes after the last newline: a line the process never finished.
+    package var hasPartialLine: Bool { !buffer.isEmpty }
+
     package init() {}
 
     package mutating func feed(_ data: Data) -> [ReviewStreamEvent] {
@@ -91,26 +98,37 @@ package struct ReviewOverviewStreamDecoder {
 
     /// One complete line → its event. A recognised event that is malformed is reported as a
     /// failure, never as a tick; only an unknown event name (or a line that is not a JSON object) is.
-    private func event(from line: Data) -> ReviewStreamEvent {
-        guard let raw = try? decoder.decode(RawLine.self, from: line) else { return .tick }
+    private mutating func event(from line: Data) -> ReviewStreamEvent {
+        let (event, unreadReason) = classify(line)
+        if let unreadReason { unreadable[unreadReason, default: 0] += 1 }
+        return event
+    }
+
+    /// The line's event, and why it could not be read as what it claims (nil = read).
+    private func classify(_ line: Data) -> (ReviewStreamEvent, String?) {
+        guard let raw = try? decoder.decode(RawLine.self, from: line) else { return (.tick, "not_json") }
         switch raw.event {
         case nil:
-            guard raw.ok != nil else { return .tick }
-            guard let env = try? decoder.decode(ReviewEnvelope.self, from: line) else { return .finalUnreadable }
-            return .final(env)
+            guard raw.ok != nil else { return (.tick, "unknown_event") }
+            guard let env = try? decoder.decode(ReviewEnvelope.self, from: line) else { return (.finalUnreadable, "malformed") }
+            return (.final(env), nil)
         case "map":
-            return raw.map.map(ReviewStreamEvent.map) ?? .mapFailed
+            guard let map = raw.map else { return (.mapFailed, "malformed") }
+            return (.map(map), nil)
+        case "tick":
+            return (.tick, nil)
         case "waiting":
-            return .waiting(by: raw.by ?? "")
+            return (.waiting(by: raw.by ?? ""), nil)
         case "chapter":
             // A chapter line without its key cannot be told apart; the envelope settles it.
-            guard let key = raw.key else { return .tick }
-            return .chapter(chapter(key: key, raw))
+            guard let key = raw.key else { return (.tick, "malformed") }
+            return (.chapter(chapter(key: key, raw)), raw.unreadable.isEmpty ? nil : "malformed")
         case "summary":
-            if raw.state == "ok" { return .summary(ok: true, error: nil) }
-            return .summary(ok: false, error: raw.error ?? ReviewRunError(errorClass: "parse", text: Self.summaryFailedText))
+            if raw.state == "ok" { return (.summary(ok: true, error: nil), nil) }
+            let error = raw.error ?? ReviewRunError(errorClass: "parse", text: Self.summaryFailedText)
+            return (.summary(ok: false, error: error), raw.unreadable.isEmpty ? nil : "malformed")
         default:
-            return .tick
+            return (.tick, "unknown_event")
         }
     }
 

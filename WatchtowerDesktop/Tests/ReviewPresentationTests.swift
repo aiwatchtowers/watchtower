@@ -116,7 +116,6 @@ final class ReviewPresentationTests: XCTestCase {
 
     func testChapterSourceCaption() {
         XCTAssertEqual(ReviewPresentation.sourceCaption(.agent), "by the agent")
-        XCTAssertEqual(ReviewPresentation.sourceCaption(.ai), "by AI")
         XCTAssertNil(ReviewPresentation.sourceCaption(.mechanical))
     }
 

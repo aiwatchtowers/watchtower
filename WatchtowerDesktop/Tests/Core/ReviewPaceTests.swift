@@ -43,7 +43,10 @@ final class ReviewPaceTests: XCTestCase {
             ReviewDiffFile(path: "a/y.go", additions: 3, deletions: 2),
             ReviewDiffFile(path: "b/z.go", additions: 20, deletions: 0)
         ]
-        let chapters = ReviewChapters.mechanical(files)
+        let chapters = [
+            ReviewChapter(key: "dir:a", title: "a", paths: ["a/x.go", "a/y.go"], changedLines: 20, core: false),
+            ReviewChapter(key: "dir:b", title: "b", paths: ["b/z.go"], changedLines: 20, core: false)
+        ]
         let progress = ReviewProgress.make(files: files, chapters: chapters) { $0.hasPrefix("a/") }
         XCTAssertEqual(progress, ReviewProgress(viewedLines: 20, totalLines: 40, chaptersDone: 1, chapterCount: 2))
     }

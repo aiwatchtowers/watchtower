@@ -1281,7 +1281,8 @@ extension WorkbenchesViewModel {
     func forgetProcessState(_ sessionID: Int64) {
         resumeStarts[sessionID] = nil
         resumeFailed.remove(sessionID)
-        reviewModels[sessionID] = nil
+        // A deleted session's overview run never outlives it.
+        reviewModels.removeValue(forKey: sessionID)?.shutDown()
         if workchatModels.removeValue(forKey: sessionID) != nil {
             lineDelivery.dropHeld(sessionID: sessionID) { if case .workchat = $0 { true } else { false } }
         }

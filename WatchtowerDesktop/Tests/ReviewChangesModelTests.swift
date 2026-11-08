@@ -11,7 +11,7 @@ import XCTest
 /// makes the round row exist, a served `send` that sent closes the round
 /// and its drafts, and a served `approve` that sent closes the round as
 /// approved (resolving carried/outdated rows with `--resolve-open`), as Go's do.
-final class ReviewScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
+final class ReviewScriptedRunner: CLIRunnerProtocol, CLIStreamingRunner, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [String: [String]] = [:]
     private var served: [String: Int] = [:]
@@ -54,15 +54,71 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         }
     }
 
+    /// The timeouts `run(args:timeout:)` was given, per subcommand.
+    private var timeouts: [String: [TimeInterval]] = [:]
+    func timeouts(_ sub: String) -> [TimeInterval] { lock.withLock { timeouts[sub] ?? [] } }
+    /// The last `diff` answer of the whole diff: an unscripted `map` is built from it.
+    private var lastDiff = ""
+
+    /// Streamed overviews (`--stream`): scripted answers by default (each served
+    /// as its lines, a one-object answer as one line); with `liveStreams` each
+    /// run is a `FakeOverviewProcess` the test drives.
+    var liveStreams = false
+    private var live: [FakeOverviewProcess] = []
+    var processes: [FakeOverviewProcess] { lock.withLock { live } }
+
+    /// Waits (bounded) until `count` live overview processes were started.
+    func waitProcesses(_ count: Int) async {
+        for _ in 0..<2000 where processes.count < count {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+    }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data {
+        lock.withLock { timeouts[args[2], default: []].append(timeout) }
+        return try await run(args: args)
+    }
+
     func run(args: [String]) async throws -> Data {
+        Data(try await serve(args).utf8)
+    }
+
+    func stream(args: [String]) async throws -> CLIStreamedRun {
+        if liveStreams {
+            let process = FakeOverviewProcess(args: args)
+            lock.withLock {
+                seen.append(args)
+                live.append(process)
+            }
+            return process.run
+        }
+        let answer = try await serve(args)
+        let lines: [String]
+        if let obj = try? JSONSerialization.jsonObject(with: Data(answer.utf8)),
+           let one = try? JSONSerialization.data(withJSONObject: obj) {
+            lines = [String(bytes: one, encoding: .utf8) ?? answer]
+        } else {
+            lines = answer.split(separator: "\n").map(String.init)
+        }
+        let output = AsyncStream<Data> { c in
+            for line in lines { c.yield(Data((line + "\n").utf8)) }
+            c.finish()
+        }
+        return CLIStreamedRun(output: output, exit: { 0 }, stop: {})
+    }
+
+    private func serve(_ args: [String]) async throws -> String {
         let sub = args[2]
         let answer: String = lock.withLock {
             seen.append(args)
             let key = sub == "diff" && args.contains("--since") && script["diff-since"] != nil ? "diff-since" : sub
+            if key == "map", script["map"] == nil { return mapJSON(fromDiff: lastDiff) }
             let list = script[key] ?? [#"{"ok":false,"error":"unscripted \#(sub)"}"#]
             let n = served[key, default: 0]
             served[key] = n + 1
-            return list[min(n, list.count - 1)]
+            let picked = list[min(n, list.count - 1)]
+            if key == "diff" { lastDiff = picked }
+            return picked
         }
         await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
             let wait = lock.withLock { () -> Bool in
@@ -83,7 +139,7 @@ final class ReviewScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         if sub == "approve", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
             try markApproved(id, resolveOpen: args.contains("--resolve-open"))
         }
-        return Data(answer.utf8)
+        return answer
     }
 
     private func markSent(_ id: Int64) throws {
@@ -177,6 +233,18 @@ struct ReviewModelHarness {
 
     func baseScript(id: Int64 = 7, prev: Int64 = 0, paths: [String] = ["a.go"]) {
         cli.script(["start": startJSON(id: id, prev: prev), "context": #"{"ok":true,"items":[]}"#, "diff": diffJSON(paths)])
+    }
+
+    /// Awaits the map's load and the overview's, and whatever they started, until nothing new starts.
+    func settle() async {
+        var lastMap: Task<Void, Never>?
+        var lastOverview: Task<Void, Never>?
+        repeat {
+            lastMap = model.mapTask
+            lastOverview = model.overviewTask
+            await lastMap?.value
+            await lastOverview?.value
+        } while model.mapTask != lastMap || model.overviewTask != lastOverview
     }
 
     func comments(_ round: Int64 = 7) async throws -> [ReviewComment] {
@@ -890,6 +958,8 @@ final class ReviewChangesModelTests: XCTestCase {
     func openDeep(_ h: ReviewModelHarness, paths: [String] = ["cmd/x.go", "pkg/y.go"]) async {
         h.cli.script(["start": deepStartJSON(), "context": deepContextJSON(), "diff": diffJSON(paths)])
         await h.model.open()
+        // The chapters come with the map (the overview it starts is left running).
+        await h.model.mapTask?.value
     }
 
     func testOpenRestoresDeepState() async throws {
@@ -935,10 +1005,12 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script(["start": startJSON(id: 7, prev: 0), "context": #"{"ok":true,"items":[]}"#])
         h.cli.script("diff", [diffJSON(["old/a.go", "new/b.go"]), diffJSON(["new/b.go"])])
         await h.model.open()
+        await h.settle()
         try await h.model.selectChapter("dir:old")
         try await h.model.setCheck(chapterKey: "dir:old", lens: "correctness", itemKey: "k1", checked: true)
         XCTAssertEqual(h.model.currentChapterKey, "dir:old")
         await h.model.refresh()
+        await h.settle()
         XCTAssertEqual(h.model.currentChapterKey, "dir:new")
         let rows = try await h.db.read { try ReviewQueries.checks($0, roundID: 7) }
         XCTAssertEqual(rows.map(\.chapterKey), ["dir:old"])
@@ -1212,11 +1284,7 @@ final class ReviewChangesModelTests: XCTestCase {
 
     /// Awaits the overview's load and any follow-up it started.
     func awaitOverview(_ h: ReviewModelHarness) async {
-        var last: Task<Void, Never>?
-        while let task = h.model.overviewTask, task != last {
-            last = task
-            await task.value
-        }
+        await h.settle()
     }
 
     /// Deep mode on `a.go`, with these trees answered by `start` in turn.
@@ -1396,92 +1464,54 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertNil(h.model.previousUnviewed(before: "a.go"))
     }
 
-    func testOpenStartsTheOverviewAndChaptersFollowIt() async throws {
+    func testOpenStartsTheStreamedOverviewOnceTheMapIsIn() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
         await h.cli.waitPending("overview")
         XCTAssertEqual(h.model.overview, .loading)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "mechanical until the overview lands")
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "the map's chapters before any AI")
+        XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .running, "dir:pkg": .running])
         h.cli.release("overview")
         await awaitOverview(h)
         guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(overview.summary, "Adds y.")
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertEqual(h.model.chapters.first?.source, .ai)
-        XCTAssertFalse(h.model.aiChaptersPending)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "the overview never replaces the map's chapters")
         XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
         XCTAssertEqual(h.model.estimateMinutes, ReviewChapters.estimateMinutes(changedLines: 4))
+        XCTAssertEqual(h.cli.calls("map").first, ["workbench", "review", "map", "--workbench", String(h.projectID), "--round", "7", "--json"])
+        XCTAssertEqual(h.cli.timeouts("map"), [60])
         let args = try XCTUnwrap(h.cli.calls("overview").first)
-        XCTAssertEqual(args, ["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7", "--json"])
+        XCTAssertEqual(args, ["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7",
+                              "--json", "--stream", "--caller", "desktop"])
     }
 
-    func testOverviewFailureKeepsMechanicalChaptersAndShowsTheReason() async throws {
+    func testOverviewFailureKeepsTheMapChaptersAndShowsTheReason() async throws {
         let h = try harness()
         h.cli.script("overview", [#"{"ok":false,"error":"the overview model timed out"}"#, overviewJSON()])
         await openDeep(h)
         await awaitOverview(h)
         XCTAssertEqual(h.model.overview, .failed("the overview model timed out"))
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .notStarted, "dir:pkg": .notStarted])
         XCTAssertEqual(h.model.load, .ready, "a failed overview fails nothing else")
         h.model.retryOverview()
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-    }
-
-    func testAgentChaptersWinOverAI() async throws {
-        let h = try harness()
-        _ = try await insertNote(h, kind: "chapter", text: "Agent first", paths: #"["cmd/x.go"]"#)
-        h.cli.script(["overview": overviewJSON()])
-        await openDeep(h)
-        await awaitOverview(h)
-        XCTAssertEqual(h.model.notes.map(\.text), ["Agent first"])
-        XCTAssertEqual(h.model.chapters.map(\.key), ["agent:1", "dir:pkg"])
-        XCTAssertEqual(h.model.chapters.first?.source, .agent)
-        XCTAssertFalse(h.model.aiChaptersPending)
-    }
-
-    func testAIChaptersHeldBackOnceAChapterFileIsViewed() async throws {
-        let h = try harness()
-        h.cli.script(["overview": overviewJSON()])
-        h.cli.hold("overview")
-        await openDeep(h)
-        XCTAssertEqual(h.model.phase, .chapters)
-        try await h.model.setViewed(["cmd/x.go"], on: true)
-        await h.cli.waitPending("overview")
-        h.cli.release("overview")
-        await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's progress")
-        XCTAssertTrue(h.model.aiChaptersPending)
-        h.model.useAIChapters()
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertFalse(h.model.aiChaptersPending)
-        XCTAssertEqual(h.model.currentChapterKey, "dir:cmd")
-    }
-
-    func testAIChaptersHeldBackOnceAChapterHasAComment() async throws {
-        let h = try harness()
-        h.cli.script(["overview": overviewJSON(), "file": fileJSON(old: "x\n", new: "one\ntwo\n")])
-        h.cli.hold("overview")
-        await openDeep(h)
-        await h.model.select("cmd/x.go")
-        try await h.model.addComment(path: "cmd/x.go", side: "new", startLine: 1, endLine: 1, body: "why?")
-        await h.cli.waitPending("overview")
-        h.cli.release("overview")
-        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
-        XCTAssertTrue(h.model.aiChaptersPending)
     }
 
-    func testAIChaptersAppliedWhenNothingStarted() async throws {
+    /// The agent's chapters come in the map (Go builds them from its notes).
+    func testAgentChapterOfTheMapIsTheAgents() async throws {
         let h = try harness()
-        h.cli.script(["overview": overviewJSON()])
+        h.cli.script(["map": mapJSON([(key: "agent:1", paths: ["cmd/x.go"], level: "significant"),
+                                      (key: "dir:pkg", paths: ["pkg/y.go"], level: "normal")])])
         await openDeep(h)
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertFalse(h.model.aiChaptersPending)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["agent:1", "dir:pkg"])
+        XCTAssertEqual(h.model.chapters.map(\.source), [.agent, .mechanical])
     }
 
     func testChapterRisksListsEveryRiskOfItsFiles() async throws {
@@ -1491,7 +1521,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script(["overview": overviewJSON(risk: risks)])
         await openDeep(h)
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapterRisks("ai:1").map(\.why), ["locks", "naming"], "most serious first, only its files")
+        XCTAssertEqual(h.model.chapterRisks("dir:pkg").map(\.why), ["locks", "naming"], "most serious first, only its files")
         XCTAssertEqual(h.model.chapterRisks("dir:cmd").map(\.why), ["flags"])
         XCTAssertEqual(h.model.risks(for: "pkg/y.go").count, 2)
         XCTAssertEqual(h.model.chapterRisks("nope"), [])
@@ -1506,20 +1536,6 @@ final class ReviewChangesModelTests: XCTestCase {
         await awaitOverview(h)
         XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.why, "locks")
         XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
-    }
-
-    func testAIChaptersSwitchOutsideTheChaptersPhase() async throws {
-        let h = try harness()
-        h.cli.script(["overview": overviewJSON()])
-        h.cli.hold("overview")
-        await openDeep(h)
-        try await h.model.setViewed(["cmd/x.go"], on: true)
-        try await h.model.setPhase(.meaning)
-        await h.cli.waitPending("overview")
-        h.cli.release("overview")
-        await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertFalse(h.model.aiChaptersPending)
     }
 
     func testWrapUpUsesCoverageItems() async throws {
@@ -1630,8 +1646,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await awaitOverview(h)
         guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(overview.summary, "Adds y.")
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertEqual(h.cli.calls("overview").last?.contains("--cached-only"), false)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.cli.calls("overview").last?.contains("--stream"), true)
     }
 
     /// A cached overview shows in Quick mode without a click.
@@ -1642,12 +1658,13 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await awaitOverview(h)
         guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .notStarted, "dir:pkg": .notStarted],
+                       "the cached overview describes no chapter of this map")
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true])
     }
 
     /// A Quick refresh onto a new tree without a cached overview drops the
-    /// old tree's risks and AI chapters.
+    /// old tree's risks.
     func testQuickRefreshWithoutACachedOverviewDropsTheOldAIState() async throws {
         let h = try harness()
         h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
@@ -1655,7 +1672,6 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("overview", [overviewJSON(), #"{"ok":true}"#])
         await h.model.open()
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
         XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         await h.model.refresh()
         await awaitOverview(h)
@@ -1665,13 +1681,14 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, true])
     }
 
-    /// A refresh never cancels Make overview's model call: it lands, and with
-    /// no cached overview for the new tree it shows as an earlier version's.
-    func testRefreshDoesNotCancelMakeOverview() async throws {
+    /// A refresh onto a new tree stops this session's Make overview run and
+    /// starts it on the new tree (tech spec §3.7).
+    func testRefreshOntoANewTreeRestartsMakeOverview() async throws {
         let h = try harness()
         h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
         h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
-        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON(), #"{"ok":true}"#])
+        h.cli.script("overview", [#"{"ok":true}"#, overviewJSON(),
+                                  #"{"ok":true,"overview":{"summary":"Of u7."},"overview_cached":false}"#])
         await h.model.open()
         await awaitOverview(h)
         h.cli.hold("overview")
@@ -1679,18 +1696,13 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.cli.waitPending("overview")
         await h.model.refresh()
         XCTAssertEqual(h.model.round?.treeSha, "u7")
+        await h.cli.waitPending("overview", count: 2)
         XCTAssertEqual(h.model.overview, .loading)
-        XCTAssertEqual(h.cli.calls("overview").count, 2, "no new call while the model call runs")
         h.cli.release("overview")
         await awaitOverview(h)
-        guard case .outdated(let earlier) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
-        XCTAssertEqual(earlier.summary, "Adds y.")
-        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
-        let outdated = try XCTUnwrap(h.model.chapterRiskList("dir:pkg"), "an earlier version's risks still show")
-        XCTAssertEqual(outdated.risks.map(\.why), ["locks"])
-        XCTAssertTrue(outdated.outOfDate)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
-        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false, true])
+        guard case .ready(let overview) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        XCTAssertEqual(overview.summary, "Of u7.", "the stopped run's answer never lands")
+        XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--stream") }, [false, true, true])
     }
 
     /// A failed cached read retries the cached read, not the model call.
@@ -1971,37 +1983,25 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(ReviewChangesModel.agentWorkingKinds, [.working, .background])
     }
 
-    func testReopenOnAIChaptersRestoresThemAndTheSavedChapter() async throws {
+    /// A round saved on an `ai:` chapter by an older release opens on the
+    /// map's first chapter; while the map loads the saved key is kept.
+    func testSavedAIChapterKeyOpensOnTheFirstChapter() async throws {
         let h = try harness()
-        h.cli.script(["overview": overviewJSON()])
-        await openDeep(h)
+        h.cli.script(["start": deepStartJSON(chapterKey: "ai:1"), "context": deepContextJSON(),
+                      "diff": diffJSON(["cmd/x.go", "pkg/y.go"]), "overview": overviewJSON()])
+        h.cli.hold("map")
+        await h.model.open()
+        await h.cli.waitPending("map")
+        XCTAssertEqual(h.model.map, .loading)
+        XCTAssertEqual(h.model.chapters, [])
+        XCTAssertEqual(h.model.currentChapterKey, "ai:1", "kept while the map loads")
+        h.cli.release("map")
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        try await h.model.selectChapter("ai:1")
-        try await h.model.setCheck(chapterKey: "ai:1", lens: "correctness", itemKey: "k1", checked: true)
-        // A check in the mechanical chapter the AI split leaves over, too.
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertEqual(h.model.currentChapterKey, "dir:cmd")
         await h.model.flushState()
-
-        // The pane is made again (the app restarted): the round row says ai:1.
-        h.cli.script(["start": deepStartJSON(chapterKey: "ai:1")])
-        h.cli.hold("overview")
-        let again = ReviewChangesModel(projectID: h.projectID, sessionID: h.sessionID, cli: WorkbenchCLI(runner: h.cli), db: h.db,
-                                       lineDelivery: h.sink) { false }
-        await again.open()
-        await h.cli.waitPending("overview")
-        XCTAssertEqual(again.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "mechanical while the overview loads")
-        await again.flushState()
-        let waiting = try await h.db.read { try String.fetchOne($0, sql: "SELECT chapter_key FROM review_rounds WHERE id = 7") }
-        XCTAssertEqual(waiting, "ai:1", "the fallback chapter is not saved over the waiting ai: one")
-        h.cli.release("overview")
-        await again.overviewTask?.value
-        XCTAssertEqual(again.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertEqual(again.currentChapterKey, "ai:1")
-        XCTAssertFalse(again.aiChaptersPending)
-        await again.flushState()
         let saved = try await h.db.read { try String.fetchOne($0, sql: "SELECT chapter_key FROM review_rounds WHERE id = 7") }
-        XCTAssertEqual(saved, "ai:1")
+        XCTAssertEqual(saved, "dir:cmd")
     }
 
     func testReopenWhenTheRoundWasSentBehindTheModelThrowsRoundClosed() async throws {
