@@ -81,23 +81,27 @@ func roundReviewPlace(ctx context.Context, repo *reviewdiff.Repo, r *db.ReviewRo
 	return pl, nil
 }
 
-// sessionReviewPlace is session sessionID's folder as it stands, no round:
-// the snapshot the session-form overview reads, at the folder's HEAD now.
-func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (reviewPlace, error) {
+// sessionReviewPlace is session sessionID's review place as it stands, no
+// round: the folder's snapshot at its HEAD now, or the task branch's tip
+// (board #1013) at its commit. dirty is the refusal of a branch-tip place
+// whose folder has uncommitted changes the reviewer would not read ("" =
+// none).
+func sessionReviewPlace(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (pl reviewPlace, dirty string, err error) {
 	snap, err := tools.SnapshotReviewSession(ctx, d, p, sessionID)
 	if err != nil {
-		return reviewPlace{}, err
+		return reviewPlace{}, "", err
 	}
-	head, err := snap.Repo.HeadCommit(ctx)
-	if err != nil {
-		return reviewPlace{}, err
+	if snap.FolderDirty {
+		return reviewPlace{}, snap.DirtyFolderRefusal(), nil
 	}
-	branch, err := snap.Repo.HeadBranch(ctx)
-	if err != nil {
-		return reviewPlace{}, err
+	branch := snap.Branch
+	if branch == "" {
+		if branch, err = snap.Repo.HeadBranch(ctx); err != nil {
+			return reviewPlace{}, "", err
+		}
 	}
-	return reviewPlace{Repo: snap.Repo, Tree: snap.Tree, Base: snap.Base, Head: head, HeadBranch: branch, SessionID: sessionID,
-		Folder: snap.Folder}, nil
+	return reviewPlace{Repo: snap.Repo, Tree: snap.Tree, Base: snap.Base, Head: snap.Head, HeadBranch: branch, SessionID: sessionID,
+		Folder: snap.Folder}, "", nil
 }
 
 // BuildReviewMap reads the place's diff, the session's agent chapters, the
@@ -225,7 +229,9 @@ func runWorkbenchReviewMap(cmd *cobra.Command, _ []string) error {
 		}
 		ctx, cancel = workbenchGitContext(cmd, workbenchReviewBudget)
 		defer cancel()
-		if pl, err = sessionReviewPlace(ctx, database, p, reviewFlagSession); err != nil {
+		// A dirty folder beside a branch tip does not stop the map: it shows
+		// the tip, which is what the overview would describe.
+		if pl, _, err = sessionReviewPlace(ctx, database, p, reviewFlagSession); err != nil {
 			return failReview(cmd, err)
 		}
 	}

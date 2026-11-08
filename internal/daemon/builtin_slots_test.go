@@ -26,6 +26,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/ideas"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tracks"
 )
 
@@ -42,7 +43,7 @@ func (g *slotGenerator) Generate(_ context.Context, _, user, _ string) (string, 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.users = append(g.users, user)
-	usage := &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}
+	usage := &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 5}}
 	if strings.Contains(user, "=== CHANNEL DIGESTS ===") {
 		return g.tracksReply, usage, "", nil
 	}

@@ -1,0 +1,6 @@
+#! spawn-grandchild
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"First message."},"synthetic":true}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":null,"error":null,"status":"in_progress"},"synthetic":true}
+#! hang

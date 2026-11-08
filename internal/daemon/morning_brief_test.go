@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // mbSentinel is a coaching line of the generated brief; the day plan's
@@ -52,7 +53,7 @@ func (g *mbGenerator) Generate(_ context.Context, system, user, _ string) (strin
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
-	usage := &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}
+	usage := &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 5}}
 	switch user {
 	case "Generate the daily briefing.":
 		if g.briefErr != nil {

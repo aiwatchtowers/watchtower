@@ -22,19 +22,10 @@ func recordClaude(ctx context.Context, requestedModel string, u *resultUsage, ra
 		DurationMS: time.Since(start).Milliseconds(),
 		OK:         err == nil,
 	}
-	if u != nil {
-		c.Model = llmusage.ModelFromUsage(u.ModelUsage, requestedModel)
-		if u.CostUSD > 0 {
-			cost := u.CostUSD
-			c.ReportedCostUSD = &cost
-		}
-	}
 	switch {
 	case u != nil:
-		t := u.Usage
-		c.Input, c.CacheRead, c.Output = int64(t.InputTokens), int64(t.CacheReadInputTokens), int64(t.OutputTokens)
-		c.CacheWrite5m, c.CacheWrite1h = llmusage.SplitCacheWrites(int64(t.CacheCreationInputTokens),
-			int64(t.CacheCreation.FiveMin), int64(t.CacheCreation.OneHour))
+		c.Model = llmusage.ModelFromUsage(u.ModelUsage, requestedModel)
+		c.Tokens = u.tokens()
 	case ran:
 		c.Estimated = true
 		c.Input, c.Output = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(out)

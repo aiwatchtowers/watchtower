@@ -247,6 +247,33 @@ func TestQueueSpecReview_LoopStart(t *testing.T) {
 	assert.Empty(t, got.LoopEnd)
 }
 
+func TestQueueSpecReview_StoresLoopRules(t *testing.T) {
+	d := openTestDB(t)
+	askID := newReviewAsk(t, d)
+	now := time.Date(2026, 10, 26, 10, 0, 0, 0, time.UTC)
+	queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: 1, LoopRules: 2})
+	got, err := d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.LoopRules)
+
+	// A nil loop keeps the stored rules; a loop start overwrites them.
+	queueSpecLoop(t, d, askID, now.Add(time.Minute), nil)
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 2, got.LoopRules)
+	queueSpecLoop(t, d, askID, now.Add(2*time.Minute), &SpecLoopStart{Round: 2})
+	got, err = d.GetSpecReview(askID)
+	require.NoError(t, err)
+	assert.Equal(t, 0, got.LoopRules)
+
+	// A plain review row (no loop) reads the default 0.
+	plain := newReviewAsk(t, d)
+	queueSpecLoop(t, d, plain, now, nil)
+	got, err = d.GetSpecReview(plain)
+	require.NoError(t, err)
+	assert.Equal(t, 0, got.LoopRules)
+}
+
 func TestQueueSpecReview_NilKeepsLoop(t *testing.T) {
 	d := openTestDB(t)
 	askID := newReviewAsk(t, d)
@@ -332,4 +359,99 @@ func TestSpecLoopsToSweep_OpenAuthorRowsOnly(t *testing.T) {
 	assert.Equal(t, open, rows[0].AskID)
 	assert.Equal(t, "queued", rows[0].Status)
 	assert.False(t, rows[0].SessionBound)
+}
+
+func TestSpecReviewChain_RootFirst(t *testing.T) {
+	d := openTestDB(t)
+	a1 := newReviewAsk(t, d)
+	first, err := d.GetOwnerAskByID(a1)
+	require.NoError(t, err)
+	next := func(prev int64) int64 {
+		return mustInsertAsk(t, d, OwnerAsk{WorkbenchID: first.WorkbenchID, Kind: "review", Title: "spec",
+			DocPath: "docs/spec.md", DocType: "spec", PreviousAskID: sql.NullInt64{Int64: prev, Valid: true}})
+	}
+	a2 := next(a1)
+	a3 := next(a2)
+
+	chain, err := d.SpecReviewChain(a3)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a1, a2, a3}, chain)
+
+	chain, err = d.SpecReviewChain(a2)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a1, a2}, chain)
+
+	chain, err = d.SpecReviewChain(a1)
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a1}, chain)
+}
+
+func TestSpecReviewChain_CycleIsCapped(t *testing.T) {
+	d := openTestDB(t)
+	a1 := newReviewAsk(t, d)
+	first, err := d.GetOwnerAskByID(a1)
+	require.NoError(t, err)
+	a2 := mustInsertAsk(t, d, OwnerAsk{WorkbenchID: first.WorkbenchID, Kind: "review", Title: "spec",
+		DocPath: "docs/spec.md", DocType: "spec", PreviousAskID: sql.NullInt64{Int64: a1, Valid: true}})
+	// A cycle no writer makes: the walk still ends.
+	_, err = d.Exec(`UPDATE owner_asks SET previous_ask_id = ? WHERE id = ?`, a2, a1)
+	require.NoError(t, err)
+
+	chain, err := d.SpecReviewChain(a2)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, len(chain), specReviewChainMaxDepth+1)
+	assert.Equal(t, a2, chain[len(chain)-1])
+}
+
+func TestFinishSpecReview_RecoversOnlyEmptyFirstRoundFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		round             int
+		ledger, open, end string
+		recover           bool
+	}{
+		{"empty first failure", 1, "", "", "reviewer_failed", true},
+		{"empty json first failure", 1, "[]", "[]", "reviewer_failed", true},
+		{"later round", 2, "[]", "[]", "reviewer_failed", false},
+		{"existing ledger", 1, `[{"key":"finding"}]`, "[]", "reviewer_failed", false},
+		{"existing open items", 1, "[]", `[{"key":"finding"}]`, "reviewer_failed", false},
+		{"owner ended", 1, "[]", "[]", "owner", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			askID := newReviewAsk(t, d)
+			now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+			queueSpecLoop(t, d, askID, now, &SpecLoopStart{Round: tc.round})
+			ok, err := d.ClaimSpecReview(askID, 7, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			require.NoError(t, d.FailSpecReview(askID, 7, "transport failed", now))
+			ok, err = d.RevealSpecLoop(askID, tc.end, tc.ledger, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			// Seed an outstanding owner item for the preservation case.
+			_, err = d.Exec(`UPDATE spec_reviews SET open_items=? WHERE ask_id=?`, tc.open, askID)
+			require.NoError(t, err)
+			require.NoError(t, d.RequeueSpecReview(askID, true, now))
+			ok, err = d.ClaimSpecReview(askID, 8, now)
+			require.NoError(t, err)
+			require.True(t, ok)
+			result := `{"summary":"New findings after retry","checks":[{"text":"check"}]}`
+			require.NoError(t, d.FinishSpecReview(askID, 8, SpecReview{Result: result, Loop: "author", LoopEnd: "clean", OpenItems: "new", Ledger: "new"}, now))
+			got, err := d.GetSpecReview(askID)
+			require.NoError(t, err)
+			assert.Equal(t, "done", got.Status)
+			assert.Equal(t, result, got.Result)
+			assert.Empty(t, got.Reason)
+			assert.Equal(t, tc.ledger, got.Ledger)
+			assert.Equal(t, tc.open, got.OpenItems)
+			if tc.recover {
+				assert.Empty(t, got.Loop)
+				assert.Empty(t, got.LoopEnd)
+			} else {
+				assert.Equal(t, "owner", got.Loop)
+				assert.Equal(t, tc.end, got.LoopEnd)
+			}
+		})
+	}
 }

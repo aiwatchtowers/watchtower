@@ -78,7 +78,7 @@ final class SessionTargetBranchTests: XCTestCase {
     private let after = "2026-11-06T10:05:00.000Z"
 
     private func record(_ root: String, _ at: String) -> SessionLanes.Record {
-        SessionLanes.Record(root: root, firstAt: at)
+        SessionLanes.Record(root: root, seenAt: at)
     }
 
     func testLanesKeepThisRunsExistingOtherWorktrees() {
@@ -205,5 +205,33 @@ final class SessionTargetBranchTests: XCTestCase {
         let numeric = try db.read { try TerminalSessionQueries.fetchWorkLinks($0, projectID: projectID) }
         XCTAssertNil(numeric[ctl]?.runStart)
         XCTAssertEqual(numeric[ctl]?.worktrees.count, 1)
+    }
+
+    /// Board #1018: a lane worktree an earlier run of the session recorded
+    /// (`first_at` before this run) counts again once the hooks saw it in
+    /// this run (`last_at`); a row never seen again stays out.
+    func testWorkLinksCountALaneAReusedRunSawAgain() throws {
+        let db = try TestDatabase.create()
+        let projectID = try db.write { try TestDatabase.insertWorkbench($0, folder: "/repo") }
+        let ctl = try db.write { db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: projectID, kind: .claude, title: "t", folderPath: "/repo",
+                claudeSessionID: UUID().uuidString)).id
+        }
+        let reused = "/repo/.claude/worktrees/reused", old = "/repo/.claude/worktrees/old"
+        try db.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET agent_turns = ? WHERE id = ?",
+                           arguments: ["{\"since\":\"\(runStart)\"}", ctl])
+            try db.execute(sql: """
+                INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at, last_at)
+                VALUES (?, ?, 'lane', ?, ?), (?, ?, 'lane', ?, NULL)
+                """, arguments: [ctl, reused, before, after, ctl, old, before])
+        }
+        let links = try XCTUnwrap(db.read { try TerminalSessionQueries.fetchWorkLinks($0, projectID: projectID) }[ctl])
+        XCTAssertEqual(links.worktrees, [record(old, before), record(reused, after)])
+        let roots = SessionLanes.roots(
+            links.worktrees, runStart: links.runStart, workbenchFolder: "/repo", place: .main
+        ) { _ in true }
+        XCTAssertEqual(roots, [reused])
     }
 }

@@ -358,6 +358,62 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         }
     }
 
+    /// `placedRow` rewritten to a kind this build does not know (a newer
+    /// version's agent), as the database would hold it. The check stays off
+    /// on the pool's writer: the newer version's migration widened the
+    /// `kind` CHECK, so the app's own updates of the row (`touch`) pass.
+    private func unsupportedPlacedRow(_ p: Int64, gone: Bool) async throws -> TerminalSession {
+        let row = try await placedRow(p, gone: gone)
+        return try await pool.write { db in
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            try db.execute(sql: "UPDATE terminal_sessions SET kind = 'gemini' WHERE id = ?", arguments: [row.id])
+            return try XCTUnwrap(TerminalSessionQueries.fetch(db, id: row.id))
+        }
+    }
+
+    /// A7b: a stopped session of an unknown kind whose worktree is gone is
+    /// refused before anything per-kind runs — no `worktree ensure` (whose
+    /// missing `--agent` would install every agent's integration), no git
+    /// status, no launch — and says it is not supported.
+    func testResumeOfAnUnsupportedKindWithItsWorktreeGoneRestoresNothing() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await unsupportedPlacedRow(p, gone: true)
+        XCTAssertEqual(row.kind, .unsupported("gemini"))
+
+        await vm.open(row)
+
+        XCTAssertNil(vm.sessionActionErrors[p], "a refusal, not an error")
+        XCTAssertTrue(runner.ensureCalls.isEmpty, "\(runner.calls)")
+        XCTAssertTrue(runner.folderStatusCalls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktree), "the checkout is not recreated")
+        XCTAssertEqual(center.states[row.id], .unavailable(TerminalSession.Kind.unsupportedMessage("gemini")))
+        XCTAssertTrue(launches.isEmpty)
+
+        // Start fresh takes the same refusal.
+        await vm.startFresh(row)
+        XCTAssertTrue(runner.ensureCalls.isEmpty)
+        XCTAssertEqual(center.states[row.id], .unavailable(TerminalSession.Kind.unsupportedMessage("gemini")))
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    /// A7b: with its worktree present, the unknown kind reads no git status
+    /// and no ledger either.
+    func testResumeOfAnUnsupportedKindWithItsWorktreePresentChecksNothing() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await unsupportedPlacedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertTrue(runner.folderStatusCalls.isEmpty, "\(runner.calls)")
+        XCTAssertTrue(runner.ensureCalls.isEmpty)
+        XCTAssertEqual(center.states[row.id], .unavailable(TerminalSession.Kind.unsupportedMessage("gemini")))
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     func testResumeOfACleanedUpWorktreeReAddsIt() async throws {
         let p = try await workbench(setup: "make deps")
         let runner = PlacementRunner(workbenchID: p, worktree: worktree)
@@ -372,6 +428,7 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         let call = try XCTUnwrap(runner.ensureCalls.first)
         XCTAssertEqual(call.firstIndex(of: "--path").map { call[$0 + 1] }, worktree)
         XCTAssertEqual(call.firstIndex(of: "--branch").map { call[$0 + 1] }, "wt/session-2")
+        XCTAssertEqual(call.firstIndex(of: "--agent").map { call[$0 + 1] }, "claude", "always the row's own agent")
         let launch = try XCTUnwrap(launches.last)
         XCTAssertEqual(launch.currentDirectory, worktree)
         XCTAssertFalse(launch.environment.contains { $0.hasPrefix(TerminalLaunch.setupCommandEnv) }, "a resume never runs the setup command")

@@ -14,7 +14,7 @@
 
 - Repo text in English; no live data, corp names or local paths (public repo).
 - REVIEW-01 amendment exactly as spec "Contracts and storage that change": new rows in `review_overview_parts` and `review_rounds.head_sha` only; `review map` writes nothing; REVIEW-02..05 unchanged. REVIEW-05: every new git call through `reviewdiff.Repo`'s runner, listed in the guard test.
-- Migration **00174** (`review_overview_parts`, `review_rounds.head_sha`); phase 3's thread table is **00175**. 00173 is #1012's `review_rounds.branch`.
+- Migration **00179** (`review_overview_parts`, `review_rounds.head_sha`); phase 3's thread table is **00180**. 00173 is #1012's `review_rounds.branch`.
 - Chapter keys: `agent:<n>`, `collapsed`, `dir:<dir>[#N]` byte-identical to today's Swift; new `lane:<lane>`, `lane:<lane>/<dir>[#N]`; no `ai:` keys.
 - Numbers: `MaxBatchLines = 2500`, `MaxOverviewFileLines = 300`, lane split 400 lines, call budget `90 s + 60 s × ceil(lines/1000)`, parallel `min(batches, 4)`, summary 2 min, run ceiling `waves × max(call) + summary` capped at 45 min, `LockWaitCap = 50 min`, map budget 20 s, walk bounds 2,000 commits / 200 lanes, Desktop map timeout 60 s (the map's own budget is 20 s), stream heartbeat `tick` every 30 s and Desktop stream silence 5 min (so only a stuck process trips it, never a slow call; tech spec §3.2/§3.5), part pruning 30 days, review-map.md ≤ 65,536 bytes.
 - Error classes `timeout|provider|parse|cancelled|too_large|busy`; owner texts verbatim from §3.6/§3.7; logs carry class, index and counts only (FILES-01).
@@ -34,12 +34,12 @@
 
 ## Phase 1 — Go
 
-### Task 1: Migration 00174 and the database layer
+### Task 1: Migration 00179 and the database layer
 
 **Depends on:** none.
 
 **Files:**
-- Create: `internal/db/migrations/00174_review_overview_parts.sql`
+- Create: `internal/db/migrations/00179_review_overview_parts.sql`
 - Modify: `internal/db/schema.sql`, `internal/db/review_rounds.go`, `internal/db/review_agent.go` (parts), `internal/db/targets.go`, `internal/db/db_test.go` (`TestAllTablesExist`), goldens + `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`-update`)
 - Test: `internal/db/review_overview_parts_test.go`, `internal/db/review_rounds_test.go`
 
@@ -257,7 +257,7 @@
 **Depends on:** Tasks 12, 13.
 
 **Files:**
-- Create: `internal/db/migrations/00175_review_reviewer_threads.sql` (+ mirrors, Desktop writer), `WatchtowerDesktop/Sources/WatchtowerCore/Services/Review/ReviewerSurface.swift`, `ReviewerMapBrief.swift` (the compact per-turn map: chapters, danger, summary, open chapter)
+- Create: `internal/db/migrations/00180_review_reviewer_threads.sql` (+ mirrors, Desktop writer), `WatchtowerDesktop/Sources/WatchtowerCore/Services/Review/ReviewerSurface.swift`, `ReviewerMapBrief.swift` (the compact per-turn map: chapters, danger, summary, open chapter)
 - Modify: the review chat panel (`ReviewAgentChatPanel`) → **Reviewer | Author** segmented switch; design shots catalog + fixtures for frame 5; Send to author → design comment in the open round (disabled "Start a round to send")
 - Test: `ReviewerSurfaceTests`, `ReviewerThreadQueriesTests`
 
@@ -273,4 +273,4 @@
 - Parallel from the start: Task 1, Task 2, Task 3, Task 13.
 - Then Task 4 (after 2, 3); then Task 5 (1, 4) ∥ Task 6 (4); Task 7 (1, 5, 6); Task 8; then Task 9 ∥ Task 10 (5, 7).
 - Task 11 → Task 12 → Task 14.
-- One table per lane: Task 1 owns migration 00174, Task 14 owns 00175.
+- One table per lane: Task 1 owns migration 00179, Task 14 owns 00180.

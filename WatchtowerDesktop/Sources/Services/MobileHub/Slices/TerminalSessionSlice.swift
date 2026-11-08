@@ -80,6 +80,14 @@ struct TerminalSessionSlice: SliceSource {
         let reportMergedStale: Bool? // swiftlint:disable:this discouraged_optional_boolean
         let reportPRLine: String?
         let reportPRLineClipped: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        /// Why the Mac cannot watch this working session (Go
+        /// `sessionPayload.WatchIssue`); nil = watched.
+        let watchIssue: String?
+        /// The Mac's tooltip for `watchIssue` (Go `sessionPayload.WatchHelp`).
+        let watchHelp: String?
+        /// What the hub takes from the phone for this session (U5, Go
+        /// `sessionPayload.Phone`).
+        let phone: AgentSessionCaps.Phone
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -94,6 +102,9 @@ struct TerminalSessionSlice: SliceSource {
             case reportDone, reportTotal, reportMerged, reportMergedStale
             case reportPRLine = "report_pr_line"
             case reportPRLineClipped = "report_pr_line_clipped"
+            case watchIssue = "watch_issue"
+            case watchHelp = "watch_help"
+            case phone
         }
     }
 

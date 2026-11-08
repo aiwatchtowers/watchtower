@@ -14,6 +14,7 @@ import (
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 )
 
 // hookAgentFlag selects the agent a workbench hook runs for. `--agent codex`
@@ -41,13 +42,22 @@ func hookAgentFor(cmd *cobra.Command, raw string) (agentkind.Kind, error) {
 	if !fs.Changed(hookAgentFlag) {
 		return agentkind.Claude, nil
 	}
-	if k, _ := agentkind.Parse(raw); k != agentkind.Codex {
+	k, ok := agentkind.Parse(raw)
+	if !ok || !launchHooks(k) {
 		return "", fmt.Errorf("unsupported --%s %q (only codex)", hookAgentFlag, briefClip(raw, 40))
 	}
 	if fs.Changed(workbenchFlag) {
 		return "", errAgentWithWorkbench
 	}
-	return agentkind.Codex, nil
+	return k, nil
+}
+
+// launchHooks says agent's hook set arrives with its launch flags and a
+// hook finds its row through the terminal env var
+// (sessionagent.Caps.LaunchHooks): the hooks that take `--agent <kind>`
+// instead of `--workbench N`.
+func launchHooks(agent agentkind.Kind) bool {
+	return sessionagent.CapsOf(string(agent)).LaunchHooks
 }
 
 // resolveCodexHookRow is the codex terminal_sessions row a Codex hook runs
@@ -64,7 +74,7 @@ func resolveCodexHookRow(d *db.DB, env func(string) string) (db.TerminalSession,
 	if !ok { // not a row id of ours: no row to act on
 		return db.TerminalSession{}, false, nil
 	}
-	row, err := d.GetTerminalSession(rowID)
+	row, err := sessionagent.LoadSession(d, rowID)
 	if errors.Is(err, db.ErrTerminalSessionNotFound) {
 		return db.TerminalSession{}, false, nil
 	}

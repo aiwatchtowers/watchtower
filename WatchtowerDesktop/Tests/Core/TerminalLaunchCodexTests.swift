@@ -159,8 +159,7 @@ final class TerminalLaunchCodexTests: XCTestCase {
                        "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again.")
         XCTAssertEqual(TerminalLaunch.exitMessage(code: 2, agent: .codex), "Codex exited (code 2).")
         XCTAssertEqual(TerminalLaunch.exitMessage(code: nil, agent: .codex), "Codex exited.")
-        XCTAssertEqual(TerminalLaunch.exitMessage(code: 127, agent: .claude), TerminalLaunch.exitMessage(code: 127))
-        XCTAssertEqual(TerminalLaunch.exitMessage(code: 127),
+        XCTAssertEqual(TerminalLaunch.exitMessage(code: 127, agent: .claude),
                        "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart.")
     }
 

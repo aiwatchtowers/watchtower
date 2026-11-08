@@ -217,6 +217,7 @@ Execution
 - Linear (features/linear.md)
 
 Insights
+- Plans and subscription limits (features/plans.md)
 - Digests (features/digests.md)
 - People (features/people.md)
 - Statistics (features/statistics.md)
@@ -234,6 +235,7 @@ Workbench
 - Switching branches (features/workbench/branches.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)
 - Reviewing a spec or plan (features/workbench/spec-review.md)
+- Discussing a spec review (features/workbench/spec-review-discuss.md)
 - Branch review (features/workbench/diff-review.md)
 - Reviewing a big branch (features/workbench/big-branch-review.md)
 - Branch reviewer (features/workbench/branch-reviewer.md)

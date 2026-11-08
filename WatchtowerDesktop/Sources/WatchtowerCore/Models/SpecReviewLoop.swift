@@ -20,7 +20,9 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
     }
 
     package var key: String
-    /// `agreement`, `decided_alone`, `blind_spot` or `check`.
+    /// `agreement`, `decided_alone`, `blind_spot`, `check`, or
+    /// `owner_comment`: the owner's own comment carried into a loop seeded
+    /// from their **Request changes** (spec 2026-11-08 §1, D8).
     package var kind: String
     package var text: String
     package var note: String
@@ -29,6 +31,10 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
     package var reply: Reply?
     /// Set when the finding was raised, kept through the loop.
     package var severity: SpecReviewSeverity?
+    /// The owner asked for it (Go `AuthorItem.Owner`): a comment of their
+    /// **Request changes**, a Fix on a finding or a finding added from a
+    /// thread, whatever its kind. False on rows written before the flag.
+    package var owner: Bool
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
@@ -40,10 +46,15 @@ package struct SpecReviewLoopItem: Decodable, Equatable, Sendable {
         round = try c.decodeIfPresent(Int.self, forKey: .round) ?? 0
         reply = try c.decodeIfPresent(Reply.self, forKey: .reply)
         severity = SpecReviewSeverity(raw: try c.decodeIfPresent(String.self, forKey: .severity))
+        owner = try c.decodeIfPresent(Bool.self, forKey: .owner) ?? false
     }
 
+    /// The owner's own item: flagged by Go, or an `owner_comment` (always
+    /// the owner's, also on a row written before the flag).
+    package var isOwners: Bool { owner || kind == SpecReviewLoop.ownerCommentKind }
+
     private enum Keys: String, CodingKey {
-        case key, kind, text, note, round, reply, severity
+        case key, kind, text, note, round, reply, severity, owner
         case anchor = "where"
     }
 }
@@ -98,13 +109,33 @@ package enum SpecReviewLoop {
         row.ledger.filter { $0.verdict == "resolved" && $0.item.reply?.reply != "disagree" }
     }
 
+    /// The owner's own item in a loop seeded from **Request changes** (Go
+    /// `specreview.KindOwnerComment`).
+    package static let ownerCommentKind = "owner_comment"
+
+    /// An unsettled item's note when the loop stalled and the author gave no
+    /// reason (Go `stalledNote`): the loop's end line says it once, so a card
+    /// does not repeat it.
+    package static let stalledNote = "The reviewer and the author stopped making progress"
+
+    /// Whether the author fixed the owner's own item (`isOwners`: a margin
+    /// comment, a Fix on any finding, an added thread finding), in the
+    /// owner's words; nil for the reviewer's findings. Fixed = resolved after
+    /// a `fixed` reply, as `fixed` reads it.
+    package static func ownerItemLine(_ entry: SpecReviewLedgerEntry) -> String? {
+        guard entry.item.isOwners else { return nil }
+        let fixed = entry.verdict == "resolved" && !isDisagree(entry)
+        return fixed ? "Your item — fixed by the author" : "Your item — still open"
+    }
+
     package static func endedEarly(_ row: SpecReviewRow) -> Bool {
         !["settled", ""].contains(row.loopEnd)
     }
 
     package static func endLine(_ row: SpecReviewRow) -> String? {
         switch row.loopEnd {
-        case "cap": return "The reviewer and the author did not settle everything in 3 rounds."
+        case "stalled": return "The reviewer and the author stopped making progress: these are still open."
+        case "cap": return "The reviewer and the author were still going after \(row.round) rounds."
         case "reviewer_failed": return "The reviewer stopped before the loop finished."
         case "session_gone": return "The author's session ended before the loop finished."
         case "timeout": return "The author did not answer the reviewer within 30 minutes."

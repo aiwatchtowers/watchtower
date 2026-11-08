@@ -43,32 +43,53 @@ const bigBranchHint = "This branch is big: run it in the background and wait for
 // var for tests.
 var finishGateExecutable = os.Executable
 
-// ReviewSnapshot is a session folder as it stands, for the AI overview.
+// ReviewSnapshot is a session's review place as it stands, for the AI
+// overview: the folder's snapshot, or the task branch's tip on a branch-tip
+// place (board #1013) — the tree and base a review round there would read.
 type ReviewSnapshot struct {
 	Repo *reviewdiff.Repo
-	// Folder is the snapshot folder's root (ReviewSessionFolder).
+	// Folder is the review folder's root (ReviewSource.Folder).
 	Folder     string
 	Tree, Base string
 	// Empty: the tree is the base's — nothing to review.
 	Empty bool
+	// Head is the commit the tree stands on (ReviewSource.Head): the tip's
+	// commit, else the folder's HEAD ("" when HEAD is unborn).
+	Head string
+	// Branch is the task branch read at its tip; "" for a folder snapshot.
+	Branch string
+	// FolderHead is the folder's checked-out branch on a branch-tip place
+	// ("" = a detached HEAD).
+	FolderHead string
+	// FolderDirty: on a branch-tip place, the folder has changes against its
+	// HEAD (untracked files included) that the tip, and so the reviewer,
+	// does not read.
+	FolderDirty bool
 }
 
-// SnapshotReviewSession snapshots session sessionID's review folder and finds
-// its base (the merge-base with the default branch).
+// DirtyFolderRefusal is the refusal of a branch-tip place whose folder has
+// uncommitted changes: the reviewer reads the task branch's last commit, so
+// the agent must commit them there or move the folder onto the branch.
+func (s ReviewSnapshot) DirtyFolderRefusal() string {
+	place := "on " + s.FolderHead
+	if s.FolderHead == "" {
+		place = "at a detached HEAD"
+	}
+	return fmt.Sprintf("the folder %s has uncommitted changes the reviewer does not read (it reads task branch %s at its last commit) — "+
+		"commit them on %s or move the folder onto it, then try again", place, s.Branch, s.Branch)
+}
+
+// SnapshotReviewSession reads session sessionID's review place the way
+// `workbench review start` does (ResolveReviewSource, ReviewSource.Read), so
+// the overview is cached under the key the owner's round on the same place
+// reads. On a branch-tip place it also reads whether the folder has
+// uncommitted changes (FolderDirty), which the tip leaves out.
 func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (ReviewSnapshot, error) {
-	folder, err := ReviewSessionFolder(ctx, d, p, sessionID)
+	src, repo, err := ResolveReviewSource(ctx, d, p, sessionID)
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	repo, err := reviewdiff.Open(folder, nil)
-	if err != nil {
-		return ReviewSnapshot{}, err
-	}
-	tree, err := repo.Snapshot(ctx)
-	if err != nil {
-		return ReviewSnapshot{}, err
-	}
-	base, err := repo.Base(ctx)
+	tree, base, err := src.Read(ctx, repo)
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
@@ -76,7 +97,21 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	return ReviewSnapshot{Repo: repo, Folder: folder, Tree: tree, Base: base.SHA, Empty: same}, nil
+	head, err := src.Head(ctx, repo)
+	if err != nil {
+		return ReviewSnapshot{}, err
+	}
+	snap := ReviewSnapshot{Repo: repo, Folder: src.Folder, Tree: tree, Base: base.SHA, Empty: same, Head: head, Branch: src.Branch()}
+	if src.Tip == nil {
+		return snap, nil
+	}
+	if snap.FolderDirty, err = repo.Uncommitted(ctx); err != nil {
+		return ReviewSnapshot{}, fmt.Errorf("reading the folder's uncommitted changes: %w", err)
+	}
+	if snap.FolderHead, err = repo.HeadBranch(ctx); err != nil {
+		return ReviewSnapshot{}, err
+	}
+	return snap, nil
 }
 
 // checkFinishGates runs both gates for session on workbench p; a refusal is
@@ -174,13 +209,17 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 }
 
 // checkOverviewGate is gate 2: with a diff, the cached overview of the
-// session's folder as it stands, with a done coverage entry for every intent
-// item of the session. The overview is found by the session's items alone
-// (reviewai.IntentHash leaves lane items out), so the gate needs no lane map
-// and the overview's lane coverage never gates (tech spec §4); only a missing
-// overview packs the diff once, for the big-branch hint. A folder outside git has no diff to check, nor has the workbench
-// folder once the session left a worktree of its own (leftItsWorktree); any
-// other git failure refuses.
+// session's review place as it stands, with a done coverage entry for every
+// intent item of the session. The overview is found by the session's items
+// alone (reviewai.IntentHash leaves lane items out), so the gate needs no
+// lane map and the overview's lane coverage never gates (tech spec §4); only
+// a missing overview packs the diff once, for the big-branch hint. A folder
+// outside git has no diff to check, nor has the workbench folder once the
+// session left a worktree of its own (leftItsWorktree) — unless the place is
+// a branch tip, which is the session's task branch wherever the folder is.
+// On a branch-tip place a folder with uncommitted changes refuses, even with
+// an empty tip: the reviewer would not read them. Any other git failure
+// refuses.
 func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
 	gitCtx, cancel := context.WithTimeout(ctx, finishGateBudget)
 	defer cancel()
@@ -191,11 +230,16 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if err != nil {
 		return fmt.Errorf("finish check: reading the session's changes: %w", err)
 	}
+	if snap.FolderDirty {
+		return &ValidationError{Msg: snap.DirtyFolderRefusal()}
+	}
 	if snap.Empty {
 		return nil
 	}
-	if left, err := leftItsWorktree(gitCtx, d, p, session, snap.Folder); err != nil || left {
-		return err
+	if snap.Branch == "" {
+		if left, err := leftItsWorktree(gitCtx, d, p, session, snap.Folder); err != nil || left {
+			return err
+		}
 	}
 	in, err := ReviewOverviewInput(gitCtx, d, p, session)
 	if err != nil {

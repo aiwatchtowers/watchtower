@@ -73,7 +73,15 @@ waiting step until it is approved, rejected or times out.
 (`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
 `TestChat02_GateDecisionsAreSteps` (`internal/chat/gate_test.go`);
 `testChat02WaitingStepIsVisibleUntilItEnds`
-(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`)
+(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+`TestTurnBackend_CodexToolCallsBecomeSteps`
+(`internal/chat/turn_backend_codex_test.go`);
+the transport contract suite's `two-messages`, `tool-ok` and
+`tool-failed` rows on every chat and stream backend (warm claude, codex,
+runtime B), resolved in `internal/transporttest/testdata/matrix.golden` and
+run by `TestTransportSuite` (`internal/transporttest/matrix_test.go`): a
+failed tool has a non-empty reason, text before a call is kept, two messages
+keep their separator
 
 ## CHAT-03 — bounded warm sessions
 
@@ -91,7 +99,7 @@ running once the daemon (and its exclusive `sync.lock`) is gone: every
 session gets the `close` command, then one SIGTERM after a 2 s grace, then
 SIGKILL after 3 s more if it is still alive — a busy turn's partial text is
 kept (`status='partial'`) rather than discarded. On the Go side, `Session`
-reaps the `claude` child and its own children on `Close()`, on stdin EOF,
+reaps the backend's child process group, any transport, on `Close()`, on stdin EOF,
 and when a stuck write blocks a full pipe (the write fails instead of
 hanging the turn) — no orphan process survives eviction, quit, or a
 misbehaving child.
@@ -113,7 +121,11 @@ misbehaving child.
 `TestChat03_CloseUnblocksAStuckWrite`
 (`internal/chat/claude_backend_test.go`);
 `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`
-(`internal/chat/gate_test.go`)
+(`internal/chat/gate_test.go`);
+the transport contract suite's `timeout-kill`, `interrupt-text` and
+`interrupt-tool` rows (`TestTransportSuite`, `internal/transporttest`; no
+pid of a fake CLI's grandchild survives, a warm child survives an
+interrupt) and `TestFakeCLI_GroupReaped`
 
 **Amendment (2026-10-25, #608):** the main chat's claude.ai tools (publish and connectors) gain a first off reason, the organization's `AllowClaudeAITools = false` — "claude.ai tools are turned off by your organization's policy." — and a warm `ai session` answers each turn with the policy error when its provider is no longer allowed (`policyCheckedBackend`). Guards: `internal/chat/claudeai_test.go` `TestClaudeAIAvailability_PolicyOff`, `cmd/provider_policy_test.go` `TestProviderPolicy_SessionTurnRefused`.
 
@@ -253,6 +265,11 @@ child is never started without it.
 
 ## Changelog
 
+- 2026-11-05 (LLM transport independence, Task A1; spec approved in ask #514, plan in ask #519): **CHAT-02** strengthened and **CHAT-03** reworded, no guard relaxed. CHAT-02's guards gain the transport contract suite's tool rows on every chat and stream backend (warm claude, codex, runtime B; `internal/transporttest`, `TestTransportSuite` over `testdata/matrix.golden`, where a cell a backend fails today is recorded as its open gap and flips to `pass` with the gap's fix). CHAT-03's "`Session` reaps the `claude` child" becomes "the backend's child process group, any transport" (spec §5); its guards gain the suite's `timeout-kill` and interrupt rows and `TestFakeCLI_GroupReaped`. Spec: `docs/superpowers/specs/2026-11-05-llm-transport-independence-design.md` §4.
+- 2026-11-05 (codex parity follow-up, embedded chats on `--events v2`): note only — **no contract wording or guard assertion changed**. The Desktop's embedded chats (target, track, idea, meeting, automation, setup assistants, code questions) now run `ai query --events v2` and, on claude as on codex, get each tool call as a `tool_start`/`tool_end` step (shown live, written to `chat_turn_steps` as it starts and ends for a database chat) and no `reset`: text streamed before a call is kept. Tests: `TestQuery_ChatEventsMakeToolStepsAndUsage` (`internal/ai`), `TestAIQueryV2_ClaudeGetsChatEvents`/`TestAIQueryV2_ClaudeChatEventsThroughTheCLI` (`cmd`), `testToolStepsAndUsageReachTheLiveRowAndTheDatabase` (`WatchtowerDesktop/Tests/Core/EmbeddedChatEngineTests.swift`). Feature note: `docs/features/embedded-chat.md`.
+- 2026-11-05 (codex parity, branch `feature/codex-parity`): **CHAT-02** strengthened, no guard relaxed; the Observable's wording is unchanged. Codex main-chat turns (`NewTurnBackend` over `codex.Client` with `EmitToolEvents`) now meet it as the Claude path does: each `mcp_tool_call`/`command_execution` item is one `tool_start`/`tool_end` step, a failed or declined call is a red step with a reason, and a call still open when the stream ends is closed as a red step. New guard `TestTurnBackend_CodexToolCallsBecomeSteps` (`internal/chat/turn_backend_codex_test.go`, codex's JSONL through `codex.Client` and the turn backend); the opt-in live proof against the real codex CLI is `TestCodexLive_ChatToolStepAndUsage` (`internal/codex/live_test.go`, `WATCHTOWER_LIVE_CODEX=1`, never in CI, so not a guard). The existing CHAT-02 guards are unchanged. Feature note: `docs/features/chat-redesign.md`.
+- 2026-11-06 (board #969 G4, plan approved ask #519, gap L6): **CHAT-04** kept, no guard relaxed. A codex chat turn's image reaches codex by path only: the checked bytes are copied to a held 0600 temp file passed as `--image=<path>` on that turn's `exec` and removed after it; stdin and argv carry no content (`TestCodexTurn_ImageAttachmentPassedAsImageFlag`). A PDF on codex, and any image or PDF on ollama, is refused before a child starts (`TestCodexTurn_PDFStillRefusedBeforeSpawn`). Web search in the codex chat stays the owner's codex setting (ask #323); the plan's explicit switch waits for the owner.
+- 2026-11-06 (board #971 G4 follow-up, owner decision ask #533, gap L5): no contract change, no guard relaxed. The codex chat session searches the web as the Claude session does (cached index, never `live`, which fetches any URL the model names); every other codex run sets web search off explicitly. Guards: `TestCodexTurn_WebSearchFlagMatchesPrompt`, `TestCodexSessionPrompt_HasTheWebSearchRules`, `TestCodexQueryClients_WebSearchOff`, `TestCodexAgentClient_WebSearchOff`, `TestClient_WebSearchOffUnlessSet`, `TestTurnBackend_CodexWebSearchBecomesWebSourceChips`.
 - 2026-11-08 (big-branch review, board #1025, owner approved in ask #560): note only — **no CHAT contract or guard changed or relaxed**. `ai query --read-folder` accepts, besides a workbench's own folder, a session worktree of that workbench: the real path (symlinks resolved, compared the way the file system does: `workbenchgit.SamePath`, case-insensitive on APFS) of a root a session of the workbench recorded in `terminal_session_worktrees` that is also a linked work tree of the workbench folder's repository, checked from files the way `git worktree list` trusts them, never by running git: its `.git` is a regular file (not a directory or a symlink), the admin dir it names has a `gitdir` back-pointer whose real path is that `.git` (`gitdir.WorktreeBackPointer`) and sits in its common git dir's `worktrees` (`gitdir.CommonDir`), and that common git dir is the folder's. Anything else is refused as before (exit 2), the message naming why (not recorded / not a linked worktree / another repository / unreadable): an unrecorded worktree, a recorded root in another repository, a recorded main checkout, a folder dressed up as a worktree (a forged `.git` pointer, a `.git` symlink or an admin dir forged outside the repository), a malformed `.git` or `commondir`, a folder inside a worktree, a symlink into one. The run itself is unchanged (cwd = the folder, read tools only, `--tools` refused). Amends the capability rule of spec 2026-10-02 code navigation §9.1; tests `TestAIQueryReadFolder_AcceptsARegisteredSessionWorktree`, `TestAIQueryReadFolder_RefusesWhatIsNoRegisteredWorktree`.
 - 2026-11-05 (board #962, owner decision ask #501): **CHAT-05** extended by owner decision, no guard relaxed. The artifact panel gains **Print…** for `document` and `html` (the macOS print panel; its PDF menu — Save as PDF, Open in Preview, Mail, Messages, network printers — runs only on the owner's choice, like Copy then paste) and **Export as Word…** for `document` (a local `.docx`, like Export…). The page prints from an offscreen web view built by `SandboxedHTMLView.makeWebView` with the same content rules (no network; `testThePrinterRouteLoadsNothingFromTheNetwork`), and a `document` prints as `ArtifactPrint.documentPage`, built from the parsed Markdown with everything escaped and nothing that loads (allow-list test `testNothingInTheDocumentPageLoadsOrRuns`). `ArtifactChat05ScanTests` also scans `ArtifactPrint.swift` and `ArtifactPrinter.swift`; every other scan and guard passes unchanged.
 

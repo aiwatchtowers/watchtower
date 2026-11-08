@@ -358,3 +358,39 @@ func TestAISessionStickyReasonSurvivesReopenWithoutInventingQuota(t *testing.T) 
 		}
 	}
 }
+
+// A fallback route may pick codex for an image turn (--image, L6), never
+// ollama; a PDF needs Claude on either.
+func TestSessionAttachmentCapability_CodexTakesImagesNotPDFs(t *testing.T) {
+	dir := t.TempDir()
+	png := filepath.Join(dir, "shot.png")
+	require.NoError(t, os.WriteFile(png, []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"), 0o600))
+	pdf := filepath.Join(dir, "doc.pdf")
+	require.NoError(t, os.WriteFile(pdf, []byte("%PDF-1.4\nsynthetic"), 0o600))
+	img := []chat.Attachment{{Path: png, Mime: "image/png", Name: "shot.png"}}
+	doc := []chat.Attachment{{Path: pdf, Mime: "application/pdf", Name: "doc.pdf"}}
+	for _, tc := range []struct {
+		provider string
+		atts     []chat.Attachment
+		want     bool
+	}{{"codex", img, true}, {"ollama", img, false}, {"codex", doc, false}, {"ollama", doc, false}} {
+		caps, _ := providers.CapsFor(tc.provider)
+		got, err := sessionAttachmentCapability(caps, tc.atts)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got, "%s %s", tc.provider, tc.atts[0].Name)
+	}
+}
+
+// Routing and the turn decide image support the same way: a provider the
+// routing says takes images builds a chat client the turn backend hands
+// them to (chat's imageQuerier), so a routed image turn is never refused.
+func TestSessionAttachmentCapability_MatchesTheCodexClient(t *testing.T) {
+	caps, _ := providers.CapsFor("codex")
+	require.True(t, caps.Images)
+	cfg := &config.Config{}
+	cfg.AI.Provider = "codex"
+	var q chat.Querier = codexSessionClient(sessionWiring{cfg: cfg, database: db.OpenTestDB(t), dbPath: ":memory:",
+		conv: &db.ChatConversation{ID: 1}, model: "m"})
+	_, ok := q.(interface{ SetImages([]string) })
+	require.True(t, ok, "the codex chat client takes images")
+}

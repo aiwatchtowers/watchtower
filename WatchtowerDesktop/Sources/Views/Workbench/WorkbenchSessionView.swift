@@ -56,10 +56,12 @@ struct WorkbenchSessionView: View {
                     ProgressView().controlSize(.small)
                     Text("Starting…").foregroundStyle(.secondary)
                 } else if let session {
-                    Text("\(session.title) is not running.")
+                    Text(session.kind.unsupportedMessage ?? "\(session.title) is not running.")
                         .foregroundStyle(.secondary)
-                    Button(TerminalSessionPolicy.reopenLabel(session)) {
-                        Task { await vm?.open(session, placement: .inPlace) }
+                    if let label = TerminalSessionPolicy.reopenLabel(session) {
+                        Button(label) {
+                            Task { await vm?.open(session, placement: .inPlace) }
+                        }
                     }
                 } else if vm?.sessionErrors[projectID] == nil {
                     ProgressView().controlSize(.small)
@@ -178,7 +180,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                 host(center)
                 Divider()
                 HStack {
-                    Text(TerminalLaunch.exitMessage(code: code, agent: session?.kind.agent ?? .claude))
+                    Text(TerminalLaunch.exitMessage(code: code, agent: session?.kind.agent))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     // A failed resume fails again on Restart: only a new id gets out.

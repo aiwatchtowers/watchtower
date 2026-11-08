@@ -89,6 +89,7 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 - [Switching branches](branches.md): switch, fetch and check out branches safely.
 - [Worktrees and cleanup](worktrees-and-cleanup.md): own worktree per session, cleaning up after a session.
 - [Reviewing a spec or plan](spec-review.md): the independent reviewer for specs and plans.
+- [Discussing a spec review](spec-review-discuss.md): the short version of a spec and a thread on every finding.
 - [Branch review](diff-review.md): guided review of a session's changes.
 - [Reviewing a big branch](big-branch-review.md): chapters at once, danger first, AI per chapter.
 - [Branch reviewer](branch-reviewer.md): an independent, read-only reviewer to question about a branch.

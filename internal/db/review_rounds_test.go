@@ -509,7 +509,7 @@ func TestTicketBranchChain(t *testing.T) {
 	}
 }
 
-// head_sha (00174) is stored by create, Refresh and a move, and is empty on a
+// head_sha (00179) is stored by create, Refresh and a move, and is empty on a
 // round made without one.
 func TestReviewRounds_HeadSHAStoredByCreateRefreshAndRepoint(t *testing.T) {
 	d := openTestDB(t)
@@ -535,7 +535,7 @@ func TestReviewRounds_HeadSHAStoredByCreateRefreshAndRepoint(t *testing.T) {
 	if got, _ := d.GetReviewRound(pid, id); got == nil || got.HeadSHA != "h3" || got.TreeSHA != "t3" {
 		t.Fatalf("after repoint: %+v", got)
 	}
-	// A round written without a head (as before 00174) reads ''.
+	// A round written without a head (as before 00179) reads ''.
 	res, err := d.Exec(`INSERT INTO review_rounds (project_id, folder_root, base_sha, tree_sha) VALUES (?, '/tmp/x', 'b', 't')`, pid)
 	if err != nil {
 		t.Fatal(err)

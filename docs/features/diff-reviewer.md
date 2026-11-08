@@ -271,8 +271,8 @@ differently; an overview cached before `index` existed decodes it as 0 and adds 
 - `annotate_changes` (`internal/tools/workbench_review_annotate.go`): `notes` (≤ 40: path,
   `start_line`, `end_line`, a 1–800 rune note — why, not what), `chapters` (≤ 20: title ≤ 120
   runes, 1–200 paths, `core`, `why` ≤ 400 runes) and a `reason`. It needs the calling
-  `terminal_sessions` row of workbench N (`WATCHTOWER_TERMINAL_SESSION_ID`), snapshots the
-  session's folder, checks that every note's file is a text file of the current changes and
+  `terminal_sessions` row of workbench N (`WATCHTOWER_TERMINAL_SESSION_ID`), reads the
+  session's review place (the folder's snapshot, or the task branch's tip since #1013), checks that every note's file is a text file of the current changes and
   its lines exist, stores each note with its quote, and replaces the session's earlier notes
   and chapters. The Desktop places a note on the selected file by its stored lines on the
   same tree, else by its quote (`ReviewNotePlacement`), shows it as a zone in the diff, and
@@ -384,7 +384,7 @@ Shortcuts: Chapter viewed ⌥⌘Return, Ask agent ⇧⌘A, chat panel ⌥⌘C; �
 
 Owner's report (board comment #451, target #987): on a session whose folder is on `main` the pane said "On main — only uncommitted edits" while the task's work sat on its branch, and after the agent moved into the branch's worktree **Refresh** still read `main` — the open round kept its `folder_root`. Owner's rule (ask #543), answering "the session folder is on main and the task has a branch": the folder if it is on the task branch; else the branch itself. The "else" is scoped to the situation the question described (fix round 1, pending the owner's confirmation): a folder on the default branch or a detached HEAD.
 
-- **Place, resolved on every `review start`** (`tools.ResolveReviewSource`): the session's folder (`ReviewSessionFolder`, unchanged); the task branch is the first non-empty `branch` of the session's ticket (`terminal_sessions.target_id`) and its ancestors (`db.TicketBranchChain`, bounded walk; `tools.TaskBranch`), the base branch the next different one above it (#986's nearest-branch-carrying-ancestor rule; `sessionreport.mergeBase` keeps its own walk, since it compares only the leaf's own branch). Then:
+- **Place, resolved on every `review start`** (`tools.ResolveReviewSource`): the session's folder (the agent's worktree, else the workbench folder; unchanged); the task branch is the first non-empty `branch` of the session's ticket (`terminal_sessions.target_id`) and its ancestors (`db.TicketBranchChain`, bounded walk; `tools.TaskBranch`), the base branch the next different one above it (#986's nearest-branch-carrying-ancestor rule; `sessionreport.mergeBase` keeps its own walk, since it compares only the leaf's own branch). Then:
   - no ticket or no branch → the folder against the default branch, as before;
   - the folder checked out on the task branch (`HeadBranch`, read as the full `refs/heads/…` so a same-named tag cannot confuse it) → the folder, measured against the base branch with the tip's rule (`reviewdiff.HeadBase`), so switching between the folder and the tip keeps the base;
   - the folder on the default branch (`reviewdiff.DefaultBranch`: the first of origin/HEAD's target, `main`, `master` that exists, the names `Base` uses) or detached, and the branch found in `refs/heads/` or `refs/remotes/origin/` → the branch tip;
@@ -396,7 +396,8 @@ Owner's report (board comment #451, target #987): on a session whose folder is o
 - **Envelope (additive)**: `round.source` (`session` | `pr`), `round.branch` (the reviewed branch; "" for a folder round) and `place_missing` (start only, only `true`). Swift `ReviewRoundInfo.source`/`branch`/`isBranchTip` and `ReviewEnvelope.placeMissing` decode them with defaults.
 - **Desktop staleness keyed on the diff**: the overview and comment re-placement follow `ReviewRoundInfo.diffKey` (base and tree), so a move that changes only the base regenerates the overview. A comment row records only its tree, so old-side drafts and carried comments are re-placed whenever the model has not seen the round on the same base (every first open, and a Refresh whose base changed). `open()` re-places drafts and carried comments of a moved round as Refresh does; a failure there is the banner "Could not re-place N comments on the new tree: …" and the round still opens with the rows untouched.
 - **Identity bar**: a branch-tip round shows `feature/x → main · N files · branch tip, read-only · <place>` whatever the folder is on, never the uncommitted count or the on-main notice; its empty state reads "No commits on feature/x past main." (`ReviewIdentityPresentation.branchLine`/`emptyDescription`).
-- **Not covered**: `annotate_changes` and the finish check's session overview still snapshot the folder, so on a branch-tip round the agent's notes and the finish overview are on another tree than the round (notes show unplaced; board #1013). On a branch-tip round, Show in Finder, go to definition / usages and the read-only preview resolve paths in the session's folder, not in the reviewed tip: a file the folder lacks or holds in another version opens as it is in the folder.
+- **The agent's side reads the same place (#1013)**: `annotate_changes` (`snapshotSessionFolder`) and `tools.SnapshotReviewSession` — the finish check's gate 2 and `workbench review overview --session` — resolve through `ResolveReviewSource` and `ReviewSource.Read` like `review start`: on a branch-tip place a note is checked against and stamped with the tip's tree (a file only in the folder's work tree is refused), and the overview covers the tip against its base, cached under the key the branch round reads; a note refusal there ends with `(task branch <b> at its last commit)`. On a branch-tip place the snapshot also reads whether the folder has changes against its HEAD (`reviewdiff.Repo.Uncommitted`, untracked files included): the tip leaves them out, so gate 2 refuses and `review overview --session` answers an error — `the folder on <default> has uncommitted changes the reviewer does not read (it reads task branch <b> at its last commit) — commit them on <b> or move the folder onto it, then try again` (`ReviewSnapshot.DirtyFolderRefusal`) — even when the tip has nothing to review; and gate 2's left-its-worktree skip does not apply to a tip, which is the session's work wherever the folder is. The tool's description says lines refer to the task branch's last commit while the folder sits on the default branch. `get_review` adds `source` (`session` | `pr`) and `branch` (omitted for a folder round), and a branch round's text says `Reviewed: branch <b> at its last commit, not the folder's work tree`.
+- **Not covered**: on a branch-tip round, Show in Finder, go to definition / usages and the read-only preview resolve paths in the session's folder, not in the reviewed tip: a file the folder lacks or holds in another version opens as it is in the folder.
 
 ## Big branches (#1025, 2026-11-08)
 
@@ -414,7 +415,7 @@ Desktop (phase 2) reads the map; the reviewer chat (phase 3) is the next section
   Swift builder), **Can skip** last (`collapsed`); no `ai:` keys. Each chapter carries its
   level, paths, signals and changed lines; the map lists every lane found (`lanes: [{name,
   title, target_id?, jira_key?}]`) and notes such as `lanes_partial`.
-- **Lanes** (§2.1): from the round's `head_sha` (migration 00174, stored by `start`, Refresh and
+- **Lanes** (§2.1): from the round's `head_sha` (migration 00179, stored by `start`, Refresh and
   a moved round; empty on an older round → no lanes, `lanes_partial`) back to its base, a
   first-parent walk (`FirstParentWalk`, `rev-list --first-parent --parents`) finds lane merges
   by their subjects; a merge whose second parent is in the default branch is a base sync
@@ -448,7 +449,7 @@ Desktop (phase 2) reads the map; the reviewer chat (phase 3) is the next section
 - **Budgets** (§3.2): `min(batches, 4)` calls at once, one call `90 s + 60 s × ceil(lines/1000)`,
   summary 2 min, run ceiling `waves × max(call) + summary` capped at 45 min. Chapters not reached
   are `not_started`; a timeout names the budget that cut the call (its own or the ceiling's).
-- **Cache** (§3.3): `review_overview_parts` (migration 00174), one row per described chapter
+- **Cache** (§3.3): `review_overview_parts` (migration 00179), one row per described chapter
   under `part_hash` = its key, files with their blobs, its own line notes and the prompt id +
   version — no intent; 30-day pruning on write. A Refresh after editing one file redoes only its
   chapter. The assembled overview goes to `review_overviews` under the old key whenever a summary
@@ -471,8 +472,13 @@ Desktop (phase 2) reads the map; the reviewer chat (phase 3) is the next section
   other until a handover ask. It finds the overview without the lane map and never runs the model;
   the missing-overview refusal adds "Re-run it; only the missing chapters are redone." and, when
   the session's diff packs into more than one batch, to run the command in the background. Skill
-  pack v20 says the same and that `busy` means Branch review is describing the branch — run
+  pack v21 says the same and that `busy` means Branch review is describing the branch — run
   again later, nothing is lost.
+- **Review place** (#1013 on main): the session forms of `review map` and `review overview`
+  read the session's review place through `tools.SnapshotReviewSession` — on a branch-tip place
+  the tip's tree against its base, with the tip's commit as the lane walk's head and the task
+  branch as the head branch. The overview refuses a branch-tip place whose folder has
+  uncommitted changes (as the finish gate does); the map shows the tip regardless.
 - **Contracts**: REVIEW-01 amended (ask #591: `review_overview_parts`, `head_sha`; `review map`
   writes nothing), REVIEW-05 guard lists the map's git reads (`docs/inventory/review.md`).
 - **v1 limits**: tech spec §9 — subjects only for lanes, squash-merged lanes, line-based
@@ -486,7 +492,7 @@ Business item 8 and tech spec §6 of `docs/superpowers/specs/2026-11-07-big-bran
 
 - **Panel**: today's agent chat panel (PanelSplit, same toolbar toggle) gets a **Reviewer | Author** switch (`ReviewChatSide`, stored per workbench under `review.chatPanel.<id>.side`, Author at first). Author is the session's Workchat, unchanged; Ask agent switches to it. A test VM without `WorkbenchesViewModel.reviewer` shows no switch.
 - **Surface**: `ReviewerSurface` (WatchtowerCore) — `toolAccess .draftOnly`, the owner's chat instructions, `--read-folder` = the round's `folder_root` (the session's worktree when it has one; `ai query --read-folder` accepts a workbench's registered session worktrees since Task 13). Ollama reads nothing and its turn runs without the folder. Each turn's prompt is `ReviewerMapBrief` (≤ 6,000 characters: chapters in reading order with their level and up to three paths, "Can skip" as a count, the summary, the chapter open in Deep) plus the question; the system prompt says it is not the author.
-- **Threads**: migration 00175 `review_reviewer_threads(project_id, branch, conversation_id, created_at)`, PK `(project_id, branch)`, Desktop writer (`ReviewerThreadQueries.ensure`). The key is the round's `branch` when set, else the folder's checked-out branch, a detached HEAD `session:<id>` (`ReviewerSurface.threadBranch`). The conversation is `chat_conversations` of context type `review_reviewer`, context id `<workbench>:<branch>`; a trigger deletes it with its row, so a deleted workbench takes its threads. Like code questions, reviewer threads are never mined for ideas, never in the knowledge index and save no knowledge prefix.
+- **Threads**: migration 00180 `review_reviewer_threads(project_id, branch, conversation_id, created_at)`, PK `(project_id, branch)`, Desktop writer (`ReviewerThreadQueries.ensure`). The key is the round's `branch` when set, else the folder's checked-out branch, a detached HEAD `session:<id>` (`ReviewerSurface.threadBranch`). The conversation is `chat_conversations` of context type `review_reviewer`, context id `<workbench>:<branch>`; a trigger deletes it with its row, so a deleted workbench takes its threads. Like code questions, reviewer threads are never mined for ideas, never in the knowledge index and save no knowledge prefix.
 - **Send to author** (`ReviewerCenter.send`): one design comment through `ReviewChangesModel.addDesignComment` in the open round; nothing else is written and nothing reaches the session until the owner sends the round. Without an open round the button is off with "Start a round to send". The "Sent to the author as a design comment in round N" line is kept in memory only.
 - **Map**: `ReviewerMapInput` is filled by `ReviewChangesModel.reviewerMapInput` from the round's `ReviewMap` (chapters in reading order, level = the map's danger level, paths) and the overview's summary; until the map is in, the pane's chapters with their most serious overview risk.
 - **Send guard**: the write checks the round is still open (`ReviewQueries.requireOpenRound`), so a round sent elsewhere after the pane loaded it refuses the comment ("This round was already sent, so it cannot change."); once written, a failed reload is shown and not reported as a failed send. The Sent mark is per answer and round, so another session's round of the branch can still take the same answer.

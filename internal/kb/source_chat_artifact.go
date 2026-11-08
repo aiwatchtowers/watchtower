@@ -27,14 +27,15 @@ const chatArtifactPrefix = "chat_artifact:"
 // workbench code questions — a `code_question` conversation never surfaces
 // outside its Questions tab (spec 2026-10-02 §9.4; the code-question guard in
 // internal/tools pins this filter), nor does Branch review's reviewer thread
-// (`review_reviewer`, board #1025) — and outside the meeting chat of a
+// (`review_reviewer`, board #1025), nor spec review threads
+// ('spec_review_thread', spec 2026-11-08 §3, the same guard) — and outside the meeting chat of a
 // private recording (MEETPRIV-02; the flip marks these keys in kb_dirty,
 // migration 00164).
 const keptJoin = `FROM chat_knowledge_artifacts k
 	JOIN chat_artifacts a ON a.conversation_id = k.conversation_id
 		AND a.artifact_key = k.artifact_key AND a.version = k.version
 	JOIN chat_conversations c ON c.id = k.conversation_id
-		AND COALESCE(c.context_type, '') NOT IN ('code_question', 'review_reviewer')
+		AND COALESCE(c.context_type, '') NOT IN ('code_question', 'review_reviewer', 'spec_review_thread')
 		AND ` + db.ChatNotPrivateMeeting
 
 func (chatArtifactSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {

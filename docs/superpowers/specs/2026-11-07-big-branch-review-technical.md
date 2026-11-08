@@ -27,7 +27,7 @@ round / session ─► reviewmap.Build ─► Map{chapters, danger, noise} ─�
 ### 2.1 Lanes (attribution)
 
 Input: repo, `base` (the round's merge-base), `head` = the round's `head_sha`. Migration
-00174 adds `review_rounds.head_sha TEXT NOT NULL DEFAULT ''`, set by `review start` and
+00179 adds `review_rounds.head_sha TEXT NOT NULL DEFAULT ''`, set by `review start` and
 Refresh from `git rev-parse HEAD` of the session folder at snapshot time (a read; the
 session form takes it the same way); a branch-tip round (#1012, `source = 'pr'`) stores the
 tip commit it read, and a move of an open round (`RepointReviewRound`) rewrites it with the
@@ -224,7 +224,7 @@ evidence lies only in such chapters at `partial`. The assembled overview is writ
 
 ### 3.3 Cache
 
-- New table `review_overview_parts` (migration 00174, with `review_rounds.head_sha`): `project_id` (FK cascade), `part_hash`,
+- New table `review_overview_parts` (migration 00179, with `review_rounds.head_sha`): `project_id` (FK cascade), `part_hash`,
   `json`, `model`, `created_at`; PK `(project_id, part_hash)`. 30-day pruning on write.
 - `part_hash` = sha256 of: chapter key, for each file in it `(path, old blob, new blob)`, the
   agent's line notes on those files, the prompt id + version. No intent and no other notes:
@@ -381,7 +381,7 @@ the model and never waits (§3.7).
   Refresh store `head_sha` on the round (a database row, read with `rev-parse`); `review map`
   writes nothing. No other contract changes. REVIEW-05: every new git call goes through the
   hardened runner; a guard test lists the new call sites.
-- Migration 00174 mirrored in `schema.sql`, `TestAllTablesExist`, golden and the Swift test
+- Migration 00179 mirrored in `schema.sql`, `TestAllTablesExist`, golden and the Swift test
   schema.
 - Prompts: `review.overview` v3 (bump reason: chapter descriptions of given keys),
   `review.chapters` v1, `review.summary` v1 — through the `add-ai-prompt` skill (both

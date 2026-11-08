@@ -31,7 +31,7 @@ type ReviewRound struct {
 	DeliveredAt   sql.NullString
 	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00155)
 	Branch        string // the branch a ReviewSourceBranch round reviews; "" for a folder round (00173)
-	HeadSHA       string // the commit the snapshot was taken at; "" for a round made before 00174 (no lanes)
+	HeadSHA       string // the commit the snapshot was taken at; "" for a round made before 00179 (no lanes)
 }
 
 // A sent round's outcome (review_rounds.outcome, 00155); an open round's is "".

@@ -141,7 +141,12 @@ type appServer struct {
 }
 
 func startAppServerProcess(budget context.Context, cancel context.CancelFunc, bin string, extraArgs, env []string) (*appServer, error) {
+	return startAppServerProcessInDir(budget, cancel, bin, extraArgs, env, "")
+}
+
+func startAppServerProcessInDir(budget context.Context, cancel context.CancelFunc, bin string, extraArgs, env []string, cwd string) (*appServer, error) {
 	cmd := exec.Command(bin, append([]string{"app-server"}, extraArgs...)...)
+	cmd.Dir = cwd
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Plain pipes, not cmd's: Wait must not block on a pipe a grandchild
@@ -219,6 +224,10 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
+func (e *rpcError) Error() string { return fmt.Sprintf("codex RPC error %d", e.Code) }
+
+func (e *rpcError) Unwrap() error { return ErrCodexTrustUnavailable }
+
 type rpcMessage struct {
 	ID     json.RawMessage `json:"id"`
 	Method string          `json:"method"`
@@ -282,7 +291,7 @@ func decodeResponse(line []byte, id int, method string, result any) (done bool, 
 		return false, nil
 	}
 	if m.Error != nil {
-		return true, fmt.Errorf("%w: %s: error %d: %s", ErrCodexTrustUnavailable, method, m.Error.Code, m.Error.Message)
+		return true, fmt.Errorf("%w: %s: %s", m.Error, method, m.Error.Message)
 	}
 	if result == nil {
 		return true, nil

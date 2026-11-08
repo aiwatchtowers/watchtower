@@ -1,6 +1,7 @@
 import SwiftUI
 import GRDB
 import WatchtowerCore
+import DesignKit
 
 struct UsageView: View {
     @Environment(AppState.self) private var appState
@@ -13,19 +14,12 @@ struct UsageView: View {
         case watchtower = "Watchtower"
         case progress = "Progress"
         case usage = "Usage"
+        var title: String { self == .plan ? PlansPresentation.title : rawValue }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("", selection: $selectedTab) {
-                ForEach(Tab.allCases, id: \.self) { tab in
-                    Text(tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
+            UsageTabs(selection: $selectedTab)
 
             switch selectedTab {
             case .plan:

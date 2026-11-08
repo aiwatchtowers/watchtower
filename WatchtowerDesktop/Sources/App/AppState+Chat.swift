@@ -90,3 +90,23 @@ extension AppState {
         return model
     }
 }
+
+extension AppState {
+    /// The app's one provider catalog. Read-only: every chat surface reads
+    /// `AIModelCatalog.shared`, so a second instance here could only drift.
+    var aiModelCatalog: AIModelCatalog { AIModelCatalog.shared }
+
+    /// Reads the provider catalog at launch, tray-only launches included
+    /// (not when a window opens): the capability rows, the fallback pair and
+    /// AGENT-04's tool access need it. Not awaited by the launch; a failed
+    /// read is logged and tried again a few times (`loadRetrying`), and a
+    /// second read while one runs waits for it (`AIModelCatalog.load`).
+    /// Tests replace the read with `modelCatalogLaunchOverride`.
+    func loadModelCatalogAtLaunch() {
+        if let modelCatalogLaunchOverride {
+            Task { await modelCatalogLaunchOverride() }
+            return
+        }
+        Task { await AIModelCatalog.shared.loadRetrying() }
+    }
+}

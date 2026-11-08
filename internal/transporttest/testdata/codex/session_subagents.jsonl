@@ -1,0 +1,3 @@
+{"timestamp":"2026-11-05T12:00:00.000Z","type":"session_meta","payload":{"id":"SESSION","cwd":"/work"},"synthetic":true}
+{"timestamp":"2026-11-05T12:00:01.000Z","type":"event_msg","payload":{"type":"user_message","message":"please add a flag"},"synthetic":true}
+{"timestamp":"2026-11-05T12:00:02.000Z","type":"event_msg","payload":{"type":"collab_agent_spawn_end","new_thread_id":"00000000-0000-4000-8000-0000000000c1","status":"running","prompt":"check files"},"synthetic":true}

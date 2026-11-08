@@ -109,6 +109,7 @@ package enum LLMPurposeNames {
             ("review.summary", "Review summaries"),
             ("review.lessons", "Review lessons"),
             ("review.spec", "Spec reviews"),
+            ("spec_review.discuss", "Spec review — Discuss"),
             ("terminal.title", "Session titles")
         ]),
         ("Assistant", [

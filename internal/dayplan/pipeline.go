@@ -133,9 +133,9 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		return nil, fmt.Errorf("ai generate: %w", err)
 	}
 	if usage != nil {
-		p.lastInputTokens = usage.InputTokens
-		p.lastOutputTokens = usage.OutputTokens
-		p.lastTotalAPITokens = usage.InputTokens + usage.OutputTokens
+		p.lastInputTokens = usage.InputTokens()
+		p.lastOutputTokens = usage.OutputTokens()
+		p.lastTotalAPITokens = usage.InputTokens() + usage.OutputTokens()
 	}
 
 	// ── parse and validate ────────────────────────────────────────────────────

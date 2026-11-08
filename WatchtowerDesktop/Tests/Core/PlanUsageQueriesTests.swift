@@ -36,8 +36,8 @@ final class PlanUsageQueriesTests: XCTestCase {
         XCTAssertNil(try db.read { try PlanUsageQueries.status($0) })
     }
 
-    /// An undecodable column is logged and degrades to [] — the state still reads.
-    func testUndecodableLimitsFallBackToEmpty() throws {
+    /// A malformed stored snapshot is an explicit read failure.
+    func testUndecodableLimitsThrow() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try db.execute(sql: """
@@ -45,9 +45,6 @@ final class PlanUsageQueriesTests: XCTestCase {
                 VALUES (1, 'error', 'parse', 'max', NULL, 'x', '{"not":"a list"}', '[{"key":1}]', '2026-10-15T08:00:00Z')
                 """)
         }
-        let s = try db.read { try PlanUsageQueries.status($0) }
-        XCTAssertEqual(s?.state, "error")
-        XCTAssertEqual(s?.limits.count, 0)
-        XCTAssertEqual(s?.breakdown.count, 0)
+        XCTAssertThrowsError(try db.read { try PlanUsageQueries.status($0) })
     }
 }

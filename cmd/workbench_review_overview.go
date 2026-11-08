@@ -199,8 +199,12 @@ func loadOverviewJob(cmd *cobra.Command, ctx context.Context) (overviewJob, bool
 		var cancel context.CancelFunc
 		gitCtx, cancel = context.WithTimeout(ctx, workbenchReviewBudget)
 		defer cancel()
-		if job.pl, err = sessionReviewPlace(gitCtx, job.database, job.p, reviewFlagSession); err != nil {
+		var dirty string
+		if job.pl, dirty, err = sessionReviewPlace(gitCtx, job.database, job.p, reviewFlagSession); err != nil {
 			return job, false, failReview(cmd, err)
+		}
+		if dirty != "" { // the finish gate refuses it too: the reviewer never reads those changes
+			return job, false, failReview(cmd, errors.New(dirty))
 		}
 		session = reviewFlagSession
 	} else {

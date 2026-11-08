@@ -1,0 +1,9 @@
+{
+  "comment": "The tooltip of a working session the Mac cannot watch (spec 2026-11-05-llm-transport-independence §3.5, U6), by agent_watch_issue: the Desktop's SessionStatePresentation.watchIssueHelp and the Go hub's watchHelp, published as the terminal_session slice's `watch_help`, which the phone shows as given. A code this table does not know reads as `unreadable`.",
+  "issues": {
+    "missing": "Watchtower can't find this session's log. Watching starts again with the next prompt.",
+    "permission": "Watchtower isn't allowed to read this session's log. Watching starts again with the next prompt.",
+    "compressed": "This session's log is compressed, so Watchtower can't read it. Watching starts again with the next prompt.",
+    "unreadable": "Watchtower can't read this session's log. Watching starts again with the next prompt."
+  }
+}

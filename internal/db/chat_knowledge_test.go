@@ -181,6 +181,32 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 	require.Error(t, err, "a non-positive limit is refused, never read as no limit")
 }
 
+// TestListChatTurnsForIdeas_SkipsSpecReviewThreads: a spec review thread
+// (spec 2026-11-08 §3) stays in its card: its turns are never mined, and its
+// pending image never holds the main floor.
+func TestListChatTurnsForIdeas_SkipsSpecReviewThreads(t *testing.T) {
+	d := openTestDB(t)
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := float64(cutoff.Add(-time.Hour).Unix())
+	require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+	plain := insertChatConversation(t, d, "", "")
+	thread := insertChatConversation(t, d, SpecReviewThreadContextType, "4:7:ag:abc")
+	before := insertChatMessage(t, d, plain, "user", "we ship on Monday", old)
+	owner := insertChatMessage(t, d, thread, "user", "we decided to drop the cache", old)
+	insertChatMessage(t, d, thread, "assistant", "the finding holds", old)
+	attachChatImage(t, d, thread, owner, "shot.png")
+	after := insertChatMessage(t, d, plain, "user", "after", old)
+
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	var ids []int64
+	for _, g := range got {
+		ids = append(ids, g.ID)
+	}
+	assert.Equal(t, []int64{before, after}, ids)
+}
+
 func TestKnowledgeVisibleIdeaCond(t *testing.T) {
 	assert.Equal(t, "NOT (chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped'))", KnowledgeVisibleIdeaCond(""))
 	assert.Equal(t, "NOT (i.chat_born = 1 AND i.status IN ('proposed','not_now','rejected','dropped'))", KnowledgeVisibleIdeaCond("i"))
@@ -326,6 +352,9 @@ func TestIdeas01_ChatImageHoldIsBounded(t *testing.T) {
 			setChatImageStatus(t, d, att, "unavailable", "", "")
 		}},
 		"a code_question chat does not hold the main floor": {ctx: "code_question", setup: func(t *testing.T, d *DB, _, _, _ int64) {
+			require.NoError(t, d.SetMediaStartAt(pastStart))
+		}},
+		"a spec review thread does not hold the main floor": {ctx: SpecReviewThreadContextType, setup: func(t *testing.T, d *DB, _, _, _ int64) {
 			require.NoError(t, d.SetMediaStartAt(pastStart))
 		}},
 	} {

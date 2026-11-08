@@ -58,3 +58,7 @@ var CheckTemplateParamForTest = checkTemplateParam
 
 // RegistryErrorForTest exposes registryError to the external tests.
 var RegistryErrorForTest = registryError
+
+// ExecutorMarkInterrupted runs the executor's start sweep (Run's first step)
+// without its poll loop.
+func ExecutorMarkInterrupted(ctx context.Context, e *Executor) bool { return e.markInterrupted(ctx) }

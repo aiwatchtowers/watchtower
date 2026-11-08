@@ -34,7 +34,7 @@ The prompt stays open on the Mac too, and the first answer wins. If you already 
 
 If you allowed a long-running command on the Mac, the phone keeps showing the prompt until the command ends. Answering it then does nothing; to stop the command, use the Mac.
 
-Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**.
+Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**: answer them on the Mac. Codex prompts and **Interrupt** are not taken from the phone. If a prompt answer reaches the Mac, it replies **Codex sessions can't answer this permission from the phone yet. Answer it on the Mac.**; an Interrupt gets **Codex sessions can't be interrupted from the phone yet. Stop it on the Mac.**
 
 ### Interrupt a working agent
 <!-- learn

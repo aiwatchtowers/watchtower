@@ -9,6 +9,9 @@ trusted_hash = "sha256:111111111111111111111111111111111111111111111111111111111
 [hooks.state."/<session-flags>/config.toml:user_prompt_submit:7:0"]
 trusted_hash = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 
+[hooks.state."/<session-flags>/config.toml:interrupt:0:0"]
+trusted_hash = "sha256:f3d36892ee5ef4aab3eb9e0258434a098114218a8d4db5e25ab7387685086ad4"
+
 [hooks.state."/<session-flags>/config.toml:permission_request:0:0"]
 trusted_hash = "sha256:c548e5d8ad126778640fd17263d33b07cacc9e92842e7939b8b2138d17517cf4"
 

@@ -37,6 +37,9 @@ func (e *boardEntry) counted() bool { return e.target.Status != "dismissed" }
 type board struct {
 	byID  map[int64]*boardEntry
 	order []int64
+	// walks counts leavesUnder calls; tests read it to pin how often a
+	// report walks a subtree (board #1016).
+	walks int
 }
 
 func loadBoard(d *db.DB, workbenchID int64) (*board, error) {
@@ -77,6 +80,7 @@ func (b *board) walk(id int64, fn func(*boardEntry)) {
 // leavesUnder is the counted leaves of target id's whole subtree (id itself
 // when it is a leaf), in board order.
 func (b *board) leavesUnder(id int64) []*boardEntry {
+	b.walks++
 	var out []*boardEntry
 	b.walk(id, func(e *boardEntry) {
 		if e.leaf() && e.counted() {
@@ -271,20 +275,32 @@ const intoPrefix = "into:"
 // first appearance: one per not-done leaf with a base among the progress
 // leaves and the leaves under each in-scope leaf's parent (the phases count
 // those, progress or not).
+//
+// Each parent's leaves are walked once and each key checked in a set, so
+// siblings sharing a parent cost one walk, not one each (board #1016).
 func (s scope) mergeRefs() []string {
 	var out []string
+	seen := map[string]bool{}
 	add := func(e *boardEntry) {
 		if e.target.Status == "done" {
 			return
 		}
-		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
-			out = append(out, intoRef(base, branch))
+		if base, branch, ok := s.b.mergeBase(e); ok {
+			if ref := intoRef(base, branch); !seen[ref] {
+				seen[ref] = true
+				out = append(out, ref)
+			}
 		}
 	}
+	walked := map[int64]bool{}
 	for _, e := range s.leaves() {
 		if s.progress[e.id()] {
 			add(e)
 		}
+		if walked[e.parent] {
+			continue
+		}
+		walked[e.parent] = true
 		for _, l := range s.b.leavesUnder(e.parent) {
 			add(l)
 		}
@@ -296,12 +312,16 @@ func (s scope) mergeRefs() []string {
 // progress leaf with a base (the phase-only leaves of mergeRefs left out).
 func (s scope) countedMergeRefs() []string {
 	var out []string
+	seen := map[string]bool{}
 	for _, e := range s.leaves() {
 		if !s.progress[e.id()] || e.target.Status == "done" {
 			continue
 		}
-		if base, branch, ok := s.b.mergeBase(e); ok && !slices.Contains(out, intoRef(base, branch)) {
-			out = append(out, intoRef(base, branch))
+		if base, branch, ok := s.b.mergeBase(e); ok {
+			if ref := intoRef(base, branch); !seen[ref] {
+				seen[ref] = true
+				out = append(out, ref)
+			}
 		}
 	}
 	return out

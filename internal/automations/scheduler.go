@@ -48,6 +48,15 @@ type Scheduler struct {
 	// beforeWrite, when set (tests), runs between reading a row and writing
 	// its schedule.
 	beforeWrite func(db.Automation)
+	// fullWake reports the system capability bits and whether the Mac is
+	// fully awake (SetFullWakeProbe); false in a Power Nap dark wake holds
+	// Run's ticks. Always awake until set.
+	fullWake func() (caps uint32, full bool)
+	// holding is set while Run holds the schedule for a dark wake, so the
+	// hold is logged once when it starts and once when it ends; heldSince is
+	// the clock's time at its start. Only Run's goroutine touches them.
+	holding   bool
+	heldSince time.Time
 }
 
 // NewScheduler returns a scheduler over d. ix rescans the personal and
@@ -57,7 +66,27 @@ func NewScheduler(d *db.DB, ix *Indexer, clock Clock, wake func()) *Scheduler {
 	return &Scheduler{
 		db: d, ix: ix, clock: clock, wake: wake, wakeCh: make(chan struct{}, 1),
 		logger: log.Default(), zone: systemZone, protected: fsutil.PrivacyProtected,
+		fullWake: alwaysFullWake,
 	}
+}
+
+// alwaysFullWake is the default full-wake probe: every tick runs.
+func alwaysFullWake() (caps uint32, full bool) { return 0, true }
+
+// SetFullWakeProbe sets the probe Run asks before each tick whether the Mac
+// is fully awake (board #877). In a Power Nap dark wake (probe false) Run
+// skips the tick entirely — no folder rescan, no run queued and
+// last_scheduled_for left as it is — so at full wake the usual rules decide
+// (AUTO-10: on time within ScheduleGrace → `schedule`, else `missed`).
+// caps are the raw system capability bits the hold's log lines carry
+// (powerstate.Probe). Tick, the test seam, never asks it. nil restores the
+// default (always awake), as Daemon.SetFullWakeProbe does. Call it before
+// Run.
+func (s *Scheduler) SetFullWakeProbe(probe func() (caps uint32, full bool)) {
+	if probe == nil {
+		probe = alwaysFullWake
+	}
+	s.fullWake = probe
 }
 
 // SetLogger sets where Run reports tick errors (the daemon's logger);
@@ -79,10 +108,14 @@ func (s *Scheduler) Wake() {
 
 // Run ticks at once, then at every minute boundary and on Wake, until ctx is
 // done; it then returns nil. A tick's error is logged and the loop goes on.
+// A tick in a dark wake (SetFullWakeProbe) is skipped; the next one asks
+// again.
 func (s *Scheduler) Run(ctx context.Context) error {
 	for {
-		if err := s.Tick(ctx, s.clock.Now()); err != nil && ctx.Err() == nil {
-			s.logger.Printf("automations: scheduler tick: %v", err)
+		if s.awake() {
+			if err := s.Tick(ctx, s.clock.Now()); err != nil && ctx.Err() == nil {
+				s.logger.Printf("automations: scheduler tick: %v", err)
+			}
 		}
 		now := s.clock.Now()
 		select {
@@ -92,6 +125,28 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-s.wakeCh:
 		}
 	}
+}
+
+// awake asks the full-wake probe and logs the change into a dark wake and
+// back out of it once each.
+func (s *Scheduler) awake() bool {
+	caps, full := s.fullWake()
+	if full {
+		if s.holding {
+			s.holding = false
+			s.logger.Printf("automations: full wake (caps 0x%02x), schedule resumed after ~%s",
+				caps, s.clock.Now().Round(0).Sub(s.heldSince).Round(time.Second))
+		}
+		return true
+	}
+	if !s.holding {
+		s.holding = true
+		// Round(0) drops the monotonic reading, which stops while the Mac
+		// sleeps: the hold's length is wall-clock time.
+		s.heldSince = s.clock.Now().Round(0)
+		s.logger.Printf("automations: dark wake (Power Nap, caps 0x%02x), holding the schedule until full wake", caps)
+	}
+	return false
 }
 
 // Tick is one scheduler pass at now (the test seam). One automation's

@@ -202,12 +202,12 @@ func TestAllTablesExist(t *testing.T) {
 		"review_notes", "review_overviews", "review_overview_parts", "review_reverts", "review_lessons", "review_reviewer_threads", "permission_requests", "owner_instructions", "instruction_suggestions", "instruction_chat_lines",
 		"terminal_session_worktrees", "terminal_session_agent_sessions",
 		"automations", "automation_runs", "automation_run_steps", "automation_run_replay", "automation_state", "automation_outputs",
-		"plan_usage_samples", "plan_usage_status",
+		"plan_usage_samples", "plan_usage_status", "codex_plan_usage_samples", "codex_plan_usage_status",
 		"linear_accounts", "linear_teams", "linear_sync_state", "linear_issues", "linear_comments",
 		"linear_issue_history", "linear_cycles", "linear_projects", "linear_relations", "linear_user_map",
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels", "builtin_migrations",
-		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks", "learn_seen", "coach_proposals", "prompt_additions", "llm_calls",
+		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks", "spec_review_questions", "spec_review_thread_findings", "learn_seen", "coach_proposals", "prompt_additions", "llm_calls",
 	}
 
 	for _, table := range expectedTables {

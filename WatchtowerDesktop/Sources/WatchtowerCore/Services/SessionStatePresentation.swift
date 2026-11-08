@@ -62,7 +62,7 @@ package enum SessionStatePresentation {
     package static func caption(for state: State, oldestAskID: Int64?) -> String {
         switch state.kind {
         case .working:
-            state.openAsks > 0 ? "Working · \(asksOpen(state.openAsks))" : "Working"
+            workingCaption(state)
         case .waitingOnAsk:
             "Waiting for you" + askSuffix(state, oldestAskID: oldestAskID)
         case .readyToCheck:
@@ -83,6 +83,29 @@ package enum SessionStatePresentation {
         case .notStarted:
             "Not running"
         }
+    }
+
+    /// "Working", or "Working · not watched" for a session the Mac cannot
+    /// watch (U6), with the open asks.
+    private static func workingCaption(_ state: State) -> String {
+        let working = state.watchIssue == nil ? "Working" : "Working · not watched"
+        return state.openAsks > 0 ? "\(working) · \(asksOpen(state.openAsks))" : working
+    }
+
+    /// The tooltip of a not-watched session (U6): why, in words, and when
+    /// watching starts again; nil for every other state. The hub publishes
+    /// it as `watch_help` and the phone shows it as given. Go's `watchHelp`;
+    /// the Kit fixture `workbench/watch_help.json` pins both. A code this
+    /// does not know reads as `unreadable`.
+    package static func watchIssueHelp(for state: State) -> String? {
+        guard let issue = state.watchIssue else { return nil }
+        let reason = switch issue {
+        case "missing": "Watchtower can't find this session's log."
+        case "permission": "Watchtower isn't allowed to read this session's log."
+        case "compressed": "This session's log is compressed, so Watchtower can't read it."
+        default: "Watchtower can't read this session's log."
+        }
+        return "\(reason) Watching starts again with the next prompt."
     }
 
     /// `StopFailure`'s error type (`rate_limit`) read as words: "Error: rate

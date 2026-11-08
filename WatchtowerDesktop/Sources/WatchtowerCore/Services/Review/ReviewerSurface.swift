@@ -7,7 +7,7 @@ import Foundation
 ///   no tool mode; the provider's own read-only file tools read the folder
 ///   the round was taken from (`ai query --read-folder`, widened to a
 ///   workbench's registered session worktrees — ask #560).
-/// - One thread per branch (`review_reviewer_threads`, migration 00175):
+/// - One thread per branch (`review_reviewer_threads`, migration 00180):
 ///   `chat_conversations` of context type `review_reviewer`, context id
 ///   `<workbench>:<branch>`; two sessions on one branch share it.
 /// - No live session: each turn is a fresh call with the system prompt, the

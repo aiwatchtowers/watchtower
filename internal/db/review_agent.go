@@ -104,7 +104,7 @@ func (db *DB) PutReviewOverview(projectID int64, tree, base, intentHash, js, mod
 	return nil
 }
 
-// ReviewOverviewPart is one chapter's cached AI description (00174, board
+// ReviewOverviewPart is one chapter's cached AI description (00179, board
 // #1025), keyed by the chapter's content hash.
 type ReviewOverviewPart struct {
 	ProjectID         int64

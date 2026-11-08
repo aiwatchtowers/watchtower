@@ -128,6 +128,28 @@ func TestChatArtifactSource_SkipsCodeQuestionChats(t *testing.T) {
 	assert.Equal(t, []string{"chat_artifact:5:plan"}, all)
 }
 
+// TestChatArtifactSource_SkipsSpecReviewThreads: an artifact kept from a
+// spec review thread (spec 2026-11-08 §3) is never indexed: Changed, Keys and
+// Build all leave it out.
+func TestChatArtifactSource_SkipsSpecReviewThreads(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedChatArtifact(t, d, 1, "document", "Plan", "body")
+	exec(t, d, `UPDATE chat_conversations SET context_type = '`+db.SpecReviewThreadContextType+`', context_id = '4:7:ag:abc' WHERE id = 5`)
+	exec(t, d, `INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at) VALUES (5, 'plan', 1, '2026-10-24T10:00:00Z')`)
+
+	src := chatArtifactSource{}
+	doc, err := src.Build(ctx, d, "chat_artifact:5:plan")
+	require.NoError(t, err)
+	assert.Nil(t, doc)
+	keys, _, _, err := src.Changed(ctx, d, "", testNow())
+	require.NoError(t, err)
+	assert.Empty(t, keys)
+	all, err := src.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Empty(t, all)
+}
+
 func TestChatArtifactSource_Registered(t *testing.T) {
 	assert.Contains(t, sourceNames(), "chat_artifact")
 }

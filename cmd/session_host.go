@@ -31,9 +31,12 @@ var sessionHostCmd = &cobra.Command{
 detached; it owns each workbench terminal's PTY so the session keeps running
 while the app quits or updates, and exits on its own after 60 s with no
 sessions and no attached terminal. A host already running on the socket makes this a
-no-op (exit 0). Without --socket, WATCHTOWER_SESSION_HOST_SOCKET names it.`,
+no-op (exit 0). Without --socket, WATCHTOWER_SESSION_HOST_SOCKET names it. It watches the
+rollout of each codex session launched with its database and records a failed or
+interrupted turn, or that the rollout cannot be read, on the session's row.`,
 	Args: cobra.NoArgs,
-	// No config or database: the host only serves terminals.
+	// No config: the host serves terminals; the only database it opens is
+	// the one a codex launch names, for the rollout watch.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	Hidden:            true,
 	RunE:              runSessionHost,
@@ -68,7 +71,10 @@ func runSessionHost(cmd *cobra.Command, _ []string) error {
 	}
 	ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	srv := sessionhost.NewServer(sessionhost.Options{IdleExit: sessionHostIdleExit, RingSize: sessionHostRingSize})
+	logOut := cmd.ErrOrStderr()
+	srv := sessionhost.NewServer(sessionhost.Options{IdleExit: sessionHostIdleExit, RingSize: sessionHostRingSize,
+		CodexWatch: openCodexWatchStore,
+		Logf:       func(format string, args ...any) { fmt.Fprintf(logOut, format+"\n", args...) }})
 	if err := srv.Serve(ctx, l); err != nil {
 		return fmt.Errorf("session-host: %w", err)
 	}

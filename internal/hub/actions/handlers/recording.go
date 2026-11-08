@@ -17,8 +17,7 @@ import (
 // ingestUpload): the hub opens a phone's recording upload into the
 // recordings dir only while Desktop, the transcriber, is running.
 const (
-	reasonNotSupported = "not_supported"
-	reasonWrongHub     = "wrong_hub"
+	reasonWrongHub = "wrong_hub"
 
 	// MaxRecordingAssetBytes is the phone's own cap (RecordingUploader's
 	// maximumAssetBytes): a larger asset is refused before it is downloaded.

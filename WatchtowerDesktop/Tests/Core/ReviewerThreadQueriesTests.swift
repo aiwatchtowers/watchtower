@@ -3,7 +3,7 @@ import WatchtowerTestSupport
 import XCTest
 @testable import WatchtowerCore
 
-/// The reviewer's threads (migration 00175): one conversation per
+/// The reviewer's threads (migration 00180): one conversation per
 /// (workbench, branch), made on first use and shared by every session on
 /// that branch; it goes with its workbench.
 final class ReviewerThreadQueriesTests: XCTestCase {

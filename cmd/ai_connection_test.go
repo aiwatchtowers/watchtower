@@ -26,7 +26,12 @@ func TestAIConnectionStrictUnsavedProbeBothProviders(t *testing.T) {
 				policytest.Set(t, nil)
 				t.Setenv("HOME", t.TempDir())
 				t.Setenv("CODEX_HOME", t.TempDir())
-				bin := routingCLI(t, provider, fails)
+				var bin string
+				if provider == "codex" && !fails {
+					bin = nonceEchoCodexCLI(t, "cat")
+				} else {
+					bin = routingCLI(t, provider, fails)
+				}
 				capture := filepath.Join(t.TempDir(), "arguments")
 				source, err := os.ReadFile(bin)
 				require.NoError(t, err)
@@ -79,6 +84,64 @@ func TestAIConnectionStrictUnsavedProbeBothProviders(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// nonceEchoCodexCLI is a fake codex that answers with the probe nonce it
+// finds in its model_instructions_file — the answer a real codex gives when
+// the system prompt reaches the model.
+// The nonce passes through filter (a shell pipeline stage, "cat" to keep
+// it) before it is answered.
+func nonceEchoCodexCLI(t *testing.T, filter string) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+if [ "$1" = --version ]; then echo 'codex-cli 0.166.0'; exit; fi
+f=
+for a in "$@"; do
+ case "$a" in model_instructions_file=*) f=${a#model_instructions_file=}; f=${f#\"}; f=${f%\"};; esac
+done
+nonce=$(grep -o 'wt-probe-[A-Z2-7]*' "$f" | head -1 | ` + filter + `)
+cat >/dev/null
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$nonce"
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":3}}'
+`
+	require.NoError(t, os.WriteFile(bin, []byte(script), 0o700))
+	return bin
+}
+
+// The codex connection test goes through the real system-prompt path: the
+// prompt names a nonce, delivered as the model_instructions_file, and an
+// answer without it fails the test (#669 shipped with a green Test
+// Connection because the probe sent no system prompt at all).
+func TestAIConnectionCodexChecksSystemPromptNonce(t *testing.T) {
+	// A model that lowercases the nonce still proves the prompt arrived.
+	for name, filter := range map[string]string{"nonce": "cat", "lowercased nonce": "tr A-Z a-z", "no nonce": ""} {
+		nonceEcho := filter != ""
+		t.Run(name, func(t *testing.T) {
+			policytest.Set(t, nil)
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CODEX_HOME", t.TempDir())
+			bin := routingCLI(t, "codex", false) // answers "ok"
+			if nonceEcho {
+				bin = nonceEchoCodexCLI(t, filter)
+			}
+			cfg := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(cfg, []byte("ai: {provider: codex}"), 0o600))
+			p := startCLI(t, "--config", cfg, "--provider", "codex", "ai", "test", "--model", "form-model", "--cli-path", bin)
+			line, ok := p.next(t, 10*time.Second)
+			require.True(t, ok)
+			require.NoError(t, p.wait())
+			var result map[string]any
+			require.NoError(t, json.Unmarshal([]byte(line), &result))
+			require.Equal(t, nonceEcho, result["ok"], line)
+			if !nonceEcho {
+				require.Equal(t, "invalid_output", result["error_code"], line)
+				// The owner reads what went wrong and what to do; the code
+				// stays the classification the Desktop switches on.
+				require.Equal(t, "Codex answered but ignored Watchtower's instructions. Update the Codex CLI, or check its config, and test again.", result["error"], line)
+			}
+		})
 	}
 }
 

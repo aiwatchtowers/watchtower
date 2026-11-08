@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/providers"
 	"watchtower/internal/specreview"
 )
 
@@ -38,7 +40,7 @@ func (a *fakeSpecReviewAgent) Review(_ context.Context, folder, _, _ string) (st
 func useSpecReviewAgent(t *testing.T, a *fakeSpecReviewAgent) {
 	t.Helper()
 	old := specReviewAgentFactory
-	specReviewAgentFactory = func(*config.Config) specreview.Agent { return a }
+	specReviewAgentFactory = func(*config.Config, string) specreview.Agent { return a }
 	t.Cleanup(func() { specReviewAgentFactory = old })
 }
 
@@ -83,10 +85,27 @@ func TestSpecReviewShow_JSONKeysPinned(t *testing.T) {
 	}
 	sort.Strings(keys)
 	assert.Equal(t, []string{"ask_id", "attempt", "dropped", "finished_at", "ledger", "loop", "loop_end", "marks", "model", "open_items", "provider",
-		"queued_at", "reason", "result", "round", "started_at", "status"}, keys)
+		"queued_at", "reason", "result", "round", "started_at", "status", "thread_findings"}, keys)
 	assert.Equal(t, "null", string(m["result"]), "no result yet")
+	assert.Equal(t, "[]", string(m["thread_findings"]), "none yet")
 	assert.JSONEq(t, `{"ag:0123456789ab":{"state":"comment","body":"why?","updated_at":"2026-10-25T10:00:00Z"},`+
 		`"ag:ba9876543210":{"state":"comment","body":"keep","about":"Threads stay unmuted","updated_at":"2026-10-25T10:00:00Z"}}`, string(m["marks"]))
+}
+
+func TestSpecReviewShowJSON_ThreadFindings(t *testing.T) {
+	database, id, _ := specReviewAsk(t)
+	f1 := `{"key":"tf:0123456789ab","kind":"differs","title":"A","thread":"1:2:ag:x"}`
+	f2 := `{"key":"tf:ba9876543210","kind":"missing","title":"B","thread":"1:2:ag:y"}`
+	for key, js := range map[string]string{"tf:0123456789ab": f1, "tf:ba9876543210": f2} {
+		require.NoError(t, database.InsertSpecReviewThreadFinding(db.SpecReviewThreadFinding{
+			AskID: id, ItemKey: key, Thread: "1:2:ag:x", Finding: js, CreatedAt: "2026-11-08T10:00:00Z"}))
+	}
+
+	out, err := runSpecReview(t, "show", "--ask", itoa(id), "--json")
+	require.NoError(t, err)
+	var m map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal([]byte(out), &m), out)
+	assert.JSONEq(t, "["+f1+","+f2+"]", string(m["thread_findings"]), "the stored findings, by key")
 }
 
 func TestSpecReviewStart_RunningRefused(t *testing.T) {
@@ -191,8 +210,11 @@ func TestSpecReviewCodexClient_NoMCPServers(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte("[mcp_servers.mine]\ncommand = \"npx\"\n"), 0o600))
 	t.Setenv("CODEX_HOME", home)
 	folder := t.TempDir()
+	runHome, removeHome, err := specReviewCodexHome()
+	require.NoError(t, err)
+	t.Cleanup(removeHome)
 	// /usr/bin/false: the version probe never runs a real codex.
-	args := specReviewCodexClient(&config.Config{CodexPath: "/usr/bin/false"}, "strong", folder).ArgsForTest("sys", "user")
+	args := specReviewCodexClient(&config.Config{CodexPath: "/usr/bin/false"}, "strong", folder, runHome).ArgsForTest("sys", "user")
 	require.NotNil(t, args)
 	joined := strings.Join(args, "\x00")
 	assert.Contains(t, joined, `"mine"={enabled=false}`, "the owner's server is switched off")
@@ -254,4 +276,79 @@ func TestSpecReviewReveal_CLI(t *testing.T) {
 	row, err = database2.GetSpecReview(id2)
 	require.NoError(t, err)
 	assert.Equal(t, "owner", row.LoopEnd)
+}
+
+// codexReviewer is the codex spec reviewer over a codex stub playing
+// stream, with rollout ("" = none) written to the run's home first; the
+// owner's codex home holds a sign-in and a config.
+func codexReviewer(t *testing.T, stream, rollout string) (*claudeStub, *specReviewCLIAgent, string) {
+	t.Helper()
+	stub := newClaudeStub(t, stream)
+	if rollout != "" {
+		require.NoError(t, os.WriteFile(filepath.Join(stub.dir, "rollout"), []byte(rollout), 0o600))
+	}
+	owner := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "auth.json"), []byte(`{"fake":true}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "config.toml"), []byte("model = \"acme\"\n"), 0o600))
+	t.Setenv("CODEX_HOME", owner)
+	cfg := &config.Config{CodexPath: stub.path, AI: config.AIConfig{Provider: "codex"}}
+	return stub, &specReviewCLIAgent{cfg: cfg, model: "strong"}, owner
+}
+
+// SPECREVIEW-01 note / AUTO-08's unit: the codex reviewer is capped at
+// specreview.MaxTurns model turns, as claude's --max-turns caps the claude
+// reviewer; a stream past the cap fails with a budget failure.
+func TestSpecReview_CodexReviewerHasTheTurnCap(t *testing.T) {
+	stub, agent, _ := codexReviewer(t, codexResponses(specreview.MaxTurns+1), "")
+	_, _, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.Error(t, err)
+	var f *providers.Failure
+	require.True(t, errors.As(err, &f), "a typed failure: %v", err)
+	assert.Equal(t, providers.Budget, f.Category)
+	assert.Contains(t, err.Error(), fmt.Sprintf("stopped after %d model turns", specreview.MaxTurns))
+	assert.NotContains(t, stub.argv(t), "--ephemeral", "the run counts its rollout")
+
+	_, agent, _ = codexReviewer(t, codexResponses(specreview.MaxTurns), "")
+	out, codeRead, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.NoError(t, err)
+	assert.True(t, codeRead)
+	assert.Equal(t, "done", out)
+}
+
+// N5 (ask #522): the reviewer counts its rollout, which lives in a private
+// home with the owner's sign-in and config linked, and is removed with it.
+func TestCodexSpecReview_StopsAtMaxTurnsFromRollout(t *testing.T) {
+	stub, agent, owner := codexReviewer(t, codexResponses(1), codexRollout(specreview.MaxTurns+1))
+	_, _, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("stopped after %d model turns", specreview.MaxTurns))
+
+	home := strings.TrimSpace(string(readFile(t, filepath.Join(stub.dir, "codex-home"))))
+	assert.NotEqual(t, owner, home, "never the owner's codex home")
+	assert.Equal(t, filepath.Join(owner, "auth.json"), strings.TrimSpace(string(readFile(t, filepath.Join(stub.dir, "codex-auth-link")))))
+	assert.Equal(t, "model = \"acme\"\n", string(readFile(t, filepath.Join(stub.dir, "codex-home.toml"))), "the owner's config is linked")
+	assert.Contains(t, string(readFile(t, filepath.Join(stub.dir, "home-ls"))), "rollout-")
+	_, err = os.Stat(home)
+	assert.True(t, os.IsNotExist(err), "the home, rollout included, is removed")
+	assert.FileExists(t, filepath.Join(owner, "auth.json"), "the owner's sign-in is untouched")
+	assert.FileExists(t, filepath.Join(owner, "config.toml"))
+}
+
+// An owner signed in without an auth.json (the keyring store, tied to the
+// codex home) keeps the reviewer in their own home, --ephemeral as before,
+// its cap counted from the stream.
+func TestCodexSpecReview_KeyringSignInKeepsTheOwnersHome(t *testing.T) {
+	stub, agent, owner := codexReviewer(t, codexResponses(specreview.MaxTurns+1), "")
+	require.NoError(t, os.Remove(filepath.Join(owner, "auth.json")))
+	_, _, err := agent.Review(context.Background(), t.TempDir(), "sys", "user")
+	require.ErrorContains(t, err, fmt.Sprintf("stopped after %d model turns", specreview.MaxTurns))
+	assert.Equal(t, owner, strings.TrimSpace(string(readFile(t, filepath.Join(stub.dir, "codex-home")))))
+	assert.Contains(t, stub.argv(t), "--ephemeral")
+}
+
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
 }

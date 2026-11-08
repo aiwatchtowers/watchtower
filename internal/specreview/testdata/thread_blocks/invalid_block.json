@@ -1,0 +1,5 @@
+{
+  "reply": "A broken block is shown as nothing.\n\n```watchtower-finding\n{\"kind\": \"differs\", \n```\n\n```watchtower-ask-author\n{\"question\": \"\"}\n```",
+  "question": null,
+  "finding": null
+}

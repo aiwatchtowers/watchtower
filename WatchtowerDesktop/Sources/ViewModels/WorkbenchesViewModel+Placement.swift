@@ -24,7 +24,7 @@ extension WorkbenchesViewModel {
         choice: WorktreeChoice,
         targetID: Int64?,
         targetText: String?,
-        agent: AgentKind?,
+        agent: AgentKind,
         rowID: Int64
     ) async -> NewSessionPlacement {
         let folder = project.folderPath

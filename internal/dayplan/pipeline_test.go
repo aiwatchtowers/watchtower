@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // ── mock generator ─────────────────────────────────────────────────────────────
@@ -18,7 +19,7 @@ import (
 type mockGenerator struct{ response string }
 
 func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "s1", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "s1", nil
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -433,5 +434,5 @@ type capturingGen struct{ response, system string }
 
 func (m *capturingGen) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
 	m.system = system
-	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "s1", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, "s1", nil
 }

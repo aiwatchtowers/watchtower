@@ -63,7 +63,18 @@ final class SpecReviewLoopTests: XCTestCase {
             XCTAssertTrue(SpecReviewLoop.endedEarly(r), end)
             XCTAssertNotNil(SpecReviewLoop.endLine(r), end)
         }
-        XCTAssertEqual(SpecReviewLoop.endLine(try row(end: "cap")), "The reviewer and the author did not settle everything in 3 rounds.")
+        XCTAssertEqual(SpecReviewLoop.endLine(try row(end: "cap")), "The reviewer and the author were still going after 2 rounds.")
+    }
+
+    /// Spec 2026-11-08 §1: the new `stalled` end and the fuse's real count.
+    func testEndLineStalledAndCapUsesRound() throws {
+        let stalled = try row(end: "stalled")
+        XCTAssertTrue(SpecReviewLoop.endedEarly(stalled))
+        XCTAssertEqual(SpecReviewLoop.endLine(stalled),
+                       "The reviewer and the author stopped making progress: these are still open.")
+        var cap = try row(end: "cap")
+        cap.round = 8
+        XCTAssertEqual(SpecReviewLoop.endLine(cap), "The reviewer and the author were still going after 8 rounds.")
     }
 
     func testMalformedLedgerIsEmptyAndFlagged() throws {

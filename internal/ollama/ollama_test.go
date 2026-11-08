@@ -49,7 +49,7 @@ func TestGenerator_TierRouting(t *testing.T) {
 	if out != "hello" || sid != "" {
 		t.Errorf("out=%q sid=%q", out, sid)
 	}
-	if usage == nil || usage.Model != "strong-model" || usage.InputTokens != 7 || usage.OutputTokens != 3 {
+	if usage == nil || usage.Model != "strong-model" || usage.InputTokens() != 7 || usage.OutputTokens() != 3 {
 		t.Errorf("usage = %+v", usage)
 	}
 
@@ -145,7 +145,9 @@ func TestClient_QuerySync(t *testing.T) {
 	if text != "pong" {
 		t.Errorf("text = %q, want trailing newline trimmed", text)
 	}
-	if usage == nil || usage.InputTokens != 7 || usage.OutputTokens != 3 || usage.TotalAPITokens != 10 {
+	// TotalAPITokens is every input token (the block's AllInput), no longer
+	// the server's total_tokens, which counts the output too.
+	if usage == nil || usage.InputTokens() != 7 || usage.OutputTokens() != 3 || usage.TotalAPITokens() != 7 {
 		t.Errorf("usage = %+v", usage)
 	}
 	if len(models) != 1 || models[0] != "chat-model" {

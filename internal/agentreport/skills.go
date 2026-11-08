@@ -59,7 +59,7 @@ func Skills(sessions []agentlogdb.AgentReportSession, events map[string][]agentl
 	r := SkillsReport{Rows: []SkillRow{}, NeverUsed: []UnusedSkill{}}
 	facts := map[string]bool{}
 	for _, s := range sessions {
-		facts[s.SessionUUID] = s.Facts
+		facts[s.SessionUUID] = contextMeasured(s)
 	}
 	listedNames := map[string]bool{}
 	for _, k := range listing {
@@ -86,7 +86,7 @@ func Skills(sessions []agentlogdb.AgentReportSession, events map[string][]agentl
 	perToken := map[string]float64{}
 	var first, last time.Time
 	for _, s := range sessions {
-		if !s.Facts {
+		if !contextMeasured(s) {
 			continue
 		}
 		r.FactsSessions++

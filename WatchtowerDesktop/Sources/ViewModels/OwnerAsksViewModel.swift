@@ -735,8 +735,9 @@ final class OwnerAsksViewModel {
 
     /// `answer` with the comments of the ask's spec review marks
     /// (`SpecReviewAnswer`, F5): `spec_review_marks` and the reviewer's
-    /// result as stored now — no result (queued, running, failed) sends
-    /// every comment mark as "From the previous run". Placed off the main
+    /// result and the findings added from a Discuss thread as stored now —
+    /// no result (queued, running, failed) sends every other comment mark as
+    /// "From the previous run". Placed off the main
     /// actor on the drawer's rendered snapshot when it has one. A finished
     /// author loop sends the loop's comments with the owner's own verdict
     /// (the loop screen's Approve is `approved`). Any other
@@ -744,8 +745,9 @@ final class OwnerAsksViewModel {
     private func specReviewAnswer(_ ask: OwnerAsk, _ answer: OwnerAskAnswer) async throws -> OwnerAskAnswer {
         guard ask.kind == .review, !answer.dismissed else { return answer }
         let askID = ask.id
-        let (row, marks) = try await dbPool.read { db in
-            (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
+        let (row, marks, threadFindings) = try await dbPool.read { db in
+            (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID),
+             try SpecReviewThreadQueries.threadFindings(db, askID: askID))
         }
         // A finished author loop's answer carries the loop's comments
         // (spec 2026-10-26 §7), with or without comment marks.
@@ -756,7 +758,7 @@ final class OwnerAsksViewModel {
         let cached = reviewDocuments.rendered[askID]
         return await Task.detached(priority: .userInitiated) {
             SpecReviewAnswer.build(
-                result: result, marks: marks, loop: loop, base: answer, snapshot: snapshot,
+                result: result, marks: marks, threadFindings: threadFindings, loop: loop, base: answer, snapshot: snapshot,
                 rendered: cached.map { doc in { doc } }
             )
         }.value

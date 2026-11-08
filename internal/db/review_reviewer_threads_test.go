@@ -8,7 +8,7 @@ import (
 )
 
 // insertReviewerThread plants a reviewer thread of branch with one owner
-// message, as the Desktop writes it (migration 00175).
+// message, as the Desktop writes it (migration 00180).
 func insertReviewerThread(t *testing.T, d *DB, projectID int64, branch string) int64 {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)

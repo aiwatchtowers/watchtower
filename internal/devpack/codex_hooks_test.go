@@ -59,6 +59,7 @@ func TestCodexHookSet_GoldenOrderAndTimeouts(t *testing.T) {
 	want := []row{
 		{"SessionStart", "", 10, 0}, {"UserPromptSubmit", "", 5, 0}, {"PermissionRequest", "", 5, 0},
 		{"PostToolUse", "", 5, 0}, {"SubagentStart", "", 5, 0}, {"SubagentStop", "", 5, 0},
+		{"Interrupt", "", 5, 0},
 		{"PreToolUse", "request_user_input", 5, 0}, {"Stop", "", 15, 0}, {"Stop", "", 30, 1},
 	}
 	hooks := CodexHookSet("/usr/local/bin/watchtower")
@@ -67,8 +68,9 @@ func TestCodexHookSet_GoldenOrderAndTimeouts(t *testing.T) {
 		got = append(got, row{h.Event, h.Matcher, h.TimeoutSec, h.Group})
 	}
 	assert.Equal(t, want, got)
-	assert.Equal(t, "/usr/local/bin/watchtower workbench check --agent codex --stop-hook", hooks[7].Command)
-	assert.Equal(t, "/usr/local/bin/watchtower workbench ask-guard --agent codex --stop", hooks[8].Command)
+	assert.Equal(t, "/usr/local/bin/watchtower workbench session-state --agent codex", hooks[6].Command)
+	assert.Equal(t, "/usr/local/bin/watchtower workbench check --agent codex --stop-hook", hooks[8].Command)
+	assert.Equal(t, "/usr/local/bin/watchtower workbench ask-guard --agent codex --stop", hooks[9].Command)
 
 	assertCodexLaunchArgsGolden(t)
 }
@@ -152,7 +154,7 @@ func assertHookCommandsRun(t *testing.T, bin string) {
 func TestCodexHookOverrides_ParseAsTOML(t *testing.T) {
 	hooks := CodexHookSet("/usr/local/bin/watchtower")
 	overrides := CodexHookOverrides(hooks)
-	require.Len(t, overrides, 2*8, "one -c pair per event")
+	require.Len(t, overrides, 2*9, "one -c pair per event")
 	i := 0
 	for j := 0; j < len(overrides); j += 2 {
 		require.Equal(t, "-c", overrides[j])

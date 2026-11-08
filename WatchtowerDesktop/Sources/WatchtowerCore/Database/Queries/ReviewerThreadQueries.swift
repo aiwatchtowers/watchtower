@@ -1,6 +1,6 @@
 import GRDB
 
-/// Branch review's reviewer threads (board #1025, migration 00175): one
+/// Branch review's reviewer threads (board #1025, migration 00180): one
 /// conversation per (workbench, branch). The Desktop is the only writer.
 package enum ReviewerThreadQueries {
     /// The thread's conversation, nil when the branch has none yet.

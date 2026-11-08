@@ -12,6 +12,14 @@ import (
 // Without it, every db.Open(":memory:") call runs the full goose migration
 // suite which under -race exceeds Go's 10-minute test timeout on CI.
 func TestMain(m *testing.M) {
+	if os.Getenv("WATCHTOWER_TEST_PLAN_LOCK") == "1" {
+		runPlanLockHelper()
+		return
+	}
+	if os.Getenv("WATCHTOWER_TEST_CODEX_USAGE") == "1" {
+		runFakeCodexUsageServer()
+		return
+	}
 	if err := db.InitTestTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
