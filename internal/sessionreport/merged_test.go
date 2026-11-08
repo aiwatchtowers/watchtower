@@ -186,31 +186,95 @@ func TestProj14_MergeRefreshWritesOnlyThePRCache(t *testing.T) {
 // A merge verdict alone reads neither the default branch nor gh: only git
 // against its base.
 func TestRefresh_MergeRefsOnlyReadTheirBase(t *testing.T) {
-	dir := newFeatureRepo(t)
-	calls := ghStub(t)
-	d, id := newWorkbench(t, dir)
-	var gitArgs [][]string
-	prev := run
-	run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
-		if name == "git" {
-			gitArgs = append(gitArgs, args)
-		}
-		return prev(ctx, dir, stdin, name, args...)
+	for _, feature := range []string{"installed-git", "supported", "unsupported"} {
+		t.Run(feature, func(t *testing.T) {
+			dir := newFeatureRepo(t)
+			calls := ghStub(t)
+			d, id := newWorkbench(t, dir)
+			prev := run
+			// Build the supported atom's fixture from this real repository,
+			// before counting Refresh calls. This exercises both paths even
+			// on a machine whose installed git predates %(ahead-behind).
+			baseOut, _, err := prev(context.Background(), dir, nil, "git", "rev-parse", "refs/heads/feature/x")
+			require.NoError(t, err)
+			base := strings.TrimSpace(string(baseOut))
+			format := "--format=%(objecttype) %(refname) %(objectname) %(committerdate:unix)"
+			refs, _, err := prev(context.Background(), dir, nil, "git", "for-each-ref", format, "refs/heads", "refs/remotes/origin")
+			require.NoError(t, err)
+			var rows []string
+			for _, row := range strings.Split(strings.TrimSpace(string(refs)), "\n") {
+				fields := strings.Fields(row)
+				require.Len(t, fields, 4)
+				counts, _, err := prev(context.Background(), dir, nil, "git", "rev-list", "--left-right", "--count", fields[1]+"..."+base)
+				require.NoError(t, err)
+				rows = append(rows, row+" "+strings.TrimSpace(string(counts)))
+			}
+			var gitArgs [][]string
+			probes, probeFailures := 0, 0
+			run = func(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+				if name == "git" {
+					gitArgs = append(gitArgs, args)
+				}
+				atom := name == "git" && len(args) > 1 && args[0] == "for-each-ref" && strings.Contains(args[1], "%(ahead-behind:")
+				if atom {
+					probes++
+					if feature == "supported" {
+						return []byte(strings.Join(rows, "\n") + "\n"), 0, nil
+					}
+					if feature == "unsupported" {
+						probeFailures++
+						return nil, 128, fmt.Errorf("fixture git has no ahead-behind atom")
+					}
+				}
+				out, code, err := prev(ctx, dir, stdin, name, args...)
+				if atom && err != nil {
+					probeFailures++
+				}
+				return out, code, err
+			}
+			t.Cleanup(func() { run = prev })
+			Refresh(context.Background(), d, id, []string{"into:feature/x:wt/m", "into:feature/x:wt/open"},
+				RefreshOptions{Network: true, Now: fixedNow})
+			assert.Empty(t, calls())
+			batches, metadataReads, rawReads := 0, 0, 0
+			for _, args := range gitArgs {
+				assert.NotContains(t, args, "refs/remotes/origin/HEAD", "the default branch is never looked up")
+				if len(args) == 0 || args[0] != "for-each-ref" {
+					continue
+				}
+				rawReads++
+				require.GreaterOrEqual(t, len(args), 4)
+				assert.Equal(t, []string{"refs/heads", "refs/remotes/origin"}, args[len(args)-2:], "every batch serves all leaves")
+				switch {
+				case strings.Contains(args[1], "%(ahead-behind:"):
+					assert.Equal(t, format+" %(ahead-behind:"+base+")", args[1])
+					if probeFailures == 0 {
+						batches++
+					}
+				case strings.HasPrefix(args[1], "--merged="):
+					assert.Equal(t, "--merged="+base, args[1], "only the requested base is queried")
+					batches++
+				default:
+					assert.Equal(t, format, args[1])
+					metadataReads++
+				}
+			}
+			assert.Equal(t, 1, batches, "one semantic merged-base batch serves every leaf of a base")
+			assert.Equal(t, 1, probes, "feature support is probed once, never per leaf")
+			assert.LessOrEqual(t, probeFailures, 1)
+			assert.Equal(t, probeFailures, metadataReads, "legacy metadata is read only after a failed feature probe")
+			assert.Equal(t, 1+2*probeFailures, rawReads, "only the fixed-cost compatibility path may add commands")
+			if feature == "supported" {
+				assert.Zero(t, probeFailures)
+			}
+			if feature == "unsupported" {
+				assert.Equal(t, 1, probeFailures)
+			}
+			got := states(t, d, id)
+			assert.Equal(t, "merged", got["into:feature/x:wt/m"].State)
+			assert.Equal(t, "open", got["into:feature/x:wt/open"].State)
+		})
 	}
-	t.Cleanup(func() { run = prev })
-	Refresh(context.Background(), d, id, []string{"into:feature/x:wt/m", "into:feature/x:wt/open"},
-		RefreshOptions{Network: true, Now: fixedNow})
-	assert.Empty(t, calls())
-	for _, a := range gitArgs {
-		assert.NotContains(t, a, "refs/remotes/origin/HEAD", "the default branch is never looked up")
-	}
-	n := 0
-	for _, a := range gitArgs {
-		if len(a) > 0 && a[0] == "for-each-ref" {
-			n++
-		}
-	}
-	assert.Equal(t, 1, n, "one batch read serves every leaf of a base")
 }
 
 func TestRefresh_BadIntoRefIsSkipped(t *testing.T) {
