@@ -319,9 +319,15 @@ private struct FolderDragModifier: ViewModifier {
     let indicator: InboxFolderDrop?
     let onAction: (InboxFolderMenuAction) -> Void
 
+    /// Only an owner folder lifts a drag: the root and Needs approval never
+    /// move. A row's kind never changes, so the branch keeps its identity;
+    /// read-only is the model's call (`beginDrag`).
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .onDrag {
+        let droppable = content.onDrop(of: [.inboxFolder], delegate: FolderDropDelegate(
+            rowID: row.id, draggedID: draggedID, indicator: indicator, onAction: onAction))
+        if row.kind == .owner {
+            droppable.onDrag {
                 onAction(.beginDrag(row.id))
                 let provider = NSItemProvider()
                 let id = row.id
@@ -333,8 +339,9 @@ private struct FolderDragModifier: ViewModifier {
                 }
                 return provider
             }
-            .onDrop(of: [.inboxFolder], delegate: FolderDropDelegate(
-                rowID: row.id, draggedID: draggedID, indicator: indicator, onAction: onAction))
+        } else {
+            droppable
+        }
     }
 }
 
