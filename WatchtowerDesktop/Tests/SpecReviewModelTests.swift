@@ -773,6 +773,49 @@ final class SpecReviewModelTests: XCTestCase {
         XCTAssertEqual(model.threadMessageCounts["ag:2"], 2)
     }
 
+    /// An open thread on screen keeps its chat through the center's idle
+    /// sweep; once no view draws it, the sweep lets it go, and drawing it
+    /// again brings it back.
+    func testShownThreadSurvivesTheSweepAndAHiddenOneIsReleased() async throws {
+        runner = FakeCLIRunner(stdout: Data("data".utf8))
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeThreadModel(ScriptedAIService())
+        await model.load()
+        let threads = try XCTUnwrap(model.threads)
+        let center = try XCTUnwrap(threadCenter)
+        threads.shown("ag:2")
+        threads.open("ag:2")
+        await waitUntil { model.threadEngine("ag:2") != nil }
+        let later = Date().addingTimeInterval(301)
+
+        center.sweep(now: later)
+        XCTAssertNotNil(model.threadEngine("ag:2"), "a thread on screen is never swept")
+
+        threads.hidden("ag:2")
+        center.sweep(now: later.addingTimeInterval(301))
+        XCTAssertNil(model.threadEngine("ag:2"), "a hidden idle thread is let go")
+
+        threads.shown("ag:2")
+        XCTAssertNotNil(model.threadEngine("ag:2"), "drawn again: back in the center")
+        center.sweep(now: later.addingTimeInterval(1000))
+        XCTAssertNotNil(model.threadEngine("ag:2"))
+    }
+
+    /// An orphaned item without a conversation gets none.
+    func testOrphanedThreadCreatesNoConversation() async throws {
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeThreadModel(ScriptedAIService())
+        await model.load()
+        try XCTUnwrap(model.threads).open("bs:gone")
+        await waitUntil { model.threadStates["bs:gone"]?.isOpening == false }
+        let count = try await pool.read { d in
+            try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_conversations WHERE context_type = 'spec_review_thread'")
+        }
+        XCTAssertEqual(count, 0)
+        XCTAssertNil(model.threadEngine("bs:gone"))
+        XCTAssertTrue(model.threadContent("bs:gone").isOrphaned)
+    }
+
     func testFailedThreadOpeningShowsRetry() async throws {
         runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
         try setRow(status: "done", result: kindsResultJSON())
@@ -799,9 +842,14 @@ final class SpecReviewModelTests: XCTestCase {
         await model.load()
         XCTAssertTrue(model.isOrphanedItem("bs:gone"))
         XCTAssertFalse(model.isOrphanedItem("th:1"), "a thesis has a thread too")
+        // Its thread from the previous run.
+        let conversation = try await SpecReviewThreadSurface.conversationID(
+            workbenchID: projectID, rootAskID: askID, itemKey: "bs:gone", title: "Gone", dbPool: pool)
         let threads = try XCTUnwrap(model.threads)
         threads.open("bs:gone")
         await waitUntil { model.threadStates["bs:gone"]?.context != nil }
+        XCTAssertEqual(model.threadStates["bs:gone"]?.conversationID, conversation)
+        XCTAssertNotNil(model.threadEngine("bs:gone"), "readable")
         XCTAssertTrue(runner.invocations.isEmpty)
         XCTAssertTrue(model.threadContent("bs:gone").isOrphaned)
         XCTAssertFalse(threads.send("bs:gone", "Still there?"))

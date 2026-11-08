@@ -542,6 +542,18 @@ struct SpecReviewThreadState {
     var loadError: String?
     var context: SpecReviewThreadContext?
     var conversationID: Int64?
+    /// How many of this screen's views draw the thread now: each one keeps
+    /// its chat marked shown in the app's center, so the idle sweep never
+    /// lets go of a thread on screen.
+    var shownViews = 0
+
+    /// The thread's key in the app's center; nil until it was opened, or
+    /// for an orphaned item that never had a conversation.
+    var chatKey: EmbeddedChatKey? {
+        guard let context, let conversationID else { return nil }
+        return EmbeddedChatKey(contextType: SpecReviewThreadKey.contextType, contextID: context.contextID,
+                               conversationID: conversationID)
+    }
 }
 
 // MARK: - Discuss threads (spec 2026-11-08 §3)
@@ -557,8 +569,29 @@ extension SpecReviewModel {
             open: { [self] in openThread($0) },
             hide: { [self] in threadStates[$0]?.isOpen = false },
             retry: { [self] in threadEngine($0)?.retry() },
-            stop: { [self] in threadEngine($0)?.stop() }
+            stop: { [self] in threadEngine($0)?.stop() },
+            shown: { [self] in threadShown($0) },
+            hidden: { [self] in threadHidden($0) }
         )
+    }
+
+    /// A view started drawing `key`'s open thread (`EmbeddedChatView`'s
+    /// `embeddedChatVisibility` rule): its chat is marked shown in the
+    /// center, now or once the thread has opened.
+    func threadShown(_ key: String) {
+        threadStates[key, default: SpecReviewThreadState()].shownViews += 1
+        guard let chatKey = threadStates[key]?.chatKey else { return }
+        // Drawn again after the sweep let it go (a card scrolled back).
+        if chats?.loaded(chatKey) == nil { makeThreadEngine(key) }
+        chats?.markShown(chatKey)
+    }
+
+    /// That view went away (Hide, a closed drawer): the idle sweep may let
+    /// the chat go once nothing runs in it.
+    func threadHidden(_ key: String) {
+        guard let state = threadStates[key], state.shownViews > 0 else { return }
+        threadStates[key]?.shownViews -= 1
+        if let chatKey = state.chatKey { chats?.markHidden(chatKey) }
     }
 
     /// The thread's conversation key (`SpecReviewThreadKey`).
@@ -592,17 +625,31 @@ extension SpecReviewModel {
             state.loadError = nil
         }
         threadStates[key] = state
-        if needsPreparing { Task { await prepareThread(key) } }
+        if needsPreparing {
+            Task { await prepareThread(key) }
+        } else if state.context != nil {
+            // The idle sweep let a hidden thread's chat go: back in the center.
+            makeThreadEngine(key)
+        }
     }
 
     private func prepareThread(_ key: String) async {
         let askID = ask.id
         let workbenchID = ask.projectID
         do {
-            let conversationID = try await SpecReviewThreadSurface.conversationID(
-                workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool)
-            // An orphaned item's thread only shows what it holds: nothing to fetch.
+            // An orphaned item's thread only shows what it holds: its
+            // conversation is looked up, never created, and nothing fetched.
             let orphaned = isOrphanedItem(key)
+            let conversationID: Int64?
+            if orphaned {
+                let contextID = threadContextID(key)
+                conversationID = try await dbPool.read { db in
+                    try ChatConversationQueries.fetchByContext(db, type: SpecReviewThreadKey.contextType, id: contextID)?.id
+                }
+            } else {
+                conversationID = try await SpecReviewThreadSurface.conversationID(
+                    workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool)
+            }
             let data = orphaned ? "" : try await cli.specReviewThreadContext(askID: askID, itemKey: key)
             let context = SpecReviewThreadContext(
                 workbenchID: workbenchID, rootAskID: rootAskID, askID: askID, itemKey: key, data: data,
@@ -617,20 +664,30 @@ extension SpecReviewModel {
             threadStates[key, default: SpecReviewThreadState()].context = context
             threadStates[key]?.conversationID = conversationID
             threadStates[key]?.isOpening = false
-            _ = threadEngine(key)
+            makeThreadEngine(key)
+            // Views that drew the thread while it was opening.
+            if let chatKey = threadStates[key]?.chatKey {
+                for _ in 0..<(threadStates[key]?.shownViews ?? 0) { chats?.markShown(chatKey) }
+            }
         } catch {
             threadStates[key, default: SpecReviewThreadState()].isOpening = false
             threadStates[key]?.loadError = "Couldn't open the discussion: \(error.localizedDescription)"
         }
     }
 
-    /// The thread's chat once it was opened, from the app's center (created
-    /// again there if the idle sweep let it go).
+    /// The thread's chat in the app's center, once it was opened; nil
+    /// after the idle sweep let a hidden one go (opening it again brings it
+    /// back). Read only — the view body never creates an engine.
     func threadEngine(_ key: String) -> EmbeddedChatEngine? {
+        guard let chats, let chatKey = threadStates[key]?.chatKey else { return nil }
+        return chats.loaded(chatKey)
+    }
+
+    /// Creates (or refreshes) the thread's chat in the app's center.
+    private func makeThreadEngine(_ key: String) {
         guard let chats, let state = threadStates[key], let context = state.context,
-              let conversationID = state.conversationID else { return nil }
-        return chats.engine(for: SpecReviewThreadSurface.spec(context: context, conversationID: conversationID,
-                                                              dbPool: dbPool))
+              let conversationID = state.conversationID else { return }
+        _ = chats.engine(for: SpecReviewThreadSurface.spec(context: context, conversationID: conversationID, dbPool: dbPool))
     }
 
     /// A completed thread reply's blocks: a question for the author, a

@@ -73,6 +73,10 @@ struct SpecReviewThreads {
     var hide: (_ key: String) -> Void = { _ in }
     var retry: (_ key: String) -> Void = { _ in }
     var stop: (_ key: String) -> Void = { _ in }
+    /// The thread is drawn / no longer drawn: its chat stays in the app's
+    /// center while it is on screen.
+    var shown: (_ key: String) -> Void = { _ in }
+    var hidden: (_ key: String) -> Void = { _ in }
 }
 
 extension EnvironmentValues {
@@ -116,6 +120,8 @@ struct SpecReviewCardThreadSection: View {
                         onStop: { threads.stop(key) },
                         onReopen: { threads.open(key) }
                     )
+                    .onAppear { threads.shown(key) }
+                    .onDisappear { threads.hidden(key) }
                 } else if content.messageCount > 0 {
                     SpecReviewThreadFoldedLine(count: content.messageCount) { visibility = .shown }
                 }
