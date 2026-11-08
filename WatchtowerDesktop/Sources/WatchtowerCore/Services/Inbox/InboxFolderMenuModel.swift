@@ -28,6 +28,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     /// badge's own predicate): the open approvals among the strip's rows,
     /// which also carry approved, running and recently decided ones.
     package let openActions: Set<Int64>
+    /// The `idea-finder` built-in is indexed (`InboxFolderQueries.ideaFinderPresent`).
+    package let ideaFinderPresent: Bool
 
     package init(
         tree: InboxFolderTree,
@@ -39,7 +41,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         waitingForMe: WaitingForMeState = WaitingForMeState(automationID: nil, messagesStandIn: true),
         needsApproval: NeedsApprovalState = .absent,
         approvalArtifacts: [String: AutomationOutputCard] = [:],
-        openActions: Set<Int64> = []
+        openActions: Set<Int64> = [],
+        ideaFinderPresent: Bool = false
     ) {
         self.tree = tree
         self.counts = counts
@@ -51,6 +54,7 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         self.needsApproval = needsApproval
         self.approvalArtifacts = approvalArtifacts
         self.openActions = openActions
+        self.ideaFinderPresent = ideaFinderPresent
     }
 
     /// One read, nothing written. Each source tolerates a schema that
@@ -78,7 +82,8 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         let openActions = Set(try openActionIDs(db))
         return Self(tree: tree, counts: counts, artifacts: artifacts.mapValues(\.count), cards: artifacts,
                     refs: refs, refState: refState, waitingForMe: waitingForMe, needsApproval: needsApproval,
-                    approvalArtifacts: approvalArtifacts, openActions: openActions)
+                    approvalArtifacts: approvalArtifacts, openActions: openActions,
+                    ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db))
     }
 
     /// The ids of the actions that wait on the owner; none on a database

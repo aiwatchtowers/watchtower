@@ -239,6 +239,21 @@ package enum InboxFolderQueries {
 
     /// The `waiting-for-me` built-in's id (`builtin.Entry`, Go).
     package static let waitingForMeBuiltinID = "waiting-for-me"
+
+    /// The `idea-finder` built-in is indexed: Idea finder stays in the root
+    /// with no ideas yet (its New idea and Find Ideas in Past Messages…).
+    package static func ideaFinderPresent(_ db: Database) throws -> Bool {
+        do {
+            return try Bool.fetchOne(
+                db, sql: "SELECT EXISTS (SELECT 1 FROM automations WHERE builtin_id = ?)",
+                arguments: [ideaFinderBuiltinID]) ?? false
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return false
+        }
+    }
+
+    /// The `idea-finder` built-in's id (`builtin.Entry`, Go).
+    package static let ideaFinderBuiltinID = "idea-finder"
 }
 
 /// The `waiting-for-me` built-in's place in the root (spec "Waiting for me").

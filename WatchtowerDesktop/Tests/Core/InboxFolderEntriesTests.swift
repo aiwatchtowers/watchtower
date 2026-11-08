@@ -135,6 +135,39 @@ final class InboxFolderEntriesTests: XCTestCase {
         }
     }
 
+    /// Every track stopped: Track my threads stays, so its Stopped fold and
+    /// Restore stay reachable.
+    func testTrackMyThreadsStaysWhileTracksAreStopped() async throws {
+        let pool = try pool()
+        let root = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            let track = try TestDatabase.insertTrack(db, text: "Release acme 2.0 checklist")
+            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-11-06T09:00:00Z' WHERE id = ?",
+                           arguments: [track])
+            return folders.root
+        }
+        let vm = await read(pool, folder: root)
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["tracks"])
+        XCTAssertEqual(vm.folderList.rows.first?.summary, "", "nothing unread")
+        await vm.selectEntry("tracks")
+        XCTAssertEqual(vm.legacyList, .tracks)
+    }
+
+    /// No ideas yet: Idea finder stays while its built-in exists, so New
+    /// idea and Find Ideas in Past Messages… stay reachable; without the
+    /// built-in and without ideas it is left out.
+    func testIdeaFinderStaysWhileItsBuiltinExists() async throws {
+        let pool = try pool()
+        let root = try await pool.write { db in try InboxFolderFixtures.seed(db).root }
+        let without = await read(pool, folder: root)
+        XCTAssertEqual(without.folderEntries.map(\.id), [], "no built-in, no ideas: nothing to show")
+
+        try await pool.write { try NeedsApprovalFixtures.builtin($0, id: "idea-finder", name: "Idea finder") }
+        let with = await read(pool, folder: root)
+        XCTAssertEqual(with.folderEntries.map(\.id), ["ideas"])
+        XCTAssertEqual(with.folderList.rows.first?.menu.map(\.command), [.findIdeasInPastMessages])
+    }
+
     /// Opening a legacy list entry opens today's list for it; back returns.
     func testLegacyListEntryOpensTodaysList() async throws {
         let pool = try pool()

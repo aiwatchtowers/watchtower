@@ -100,7 +100,10 @@ package enum InboxFolderEntries {
     ///   without Needs approval (an older database) the root also holds the
     ///   approvals.
     /// - An owner folder: its artifacts, newest change first.
-    /// A legacy entry with nothing to show is left out.
+    /// A legacy entry with nothing to show is left out: Track my threads
+    /// stays while a track is stopped (its Stopped fold restores it), Idea
+    /// finder while its built-in exists (New idea, Find Ideas in Past
+    /// Messages…).
     package static func build(folder: InboxFolder, _ inputs: Inputs) -> [InboxFolderEntry] {
         let read = inputs.folders
         let artifacts = read.cards[folder.id] ?? []
@@ -148,10 +151,10 @@ package enum InboxFolderEntries {
     private static func legacy(_ inputs: Inputs) -> [(at: Date, entry: InboxFolderEntry)] {
         let feed = inputs.feed
         var out: [(at: Date, entry: InboxFolderEntry)] = days(inputs).map { ($0.stamp, .legacyDay($0)) }
-        if let at = feed.tracks.map(\.lastEventAt).max() {
+        if let at = tracksUpdatedAt(feed) {
             out.append((at, .legacyTracks))
         }
-        if !feed.ideas.isEmpty {
+        if !feed.ideas.isEmpty || inputs.folders.ideaFinderPresent {
             out.append((ideasUpdatedAt(feed) ?? .distantPast, .legacyIdeas))
         }
         if inputs.folders.waitingForMe.messagesStandIn, let at = feed.messages.map(\.stamp).max() {
@@ -177,6 +180,11 @@ package enum InboxFolderEntries {
             days.append(card)
         }
         return days
+    }
+
+    /// The newest track's time, stopped ones included; nil = no track.
+    private static func tracksUpdatedAt(_ feed: InboxFeedSnapshot) -> Date? {
+        (feed.tracks + feed.stoppedTracks).map(\.lastEventAt).max()
     }
 
     private static func ideasUpdatedAt(_ feed: InboxFeedSnapshot) -> Date? {
@@ -224,7 +232,7 @@ package enum InboxFolderEntries {
             return InboxFolderListRow(
                 id: entry.id, kind: .legacy, title: "Track my threads",
                 summary: unread > 0 ? "\(unread) unread" : "",
-                detail: feed.tracks.map(\.lastEventAt).max().map { updated($0, now: now) } ?? "",
+                detail: tracksUpdatedAt(feed).map { updated($0, now: now) } ?? "",
                 unread: unread > 0)
         case .legacyIdeas:
             let judge = feed.ideas.filter(\.awaitsVerdict).count
