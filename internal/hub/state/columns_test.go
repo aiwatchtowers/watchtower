@@ -78,6 +78,7 @@ var sidecarColumns = map[string]string{
 	"devices.agreement_key":    classPublicKey,
 	"devices.link_nonce":       classLinkSecret,
 	"devices.relay_device_id":  classID,
+	"devices.kx_offer":         classPublicKey, // the phone's offered ephemeral X25519 key (00016)
 	// devices.relay_admitted_at is REAL, a timestamp (not text, so not
 	// listed; TestRelayAdmittedAtIsATimestamp pins its type).
 
@@ -89,7 +90,16 @@ var sidecarColumns = map[string]string{
 
 	"hub_epochs.sealed_keys": classSealed,
 	"hub_epochs.reason":      classEnum, // why the epoch began (00010)
-	// hub_epochs.retire_after is REAL, a timestamp (not text, so not listed).
+	// hub_epochs.retire_after is REAL, a timestamp, and hub_epochs.on_relay
+	// INTEGER (00016): not text, so not listed.
+
+	// Per-epoch relay keys of a phone that offered an ephemeral key (00016):
+	// the two ephemeral publics in the clear, the two derived keys sealed
+	// under the wrap key.
+	"epoch_relay_keys.device_id":   classID,
+	"epoch_relay_keys.hub_pub":     classPublicKey,
+	"epoch_relay_keys.device_pub":  classPublicKey,
+	"epoch_relay_keys.sealed_keys": classSealed,
 
 	"pending_devices.device_id":        classID,
 	"pending_devices.name":             classLabel,

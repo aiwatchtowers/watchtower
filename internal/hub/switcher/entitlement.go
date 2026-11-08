@@ -146,7 +146,7 @@ type lapseRequest struct {
 	at    time.Time
 }
 
-const metaLapsePending = "lapse_pending"
+const metaLapsePending = state.MetaLapsePending
 
 // queueLapse records that device's relay entitlement lapsed and wakes the
 // Step that decides it. The lapse path reads nothing here and never blocks on
