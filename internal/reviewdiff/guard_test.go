@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -64,7 +66,8 @@ func TestReview05_UndoRunsNothingFromTheFolder(t *testing.T) {
 
 // TestReview05_HistoryReadsRunNothingFromTheFolder: the big-branch map's
 // history reads (FirstParentWalk, CommitFiles, IsAncestor) run none of the
-// folder's filter drivers, its fsmonitor or a textconv driver.
+// folder's filter drivers, its fsmonitor or a textconv driver; every call
+// goes through the Repo's hardened runner and none asks for content.
 func TestReview05_HistoryReadsRunNothingFromTheFolder(t *testing.T) {
 	dir, ids := historyRepo(t)
 	marker := filepath.Join(t.TempDir(), "ran")
@@ -79,6 +82,8 @@ func TestReview05_HistoryReadsRunNothingFromTheFolder(t *testing.T) {
 	writeFile(t, dir, ".git/info/attributes", "*.go filter=evil diff=evil\n")
 
 	r := openRepo(t, dir)
+	var argvs [][]string
+	r.run = recorder(&argvs, nil)
 	ctx := context.Background()
 	if _, err := r.FirstParentWalk(ctx, ids["after"], []string{ids["init"]}, 0); err != nil {
 		t.Fatal(err)
@@ -91,6 +96,18 @@ func TestReview05_HistoryReadsRunNothingFromTheFolder(t *testing.T) {
 	}
 	if _, err := r.IsAncestor(ctx, ids["l2"], ids["after"]); err != nil {
 		t.Fatal(err)
+	}
+	var subs []string
+	for _, a := range argvs {
+		subs = append(subs, a[0])
+		for _, bad := range []string{"-p", "--patch", "-u", "--textconv", "--ext-diff"} {
+			if slices.Contains(a, bad) {
+				t.Errorf("git %v asks for content (%s)", a, bad)
+			}
+		}
+	}
+	if want := []string{"rev-list", "log", "log", "merge-base"}; !reflect.DeepEqual(subs, want) {
+		t.Errorf("runner saw %v, want %v", subs, want)
 	}
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("a command from the folder's git config ran")
