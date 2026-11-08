@@ -79,20 +79,18 @@ package final class InboxArtifactMenuModel {
 
     /// The artifact ⋯ of `card`: a built-in has no Delete…, Needs
     /// approval's automation no Move to Folder, a built-in without Run Now
-    /// none; Turn Off / Turn On follows `enabled`.
+    /// none; Turn Off / Turn On follows `enabled` — a built-in's from its
+    /// `show` (its features), as the tab's card reads it.
     package func content(for card: AutomationOutputCard) -> InboxArtifactMenuContent {
         let automation = automation(card.automationID)
         let builtin = automation?.isBuiltin ?? false
-        let offersRunNow = if builtin, let automation {
-            hooks.automations()?.builtinCard(automation).detail?.runNow ?? false
-        } else {
-            true
-        }
+        let detail = automation.flatMap { builtin ? hooks.automations()?.builtinCard($0).detail : nil }
+        let offersRunNow = builtin ? detail?.runNow ?? false : true
         return InboxArtifactMenuContent(
             isBuiltin: builtin,
             offersRunNow: offersRunNow,
             movable: automation?.builtinID != InboxFolderQueries.needsApprovalBuiltinID,
-            isEnabled: automation?.enabled ?? true,
+            isEnabled: detail?.enabled ?? automation?.enabled ?? true,
             folders: folderMenu.content.rows,
             currentFolderID: folderMenu.tree.routes[card.automationID])
     }
@@ -102,6 +100,13 @@ package final class InboxArtifactMenuModel {
         guard let automation = automation(card.automationID), automation.isBuiltin,
               let builtin = hooks.automations()?.builtinCard(automation), builtin.detail == nil else { return }
         await builtin.load()
+    }
+
+    /// A folder list's artifacts: each built-in reads its `show` once, so a
+    /// row's context menu offers Run Now before its reading pane opened.
+    package func prepare(_ cards: [AutomationOutputCard]) async {
+        var seen: Set<Int64> = []
+        for card in cards where seen.insert(card.automationID).inserted { await prepare(card) }
     }
 
     /// The entries are off: the tab's model is not built, the automation is
@@ -160,8 +165,8 @@ package final class InboxArtifactMenuModel {
         }
     }
 
-    /// The confirmation's **Delete** of `pending` (taken when pressed: the
-    /// dialog's dismissal clears `pendingDelete` before this runs): the
+    /// The confirmation's **Delete** of `pending` (the dialog presents it,
+    /// so the dismissal clearing `pendingDelete` does not matter): the
     /// tab's `delete`, with its cleanup.
     package func confirmDelete(_ pending: PendingDelete) async {
         guard let vm = hooks.automations() else { return }
@@ -193,10 +198,20 @@ package final class InboxArtifactMenuModel {
     }
 
     /// Edit the Look…, Turn Off / Turn On (the built-in's own card, else its
-    /// feature directly), Run History.
-    package func performApprovals(_ command: InboxMenuCommand) async {
+    /// feature directly), Run History. Pressed on the folder menu's row
+    /// (`fromFolder`) while Needs approval is not the open folder, a failure
+    /// also shows on that row: its pane, where `approvalsError` is drawn, is
+    /// not on screen.
+    package func performApprovals(_ command: InboxMenuCommand, fromFolder folderID: Int64? = nil) async {
         guard !approvalsPressing else { return }
         approvalsError = nil
+        await runApprovals(command)
+        if let approvalsError, let folderID, folderMenu.selectedFolderID != folderID {
+            folderMenu.showRefusal(approvalsError, on: folderID)
+        }
+    }
+
+    private func runApprovals(_ command: InboxMenuCommand) async {
         let automation = approvalsAutomation
         switch command {
         case .editLook, .runHistory:

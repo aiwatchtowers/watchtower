@@ -74,7 +74,11 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
             artifacts = artifacts.mapValues { $0.filter { $0.automationID != approvalsID } }
         }
         let refs = InboxFolderCounts.refs(of: artifacts)
-        let refState = try InboxRefState.read(db, refs: Array(refs.values.joined()), nowUTC: nowUTC)
+        // Needs approval's cards are read too: their `action`/`reminder`
+        // rows draw only while the record is open (the row hooks' `isOpen`).
+        let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
+        let refState = try InboxRefState.read(
+            db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
         let legacy = try ActionStripViewModel.legacyCounts(
             db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
         let counts = InboxFolderCounts.counts(
@@ -169,6 +173,10 @@ package final class InboxFolderMenuModel {
     /// has been read yet (revision 0: nothing to compare-and-set against —
     /// before the first read, or a database without the folder tables).
     package var isReadOnly: Bool { cliMissing || isBusy || tree.revision < 1 }
+
+    /// No `watchtower` binary at the last read: the menu's and the rows'
+    /// writes are off (plan "Failure paths").
+    package var isCLIMissing: Bool { cliMissing }
 
     /// The folder the Inbox shows (the root when none is selected).
     package var selectedFolderID: Int64 { selection ?? tree.root.id }
@@ -446,6 +454,13 @@ package final class InboxFolderMenuModel {
         return reason
     }
 
+    /// A row ⋯ press the caller carried out failed (Needs approval's, from
+    /// the menu while another folder is open): its reason on that row, like
+    /// the menu's own refusals.
+    package func showRefusal(_ message: String, on folderID: Int64) {
+        refusal = InboxFolderMenuRefusal(folderID: folderID, message: message)
+    }
+
     nonisolated package static let routeBusy = "another change to the Inbox menu is running — try again"
     nonisolated package static let routeNotRead = "the Inbox menu is not read yet — try again"
     nonisolated package static let routeMenuChanged = "the Inbox menu changed — it was reloaded, try again"
@@ -471,7 +486,8 @@ package final class InboxFolderMenuModel {
         }
         cliMissing = false
         isBusy = true
-        refusal = nil
+        // A caller-shown write (a route) leaves the menu's own line alone.
+        if onFailure == nil { refusal = nil }
         defer { isBusy = false }
         do {
             try await call(InboxFoldersCLI(runner: runner), tree.revision)

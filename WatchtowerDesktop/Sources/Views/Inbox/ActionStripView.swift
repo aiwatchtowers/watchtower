@@ -59,6 +59,8 @@ struct ActionStripView: View {
                         appState.openAutomationRun(automationID: automationID, runID: runID)
                     },
                     onNewArtifact: { appState.newInboxArtifact() },
+                    onMakeTaskFromTrack: { await appState.makeTask(fromTrack: $0) },
+                    onGoToTarget: { appState.navigateToTarget($0) },
                     artifactMenu: appState.inboxArtifactMenu
                 )
             } else {
@@ -225,6 +227,10 @@ struct ActionStripActionsView: View {
     /// **+ New Artifact…** and the empty folders' **New Artifact…**: the
     /// Automations tab's New flow, the selected owner folder as its route.
     var onNewArtifact: () -> Void = {}
+    /// A track row's **Make a Task** (`AppState.makeTask(fromTrack:)`): why it failed, or nil.
+    var onMakeTaskFromTrack: (Track) async -> String? = { _ in nil }
+    /// A track row's **Go to Target**, an idea made into a task.
+    var onGoToTarget: (Int) -> Void = { _ in }
     /// The artifact ⋯ (reading pane, list rows) and Needs approval's ⋯;
     /// nil (tests, shots) draws neither.
     var artifactMenu: InboxArtifactMenuModel?
@@ -236,6 +242,9 @@ struct ActionStripActionsView: View {
     @State private var newIdea = InboxNewIdeaDraft()
     @Environment(\.markdownNavScreens) private var navScreens
     @State private var backfillRange = InboxIdeaBackfillRange(from: Date(), to: Date())
+    /// Proposals whose recipe card's **Edit…** was pressed: Needs approval
+    /// draws their native card, with its argument editor, in its place.
+    @State private var editingActions: Set<Int64> = []
 
     /// The folder menu (inbox builder B), then the selected folder.
     var body: some View {
@@ -262,13 +271,14 @@ struct ActionStripActionsView: View {
             }
             content
         }
-        .confirmationDialog(deleteTitle, isPresented: deleteConfirming) {
+        .confirmationDialog(deleteTitle, isPresented: deleteConfirming,
+                            presenting: artifactMenu?.pendingDelete) { pending in
             Button("Delete", role: .destructive) {
-                guard let artifactMenu, let pending = artifactMenu.pendingDelete else { return }
+                guard let artifactMenu else { return }
                 Task { await artifactMenu.confirmDelete(pending) }
             }
             Button("Cancel", role: .cancel) { artifactMenu?.cancelDelete() }
-        } message: {
+        } message: { _ in
             Text("This removes the recipe file with its runs, state and outputs.")
         }
     }
@@ -289,7 +299,7 @@ struct ActionStripActionsView: View {
     /// A folder-menu ⋯ press the menu does not carry out: Needs approval's.
     private func folderMenuCommand(_ folderID: Int64, _ command: InboxMenuCommand) {
         guard vm.folderMenu.tree.folder(folderID)?.kind == .approvals, let artifactMenu else { return }
-        Task { await artifactMenu.performApprovals(command) }
+        Task { await artifactMenu.performApprovals(command, fromFolder: folderID) }
     }
 
     /// `card`'s ⋯ in the reading pane.
@@ -428,6 +438,14 @@ struct ActionStripActionsView: View {
         )
         // swiftlint:enable trailing_closure
         .accessibilityIdentifier(showsInlineCheatSheet ? "actionStrip.cheatSheet" : "inbox.folderList")
+        .task(id: listedArtifacts.map(\.automationID)) { await artifactMenu?.prepare(listedArtifacts) }
+    }
+
+    /// The artifacts the folder's list shows (their rows' context menus).
+    private var listedArtifacts: [AutomationOutputCard] {
+        vm.folderEntries.compactMap { entry in
+            if case let .artifact(card) = entry { card } else { nil }
+        }
     }
 
     /// Under the empty root: why it is empty without an owner (OWNER-02),
@@ -511,8 +529,42 @@ struct ActionStripActionsView: View {
             trackCard: { track in InboxCardColumn { InboxCardPlaceholder(track: track, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0).padding(Spacing.page) }
         )
+        .refHooks(rowHooks)
         .withArtifactMenu(menu)
         return inApprovals ? pane.stackedInApprovals() : pane
+    }
+
+    // MARK: - Native row actions
+
+    /// The native actions on an artifact's rows with a `ref`.
+    private var rowHooks: ArtifactRefHooks {
+        let handler = rowHandler
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        return InboxRefHooks(vm: vm, navScreens: navScreens, workbenches: workbenches,
+                             sessionHoldsCall: { sessionHoldsCall?($0) ?? false }, ideasAvailable: ideas != nil,
+                             onCommand: onCardAction,
+                             onPress: { ref, press in Task { await handler.press(press, on: ref) } }).hooks
+        // swiftlint:enable trailing_closure
+    }
+
+    private var rowHandler: InboxRowActionHandler {
+        // Labeled: with several closures a trailing one would be ambiguous.
+        // swiftlint:disable trailing_closure
+        InboxRowActionHandler(
+            vm: vm,
+            ideas: ideas,
+            onCommand: onCardAction,
+            onMakeTaskFromTrack: onMakeTaskFromTrack,
+            onGoToTarget: onGoToTarget,
+            onIdeaMadeTask: onGoToTarget,
+            onEditAction: { editingActions.insert($0) },
+            onOpenSaveDraft: onOpenSaveDraft,
+            sessionHoldsCall: { sessionHoldsCall?($0) ?? false },
+            navScreens: navScreens,
+            now: { now ?? Date() }
+        )
+        // swiftlint:enable trailing_closure
     }
 
     private func done(_ id: InboxSelection) {
@@ -570,7 +622,7 @@ struct ActionStripActionsView: View {
     @ViewBuilder
     private func approvalCard(_ entry: InboxFolderEntry) -> some View {
         switch entry {
-        case let .approval(item) where item.recipe == nil:
+        case let .approval(item) where item.recipe == nil || isEditing(item):
             if case let .action(action) = item.record {
                 if action.tool == SaveAutomationCardModel.tool, action.isPending {
                     saveProposal(action)
@@ -581,14 +633,20 @@ struct ActionStripActionsView: View {
                 filled(Self.listItem(item))
             }
         case let .approval(item):
-            // The recipe's card, without Done/Dismiss until Task 13 wires
-            // its row actions (Approve, Reject, Edit…).
+            // The recipe's card: no Done/Dismiss (they would close the
+            // artifact, not the approval); its row's native actions act on it.
             filled(Self.listItem(item))
         case let .builtinNotice(notice):
             filled(.builtinNotice(notice))
         case .artifact, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages:
             EmptyView()
         }
+    }
+
+    /// **Edit…** was pressed on this proposal's recipe card.
+    private func isEditing(_ item: NeedsApprovalItem) -> Bool {
+        guard case let .action(action) = item.record else { return false }
+        return editingActions.contains(action.id)
     }
 
     private func filled(_ item: InboxListItem) -> some View {

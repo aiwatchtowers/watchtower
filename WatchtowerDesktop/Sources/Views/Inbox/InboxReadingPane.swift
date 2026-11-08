@@ -43,6 +43,9 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let ideaCard: (Idea) -> IdeaCard
     /// Drawn as one card of Needs approval's stack (`stackedInApprovals()`).
     private(set) var inApprovals = false
+    /// The native row actions of an artifact's rows with a `ref`
+    /// (`refHooks(_:)`, `InboxRefHooks`); the default draws none.
+    private(set) var rowHooks = ArtifactRefHooks()
     /// An automation card's ⋯ on its title row (`withArtifactMenu(_:)`).
     private(set) var artifactMenu: InboxArtifactMenuState?
 
@@ -88,12 +91,20 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     /// of its own (the stack scrolls). An automation card
     /// there is the `needs-approval` recipe's look of an approval: its Done
     /// and Dismiss would close the artifact, not the approval, so they are
-    /// left out until inbox builder B Task 13, whose ref hooks add Approve,
-    /// Reject and Edit… under the recipe's card. A reminder keeps its Done
-    /// and Snooze (today's reminder functions).
+    /// left out; the approval's own presses (Approve, Reject, Edit…; Retry
+    /// and Dismiss after a failed apply; a reminder's Done and Snooze 1h)
+    /// are its row's native actions (`refHooks(_:)`). A native reminder card
+    /// keeps its Done and Snooze (today's reminder functions).
     func stackedInApprovals() -> Self {
         var pane = self
         pane.inApprovals = true
+        return pane
+    }
+
+    /// This pane with `hooks` on an artifact's rows with a `ref`.
+    func refHooks(_ hooks: ArtifactRefHooks) -> Self {
+        var pane = self
+        pane.rowHooks = hooks
         return pane
     }
 
@@ -201,7 +212,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                 InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
                                   navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
                                   onDone: onDone, onDismiss: onDismiss, workbenches: workbenches,
-                                  showsDoneDismiss: !inApprovals)
+                                  showsDoneDismiss: !inApprovals, refHooks: rowHooks)
             }
         }
     }

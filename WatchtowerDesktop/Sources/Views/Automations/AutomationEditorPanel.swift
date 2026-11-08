@@ -647,8 +647,9 @@ struct AutomationEditorPanel: View {
         }
         let vm = vm, target = target, onSaved = onSaved
         Task {
-            await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID)
-            if vm.panel == .editor(target) { onSaved(savedID) }
+            await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID) {
+                if vm.panel == .editor(target) { onSaved(savedID) }
+            }
         }
     }
 

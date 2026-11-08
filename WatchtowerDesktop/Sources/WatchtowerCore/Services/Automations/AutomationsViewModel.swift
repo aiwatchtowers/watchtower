@@ -96,11 +96,16 @@ package final class AutomationsViewModel {
     @ObservationIgnored package var inboxFolderTree: @MainActor () -> InboxFolderTree? = { nil }
     /// The folder each new draft started from **+ New Artifact…** goes to on
     /// save, by the draft's context id (`showEditor` takes it from the New flow).
+    /// v1 limit: memory only — a draft saved after an app restart is filed
+    /// with no route (and no failure line).
     package private(set) var newDraftRoutes: [String: InboxNewArtifactRoute] = [:]
     /// The folder the editor's save press showed for a new draft (its
     /// Changed row's folder line), by context id: `draftSaved` routes it,
     /// in place of the New flow's.
     @ObservationIgnored private var pressRoutes: [String: InboxNewArtifactRoute] = [:]
+    /// The folder a template's install from **+ New Artifact…** goes to, by
+    /// `AutomationTemplatePanels.key` (`showTemplate` takes it from the New flow).
+    package private(set) var templateRoutes: [String: InboxNewArtifactRoute] = [:]
     /// A save landed but its route did not, by automation id: "Saved. The
     /// folder was not created: <reason>" with **Try Again**.
     package private(set) var routeFailures: [Int64: InboxRouteFailure] = [:]
@@ -402,8 +407,11 @@ package final class AutomationsViewModel {
         composerPrefill = nil
     }
 
-    /// Opens a template's panel; no row stays selected meanwhile.
-    package func showTemplate(name: String, scope: AutomationScopeChoice) {
+    /// Opens a template's panel; no row stays selected meanwhile. A New
+    /// flow passes its `route` (nil clears an earlier one): the copies the
+    /// install makes, or a draft its Adjust in Chat saves, are routed there.
+    package func showTemplate(name: String, scope: AutomationScopeChoice, route: InboxNewArtifactRoute? = nil) {
+        templateRoutes[AutomationTemplatePanels.key(template: name, scope: scope)] = route
         if selectedID != nil { expandedRuns = [] }
         selectedID = nil
         panel = .template(name: name, scope: scope)
@@ -420,13 +428,14 @@ package final class AutomationsViewModel {
 
     /// Opens the editor: an edit keeps its row selected, a new draft selects
     /// none (its draft row, if any, shows as selected). `composerPrefill`
-    /// goes into the editor chat's empty composer once.
-    package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
+    /// goes into the editor chat's empty composer once. `route` is the
+    /// Inbox folder of the fresh draft a New flow just started (its save
+    /// routes it there); a resumed draft is opened without one.
+    package func showEditor(
+        _ target: AutomationEditorTarget, composerPrefill: String? = nil, route: InboxNewArtifactRoute? = nil
+    ) {
         let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
-        // The New flow's folder goes with the draft it continues to.
-        if case let .new(flow) = panel, let route = flow.route, case let .newDraft(contextID, _, _) = target {
-            newDraftRoutes[contextID] = route
-        }
+        if let route, case let .newDraft(contextID, _, _) = target { newDraftRoutes[contextID] = route }
         if id != selectedID { expandedRuns = [] }
         selectedID = id
         panel = .editor(target)
@@ -508,6 +517,7 @@ package final class AutomationsViewModel {
     /// longer a row) and the panel empties. A draft never drafted by the
     /// assistant has no cached draft; its in-memory draft is the editor center's.
     package func discardDraft(contextID: String) async {
+        newDraftRoutes[contextID] = nil
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
         pressRoutes[contextID] = nil
         guard let row = draftRows.first(where: { $0.contextID == contextID }) else { return }
@@ -524,15 +534,19 @@ package final class AutomationsViewModel {
     /// 2026-10-24 §4): its row leaves the list and its cached drafts go at
     /// once, with the editor's draft; once the draft's chat engine is idle
     /// and let go of, its conversation becomes the automation's editor chat
-    /// (ask #528). The selection is the caller's: this never empties the panel.
-    package func draftSaved(contextID: String, conversationID: Int64, automationID: Int64) async {
+    /// (ask #528). The selection is the caller's: this never empties the
+    /// panel; `opened` (the caller opening the saved card) runs once the
+    /// draft is gone and its chat moved. A **+ New Artifact…** draft's route
+    /// is sent last, so it never holds the save up.
+    package func draftSaved(
+        contextID: String, conversationID: Int64, automationID: Int64, opened: @MainActor () -> Void = {}
+    ) async {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
+        let pressRoute = pressRoutes.removeValue(forKey: contextID)
         let newFlowRoute = newDraftRoutes.removeValue(forKey: contextID)
-        if let route = pressRoutes.removeValue(forKey: contextID) ?? newFlowRoute {
-            await routeSaved(automationID, route, reread: false)
-        }
+        let route = pressRoute ?? newFlowRoute
         await removeDraftCache(conversationID)
         draftRows.removeAll { $0.conversationID == conversationID }
         let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
@@ -548,6 +562,8 @@ package final class AutomationsViewModel {
         }
         // The turn waited for may have drafted again.
         await removeDraftCache(conversationID)
+        opened()
+        if let route { await routeSaved(automationID, route, reread: false) }
     }
 
     // MARK: - The editor's folder line
@@ -585,6 +601,20 @@ package final class AutomationsViewModel {
         } else {
             routeFailures[automationID] = nil
         }
+    }
+
+    /// The folder template `name`'s panel in `scope` routes to, if any.
+    package func templateRoute(name: String, scope: AutomationScopeChoice) -> InboxNewArtifactRoute? {
+        templateRoutes[AutomationTemplatePanels.key(template: name, scope: scope)]
+    }
+
+    /// A template install made `ids`: each copy is routed to the folder its
+    /// New flow started in, one call each; a failure keeps **Try Again** on
+    /// that copy's card like a save's.
+    package func templateInstalled(name: String, scope: AutomationScopeChoice, ids: [Int64]) async {
+        guard let route = templateRoutes.removeValue(forKey: AutomationTemplatePanels.key(template: name, scope: scope))
+        else { return }
+        for id in ids { await routeSaved(id, route, reread: false) }
     }
 
     /// **Try Again** on "Saved. The folder was not created": re-reads the

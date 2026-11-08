@@ -101,7 +101,7 @@ final class InboxArtifactMenuTests: XCTestCase {
             return Data(("{\"id\":\(id),\"slug\":\"\(slug)\",\"scope\":\"personal\",\"path\":\"builtin:\(slug)\","
                 + "\"name\":\"\(slug)\",\"enabled\":true,\"runnable\":true,\"needs_confirmation\":false,"
                 + "\"recipe_text\":\"\",\"builtin\":{\"id\":\"\(slug)\",\"feature_ids\":\(features),"
-                + "\"run_now\":\(id == ids.builtin)}}").utf8)
+                + "\"enabled\":true,\"run_now\":\(id == ids.builtin)}}").utf8)
         }
         runner.on("run") { _ in Data(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#.utf8) }
         runner.on("route") { _ in
@@ -190,6 +190,34 @@ final class InboxArtifactMenuTests: XCTestCase {
                        "Needs approval's automation is never moved")
     }
 
+    /// A folder list's rows prepared together (the row context menu's way
+    /// in): a built-in never opened offers Run Now, one `show` per automation.
+    func testListPrepareOffersRunNowForABuiltinNeverOpened() async {
+        let menu = model()
+        XCTAssertFalse(commands(menu.content(for: card(ids.builtin)).entries).contains("Run Now"))
+        await menu.prepare([card(ids.builtin), card(ids.builtin, id: 950), card(ids.owner)])
+        XCTAssertTrue(commands(menu.content(for: card(ids.builtin)).entries).contains("Run Now"))
+        XCTAssertEqual(runner.invocations.filter { $0.count > 1 && $0[1] == "show" }.count, 1)
+    }
+
+    /// A built-in whose features are off (`show`'s `builtin.enabled`) while
+    /// its row still reads on: the ⋯ offers Turn On, as the tab's card does.
+    func testBuiltinTurnTitleFollowsItsShowNotTheRow() async {
+        let builtin = ids.builtin
+        runner.on("show") { _ in
+            Data(("{\"id\":\(builtin),\"slug\":\"track-my-threads\",\"scope\":\"personal\","
+                + "\"path\":\"builtin:track-my-threads\",\"name\":\"track-my-threads\",\"enabled\":true,"
+                + "\"runnable\":true,\"needs_confirmation\":false,\"recipe_text\":\"\",\"builtin\":{"
+                + "\"id\":\"track-my-threads\",\"feature_ids\":[\"tracks\"],\"enabled\":false,\"run_now\":true}}").utf8)
+        }
+        let menu = model()
+        XCTAssertEqual(menu.automation(ids.builtin)?.enabled, true, "the row still reads on")
+        await menu.prepare(card(ids.builtin))
+        let titles = commands(menu.content(for: card(ids.builtin)).entries)
+        XCTAssertTrue(titles.contains("Turn On"))
+        XCTAssertFalse(titles.contains("Turn Off"))
+    }
+
     func testMoveToFolderListsTheTreeWithTheRouteChecked() async throws {
         let (owner, release) = (ids.owner, ids.release)
         try await pool.write { db in try InboxFolderFixtures.route(db, automation: owner, folder: release) }
@@ -243,6 +271,13 @@ final class InboxArtifactMenuTests: XCTestCase {
             "inbox", "folders", "route", String(ids.owner), "--folder", String(ids.release),
             "--expect-revision", "7", "--json"
         ]])
+    }
+
+    /// A Move (a caller-shown route) leaves the menu's own refusal line alone.
+    func testMoveKeepsTheMenusRefusalLine() async {
+        folderMenu.showRefusal("a folder named \"Release\" already exists here", on: ids.release)
+        await model().perform(.moveTo(folderID: ids.release), on: card(ids.owner))
+        XCTAssertEqual(folderMenu.refusal?.folderID, ids.release)
     }
 
     func testMoveConflictReloadsLikeTheMenuAndShowsOnTheHeader() async {
@@ -415,6 +450,23 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertTrue(editorOpened.isEmpty)
     }
 
+    /// Needs approval's ⋯ pressed on its menu row while the root is open:
+    /// the failure shows on that row; with Needs approval open, in its pane only.
+    func testApprovalsFailureFromTheMenuRowShowsOnTheRow() async {
+        builtinAnswer = "config locked"
+        let menu = model()
+        folderMenu.select(ids.approvals)
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertEqual(menu.approvalsError, "config locked")
+        XCTAssertNil(folderMenu.content.refusal, "the open pane shows it")
+
+        folderMenu.select(ids.root)
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertEqual(menu.approvalsError, "config locked")
+        XCTAssertEqual(folderMenu.content.refusal,
+                       InboxFolderMenuRefusal(folderID: ids.approvals, message: "config locked"))
+    }
+
     // MARK: - + New Artifact…
 
     /// The view model wired as the app wires it: the route through the
@@ -427,8 +479,11 @@ final class InboxArtifactMenuTests: XCTestCase {
         }
     }
 
+    /// A fresh draft started from the New panel on screen (its route, as
+    /// `AutomationsView.continueNew` passes it), then saved.
     private func saveNewDraft(contextID: String, as automationID: Int64) async {
-        vm.showEditor(.newDraft(contextID: contextID, scope: .personal, startText: nil))
+        let route: InboxNewArtifactRoute? = if case let .new(flow) = vm.panel { flow.route } else { nil }
+        vm.showEditor(.newDraft(contextID: contextID, scope: .personal, startText: nil), route: route)
         await vm.draftSaved(contextID: contextID, conversationID: 77, automationID: automationID)
     }
 
@@ -443,6 +498,23 @@ final class InboxArtifactMenuTests: XCTestCase {
             "--expect-revision", "7", "--json"
         ]])
         XCTAssertNil(vm.routeFailures[ids.owner])
+    }
+
+    /// The route goes last: the draft row left, the chat moved and the
+    /// card opened before the route call is sent.
+    func testNewArtifactRouteIsSentAfterTheCardOpened() async {
+        wireRoute()
+        vm.showNew(AutomationNewFlow(route: InboxNewArtifactRoute(folderID: ids.release, title: "Release")))
+        vm.showEditor(.newDraft(contextID: "draft-e", scope: .personal, startText: nil),
+                      route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        var routeCallsWhenOpened: Int?
+        await vm.draftSaved(contextID: "draft-e", conversationID: 79, automationID: ids.owner) {
+            routeCallsWhenOpened = self.runner.invocations.count
+            self.vm.showCard(self.ids.owner)
+        }
+        XCTAssertEqual(routeCallsWhenOpened, 0, "the card opened before the route call")
+        XCTAssertEqual(runner.invocations.filter { $0.contains("route") }.count, 1)
+        XCTAssertEqual(vm.panel, .card(ids.owner))
     }
 
     func testNewArtifactFromRootSendsNoRoute() async {
@@ -460,6 +532,58 @@ final class InboxArtifactMenuTests: XCTestCase {
         vm.select(nil) // the New flow left before a draft started
         await saveNewDraft(contextID: "draft-c", as: ids.owner)
         XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    /// + New Artifact… from Release, then an older draft row opened
+    /// instead of a fresh start: its save sends no route.
+    func testResumedDraftFromTheNewPanelSendsNoRoute() async {
+        wireRoute()
+        vm.showNew(AutomationNewFlow(route: InboxNewArtifactRoute(folderID: ids.release, title: "Release")))
+        vm.showEditor(.newDraft(contextID: "older-draft", scope: .personal, startText: nil))
+        await vm.draftSaved(contextID: "older-draft", conversationID: 78, automationID: ids.owner)
+        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertTrue(vm.newDraftRoutes.isEmpty)
+    }
+
+    /// A template picked in a New flow from Release: every copy its install
+    /// makes is routed there, one call each.
+    func testTemplateFromAFolderRoutesEveryInstalledCopy() async {
+        wireRoute()
+        vm.showTemplate(name: "jira-state-report", scope: .personal,
+                        route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner, ids.builtin])
+        XCTAssertEqual(runner.invocations.map { $0.prefix(6) }, [
+            ["inbox", "folders", "route", String(ids.owner), "--folder", String(ids.release)],
+            ["inbox", "folders", "route", String(ids.builtin), "--folder", String(ids.release)]
+        ])
+        XCTAssertTrue(vm.routeFailures.isEmpty)
+        XCTAssertNil(vm.templateRoute(name: "jira-state-report", scope: .personal), "routed once")
+    }
+
+    func testTemplateFromTheRootSendsNoRoute() async {
+        wireRoute()
+        vm.showTemplate(name: "jira-state-report", scope: .personal)
+        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner])
+        XCTAssertTrue(runner.invocations.isEmpty)
+    }
+
+    /// A template's failed route shows the save's line and Try Again on the copy.
+    func testTemplateRouteFailureShowsTryAgain() async {
+        wireRoute()
+        runner.on("route") { _ in throw Self.failure("the Inbox menu changed (revision 8, expected 7)") }
+        vm.showTemplate(name: "jira-state-report", scope: .personal,
+                        route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        await vm.templateInstalled(name: "jira-state-report", scope: .personal, ids: [ids.owner])
+        XCTAssertEqual(vm.routeFailures[ids.owner]?.reason, InboxFolderMenuModel.routeMenuChanged)
+    }
+
+    /// A New flow's draft discarded: its folder goes with it.
+    func testDiscardedNewArtifactDraftDropsItsRoute() async {
+        vm.showEditor(.newDraft(contextID: "draft-f", scope: .personal, startText: nil),
+                      route: InboxNewArtifactRoute(folderID: ids.release, title: "Release"))
+        XCTAssertEqual(vm.newDraftRoutes.keys.sorted(), ["draft-f"])
+        await vm.discardDraft(contextID: "draft-f")
+        XCTAssertTrue(vm.newDraftRoutes.isEmpty)
     }
 
     func testNewArtifactRouteConflictShowsTryAgain() async {

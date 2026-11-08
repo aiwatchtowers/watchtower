@@ -9,8 +9,10 @@ extension AppState {
     func makeInboxArtifactMenu(strip: ActionStripViewModel) -> InboxArtifactMenuModel {
         InboxArtifactMenuModel(folderMenu: strip.folderMenu, hooks: .init(
             automations: { [weak self] in self?.automationsViewModel },
+            // Nil (landed) stays nil: only a gone app state is "not ready".
             setBuiltinEnabled: { [weak self] ids, on in
-                await self?.setBuiltinEnabled(ids, on: on) ?? Self.inboxMenuNotReady
+                guard let self else { return Self.inboxMenuNotReady }
+                return await setBuiltinEnabled(ids, on: on)
             },
             openEditor: { [weak self] id, step in self?.openAutomationEditor(.existing(id), step: step) },
             openRunHistory: { [weak self] id in self?.openAutomationRun(automationID: id, runID: nil) },
@@ -19,10 +21,30 @@ extension AppState {
     }
 
     /// The Automations view model's way to the Inbox menu: the route a save
-    /// sets, and the tree the editor's folder line is resolved against.
-    func wireInboxFolderRoutes(_ vm: AutomationsViewModel) {
-        vm.routeSavedAutomation = { [weak self] in await self?.routeSavedAutomation($0, to: $1, reread: $2) ?? Self.inboxMenuNotReady }
+    /// sets (its nil = landed stays nil — only a gone app state is "not
+    /// ready"), and the tree the editor's folder line is resolved against.
+    func wireInboxRoute(_ vm: AutomationsViewModel) {
+        vm.routeSavedAutomation = { [weak self] automationID, destination, reread in
+            guard let self else { return Self.inboxMenuNotReady }
+            return await routeSavedAutomation(automationID, to: destination, reread: reread)
+        }
         vm.inboxFolderTree = { [weak self] in self?.actionStripViewModel?.folderMenu.tree }
+    }
+
+    /// The Automations tab's template panels: an install re-reads the list
+    /// and the first copy's card, and its copies go to the Inbox folder of
+    /// the New flow it started from (**+ New Artifact…**).
+    func makeTemplatePanels(vm: AutomationsViewModel, cli: AutomationsCLI) -> AutomationTemplatePanels {
+        AutomationTemplatePanels { [weak vm] template, scope in
+            AutomationTemplatePanelModel(
+                template: template, scope: scope, cli: cli,
+                installed: { ids in await vm?.templateInstalled(name: template.name, scope: scope, ids: ids) },
+                refresh: { id in
+                    vm?.refresh()
+                    if let id { await vm?.loadDetail(id) }
+                }
+            )
+        }
     }
 
     /// A saved automation's route to the Inbox folder it was made from

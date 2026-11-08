@@ -8,8 +8,8 @@ import WatchtowerCore
 /// folder list, Needs approval, Waiting for me, the native row actions, the
 /// ⋯ menus and the editor's folder line, drawn on plain values before any
 /// wiring. Compared with the mockups `docs/design/mockups/inbox-builder/b-01
-/// … b-04`. Rows with a `ref` are drawn as `InboxRowActionsView` beside a
-/// plain row stand-in (Task 13 draws them through A's `ArtifactView`); the
+/// … b-04`. Rows with a `ref` are list rows drawn by A's `ArtifactView`
+/// with the Desktop's native actions through `InboxRefHooks` (Task 13); the
 /// Changed row is a stand-in over A's row model (Task 15 re-renders it from
 /// `AutomationSaveConfirmation`). Sample data only.
 @MainActor
@@ -116,25 +116,40 @@ enum InboxBuilderBShotFixtures {
 
     // MARK: - Rows with a ref
 
-    /// A row of a recipe's list block (A's `ArtifactListRowView` shape) with
-    /// the Desktop's native actions at its trailing edge.
+    /// A row of a recipe's list block with a `ref`; its native actions come
+    /// through `InboxRefHooks` like the Inbox's.
     private struct StandInRow {
         let title: String
         var subtitle: String?
         var badge: String?
-        var tone: Color?
+        var tone: ArtifactTone?
         let actions: InboxRowActionsContent
+
+        /// The ref of the kind the native actions are for.
+        func ref(_ id: Int64) -> ArtifactRef {
+            let kind: ArtifactRefKind = switch actions.kind {
+            case .inboxItem: .inboxItem
+            case .track: .track
+            case .idea: .idea
+            case .reminder: .reminder
+            case .action: .action
+            }
+            return ArtifactRef(kind: kind, id: id)
+        }
     }
 
     private static func jiraRow() -> StandInRow {
         StandInRow(title: "Create a Jira issue",
                    subtitle: "ACME · “Checklist link broken on the release page” · from your :ticket: reaction",
-                   actions: InboxRowActionsContent(kind: .action(failed: false)))
+                   actions: InboxRowActionsContent(kind: .action(
+                       summary: "Project: ACME · Task · Summary: Checklist link broken",
+                       buttons: [.approve, .reject, .edit])))
     }
 
     private static func linearFailedRow() -> StandInRow {
-        StandInRow(title: "Create a Linear issue", subtitle: "failed: the team was archived", tone: Tone.error,
-                   actions: InboxRowActionsContent(kind: .action(failed: true)))
+        StandInRow(title: "Create a Linear issue", subtitle: "failed: the team was archived", tone: .danger,
+                   actions: InboxRowActionsContent(kind: .action(
+                       summary: "Team: ACME · Title: Release notes", buttons: [.retry])))
     }
 
     private static func reminderRow() -> StandInRow {
@@ -145,7 +160,7 @@ enum InboxBuilderBShotFixtures {
     private static func ping(
         _ who: String, _ place: String, _ text: String, age: String, late: Bool, _ actions: InboxRowActionsContent
     ) -> StandInRow {
-        StandInRow(title: "\(who) in \(place)", subtitle: text, badge: age, tone: late ? Tone.warning : nil,
+        StandInRow(title: "\(who) in \(place)", subtitle: text, badge: age, tone: late ? .warning : nil,
                    actions: actions)
     }
 
@@ -181,14 +196,14 @@ enum InboxBuilderBShotFixtures {
         ]
         let other: [(String, String, [StandInRow])] = [
             ("inbox-b-rows-track", "Release watch", [
-                StandInRow(title: "Release acme 2.0 checklist", subtitle: "2 new replies", tone: .accentColor,
+                StandInRow(title: "Release acme 2.0 checklist", subtitle: "2 new replies", tone: .accent,
                            actions: InboxRowActionsContent(kind: .track(custom: false, linkedTargetID: nil))),
                 StandInRow(title: "Tell me when finance decides on the acme refund", subtitle: "1 new reply",
-                           tone: .accentColor, actions: InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: 12)))
+                           tone: .accent, actions: InboxRowActionsContent(kind: .track(custom: true, linkedTargetID: 12)))
             ]),
             ("inbox-b-rows-idea", "Release ideas", [
                 StandInRow(title: "Move the release checklist into the repo", subtitle: "Idea · proposed",
-                           tone: .accentColor, actions: InboxRowActionsContent(kind: .idea(
+                           tone: .accent, actions: InboxRowActionsContent(kind: .idea(
                                kind: .idea, status: .proposed, awaitsVerdict: true))),
                 StandInRow(title: "Ship release notes as a page", subtitle: "Idea · active",
                            actions: InboxRowActionsContent(kind: .idea(kind: .idea, status: .active,
@@ -215,56 +230,33 @@ enum InboxBuilderBShotFixtures {
             }
         } + [
             DesignShot(name: "inbox-b-waiting-not-run", size: NSSize(width: 980, height: 360)) { waitingNotRun() },
-            DesignShot(name: "inbox-b-waiting-empty", size: NSSize(width: 660, height: 0)) { waitingEmpty() }
+            DesignShot(name: "inbox-b-waiting-empty", size: NSSize(width: 660, height: 300)) { waitingEmpty() }
         ]
     }
 
     private static func standInCard(title: String?, caption: String?, rows: [StandInRow]) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
+        let listRows = rows.enumerated().map { index, row in
+            ArtifactListRow(title: row.title, subtitle: row.subtitle,
+                            badge: row.badge.map { ArtifactBadge(text: $0, tone: row.tone ?? .neutral) },
+                            tone: row.tone, ref: row.ref(Int64(index + 1)))
+        }
+        let byRef = Dictionary(uniqueKeysWithValues: rows.enumerated().map { index, row in
+            (InboxRefHooks.inboxRef(row.ref(Int64(index + 1))), row.actions)
+        })
+        let hooks = InboxRefHooks.make(isShown: { byRef[$0] != nil }, content: { ref, _ in byRef[ref] })
+        return VStack(alignment: .leading, spacing: Spacing.small) {
             if let title {
                 Text(title).font(.title3.weight(.semibold))
             }
             if let caption {
                 Text(caption).font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                standInRow(row)
-            }
+            ArtifactView(document: ArtifactDocument(blocks: [.list(ArtifactBlock.List(rows: listRows))]), mode: .inbox)
+                .environment(\.artifactEnvironment, ArtifactEnvironment(refHooks: hooks))
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
         .card()
-    }
-
-    private static func standInRow(_ row: StandInRow) -> some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(alignment: .center, spacing: Spacing.regular) {
-                Circle()
-                    .fill(row.tone ?? .clear)
-                    .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                        Text(row.title).font(.callout.weight(.medium))
-                        if let badge = row.badge {
-                            Chip(text: badge, color: row.tone ?? .secondary)
-                        }
-                    }
-                    if let subtitle = row.subtitle {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                Spacer(minLength: Spacing.regular)
-                InboxRowActionsView(content: row.actions)
-            }
-            .opacity(row.actions.isBusy ? 0.6 : 1)
-            InboxRowActionsFooter(content: row.actions)
-                .padding(.leading, IconSize.stateDot + Spacing.regular)
-        }
-        .controlSize(.small)
-        .kitRow(isSelected: false)
     }
 
     /// Before Waiting for me's first run: the root lists the Messages legacy
@@ -296,21 +288,24 @@ enum InboxBuilderBShotFixtures {
         .detailBackground())
     }
 
-    /// Waiting for me with nothing open: its list block's own empty line.
+    /// Waiting for me with nothing open: its list block's own empty line,
+    /// in the wired reading pane with the built-in's ⋯ on its title row.
     private static func waitingEmpty() -> AnyView {
         let json = #"{"v":1,"blocks":[{"type":"list","rows":[],"empty":"Nobody is waiting on you"}]}"#
-        guard case let .document(document) = ArtifactDocument.decode(json) else {
+        guard case .document = ArtifactDocument.decode(json) else {
             XCTFail("the empty Waiting for me sample does not decode")
             return AnyView(Text("fixture failed"))
         }
-        return AnyView(VStack(alignment: .leading, spacing: Spacing.medium) {
-            InboxArtifactHeader(title: "Waiting for me", source: "Updated 6 min ago · after every sync",
-                                menu: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree))
-            ArtifactView(document: document, mode: .inbox)
-        }
-        .padding(Spacing.page)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .detailBackground())
+        let now = AutomationDates.parse("2026-11-06T12:00:00Z") ?? Date()
+        let card = AutomationOutputCard(
+            id: 21, automationID: 9, automationName: "Waiting for me", runID: 21, title: "Waiting for me",
+            body: "", priority: "normal", createdAt: now.addingTimeInterval(-360), blocksJSON: json,
+            outputKey: "waiting")
+        let menu = InboxArtifactMenuState(entries: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree).entries)
+        return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+            .withArtifactMenu(menu)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .detailBackground())
     }
 
     // MARK: - The ⋯ menus

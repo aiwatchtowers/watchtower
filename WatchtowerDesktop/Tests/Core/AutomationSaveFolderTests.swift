@@ -135,8 +135,10 @@ final class AutomationSaveFolderTests: XCTestCase {
     }
 
     func testChangedRowShowsExistingFolderLine() throws {
-        vm.showNew(AutomationNewFlow(route: InboxNewArtifactRoute(folderID: release, title: "Release")))
-        vm.showEditor(.newDraft(contextID: "draft-a", scope: .personal, startText: nil))
+        // A fresh draft from the New flow, as `AutomationsView.continueNew` opens it.
+        let flowRoute = InboxNewArtifactRoute(folderID: release, title: "Release")
+        vm.showNew(AutomationNewFlow(route: flowRoute))
+        vm.showEditor(.newDraft(contextID: "draft-a", scope: .personal, startText: nil), route: flowRoute)
         let placement = try XCTUnwrap(vm.editorPlacement(suggestion: nil, draftContextID: "draft-a"))
         XCTAssertEqual(placement.placementText, "Folder: Release")
         XCTAssertNil(vm.editorPlacement(suggestion: nil, draftContextID: nil), "an edit with no suggestion has none")
@@ -146,8 +148,10 @@ final class AutomationSaveFolderTests: XCTestCase {
     }
 
     func testSuggestionOverridesTheNewFlowFolder() throws {
-        vm.showNew(AutomationNewFlow(route: InboxNewArtifactRoute(folderID: release, title: "Release")))
-        vm.showEditor(.newDraft(contextID: "draft-a", scope: .personal, startText: nil))
+        // A fresh draft from the New flow, as `AutomationsView.continueNew` opens it.
+        let flowRoute = InboxNewArtifactRoute(folderID: release, title: "Release")
+        vm.showNew(AutomationNewFlow(route: flowRoute))
+        vm.showEditor(.newDraft(contextID: "draft-a", scope: .personal, startText: nil), route: flowRoute)
         let placement = vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "acme"),
                                            draftContextID: "draft-a")
         XCTAssertEqual(placement, InboxNewArtifactRoute(folderID: acme, title: "Acme"),
