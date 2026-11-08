@@ -67,7 +67,7 @@ struct SpecReviewWrapUpView: View {
     private func markGlyph(_ mark: SpecReviewMark?) -> some View {
         switch mark?.state {
         case .ok:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Fine as is")
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Skip")
         case .comment where mark?.body.isEmpty ?? true:
             Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.secondary).accessibilityLabel("Fix")
         case .comment:

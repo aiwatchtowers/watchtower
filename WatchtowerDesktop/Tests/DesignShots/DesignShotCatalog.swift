@@ -331,11 +331,11 @@ enum DesignShotCatalog {
                 ReviewShotFixtures.deepMeaning()
             },
             // Spec review in the review ask drawer (spec 2026-10-25 §7).
-            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1040)) {
+            DesignShot(name: "spec-review-meaning", size: NSSize(width: 760, height: 1200)) {
                 SpecReviewShotFixtures.screen(.meaning)
             },
-            // A narrow drawer: the four mark buttons (Fix / Fine as is /
-            // Comment / Not useful) wrap to two rows inside the card. Below about 480 the Chapters
+            // A narrow drawer: the four mark buttons (Fix / Skip /
+            // Discuss / Not useful) wrap to two rows inside the card. Below about 480 the Chapters
             // screen's two columns overflow on their own.
             DesignShot(name: "spec-review-chapters-narrow", size: NSSize(width: 480, height: 1100)) {
                 SpecReviewShotFixtures.screen(.chapters)
@@ -362,6 +362,47 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "spec-review-strips", size: NSSize(width: 760, height: 150)) {
                 SpecReviewShotFixtures.strips()
+            },
+            // Spec review: summary, Discuss threads, per-kind buttons and the
+            // loop's new end lines (spec 2026-11-08), on fixtures.
+            DesignShot(name: "spec-review-summary", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.summary()
+            },
+            DesignShot(name: "spec-review-thread-open", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("open")
+            },
+            DesignShot(name: "spec-review-thread-replying", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("replying")
+            },
+            DesignShot(name: "spec-review-thread-question-pending", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("pending")
+            },
+            DesignShot(name: "spec-review-thread-question-answered", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("answered")
+            },
+            DesignShot(name: "spec-review-thread-question-expired", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("expired")
+            },
+            DesignShot(name: "spec-review-thread-finding-proposed", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("proposed")
+            },
+            DesignShot(name: "spec-review-thread-finding-refused", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("refused")
+            },
+            DesignShot(name: "spec-review-thread-folded", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.threadCard("folded")
+            },
+            DesignShot(name: "spec-review-buttons-findings", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.findingKinds()
+            },
+            DesignShot(name: "spec-review-buttons-loop", size: NSSize(width: 620, height: 0)) {
+                SpecReviewShotFixtures.loopKinds()
+            },
+            DesignShot(name: "spec-review-loop-stalled", size: NSSize(width: 760, height: 1100)) {
+                SpecReviewShotFixtures.loopEnded("loop-owner-items", end: "stalled", round: 4)
+            },
+            DesignShot(name: "spec-review-loop-cap", size: NSSize(width: 760, height: 420)) {
+                SpecReviewShotFixtures.loopEnded("loop-cap", end: "cap", round: 8, ownerItems: false)
             },
             // A question raised from the terminal: the reason as a caption,
             // the question once, on its card.

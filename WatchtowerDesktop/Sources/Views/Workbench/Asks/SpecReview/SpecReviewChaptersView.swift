@@ -83,7 +83,9 @@ struct SpecReviewChaptersView: View {
                     if !chapter.checks.isEmpty {
                         SectionHeader(title: "Checklist", systemImage: "checklist", count: chapter.checks.count)
                             .padding(.top, Spacing.small)
-                        ForEach(SpecReviewPresentation.sortedBySeverity(chapter.checks, \.severity), id: \.key) { checkRow($0) }
+                        ForEach(SpecReviewPresentation.sortedBySeverity(chapter.checks, \.severity), id: \.key) {
+                            SpecReviewCheckCard(model: model, check: $0)
+                        }
                     }
                     if !model.isLoop {
                         HStack {
@@ -101,27 +103,6 @@ struct SpecReviewChaptersView: View {
         } else {
             Text("No chapters").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-    }
-
-    /// One lens question: the answer, the reviewer's note, and for a concern
-    /// the marks a finding has.
-    private func checkRow(_ check: SpecReviewResult.Check) -> some View {
-        let badge = SpecReviewPresentation.checkBadge(answer: check.answer)
-        return VStack(alignment: .leading, spacing: Spacing.small) {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                SpecReviewChips(severity: check.severity, kind: badge)
-                Text(check.question).font(.callout).fixedSize(horizontal: false, vertical: true)
-            }
-            if !check.note.isEmpty {
-                Text(check.note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            if check.answer == "concern" {
-                SpecReviewMarkControls(model: model, key: check.key, commentOnly: model.isLoop)
-            }
-        }
-        .padding(Spacing.regular)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
     }
 
     private func viewedButton(_ chapter: SpecReviewChapterVM) -> some View {
@@ -159,5 +140,43 @@ private struct SpecReviewExcerpt: View {
     private var firstLine: String {
         let line = text.split(separator: "\n").dropFirst().first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         return line.map { "Section text — \($0)" } ?? "Section text"
+    }
+}
+
+/// One lens question: the answer, the reviewer's note, and the buttons its
+/// kind offers (spec 2026-11-08 §2) — a concern's are a finding's, an
+/// answered check's **Discuss** and **Checked**; one the reviewer found not
+/// applicable has none.
+struct SpecReviewCheckCard: View {
+    let model: SpecReviewModel
+    let check: SpecReviewResult.Check
+    @State private var thread = SpecReviewThreadVisibility.auto
+    @Environment(\.specReviewThreads) private var threads
+
+    var body: some View {
+        let badge = SpecReviewPresentation.checkBadge(answer: check.answer)
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                SpecReviewChips(severity: check.severity, kind: badge)
+                Text(check.question).font(.callout).fixedSize(horizontal: false, vertical: true)
+            }
+            if !check.note.isEmpty {
+                Text(check.note).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            // A finished loop marks its concerns only (Fix and Discuss).
+            if let kind = SpecReviewPresentation.checkCardKind(answer: check.answer), !model.isLoop || kind == .actionable {
+                SpecReviewMarkControls(
+                    model: model,
+                    key: check.key,
+                    kind: kind,
+                    commentOnly: model.isLoop,
+                    onDiscuss: threads == nil ? nil : { thread = .shown }
+                )
+                SpecReviewCardThreadSection(key: check.key, visibility: $thread, placeholder: "Ask about this check")
+            }
+        }
+        .padding(Spacing.regular)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
     }
 }
