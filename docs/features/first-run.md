@@ -307,6 +307,16 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   `+` and ⋯ → **Find Ideas in Past Messages…** replace them. With both
   features off no filter lists the placeholder (`InboxFeedSnapshot.briefingOn`
   / `dayPlanOn`, from the disabled feature ids passed to `InboxFeedQueries.read`).
+- **Inbox builder B (2026-11-08):** the filters are gone ([inbox-folders.md](inbox-folders.md));
+  `InboxFilter` and its `emptyCopyKey` with them, and the `inboxAutomations` key.
+  The table is keyed by a `SidebarDestination.rawValue`, an Inbox folder's
+  key (`InboxFolderListContent.emptyCopyKey`: root → `inbox`, "Your Inbox is
+  empty" with **New Artifact…**; an owner folder → `inboxFolder`, "Nothing in
+  {folder} yet"; Needs approval → `inboxApprovals`) or a root legacy list's
+  `InboxLegacyList.emptyCopyKey` (Track my threads → `tracks`, Idea finder →
+  `ideas`, Messages → `inboxMessages`). The day half's first-run copy is the
+  `briefings` row; the day card has no **Done** (ask #607), so
+  `inbox.dayCardDone` is gone. The C1 bullet above records C1 as shipped.
 - **Views.** `FeatureEmptyState` (`WatchtowerDesktop/Sources/Views/Components/FeatureEmptyState.swift`) is
   values and closures only (ViewInspector-driven, no `@Environment(AppState)`);
   `TabEmptyState` (`WatchtowerDesktop/Sources/Views/Components/TabEmptyState.swift`) binds it to one tab
@@ -355,6 +365,8 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   cheat sheet is inline (spec row updated). Since C1 T11b the All filter
   lists today's day card once the owner is known, so the cheat sheet then
   sits behind `?`; with no owner All stays empty, with OWNER-02 and the sheet.
+  Since inbox builder B the root lists today's Morning brief entry once the
+  owner is known, and the cheat sheet is behind `?` in the Inbox header.
 
 ## Fresh-install first cycle (Go daemon, P4)
 
@@ -691,7 +703,9 @@ log.") and never reads as empty.
   `LinksZoneView.swift`. Since C1 (2026-10-22) Briefing and Day plan are
   allowed while their feature is on (`.inbox` has no gate), and open today's
   day card (`InboxRoute.forFeature`); Getting ready's lines for the briefing,
-  day plan, tracks and ideas open the Inbox on the matching filter.
+  day plan, tracks and ideas open the Inbox on the matching filter (since
+  inbox builder B: today's Morning brief, Track my threads or Idea finder in
+  the root, `InboxRoute.forFeature`).
 - **Numbers** — `HomeNumbersQueries.read` (`HomeNumbersQueries.swift:31`), a
   read of its own in `HomeCenter` (own observation task and token, so a slow
   count never blocks the feed), one independent group per source; a throw marks
