@@ -140,17 +140,26 @@ func writeChapterHead(s *strings.Builder, ch reviewmap.Chapter) {
 
 // ParseChapters validates a review.chapters reply against its batch.
 func ParseChapters(raw string, b Batch) (map[string]ChapterDesc, error) {
-	js, err := extractObject(raw)
-	if err != nil {
-		return nil, fmt.Errorf("chapters reply: %w: %w", ErrParse, err)
-	}
 	var r struct {
 		Chapters []ChapterDesc `json:"chapters"`
 	}
-	if err := json.Unmarshal([]byte(js), &r); err != nil {
-		return nil, fmt.Errorf("chapters reply: %w: %w", ErrParse, err)
+	if err := decodeReply(raw, "chapters", &r); err != nil {
+		return nil, err
 	}
 	return keepChapters(r.Chapters, b)
+}
+
+// decodeReply decodes the JSON object of a model reply into v; a failure
+// wraps ErrParse and names the reply.
+func decodeReply(raw, label string, v any) error {
+	js, err := extractObject(raw)
+	if err == nil {
+		err = json.Unmarshal([]byte(js), v)
+	}
+	if err != nil {
+		return fmt.Errorf("%s reply: %w: %w", label, ErrParse, err)
+	}
+	return nil
 }
 
 // keepChapters keeps, entry by entry, the descriptions of the batch's own

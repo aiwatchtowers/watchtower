@@ -232,3 +232,10 @@ func (g *recGen) Generate(ctx context.Context, system, user, _ string) (string, 
 	g.source, _ = digest.SourceFromContext(ctx)
 	return g.out, &digest.Usage{}, "", nil
 }
+
+func TestParseOverview_EmptySummaryNamesTheOverviewReply(t *testing.T) {
+	_, _, err := ParseOverview(`{"summary":" ","chapters":[{"key":"dir:server","what":"w"}]}`, okBatch(t), okIntent())
+	require.ErrorIs(t, err, ErrParse)
+	assert.Contains(t, err.Error(), "overview reply")
+	assert.NotContains(t, err.Error(), "summary reply")
+}

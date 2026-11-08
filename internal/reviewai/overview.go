@@ -194,18 +194,14 @@ func extractObject(raw string) (string, error) {
 // the batch's chapters fails with ErrParse. NotCovered is always empty:
 // the one call sees every chapter.
 func ParseOverview(raw string, b Batch, intent []IntentItem) (map[string]ChapterDesc, Summary, error) {
-	js, err := extractObject(raw)
-	if err != nil {
-		return nil, Summary{}, fmt.Errorf("overview reply: %w: %w", ErrParse, err)
-	}
 	var r struct {
 		Summary
 		Chapters []ChapterDesc `json:"chapters"`
 	}
-	if err := json.Unmarshal([]byte(js), &r); err != nil {
-		return nil, Summary{}, fmt.Errorf("overview reply: %w: %w", ErrParse, err)
+	if err := decodeReply(raw, "overview", &r); err != nil {
+		return nil, Summary{}, err
 	}
-	sum, err := checkSummary(r.Summary, intent, b.changedPaths())
+	sum, err := checkSummary("overview", r.Summary, intent, b.changedPaths())
 	if err != nil {
 		return nil, Summary{}, err
 	}

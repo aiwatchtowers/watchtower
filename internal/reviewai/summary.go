@@ -2,7 +2,6 @@ package reviewai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -86,19 +85,16 @@ func BuildSummaryUser(in SummaryInput) string {
 // keys that are not a not-described chapter of the input are dropped entry
 // by entry; malformed JSON or an empty summary fails with ErrParse.
 func ParseSummary(raw string, in SummaryInput) (Summary, error) {
-	js, err := extractObject(raw)
-	if err != nil {
-		return Summary{}, fmt.Errorf("summary reply: %w: %w", ErrParse, err)
-	}
 	var sum Summary
-	if err := json.Unmarshal([]byte(js), &sum); err != nil {
-		return Summary{}, fmt.Errorf("summary reply: %w: %w", ErrParse, err)
+	if err := decodeReply(raw, "summary", &sum); err != nil {
+		return Summary{}, err
 	}
 	paths := map[string]bool{}
 	for _, f := range in.Map.Files {
 		paths[f.Path] = true
 	}
-	if sum, err = checkSummary(sum, in.Intent, paths); err != nil {
+	sum, err := checkSummary("summary", sum, in.Intent, paths)
+	if err != nil {
 		return Summary{}, err
 	}
 	notDescribed := in.notDescribed()
@@ -116,10 +112,10 @@ func ParseSummary(raw string, in SummaryInput) (Summary, error) {
 // checkSummary clips the summary (empty fails) and validates the coverage
 // and out_of_scope against the intent and the known paths. NotCovered is
 // left to the caller.
-func checkSummary(sum Summary, intent []IntentItem, paths map[string]bool) (Summary, error) {
+func checkSummary(label string, sum Summary, intent []IntentItem, paths map[string]bool) (Summary, error) {
 	sum.Summary = clipRunes(strings.TrimSpace(sum.Summary), maxSummaryRunes)
 	if sum.Summary == "" {
-		return Summary{}, fmt.Errorf("summary reply: %w: empty summary", ErrParse)
+		return Summary{}, fmt.Errorf("%s reply: %w: empty summary", label, ErrParse)
 	}
 	sum.Coverage = parseCoverage(sum.Coverage, intent, paths)
 	sum.OutOfScope = keepKnown(sum.OutOfScope, paths)
