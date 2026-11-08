@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -616,4 +617,40 @@ func TestFILES01_ReviewOverviewNeverLogsContent(t *testing.T) {
 	assert.NotEmpty(t, sink.String(), "the failures are logged")
 	assert.Contains(t, stderr.String(), logcanary.Text("provider"))
 	assert.Contains(t, re.Detail, logcanary.Text("summary-provider"))
+}
+
+// A summary that fails after the batches (the multi-batch path): the
+// failed summary event is emitted, the run answers the summary's error,
+// nothing is assembled, the parts stay, and a summary-only run then makes
+// the overview from them without describing anything again (spec frame 2c).
+func TestRun_MultiBatchSummaryFailureKeepsPartsAndEmitsFailed(t *testing.T) {
+	var d reviewdiff.Diff
+	for i := range 12 {
+		d.Files = append(d.Files, fileOf(fmt.Sprintf("dir%02d/f.go", i), 300))
+	}
+	m := dirsMap(d)
+	require.Greater(t, len(Pack(m, d, nil)), 1, "the multi-batch path")
+	store := newMemStore()
+	var events []Event
+	var mu sync.Mutex
+	g := &keyGen{sumErr: errors.New("HTTP 529")}
+	_, err := fastPipeline(g).Run(context.Background(), store, m, d, nil, nil, RunOptions{Stderr: io.Discard,
+		Emit: func(e Event) { mu.Lock(); events = append(events, e); mu.Unlock() }})
+	var re *RunError
+	require.ErrorAs(t, err, &re)
+	assert.Contains(t, re.Text, "the summary")
+	last := events[len(events)-1]
+	assert.Equal(t, "summary", last.Event)
+	assert.Equal(t, StateFailed, last.State)
+	require.NotNil(t, last.Error)
+	assert.Equal(t, re.Text, last.Error.Text)
+	assert.Empty(t, store.overviews, "nothing assembled")
+	assert.NotZero(t, store.partPuts, "the described chapters are kept")
+
+	g2 := &keyGen{}
+	o, err := fastPipeline(g2).Run(context.Background(), store, m, d, nil, nil, RunOptions{SummaryOnly: true, Stderr: io.Discard})
+	require.NoError(t, err)
+	assert.Equal(t, "the summary", o.Summary)
+	assert.Equal(t, 1, g2.calls, "only the summary call")
+	assert.Len(t, store.overviews, 1)
 }
