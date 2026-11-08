@@ -9,8 +9,10 @@ extension AppState {
     func makeInboxArtifactMenu(strip: ActionStripViewModel) -> InboxArtifactMenuModel {
         InboxArtifactMenuModel(folderMenu: strip.folderMenu, hooks: .init(
             automations: { [weak self] in self?.automationsViewModel },
+            // Nil (landed) stays nil: only a gone app state is "not ready".
             setBuiltinEnabled: { [weak self] ids, on in
-                await self?.setBuiltinEnabled(ids, on: on) ?? Self.inboxMenuNotReady
+                guard let self else { return Self.inboxMenuNotReady }
+                return await setBuiltinEnabled(ids, on: on)
             },
             openEditor: { [weak self] id, step in self?.openAutomationEditor(.existing(id), step: step) },
             openRunHistory: { [weak self] id in self?.openAutomationRun(automationID: id, runID: nil) },
