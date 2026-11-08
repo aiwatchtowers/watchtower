@@ -461,6 +461,11 @@ package final class InboxFolderMenuModel {
         refusal = InboxFolderMenuRefusal(folderID: folderID, message: message)
     }
 
+    /// That row's press landed since: its old reason goes (another row's stays).
+    package func clearRefusal(on folderID: Int64) {
+        if refusal?.folderID == folderID { refusal = nil }
+    }
+
     nonisolated package static let routeBusy = "another change to the Inbox menu is running — try again"
     nonisolated package static let routeNotRead = "the Inbox menu is not read yet — try again"
     nonisolated package static let routeMenuChanged = "the Inbox menu changed — it was reloaded, try again"

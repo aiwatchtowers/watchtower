@@ -465,6 +465,21 @@ final class InboxArtifactMenuTests: XCTestCase {
         XCTAssertEqual(menu.approvalsError, "config locked")
         XCTAssertEqual(folderMenu.content.refusal,
                        InboxFolderMenuRefusal(folderID: ids.approvals, message: "config locked"))
+
+        builtinAnswer = nil
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertNil(menu.approvalsError)
+        XCTAssertNil(folderMenu.content.refusal, "a press that landed clears the row's old reason")
+    }
+
+    /// A landed press clears only its own row's reason, not another row's.
+    func testApprovalsSuccessKeepsAnotherRowsRefusal() async {
+        let menu = model()
+        folderMenu.select(ids.root)
+        folderMenu.showRefusal("folders nest at most 3 deep", on: ids.release)
+        await menu.performApprovals(.turnOff, fromFolder: ids.approvals)
+        XCTAssertEqual(folderMenu.content.refusal,
+                       InboxFolderMenuRefusal(folderID: ids.release, message: "folders nest at most 3 deep"))
     }
 
     // MARK: - + New Artifact…
