@@ -12,11 +12,24 @@ protocol SpecReviewLineDelivering: AnyObject {
     /// is surely gone: never before the launch's reattach of hosted runs is
     /// done, nor when a new run of it started meanwhile (both `.held`).
     func deliverSpecReviewLine(_ line: String, askID: Int64, sessionID: Int64) async -> SessionLineDelivery.Delivery
+    /// The round's line will not be asked for again (its loop ended): a
+    /// line filed after it in the session's order may go now.
+    func forgetSpecReviewLine(askID: Int64)
 }
 
 extension SessionLineDelivery: SpecReviewLineDelivering {
     func deliverSpecReviewLine(_ line: String, askID: Int64, sessionID: Int64) async -> Delivery {
-        var delivery = await deliverLine(line, key: .specReview(askID), sessionID: sessionID) { _ in }
+        await specReviewLines.send(line, key: .specReview(askID), sessionID: sessionID)
+    }
+
+    func forgetSpecReviewLine(askID: Int64) {
+        specReviewLines.forget(.specReview(askID))
+    }
+
+    /// One try of a spec review line (a round's or a thread question's),
+    /// in `specReviewLines`' order.
+    func deliverSpecReviewKeyed(_ line: String, key: LineKey, sessionID: Int64) async -> Delivery {
+        var delivery = await deliverLine(line, key: key, sessionID: sessionID) { _ in }
         // A session not reattached yet after Keep Sessions and Quit or an
         // update is not gone: revealing it would end a live author's loop.
         if delivery == .noSession, !hostRunsSettled || isLive(sessionID) {
@@ -25,9 +38,75 @@ extension SessionLineDelivery: SpecReviewLineDelivering {
         if delivery == .held || delivery == .queued {
             // The center's next poll owns the retry: the line must not also
             // go from the held queue, nor after the round was revealed.
-            dropHeld(sessionID: sessionID) { $0 == .specReview(askID) }
+            dropHeld(sessionID: sessionID) { $0 == key }
         }
         return delivery
+    }
+}
+
+/// The spec review lines of each session in filing order (spec 2026-11-08
+/// §3): a round's findings line (`SpecReviewLoopCenter`) and a Discuss
+/// thread's question (`SpecReviewThreadCenter`) go one at a time, the
+/// earlier filed first. Each center tries its line again on its own poll;
+/// a line that is not at the head of its session's order is `.queued`
+/// without being tried, so a later line never overtakes a held one. The
+/// line at the head is tried through `deliver`, which keeps every PROJ-12
+/// rule (never mid-turn, never over the owner's typing, held while the
+/// hosted sessions reattach). A line its center is done with (its round
+/// revealed, its question closed) leaves the order at once (`forget`); one
+/// nobody forgot leaves it after `staleAfter`, so it never blocks the
+/// session.
+@MainActor
+final class SpecReviewLineOrder {
+    typealias Deliver = @MainActor (
+        _ line: String, _ key: SessionLineDelivery.LineKey, _ sessionID: Int64
+    ) async -> SessionLineDelivery.Delivery
+
+    nonisolated static let staleAfter: TimeInterval = 30
+
+    private struct Entry {
+        let key: SessionLineDelivery.LineKey
+        var lastAsked: Date
+    }
+
+    private let deliver: Deliver
+    private let now: () -> Date
+    private var queues: [Int64: [Entry]] = [:]
+    /// Lines being tried right now: an overlapping ask for one waits.
+    private var trying: Set<SessionLineDelivery.LineKey> = []
+
+    init(now: @escaping () -> Date = Date.init, deliver: @escaping Deliver) {
+        self.now = now
+        self.deliver = deliver
+    }
+
+    /// Files `key` in its session's order on its first ask, then tries it
+    /// when it is first in line; `.queued` while an earlier line waits.
+    func send(_ line: String, key: SessionLineDelivery.LineKey, sessionID: Int64) async -> SessionLineDelivery.Delivery {
+        let stamp = now()
+        var queue = (queues[sessionID] ?? []).filter {
+            $0.key == key || trying.contains($0.key) || stamp.timeIntervalSince($0.lastAsked) <= Self.staleAfter
+        }
+        if let index = queue.firstIndex(where: { $0.key == key }) {
+            queue[index].lastAsked = stamp
+        } else {
+            queue.append(Entry(key: key, lastAsked: stamp))
+        }
+        queues[sessionID] = queue
+        guard queue.first?.key == key, !trying.contains(key) else { return .queued }
+        trying.insert(key)
+        let delivery = await deliver(line, key, sessionID)
+        trying.remove(key)
+        if delivery != .held, delivery != .queued { forget(key) }
+        return delivery
+    }
+
+    /// The line will not be asked for again: the next one may go.
+    func forget(_ key: SessionLineDelivery.LineKey) {
+        for (sessionID, queue) in queues where queue.contains(where: { $0.key == key }) {
+            let rest = queue.filter { $0.key != key }
+            queues[sessionID] = rest.isEmpty ? nil : rest
+        }
     }
 }
 
@@ -57,8 +136,6 @@ extension WorkbenchCLI: SpecReviewRevealing {}
 @Observable
 final class SpecReviewLoopCenter {
     nonisolated static let pollInterval: Duration = .seconds(3)
-    /// The loop's round cap (Go `specreview.MaxLoopRounds`).
-    nonisolated static let maxRounds = 3
 
     /// Session id → the round of its author loop.
     private(set) var progress: [Int64: Int] = [:]
@@ -90,9 +167,11 @@ final class SpecReviewLoopCenter {
         self.pollInterval = pollInterval
     }
 
-    /// The session row's line, "Spec review: round 2 of 3".
+    /// The session row's line, "Spec review: round 2". The loop runs while
+    /// the author's fixes hold (spec 2026-11-08 §1): its fuse is no target,
+    /// so no "of N".
     nonisolated static func progressLine(round: Int) -> String {
-        "Spec review: round \(round) of \(maxRounds)"
+        "Spec review: round \(round)"
     }
 
     func start() {
@@ -141,6 +220,8 @@ final class SpecReviewLoopCenter {
     @discardableResult
     func showNow(askID: Int64) async -> Bool {
         revealed.insert(askID)
+        // Its round's line never goes now: a line filed after it may.
+        delivery.forgetSpecReviewLine(askID: askID)
         do {
             try await cli.specReviewReveal(askID: askID, reason: "owner")
         } catch {

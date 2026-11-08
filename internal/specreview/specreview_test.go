@@ -320,6 +320,11 @@ func TestParse_Caps(t *testing.T) {
 func TestResult_JSONKeysPinned(t *testing.T) {
 	r := Result{
 		Summary: "The spec matches the idea; one promise has no task.",
+		Brief:   "Builds a one-day channel mute for the owner.\nIt keeps the state on this Mac.\nThreads are left as they are.",
+		Theses: []Thesis{{
+			Key: "th:0123456789ab", Kind: ThesisGoal, Text: "Mute a channel for a day", Chapter: "ch:1",
+			Where: Anchor{Heading: "Behaviour", Quote: "Muting lasts twenty-four hours"},
+		}},
 		Idea: &Idea{
 			OwnerQuote: "mute a channel for a day", GoalQuote: "the owner can mute a channel for a day",
 			Verdict: "matches", Note: "Same scope.",
@@ -347,12 +352,13 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 			Key: "ck:0123456789ab", Chapter: "ch:1", Lens: "promises", Question: "Does every promise have a task?",
 			Answer: "concern", Note: "Expiry has none.", Severity: "major",
 		}},
-		Resolved: []Resolved{{CommentQuote: "name the retention period", Status: "resolved", Note: "Now stated."}},
-		Verdicts: []Verdict{{Key: "bs:0123456789ab", Verdict: "disputed", Note: "The threads are still not named."}},
-		Chapters: []Chapter{{Key: "ch:0", Heading: "Intro", Start: 0, End: 40}, {Key: "ch:1", Heading: "Behaviour", Start: 40, End: 200}},
-		Notes:    []string{"The conversation was trimmed to the last 50 entries."},
-		CodeRead: true,
-		Dropped:  2,
+		Resolved:  []Resolved{{CommentQuote: "name the retention period", Status: "resolved", Note: "Now stated."}},
+		Verdicts:  []Verdict{{Key: "bs:0123456789ab", Verdict: "disputed", Note: "The threads are still not named."}},
+		Chapters:  []Chapter{{Key: "ch:0", Heading: "Intro", Start: 0, End: 40}, {Key: "ch:1", Heading: "Behaviour", Start: 40, End: 200}},
+		Notes:     []string{"The conversation was trimmed to the last 50 entries."},
+		CodeRead:  true,
+		Dropped:   2,
+		DroppedBy: map[string]int{DropUnchangedText: 1, DropMinorLate: 1},
 	}
 	got, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {

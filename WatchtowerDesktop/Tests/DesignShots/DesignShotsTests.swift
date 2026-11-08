@@ -30,6 +30,10 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all)
     }
 
+    func testSpecReviewShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("spec-review-") })
+    }
+
     func testProviderFallbackShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("provider-") })
     }

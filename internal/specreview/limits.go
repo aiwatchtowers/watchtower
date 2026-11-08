@@ -9,9 +9,11 @@ const (
 	maxResolved     = 300
 	maxVerdicts     = 300
 	maxNotes        = 20
+	maxTheses       = 10
 
 	maxFieldRunes   = 600  // runes of any one free-text field
 	maxSummaryRunes = 2000 // runes of the summary
+	maxBriefRunes   = 1200 // runes of the summary screen's brief
 
 	// minQuoteRunes: a quote shorter than this (after Normalize) is too weak
 	// to anchor anything.

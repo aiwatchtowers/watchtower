@@ -40,7 +40,7 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string, launch
 		NewCreateTargets(files, sessionEnv), NewUpdateTarget(files, sessionEnv),
 		NewListComments(), NewAddComment(sessionEnv), NewResolveComment(sessionEnv),
 		NewAskOwner(sessionEnv, launch), NewGetAsk(), NewGetReview(), NewGetSpecReview(),
-		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(),
+		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(), NewAnswerReviewQuestion(sessionEnv),
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
 		NewFinishSession(sessionEnv), NewSetSessionTarget(sessionEnv),
 	}

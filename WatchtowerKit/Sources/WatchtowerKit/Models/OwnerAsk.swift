@@ -365,13 +365,24 @@ public struct OwnerAskAnswer: Codable, Hashable, Sendable {
         public var suffix: String
         public var heading: String
         public var body: String
+        /// The spec review finding the comment is about (Go `asks.Comment.ItemKey`,
+        /// JSON `item_key`, omitted when nil); nil on a margin comment.
+        public var itemKey: String?
 
-        public init(quote: String, prefix: String, suffix: String, heading: String, body: String) {
+        public init(
+            quote: String,
+            prefix: String,
+            suffix: String,
+            heading: String,
+            body: String,
+            itemKey: String? = nil
+        ) {
             self.quote = quote
             self.prefix = prefix
             self.suffix = suffix
             self.heading = heading
             self.body = body
+            self.itemKey = itemKey
         }
 
         public init(from decoder: Decoder) throws {
@@ -381,6 +392,13 @@ public struct OwnerAskAnswer: Codable, Hashable, Sendable {
             suffix = try c.decodeIfPresent(String.self, forKey: .suffix) ?? ""
             heading = try c.decodeIfPresent(String.self, forKey: .heading) ?? ""
             body = try c.decode(String.self, forKey: .body)
+            let key = try c.decodeIfPresent(String.self, forKey: .itemKey) ?? ""
+            itemKey = key.isEmpty ? nil : key
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case quote, prefix, suffix, heading, body
+            case itemKey = "item_key"
         }
     }
 

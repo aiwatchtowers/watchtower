@@ -361,7 +361,8 @@ func methodologyValue(s string) sql.NullString { return sql.NullString{String: s
 
 // DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
 // sources and comments, and its folder files' search index entries
-// (kb source project_doc, PROJ-08) and its code questions go in the same
+// (kb source project_doc, PROJ-08), its code questions and its spec review
+// threads go in the same
 // transaction, so the delete is all-or-nothing (PROJ-02). The folder install
 // is removed by the caller.
 func (db *DB) DeleteWorkbench(id int64) error {
@@ -376,7 +377,10 @@ func (db *DB) DeleteWorkbench(id int64) error {
 		if err := deleteWorkbenchDocIndex(tx, id); err != nil {
 			return err
 		}
-		return deleteWorkbenchCodeQuestions(tx, id)
+		if err := deleteWorkbenchCodeQuestions(tx, id); err != nil {
+			return err
+		}
+		return deleteWorkbenchSpecReviewThreads(tx, id)
 	})
 }
 
@@ -392,6 +396,20 @@ func deleteWorkbenchCodeQuestions(tx *sql.Tx, workbenchID int64) error {
 	if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE context_type = 'code_question'
 		AND substr(context_id, 1, length(?)) = ?`, prefix, prefix); err != nil {
 		return fmt.Errorf("deleting workbench %d code questions: %w", workbenchID, err)
+	}
+	return nil
+}
+
+// deleteWorkbenchSpecReviewThreads drops a workbench's spec review threads
+// (spec 2026-11-08 §3): `chat_conversations` rows of context type
+// `spec_review_thread` whose `context_id` starts with `<id>:`, the prefix
+// matched exactly as in deleteWorkbenchCodeQuestions. A thread lives while an
+// ask of its chain does, and the asks go with the workbench.
+func deleteWorkbenchSpecReviewThreads(tx *sql.Tx, workbenchID int64) error {
+	prefix := strconv.FormatInt(workbenchID, 10) + ":"
+	if _, err := tx.Exec(`DELETE FROM chat_conversations WHERE context_type = ?
+		AND substr(context_id, 1, length(?)) = ?`, SpecReviewThreadContextType, prefix, prefix); err != nil {
+		return fmt.Errorf("deleting workbench %d spec review threads: %w", workbenchID, err)
 	}
 	return nil
 }

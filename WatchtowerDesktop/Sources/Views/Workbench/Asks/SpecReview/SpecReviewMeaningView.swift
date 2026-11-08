@@ -2,7 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// Spec review, step 1 (spec §7): the ask's own header (its summary, focus
-/// points, what changed on a re-round, its questions to answer), then does
+/// points, what changed on a re-round, its questions to answer), the
+/// reviewer's summary of the document — brief and theses, spec 2026-11-08
+/// §4 — then does
 /// the document carry the owner's idea — the idea next to the document's
 /// goal with the verdict — a spec's Decisions list (a plan has none), the counts, the
 /// reviewer's summary, its notes (trimmed inputs, dropped findings, code
@@ -12,11 +14,23 @@ struct SpecReviewMeaningView<AskContext: View>: View {
     let model: SpecReviewModel
     let result: SpecReviewResult
     let askContext: () -> AskContext
+    /// Opens the classic view (**Read the spec**); nil: no link on a thesis.
+    var onReadSpec: (() -> Void)?
+    @Environment(\.specReviewThreads) private var threads
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
                 askContext()
+                if !result.brief.isEmpty || !result.theses.isEmpty {
+                    // The summary leads (spec 2026-11-08 §4).
+                    SpecReviewSummaryView(
+                        brief: result.brief,
+                        theses: result.theses,
+                        onDiscuss: threads.map { threads in { threads.open($0.key) } },
+                        onReadSpec: onReadSpec.map { read in { _ in read() } }
+                    )
+                }
                 if let idea = result.idea { ideaCard(idea) }
                 if model.showsDecisions { decisionsList }
                 VStack(alignment: .leading, spacing: Spacing.regular) {

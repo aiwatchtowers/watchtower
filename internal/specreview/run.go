@@ -100,7 +100,7 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 	if ask.Kind != "review" || (t != Spec && t != Plan) {
 		return db.SpecReview{}, fmt.Errorf("ask %d is not a spec or plan review", askID)
 	}
-	folder, err := readFolder(d.DB, ask)
+	folder, err := ReadFolder(d.DB, ask)
 	if err != nil {
 		return db.SpecReview{}, err
 	}
@@ -145,13 +145,19 @@ func run(ctx context.Context, d Deps, askID int64) (db.SpecReview, error) {
 }
 
 // advanceLoop sets out's loop columns from NextRound: the previous round's
-// open items and ledger (read from the previous ask's row) and this row's
-// replies. The loop stays with the author ("author") until the round ends
-// it ("owner").
+// open items and ledger (read from the previous ask's row), or on round 1 of
+// a loop after the owner's Request changes the owner's items (SeedOf), and
+// this row's replies. The loop stays with the author ("author") until the
+// round ends it ("owner").
 func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out *db.SpecReview) error {
 	var prevLedger []LedgerEntry
-	var prevOpen []AuthorItem
-	if row.Round >= 2 && ask.PreviousAskID.Valid {
+	// The seed's notes are already in this round's result: BuildInputs read
+	// the same rows.
+	prevOpen, _, err := SeedOf(d, ask)
+	if err != nil {
+		return err
+	}
+	if prevOpen == nil && row.Round >= 2 && ask.PreviousAskID.Valid {
 		prev, err := d.GetSpecReview(ask.PreviousAskID.Int64)
 		if err != nil && !errors.Is(err, db.ErrSpecReviewNotFound) {
 			return err
@@ -166,7 +172,7 @@ func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out
 	if err != nil {
 		return err
 	}
-	o := NextRound(row.Round, prevOpen, prevLedger, replies, res)
+	o := NextRound(row.Round, row.LoopRules, prevOpen, prevLedger, replies, res)
 	if out.OpenItems, err = encodeList(o.Open); err != nil {
 		return err
 	}
@@ -180,10 +186,11 @@ func advanceLoop(d *db.DB, ask *db.OwnerAsk, row *db.SpecReview, res Result, out
 	return nil
 }
 
-// readFolder is where the reviewer reads: the session's working directory (its
+// ReadFolder is where the reviewer reads: the session's working directory (its
 // worktree) when it is recorded and still a directory, else the workbench
 // folder, which must be a directory too: the reviewer never runs without one.
-func readFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
+// A Discuss thread reads the same folder (`ai query --read-folder-ask`).
+func ReadFolder(d *db.DB, ask *db.OwnerAsk) (string, error) {
 	if ask.SessionID.Valid {
 		cwd, err := d.TerminalAgentCwd(ask.SessionID.Int64)
 		if err != nil {

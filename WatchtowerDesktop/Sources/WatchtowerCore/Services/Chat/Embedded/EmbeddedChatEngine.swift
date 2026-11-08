@@ -84,6 +84,10 @@ package final class EmbeddedChatEngine {
     }
 
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
+    /// A turn will not come: a queued turn was withdrawn before it started
+    /// (Stop, the quit, a shutdown), or the center let the engine go. No
+    /// `onTurnFinished` follows for it; a waiter for the next outcome ends here.
+    @ObservationIgnored package var onTurnDropped: (() -> Void)?
     /// A new owner message is on disk (text, conversation id, message id), for
     /// a database chat whose spec carries the owner's instructions; remember
     /// in place hangs here. Never awaited: it cannot delay the turn.
@@ -330,6 +334,7 @@ package final class EmbeddedChatEngine {
     /// The center lets go of the engine. `quietly`: its context was deleted,
     /// so "not found" write errors have nowhere to be shown.
     package func shutdown(quietly: Bool) {
+        defer { onTurnDropped?() }
         isQuiet = quietly
         cancelQueued()
         finishAsPartial()
@@ -387,6 +392,7 @@ package final class EmbeddedChatEngine {
     /// the queue. The caller decides where the owner text goes.
     private func withdrawQueued() -> TurnRequest? {
         guard let request = pending else { return nil }
+        defer { onTurnDropped?() }
         gate.cancel(request.slot)
         pending = nil
         isQueued = false
@@ -472,7 +478,9 @@ package final class EmbeddedChatEngine {
             provider: options.provider,
             toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turn.turnID),
             readFolder: options.readFolder,
-            ownerInstructions: spec.ownerInstructions
+            ownerInstructions: spec.ownerInstructions,
+            purpose: options.purpose,
+            readFolderAskID: options.readFolderAskID
         )
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)

@@ -2281,7 +2281,7 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     queued_at   TEXT NOT NULL,
     started_at  TEXT NOT NULL DEFAULT '',
     finished_at TEXT NOT NULL DEFAULT ''
-, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1);
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1, loop_rules INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS learn_seen (
     item_id TEXT PRIMARY KEY,
     how     TEXT NOT NULL CHECK (how IN ('got_it','action','in_use')),
@@ -2400,6 +2400,25 @@ CREATE TABLE IF NOT EXISTS codex_plan_usage_samples (
     percent    REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
     resets_at  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (scope, limit_key, taken_at)
+);
+CREATE TABLE IF NOT EXISTS spec_review_questions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    thread     TEXT NOT NULL,
+    item_key   TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    answer     TEXT NOT NULL DEFAULT '',
+    state      TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+    created_at TEXT NOT NULL,
+    closed_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    thread     TEXT NOT NULL,
+    finding    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2746,6 +2765,8 @@ CREATE INDEX IF NOT EXISTS idx_media_items_described ON media_items(described_at
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_spec_review_questions_ask ON spec_review_questions(ask_id);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

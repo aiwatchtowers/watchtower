@@ -2800,7 +2800,8 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     open_items  TEXT NOT NULL DEFAULT '',   -- JSON this round hands the author
     ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
     loop_end    TEXT NOT NULL DEFAULT '',
-    findings    INTEGER NOT NULL DEFAULT -1  -- findings counted in result at the first finish (00162); -1 = not counted
+    findings    INTEGER NOT NULL DEFAULT -1, -- findings counted in result at the first finish (00162); -1 = not counted
+    loop_rules  INTEGER NOT NULL DEFAULT 0   -- author loop rules (00177): 0 = cap of 3 (2026-10-26), 2 = runs while fixes hold, fuse 8
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.
@@ -2811,6 +2812,33 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     body       TEXT NOT NULL DEFAULT '',
     about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
     updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
+);
+
+-- An author question from a spec review thread (00178); Go is the only
+-- writer, every state change is a conditional update from 'open'.
+CREATE TABLE IF NOT EXISTS spec_review_questions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    thread     TEXT NOT NULL,              -- the thread's conversation key
+    item_key   TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    answer     TEXT NOT NULL DEFAULT '',
+    state      TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+    created_at TEXT NOT NULL,
+    closed_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_spec_review_questions_ask ON spec_review_questions(ask_id);
+
+-- A finding the owner added from a spec review thread (00178); Go writes it,
+-- a reviewer re-run never touches it. finding is the JSON.
+CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    thread     TEXT NOT NULL,
+    finding    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
 
