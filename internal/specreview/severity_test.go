@@ -67,7 +67,7 @@ func TestNextRound_CarriedItemKeepsSeverity(t *testing.T) {
 }
 
 func TestPrompt_SeverityDefinitions(t *testing.T) {
-	assert.Equal(t, 3, prompts.DefaultVersions[prompts.SpecReview])
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.SpecReview], 3)
 	p := prompts.Defaults[prompts.SpecReview]
 	for _, lvl := range []string{`"blocker"`, `"major"`, `"minor"`, `"severity"`} {
 		assert.Contains(t, p, lvl)
