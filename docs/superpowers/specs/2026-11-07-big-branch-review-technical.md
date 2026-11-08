@@ -419,6 +419,9 @@ the model and never waits (§3.7).
   one key, Go methods of different receivers collide, `<<T` in a generic operator reads as
   `<`, and exported names inside grouped `const (`/`var (`/`type (` blocks and removed struct
   fields are not detected.
+- Go compares paths byte for byte, Swift by canonical equivalence: a path not in NFC (for
+  example committed from Linux) may fall into another `dir:x#N` part than the Swift builder
+  put it in, and an agent chapter path written in another normalization is dropped.
 - In `.watchtower/review-map.md` a glob without `/` matches a top-level file only (`**/` for
   any depth); a path matching both a danger section and **Can skip** takes the danger level.
 - The summary of a multi-batch branch judges coverage from chapter descriptions, not the
