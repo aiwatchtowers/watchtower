@@ -603,5 +603,50 @@ func TestFeaturesDisable_BuiltinRowFailureIsAWarning(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, after.ApprovalCards.Enabled, "the key is written")
 	assert.NotEmpty(t, out.String(), "the result is still printed")
-	assert.Contains(t, errOut.String(), `warning: "approval-cards" is disabled, but its built-in automations stay on`)
+	assert.Contains(t, errOut.String(), `warning: "approval-cards" is disabled, but its built-in automations stay on until the daemon's next built-in sync`)
+}
+
+// TestFeaturesDisable_BuiltinWorkspaceErrorIsAWarning: a workspace that
+// cannot be resolved (here an invalid name) is not folded into success — the
+// warning names it — while the disable itself stands.
+func TestFeaturesDisable_BuiltinWorkspaceErrorIsAWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+	original := flagWorkspace
+	flagWorkspace = "bad name/"
+	t.Cleanup(func() { flagWorkspace = original })
+
+	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
+	featuresDisableCmd.SetOut(out)
+	featuresDisableCmd.SetErr(errOut)
+	t.Cleanup(func() { featuresDisableCmd.SetOut(nil); featuresDisableCmd.SetErr(nil) })
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+
+	after, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, after.ApprovalCards.Enabled, "the key is written")
+	assert.Contains(t, errOut.String(), `warning: "approval-cards" is disabled, but its built-in automations stay on until the daemon's next built-in sync`)
+	assert.Contains(t, errOut.String(), "invalid workspace name")
+}
+
+// TestFeaturesDisable_NoWorkspaceIsSilent: a fresh install with no
+// workspace has no built-in row to turn off, so the disable prints no
+// warning.
+func TestFeaturesDisable_NoWorkspaceIsSilent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("digest:\n  enabled: true\n"), 0o600))
+	original := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = original })
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	require.ErrorIs(t, cfg.ValidateWorkspace(), config.ErrNoWorkspace, "the fixture has no workspace")
+
+	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
+	featuresDisableCmd.SetOut(out)
+	featuresDisableCmd.SetErr(errOut)
+	t.Cleanup(func() { featuresDisableCmd.SetOut(nil); featuresDisableCmd.SetErr(nil) })
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+	assert.Empty(t, errOut.String())
 }
