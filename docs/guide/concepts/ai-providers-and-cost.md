@@ -47,24 +47,27 @@ Defaults:
 
 Override either tier in **Light model** and **Strong model**, or press **Provider default** to clear it.
 
-Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Default**.
+Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Provider default**.
 
 ## A reserve provider for quota limits
 <!-- learn
-id: ai-reserve-provider
+id: ai-reserve-provider-settings
 title: Keep working when your AI plan runs out
-text: Set Codex or Claude as a reserve; background summaries switch to it when your plan's quota is used up.
+text: Turn on **Use reserve when limits are reached** in **Settings → System → AI** to switch to Codex or Claude.
+replaces: [ai-reserve-provider]
+changed: The reserve is set up in Settings now, and chats and automations can use it too.
 area: setup
 level: power
 kind: tip
-since: 0.26.5
+since: next
+action: hotkey:settings
 -->
 
 If you have both Claude Code and Codex, the other one can stand in when your plan's quota runs out. In **Settings → System → AI**, choose your **Preferred provider**, check the other provider's models and CLI path under **Reserve provider**, then turn on **Use reserve when limits are reached** and save. The switch starts off; installing or testing the other CLI never turns it on.
 
 **Check connection** checks the installed CLI without sending an AI prompt. **Not verified** means sign-in cannot safely be confirmed from metadata; **Test connection** sends one short request with that provider's strong model and account, possibly using paid quota. It tests your unsaved model and path without testing the light model or switching to the reserve.
 
-**Saved provider limits → Check again** only reads local quota metadata and is limited to once a minute. A reset time passing does not prove recovery; a waiting safe request must succeed. Saving shows **Applying provider settings** until the background service confirms the saved configuration; **Retry** after an apply failure checks the latest saved settings.
+**Saved provider limits → Check again** only reads local quota metadata and is limited to once a minute. A reset time passing does not prove recovery; a waiting safe request must succeed. Saving shows **Applying provider settings** until the background service confirms the saved configuration; it takes the change without a restart, and tasks already running and Workbench sessions carry on; **Retry** after an apply failure checks the latest saved settings.
 
 You can also enable the reserve in Terminal:
 
@@ -73,7 +76,7 @@ watchtower config set ai.fallback.provider codex
 watchtower config set ai.fallback.enabled true
 ```
 
-Use `claude` as the provider when Codex is your main one. Background summaries switch only on a confirmed quota error, with the reserve's own **Light model** and **Strong model**. When both are out of quota, supported unfinished AI steps wait for a later sync; source syncing continues. A provider your company's profile forbids is never used as the reserve. Workbench sessions keep their own agent.
+Use `claude` as the provider when Codex is your main one. Background summaries and your automations' AI steps switch only on a confirmed quota error, with the reserve's own **Light model** and **Strong model**. When both are out of quota, supported unfinished AI steps wait for a later sync; source syncing continues. A provider your company's profile forbids is never used as the reserve. Workbench sessions keep their own agent.
 
 New chats use **Preferred + reserve · Auto**. **Only Claude**, **Only Codex**, **Only Ollama** or an explicit model pins the chat; old chats keep their pins until you explicitly choose **Preferred + reserve · Auto model**. **Current provider** shows who actually answers and its model. Codex reads the images you attach to a message, with that message only (attach one again to ask about it later), but not PDFs or a project's images and PDFs; Ollama reads none of them, so with Ollama the paperclip picks text files only and a line under the chat says what it can't do. They start fresh on every reply and re-read the text files you sent earlier, newest first, up to 256 KB; an older file past that is named instead of read, so attach it again. A reserve missing a required tool or attachment is refused before startup.
 

@@ -9,6 +9,16 @@ Slack, Gmail, Calendar and Jira are synced and searchable. For anything else, yo
 Then ask "what's on my Trello board for this sprint?" in the chat; the assistant calls the tool live. Nothing is synced or stored beyond the connection itself.
 
 ## How it works
+<!-- learn
+id: qc-ollama
+title: Use Quick Connections with Ollama
+text: With **Ollama / Local** as the provider, the main chat can call your Quick Connections' read-only tools too.
+area: assistant
+level: power
+kind: tip
+since: next
+action: nav:connections
+-->
 
 **Read-only by design.** A connection is never handed to the assistant whole. When you enable it, Watchtower lists the server's tools once and allows only those the server marks read-only.
 

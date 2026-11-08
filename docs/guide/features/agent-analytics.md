@@ -18,6 +18,17 @@ since: 0.24.0
 action: nav:projects
 -->
 
+<!-- learn
+id: agent-analytics-codex
+title: Count Codex sessions in Analytics
+text: With **Analytics** on, the Codex sessions a workbench starts count too: times, tokens, tool calls and failures.
+area: development
+level: next
+kind: feature
+since: next
+action: nav:projects
+-->
+
 You turn analytics on per workbench. Watchtower then reads the transcript files Claude Code keeps under `~/.claude/projects/`, picks the ones that belong to the workbench folder (or one of its git worktrees, including worktrees that cleanup has removed) and stores one row per API call, tool call, skill and error in the local database. It copies no prompt or reply text, only counts and a pointer back to the file.
 
 Each API call counts once, even when a resumed or forked session replays it. The earliest session owns a replayed call.
