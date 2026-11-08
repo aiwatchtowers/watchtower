@@ -20,7 +20,8 @@ import (
 // session, the main one, a subagent or a teammate. Nothing for a cwd that is
 // missing, invalid or outside a repository; a pair the session already holds
 // and has seen in this run, or a session already full, costs one read and no
-// write (a pair last seen in an earlier run is touched once, board #1018).
+// write (a pair last seen in an earlier run has its last sighting moved to
+// this run, board #1018; concurrent hooks may both write it).
 // It runs after the event's state write, in its own transaction, so it never
 // changes that write: a failure is one stderr line, and nothing reaches
 // stdout (PROJ-11). The "session full" line is printed at most once per run
@@ -44,10 +45,21 @@ func recordSessionLedger(database *db.DB, stderr io.Writer, rowID, workbenchID i
 	if errors.Is(err, errSessionLedgerFull) && sessionLedgerFullReported.Swap(true) {
 		return
 	}
-	if err != nil {
+	var touch sightingNotMoved
+	switch {
+	case errors.As(err, &touch):
+		fmt.Fprintf(stderr, "watchtower: session worktree sighting not moved: %v\n", touch.err)
+	case err != nil:
 		fmt.Fprintf(stderr, "watchtower: session worktree not recorded: %v\n", err)
 	}
 }
+
+// sightingNotMoved is a failed move of a recorded pair's last sighting
+// (board #1018): the pair is recorded, so it has its own stderr label.
+type sightingNotMoved struct{ err error }
+
+func (e sightingNotMoved) Error() string { return "sighting not moved: " + e.err.Error() }
+func (e sightingNotMoved) Unwrap() error { return e.err }
 
 // errSessionLedgerFull is a new pair past db.MaxSessionWorktrees.
 var errSessionLedgerFull = fmt.Errorf("the session already records %d worktrees", db.MaxSessionWorktrees)
@@ -78,10 +90,13 @@ func writeSessionLedger(database *db.DB, rowID, workbenchID int64, sessionID, ro
 	}
 	stamp := db.AgentStateStamp(at)
 	if has {
-		return lock.write(database, func() error {
+		if err := lock.write(database, func() error {
 			_, err := database.TouchSessionWorktree(ctx, rowID, root, branch, stamp)
 			return err
-		})
+		}); err != nil {
+			return sightingNotMoved{err}
+		}
+		return nil
 	}
 	var recorded bool
 	err = lock.write(database, func() error {

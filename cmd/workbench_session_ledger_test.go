@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -361,4 +362,62 @@ func TestCodexSessionStateLedger_RecordsTheCwd(t *testing.T) {
 	runCodexState(t, codexPayload(t, "post_tool_use", map[string]any{"cwd": wt}))
 	runCodexState(t, codexPayload(t, "post_tool_use", map[string]any{"cwd": wt}))
 	assert.Equal(t, []string{wt + "@feat/codex"}, ledgerPairs(ledgerRows(t, database, row)))
+}
+
+// Board #1018: a full session still moves the last sighting of a pair it
+// holds — no new row, so no "session full" line.
+func TestSessionStateLedger_AFullSessionTouchesAHeldPair(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	main := ledgerRepo(t)
+	wt := ledgerWorktree(t, main, "wt", "ref: refs/heads/feat/x")
+	old := db.AgentStateStamp(hookNow().Add(-time.Hour))
+	_, err := database.RecordSessionWorktree(context.Background(), nil, row, wt, "feat/x", old)
+	require.NoError(t, err)
+	for i := 1; i < db.MaxSessionWorktrees; i++ {
+		_, err := database.RecordSessionWorktree(context.Background(), nil, row, fmt.Sprintf("/tmp/acme/wt-%d", i), "b", old)
+		require.NoError(t, err)
+	}
+	marked, err := database.MarkTerminalAgentRun(row, pid, briefLaunchID, hookNow(), "")
+	require.NoError(t, err)
+	require.True(t, marked)
+	sessionLedgerFullReported.Store(false)
+	t.Cleanup(func() { sessionLedgerFullReported.Store(false) })
+
+	runLedgerEvent(t, pid, withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), wt)) // no stderr line
+	var first, last string
+	require.NoError(t, database.QueryRow(`SELECT first_at, last_at FROM terminal_session_worktrees
+		WHERE session_id = ? AND root = ?`, row, wt).Scan(&first, &last))
+	assert.Equal(t, old, first)
+	assert.Greater(t, last, old, "the full session's held pair is seen in this run")
+	assert.Len(t, ledgerRows(t, database, row), db.MaxSessionWorktrees)
+}
+
+// Board #1018: a failed move of a held pair's last sighting has its own
+// stderr line; the state write lands.
+func TestSessionStateLedger_TouchFailureHasItsOwnLabel(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	main := ledgerRepo(t)
+	wt := ledgerWorktree(t, main, "wt", "ref: refs/heads/feat/x")
+	_, err := database.RecordSessionWorktree(context.Background(), nil, row, wt, "feat/x",
+		db.AgentStateStamp(hookNow().Add(-time.Hour)))
+	require.NoError(t, err)
+	marked, err := database.MarkTerminalAgentRun(row, pid, briefLaunchID, hookNow(), "")
+	require.NoError(t, err)
+	require.True(t, marked)
+	_, err = database.Exec(`CREATE TRIGGER no_touch BEFORE UPDATE ON terminal_session_worktrees
+		BEGIN SELECT RAISE(ABORT, 'refused'); END`)
+	require.NoError(t, err)
+
+	out, errOut, err := runSessionState(t, pid,
+		strings.NewReader(withCwd(t, statePayload("UserPromptSubmit", briefLaunchID, ""), wt)))
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Equal(t, 1, strings.Count(errOut, "\n"), "one stderr line: %q", errOut)
+	assert.Contains(t, errOut, "watchtower: session worktree sighting not moved: ")
+	assert.NotContains(t, errOut, "not recorded")
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write ran")
 }

@@ -15,7 +15,8 @@ const MaxSessionWorktrees = 64
 // SessionWorktree is a terminal_session_worktrees row of one session: a
 // worktree root and the branch an agent of the session worked on there
 // (empty = detached HEAD or unreadable), first seen at FirstAt (agent_state_at
-// format). The row's last_at (board #1018) is read by the Desktop only.
+// format). The row's last_at (board #1018), its last sighting, is read by
+// HasSessionWorktree and the Desktop, not carried here.
 type SessionWorktree struct {
 	Root, Branch, FirstAt string
 }
@@ -51,7 +52,9 @@ func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, bra
 
 // seenBeforeRun reports whether a ledger stamp is older than the run mark
 // since. Both are agent_state_at stamps, so they compare as text; a mark
-// that is NULL or not in that layout has no run to be stale against.
+// that is NULL or not in that layout has no run to be stale against — false,
+// so a reused worktree is then not touched and the Desktop counts it in the
+// run it was first seen in, as before board #1018.
 func seenBeforeRun(seen string, since sql.NullString) bool {
 	if !since.Valid {
 		return false
@@ -66,7 +69,9 @@ func seenBeforeRun(seen string, since sql.NullString) bool {
 // sessionID's recorded (root, branch) to at (agent_state_at format) when the
 // stored one (last_at, else first_at) is older; first_at never changes.
 // touched is false, with no error, when there is no such pair or it was seen
-// at or after at already.
+// at or after at already. last_at only moves forward; concurrent hooks of one
+// run may both write it (the later stamp wins), which costs a write, not a
+// wrong value.
 func (db *DB) TouchSessionWorktree(ctx context.Context, sessionID int64, root, branch, at string) (touched bool, err error) {
 	res, err := db.ExecContext(ctx, `UPDATE terminal_session_worktrees SET last_at = ?
 		WHERE session_id = ? AND root = ? AND branch = ? AND COALESCE(last_at, first_at) < ?`,

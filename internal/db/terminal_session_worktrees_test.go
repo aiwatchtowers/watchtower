@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -334,5 +335,56 @@ func TestSessionWorktree_StaleAgainstTheRunMarkAndTouch(t *testing.T) {
 	}
 	if first != ledgerAt || last != later {
 		t.Fatalf("first_at, last_at = %s, %s; want %s, %s", first, last, ledgerAt, later)
+	}
+}
+
+// Board #1018: a row from before migration 00174 has no last_at; its
+// first_at is its last sighting against the run mark, and a touch sets
+// last_at, keeping first_at.
+func TestSessionWorktree_UpgradedRowWithNoLastAt(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	id := newAgentStateRow(t, d, newTestWorkbench(t, d), "claude", agentStateUUID)
+	const root, later = "/tmp/example/wt", "2026-10-12T13:00:00.000Z"
+	if _, err := d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, '', ?)`,
+		id, root, ledgerAt); err != nil {
+		t.Fatal(err)
+	}
+	setSince := func(since string) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_turns = ? WHERE id = ?`, `{"since":"`+since+`"}`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stale := func() bool {
+		t.Helper()
+		has, stale, _, err := d.HasSessionWorktree(ctx, id, root, "")
+		if err != nil || !has {
+			t.Fatalf("HasSessionWorktree = %v, %v; want a recorded pair", has, err)
+		}
+		return stale
+	}
+	setSince(ledgerAt)
+	if stale() {
+		t.Fatal("first seen at the run mark: this run's")
+	}
+	setSince("2026-10-12T12:30:00.000Z")
+	if !stale() {
+		t.Fatal("first seen before the run mark, no last_at: stale")
+	}
+	if got, err := d.TouchSessionWorktree(ctx, id, root, "", later); err != nil || !got {
+		t.Fatalf("touch = %v, %v; want touched", got, err)
+	}
+	var first string
+	var last sql.NullString
+	if err := d.QueryRow(`SELECT first_at, last_at FROM terminal_session_worktrees WHERE session_id = ?`, id).
+		Scan(&first, &last); err != nil {
+		t.Fatal(err)
+	}
+	if first != ledgerAt || last.String != later {
+		t.Fatalf("first_at, last_at = %s, %v; want %s, %s", first, last, ledgerAt, later)
+	}
+	if stale() {
+		t.Fatal("touched in this run: not stale")
 	}
 }
