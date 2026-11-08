@@ -90,7 +90,7 @@ package enum PlansPresentation {
             text = reasonText(reason)
         } else if projection.state == "will_hit", let hit = projection.hitAt {
             text = "At this pace you hit it at \(PlanUsagePresentation.clock(hit, now: now))"
-        } else { text = "Projected below the limit at reset" }
+        } else { text = "On track to last until reset" }
         let resetText: String
         if let reset = limit.resetsAt {
             resetText = reset <= now ? "Reset needs an update" : PlanUsagePresentation.resetText(limit, now: now)

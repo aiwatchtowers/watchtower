@@ -9,4 +9,6 @@ public enum PlansLayout {
     public static let providerMinimumHeight: CGFloat = 220
     public static let chartInset: CGFloat = 5
     public static let progressHeight: CGFloat = 6
+    public static let menuWidth: CGFloat = 390
+    public static let menuMaximumHeight: CGFloat = 680
 }

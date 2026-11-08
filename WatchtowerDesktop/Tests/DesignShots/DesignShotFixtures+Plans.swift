@@ -20,7 +20,7 @@ enum PlansShotFixtures {
             state == .stale || state == .error ? now.addingTimeInterval(-1080) : now
         let reset = published.addingTimeInterval(isClaude ? 48 * 3600 : 53 * 3600)
         let hit = state == .predictionExpired ? now.addingTimeInterval(-1) : published.addingTimeInterval(isClaude ? 32 * 3600 : 232 * 3600)
-        let key = isClaude ? "weekly_all" : "codex:secondary:10080"
+        let key = isClaude ? "weekly_all" : "5:codex:secondary:10080"
         let rawState = state == .collecting || (state == .unknownID && !isClaude) ? "collecting" :
             state == .idle ? "idle" : state == .hit ? "hit" :
             isClaude || state == .predictionExpired ? "will_hit" : "safe"
@@ -32,10 +32,10 @@ enum PlansShotFixtures {
                                     projection: PlanUsageProjection(state: rawState, hitAt: projected ? hit : nil,
                                                                     ratePerHour: projected ? rate : 0),
                                     windowDurationMinutes: 10080)
-        let session = PlanUsageLimit(key: isClaude ? "session" : "codex:primary:300", label: "5-hour window", group: "session",
+        let session = PlanUsageLimit(key: isClaude ? "session" : "5:codex:primary:300", label: "5-hour window", group: "session",
                                      percent: isClaude ? 38 : 17, resetsAt: published.addingTimeInterval(2.25 * 3600), severity: nil,
                                      projection: PlanUsageProjection(state: "collecting", hitAt: nil, ratePerHour: 0), windowDurationMinutes: 300)
-        let extra = PlanUsageLimit(key: isClaude ? "weekly_scoped:sonnet" : "review:primary:300",
+        let extra = PlanUsageLimit(key: isClaude ? "weekly_scoped:sonnet" : "6:review:primary:300",
                                    label: isClaude ? "Weekly · Sonnet" : "Review quota · 5 hours", group: isClaude ? "weekly" : "session",
                                    percent: isClaude ? 12 : 86, resetsAt: isClaude ? reset : published.addingTimeInterval(12000), severity: nil,
                                    projection: PlanUsageProjection(state: "collecting", hitAt: nil, ratePerHour: 0),
@@ -118,10 +118,28 @@ enum PlansShotFixtures {
         let label = (try? PlansPresentation.menuBar(claude: model.providers[0].status,
                                                     codex: model.providers[1].status, show: show, now: now)) ?? ""
         return AnyView(VStack(alignment: .leading, spacing: Spacing.large) {
-            Text(label).font(.caption).monospacedDigit()
-            if !barOnly { PlansTrayRows(model: PlansMenuPresentation(screen: model), openPlans: {}, refresh: { _ in }) }
+            HStack {
+                Image(systemName: "apple.logo")
+                Text("Watchtower").fontWeight(.semibold)
+                Spacer()
+                Text(label).monospacedDigit()
+            }.font(.caption)
+            if !barOnly {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: Spacing.medium) {
+                        Text(PlansPopupCopy.title).font(.headline)
+                        Text(PlansScreenCopy.subtitle).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    TrayPopupContent(model: PlansPopupPresentation(screen: model), showInMenuBar: .constant(show),
+                                     openPlans: {}, refresh: { _ in }, refreshAll: {}, actions: {
+                        Button("Open Watchtower") {}
+                        Button("Settings…") {}
+                    }).background(Surface.window, in: RoundedRectangle(cornerRadius: Radius.container))
+                }
+            }
             Spacer()
-        }.padding(Spacing.page).frame(maxWidth: .infinity, alignment: .leading).detailBackground())
+        }.padding(Spacing.large).frame(maxWidth: .infinity, alignment: .leading).detailBackground())
     }
 
     static func trayLines(_ model: PlansScreenPresentation) -> [String] {
