@@ -624,7 +624,7 @@ func TestConfirmSealsKeyboxWithGrantAndKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	kb := r.mustKeybox(a)
-	want, err := r.kr.KeyboxKeys()
+	want, err := r.kr.KeyboxKeysFor(a.id)
 	if err != nil {
 		t.Fatal(err)
 	}

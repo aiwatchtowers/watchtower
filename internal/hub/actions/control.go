@@ -106,9 +106,9 @@ func (p *Processor) SealControlFor(device string, c wire.Control, epoch uint32) 
 		if !sameID(device, b.id) {
 			continue
 		}
-		sealer := p.cfg.Sealer
-		if epoch != 0 {
-			sealer = sealer.InEpoch(epoch)
+		sealer, err := p.sealerIn(b, epoch)
+		if err != nil {
+			return state.Control{}, false, err
 		}
 		q, err := p.sealControlIn(sealer, b, c)
 		if err != nil {
@@ -134,12 +134,37 @@ func (p *Processor) QueueOf(device string) (queue string, ok bool, err error) {
 	return "", false, nil
 }
 
-// sealControl seals c as a hub control c-<uuid> for b's phone: a new id, and
-// device_id and hub_id naming the phone and this hub. It is queued with
+// sealControl seals c as a hub control c-<uuid> for b's phone (in the epoch
+// phoneSealer picks): a new id, and device_id and hub_id naming the phone and
+// this hub. It is queued with
 // ExpectAbsent (a new record).
 func (p *Processor) sealControl(b mailbox, c wire.Control) (queued, error) {
 	c.ID = ""
-	return p.sealControlIn(p.cfg.Sealer, b, c)
+	sealer, err := p.phoneSealer(b)
+	if err != nil {
+		return queued{}, err
+	}
+	return p.sealControlIn(sealer, b, c)
+}
+
+// phoneSealer is the Sealer for b's phone: pinned to the epoch EpochFor names
+// for it (a phone that offered a relay key: its acked epoch while retained,
+// relay client Phase 5), else the current one.
+func (p *Processor) phoneSealer(b mailbox) (*secure.Sealer, error) { return p.sealerIn(b, 0) }
+
+// sealerIn is the Sealer for b's phone in epoch, or, for 0, in the epoch
+// phoneSealer picks.
+func (p *Processor) sealerIn(b mailbox, epoch uint32) (*secure.Sealer, error) {
+	if epoch == 0 && p.cfg.EpochFor != nil {
+		var err error
+		if epoch, err = p.cfg.EpochFor(b.id.String()); err != nil {
+			return nil, fmt.Errorf("actions: the epoch to seal in: %w", err)
+		}
+	}
+	if epoch == 0 {
+		return p.cfg.Sealer, nil
+	}
+	return p.cfg.Sealer.InEpoch(epoch), nil
 }
 
 // sealControlIn is sealControl with sealer (the Sealer, or one pinned to an

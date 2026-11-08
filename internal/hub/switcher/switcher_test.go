@@ -246,7 +246,7 @@ func (w *world) rebuild(mut func(*switcher.Config)) {
 // paying for the relay.
 func (w *world) addPhone(pays bool) *hubtest.Phone {
 	w.t.Helper()
-	kk, err := w.keys.KeyboxKeys()
+	kk, err := w.keys.KeyboxKeysFor(secure.ID{})
 	if err != nil {
 		w.t.Fatal(err)
 	}

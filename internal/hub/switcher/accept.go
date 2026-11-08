@@ -71,6 +71,19 @@ func saveRecordTx(tx *sql.Tx, r switchRecord) error {
 	return state.SetMetaTx(tx, metaSwitch, string(raw))
 }
 
+// RotationBlocked reports, in the caller's transaction, whether an accepted
+// switch is in progress (a switch record not done): an age rotation then waits
+// for the next cycle, since the switch begins its own epoch (relay client
+// Phase 5). The runtime's housekeeping passes it to identity.RotateIfDue,
+// which cannot import this package. An unreadable record blocks.
+func RotationBlocked(tx *sql.Tx) (bool, error) {
+	r, ok, err := recordTx(tx)
+	if err != nil {
+		return true, err
+	}
+	return ok && !r.Done, nil
+}
+
 // Pending reports whether an accepted switch is not carried out yet.
 func (s *Switcher) Pending() bool {
 	r, ok, err := s.record()

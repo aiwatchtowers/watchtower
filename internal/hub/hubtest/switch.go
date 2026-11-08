@@ -70,6 +70,9 @@ func (p *Phone) Keep(k wire.KeyboxKeys) error {
 		}
 		p.dataKeys[*k.PreviousEpoch] = prev
 	}
+	if err := p.takeRelayKX(k); err != nil {
+		return err
+	}
 	p.cfg.MetaKey, p.cfg.Epoch = meta, k.Epoch
 	return nil
 }

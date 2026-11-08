@@ -106,11 +106,11 @@ func (p *Processor) answerStale(ctx context.Context, b mailbox, rec transport.St
 		return
 	}
 	if ok {
-		sealer := p.cfg.Sealer
-		if epoch != 0 {
-			sealer = sealer.InEpoch(epoch)
+		sealer, err := p.sealerIn(b, epoch)
+		var q queued
+		if err == nil {
+			q, err = p.sealControlIn(sealer, b, c)
 		}
-		q, err := p.sealControlIn(sealer, b, c)
 		if err == nil {
 			err = p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error { return state.Enqueue(tx, q.control(b.queue)) })
 		}

@@ -149,8 +149,15 @@ func scanDevice(r rowScanner) (Device, error) {
 }
 
 // Devices lists the linked phones, oldest link first.
-func (s *Store) Devices() ([]Device, error) {
-	rows, err := s.db.Query(`SELECT ` + deviceRead + ` FROM devices ORDER BY linked_at, device_id`)
+func (s *Store) Devices() ([]Device, error) { return devices(s.db) }
+
+// DevicesTx is Devices inside the caller's transaction (a rotation derives
+// the relay keys of the phones it reads under the write lock it then writes
+// under).
+func DevicesTx(tx *sql.Tx) ([]Device, error) { return devices(tx) }
+
+func devices(q querier) ([]Device, error) {
+	rows, err := q.Query(`SELECT ` + deviceRead + ` FROM devices ORDER BY linked_at, device_id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing devices: %w", err)
 	}

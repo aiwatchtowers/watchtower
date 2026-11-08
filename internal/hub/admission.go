@@ -2,13 +2,17 @@ package hub
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
 
+	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/relayv1"
@@ -134,13 +138,95 @@ func (h *hubRuntime) readAccount(ctx context.Context) (*relayv1.AccountState, er
 	return h.followed(h.acct.State(ctx))
 }
 
-// followed is readAccount's tail: the stamps and the gate follow an answer.
+// followed is readAccount's tail: the stamps and the gate follow an answer,
+// and so does relay_serving_nobody_since (every answered read, the switcher's
+// Step and G2 poll included; a failed read changes nothing).
 func (h *hubRuntime) followed(st *relayv1.AccountState, err error) (*relayv1.AccountState, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := noteServingNobody(h.kr, h.st, st, h.sup.o.Clock()); err != nil {
+		log.Printf("hub: relay_serving_nobody_since not written (%s)", errClass(err))
+	}
 	h.followAccount(st)
 	return st, nil
+}
+
+// noteServingNobody keeps relay_serving_nobody_since from an answered account
+// read while the hub is on the relay: set (keeping an earlier since) when the
+// read holds no linked phone in a slot or no phone pays, removed when a phone
+// pays and a linked phone holds the hub in a slot (asks #1077, #1081). Off the
+// relay it writes nothing (a rotation toward iCloud removed it). The keyring's
+// rotation check reads it: no age rotation while it is set, and one rotation
+// that clears every relay key ServingNobodyHold after it.
+func noteServingNobody(kr *identity.Keyring, st *state.Store, acct *relayv1.AccountState, now time.Time) error {
+	on, err := kr.OnRelay()
+	if err != nil || !on {
+		return err
+	}
+	devices, err := st.Devices()
+	if err != nil {
+		return err
+	}
+	linked := map[string]bool{}
+	for _, d := range devices {
+		if d.RelayDeviceID != "" {
+			linked[d.RelayDeviceID] = true
+		}
+	}
+	reader, payer := false, false
+	for _, p := range acct.GetPhones() {
+		reader = reader || linked[p.GetPhoneDeviceId()]
+		payer = payer || p.GetPaying()
+	}
+	serves := reader && payer
+	// Most reads change nothing: decided on a plain read, written (and
+	// decided again) under the write lock only when it would change.
+	if v, ok, err := st.Meta(state.MetaServingNobodySince); err != nil {
+		return err
+	} else if serves == !ok || (!serves && validSince(v)) {
+		return nil
+	}
+	return st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		if serves {
+			return state.DeleteMetaTx(tx, state.MetaServingNobodySince)
+		}
+		v, ok, err := state.MetaTx(tx, state.MetaServingNobodySince)
+		if err != nil || (ok && validSince(v)) {
+			return err // the earlier since stands
+		}
+		return state.SetMetaTx(tx, state.MetaServingNobodySince, strconv.FormatInt(now.Unix(), 10))
+	})
+}
+
+// validSince: a stored relay_serving_nobody_since is a number (one that is
+// not is written afresh).
+func validSince(v string) bool {
+	_, err := strconv.ParseInt(v, 10, 64)
+	return err == nil
+}
+
+// rotationAlso is housekeeping's check in the rotation's transaction: no age
+// rotation while a switch is in progress (switcher.RotationBlocked).
+func rotationAlso(tx *sql.Tx) error {
+	blocked, err := switcher.RotationBlocked(tx)
+	if err != nil {
+		return err
+	}
+	if blocked {
+		return identity.ErrSkipRotation
+	}
+	return nil
+}
+
+// phoneEpoch is the processors' EpochFor: the epoch a phone's echoes and
+// controls are sealed in (identity.Keyring.PhoneEpoch), 0 for the current.
+func (h *hubRuntime) phoneEpoch(device string) (uint32, error) {
+	d, ok, err := h.st.Device(device)
+	if err != nil || !ok {
+		return 0, err
+	}
+	return h.kr.PhoneEpoch(d)
 }
 
 // followAccount stamps the phones st lists and follows the vouch state.

@@ -77,6 +77,19 @@ func ClearKXOffers(tx *sql.Tx) error {
 	return nil
 }
 
+// ClearAllRelayKeys drops every phone's offer and every relay-key row, in the
+// caller's transaction (the rotation that ends the 14-day hold of a hub
+// serving nobody).
+func ClearAllRelayKeys(tx *sql.Tx) error {
+	if err := ClearKXOffers(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM epoch_relay_keys`); err != nil {
+		return fmt.Errorf("clearing relay keys: %w", err)
+	}
+	return nil
+}
+
 // ClearDeviceKX drops device's offer and every relay-key row of it, in the
 // caller's transaction (a lapse, a lost reader, an unlink). A phone not linked
 // loses its rows all the same.

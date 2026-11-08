@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/wire"
@@ -201,7 +202,7 @@ func TestEveryEpochKeptAtMost7Days(t *testing.T) {
 					if err := w.keys.Rotate(identity.ReasonManual); err != nil {
 						t.Fatal(err)
 					}
-					kk, err := w.keys.KeyboxKeys()
+					kk, err := w.keys.KeyboxKeysFor(secure.ID{})
 					if err != nil {
 						t.Fatal(err)
 					}

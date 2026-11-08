@@ -58,6 +58,11 @@ type Config struct {
 	// records none. It is called after the deciding transaction committed,
 	// never inside one.
 	Latency Latency
+	// EpochFor, when set, is the epoch a phone's echoes and controls are
+	// sealed in (identity.Keyring.PhoneEpoch: a phone that offered a relay
+	// key gets its acked epoch while the hub retains it); 0, or nil, the
+	// current one. An explicit epoch (SealControlFor's) wins.
+	EpochFor func(device string) (uint32, error)
 }
 
 // Latency is the processor's side of the latency samples (measure.Recorder):
