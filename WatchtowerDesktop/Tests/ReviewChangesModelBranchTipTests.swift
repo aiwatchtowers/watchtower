@@ -334,7 +334,8 @@ extension ReviewChangesModelTests {
             try await h.model.reopen(id)
             XCTFail("the side read fails")
         } catch {}
-        XCTAssertEqual(h.model.lastError, "boom")
+        XCTAssertEqual(h.model.lastError, "Reopened, but could not re-place 1 comment on the new tree: boom",
+                       "the banner says the reopen is committed")
         XCTAssertEqual(h.model.comments.first { $0.id == id }?.status, .draft, "the reopen is shown")
         let stale = try await h.comments().first { $0.id == id }
         XCTAssertEqual(stale?.startLine, 2, "still on the old base's lines")

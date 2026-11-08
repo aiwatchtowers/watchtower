@@ -1119,9 +1119,14 @@ final class ReviewChangesModel {
             } catch {
                 // The reopen is committed: a row left on its pre-move lines is
                 // re-placed by the next Refresh, which re-checks every comment.
+                // The banner says so; a failed reload must not replace it.
                 commentsPlacedOn = nil
-                try reloadComments()
-                throw error
+                do {
+                    try reloadComments()
+                } catch let reloadError {
+                    Self.log.error("review comments reload failed: \(reloadError.localizedDescription, privacy: .public)")
+                }
+                throw Failure(message: Self.replaceFailedMessage(count: reopened.count, error, afterReopen: true))
             }
             try reloadComments()
         }
@@ -1427,9 +1432,12 @@ final class ReviewChangesModel {
     /// The `commentsPlacedOn` key of a round.
     private static func placement(_ info: ReviewRoundInfo) -> String { "\(info.id):\(info.baseSha)" }
 
-    /// The banner when `open()` could not re-place a moved round's comments.
-    static func replaceFailedMessage(count: Int, _ error: Error) -> String {
-        "Could not re-place \(count) \(count == 1 ? "comment" : "comments") on the new tree: \(message(error))"
+    /// The banner when `open()` could not re-place a moved round's comments,
+    /// or (`afterReopen`) when `reopen(_:)` committed but could not re-place
+    /// the reopened ones.
+    static func replaceFailedMessage(count: Int, _ error: Error, afterReopen: Bool = false) -> String {
+        let what = "re-place \(count) \(count == 1 ? "comment" : "comments") on the new tree: \(message(error))"
+        return afterReopen ? "Reopened, but could not \(what)" : "Could not \(what)"
     }
 
     /// Re-places stale comments onto the round's current diff: moved, or
