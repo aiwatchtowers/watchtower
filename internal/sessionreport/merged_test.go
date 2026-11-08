@@ -110,9 +110,9 @@ func mergeRefsOf(t *testing.T, d *db.DB, sessionID int64) []string {
 
 func TestSessionRefs_EndWithTheMergeVerdicts(t *testing.T) {
 	d := mergedFixture(t)
-	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/c", "into:feature/x:wt/f",
+	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/f", "into:feature/x:wt/c",
 		"into:feature/x-ui:wt/g"}
-	assert.ElementsMatch(t, want, mergeRefsOf(t, d, 1))
+	assert.Equal(t, want, mergeRefsOf(t, d, 1), "board order of first appearance")
 	refs, err := SessionRefs(context.Background(), d, 1, 1)
 	require.NoError(t, err)
 	assert.Equal(t, mergeRefsOf(t, d, 1), refs[len(refs)-len(want):], "the PR and branch refs, then the verdicts")
@@ -417,4 +417,19 @@ func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
 	elapsed := time.Since(start)
 	assert.Equal(t, want, got)
 	assert.Less(t, elapsed, time.Second, "1000 siblings took %v", elapsed)
+}
+
+// Board #1016: a key two leaves resolve to — a second leaf on the same
+// branch, and a progress leaf its parent's walk also reaches — is listed
+// once, at its first appearance.
+func TestMergeRefs_ASharedKeyIsListedOnce(t *testing.T) {
+	d := mergedFixture(t)
+	runSQL(t, d, `INSERT INTO targets (id, text, period_start, period_end, parent_id, status, project_id, branch) VALUES
+		(117, 'b2', '2026-09-28', '2026-10-05', 110, 'todo', 1, 'wt/b')`)
+	want := []string{"into:feature/x:wt/b", "into:feature/x:wt/f", "into:feature/x:wt/c",
+		"into:feature/x-ui:wt/g"}
+	assert.Equal(t, want, mergeRefsOf(t, d, 1))
+	_, sc, err := loadScope(context.Background(), d, 1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, want, sc.countedMergeRefs(), "every leaf here is a progress leaf")
 }

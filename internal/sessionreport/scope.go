@@ -281,9 +281,11 @@ func (s scope) mergeRefs() []string {
 		if e.target.Status == "done" {
 			return
 		}
-		if base, branch, ok := s.b.mergeBase(e); ok && !seen[intoRef(base, branch)] {
-			seen[intoRef(base, branch)] = true
-			out = append(out, intoRef(base, branch))
+		if base, branch, ok := s.b.mergeBase(e); ok {
+			if ref := intoRef(base, branch); !seen[ref] {
+				seen[ref] = true
+				out = append(out, ref)
+			}
 		}
 	}
 	walked := map[int64]bool{}
@@ -311,9 +313,11 @@ func (s scope) countedMergeRefs() []string {
 		if !s.progress[e.id()] || e.target.Status == "done" {
 			continue
 		}
-		if base, branch, ok := s.b.mergeBase(e); ok && !seen[intoRef(base, branch)] {
-			seen[intoRef(base, branch)] = true
-			out = append(out, intoRef(base, branch))
+		if base, branch, ok := s.b.mergeBase(e); ok {
+			if ref := intoRef(base, branch); !seen[ref] {
+				seen[ref] = true
+				out = append(out, ref)
+			}
 		}
 	}
 	return out
