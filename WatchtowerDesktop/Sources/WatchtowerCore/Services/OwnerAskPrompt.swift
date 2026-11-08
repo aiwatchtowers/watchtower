@@ -22,6 +22,17 @@ package enum OwnerAskPrompt {
         )
     }
 
+    /// The line typed into the ask's session when the owner's Discuss
+    /// thread asks the author a question (spec 2026-11-08 §3). Dual path of
+    /// Go's `asks.SpecReviewQuestionLine` (same `OneLine` cleanup), pinned by
+    /// `internal/asks/testdata/spec_review_question_lines`.
+    package static func specReviewQuestionLine(askID: Int64, questionID: Int64, question: String) -> String {
+        WorkbenchCommentPrompt.oneLine(
+            "Owner's thread on spec review ask #\(askID) asks you: \(question) — "
+                + "answer with answer_review_question \(questionID)."
+        )
+    }
+
     private static func short(_ kind: OwnerAskKind, _ answer: OwnerAskAnswer) -> String {
         if answer.dismissed { return "dismissed" }
         switch (kind, answer.verdict) {

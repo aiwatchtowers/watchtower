@@ -255,11 +255,18 @@ struct SpecReviewMarkControls: View {
                         Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
                     }
                 case .comment where model.marks[key]?.body.isEmpty ?? true:
-                    HStack(spacing: Spacing.regular) {
-                        SpecReviewPickedLabel(title: "Fix", systemImage: "wrench.and.screwdriver.fill")
-                        Spacer()
-                        Button("Add Comment") { startEditing() }.buttonStyle(.kitQuiet)
-                        Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
+                    VStack(alignment: .leading, spacing: Spacing.small) {
+                        HStack(spacing: Spacing.regular) {
+                            SpecReviewPickedLabel(title: "Fix", systemImage: "wrench.and.screwdriver.fill")
+                            Spacer()
+                            if model.fixDrafts[key] == nil {
+                                Button("Add Comment") { startEditing() }.buttonStyle(.kitQuiet)
+                            }
+                            Button("Undo") { Task { await model.unmark(key) } }.buttonStyle(.kitQuiet)
+                        }
+                        if let draft = model.fixDrafts[key] {
+                            SpecReviewFixDraftEditor(model: model, key: key, draft: draft)
+                        }
                     }
                 case .comment:
                     VStack(alignment: .leading, spacing: Spacing.small) {
@@ -320,7 +327,7 @@ struct SpecReviewMarkControls: View {
     }
 
     private var fixButton: some View {
-        Button("Fix") { Task { await model.mark(key, .comment) } }
+        Button("Fix") { Task { await model.fix(key: key) } }
             .buttonStyle(.kitSecondary)
             .help("The reviewer is right: send this finding to the author as it is")
     }
@@ -369,5 +376,52 @@ struct SpecReviewMarkControls: View {
         guard !body.isEmpty else { return }
         editing = false
         Task { await model.mark(key, .comment, body: body) }
+    }
+}
+
+/// **Fix** on a card with a thread (spec 2026-11-08 §3): the comment field
+/// opens at once, empty; the thread's conclusion fills it when it arrives,
+/// unless the owner typed first. A failed or slow draft leaves the field as
+/// it is with "Couldn't draft a conclusion". Save writes the comment mark's
+/// body; Cancel keeps the plain Fix.
+struct SpecReviewFixDraftEditor: View {
+    let model: SpecReviewModel
+    let key: String
+    let draft: SpecReviewFixDraft
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            CommentTextEditor(
+                text: Binding(get: { model.fixDrafts[key]?.text ?? "" }, set: { model.editFixDraft(key, text: $0) }),
+                placeholder: "Your comment for the author",
+                focusOnAppear: true,
+                minHeight: CommentTextEditor.formMinHeight,
+                maxHeight: CommentTextEditor.formMaxHeight,
+                onSubmit: save,
+                onCancel: cancel
+            )
+            HStack(spacing: Spacing.regular) {
+                if draft.isDrafting {
+                    ProgressView().controlSize(.mini)
+                    Text("Drafting a conclusion from the discussion…").font(.caption).foregroundStyle(.secondary)
+                } else if draft.couldNotDraft {
+                    Text("Couldn't draft a conclusion").font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Cancel", action: cancel).buttonStyle(.kitQuiet)
+                Button("Save", action: save)
+                    .buttonStyle(.kitSecondary)
+                    .disabled(draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Shortcut: ⌘↩")
+            }
+        }
+    }
+
+    private func save() {
+        Task { await model.saveFixDraft(key) }
+    }
+
+    private func cancel() {
+        model.closeFixDraft(key)
     }
 }

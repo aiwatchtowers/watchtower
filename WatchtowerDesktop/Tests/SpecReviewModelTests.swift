@@ -695,19 +695,164 @@ final class SpecReviewModelTests: XCTestCase {
 
     // MARK: - Discuss threads (spec 2026-11-08 §3)
 
-    /// A model with the app's embedded chats over `ai`.
-    private func makeThreadModel(_ ai: ScriptedAIService) async throws -> SpecReviewModel {
+    /// A model with the app's embedded chats over `ai`; the same chats on
+    /// every call, as the app's center (a new screen keeps them).
+    private func makeThreadModel(
+        _ ai: ScriptedAIService,
+        threads: SpecReviewThreadCenter? = nil,
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async throws -> SpecReviewModel {
         let base = try await makeModel()
         let pool = try XCTUnwrap(pool)
-        let center = EmbeddedChatCenter { spec, gate in
+        let center = threadCenter ?? EmbeddedChatCenter { spec, gate in
             guard case .database(let conversationID) = spec.persistence else { preconditionFailure("database chat") }
             return EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID),
                                       aiService: ai, gate: gate)
         }
         threadCenter = center
-        let model = SpecReviewModel(ask: base.ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, chats: center)
+        let model = SpecReviewModel(ask: base.ask, dbPool: pool, cli: WorkbenchCLI(runner: runner), asks: asks, chats: center,
+                                    threadCenter: threads, sleep: sleep)
         model.configuredProvider = { .claude }
         return model
+    }
+
+    /// A thread on `ag:2` with one exchange in it (the owner's question and
+    /// `reply`), its turn ended.
+    private func discussedModel(
+        _ ai: ScriptedAIService,
+        reply: String = "It holds.",
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async throws -> SpecReviewModel {
+        runner = FakeCLIRunner(stdout: Data("data".utf8))
+        try setRow(status: "done", result: kindsResultJSON())
+        let model = try await makeThreadModel(ai, sleep: sleep)
+        await model.load()
+        let threads = try XCTUnwrap(model.threads)
+        threads.open("ag:2")
+        await waitUntil { model.threadEngine("ag:2") != nil }
+        XCTAssertTrue(threads.send("ag:2", "Why per channel?"))
+        await waitUntil { ai.calls.count == 1 }
+        ai.emit(.text(reply), .turnComplete(reply), .done)
+        ai.finish()
+        await waitUntil { model.threadContent("ag:2").entries.count >= 2 && !model.threadContent("ag:2").isReplying }
+        await model.threadEngine("ag:2")?.finished()
+        return model
+    }
+
+    /// **Fix** on a card with a thread writes the mark at once and opens the
+    /// field empty; the conclusion arrives after the owner typed, and does
+    /// not replace the owner's words.
+    func testFixPrefillDoesNotOverwriteTyping() async throws {
+        let ai = ScriptedAIService()
+        let model = try await discussedModel(ai)
+        let fixing = Task { await model.fix(key: "ag:2") }
+        await waitUntil { model.fixDrafts["ag:2"] != nil && ai.calls.count == 2 }
+        XCTAssertEqual(model.marks["ag:2"]?.state, .comment, "the Fix mark is written at once")
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "")
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.isDrafting, true)
+        XCTAssertEqual(ai.calls[1].prompt.contains("one-paragraph conclusion"), true)
+        model.editFixDraft("ag:2", text: "My own words")
+        ai.emit(.text("Make it per user."), .turnComplete("Make it per user."), .done)
+        ai.finish()
+        await fixing.value
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "My own words")
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.isDrafting, false)
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.couldNotDraft, false)
+        await model.saveFixDraft("ag:2")
+        XCTAssertEqual(model.marks["ag:2"]?.body, "My own words")
+        XCTAssertNil(model.fixDrafts["ag:2"])
+
+        // Untouched, the conclusion fills the field.
+        await model.unmark("ag:2")
+        let again = Task { await model.fix(key: "ag:2") }
+        await waitUntil { ai.calls.count == 3 }
+        ai.emit(.text("Make it per user."), .turnComplete("Make it per user."), .done)
+        ai.finish()
+        await again.value
+        XCTAssertEqual(model.fixDrafts["ag:2"]?.text, "Make it per user.")
+    }
+
+    /// The conclusion takes longer than 30 s: the field stays as it is with
+    /// "Couldn't draft a conclusion"; the Fix mark is in.
+    func testFixPrefillTimeoutShowsLine() async throws {
+        let ai = ScriptedAIService()
+        var waited: [Duration] = []
+        let model = try await discussedModel(ai) { duration in
+            waited.append(duration)
+            if duration != .seconds(30) { try await Task.sleep(for: duration) }
+        }
+        await model.fix(key: "ag:2")
+        XCTAssertEqual(waited, [.seconds(30)])
+        XCTAssertEqual(model.marks["ag:2"]?.state, .comment)
+        let failed = SpecReviewFixDraft(text: "", ownerTyped: false, isDrafting: false, couldNotDraft: true)
+        XCTAssertEqual(model.fixDrafts["ag:2"], failed)
+        let controls = try SpecReviewMarkControls(model: model, key: "ag:2", kind: .actionable) {}.inspect()
+        let editor = try controls.find(SpecReviewFixDraftEditor.self)
+        XCTAssertEqual(try editor.actualView().draft.couldNotDraft, true)
+        // The line under the field (searching the field itself is slow).
+        XCTAssertNoThrow(try editor.vStack().hStack(1).find(text: "Couldn't draft a conclusion"))
+
+        // A card without a thread: the plain Fix, no field.
+        await model.fix(key: "da:1")
+        XCTAssertEqual(model.marks["da:1"]?.state, .comment)
+        XCTAssertNil(model.fixDrafts["da:1"])
+    }
+
+    /// **Add to review** refused by Go: its words stay on the proposal's card.
+    func testAddToReviewRefusalShownOnCard() async throws {
+        let ai = ScriptedAIService()
+        let reply = """
+            It is missing.
+
+            ```watchtower-finding
+            {"kind": "missing", "severity": "minor", "title": "Ends at midnight", "text": "t", \
+            "quote": {"source": "document", "text": "Mute ends at midnight"}, "where": null}
+            ```
+            """
+        let model = try await discussedModel(ai, reply: reply)
+        guard case let .finding(_, proposed)? = model.threadContent("ag:2").entries.last else {
+            return XCTFail("no proposal: \(model.threadContent("ag:2").entries.map(\.id))")
+        }
+        XCTAssertEqual(proposed.status, .proposed)
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 3, stderr: "not added: quote not found\n")
+        await model.addToReview(proposed, thread: "ag:2")
+        let args = try XCTUnwrap(runner.invocations.last)
+        let thread = SpecReviewThreadKey.contextID(workbenchID: projectID, rootAskID: askID, itemKey: "ag:2")
+        XCTAssertEqual(args, ["workbench", "spec-review", "add-finding", "--ask=\(askID)", "--thread=\(thread)"])
+        let block = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(runner.stdinInputs.last)) as? [String: Any])
+        XCTAssertEqual(block["title"] as? String, "Ends at midnight")
+        XCTAssertTrue(block["where"] is NSNull)
+        guard case let .finding(_, shown)? = model.threadContent("ag:2").entries.last else { return XCTFail("no card") }
+        XCTAssertEqual(shown.status, .refused("not added: quote not found"))
+        let card = try SpecReviewProposedFindingCard(finding: shown) {}.inspect()
+        XCTAssertNoThrow(try card.find(text: "not added: quote not found"))
+        XCTAssertThrowsError(try card.find(button: "Add to review"))
+    }
+
+    /// A thread left open is open again when the drawer is closed and the
+    /// ask reopened: the app's thread center holds it, not the screen.
+    func testOpenThreadSurvivesReopeningTheScreen() async throws {
+        runner = FakeCLIRunner(stdout: Data("data".utf8))
+        try setRow(status: "done", result: kindsResultJSON())
+        let pool = try XCTUnwrap(pool)
+        let threads = SpecReviewThreadCenter(dbPool: pool, cli: WorkbenchCLI(runner: runner),
+                                             delivery: SessionLineDelivery(terminalCenter: nil), pollInterval: .seconds(3600))
+        defer { threads.stop() }
+        let ai = ScriptedAIService()
+        let first = try await makeThreadModel(ai, threads: threads)
+        await first.load()
+        try XCTUnwrap(first.threads).open("ag:2")
+        await waitUntil { first.threadEngine("ag:2") != nil }
+        XCTAssertTrue(first.threadContent("ag:2").isOpen)
+
+        let reopened = try await makeThreadModel(ai, threads: threads)
+        await reopened.load()
+        XCTAssertTrue(reopened.threadContent("ag:2").isOpen)
+        await waitUntil { reopened.threadEngine("ag:2") != nil }
+        try XCTUnwrap(reopened.threads).hide("ag:2")
+        let third = try await makeThreadModel(ai, threads: threads)
+        await third.load()
+        XCTAssertFalse(third.threadContent("ag:2").isOpen, "Hide folds it for next time too")
     }
 
     private var threadCenter: EmbeddedChatCenter?

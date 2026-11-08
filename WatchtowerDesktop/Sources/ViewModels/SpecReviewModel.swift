@@ -85,6 +85,12 @@ final class SpecReviewModel {
     private(set) var threadQuestions: [SpecReviewQuestionRow] = []
     /// Item key → the finished messages its thread holds on disk.
     private(set) var threadMessageCounts: [String: Int] = [:]
+    /// **Fix** on a card with a thread: the comment field, filled with the
+    /// thread's drafted conclusion unless the owner typed first.
+    private(set) var fixDrafts: [String: SpecReviewFixDraft] = [:]
+    /// What **Add to review** made of a thread's proposed finding, by
+    /// `proposalKey`: added, or Go's refusal.
+    private(set) var proposalStatuses: [String: SpecReviewProposedFinding.Status] = [:]
 
     @ObservationIgnored let ask: OwnerAsk
     @ObservationIgnored let dbPool: DatabasePool
@@ -92,6 +98,9 @@ final class SpecReviewModel {
     @ObservationIgnored private let asks: OwnerAsksViewModel
     /// The app's embedded chats; nil: this screen has no Discuss threads.
     @ObservationIgnored let chats: EmbeddedChatCenter?
+    /// The threads' app-lifetime half: open threads, questions to the
+    /// author and their follow-ups.
+    @ObservationIgnored let threadCenter: SpecReviewThreadCenter?
     /// The provider a thread opens on: the configured one, at its strong tier.
     @ObservationIgnored var configuredProvider: () -> AIProvider = {
         AIProvider.fromConfig(ConfigService().aiProvider)
@@ -99,6 +108,8 @@ final class SpecReviewModel {
     @ObservationIgnored private let pollInterval: Duration
     @ObservationIgnored private let sleep: (Duration) async throws -> Void
     @ObservationIgnored private let now: () -> Date
+    /// How long **Fix** waits for the thread's conclusion.
+    @ObservationIgnored let conclusionTimeout: Duration
     @ObservationIgnored nonisolated(unsafe) private var pollTask: Task<Void, Never>?
     /// Bumped on every start and stop, so a finishing Task clears `pollTask`
     /// only when it is still the current one.
@@ -110,9 +121,11 @@ final class SpecReviewModel {
         cli: WorkbenchCLI,
         asks: OwnerAsksViewModel,
         chats: EmbeddedChatCenter? = nil,
+        threadCenter: SpecReviewThreadCenter? = nil,
         pollInterval: Duration = .seconds(3),
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        conclusionTimeout: Duration = .seconds(30)
     ) {
         self.ask = ask
         self.rootAskID = ask.id
@@ -120,9 +133,11 @@ final class SpecReviewModel {
         self.cli = cli
         self.asks = asks
         self.chats = chats
+        self.threadCenter = threadCenter
         self.pollInterval = pollInterval
         self.sleep = sleep
         self.now = now
+        self.conclusionTimeout = conclusionTimeout
     }
 
     deinit { pollTask?.cancel() }
@@ -252,6 +267,7 @@ final class SpecReviewModel {
                 try SpecReviewQueries.clearMark(db, askID: askID, key: key)
             }
             marks[key] = nil
+            fixDrafts[key] = nil
         } catch {
             lastError = "Could not clear the mark: \(error.localizedDescription)"
         }
@@ -370,8 +386,7 @@ final class SpecReviewModel {
     /// a thread is no reviewer finding, but it is not gone either.
     var orphans: [SpecReviewMark] {
         guard let result = row?.result else { return [] }
-        let added = Set(threadFindings.map(\.key))
-        return SpecReviewAnswer.orphanMarks(result: result, marks: marks).filter { !added.contains($0.key) }
+        return SpecReviewAnswer.orphanMarks(result: result, marks: marks, threadFindings: threadFindings)
     }
 
     /// What the card under `key` is, for its buttons and its `ok` mark's
@@ -531,6 +546,28 @@ final class SpecReviewModel {
     }
 }
 
+/// **Fix**'s comment field on a card with a thread (spec 2026-11-08 §3).
+struct SpecReviewFixDraft: Equatable {
+    var text = ""
+    /// The owner typed: the conclusion no longer fills the field.
+    var ownerTyped = false
+    /// The thread's conclusion is being drafted.
+    var isDrafting = true
+    /// It failed or took too long: "Couldn't draft a conclusion".
+    var couldNotDraft = false
+}
+
+/// Resumes a continuation once: the first of two racing tasks wins.
+@MainActor
+private final class OnceResume<Value> {
+    var continuation: CheckedContinuation<Value, Never>?
+
+    func resume(_ value: Value) {
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+}
+
 /// One Discuss thread as this screen holds it: whether it is drawn open,
 /// and what its chat runs on once it was opened.
 struct SpecReviewThreadState {
@@ -566,8 +603,9 @@ extension SpecReviewModel {
         return SpecReviewThreads(
             thread: { [self] in threadContent($0) },
             send: { [self] key, text in threadEngine(key)?.send(text) ?? false },
+            addToReview: { [self] key, finding in Task { await addToReview(finding, thread: key) } },
             open: { [self] in openThread($0) },
-            hide: { [self] in threadStates[$0]?.isOpen = false },
+            hide: { [self] in hideThread($0) },
             retry: { [self] in threadEngine($0)?.retry() },
             stop: { [self] in threadEngine($0)?.stop() },
             shown: { [self] in threadShown($0) },
@@ -617,6 +655,7 @@ extension SpecReviewModel {
     /// reviewer's data fetched (once; a failure shows **Retry**).
     func openThread(_ key: String) {
         guard chats != nil else { return }
+        threadCenter?.setOpen(threadContextID(key), true)
         var state = threadStates[key] ?? SpecReviewThreadState()
         state.isOpen = true
         let needsPreparing = state.context == nil && !state.isOpening
@@ -631,6 +670,19 @@ extension SpecReviewModel {
             // The idle sweep let a hidden thread's chat go: back in the center.
             makeThreadEngine(key)
         }
+    }
+
+    /// **Hide**: the thread folds, also for the next time the ask opens; a
+    /// reply in flight keeps going.
+    func hideThread(_ key: String) {
+        threadStates[key]?.isOpen = false
+        threadCenter?.setOpen(threadContextID(key), false)
+    }
+
+    /// Whether `key`'s thread is drawn open: as the app's thread center
+    /// holds it (it outlives this screen), else as this screen does.
+    func isThreadOpen(_ key: String) -> Bool {
+        threadCenter?.isOpen(threadContextID(key)) ?? threadStates[key]?.isOpen ?? false
     }
 
     private func prepareThread(_ key: String) async {
@@ -651,13 +703,24 @@ extension SpecReviewModel {
                     workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool)
             }
             let data = orphaned ? "" : try await cli.specReviewThreadContext(askID: askID, itemKey: key)
+            let sessionID = ask.sessionID
+            let threadCenter = threadCenter
+            let contextID = threadContextID(key)
             let context = SpecReviewThreadContext(
                 workbenchID: workbenchID, rootAskID: rootAskID, askID: askID, itemKey: key, data: data,
                 provider: configuredProvider(),
                 // The chat outlives this screen in the app's center: once the
                 // screen is gone, the item stands as it was when opened.
                 isOrphaned: { [weak self] in self?.isOrphanedItem(key) ?? orphaned },
+                // The question is the app-lifetime center's: it is filed and
+                // typed even when the reply ends after the drawer closed.
                 onReply: { [weak self] question, finding in
+                    if let question {
+                        Task {
+                            await threadCenter?.askAuthor(askID: askID, sessionID: sessionID, itemKey: key,
+                                                          thread: contextID, question: question)
+                        }
+                    }
                     self?.threadReplied(key: key, question: question, finding: finding)
                 }
             )
@@ -683,11 +746,16 @@ extension SpecReviewModel {
         return chats.loaded(chatKey)
     }
 
-    /// Creates (or refreshes) the thread's chat in the app's center.
+    /// Creates (or refreshes) the thread's chat in the app's center, and
+    /// hands it to the thread center: a question closed meanwhile gets its
+    /// follow-up there.
     private func makeThreadEngine(_ key: String) {
         guard let chats, let state = threadStates[key], let context = state.context,
               let conversationID = state.conversationID else { return }
-        _ = chats.engine(for: SpecReviewThreadSurface.spec(context: context, conversationID: conversationID, dbPool: dbPool))
+        let spec = SpecReviewThreadSurface.spec(context: context, conversationID: conversationID, dbPool: dbPool)
+        _ = chats.engine(for: spec)
+        guard let threadCenter, !context.isOrphaned() else { return }
+        Task { await threadCenter.register(thread: context.contextID) { chats.engine(for: spec) } }
     }
 
     /// A completed thread reply's blocks: a question for the author, a
@@ -719,6 +787,10 @@ extension SpecReviewModel {
         } catch {
             lastError = "Could not read the discussions: \(error.localizedDescription)"
         }
+        // A thread left open when the drawer closed opens again with it.
+        for key in threadItemKeys where threadStates[key] == nil && isThreadOpen(key) {
+            openThread(key)
+        }
     }
 
     /// What `key`'s thread shows.
@@ -726,8 +798,8 @@ extension SpecReviewModel {
         var content = SpecReviewThreadContent()
         content.isOrphaned = isOrphanedItem(key)
         content.persistedMessageCount = threadMessageCounts[key] ?? 0
+        content.isOpen = isThreadOpen(key)
         guard let state = threadStates[key] else { return content }
-        content.isOpen = state.isOpen
         content.isOpening = state.isOpening
         content.loadError = state.loadError
         guard let engine = threadEngine(key) else { return content }
@@ -736,13 +808,147 @@ extension SpecReviewModel {
         let contextID = threadContextID(key)
         let retryID = engine.canRetry && !engine.isBusy
             ? engine.messages.last { $0.message.role == "assistant" }?.id : nil
-        content.entries = Self.threadEntries(
+        let entries = Self.threadEntries(
             messages: engine.messages.map(\.message),
             liveText: { engine.liveTurn?.messageID == $0 ? engine.liveTurn?.text : nil },
-            questions: threadQuestions.filter { $0.thread == contextID },
+            questions: threadCenter?.questions[contextID] ?? threadQuestions.filter { $0.thread == contextID },
             retryID: retryID
         )
+        content.entries = entries.map { entry in
+            guard case let .finding(id, finding) = entry else { return entry }
+            var shown = finding
+            shown.status = proposalStatus(finding, thread: key)
+            return .finding(id: id, shown)
+        }
         return content
+    }
+
+    // MARK: - Add to review, Fix with a conclusion (spec 2026-11-08 §3)
+
+    /// A proposal's identity in its thread, for its **Add to review** status.
+    private func proposalKey(_ finding: SpecReviewProposedFinding, thread key: String) -> String {
+        [key, finding.kind, finding.title, finding.text, finding.quote.source, finding.quote.text]
+            .joined(separator: "\u{1F}")
+    }
+
+    /// Added (this screen's press, or the same finding stored on the ask),
+    /// refused with Go's words, else proposed.
+    private func proposalStatus(_ finding: SpecReviewProposedFinding, thread key: String) -> SpecReviewProposedFinding.Status {
+        if let status = proposalStatuses[proposalKey(finding, thread: key)] { return status }
+        if let stored = threadFindings.first(where: { $0.isSameProposal(as: finding) }) { return .added(key: stored.key) }
+        return .proposed
+    }
+
+    /// **Add to review** on a thread's proposed finding: Go checks its quotes
+    /// and stores it (it then shows in its chapter with **From
+    /// discussion**), or refuses ("not added: quote not found"), which the
+    /// card shows.
+    func addToReview(_ finding: SpecReviewProposedFinding, thread key: String) async {
+        let id = proposalKey(finding, thread: key)
+        do {
+            let added = try await cli.specReviewAddFinding(askID: ask.id, thread: threadContextID(key),
+                                                           block: finding.blockJSON())
+            proposalStatuses[id] = .added(key: added)
+            await load()
+        } catch {
+            proposalStatuses[id] = .refused(error.localizedDescription)
+        }
+    }
+
+    /// The prompt of the hidden turn **Fix** asks a thread for.
+    static let conclusionPrompt = """
+        The owner pressed Fix on this item: it goes to the document's author to fix. Write a one-paragraph \
+        conclusion of this discussion for the author: what to change in the document and why, in the language \
+        of the discussion. Plain text only: no preamble, no headings, no blocks.
+        """
+
+    /// Whether `key`'s card has a thread with messages in it.
+    private func hasThread(_ key: String) -> Bool {
+        (threadMessageCounts[key] ?? 0) > 0 || !(threadEngine(key)?.messages.isEmpty ?? true)
+    }
+
+    /// **Fix**: the `comment` mark at once. On a card with a thread, the
+    /// comment field opens empty and the thread is asked for a conclusion
+    /// (a hidden turn); it fills the field unless the owner typed first.
+    /// When it fails or takes longer than `conclusionTimeout`, the field
+    /// stays as it is with "Couldn't draft a conclusion". Nothing waits for it.
+    func fix(key: String) async {
+        await mark(key, .comment)
+        guard marks[key]?.state == .comment, chats != nil, !isOrphanedItem(key), hasThread(key) else { return }
+        fixDrafts[key] = SpecReviewFixDraft()
+        let conclusion = await withConclusionTimeout { [weak self] in await self?.draftConclusion(key) }
+        guard var draft = fixDrafts[key] else { return }
+        draft.isDrafting = false
+        if let conclusion {
+            if !draft.ownerTyped { draft.text = conclusion }
+        } else {
+            draft.couldNotDraft = true
+        }
+        fixDrafts[key] = draft
+    }
+
+    /// The owner typed in the Fix comment field: a conclusion arriving
+    /// later no longer replaces it.
+    func editFixDraft(_ key: String, text: String) {
+        guard var draft = fixDrafts[key], draft.text != text else { return }
+        draft.text = text
+        draft.ownerTyped = true
+        fixDrafts[key] = draft
+    }
+
+    /// Saves the field as the comment mark's body; an empty field leaves
+    /// the plain Fix.
+    func saveFixDraft(_ key: String) async {
+        let body = fixDrafts[key]?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        fixDrafts[key] = nil
+        guard !body.isEmpty else { return }
+        await mark(key, .comment, body: body)
+    }
+
+    /// Closes the field: the plain Fix stays.
+    func closeFixDraft(_ key: String) {
+        fixDrafts[key] = nil
+    }
+
+    /// The conclusion, or nil when the turn failed, never started, or
+    /// `conclusionTimeout` passed first.
+    private func withConclusionTimeout(_ work: @escaping @MainActor () async -> String?) async -> String? {
+        let once = OnceResume<String?>()
+        return await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            Task { @MainActor in once.resume(await work()) }
+            Task { @MainActor [sleep, conclusionTimeout] in
+                try? await sleep(conclusionTimeout)
+                once.resume(nil)
+            }
+        }
+    }
+
+    /// Waits for a reply in flight, then runs the hidden turn and returns
+    /// its text with any block taken out.
+    private func draftConclusion(_ key: String) async -> String? {
+        if threadStates[key]?.context == nil, threadStates[key]?.isOpening != true {
+            threadStates[key, default: SpecReviewThreadState()].isOpening = true
+            await prepareThread(key)
+        }
+        guard let engine = threadEngine(key) else { return nil }
+        while engine.isBusy { _ = await Self.nextOutcome(of: engine) }
+        engine.sendHidden(Self.conclusionPrompt)
+        guard engine.isBusy, case let .completed(_, result) = await Self.nextOutcome(of: engine) else { return nil }
+        let text = SpecReviewThreadBlocks.parse(result.displayText, final: true).text
+        return text.isEmpty ? nil : text
+    }
+
+    /// The outcome of the engine's next turn to end.
+    private static func nextOutcome(of engine: EmbeddedChatEngine) async -> EmbeddedChatEngine.TurnOutcome {
+        await withCheckedContinuation { continuation in
+            let previous = engine.onTurnFinished
+            engine.onTurnFinished = { [weak engine] outcome in
+                engine?.onTurnFinished = previous
+                previous?(outcome)
+                continuation.resume(returning: outcome)
+            }
+        }
     }
 
     /// A thread's rows in order: the owner's words, the assistant's replies

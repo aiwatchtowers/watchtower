@@ -731,12 +731,16 @@ enum WorkbenchCLIError: LocalizedError, Equatable {
     case specReviewRunning
     /// The command printed bytes that are not UTF-8 text.
     case unreadableOutput(command: String)
+    /// Go refused with exit 3; its words, as the owner sees them (such as
+    /// "not added: quote not found" or "the question is closed").
+    case refused(String)
 
     var errorDescription: String? {
         switch self {
         case .specReviewRunning: "The reviewer is already running"
         case let .unreadableOutput(command): "`watchtower \(command)` printed text that is not UTF-8"
         case let .agentNotFound(agent): TerminalLaunch.exitMessage(code: 127, agent: agent)
+        case let .refused(message): message
         }
     }
 }
@@ -1197,6 +1201,54 @@ struct WorkbenchCLI {
             throw WorkbenchCLIError.unreadableOutput(command: "workbench spec-review thread-context")
         }
         return text
+    }
+
+    /// Files a Discuss thread's question to the author of review ask `askID`
+    /// about item `itemKey` (spec 2026-11-08 §3); the question goes over
+    /// stdin. Returns the question's id. Exit 3 (the thread has an open
+    /// question, the ask has no session) is thrown as `.refused` with Go's
+    /// words.
+    func specReviewQuestion(askID: Int64, itemKey: String, question: String) async throws -> Int64 {
+        let data = try await refusing {
+            try await runner.run(args: ["workbench", "spec-review", "question", "--ask=\(askID)", "--item=\(itemKey)"],
+                                 stdin: Data(question.utf8))
+        }
+        let text = String(bytes: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let id = Int64(text) else {
+            throw WorkbenchCLIError.unreadableOutput(command: "workbench spec-review question")
+        }
+        return id
+    }
+
+    /// Closes an open question the Desktop could not deliver (`reason`
+    /// `gone`). Exit 3 "the question is closed" (answered or expired
+    /// meanwhile) is thrown as `.refused`.
+    func specReviewCloseQuestion(id: Int64, reason: String) async throws {
+        _ = try await refusing {
+            try await runner.run(args: ["workbench", "spec-review", "question", "--close=\(id)", "--reason=\(reason)"])
+        }
+    }
+
+    /// Adds a finding a Discuss thread proposed to review ask `askID`
+    /// (`thread` is the thread's conversation key, `block` the finding's
+    /// JSON on stdin) and returns its key. Go checks its quotes; a refusal
+    /// ("not added: quote not found") is thrown as `.refused`.
+    func specReviewAddFinding(askID: Int64, thread: String, block: Data) async throws -> String {
+        let data = try await refusing {
+            try await runner.run(args: ["workbench", "spec-review", "add-finding", "--ask=\(askID)", "--thread=\(thread)"],
+                                 stdin: block)
+        }
+        struct Added: Decodable { let key: String }
+        return try JSONDecoder().decode(Added.self, from: data).key
+    }
+
+    /// Exit 3 with Go's words on stderr becomes `.refused(words)`.
+    private func refusing(_ run: () async throws -> Data) async throws -> Data {
+        do {
+            return try await run()
+        } catch CLIRunnerError.nonZeroExit(code: 3, let stderr) where !stderr.isEmpty {
+            throw WorkbenchCLIError.refused(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
     }
 
     /// Removes what was installed in the folder, then the workbench and every
