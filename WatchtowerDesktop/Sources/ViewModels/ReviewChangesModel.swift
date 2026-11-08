@@ -1075,10 +1075,13 @@ final class ReviewChangesModel {
     }
 
     /// The chapter has no description in this overview (business spec item 4).
-    /// After a whole run failed the last ready overview stands, out of date:
-    /// its text and risks are shown, not "not described".
+    /// After a whole run failed the last ready overview stands, out of date: a
+    /// chapter it described shows that text and its risks, not "not described".
     func notDescribed(_ key: String) -> Bool {
-        if case .failed = overview { return false }
+        if case .failed = overview, let earlier = lastReadyOverview,
+           !earlier.incomplete.contains(key), earlier.chapters.contains(where: { $0.key == key && $0.what != nil }) {
+            return false
+        }
         return ReviewMapPresentation.notDescribed(chapterStates[key])
     }
 

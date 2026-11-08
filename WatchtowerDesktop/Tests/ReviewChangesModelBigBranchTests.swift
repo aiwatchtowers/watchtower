@@ -225,6 +225,27 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(h.model.chapterDescription("dir:pkg"), "Locks.")
     }
 
+    /// A chapter the earlier overview never described stays "not described"
+    /// after a whole run fails: the out-of-date overview says nothing of it.
+    func testWholeRunFailureKeepsAChapterTheEarlierOverviewMissedNotDescribed() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let first = try await process(h, 0)
+        first.send(#"{"ok":true,"overview":{"summary":"Adds y.","chapters":["#
+            + #"{"key":"dir:cmd","title":"cmd","paths":["cmd/x.go"],"core":false},"#
+            + #"{"key":"dir:pkg","title":"pkg","paths":["pkg/y.go"],"core":false,"what":"Locks."}]},"#
+            + #""incomplete":["dir:cmd"]}"#)
+        first.finish()
+        await h.settle()
+        h.model.makeOverview()
+        let second = try await process(h, 1)
+        second.send(#"{"ok":false,"error":"Another overview of this branch is still running.","error_class":"busy"}"#)
+        second.finish()
+        await h.settle()
+        XCTAssertTrue(h.model.notDescribed("dir:cmd"))
+        XCTAssertFalse(h.model.notDescribed("dir:pkg"))
+    }
+
     /// Describe N remaining redoes exactly the chapters the run did not reach, never a failed one.
     func testDescribeRemainingSkipsFailedChapters() async throws {
         let h = try harness()
