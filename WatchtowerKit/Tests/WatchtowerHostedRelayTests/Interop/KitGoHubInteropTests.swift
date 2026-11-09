@@ -271,7 +271,7 @@ final class Handoff: @unchecked Sendable {
 
 /// The phone's side of one link: its keys, the hub's keys from the code, the replica and the sealing.
 struct PhoneLink {
-    let keys = InMemoryPhoneKeyStore()
+    let keys: InMemoryPhoneKeyStore
     let identity: DeviceIdentityKeys
     let hubID: String
     let hubUUID: UUID
@@ -286,7 +286,9 @@ struct PhoneLink {
         identity.deviceID
     }
 
-    init(code: LinkPayload) throws {
+    /// `now` dates the key store's epoch retention (the rotation run moves it with the hub's clock).
+    init(code: LinkPayload, now: @escaping @Sendable () -> Date = { Date() }) throws {
+        keys = InMemoryPhoneKeyStore(now: now)
         identity = try keys.identity()
         hubID = code.hubID
         hubUUID = try WireBytes.hubUUID(code.hubID)
