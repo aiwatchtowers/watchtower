@@ -95,10 +95,16 @@ final class DesignKitNewComponentsTests: XCTestCase {
     func testCallersFocusBindingReachesAKitField() async throws {
         let unfocused = try await renderKitField(requestFocus: false)
         XCTAssertFalse(unfocused.focused, "the field took focus nobody asked for")
-        XCTAssertFalse(Self.hasAccentLine(unfocused.rep), "an accent border on the unfocused field")
-
         let focused = try await renderKitField(requestFocus: true)
         XCTAssertTrue(focused.focused, "the caller's focus binding did not follow its own write")
+
+        // The border check looks for a saturated line; a Graphite accent
+        // (System Settings → Appearance) draws it grey.
+        let accent = try XCTUnwrap(NSColor.controlAccentColor.usingColorSpace(.deviceRGB))
+        guard Self.isSaturated(accent) else {
+            throw XCTSkip("Graphite accent: focus checked, the border check cannot see a grey border")
+        }
+        XCTAssertFalse(Self.hasAccentLine(unfocused.rep), "an accent border on the unfocused field")
         XCTAssertTrue(Self.hasAccentLine(focused.rep), "no accent border on the focused field")
     }
 
@@ -144,15 +150,19 @@ final class DesignKitNewComponentsTests: XCTestCase {
         return (box.focused, rep)
     }
 
+    /// A colour far enough from grey to be an accent (a device-RGB colour).
+    private static func isSaturated(_ c: NSColor) -> Bool {
+        max(c.redComponent, c.greenComponent, c.blueComponent)
+            - min(c.redComponent, c.greenComponent, c.blueComponent) > 0.3
+    }
+
     /// A long saturated horizontal line: the accent border's top or bottom edge.
     private static func hasAccentLine(_ rep: NSBitmapImageRep) -> Bool {
         for y in 0..<rep.pixelsHigh {
             var run = 0
             for x in 0..<rep.pixelsWide {
                 guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                let spread = max(c.redComponent, c.greenComponent, c.blueComponent)
-                    - min(c.redComponent, c.greenComponent, c.blueComponent)
-                run = spread > 0.3 ? run + 1 : 0
+                run = isSaturated(c) ? run + 1 : 0
                 if run >= 100 { return true }
             }
         }

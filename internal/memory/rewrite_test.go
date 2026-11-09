@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // rewriteNow is a fixed run time used by the rewrite tests; entity ids are
@@ -62,7 +63,7 @@ func TestRewriteEntityPagesHappyPath(t *testing.T) {
 	writeAndIndex(t, v, d, rewriteEntityNode(entID, "Acme", epID))
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 80, OutputTokens: 30, TotalAPITokens: 120, Model: "sonnet"},
+		usage: digest.Usage{Model: "sonnet", Tokens: llmusage.Tokens{Input: 80, Output: 30, CacheRead: 40}},
 		reply: func(string) (string, error) {
 			return rewriteReplyJSON(t, "new what", "new current",
 				[]string{"new fact"}, []episodeRef{{ChannelID: "C1CHAN", TS: "1710000000.000100"}}), nil
@@ -74,7 +75,7 @@ func TestRewriteEntityPagesHappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{entID}, rewritten)
 	require.NotNil(t, usage)
-	assert.Equal(t, 30, usage.OutputTokens)
+	assert.Equal(t, 30, usage.OutputTokens())
 	require.Len(t, gen.calls, 1)
 
 	page, err := v.ReadNode(entID)

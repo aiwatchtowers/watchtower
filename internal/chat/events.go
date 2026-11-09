@@ -9,6 +9,9 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"watchtower/internal/llmusage"
+	"watchtower/internal/providers"
 )
 
 // Protocol v2 event types (spec §1.1). There is deliberately no "reset":
@@ -72,14 +75,38 @@ type Event struct {
 	Sources   []Source        `json:"sources,omitempty"`
 	TokensIn  int             `json:"tokens_in,omitempty"`
 	TokensOut int             `json:"tokens_out,omitempty"`
-	Model     string          `json:"model,omitempty"`
-	Provider  string          `json:"provider,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Status    string          `json:"status,omitempty"`
-	Code      string          `json:"code,omitempty"`
-	Message   string          `json:"message,omitempty"`
-	Retryable bool            `json:"retryable,omitempty"`
-	ActionID  int64           `json:"action_id,omitempty"`
+	// FreshIn, CacheRead, CacheWrite (5 m + 1 h), CostUSD (the provider's
+	// own) and Estimated are a usage event's split beside tokens_in, which
+	// stays every input token (CHAT-01).
+	FreshIn           int64    `json:"fresh_in,omitempty"`
+	CacheRead         int64    `json:"cache_read,omitempty"`
+	CacheWrite        int64    `json:"cache_write,omitempty"`
+	CostUSD           *float64 `json:"cost_usd,omitempty"`
+	Estimated         bool     `json:"estimated,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	Provider          string   `json:"provider,omitempty"`
+	SessionID         string   `json:"session_id,omitempty"`
+	PreferredProvider string   `json:"preferred_provider,omitempty"`
+	RoutingMode       string   `json:"routing_mode,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	Status            string   `json:"status,omitempty"`
+	Code              string   `json:"code,omitempty"`
+	Message           string   `json:"message,omitempty"`
+	Retryable         bool     `json:"retryable,omitempty"`
+	ActionID          int64    `json:"action_id,omitempty"`
+	// Capabilities is the actual provider's capability row on a
+	// session_ready (EventWriter fills it from Provider): what this
+	// session's transport offers, a fallback route's included.
+	Capabilities *providers.Capabilities `json:"capabilities,omitempty"`
+}
+
+// usageEvent is turnID's usage event for model: tokens_in is every input
+// token, the split rides beside it.
+func usageEvent(turnID, model string, t llmusage.Tokens) Event {
+	return Event{Type: EventUsage, TurnID: turnID, Model: model,
+		TokensIn: int(t.AllInput()), TokensOut: int(t.Output),
+		FreshIn: t.Input, CacheRead: t.CacheRead, CacheWrite: t.CacheWrite(),
+		CostUSD: t.ReportedCostUSD, Estimated: t.Estimated}
 }
 
 // ToolWaitMessage is the waiting step's label.
@@ -158,6 +185,11 @@ func NewEventWriter(w io.Writer) *EventWriter { return &EventWriter{w: w} }
 
 // Emit writes one event line.
 func (w *EventWriter) Emit(e Event) error {
+	if e.Type == EventSessionReady && e.Provider != "" && e.Capabilities == nil {
+		if c, ok := providers.CapsFor(e.Provider); ok {
+			e.Capabilities = &c
+		}
+	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("encoding %s event: %w", e.Type, err)

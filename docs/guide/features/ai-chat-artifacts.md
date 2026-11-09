@@ -54,19 +54,39 @@ An HTML page, such as a slide deck, shows rendered in the panel once it is fully
 
 Drafts are never sent by Watchtower. An email opens in Gmail compose (**Open in Gmail**) or **Open in Mail**, a Slack draft is copied with its channel opened, and an event opens Google Calendar's new-event page.
 
-### Publishing to claude.ai
+### Printing, PDF and Word
 <!-- learn
-id: artifacts-publish-claude-ai
-title: Publish a page to claude.ai
-text: On the Claude provider, a page or doc you ask for is published privately to claude.ai; **Copy Link** shares it.
+id: artifacts-print-pdf-word
+title: Print a document or save it as PDF
+text: Press **Print…** on a document or HTML artifact; the print panel's **PDF** menu saves a PDF.
 area: assistant
-level: power
-kind: feature
-since: 0.24.0
+level: next
+kind: tip
+since: 0.27.0
 action: nav:chat
 -->
 
-On the Claude provider, signed in with a claude.ai account, a page, a slide deck or a document you ask for in the main chat is published privately to your claude.ai account instead of the artifact panel. Say "keep it in the app" to get the in-app artifact instead. Drafts to send, tables and code stay in the panel.
+A document or HTML page has **Print…** in the panel's toolbar, and **⌘P** does the same while it is shown. It opens the standard macOS print panel; choose **Save as PDF** from its **PDF** menu to keep a PDF. A document prints as formatted text, an HTML page as it renders, still with no internet access. Both wait until the artifact is fully written.
+
+A slide deck prints one slide per page. A deck made before this version may print only the slide on screen; ask the chat for the deck again to get one that prints whole.
+
+A document also has **Export as Word…**, which saves it as a `.docx` file with its headings and text. Tables come out as rows of plain paragraphs and lists as bullet lines; to keep a table as a table, export the table artifact as CSV. **Export…** still saves the Markdown.
+
+### Publishing to claude.ai
+<!-- learn
+id: artifacts-publish-claude-ai-on-ask
+title: Publish a page to claude.ai
+text: On the Claude provider, ask to publish a page or doc to claude.ai; **Copy Link** shares it.
+area: assistant
+level: power
+kind: feature
+since: 0.27.0
+action: nav:chat
+replaces: [artifacts-publish-claude-ai]
+changed: Pages and docs now stay in the app unless you ask for claude.ai.
+-->
+
+On the Claude provider, signed in with a claude.ai account, the main chat can publish a page, a slide deck or a document privately to your claude.ai account. Pages, decks and documents open in the artifact panel by default; ask for it on claude.ai ("publish it to claude.ai", "make it a Claude Doc") to get a link instead. Drafts to send, tables and code always stay in the panel.
 
 The reply ends with a **Published on claude.ai** card naming the page. **Open in Browser** opens it on claude.ai; **Copy Link** copies the link. Only you can see the page until you share it on claude.ai yourself. Asking for a change in the same chat publishes the new version to the same link; once that chat has restarted (after a quiet spell or a settings change), updating the old page waits for your Approve first.
 
@@ -90,6 +110,7 @@ A document, table, code or HTML page has **Add to Knowledge** in its header. It 
 
 - **An HTML page shows nothing yet.** It renders once it is fully written.
 - **A page loads no images or styles.** It runs with every network load blocked; ask for one self-contained file.
+- **Print… is greyed out.** The artifact is still being written, or it is empty.
 - **No Add to Knowledge button.** Only documents, tables, code and HTML pages have it, and not in a code question chat.
 - **No passage comments on an HTML page.** HTML pages take none; ask for the change in the chat.
 

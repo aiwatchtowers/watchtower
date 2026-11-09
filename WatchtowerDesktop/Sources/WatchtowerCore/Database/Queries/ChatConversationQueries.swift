@@ -164,6 +164,20 @@ package enum ChatConversationQueries {
         )
     }
 
+    /// Explicit complete choice. Automatic also explicitly removes the model pin.
+    package static func setRouting(_ db: Database, id: Int64, automatic: Bool, provider: String, model: String?) throws {
+        guard automatic || ManagedPolicy.knownProviders.contains(provider) else {
+            throw DatabaseError(message: "Invalid chat provider")
+        }
+        try db.execute(sql: """
+            UPDATE chat_conversations SET routing_mode = ?, provider = ?, model = ?,
+                actual_provider = '', actual_model = '', routing_reason = '' WHERE id = ?
+            """, arguments: [
+                automatic ? "preferred_reserve" : "pinned", automatic ? nil : provider, automatic ? nil : model, id
+            ])
+        try db.requireUpdated("chat", id: id)
+    }
+
     package static func setProviderModel(_ db: Database, id: Int64, provider: String, model: String?) throws {
         try db.execute(
             sql: "UPDATE chat_conversations SET provider = ?, model = ? WHERE id = ?",

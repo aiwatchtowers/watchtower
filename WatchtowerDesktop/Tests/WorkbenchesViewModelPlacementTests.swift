@@ -358,6 +358,62 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         }
     }
 
+    /// `placedRow` rewritten to a kind this build does not know (a newer
+    /// version's agent), as the database would hold it. The check stays off
+    /// on the pool's writer: the newer version's migration widened the
+    /// `kind` CHECK, so the app's own updates of the row (`touch`) pass.
+    private func unsupportedPlacedRow(_ p: Int64, gone: Bool) async throws -> TerminalSession {
+        let row = try await placedRow(p, gone: gone)
+        return try await pool.write { db in
+            try db.execute(sql: "PRAGMA ignore_check_constraints = ON")
+            try db.execute(sql: "UPDATE terminal_sessions SET kind = 'gemini' WHERE id = ?", arguments: [row.id])
+            return try XCTUnwrap(TerminalSessionQueries.fetch(db, id: row.id))
+        }
+    }
+
+    /// A7b: a stopped session of an unknown kind whose worktree is gone is
+    /// refused before anything per-kind runs — no `worktree ensure` (whose
+    /// missing `--agent` would install every agent's integration), no git
+    /// status, no launch — and says it is not supported.
+    func testResumeOfAnUnsupportedKindWithItsWorktreeGoneRestoresNothing() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await unsupportedPlacedRow(p, gone: true)
+        XCTAssertEqual(row.kind, .unsupported("gemini"))
+
+        await vm.open(row)
+
+        XCTAssertNil(vm.sessionActionErrors[p], "a refusal, not an error")
+        XCTAssertTrue(runner.ensureCalls.isEmpty, "\(runner.calls)")
+        XCTAssertTrue(runner.folderStatusCalls.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktree), "the checkout is not recreated")
+        XCTAssertEqual(center.states[row.id], .unavailable(TerminalSession.Kind.unsupportedMessage("gemini")))
+        XCTAssertTrue(launches.isEmpty)
+
+        // Start fresh takes the same refusal.
+        await vm.startFresh(row)
+        XCTAssertTrue(runner.ensureCalls.isEmpty)
+        XCTAssertEqual(center.states[row.id], .unavailable(TerminalSession.Kind.unsupportedMessage("gemini")))
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    /// A7b: with its worktree present, the unknown kind reads no git status
+    /// and no ledger either.
+    func testResumeOfAnUnsupportedKindWithItsWorktreePresentChecksNothing() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        let row = try await unsupportedPlacedRow(p, gone: false)
+
+        await vm.open(row)
+
+        XCTAssertTrue(runner.folderStatusCalls.isEmpty, "\(runner.calls)")
+        XCTAssertTrue(runner.ensureCalls.isEmpty)
+        XCTAssertEqual(center.states[row.id], .unavailable(TerminalSession.Kind.unsupportedMessage("gemini")))
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     func testResumeOfACleanedUpWorktreeReAddsIt() async throws {
         let p = try await workbench(setup: "make deps")
         let runner = PlacementRunner(workbenchID: p, worktree: worktree)
@@ -372,6 +428,7 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         let call = try XCTUnwrap(runner.ensureCalls.first)
         XCTAssertEqual(call.firstIndex(of: "--path").map { call[$0 + 1] }, worktree)
         XCTAssertEqual(call.firstIndex(of: "--branch").map { call[$0 + 1] }, "wt/session-2")
+        XCTAssertEqual(call.firstIndex(of: "--agent").map { call[$0 + 1] }, "claude", "always the row's own agent")
         let launch = try XCTUnwrap(launches.last)
         XCTAssertEqual(launch.currentDirectory, worktree)
         XCTAssertFalse(launch.environment.contains { $0.hasPrefix(TerminalLaunch.setupCommandEnv) }, "a resume never runs the setup command")
@@ -442,26 +499,175 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         XCTAssertNotEqual(center.states[row.id].map { if case .unavailable = $0 { true } else { false } }, true)
     }
 
-    func testResumeOfAWorktreeNowOnAnotherBranchIsUnavailable() async throws {
+    private static let otherBranchStatus = #"""
+        {"workbench_id":1,"git_available":true,"git":true,"branch":"fix/onboarding","status_ok":true,
+         "folder_scope":"worktree"}
+        """#
+    private static let detachedStatus = #"""
+        {"workbench_id":1,"git_available":true,"git":true,"branch":"","detached":true,"status_ok":true,
+         "folder_scope":"worktree"}
+        """#
+
+    /// A pair the state hooks record when a session's agent works in a
+    /// worktree (`terminal_session_worktrees`, migration 00111).
+    private func ledger(_ sessionID: Int64, root: String, branch: String) async throws {
+        try await pool.write { db in
+            try db.execute(
+                sql: "INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at) VALUES (?, ?, ?, ?)",
+                arguments: [sessionID, root, branch, "2026-11-03T10:00:00Z"]
+            )
+        }
+    }
+
+    /// The top as the Go hooks store it: realpath(3), so /private/var.
+    private var resolvedWorktree: String { CodeRootPolicy.symlinkResolvedPath(worktreeURL) }
+
+    private func assertRefused(_ row: TerminalSession, now: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(
+            center.states[row.id],
+            .unavailable("The worktree at \(worktree) is now on \(now), not wt/session-2 — start a new session."),
+            file: file, line: line
+        )
+        XCTAssertTrue(launches.isEmpty, "never a launch in another session's worktree", file: file, line: line)
+    }
+
+    private func assertLaunched(_ row: TerminalSession, file: StaticString = #filePath, line: UInt = #line) async throws {
+        XCTAssertEqual(launches.last?.currentDirectory, worktree, file: file, line: line)
+        XCTAssertNotEqual(
+            center.states[row.id].map { if case .unavailable = $0 { true } else { false } }, true, file: file, line: line
+        )
+        let stored = try await pool.read { try TerminalSessionQueries.fetch($0, id: row.id) }
+        XCTAssertEqual(stored?.worktreeBranch, "wt/session-2", "the row's branch stays: cleanup relies on it",
+                       file: file, line: line)
+    }
+
+    func testResumeOnABranchTheSessionNeverUsedIsUnavailable() async throws {
         let p = try await workbench()
         let runner = PlacementRunner(workbenchID: p, worktree: worktree)
-        runner.setFolderStatusReply(#"""
-            {"workbench_id":1,"git_available":true,"git":true,"branch":"wt/session-2-2","status_ok":true,
-             "folder_scope":"worktree"}
-            """#)
+        runner.setFolderStatusReply(Self.otherBranchStatus)
         let vm = await makeVM(runner)
         let row = try await placedRow(p, gone: false)
+        try await ledger(row.id, root: resolvedWorktree, branch: "wt/session-2")
 
         await vm.open(row)
 
         let call = try XCTUnwrap(runner.folderStatusCalls.first)
         XCTAssertEqual(call.firstIndex(of: "--folder").map { call[$0 + 1] }, worktree)
-        XCTAssertEqual(
-            center.states[row.id],
-            .unavailable("The worktree at \(worktree) is now on wt/session-2-2, not wt/session-2 — start a new session.")
-        )
-        XCTAssertTrue(launches.isEmpty, "never a launch in another session's worktree")
+        assertRefused(row, now: "fix/onboarding")
         XCTAssertTrue(runner.ensureCalls.isEmpty)
+    }
+
+    func testResumeOnABranchItsOwnAgentSwitchedToLaunches() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        // The agent ran `git checkout -b` inside its own worktree.
+        runner.setFolderStatusReply(Self.otherBranchStatus)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+        try await ledger(row.id, root: resolvedWorktree, branch: "fix/onboarding")
+
+        await vm.open(row)
+
+        try await assertLaunched(row)
+    }
+
+    func testResumeOnABranchAnotherSessionUsedThereIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(Self.otherBranchStatus)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+        // Another session's agent (a Delete Only'd row's worktree, or one
+        // made by hand at this path) worked here on that branch.
+        let other = try await placedRow(p, gone: false)
+        try await ledger(other.id, root: resolvedWorktree, branch: "fix/onboarding")
+
+        await vm.open(row)
+
+        assertRefused(row, now: "fix/onboarding")
+    }
+
+    func testResumeOnADetachedHeadItsOwnAgentMadeLaunches() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(Self.detachedStatus)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+        try await ledger(row.id, root: resolvedWorktree, branch: "")
+
+        await vm.open(row)
+
+        try await assertLaunched(row)
+    }
+
+    func testResumeOnADetachedHeadWithoutALedgerPairIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(Self.detachedStatus)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+        try await ledger(row.id, root: resolvedWorktree, branch: "fix/onboarding")
+
+        await vm.open(row)
+
+        assertRefused(row, now: "a detached HEAD")
+    }
+
+    func testResumeOnAnUnnamedBranchNeverMatchesADetachedPair() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(#"""
+            {"workbench_id":1,"git_available":true,"git":true,"branch":"","status_ok":true,
+             "folder_scope":"worktree"}
+            """#)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+        try await ledger(row.id, root: resolvedWorktree, branch: "")
+
+        await vm.open(row)
+
+        assertRefused(row, now: "an unnamed branch")
+    }
+
+    func testResumeMatchesALedgerRootStoredSymlinkResolved() async throws {
+        XCTAssertNotEqual(worktree, resolvedWorktree, "the temporary folder sits behind a symlink (/var → /private/var)")
+        try await assertLaunchesWithLedgerRoot(resolvedWorktree)
+    }
+
+    func testResumeMatchesALedgerRootStoredAsGiven() async throws {
+        try await assertLaunchesWithLedgerRoot(worktree)
+    }
+
+    private func assertLaunchesWithLedgerRoot(_ root: String) async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setFolderStatusReply(Self.otherBranchStatus)
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: false)
+        try await ledger(row.id, root: root, branch: "fix/onboarding")
+
+        await vm.open(row)
+
+        try await assertLaunched(row)
+    }
+
+    func testResumeWhenEnsureFindsTheDirectoryOnAnUnusedBranchIsUnavailable() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        runner.setEnsureReply(#"""
+            {"workbench_id":1,"created":false,"path":"","cwd":"","branch":"","base":"","base_branch":"",
+             "base_dirty":false,"included":[],"include_warnings":[]}
+            """#)
+        runner.setFolderStatusReply(Self.otherBranchStatus)
+        let url = worktreeURL
+        runner.onEnsure = { try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+        let vm = await makeVM(runner)
+        let row = try await placedRow(p, gone: true)
+
+        await vm.open(row)
+
+        XCTAssertEqual(runner.ensureCalls.count, 1)
+        assertRefused(row, now: "fix/onboarding")
     }
 
     func testResumeOfAWorktreeWhoseStatusFailsIsUnavailable() async throws {

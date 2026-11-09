@@ -15,7 +15,7 @@ type AutomationRunReplay struct {
 	ArgsHash   string
 	ResultJSON *string // nil = the call returned undefined
 	ErrorJSON  string  // "" = the call did not throw
-	ClockJSON  string  // a JSON array of ms values; "" is written as []
+	ClockJSON  string  // Internal replay metadata: legacy ms array or v1 envelope with reads and unknown_model_usage; "" writes [].
 	Pending    bool
 }
 

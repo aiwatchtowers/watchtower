@@ -71,8 +71,23 @@ package final class EmbeddedChatEngine {
     package private(set) var postTurnResults: [Int64: ChatPostTurnResult] = [:]
     /// The latest turn failed on the provider's side: Retry may rerun it.
     package private(set) var canRetry = false
+    package private(set) var reviewedMessageID: Int64?
+    package private(set) var reviewedActions: [AgentAction] = []
+
+    /// Read existing receipts only. This never acquires a stream slot or sends a prompt.
+    package func reviewActions(messageID: Int64) {
+        guard let message = messages.first(where: { $0.id == messageID })?.message else { return }
+        do {
+            reviewedActions = try store.actions(turnID: message.turnID)
+            reviewedMessageID = messageID
+        } catch { report(error, prefix: "Couldn't load existing actions") }
+    }
 
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
+    /// A turn will not come: a queued turn was withdrawn before it started
+    /// (Stop, the quit, a shutdown), or the center let the engine go. No
+    /// `onTurnFinished` follows for it; a waiter for the next outcome ends here.
+    @ObservationIgnored package var onTurnDropped: (() -> Void)?
     /// A new owner message is on disk (text, conversation id, message id), for
     /// a database chat whose spec carries the owner's instructions; remember
     /// in place hangs here. Never awaited: it cannot delay the turn.
@@ -163,6 +178,9 @@ package final class EmbeddedChatEngine {
         let bannerAtBegin: String?
         var stopRequested = false
         var failure: EmbeddedChatErrorClassifier.Failure?
+        /// The reply's text when its latest tool step started: what follows
+        /// it is `ChatPostTurnInput.finalText`.
+        var textAtLastStep = ""
     }
 
     package init(
@@ -316,6 +334,7 @@ package final class EmbeddedChatEngine {
     /// The center lets go of the engine. `quietly`: its context was deleted,
     /// so "not found" write errors have nowhere to be shown.
     package func shutdown(quietly: Bool) {
+        defer { onTurnDropped?() }
         isQuiet = quietly
         cancelQueued()
         finishAsPartial()
@@ -373,6 +392,7 @@ package final class EmbeddedChatEngine {
     /// the queue. The caller decides where the owner text goes.
     private func withdrawQueued() -> TurnRequest? {
         guard let request = pending else { return nil }
+        defer { onTurnDropped?() }
         gate.cancel(request.slot)
         pending = nil
         isQueued = false
@@ -458,7 +478,9 @@ package final class EmbeddedChatEngine {
             provider: options.provider,
             toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turn.turnID),
             readFolder: options.readFolder,
-            ownerInstructions: spec.ownerInstructions
+            ownerInstructions: spec.ownerInstructions,
+            purpose: options.purpose,
+            readFolderAskID: options.readFolderAskID
         )
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)
@@ -472,6 +494,28 @@ package final class EmbeddedChatEngine {
             for try await event in stream {
                 guard isCurrent(turn) else { return }
                 running?.lastEvent = clock()
+                if case .failure(let failure) = event {
+                    fail(EmbeddedChatErrorClassifier.classify(failure))
+                    continue
+                }
+                if case let .routing(provider, model, _) = event {
+                    let store = store
+                    await writes.run { [self] in
+                        do {
+                            try await store.saveActual(messageID: turn.messageID, provider: provider, model: model)
+                        } catch {
+                            failForStore(error, prefix: "Couldn't save the actual provider")
+                        }
+                    }
+                    continue
+                }
+                if recordStepOrUsage(event, turn: turn) {
+                    // A tool call's start is the cutoff, not its end: a
+                    // provider may close an open step after the final text
+                    // (a skipped result line), which must not drop it.
+                    if case .toolStart = event { running?.textAtLastStep = turn.fullText }
+                    continue
+                }
                 switch reducer.apply(event) {
                 case .text(let text):
                     turn.replaceText(text, now: clock())
@@ -489,6 +533,41 @@ package final class EmbeddedChatEngine {
         }
         guard isCurrent(turn) else { return }
         endRunningTurn()
+    }
+
+    /// A tool step is shown on the live row and written as it starts and as
+    /// it ends, in order with the turn's other writes (CHAT-02); the usage is
+    /// kept on the turn and written with the reply's final state. False for
+    /// any other event. A failed step write raises the banner and leaves the
+    /// turn running, as the main chat leaves it (bookkeeping never ends the
+    /// owner's answer), also when it fails after the turn ended.
+    private func recordStepOrUsage(_ event: StreamEvent, turn: LiveTurn) -> Bool {
+        let now = clock()
+        let store = store
+        let messageID = turn.messageID
+        switch event {
+        case .toolStart(let start):
+            let seq = turn.startStep(start, at: now)
+            persistStep { try await store.stepStarted(messageID: messageID, seq: seq, start: start, at: now) }
+        case .toolEnd(let end):
+            turn.finishStep(end, at: now)
+            persistStep { try await store.stepFinished(messageID: messageID, end: end, at: now) }
+        case .usage(let usage):
+            turn.setUsage(usage)
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func persistStep(_ write: @escaping @MainActor () async throws -> Void) {
+        writes.start { [self] in
+            do {
+                try await write()
+            } catch {
+                report(error, prefix: "Couldn't save a step of the reply")
+            }
+        }
     }
 
     /// Records the turn's failure; the first one wins.
@@ -624,13 +703,15 @@ package final class EmbeddedChatEngine {
     private func endNow(_ current: RunningTurn) async -> TurnEnd {
         let turn = current.turn
         let text = turn.fullText
+        // A typed started-quota error is terminal even while its process is
+        // draining stdout. A later Stop must not erase its no-replay semantics.
+        if let failure = current.failure, !current.stopRequested || failure.code == .quotaExhausted {
+            return .ended(await failTurn(turn, text: text, failure: failure))
+        }
         if current.stopRequested {
             turn.finish(.interrupted, at: clock())
             await persistFinal(turn, text: text, status: "partial", failure: nil)
             return .ended(.stopped(messageID: turn.messageID))
-        }
-        if let failure = current.failure {
-            return .ended(await failTurn(turn, text: text, failure: failure))
         }
         // The reply must be on disk before postTurn acts on it.
         let store = store
@@ -647,8 +728,9 @@ package final class EmbeddedChatEngine {
 
     private func finalizeCompleted(_ current: RunningTurn, reply text: String) async -> TurnOutcome {
         let turn = current.turn
-        let result = await spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
-                                                           alreadyApplied: current.request.alreadyApplied))
+        let result = await spec.postTurn(ChatPostTurnInput(
+            reply: text, finalText: ChatPostTurnInput.textAfter(current.textAtLastStep, in: text),
+            turnID: turn.turnID, messageID: turn.messageID, alreadyApplied: current.request.alreadyApplied))
         // An action surface may answer with tool proposals only and show a
         // placeholder; a reply that still has nothing to show is an error.
         if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -714,7 +796,10 @@ package final class EmbeddedChatEngine {
         let sessionError = ChatSessionError(turnID: turn.turnID, code: failure.code ?? .internalError,
                                             message: failure.message, retryable: failure.retryable)
         turn.finish(.failed(sessionError), at: clock())
-        if persist { await persistFinal(turn, text: text, status: "error", failure: failure) }
+        if persist {
+            let status = failure.code == .quotaExhausted && !text.isEmpty ? "partial" : "error"
+            await persistFinal(turn, text: text, status: status, failure: failure)
+        }
         canRetry = failure.retryable
         return .failed(messageID: turn.messageID, message: failure.message)
     }
@@ -729,7 +814,9 @@ package final class EmbeddedChatEngine {
         let store = store
         let errorCode = failure.map { ($0.code ?? .internalError).rawValue }
         do {
+            let usage = turn.usage
             try await writes.runThrowing {
+                if let usage { try await store.saveUsage(messageID: turn.messageID, usage: usage) }
                 try await store.finalize(messageID: turn.messageID, text: text, status: status,
                                          errorCode: errorCode, errorMessage: failure?.message)
             }
@@ -797,8 +884,17 @@ package final class EmbeddedChatEngine {
     }
 
     private func reload() throws {
-        messages = try store.loadMessages().map {
-            ChatThreadItem(message: $0, steps: [], siblingIndex: 1, siblingCount: 1)
+        let rows = try store.loadMessages()
+        // The messages still show when their steps cannot be read.
+        let steps: [Int64: [ChatTurnStep]]
+        do {
+            steps = try store.steps(messageIDs: rows.filter { !$0.isUser }.map(\.id))
+        } catch {
+            log("reading the replies' steps: \(error)")
+            steps = [:]
+        }
+        messages = rows.map {
+            ChatThreadItem(message: $0, steps: steps[$0.id] ?? [], siblingIndex: 1, siblingCount: 1)
         }
     }
 

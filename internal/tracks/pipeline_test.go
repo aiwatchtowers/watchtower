@@ -12,6 +12,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
 
 	"github.com/stretchr/testify/assert"
@@ -23,7 +24,7 @@ type mockGenerator struct {
 }
 
 func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
-	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 func testDB(t *testing.T) *db.DB {
@@ -631,7 +632,7 @@ func (m *routingMockGenerator) Generate(_ context.Context, _, userMessage, _ str
 	if strings.Contains(userMessage, "=== CHANNEL DIGESTS ===") {
 		resp = m.batchResponse
 	}
-	return resp, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+	return resp, &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 func TestBatchTracksIntegration(t *testing.T) {
@@ -741,7 +742,7 @@ func TestStoreTrackItems(t *testing.T) {
 		},
 	}
 
-	usage := &digest.Usage{InputTokens: 200, OutputTokens: 100, CostUSD: 0}
+	usage := &digest.Usage{Tokens: llmusage.Tokens{Input: 200, Output: 100}}
 	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", usage, 1, 1000, 2000)
 	require.NoError(t, storeErr)
 	assert.Equal(t, 2, stored)
@@ -1195,7 +1196,7 @@ type capturingGenerator struct {
 func (m *capturingGenerator) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
 	m.systemSeen = system
 	m.userSeen = user
-	return m.response, &digest.Usage{InputTokens: 100, OutputTokens: 50, CostUSD: 0}, "mock-session", nil
+	return m.response, &digest.Usage{Tokens: llmusage.Tokens{Input: 100, Output: 50}}, "mock-session", nil
 }
 
 // TestTracksLearnedPrefsInPrompt verifies a "tracks" learned rule is formatted

@@ -1,75 +1,68 @@
-# Claude plan limits — 5h / weekly usage + projection (2026-10-15)
+# Subscription plan limits — Claude and Codex
 
-Spec: `docs/superpowers/specs/2026-10-15-claude-plan-limits-design.md`. Plan: `docs/superpowers/plans/2026-10-15-claude-plan-limits.md`. Contracts: PLANUSAGE-01..03 in `docs/inventory/plan-usage.md`.
+Spec: `docs/superpowers/specs/2026-11-01-plans-codex-design.md`. Plan: `docs/superpowers/plans/2026-11-01-plans-codex.md` (approved ask #936). Claude credential/notification contracts remain PLANUSAGE-01..03 in `docs/inventory/plan-usage.md`.
 
 ## Summary
 
-Shows how much of the account's Claude plan limits is used — the 5-hour session window, the weekly window and per-model weekly limits — and a projection of when each limit is hit at the current pace. The limits are account-wide (Claude chats, Cowork and Claude Code all draw from them), so the feature is named "Claude plan", not "Claude Code"; the Claude Code OAuth token is only the means of reading the numbers. Feature Manager id `claude-plan-limits`, config key `plan_usage.enabled`, default on, no AI calls (`CostNone`).
+**Usage → Plans** shows separate Claude and Codex subscription cards, published usage history and a forecast to each window's reset. All quota buckets remain available in the screen and popup; percentages are never summed. Feature id `claude-plan-limits`, config `plan_usage.enabled`, default on and `CostNone` are retained; its displayed name is **Subscription plan limits**.
 
-## Data source
+## Sources and identity
 
-`GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <access token>` and `anthropic-beta: oauth-2025-04-20` (the endpoint Claude Code's `/usage` reads). It is undocumented, so `planusage.Parse` is lenient: unknown keys are ignored, every field is optional, and a body with no usable limit is a parse error, never a crash. HTTP timeout 15 s, `User-Agent: watchtower/<version>`.
+Claude uses the read-only Claude Code credential loader and `GET https://api.anthropic.com/api/oauth/usage`. The macOS Keychain item is tried before Claude Code's credential file. Watchtower never refreshes or writes Claude credentials; an expired token sends no request, and a 401 marks the snapshot stale until Claude Code refreshes its own sign-in.
 
-- `limits[]` is the primary list. Each entry gets a stable key `<kind>:<slug(name)>`, where slug trims, lowercases and turns spaces into `-` (the slug comes from the model `display_name`, for example `weekly_scoped:opus` or `weekly_scoped:fable`); `session` and `weekly_all` carry no scope and keep the bare kind. An unknown kind with no scope keeps the bare kind as both key and label. Labels read "5-hour", "Weekly", "Weekly · <model>".
-- If `limits` is absent or empty the parser falls back to `five_hour` → `session`, `seven_day` → `weekly_all`, and `seven_day_opus` / `seven_day_sonnet` when non-null.
-- `percent` is clamped to 0…100 and kept as a float. `severity` is stored verbatim as a hint only; the UI thresholds are our own.
-- `seven_day_breakdown.rows` (key, label, percent) is kept for the card.
+Codex uses the installed CLI's bounded JSON-RPC app-server in a neutral directory. Its only conversation is initialize → initialized → `account/read` with `refreshToken:false` → `account/rateLimits/read` with `excludeResetCreditDetails:true`. It makes no model/thread/turn, login/logout or reset-credit request, enables no experimental capability, and does not read `auth.json`. The process group is reaped on success, failure, timeout and cancellation.
 
-## Credentials
+Nonempty `rateLimitsByLimitId` wins over legacy `rateLimits`. Every bucket and optional primary/secondary window keeps a collision-free key; duration comes from `windowDurationMins`, never slot position. Actual 300/10080-minute windows map to five hours/week; other positive durations keep their own labels, and missing windows are not invented. Malformed data is a parse failure rather than 0%.
 
-`planusage.CredentialSource` is read-only: the macOS Keychain item `Claude Code-credentials` through `/usr/bin/security find-generic-password -s … -w` (the token arrives on our stdout pipe, never argv), then `~/.claude/.credentials.json`. It uses `claudeAiOauth.accessToken`, `expiresAt` and `subscriptionType`.
+Codex history is scoped by SHA-256 of the Codex-home namespace plus the same response's account id. Raw identity, email, credentials and stderr are excluded from storage errors, plot JSON and the public CLI. A successful response without identity may publish its own current numbers, but stores no samples and has no history/forecast. A failed response without confirmation hides retained scoped numbers. Account switches cannot reuse another account's samples. API-key-only authentication is unsupported for subscription quotas.
 
-Watchtower never refreshes the token — a refresh rotates the refresh token and would sign Claude Code out (PLANUSAGE-01). An expired token, or a 401, gives status `stale` / reason `token_expired`; the next poll re-reads the credentials, so the numbers return once Claude Code refreshes its own token. No credentials gives `unavailable` / `no_credentials`. The token is never logged, stored or put in an error (PLANUSAGE-02; errors are redacted).
+## Polling and writers
 
-## Poller
+Each provider runs independently: first attempt after 10 seconds, success every 5 minutes, transient-failure delays 5 → 10 → 20 → 30 minutes (cap), reset after success. A busy background lock skips the cycle without writing status or changing the failure count; its next tick is 5 minutes later. One failure never holds back the other provider.
 
-`planusage.Poller` runs as a goroutine in the daemon (`cmd/plan_usage_daemon.go` wires it with `d.SetPlanUsage`), on its own ticker, independent of the sync cadence.
+All production writers share stable workspace lockfiles `.plan-usage-claude.lock` and `.plan-usage-codex.lock` (0600): daemon, aggregate refresh, legacy Claude refresh and disabled-state publication. Lockfiles are never replaced/unlinked. Manual refresh waits at most 20 seconds within a 45-second provider budget, rechecks the feature and snapshot under lock, then performs one fetch and publication. Separate external CLI refreshes each fetch once; the Desktop coalesces refreshes per provider and every caller awaits the shared result.
 
-- First poll 10 s after start, then every 5 min.
-- 429 / 5xx / network / parse failure: status `error` (reason `http_<code>`, `network` or `parse`), the last good numbers are kept, `last_error` + `last_error_at` are recorded, and the next delay backs off 5 → 10 → 20 → 30 min (cap). A 401 or an expired token resets the failure count and polls at the normal interval.
-- `watchtower usage plan --now` (and the Desktop Refresh button, which runs it) forces one poll outside the ticker through the same `PollOnce`.
-- A poll cancelled by shutdown (context cancelled during the credentials read or the fetch) returns the context error, writes no status row and counts no failure.
-- Feature off: no polls; the daemon calls `MarkDisabled`, which sets status `disabled` and keeps the last numbers.
+Network/process work is outside SQL transactions. Context-aware reads and transactions prevent cancellation during the storage phase from publishing a status; a cancelled transaction rolls back and does not advance backoff. Turning the common feature off stops both sources. Manual refresh while off only reads retained data.
 
-## Storage — migration 00115
+## Storage and publication
 
-- `plan_usage_samples(taken_at, limit_key, percent, resets_at)`, PK `(limit_key, taken_at)`; one row per limit per successful poll, pruned after 8 days following each successful poll.
-- `plan_usage_status`, singleton (`id = 1`): `state` CHECK in `ok | stale | unavailable | error | disabled`, `reason`, `plan`, `fetched_at`, `last_error`, `last_error_at`, `limits_json`, `breakdown_json`, `updated_at`.
-- Times are stored as whole-second RFC3339 UTC, so string order equals time order.
-- `limits_json` is an array of `{key, label, group, percent, resets_at, severity, projection: {state, hit_at, rate_per_hour}}`: Desktop and CLI read one row and never recompute the projection.
+Migration 00115's Claude singleton/samples stay compatible. Migration 00176 adds `codex_plan_usage_status`, scoped `codex_plan_usage_samples`, and `plot_json TEXT NOT NULL DEFAULT '{}'` to both status tables. Samples are retained for 8 days.
 
-## Projection
+Codex publishes successful status and samples in one transaction. Claude retains samples-before-status; a status upsert publishes limits/fetched time/plot together. Reads select samples no later than published `fetched_at`, matching the current reset within ±60 seconds; Codex also requires the current scope. Repeated publication is idempotent. Errors retain last-good diagnostic data, while presentation gates prevent drawing an old forecast.
 
-`planusage.Project`, computed in Go after each successful poll; Swift only renders. Samples are those of the limit in the current window (same `resets_at` within ±60 s) inside a lookback: 60 min for the session group, 24 h for weekly.
+## Forecast contract
 
-States: `idle` (window not started, no `resets_at`), `collecting` (samples span under 15 min), `safe`, `will_hit`, `hit`.
+The existing Go least-squares policy is reused: nonnegative rate, at least 15 minutes of observations, a 1-hour session lookback and 24 hours for other groups. Raw states remain `idle | collecting | safe | will_hit | hit`. A reset restarts collection.
 
-1. percent ≥ 100: `hit`.
-2. No `resets_at`: `idle`.
-3. Span under 15 min: `collecting`.
-4. Rate is the least-squares slope in percent per hour, floored at 0; under 0.01 %/h: `safe`.
-5. `hit_at = now + (100 − percent) / rate`; at or after `resets_at`: `safe` (with `hit_at` kept), otherwise `will_hit`.
+Go publishes schema-1 plot candidates with `fetched_at` and a map of limit key to nullable Line. Line has exactly `start_at`, `start_percent`, `end_at`, `end_percent`; its start equals the published snapshot. A will-hit line ends at 100% before reset; a safe line ends at reset. Swift validates and renders these points without extrapolating the rate.
 
-A window reset (new `resets_at`) restarts the projection at `collecting`.
+Current eligibility is ordered: disabled; clock skew/stale; unknown Codex identity; missing duration/reset; expired reset; raw idle/collecting/hit; missing matching sample; expired prediction; unavailable endpoints; invalid projection. A snapshot is fresh only when ok, fetched, no more than 900 seconds old and no more than 60 seconds in the future. Invalid plot/schema/start/window data is a storage error; legacy `{}`, null or a missing candidate means endpoints unavailable until the next poll. A past prediction says it needs an update.
 
-## Desktop
+The aggregate CLI always includes `projection.line: Line|null`; drawable is true exactly when line is present. Legacy Claude JSON keeps its three-field projection. A source restriction (`ordinaryUsageAllowed:false`) overrides the overall availability message.
 
-- `PlanUsageCenter` re-reads the status row every 30 s. The daemon writes the DB from another process, so there is no GRDB observation. `refresh()` runs `usage plan --now` and reloads.
-- Menu bar text `5h N% · 7d M%`, showing the session and `weekly_all` limits only (per-model limits are not in the menu bar). A `⚠︎ ` prefix marks a warning state instead of colour, because a `MenuBarExtra` label is rendered as a template and drops colour. Toggle `planUsage.showInMenuBar` (default on) hides the text; `stale` and `error` keep the text but drop the `⚠︎`; only `unavailable` and `disabled` show the icon alone. A status that is still `ok` but older than 15 min (daemon stopped) shows its numbers with no stale mark, because the template label cannot grey them. Refresh is disabled while the state is `disabled`.
-- The tray menu shows one item per limit line (session and weekly); a click opens Usage → Claude plan.
-- Usage → Claude plan tab (`ClaudePlanView`): plan name, updated-ago, Refresh, stale / error banner, one row per limit (bar, percent, reset, projection sentence), percent-over-time charts with the projection as a dashed line, and the weekly surface breakdown. Pure rendering rules live in `PlanUsagePresentation` (WatchtowerCore).
-- Notifications (`PlanUsageNoticePolicy` decides, the Desktop posts them): kind `will` for `session` and `weekly_all` when the projection is `will_hit`; kind `p90` for any limit at or above 90 %. Dedupe key `<kind>|<limit_key>|<resets_at ISO>`, so at most one notice per kind per limit per window (PLANUSAGE-03); sent keys are kept in the `planUsage.sentNotices` default and pruned a minute after their (rounded) reset; a limit whose `resets_at` is already past (old data until the next poll) never notifies. The `planUsage.notifications` toggle (absent = on) switches them off. Clicking a notice routes to Usage → Claude plan. Pause notifications (`quietHoursEnabled`, formerly "quiet hours") suppress notices without touching the sent set, so a notice still due fires after quiet hours end. The dedupe key rounds the reset time to the nearest minute, so server jitter across a second boundary cannot mint a new key. The policy sends nothing when the status is not `ok` or is stale (older than 15 min), and a limit with no `resets_at` never notifies.
+## Desktop and menu
+
+The app-wide center independently reads each provider every 30 seconds; DB read failures are explicit. Its observed clock advances on this existing poll, so stale labels/cards invalidate even when rows are unchanged. Stop/generation guards discard late reads, and successful Feature Manager loads update the actual common feature state.
+
+Plans uses two columns from 800pt, one column below it. Weekly/5-hour selection uses real durations; an absent selected window is explained rather than substituted. Charts show current history as solid and eligible Go Line as dashed, with Now/Reset/hit markers. Details retain additional quotas and Claude surface breakdown. Copy lives in pure presentation models.
+
+The existing `planUsage.showInMenuBar` toggle/default controls both provider counters. Names/order are Claude then Codex. Claude retains its 5h/7d counters; Codex shows one most restrictive quota across every bucket: reached limit first, otherwise the nearest eligible hit, otherwise highest percent, with stable-key ties. Its duration is real. Fresh unknown-identity numbers may participate without forecast; stale/unconfirmed Codex numbers and warnings are hidden.
+
+The popup keeps each provider's loading/error/empty/busy state, all current quota rows and independent refresh/retry actions. Quota/navigation actions open Plans. Claude notifications retain the existing once-per-kind/window ledger, pause handling and navigation route; Codex adds no system notifications. The persisted tab raw value remains `Claude plan`, displayed as **Plans**.
 
 ## CLI
 
-`watchtower usage plan [--json] [--now]` prints plan, state, and each limit with percent, reset and projection. `--now` polls once first (a failed poll shows in the exit code). When the feature is off (`plan_usage.enabled=false`) `--now` refuses with an error, does not poll and leaves the `disabled` status row untouched. The `--json` keys (`state`, `reason`, `plan`, `fetched_at`, `last_error`, `limits`, `breakdown`) are pinned by a test.
+- `watchtower usage plan [--json] [--now]`: legacy Claude-only command and JSON shape are unchanged.
+- `watchtower usage plans --json [--now] [--provider all|claude|codex]`: schema-1 envelope, selected providers in Claude→Codex order, arrays always present. The local provider flag selects subscriptions, independently of the configured AI backend.
+- Without `--now`, and for refresh while off, an existing read-only DB handle performs no migration, DB creation, source call or status/sample write. No row is a successful null status; read failure is an operation storage error.
+- Provider `ok` describes the operation, not subscription health. Results include safe operation error, refresh outcome and nullable status; partial results wait for both providers and are never fail-fast.
+- Exit 0: operations succeeded; 1: source/read/busy/deadline failure; 2: invalid arguments before command I/O, stderr only; 3: refresh while feature off; 130/143: best-effort partial JSON after SIGINT/SIGTERM. Priority is signal → disabled refresh → failure → success.
+- Raw ids, hashed scope, email and credentials are absent from the public envelope.
 
-## Contracts
+## Validation and references
 
-- PLANUSAGE-01: the token is never refreshed or written; an expired token sends no request.
-- PLANUSAGE-02: the token never reaches the DB, logs or errors.
-- PLANUSAGE-03: at most one notification per kind per `(limit, window)`.
+Production catalog: [58 PNGs / 29 states](../design/shots/plans/index.html). Approved references: [Plans and menu mockups](../design/mockups/plans/index.html). The archived renderer reproduces the 40 approved PNGs without using the production snapshot fixtures.
 
-## v1 limits
+`pipeline_fixture_test.go` drives synthetic raw RPC responses through the real reader, atomic store and public envelope. Its shared DB/sample fixture is replayed by Swift production queries and Plans presentation/render tests, including foreign-scope, reset and unpublished-sample noise.
 
-No iPhone slice, no Codex / ChatGPT limits, no token refresh, no spend display.
+No iPhone plan slice or subscription spend estimate is added. API call/token/cost accounting stays on Watchtower's usage tab. PLANUSAGE-01..03, LLMUSAGE-01 and PROJ-* guards remain load-bearing.

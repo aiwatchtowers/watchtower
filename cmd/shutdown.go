@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"sync/atomic"
 	"syscall"
+
+	"github.com/spf13/cobra"
 )
 
 // notifyShutdownContext wraps signal.NotifyContext(parent, os.Interrupt,
@@ -61,6 +63,21 @@ func notifyShutdownContext(parent context.Context, logf func(string, ...any)) (c
 	}()
 
 	return ctx, cancel
+}
+
+// cancelAIChildOnSignal makes cmd's context cancel on SIGINT/SIGTERM and
+// returns the stop to defer. A command that runs a claude or codex child on
+// cmd.Context() needs it: the child leads its own process group
+// (ai.ConfigureChild), so a terminal Ctrl-C never reaches it, and without a
+// cancelled context it would outlive this process.
+func cancelAIChildOnSignal(cmd *cobra.Command) (stop func()) {
+	parent := cmd.Context()
+	if parent == nil { // a command run outside Execute
+		parent = context.Background()
+	}
+	ctx, cancel := notifyShutdownContext(parent, stderrLogf)
+	cmd.SetContext(ctx)
+	return cancel
 }
 
 // stderrLogf is the notifyShutdownContext logf for call sites with no

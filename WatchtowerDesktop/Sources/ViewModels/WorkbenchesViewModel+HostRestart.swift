@@ -7,7 +7,9 @@ import WatchtowerCore
 /// the restart list, and a listed row relaunches with resume.
 extension WorkbenchesViewModel {
     static let hostRestartDidNotStart = "[Watchtower] This session did not restart after the update."
-    static let hostRestartCodexUnchecked = "Could not check Codex's saved sessions: Codex's home folder is not known."
+    static func hostRestartHomeUnchecked(_ agent: AgentKind) -> String {
+        "Could not check \(agent.displayName)'s saved sessions: \(agent.displayName)'s home folder is not known."
+    }
 
     // MARK: Reattach and sweep
 
@@ -106,26 +108,30 @@ extension WorkbenchesViewModel {
         return .failed(Self.hostRestartDidNotStart)
     }
 
-    /// Whether the row's agent has a conversation to resume: Claude Code's
-    /// transcript, Codex's rollout (at its stored path, else in the login
-    /// shell's Codex home). A shell has nothing to resume and just opens.
+    /// Whether the row's agent has a conversation to resume: the transcript
+    /// of an agent whose id the app chooses (Claude Code), else the agent's
+    /// own (Codex's rollout at its stored path, else in the login shell's
+    /// home). A shell has nothing to resume and just opens; a kind this build
+    /// does not know runs nothing (A7b).
     private func hasConversationToResume(
         _ row: TerminalSession, center: TerminalCenter
     ) async -> Result<Bool, HostRestartCheckFailure> {
         switch row.kind {
         case .shell:
             return .success(true)
-        case .claude:
-            return .success(center.hasTranscript(row))
-        case .codex:
+        case let .unsupported(raw):
+            return .failure(HostRestartCheckFailure(TerminalSession.Kind.unsupportedMessage(raw)))
+        case let .agent(agent):
+            guard !agent.session.caps.appSessionID else { return .success(center.hasTranscript(row)) }
             do {
-                if try center.codexResumes(row, codexHome: nil) { return .success(true) }
-                guard let home = await resolveCodexHome() else {
-                    return .failure(HostRestartCheckFailure(Self.hostRestartCodexUnchecked))
+                if try center.resumesStoredID(row, home: nil) { return .success(true) }
+                guard let home = await resolveAgentHome(agent) else {
+                    return .failure(HostRestartCheckFailure(Self.hostRestartHomeUnchecked(agent)))
                 }
-                return .success(try center.codexResumes(row, codexHome: home))
+                return .success(try center.resumesStoredID(row, home: home))
             } catch {
-                return .failure(HostRestartCheckFailure("Could not check Codex's saved sessions: \(error.localizedDescription)"))
+                return .failure(HostRestartCheckFailure(
+                    "Could not check \(agent.displayName)'s saved sessions: \(error.localizedDescription)"))
             }
         }
     }

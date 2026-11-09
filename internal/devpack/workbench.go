@@ -141,7 +141,7 @@ type WorkbenchStatus struct {
 	Skill          SkillStatus
 	Hook           bool // the SessionStart hook (the brief)
 	StopHook       bool // the Stop hook (the board drift check, PROJ-07)
-	StateHooks     bool // every session state hook (UserPromptSubmit, Notification, PostToolUse, StopFailure)
+	StateHooks     bool // every session state hook (stateHookSpecs: the core four, SubagentStop/Start, PreToolUse, PostToolUseFailure)
 	AskGuard       bool // the Stop command hook sending a plain-text request to ask_owner (PROJ-13); an old marker prompt alone is false
 	PermissionWait bool // the PermissionRequest hook holding a dialog for the phone (#517)
 	AskToolBlock   bool // the PreToolUse hook denying AskUserQuestion (PROJ-13)

@@ -536,3 +536,46 @@ func TestPRReviewRounds_CarryOverEdgeCases(t *testing.T) {
 		}
 	})
 }
+
+// N6 (ask #516): every shipped template that waits on a session reads
+// not_watched as "outcome unknown": the button checks report the reason, and
+// pr-review-rounds leaves the pull request for the next round, never marked
+// reviewed.
+func TestTemplates_SessionWaitersHandleNotWatched(t *testing.T) {
+	for _, b := range buttonRecipes {
+		t.Run(b.slug, func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{Stdout: "published v1.2.3\n"})
+			w.desk.Outcomes = []automationstest.SessionOutcome{{WatchIssue: "compressed"}}
+			r := w.drive(t, w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton))
+			if r.Status != db.RunSucceeded {
+				t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+			}
+			rep := w.onlyReport(t)
+			mustContain(t, "report title", rep.Title, b.label+": not_watched")
+			mustContain(t, "report body", rep.Body, "Check (not_watched): not watched (compressed): the outcome is unknown")
+			if strings.Contains(rep.Body, "no summary") {
+				t.Fatalf("a not-watched check reads as an empty success:\n%s", rep.Body)
+			}
+		})
+	}
+	t.Run("pr-review-rounds", func(t *testing.T) {
+		w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+		w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "1 finding filed"}, {WatchIssue: "missing"}}
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+		r := w.drive(t, w.enqueue(t, a, db.TriggerSchedule))
+		if r.Status != db.RunSucceeded {
+			t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+		}
+		st := w.state(t, a)
+		if got, _ := st["last_round"].(string); got != lastRound {
+			t.Fatalf("last_round = %q; want it kept while #15 waits for the next round", got)
+		}
+		if rev, _ := st["reviewed"].(map[string]any); len(rev) != 1 || rev["14"] == nil {
+			t.Fatalf("reviewed = %v; want only #14 (the not-watched #15 is never marked reviewed)", rev)
+		}
+		rep := w.onlyReport(t)
+		mustContain(t, "report body", rep.Body, "#15 Retry the sync (https://example.com/acme/pull/15): not_watched (missing): the session may still be reviewing it; left for the next round")
+		mustContain(t, "report body", rep.Body, "1 pull request left for the next round.")
+	})
+}

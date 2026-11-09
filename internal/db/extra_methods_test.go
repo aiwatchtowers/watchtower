@@ -28,14 +28,51 @@ func TestUnreadDigestChannelIDs(t *testing.T) {
 	_, err = db.Exec(`UPDATE digests SET read_at = '2026-04-02T00:00:00Z' WHERE id = ?`, id1)
 	require.NoError(t, err)
 
-	got, err := db.UnreadDigestChannelIDs()
+	got, err := db.UnreadDigestChannelIDs(time.Time{})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"C2"}, got, "only unread channel must remain")
+	assert.Equal(t, []string{"C2"}, got, "a zero since returns every unread channel, whatever its age")
+}
+
+// TestUnreadDigestChannelIDs_Window pins the #881 bound: only unread
+// channel-type digests whose period ended at or after since count.
+func TestUnreadDigestChannelIDs_Window(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-7 * 24 * time.Hour)
+	seed := func(ch, typ string, to time.Time) int64 {
+		t.Helper()
+		id, err := db.UpsertDigest(Digest{
+			ChannelID: ch, Type: typ, PeriodFrom: float64(to.Add(-time.Hour).Unix()), PeriodTo: float64(to.Unix()),
+			Summary: "s", Topics: "[]", Decisions: "[]", ActionItems: "[]", Model: "m",
+		})
+		require.NoError(t, err)
+		return id
+	}
+	seed("C_INSIDE", "channel", now.Add(-time.Hour))
+	seed("C_BOUNDARY", "channel", since)
+	seed("C_OUTSIDE", "channel", since.Add(-time.Second))
+	readID := seed("C_READ", "channel", now.Add(-time.Hour))
+	_, err := db.Exec(`UPDATE digests SET read_at = ? WHERE id = ?`, now.UTC().Format(time.RFC3339), readID)
+	require.NoError(t, err)
+	seed("C_DAILY", "daily", now.Add(-time.Hour))
+	seed("C_WEEKLY", "weekly", now.Add(-time.Hour))
+	seed("", "channel", now.Add(-time.Hour))
+	// One channel with an old and a recent unread digest is listed once.
+	seed("C_BOTH", "channel", since.Add(-24*time.Hour))
+	seed("C_BOTH", "channel", now.Add(-2*time.Hour))
+
+	got, err := db.UnreadDigestChannelIDs(since)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"C_INSIDE", "C_BOUNDARY", "C_BOTH"}, got)
+
+	all, err := db.UnreadDigestChannelIDs(time.Time{})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"C_INSIDE", "C_BOUNDARY", "C_OUTSIDE", "C_BOTH"}, all)
 }
 
 func TestUnreadDigestChannelIDs_Empty(t *testing.T) {
 	db := openTestDB(t)
-	got, err := db.UnreadDigestChannelIDs()
+	got, err := db.UnreadDigestChannelIDs(time.Time{})
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }

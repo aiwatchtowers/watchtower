@@ -4,6 +4,8 @@ import Foundation
 package enum ChatErrorCode: String, Equatable, Sendable {
     case auth
     case rateLimit = "rate_limit"
+    /// Durable semantic code: a started tool turn must never be replayed.
+    case quotaExhausted = "quota_exhausted"
     case providerUnavailable = "provider_unavailable"
     case sessionLost = "session_lost"
     case attachmentUnsupported = "attachment_unsupported"
@@ -67,17 +69,41 @@ package struct ChatToolWait: Equatable, Sendable {
     }
 }
 
+/// A turn's usage. `tokensIn` is every input token (CHAT-01); the split
+/// beside it (fresh input, cache reads, cache writes, the provider's own cost,
+/// an estimate flag) is additive: a line without it decodes to zeros, no
+/// cost and not estimated.
 package struct ChatUsage: Equatable, Sendable {
     package let turnID: String
     package let tokensIn: Int
     package let tokensOut: Int
     package let model: String
+    package let freshIn: Int
+    package let cacheRead: Int
+    package let cacheWrite: Int
+    package let costUSD: Double?
+    package let estimated: Bool
 
-    package init(turnID: String, tokensIn: Int, tokensOut: Int, model: String) {
+    package init(
+        turnID: String,
+        tokensIn: Int,
+        tokensOut: Int,
+        model: String,
+        freshIn: Int = 0,
+        cacheRead: Int = 0,
+        cacheWrite: Int = 0,
+        costUSD: Double? = nil,
+        estimated: Bool = false
+    ) {
         self.turnID = turnID
         self.tokensIn = tokensIn
         self.tokensOut = tokensOut
         self.model = model
+        self.freshIn = freshIn
+        self.cacheRead = cacheRead
+        self.cacheWrite = cacheWrite
+        self.costUSD = costUSD
+        self.estimated = estimated
     }
 }
 
@@ -87,19 +113,51 @@ package struct ChatSessionError: Error, Equatable, Sendable {
     package let code: ChatErrorCode
     package let message: String
     package let retryable: Bool
+    package let reason: String?
+    package var persistenceCode: String {
+        switch reason {
+        case "quota_exhausted": ChatErrorCode.quotaExhausted.rawValue
+        case "required_capability_missing": ChatErrorCode.attachmentUnsupported.rawValue
+        default: code.rawValue
+        }
+    }
 
-    package init(turnID: String?, code: ChatErrorCode, message: String, retryable: Bool) {
+    package init(turnID: String?, code: ChatErrorCode, message: String, retryable: Bool, reason: String? = nil) {
         self.turnID = turnID
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.reason = reason
+    }
+}
+
+/// Content-free routing metadata; actual selection can be empty before the first automatic turn.
+package struct ChatRoutingMetadata: Equatable, Sendable {
+    package let preferredProvider: String
+    package let mode: String
+    package let reason: String?
+
+    package init(preferredProvider: String, mode: String, reason: String?) {
+        self.preferredProvider = preferredProvider
+        self.mode = mode
+        self.reason = reason
+    }
+
+    package static func parse(_ json: [String: Any]) -> Self? {
+        guard let mode = json["routing_mode"] as? String else { return nil }
+        return Self(preferredProvider: json["preferred_provider"] as? String ?? "", mode: mode,
+                    reason: json["reason"] as? String)
     }
 }
 
 /// One `watchtower ai session` protocol-v2 event (spec §1.1). There is no
 /// `reset` in v2: text already shown is never wiped (CHAT-02).
 package enum ChatEvent: Equatable, Sendable {
-    case sessionReady(sessionID: String?, provider: String, model: String)
+    // The wire's session_ready fields, as decoded; a struct would rename
+    // every existing construction for one optional field.
+    // swiftlint:disable:next enum_case_associated_values_count
+    case sessionReady(sessionID: String?, provider: String, model: String, routing: ChatRoutingMetadata? = nil,
+                      capabilities: ProviderCapabilities? = nil)
     case turnStart(turnID: String)
     case textDelta(turnID: String, text: String)
     case toolStart(ChatToolStart)
@@ -111,6 +169,14 @@ package enum ChatEvent: Equatable, Sendable {
     /// Synthesized by the process wrapper when the session process exits.
     case exited(status: Int32, stderrTail: String)
 
+    /// The session_ready's capability row (the actual provider's); nil when
+    /// absent (the routing placeholder, an older CLI) or unreadable.
+    private static func capabilities(_ value: Any?) -> ProviderCapabilities? {
+        guard let object = value as? [String: Any],
+              let data = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return try? JSONDecoder().decode(ProviderCapabilities.self, from: data)
+    }
+
     /// Decodes one NDJSON line; nil for anything that is not a known v2 event.
     /// Omitted (`omitempty`) fields decode to their zero value.
     package static func parse(_ line: String) -> Self? {
@@ -121,7 +187,8 @@ package enum ChatEvent: Equatable, Sendable {
         switch type {
         case "session_ready":
             return .sessionReady(sessionID: fields.optional("session_id"), provider: fields.string("provider"),
-                                 model: fields.string("model"))
+                                 model: fields.string("model"), routing: ChatRoutingMetadata.parse(json),
+                                 capabilities: Self.capabilities(json["capabilities"]))
         case "turn_start":
             return .turnStart(turnID: fields.string("turn_id"))
         case "text_delta":
@@ -142,7 +209,10 @@ package enum ChatEvent: Equatable, Sendable {
             return .toolWait(ChatToolWait(turnID: turnID, id: id, actionID: actionID, message: message))
         case "usage":
             return .usage(ChatUsage(turnID: fields.string("turn_id"), tokensIn: fields.int("tokens_in"),
-                                    tokensOut: fields.int("tokens_out"), model: fields.string("model")))
+                                    tokensOut: fields.int("tokens_out"), model: fields.string("model"),
+                                    freshIn: fields.int("fresh_in"), cacheRead: fields.int("cache_read"),
+                                    cacheWrite: fields.int("cache_write"), costUSD: fields.double("cost_usd"),
+                                    estimated: fields.bool("estimated")))
         case "turn_done":
             // An unknown status keeps the text as partial (Continue offered) rather than claiming completion.
             let status = ChatTurnStatus(rawValue: fields.string("status")) ?? .interrupted
@@ -151,7 +221,8 @@ package enum ChatEvent: Equatable, Sendable {
         case "error":
             return .error(ChatSessionError(turnID: fields.optional("turn_id"),
                                            code: ChatErrorCode(rawValue: fields.string("code")) ?? .internalError,
-                                           message: fields.string("message"), retryable: fields.bool("retryable")))
+                                           message: fields.string("message"), retryable: fields.bool("retryable"),
+                                           reason: fields.optional("reason")))
         default:
             return nil
         }
@@ -169,6 +240,12 @@ private struct Fields {
     }
 
     func int(_ key: String) -> Int { (json[key] as? NSNumber)?.intValue ?? 0 }
+
+    /// A JSON number; nil when absent, a bool or anything else.
+    func double(_ key: String) -> Double? {
+        guard let number = json[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        return number.doubleValue
+    }
 
     /// A JSON integer > 0 that fits Int64; nil for a bool, a fraction, a
     /// string or anything out of range.

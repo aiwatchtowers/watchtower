@@ -14,8 +14,16 @@ import (
 )
 
 func llmCall(id, at, surface, purpose, process, model string) llmusage.Call {
-	return llmusage.Call{CallID: id, At: at, Surface: surface, Purpose: purpose,
-		Process: process, Model: model, Input: 10, Output: 5, OK: true}
+	return llmusage.Call{
+		CallID:  id,
+		At:      at,
+		Surface: surface,
+		Purpose: purpose,
+		Process: process,
+		Model:   model,
+		OK:      true,
+		Tokens:  llmusage.Tokens{Input: 10, Output: 5},
+	}
 }
 
 func writeSpoolLines(t *testing.T, path string, calls ...llmusage.Call) {
@@ -147,7 +155,7 @@ func TestImportLLMSpool_ConcurrentAppend(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < total; i++ {
-			llmusage.Record(context.Background(), llmusage.Call{Model: "haiku", Input: 1, OK: true})
+			llmusage.Record(context.Background(), llmusage.Call{Model: "haiku", OK: true, Tokens: llmusage.Tokens{Input: 1}})
 		}
 	}()
 	done := make(chan struct{})
@@ -358,5 +366,24 @@ func TestLLMAutomationRunsAndCallIDsPresent(t *testing.T) {
 	present := snap.Present
 	if !present["a"] || !present["old"] || present["missing"] || len(present) != 2 {
 		t.Fatalf("present = %v", present)
+	}
+}
+
+func TestLLMCallAttemptLinkageSurvivesSpoolImport(t *testing.T) {
+	d := openTestDB(t)
+	spool := filepath.Join(t.TempDir(), "calls.jsonl")
+	c := llmCall("route-leaf", llmAt, "watchtower", "digest.channel", "daemon", "haiku")
+	c.OperationID, c.Attempt, c.ConfigRevision = "operation", 2, "revision"
+	writeSpoolLines(t, spool, c)
+	if _, err := d.ImportLLMSpool(spool); err != nil {
+		t.Fatal(err)
+	}
+	var operation, revision, provider, model string
+	var attempt int
+	if err := d.QueryRow(`SELECT operation_id,attempt,config_revision,provider,model FROM llm_calls WHERE call_id=?`, c.CallID).Scan(&operation, &attempt, &revision, &provider, &model); err != nil {
+		t.Fatal(err)
+	}
+	if operation != c.OperationID || attempt != 2 || revision != c.ConfigRevision || provider != c.Provider || model != c.Model {
+		t.Fatal(operation, attempt, revision, provider, model)
 	}
 }

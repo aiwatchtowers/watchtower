@@ -75,9 +75,18 @@ final class StepsBlockViewTests: XCTestCase {
     func testSourcesRowHiddenWhileStreaming() throws {
         let streaming = AssistantMessageBody(text: "Partial", steps: [finishedStep(sources(3))], isRunning: true)
         XCTAssertThrowsError(try streaming.inspect().find(SourcesSummaryRow.self))
-        let done = AssistantMessageBody(text: "Answer", steps: [finishedStep(sources(3))], isRunning: false)
+        let done = AssistantMessageBody(text: "Answer", steps: [finishedStep(sources(3))], isRunning: false,
+                                        onOpenSources: {}) // swiftlint:disable:this trailing_closure
         XCTAssertNoThrow(try done.inspect().find(SourcesSummaryRow.self))
         XCTAssertNoThrow(try done.inspect().find(text: "3 sources"))
+    }
+
+    /// An embedded chat has no sources panel: its replies show steps but no
+    /// sources row whose button would open nothing.
+    func testNoSourcesRowWithoutASourcesPanel() throws {
+        let done = AssistantMessageBody(text: "Answer", steps: [finishedStep(sources(3))], isRunning: false)
+        XCTAssertThrowsError(try done.inspect().find(SourcesSummaryRow.self))
+        XCTAssertNil(ChatRowActions.embedded(copy: { _ in }, retry: nil).openSources)
     }
 
     func testSourcesPanelGroupsItemsAndDisablesLinklessOnes() throws {

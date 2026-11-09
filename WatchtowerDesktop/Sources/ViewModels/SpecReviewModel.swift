@@ -9,12 +9,15 @@ enum SpecReviewChapterFinding: Equatable {
     case agreement(SpecReviewResult.Agreement)
     case decidedAlone(SpecReviewResult.DecidedAlone)
     case blindSpot(SpecReviewResult.BlindSpot)
+    /// A finding the owner added from a Discuss thread (spec 2026-11-08 §3).
+    case fromDiscussion(SpecReviewProposedFinding)
 
     var key: String {
         switch self {
         case let .agreement(f): f.key
         case let .decidedAlone(f): f.key
         case let .blindSpot(f): f.key
+        case let .fromDiscussion(f): f.key
         }
     }
 
@@ -23,6 +26,16 @@ enum SpecReviewChapterFinding: Equatable {
         case let .agreement(f): f.severity
         case let .decidedAlone(f): f.severity
         case let .blindSpot(f): f.severity
+        case let .fromDiscussion(f): f.severity
+        }
+    }
+
+    var chapter: String {
+        switch self {
+        case let .agreement(f): f.chapter
+        case let .decidedAlone(f): f.chapter
+        case let .blindSpot(f): f.chapter
+        case let .fromDiscussion(f): f.chapter
         }
     }
 }
@@ -53,20 +66,52 @@ struct SpecReviewChapterVM: Equatable, Identifiable {
 final class SpecReviewModel {
     private(set) var row: SpecReviewRow?
     private(set) var marks: [String: SpecReviewMark] = [:]
+    /// Findings the owner added to this ask from a Discuss thread (Go writes
+    /// `spec_review_thread_findings`); they sit in their chapter, or Other.
+    private(set) var threadFindings: [SpecReviewProposedFinding] = []
+    /// The first ask of this ask's review chain: the middle part of its
+    /// threads' keys (`SpecReviewThreadKey`). The ask itself until loaded.
+    private(set) var rootAskID: Int64
     var phase: ReviewPhase = .meaning
     var chapterKey: String?
     var lastError: String?
     /// The footer's Approve asked to confirm (unmarked findings, or an
     /// unanswered dispute after an early end).
     var confirmingApprove = false
+    /// The Discuss threads opened on this screen, by item key (spec
+    /// 2026-11-08 §3); their chats live in `chats`.
+    private(set) var threadStates: [String: SpecReviewThreadState] = [:]
+    /// The questions the threads' agent put to the author (Go writes them).
+    private(set) var threadQuestions: [SpecReviewQuestionRow] = []
+    /// Item key → the finished messages its thread holds on disk.
+    private(set) var threadMessageCounts: [String: Int] = [:]
+    /// Fix drafts when the screen has no thread center (tests, previews).
+    private var localFixDrafts: [String: SpecReviewFixDraft] = [:]
+    /// Threads along the review chain whose item a re-run dropped, marked or
+    /// not: readable under "From the previous run".
+    private(set) var orphanThreads: [SpecReviewOrphanThread] = []
+    /// What **Add to review** made of a thread's proposed finding, by
+    /// `proposalKey`: added, or Go's refusal.
+    private(set) var proposalStatuses: [String: SpecReviewProposedFinding.Status] = [:]
 
     @ObservationIgnored let ask: OwnerAsk
-    @ObservationIgnored private let dbPool: DatabasePool
-    @ObservationIgnored private let cli: WorkbenchCLI
+    @ObservationIgnored let dbPool: DatabasePool
+    @ObservationIgnored let cli: WorkbenchCLI
     @ObservationIgnored private let asks: OwnerAsksViewModel
+    /// The app's embedded chats; nil: this screen has no Discuss threads.
+    @ObservationIgnored let chats: EmbeddedChatCenter?
+    /// The threads' app-lifetime half: open threads, questions to the
+    /// author and their follow-ups.
+    @ObservationIgnored let threadCenter: SpecReviewThreadCenter?
+    /// The provider a thread opens on: the configured one, at its strong tier.
+    @ObservationIgnored var configuredProvider: () -> AIProvider = {
+        AIProvider.fromConfig(ConfigService().aiProvider)
+    }
     @ObservationIgnored private let pollInterval: Duration
     @ObservationIgnored private let sleep: (Duration) async throws -> Void
     @ObservationIgnored private let now: () -> Date
+    /// How long **Fix** waits for the thread's conclusion.
+    @ObservationIgnored let conclusionTimeout: Duration
     @ObservationIgnored nonisolated(unsafe) private var pollTask: Task<Void, Never>?
     /// Bumped on every start and stop, so a finishing Task clears `pollTask`
     /// only when it is still the current one.
@@ -77,17 +122,24 @@ final class SpecReviewModel {
         dbPool: DatabasePool,
         cli: WorkbenchCLI,
         asks: OwnerAsksViewModel,
+        chats: EmbeddedChatCenter? = nil,
+        threadCenter: SpecReviewThreadCenter? = nil,
         pollInterval: Duration = .seconds(3),
         sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        conclusionTimeout: Duration = .seconds(30)
     ) {
         self.ask = ask
+        self.rootAskID = ask.id
         self.dbPool = dbPool
         self.cli = cli
         self.asks = asks
+        self.chats = chats
+        self.threadCenter = threadCenter
         self.pollInterval = pollInterval
         self.sleep = sleep
         self.now = now
+        self.conclusionTimeout = conclusionTimeout
     }
 
     deinit { pollTask?.cancel() }
@@ -97,19 +149,25 @@ final class SpecReviewModel {
     func load() async {
         let askID = ask.id
         do {
-            let (row, marks) = try await dbPool.read { db in
-                (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID))
+            let (row, marks, found, root) = try await dbPool.read { db in
+                (try SpecReviewQueries.row(db, askID: askID), try SpecReviewQueries.marks(db, askID: askID),
+                 try SpecReviewThreadQueries.threadFindings(db, askID: askID),
+                 try SpecReviewThreadQueries.chainRoot(db, askID: askID))
             }
             // A finished author loop opens on its disputes (spec 2026-10-26 §6).
             if self.row == nil, row?.loop == .owner { phase = .wrapup }
             self.row = row
             self.marks = marks
+            if found != threadFindings { threadFindings = found }
+            rootAskID = root
             if chapterKey == nil || !chapters.contains(where: { $0.key == chapterKey }) {
                 chapterKey = chapters.first?.key
             }
         } catch {
             lastError = "Could not read the spec review: \(error.localizedDescription)"
+            return
         }
+        await loadThreads()
     }
 
     var isReviewerActive: Bool { row?.status == .queued || row?.status == .running }
@@ -189,6 +247,7 @@ final class SpecReviewModel {
         if state == .comment {
             let finding = row?.result?.findings.first { $0.key == key }?.text
                 ?? row?.ledger.first { $0.item.key == key }?.item.text
+                ?? threadFindings.first { $0.key == key }.map(\.headline)
             about = finding ?? marks[key]?.about ?? ""
         }
         let mark = SpecReviewMark(key: key, state: state, body: body, about: about)
@@ -210,6 +269,7 @@ final class SpecReviewModel {
                 try SpecReviewQueries.clearMark(db, askID: askID, key: key)
             }
             marks[key] = nil
+            setFixDraft(key, nil)
         } catch {
             lastError = "Could not clear the mark: \(error.localizedDescription)"
         }
@@ -271,13 +331,12 @@ final class SpecReviewModel {
         guard let result = row?.result else { return [] }
         let known = Set(result.chapters.map(\.key))
         func inChapter(_ key: String) -> Bool { known.contains(key) }
+        let all: [SpecReviewChapterFinding] = result.agreements.map { .agreement($0) }
+            + result.decidedAlone.map { .decidedAlone($0) }
+            + result.blindSpots.map { .blindSpot($0) }
+            + threadFindings.map { .fromDiscussion($0) }
         func findings(_ pick: (String) -> Bool) -> [SpecReviewChapterFinding] {
-            SpecReviewPresentation.sortedBySeverity(
-                result.agreements.filter { pick($0.chapter) }.map { .agreement($0) }
-                    + result.decidedAlone.filter { pick($0.chapter) }.map { .decidedAlone($0) }
-                    + result.blindSpots.filter { pick($0.chapter) }.map { .blindSpot($0) },
-                \.severity
-            )
+            SpecReviewPresentation.sortedBySeverity(all.filter { pick($0.chapter) }, \.severity)
         }
         var out = result.chapters.map { chapter in
             SpecReviewChapterVM(
@@ -315,17 +374,46 @@ final class SpecReviewModel {
     }
 
     /// Findings the owner can mark that carry no mark yet: agreements,
-    /// decided-alone items, blind spots, and lens checks that raised a concern.
+    /// decided-alone items, blind spots, lens checks that raised a concern,
+    /// and findings added from a thread.
     var unmarkedCount: Int {
         guard let result = row?.result else { return 0 }
         let keys = result.agreements.map(\.key) + result.decidedAlone.map(\.key)
             + result.blindSpots.map(\.key) + result.checks.filter { $0.answer == "concern" }.map(\.key)
+            + threadFindings.map(\.key)
         return keys.filter { marks[$0] == nil }.count
     }
 
+    /// Comment marks whose finding the re-run dropped; a finding added from
+    /// a thread is no reviewer finding, but it is not gone either.
     var orphans: [SpecReviewMark] {
         guard let result = row?.result else { return [] }
-        return SpecReviewAnswer.orphanMarks(result: result, marks: marks)
+        return SpecReviewAnswer.orphanMarks(result: result, marks: marks, threadFindings: threadFindings)
+    }
+
+    /// What the card under `key` is, for its buttons and its `ok` mark's
+    /// label (spec 2026-11-08 §2): a finished loop's dispute, fix or
+    /// unanswered finding; a finding added from a thread; an agreement the
+    /// document matches; a check with a concern (fixable) or without one
+    /// (to verify); a thesis. Anything else is a finding to act on. Nil for a
+    /// check the reviewer found not applicable: it has no buttons at all
+    /// (`SpecReviewPresentation.checkCardKind`).
+    func cardKind(for key: String) -> SpecReviewCardKind? {
+        if isLoop, let row {
+            if SpecReviewLoop.disputed(row).contains(where: { $0.item.key == key }) { return .dispute }
+            if SpecReviewLoop.unanswered(row).contains(where: { $0.item.key == key }) { return .unanswered }
+            if SpecReviewLoop.fixed(row).contains(where: { $0.item.key == key }) { return .fixedByAuthor }
+        }
+        if threadFindings.contains(where: { $0.key == key }) { return .fromDiscussion }
+        guard let result = row?.result else { return .actionable }
+        if let agreement = result.agreements.first(where: { $0.key == key }) {
+            return SpecReviewPresentation.cardKind(for: .agreement(agreement))
+        }
+        if let check = result.checks.first(where: { $0.key == key }) {
+            return SpecReviewPresentation.checkCardKind(answer: check.answer)
+        }
+        if result.theses.contains(where: { $0.key == key }) { return .thesis }
+        return .actionable
     }
 
     /// The document's Decisions list (spec §6), from the snapshot; nil when
@@ -427,7 +515,11 @@ final class SpecReviewModel {
         }
     }
 
+    /// Why Send and Approve stop when a Fix comment could not be saved.
+    static let fixNotSavedMessage = "A Fix comment could not be saved, so nothing was sent. Try again."
+
     func send() async -> OwnerAsksViewModel.AnswerResult {
+        guard await flushFixDrafts() else { return .invalid(Self.fixNotSavedMessage) }
         guard canSend else {
             return .invalid("Comment on a finding, or write a note, before requesting changes.")
         }
@@ -435,7 +527,8 @@ final class SpecReviewModel {
     }
 
     func approve() async -> OwnerAsksViewModel.AnswerResult {
-        await asks.answer(ask, with: answer(verdict: .approved))
+        guard await flushFixDrafts() else { return .invalid(Self.fixNotSavedMessage) }
+        return await asks.answer(ask, with: answer(verdict: .approved))
     }
 
     /// The footer's Approve: asks first when `needsApproveConfirm`.
@@ -457,5 +550,612 @@ final class SpecReviewModel {
         case .approved: pressApprove()
         default: break
         }
+    }
+}
+
+/// **Fix**'s comment field on a card with a thread (spec 2026-11-08 §3).
+/// A thread on an item a re-run dropped: its key and the item's line (the
+/// conversation's title without its "Spec review: " prefix).
+struct SpecReviewOrphanThread: Equatable {
+    let key: String
+    let title: String
+
+    static func itemTitle(_ conversationTitle: String) -> String {
+        let prefix = "Spec review: "
+        return conversationTitle.hasPrefix(prefix) ? String(conversationTitle.dropFirst(prefix.count)) : conversationTitle
+    }
+}
+
+struct SpecReviewFixDraft: Equatable {
+    var text = ""
+    /// The owner typed: the conclusion no longer fills the field.
+    var ownerTyped = false
+    /// The thread's conclusion is being drafted.
+    var isDrafting = true
+    /// It failed or took too long: "Couldn't draft a conclusion".
+    var couldNotDraft = false
+}
+
+/// Resumes a turn's waiter once: with the turn's outcome, or with
+/// `.notStarted` when it is freed first (its engine was let go).
+final class SpecReviewOutcomeWaiter: @unchecked Sendable {
+    static let goneMessage = "The discussion was closed"
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<EmbeddedChatEngine.TurnOutcome, Never>?
+
+    init(_ continuation: CheckedContinuation<EmbeddedChatEngine.TurnOutcome, Never>) {
+        self.continuation = continuation
+    }
+
+    deinit { resume(.notStarted(message: Self.goneMessage)) }
+
+    func resume(_ outcome: EmbeddedChatEngine.TurnOutcome) {
+        let pending = lock.withLock {
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume(returning: outcome)
+    }
+}
+
+/// Resumes a continuation once: the first of two racing tasks wins.
+@MainActor
+private final class OnceResume<Value> {
+    var continuation: CheckedContinuation<Value, Never>?
+
+    func resume(_ value: Value) {
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+}
+
+/// One Discuss thread as this screen holds it: whether it is drawn open,
+/// and what its chat runs on once it was opened.
+struct SpecReviewThreadState {
+    var isOpen = false
+    /// Its conversation and the reviewer's data are being fetched.
+    var isOpening = false
+    /// Opening failed (the conversation or `thread-context`); **Retry**
+    /// opens it again.
+    var loadError: String?
+    var context: SpecReviewThreadContext?
+    var conversationID: Int64?
+    /// How many of this screen's views draw the thread now: each one keeps
+    /// its chat marked shown in the app's center, so the idle sweep never
+    /// lets go of a thread on screen.
+    var shownViews = 0
+
+    /// The thread's key in the app's center; nil until it was opened, or
+    /// for an orphaned item that never had a conversation.
+    var chatKey: EmbeddedChatKey? {
+        guard let context, let conversationID else { return nil }
+        return EmbeddedChatKey(contextType: SpecReviewThreadKey.contextType, contextID: context.contextID,
+                               conversationID: conversationID)
+    }
+}
+
+// MARK: - Discuss threads (spec 2026-11-08 §3)
+
+extension SpecReviewModel {
+    /// The threads for the screen's environment; nil without the app's
+    /// embedded chats (no **Discuss** then).
+    var threads: SpecReviewThreads? {
+        guard chats != nil else { return nil }
+        return SpecReviewThreads(
+            thread: { [self] in threadContent($0) },
+            send: { [self] key, text in threadEngine(key)?.send(text) ?? false },
+            addToReview: { [self] key, finding in Task { await addToReview(finding, thread: key) } },
+            open: { [self] in openThread($0) },
+            hide: { [self] in hideThread($0) },
+            retry: { [self] in threadEngine($0)?.retry() },
+            stop: { [self] in threadEngine($0)?.stop() },
+            shown: { [self] in threadShown($0) },
+            hidden: { [self] in threadHidden($0) }
+        )
+    }
+
+    /// A view started drawing `key`'s open thread (`EmbeddedChatView`'s
+    /// `embeddedChatVisibility` rule): its chat is marked shown in the
+    /// center, now or once the thread has opened.
+    func threadShown(_ key: String) {
+        threadStates[key, default: SpecReviewThreadState()].shownViews += 1
+        guard let chatKey = threadStates[key]?.chatKey else { return }
+        // Drawn again after the sweep let it go (a card scrolled back).
+        if chats?.loaded(chatKey) == nil { makeThreadEngine(key) }
+        chats?.markShown(chatKey)
+    }
+
+    /// That view went away (Hide, a closed drawer): the idle sweep may let
+    /// the chat go once nothing runs in it.
+    func threadHidden(_ key: String) {
+        guard let state = threadStates[key], state.shownViews > 0 else { return }
+        threadStates[key]?.shownViews -= 1
+        if let chatKey = state.chatKey { chats?.markHidden(chatKey) }
+    }
+
+    /// The thread's conversation key (`SpecReviewThreadKey`).
+    func threadContextID(_ itemKey: String) -> String {
+        SpecReviewThreadKey.contextID(workbenchID: ask.projectID, rootAskID: rootAskID, itemKey: itemKey)
+    }
+
+    /// Every item a thread can be about: the result's findings and checks,
+    /// its theses, the loop's ledger and the findings added from a thread.
+    var threadItemKeys: [String] {
+        var keys = threadFindings.map(\.key) + (row?.ledger.map(\.item.key) ?? [])
+        if let result = row?.result { keys += result.findings.map(\.key) + result.theses.map(\.key) }
+        return keys
+    }
+
+    /// The item is gone after a re-run: its thread is readable only.
+    func isOrphanedItem(_ key: String) -> Bool {
+        !threadItemKeys.contains(key)
+    }
+
+    /// Every key a thread on this screen may be about: the current items,
+    /// then the marked orphans and the threads on dropped items.
+    private var allThreadKeys: [String] {
+        var seen = Set<String>()
+        return (threadItemKeys + orphans.map(\.key) + orphanThreads.map(\.key)).filter { seen.insert($0).inserted }
+    }
+
+    /// **Discuss** (or the folded line): the thread is drawn open, and on
+    /// its first opening its conversation is found or created and the
+    /// reviewer's data fetched (once; a failure shows **Retry**).
+    func openThread(_ key: String) {
+        guard chats != nil else { return }
+        threadCenter?.setOpen(threadContextID(key), true)
+        var state = threadStates[key] ?? SpecReviewThreadState()
+        state.isOpen = true
+        let needsPreparing = state.context == nil && !state.isOpening
+        if needsPreparing {
+            state.isOpening = true
+            state.loadError = nil
+        }
+        threadStates[key] = state
+        if needsPreparing {
+            Task { await prepareThread(key) }
+        } else if state.context != nil {
+            // The idle sweep let a hidden thread's chat go: back in the center.
+            makeThreadEngine(key)
+        }
+    }
+
+    /// **Hide**: the thread folds, also for the next time the ask opens; a
+    /// reply in flight keeps going.
+    func hideThread(_ key: String) {
+        threadStates[key]?.isOpen = false
+        threadCenter?.setOpen(threadContextID(key), false)
+    }
+
+    /// Whether `key`'s thread is drawn open: as the app's thread center
+    /// holds it (it outlives this screen), else as this screen does.
+    func isThreadOpen(_ key: String) -> Bool {
+        threadCenter?.isOpen(threadContextID(key)) ?? threadStates[key]?.isOpen ?? false
+    }
+
+    private func prepareThread(_ key: String) async {
+        let askID = ask.id
+        let workbenchID = ask.projectID
+        do {
+            // An orphaned item's thread only shows what it holds: its
+            // conversation is looked up, never created, and nothing fetched.
+            let orphaned = isOrphanedItem(key)
+            let conversationID: Int64?
+            if orphaned {
+                let contextID = threadContextID(key)
+                conversationID = try await dbPool.read { db in
+                    try ChatConversationQueries.fetchByContext(db, type: SpecReviewThreadKey.contextType, id: contextID)?.id
+                }
+            } else {
+                conversationID = try await SpecReviewThreadSurface.conversationID(
+                    workbenchID: workbenchID, rootAskID: rootAskID, itemKey: key, title: threadTitle(key), dbPool: dbPool)
+            }
+            let data = orphaned ? "" : try await cli.specReviewThreadContext(askID: askID, itemKey: key)
+            let sessionID = ask.sessionID
+            let threadCenter = threadCenter
+            let contextID = threadContextID(key)
+            let context = SpecReviewThreadContext(
+                workbenchID: workbenchID, rootAskID: rootAskID, askID: askID, itemKey: key, data: data,
+                provider: configuredProvider(),
+                // The chat outlives this screen in the app's center: once the
+                // screen is gone, the item stands as it was when opened.
+                isOrphaned: { [weak self] in self?.isOrphanedItem(key) ?? orphaned },
+                // The question is the app-lifetime center's: it is filed and
+                // typed even when the reply ends after the drawer closed.
+                onReply: { [weak self] question, finding in
+                    if let question {
+                        Task {
+                            await threadCenter?.askAuthor(askID: askID, sessionID: sessionID, itemKey: key,
+                                                          thread: contextID, question: question)
+                        }
+                    }
+                    self?.threadReplied(key: key, question: question, finding: finding)
+                }
+            )
+            threadStates[key, default: SpecReviewThreadState()].context = context
+            threadStates[key]?.conversationID = conversationID
+            threadStates[key]?.isOpening = false
+            makeThreadEngine(key)
+            // Views that drew the thread while it was opening.
+            if let chatKey = threadStates[key]?.chatKey {
+                for _ in 0..<(threadStates[key]?.shownViews ?? 0) { chats?.markShown(chatKey) }
+            }
+        } catch {
+            threadStates[key, default: SpecReviewThreadState()].isOpening = false
+            threadStates[key]?.loadError = "Couldn't open the discussion: \(error.localizedDescription)"
+        }
+    }
+
+    /// The thread's chat in the app's center, once it was opened; nil
+    /// after the idle sweep let a hidden one go (opening it again brings it
+    /// back). Read only — the view body never creates an engine.
+    func threadEngine(_ key: String) -> EmbeddedChatEngine? {
+        guard let chats, let chatKey = threadStates[key]?.chatKey else { return nil }
+        return chats.loaded(chatKey)
+    }
+
+    /// Creates (or refreshes) the thread's chat in the app's center, and
+    /// hands it to the thread center: a question closed meanwhile gets its
+    /// follow-up there.
+    private func makeThreadEngine(_ key: String) {
+        guard let chats, let state = threadStates[key], let context = state.context,
+              let conversationID = state.conversationID else { return }
+        let spec = SpecReviewThreadSurface.spec(context: context, conversationID: conversationID, dbPool: dbPool)
+        _ = chats.engine(for: spec)
+        guard let threadCenter, !context.isOrphaned() else { return }
+        Task { await threadCenter.register(thread: context.contextID) { chats.engine(for: spec) } }
+    }
+
+    /// A completed thread reply's blocks: a question for the author, a
+    /// proposed finding. The proposal is shown from the stored reply; the
+    /// question's row and the message count are read again once the reply
+    /// is saved (this runs before the engine's final write).
+    func threadReplied(key: String, question: String?, finding: SpecReviewProposedFinding?) {
+        let engine = threadEngine(key)
+        Task {
+            await engine?.finished()
+            await loadThreads()
+        }
+    }
+
+    /// Reads the threads on dropped items, then the threads' questions and
+    /// message counts for every item on the screen.
+    func loadThreads() async {
+        let workbenchID = ask.projectID
+        let root = rootAskID
+        do {
+            let chain = try await dbPool.read { db in
+                try SpecReviewThreadQueries.chainThreads(db, workbenchID: workbenchID, rootAskID: root)
+            }
+            let current = Set(threadItemKeys).union(orphans.map(\.key))
+            let found = chain.filter { !current.contains($0.itemKey) }.map {
+                SpecReviewOrphanThread(key: $0.itemKey, title: SpecReviewOrphanThread.itemTitle($0.title))
+            }
+            if found != orphanThreads { orphanThreads = found }
+        } catch {
+            lastError = "Could not read the discussions: \(error.localizedDescription)"
+        }
+        let byContext = Dictionary(allThreadKeys.map { (threadContextID($0), $0) }) { first, _ in first }
+        let contextIDs = Array(byContext.keys)
+        do {
+            let (questions, counts) = try await dbPool.read { db in
+                (try SpecReviewThreadQueries.questions(db, threads: contextIDs),
+                 try SpecReviewThreadQueries.messageCounts(db, contextIDs: contextIDs))
+            }
+            var byKey: [String: Int] = [:]
+            for (contextID, count) in counts { if let key = byContext[contextID] { byKey[key] = count } }
+            if questions != threadQuestions { threadQuestions = questions }
+            if byKey != threadMessageCounts { threadMessageCounts = byKey }
+        } catch {
+            lastError = "Could not read the discussions: \(error.localizedDescription)"
+        }
+        // A thread left open when the drawer closed opens again with it.
+        for key in allThreadKeys where threadStates[key] == nil && isThreadOpen(key) {
+            openThread(key)
+        }
+    }
+
+    /// What `key`'s thread shows.
+    func threadContent(_ key: String) -> SpecReviewThreadContent {
+        var content = SpecReviewThreadContent()
+        content.isOrphaned = isOrphanedItem(key)
+        content.persistedMessageCount = threadMessageCounts[key] ?? 0
+        content.isOpen = isThreadOpen(key)
+        guard let state = threadStates[key] else { return content }
+        content.isOpening = state.isOpening
+        content.loadError = state.loadError
+        guard let engine = threadEngine(key) else { return content }
+        content.isQueued = engine.isQueued
+        content.isReplying = engine.isBusy
+        let contextID = threadContextID(key)
+        let retryID = engine.canRetry && !engine.isBusy
+            ? engine.messages.last { $0.message.role == "assistant" }?.id : nil
+        let entries = Self.threadEntries(
+            messages: engine.messages.map(\.message),
+            liveText: { engine.liveTurn?.messageID == $0 ? engine.liveTurn?.text : nil },
+            questions: threadCenter?.questions[contextID] ?? threadQuestions.filter { $0.thread == contextID },
+            retryID: retryID
+        )
+        content.entries = entries.map { entry in
+            guard case let .finding(id, finding) = entry else { return entry }
+            var shown = finding
+            shown.status = proposalStatus(finding, thread: key)
+            return .finding(id: id, shown)
+        }
+        return content
+    }
+
+    // MARK: - Add to review, Fix with a conclusion (spec 2026-11-08 §3)
+
+    /// A proposal's identity in its thread, for its **Add to review** status.
+    private func proposalKey(_ finding: SpecReviewProposedFinding, thread key: String) -> String {
+        [key, finding.kind, finding.title, finding.text, finding.quote.source, finding.quote.text]
+            .joined(separator: "\u{1F}")
+    }
+
+    /// Added (this screen's press, or the same finding stored on the ask),
+    /// refused with Go's words, else proposed.
+    private func proposalStatus(_ finding: SpecReviewProposedFinding, thread key: String) -> SpecReviewProposedFinding.Status {
+        if let status = proposalStatuses[proposalKey(finding, thread: key)] { return status }
+        if let stored = threadFindings.first(where: { $0.isSameProposal(as: finding) }) { return .added(key: stored.key) }
+        return .proposed
+    }
+
+    /// **Add to review** on a thread's proposed finding: Go checks its quotes
+    /// and stores it (it then shows in its chapter with **From
+    /// discussion**), or refuses ("not added: quote not found"), which the
+    /// card shows.
+    func addToReview(_ finding: SpecReviewProposedFinding, thread key: String) async {
+        let id = proposalKey(finding, thread: key)
+        do {
+            let added = try await cli.specReviewAddFinding(askID: ask.id, thread: threadContextID(key),
+                                                           block: try finding.blockJSON())
+            proposalStatuses[id] = .added(key: added)
+            await load()
+        } catch {
+            proposalStatuses[id] = .refused(error.localizedDescription)
+        }
+    }
+
+    /// The prompt of the hidden turn **Fix** asks a thread for.
+    static let conclusionPrompt = """
+        The owner pressed Fix on this item: it goes to the document's author to fix. Write a one-paragraph \
+        conclusion of this discussion for the author: what to change in the document and why, in the language \
+        of the discussion. Plain text only: no preamble, no headings, no blocks.
+        """
+
+    /// Whether `key`'s card has a thread with messages in it.
+    private func hasThread(_ key: String) -> Bool {
+        (threadMessageCounts[key] ?? 0) > 0 || !(threadEngine(key)?.messages.isEmpty ?? true)
+    }
+
+    /// **Fix** on a card with a thread: the comment field by item key,
+    /// filled with the thread's drafted conclusion unless the owner typed
+    /// first. Held by the app's thread center (by thread key) when there is
+    /// one, so closing or switching the drawer keeps the typed text and a
+    /// conclusion still drafting lands there.
+    var fixDrafts: [String: SpecReviewFixDraft] {
+        guard let threadCenter else { return localFixDrafts }
+        let prefix = threadContextID("")
+        var out: [String: SpecReviewFixDraft] = [:]
+        for (thread, draft) in threadCenter.fixDrafts where thread.hasPrefix(prefix) {
+            out[String(thread.dropFirst(prefix.count))] = draft
+        }
+        return out
+    }
+
+    private func setFixDraft(_ key: String, _ draft: SpecReviewFixDraft?) {
+        if let threadCenter {
+            threadCenter.fixDrafts[threadContextID(key)] = draft
+        } else {
+            localFixDrafts[key] = draft
+        }
+    }
+
+    /// **Fix**: the `comment` mark at once. On a card with a thread, the
+    /// comment field opens empty and the thread is asked for a conclusion
+    /// (a hidden turn); it fills the field unless the owner typed first.
+    /// When it fails or takes longer than `conclusionTimeout`, the field
+    /// stays as it is with "Couldn't draft a conclusion". Nothing waits for it.
+    func fix(key: String) async {
+        await mark(key, .comment)
+        guard marks[key]?.state == .comment, chats != nil, !isOrphanedItem(key), hasThread(key) else { return }
+        setFixDraft(key, SpecReviewFixDraft())
+        let conclusion = await withConclusionTimeout { [weak self] in await self?.draftConclusion(key) }
+        guard var draft = fixDrafts[key] else { return }
+        draft.isDrafting = false
+        if let conclusion {
+            if !draft.ownerTyped { draft.text = conclusion }
+        } else {
+            NSLog("SpecReviewModel: ask %lld: no conclusion for %@ (failed, or none within %@)",
+                  ask.id, key, "\(conclusionTimeout)")
+            draft.couldNotDraft = true
+        }
+        setFixDraft(key, draft)
+    }
+
+    /// The owner typed in the Fix comment field: a conclusion arriving
+    /// later no longer replaces it.
+    func editFixDraft(_ key: String, text: String) {
+        guard var draft = fixDrafts[key], draft.text != text else { return }
+        draft.text = text
+        draft.ownerTyped = true
+        setFixDraft(key, draft)
+    }
+
+    /// Saves the field as the comment mark's body; an empty field leaves
+    /// the plain Fix. The field closes only once the body is stored: a
+    /// failed write keeps the owner's words (and `lastError` says why).
+    /// Returns whether nothing is left to save.
+    @discardableResult
+    func saveFixDraft(_ key: String) async -> Bool {
+        let body = fixDrafts[key]?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !body.isEmpty else {
+            setFixDraft(key, nil)
+            return true
+        }
+        await mark(key, .comment, body: body)
+        guard marks[key]?.state == .comment, marks[key]?.body == body else { return false }
+        // The owner typed on during the write: the newer words stay.
+        guard fixDrafts[key]?.text.trimmingCharacters(in: .whitespacesAndNewlines) == body else { return false }
+        setFixDraft(key, nil)
+        return true
+    }
+
+    /// Send and Approve: every open Fix field with words in it (the drafted
+    /// conclusion or the owner's own) becomes its comment mark's body before
+    /// the answer is built; an empty one stays a plain Fix. False when one
+    /// could not be saved: the answer must not go without it.
+    func flushFixDrafts() async -> Bool {
+        var saved = true
+        for key in fixDrafts.keys.sorted() {
+            let stored = await saveFixDraft(key)
+            saved = saved && stored
+        }
+        return saved
+    }
+
+    /// Closes the field: the plain Fix stays.
+    func closeFixDraft(_ key: String) {
+        setFixDraft(key, nil)
+    }
+
+    /// The conclusion, or nil when the turn failed, never started, or
+    /// `conclusionTimeout` passed first.
+    private func withConclusionTimeout(_ work: @escaping @MainActor () async -> String?) async -> String? {
+        let once = OnceResume<String?>()
+        return await withCheckedContinuation { continuation in
+            once.continuation = continuation
+            Task { @MainActor in once.resume(await work()) }
+            Task { @MainActor [sleep, conclusionTimeout] in
+                try? await sleep(conclusionTimeout)
+                once.resume(nil)
+            }
+        }
+    }
+
+    /// Waits for a reply in flight, then runs the hidden turn and returns
+    /// its text with any block taken out.
+    private func draftConclusion(_ key: String) async -> String? {
+        let askID = ask.id
+        func failed(_ why: String) -> String? {
+            NSLog("SpecReviewModel: ask %lld: conclusion for %@: %@", askID, key, why)
+            return nil
+        }
+        if threadStates[key]?.context == nil, threadStates[key]?.isOpening != true {
+            threadStates[key, default: SpecReviewThreadState()].isOpening = true
+            await prepareThread(key)
+        }
+        // Held weakly across the waits: a chat the center lets go ends the
+        // wait (`nextOutcome`) instead of being kept alive by it.
+        weak var engine = threadEngine(key)
+        guard let turns = threadStates[key]?.context?.turns, engine != nil else {
+            return failed("the thread could not be opened")
+        }
+        while engine?.isBusy == true { _ = await Self.nextOutcome(of: engine) }
+        guard let idle = engine else { return failed("the thread's chat was let go") }
+        turns.concluding = true
+        idle.sendHidden(Self.conclusionPrompt)
+        let accepted = idle.isBusy
+        guard accepted else {
+            turns.concluding = false
+            return failed("the thread did not take the turn")
+        }
+        let outcome = await Self.nextOutcome(of: engine)
+        turns.concluding = false
+        // The case name only (FILES-01): its payload may carry the provider's text.
+        guard case let .completed(_, result) = outcome else {
+            return failed("the turn ended as \(String(describing: outcome).prefix { $0 != "(" })")
+        }
+        let text = SpecReviewThreadBlocks.parse(result.displayText, final: true).text
+        return text.isEmpty ? failed("the reply was empty") : text
+    }
+
+    /// The outcome of the engine's next turn to end; `.notStarted` when no
+    /// turn will end — a queued turn withdrawn, the engine let go by the
+    /// center (`onTurnDropped`), or freed — so the wait never hangs.
+    static func nextOutcome(of engine: EmbeddedChatEngine?) async -> EmbeddedChatEngine.TurnOutcome {
+        await withCheckedContinuation { continuation in
+            let waiter = SpecReviewOutcomeWaiter(continuation)
+            guard let engine else { return waiter.resume(.notStarted(message: SpecReviewOutcomeWaiter.goneMessage)) }
+            let previous = engine.onTurnFinished
+            let previousDropped = engine.onTurnDropped
+            let restore = { [weak engine] in
+                engine?.onTurnFinished = previous
+                engine?.onTurnDropped = previousDropped
+            }
+            // The waiter lives in these closures only: when the engine is
+            // freed, so are they, and the waiter's deinit resumes.
+            engine.onTurnFinished = { outcome in
+                restore()
+                previous?(outcome)
+                waiter.resume(outcome)
+            }
+            engine.onTurnDropped = {
+                restore()
+                previousDropped?()
+                waiter.resume(.notStarted(message: SpecReviewOutcomeWaiter.goneMessage))
+            }
+        }
+    }
+
+    /// A thread's rows in order: the owner's words, the assistant's replies
+    /// with their blocks taken out (the running one with an open block
+    /// hidden), each reply's proposed finding and its question to the
+    /// author (the question's row, matched by its text; rows no reply names
+    /// come last), Watchtower's lines and failed replies.
+    static func threadEntries(
+        messages: [ChatMessageRecord],
+        liveText: (Int64) -> String?,
+        questions: [SpecReviewQuestionRow],
+        retryID: Int64?
+    ) -> [SpecReviewThreadEntry] {
+        var remaining = questions
+        var out: [SpecReviewThreadEntry] = []
+        for message in messages {
+            let id = "m\(message.id)"
+            switch message.role {
+            case "user":
+                out.append(.owner(id: id, text: message.text))
+            case "system":
+                out.append(.notice(id: id, text: message.text))
+            case "assistant":
+                if let live = liveText(message.id) {
+                    let text = SpecReviewThreadBlocks.parse(live, final: false).text
+                    if !text.isEmpty { out.append(.assistant(id: id, text: text)) }
+                } else if message.status == "error" || (message.status == "partial" && message.id == retryID) {
+                    // A partial row offered Retry is a reply whose error
+                    // could not be written over it.
+                    let failed = message.status == "error"
+                    out.append(.failed(
+                        id: id,
+                        message: failed ? ChatErrorPresentation.message(for: message.errorCode, provider: message.provider)
+                            : "The reply was not saved.",
+                        detail: ChatErrorPresentation.detail(message.errorMessage),
+                        canRetry: message.id == retryID && (!failed || ChatErrorPresentation.isRetryable(message.errorCode))
+                    ))
+                } else {
+                    // A stopped reply is never read for blocks.
+                    let blocks = SpecReviewThreadBlocks.parse(message.text, final: message.status == "complete")
+                    if !blocks.text.isEmpty { out.append(.assistant(id: id, text: blocks.text)) }
+                    if let finding = blocks.finding { out.append(.finding(id: "f\(message.id)", finding)) }
+                    if let question = blocks.question, let index = remaining.firstIndex(where: { $0.question == question }) {
+                        out.append(.question(remaining.remove(at: index)))
+                    }
+                }
+            default:
+                break
+            }
+        }
+        return out + remaining.map { .question($0) }
+    }
+
+    /// The thread's conversation title: the item's own line.
+    private func threadTitle(_ key: String) -> String {
+        if let finding = row?.result?.findings.first(where: { $0.key == key }) { return finding.text }
+        if let thesis = row?.result?.theses.first(where: { $0.key == key }) { return thesis.text }
+        if let entry = row?.ledger.first(where: { $0.item.key == key }) { return entry.item.text }
+        if let orphan = orphanThreads.first(where: { $0.key == key }) { return orphan.title }
+        return threadFindings.first { $0.key == key }?.headline ?? key
     }
 }

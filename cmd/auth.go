@@ -333,11 +333,15 @@ func reusableSlackWorkspace(cfg *config.Config, teamID string, explicit bool) (s
 		if a.ID != 1 {
 			continue
 		}
-		if a.TeamID == "" || a.TeamID == teamID {
+		home, err := database.SlackAccountHomeTeam(a)
+		if err != nil {
+			return "", err
+		}
+		if !home.Conflicts(teamID) {
 			return cfg.ActiveWorkspace, nil
 		}
 		if !explicit && a.Status != "removed" {
-			return "", secondSlackTeamError(a)
+			return "", secondSlackTeamError(home)
 		}
 	}
 	return "", nil
@@ -346,11 +350,8 @@ func reusableSlackWorkspace(cfg *config.Config, teamID string, explicit bool) (s
 // secondSlackTeamError refuses an `auth login` into a team other than
 // account #1's, actionable part first and short: the Desktop's Reconnect
 // shows only the first 200 characters of stderr.
-func secondSlackTeamError(first db.SlackAccount) error {
-	name := first.TeamName
-	if name == "" {
-		name = first.TeamID
-	}
+func secondSlackTeamError(home db.SlackHomeTeam) error {
+	name := home.DisplayName()
 	return fmt.Errorf("slack team %q is already connected here; add another team with "+
 		"`watchtower slack add` (Settings → Add Slack Workspace), or log in with --workspace <new-name>", name)
 }

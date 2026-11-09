@@ -19,19 +19,19 @@ since: 0.24.0
 | **Codex** | The Codex command-line tool | Installed and signed in |
 | **Ollama / Local** | Any OpenAI-compatible server (Ollama, LM Studio, vLLM), at `http://localhost:11434` unless you change it | A running server and a chosen model |
 
-Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). When no provider is picked and only Codex is installed, setup picks Codex for you. If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "auto-detect"), then press **Test Connection**. The main chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
+Setup checks the Claude or Codex tool and keeps **Continue** off until it finds one ([Set up Watchtower](../start/setup.md)). When no provider is picked and only Codex is installed, setup picks Codex for you. If Watchtower cannot find the tool, set its path under **Settings → System → AI** (the field shows "Auto-detect"), then press **Test connection**. The main chat also has a provider and model pill for switching per chat. If your company's profile limits providers, the provider picker in **Settings → System → AI** lists only those; a configured provider it forbids shows "(not allowed)" there, and every AI call fails until you pick another.
 
 ## Light and strong models
 <!-- learn
 id: ai-models-per-provider
 title: Keep models for each provider
-text: Set **Light Model** and **Strong Model** in **Settings → System → AI**; each provider keeps its choices.
+text: Set **Light model** and **Strong model** in **Settings → System → AI**; each provider keeps its choices.
 replaces: [ai-own-models]
 changed: Switching providers restores their saved models.
 area: setup
 level: power
 kind: tip
-since: next
+since: 0.26.5
 -->
 
 Every AI call is routed to one of two tiers, and each provider has a model per tier.
@@ -42,12 +42,47 @@ Every AI call is routed to one of two tiers, and each provider has a model per t
 Defaults:
 
 - **Claude:** the aliases `haiku` (light) and `opus` (strong), which move to the newest model of each class without a Watchtower update.
-- **Codex:** `gpt-5.6-luna` (light) and `gpt-5.6-sol` (strong), the models the Codex tool offers on a ChatGPT sign-in. A newer model such as `gpt-6-astra` needs an up-to-date Codex: run `codex update`, then type it into **Strong Model**.
+- **Codex:** `gpt-5.6-luna` (light) and `gpt-5.6-sol` (strong), the models the Codex tool offers on a ChatGPT sign-in. A newer model such as `gpt-6-astra` needs an up-to-date Codex: run `codex update`, then type it into **Strong model**.
 - **Ollama / Local:** none, so pick a model; one model then serves both tiers.
 
-Override either tier in **Light Model** and **Strong Model**, or press **Default** to clear it.
+Override either tier in **Light model** and **Strong model**, or press **Provider default** to clear it.
 
-Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Default**.
+Each provider keeps its own model choices. Switching providers restores its saved choices; a provider without saved choices starts with **Provider default**.
+
+## A reserve provider for quota limits
+<!-- learn
+id: ai-reserve-provider-settings
+title: Keep working when your AI plan runs out
+text: Turn on **Use reserve when limits are reached** in **Settings → System → AI** to switch to Codex or Claude.
+replaces: [ai-reserve-provider]
+changed: The reserve is set up in Settings now, and chats and automations can use it too.
+area: setup
+level: power
+kind: tip
+since: 0.27.0
+action: hotkey:settings
+-->
+
+If you have both Claude Code and Codex, the other one can stand in when your plan's quota runs out. In **Settings → System → AI**, choose your **Preferred provider**, check the other provider's models and CLI path under **Reserve provider**, then turn on **Use reserve when limits are reached** and save. The switch starts off; installing or testing the other CLI never turns it on.
+
+**Check connection** checks the installed CLI without sending an AI prompt. **Not verified** means sign-in cannot safely be confirmed from metadata; **Test connection** sends one short request with that provider's strong model and account, possibly using paid quota. It tests your unsaved model and path without testing the light model or switching to the reserve.
+
+**Saved provider limits → Check again** only reads local quota metadata and is limited to once a minute. A reset time passing does not prove recovery; a waiting safe request must succeed. Saving shows **Applying provider settings** until the background service confirms the saved configuration; it takes the change without a restart, and tasks already running and Workbench sessions carry on; **Retry** after an apply failure checks the latest saved settings.
+
+You can also enable the reserve in Terminal:
+
+```
+watchtower config set ai.fallback.provider codex
+watchtower config set ai.fallback.enabled true
+```
+
+Use `claude` as the provider when Codex is your main one. Background summaries and your automations' AI steps switch only on a confirmed quota error, with the reserve's own **Light model** and **Strong model**. When both are out of quota, supported unfinished AI steps wait for a later sync; source syncing continues. A provider your company's profile forbids is never used as the reserve. Workbench sessions keep their own agent.
+
+New chats use **Preferred + reserve · Auto**. **Only Claude**, **Only Codex**, **Only Ollama** or an explicit model pins the chat; old chats keep their pins until you explicitly choose **Preferred + reserve · Auto model**. **Current provider** shows who actually answers and its model. Codex reads the images you attach to a message, with that message only (attach one again to ask about it later), but not PDFs or a project's images and PDFs; Ollama reads none of them, so with Ollama the paperclip picks text files only and a line under the chat says what it can't do. They start fresh on every reply and re-read the text files you sent earlier, newest first, up to 256 KB; an older file past that is named instead of read, so attach it again. A reserve missing a required tool or attachment is refused before startup.
+
+The reserve is chosen before a new turn starts. A quota failure after work starts keeps the partial reply and offers **Review actions**, which opens saved actions without sending, approving or repeating anything. Check those actions, choose a provider if needed, then send a new message.
+
+A healthy reserve stays with the chat after the preferred provider recovers. **Use Claude** or **Use Codex** switches back between turns and keeps your draft. If that reserve later reaches its own limit, the next new turn can use the recovered compatible preferred provider. **Claude can be tried** or **Codex can be tried** means no local quota block is currently recorded. It does not prove a background task completed or that the provider will accept the next request. Availability refreshes when you enter a chat, return to the app or finish a turn; the app never sends a paid test prompt just to check recovery.
 
 ## What drives cost
 <!-- learn
@@ -61,7 +96,7 @@ since: 0.24.0
 action: nav:statistics
 -->
 
-- **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory, Next Step and Knowledge search (its images and links) are medium. Briefing and Day Plan are light, once a day. Attention detection and Claude plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
+- **Features, not tabs.** Slack Digests and Tracks are the heavy ones, every cycle. People Cards, Stream Digests, Ideas, Memory, Next Step and Knowledge search (its images and links) are medium. Briefing and Day Plan are light, once a day. Attention detection and subscription plan limits spend nothing. The badge is in **Settings → Features** ([Turning features on and off](features-on-and-off.md)).
 - **Channels.** Digests are per channel, so a bot-heavy channel burns tokens. In **Statistics** you can **Mute for AI** a channel or a person; muted ones are skipped by digests, tracks and the briefing, but the chat, Catch Up and Memory can still read them.
 - **Chat and Workbench.** They cost nothing until you send a message or start a session. One exception: in [Branch review](../features/workbench/diff-review.md), **Deep** mode makes a strong-model AI overview when a round opens and after each **Refresh** that finds new changes; **Quick** mode makes one only when you press **Make overview**.
 - **A fresh connection.** The first month of history is processed by AI too. See [History backfill](history-backfill.md).
@@ -85,44 +120,28 @@ changed: Usage now shows every AI call by job, with cost, on the Watchtower tab.
 
 **Usage** has four tabs:
 
-- **Claude plan**: your Claude account's limits, below.
-- **Watchtower**: what Watchtower itself spends on AI, for **Today**, **7 days** or **30 days**. A totals row shows calls, fresh input, cache, output and cost. Below it, a table lists each job (digests, briefing, ideas, memory, images, built-in automations and so on) with calls, tokens, output, cost and tokens per call. **Your automations** is a separate section with one row per automation of your own. **Chats and workbenches** shows one line each: your chats, and workbench sessions plus the helper calls Watchtower makes for workbenches. Workbench sessions count only for workbenches with analytics on; the tab names the ones left out.
+- **Plans**: Claude and Codex subscription limits, history and forecasts ([Plans and subscription limits](../features/plans.md)).
+- **Watchtower**: what Watchtower, your automations and your chats spend on AI, for **Today**, **7 days** or **30 days**. A totals row shows calls, fresh input, cache, output and cost for Watchtower, your automations and chats together, the same total Home shows; workbenches are not in it. Below it, **Watchtower collecting and processing** lists each job (digests, briefing, ideas, memory, images, built-in automations and so on) with calls, tokens, output, cost and tokens per call, and its own tokens and cost next to the title. **Your automations** is a separate section with one row per automation of your own. Tokens everywhere on the tab count fresh input, cache and output together, so the rows add up to their section's title. **Chats and workbenches** shows one line each: your chats, and workbench sessions plus the helper calls Watchtower makes for workbenches. Workbench sessions count only for workbenches with analytics on; the tab names the ones left out.
 - **Progress**: history of the background runs and their steps, without tokens.
 - **Usage**: pick a day to see its run log, one entry per background run with status, duration, items and errors. It shows no tokens or money; **Open Watchtower tab** takes you there.
 
 Reading the numbers:
 
 - Cost is what the provider reports, which for Claude is the price at API rates even on a subscription, so it is not your bill. A figure with **≈** is an estimate from a price table, and **≥** means some calls have no price (Codex and local models), so the real total is higher; those calls still count in the token columns.
-- A grey line under the totals names every gap: calls where the provider gave no usage (counted by length), calls with no price, and **Untagged** calls, which are listed with the command that made them.
+- A grey line under the totals names every gap in them: calls where the provider gave no usage (counted by length), calls with no price, and **Untagged** calls, which a Watchtower job lists with the command that made it.
 - The tab starts counting from the first AI call after the update ("Recording starts with the next AI call"), keeps 90 days and refreshes every minute. Home shows today's total as **AI spend** (Watchtower, your automations and chats, without workbenches).
 - A call that could not be written anywhere is missing from the tab; the cause (usually a full disk) leaves a line in `watchtower.log`.
 
 For a terminal, `watchtower usage llm` prints the same numbers ([Command-line reference](../reference/cli.md)).
 
 ## Claude plan limits
-<!-- learn
-id: ai-plan-limits
-title: Watch your Claude plan limits
-text: **Usage → Claude plan** shows your 5-hour and weekly limits and when you would hit them at this pace.
-area: setup
-level: next
-kind: feature
-since: 0.24.0
-action: nav:usage
-requires: feature:claude-plan-limits
--->
+<!-- learn: none -->
 
-This tab shows how much of your Claude plan is used: the 5-hour window, the weekly window and per-model weekly limits, each with a projection of when it would be hit at the current pace. The limits belong to the Claude account, so Claude chats and Claude Code count too.
+**Usage → Plans** shows Claude and Codex subscription limits separately, with history, forecasts and independent refresh. Claude's limits belong to the account, so chats and Claude Code draw from the same windows.
 
-Watchtower reads the numbers every 5 minutes with Claude Code's existing sign-in, read-only.
+Both readers use existing sign-ins without AI model calls. The common **Subscription plan limits** feature switches them off together. Claude's system-notification switch stays separate; Codex adds information to Plans and the menu.
 
-It never refreshes that sign-in, so if Claude Code's token has expired the tab shows the last numbers marked stale until you use Claude Code again. The source is an undocumented endpoint and can change. Codex and API-key accounts have no plan numbers.
-
-- The menu bar shows `5h N% · 7d M%`; a `⚠︎` prefix marks a warning. **Show in the menu bar** on this tab hides it.
-- Notifications fire once per limit per window, when the 5-hour or weekly limit is projected to be hit before it resets, and when any limit reaches 90%. The switch is **Claude plan limits** in **Settings → Features → Notifications**.
-- **Refresh** polls once now.
-- The limits are information only: Watchtower never pauses or skips its own work because of them.
-- The feature is **Claude plan limits** in Settings → Features; off stops the polling.
+See [Plans and subscription limits](../features/plans.md) for window selection, menu counters, stale data and sign-in fixes.
 
 ## Related
 
@@ -131,3 +150,22 @@ It never refreshes that sign-in, so if Claude Code's token has expired the tab s
 - [Troubleshooting](../troubleshooting/README.md)
 
 For developers: [docs/features/llm-usage-ledger.md](../../features/llm-usage-ledger.md), [docs/features/model-provider-registry.md](../../features/model-provider-registry.md), [docs/features/claude-plan-limits.md](../../features/claude-plan-limits.md)
+
+
+To stop using the reserve, turn off **Use reserve when limits are reached** and
+save. Future jobs use the preferred provider; active work finishes with its
+current settings. Both providers' model settings, chats, pending source data,
+usage and credentials stay in place. Do not reset AI data or remove credentials
+to disable the feature. Downgrading to an older binary is a separate operation:
+older versions may not understand the new fields, and manually rolling back a
+live database's migrations is unsupported.
+
+This routing implementation was tested with fake providers and local fixtures;
+no paid or live-account acceptance check was performed. It does not automatically
+repeat custom recipes or started tool turns. An automatic main chat can continue
+with Codex when Claude is out of quota, without Claude-native claude.ai tools.
+The chat shows **claude.ai tools are unavailable with Codex**; those tools have
+not moved to Codex. This notice stays while the chat uses that reserve, including
+after reopening it. Required attachments, explicit provider/model choices and
+organization policy still apply. To use native tools again, switch back to a
+provider that supplies them between turns.

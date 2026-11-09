@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // TestShutdownContext_HelperProcess is not a real test: it is re-executed as
@@ -245,5 +247,23 @@ func TestNotifyShutdownContext_CallerCancelSuppressesLog(t *testing.T) {
 		// instant ctx.Done() fires (already true above) and does nothing
 		// else blocking before its logf check, so this window is ample
 		// time for a regression to have logged by now.
+	}
+}
+
+// cancelAIChildOnSignal gives the command a context derived from its own
+// (Background outside Execute) that its stop cancels; a signal cancels it
+// the same way (notifyShutdownContext, tested above).
+func TestCancelAIChildOnSignal_SetsACancellableContext(t *testing.T) {
+	c := &cobra.Command{}
+	stop := cancelAIChildOnSignal(c)
+	ctx := c.Context()
+	if ctx == nil || ctx.Err() != nil {
+		t.Fatalf("context = %v, want a live one", ctx)
+	}
+	stop()
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("stop did not cancel the command's context")
 	}
 }

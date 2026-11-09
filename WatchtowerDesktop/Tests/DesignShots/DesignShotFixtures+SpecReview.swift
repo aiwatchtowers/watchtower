@@ -47,6 +47,33 @@ enum SpecReviewShotFixtures {
         + "the sidebar greys a muted channel instead of the bell; a followed thread stays loud; "
         + "the expiry test covers a mute across midnight"
 
+    /// The summary's theses (spec 2026-11-08 §4), each quoting the snapshot.
+    private static func theses() -> [[String: Any]] {
+        func thesis(
+            _ key: String,
+            _ kind: String,
+            _ text: String,
+            _ chapter: String,
+            _ heading: String,
+            _ quote: String
+        ) -> [String: Any] {
+            ["key": key, "kind": kind, "text": text, "chapter": chapter, "where": ["heading": heading, "quote": quote]]
+        }
+        return [
+            thesis("th:goal", "goal", "Mute a noisy channel for a day without leaving it", "ch:1", "Goal",
+                   "The owner can mute a channel for a day, and it comes back on its own."),
+            thesis("th:store", "decision", "Mute state lives in the local database", "ch:3", "Decisions",
+                   "Mute state lives in the local database."),
+            thesis("th:refresh", "decision", "The sidebar refreshes once a minute", "ch:3", "Decisions",
+                   "The sidebar refreshes once a minute."),
+            thesis("th:bell", "owner_change", "A muted channel shows a bell with a slash in the sidebar", "ch:2",
+                   "Behaviour", "A muted channel shows a bell with a slash in the sidebar."),
+            thesis("th:longer", "non_goal", "No mute longer than a day", "ch:2", "Behaviour", "Muting lasts twenty-four hours."),
+            thesis("th:risk", "risk", "A mute can end up to a minute late", "ch:3", "Decisions",
+                   "The sidebar refreshes once a minute.")
+        ]
+    }
+
     private static func resultJSON() throws -> String {
         func agreement(
             _ key: String,
@@ -68,6 +95,9 @@ enum SpecReviewShotFixtures {
         }
         let result: [String: Any] = [
             "summary": "The spec carries the idea. One promise has no task, and the refresh interval was chosen without you.",
+            "brief": "A one-day mute for a noisy channel, for the owner who wants quiet without leaving it. "
+                + "The channel comes back on its own after a day, and the sidebar shows which channels are muted.",
+            "theses": theses(),
             "idea": [
                 "owner_quote": "let me mute a noisy channel for a day, and bring it back by itself",
                 "goal_quote": "The owner can mute a channel for a day, and it comes back on its own.",
@@ -168,8 +198,58 @@ enum SpecReviewShotFixtures {
         return String(bytes: data, encoding: .utf8) ?? "[]"
     }
 
+    /// A loop seeded from the owner's Request changes (spec 2026-11-08 §1):
+    /// the owner's two items — one the author fixed, one still disputed —
+    /// beside a fix of the reviewer's and a finding the author never answered.
+    private static func ownerItemsLedgerJSON() throws -> String {
+        func entry(
+            _ key: String,
+            _ kind: String,
+            _ text: String,
+            round: Int,
+            settled: Int,
+            verdict: String,
+            note: String,
+            reply: (String, String)?,
+            severity: String = ""
+        ) -> [String: Any] {
+            var out: [String: Any] = ["key": key, "kind": kind, "text": text, "note": "", "round": round,
+                                      "verdict": verdict, "verdict_note": note, "settled": settled]
+            if !severity.isEmpty { out["severity"] = severity }
+            if let reply { out["reply"] = ["key": key, "reply": reply.0, "note": reply.1] }
+            return out
+        }
+        let ledger: [[String: Any]] = [
+            entry("ow:1", "owner_comment", "Grey a muted channel out instead of the bell", round: 1, settled: 2,
+                  verdict: "resolved", note: "Behaviour now greys it out.", reply: ("fixed", "Behaviour greys a muted channel.")),
+            entry("ow:2", "owner_comment", "Say what a followed thread does while muted", round: 1, settled: 3,
+                  verdict: "disputed", note: "A followed thread is still not covered.",
+                  reply: ("disagree", "Threads follow their channel; nothing to add.")),
+            entry("da:1", "decided_alone", "The sidebar refreshes once a minute", round: 2, settled: 3,
+                  verdict: "resolved", note: "", reply: ("fixed", "The sidebar now refreshes when a mute ends."), severity: "minor"),
+            entry("bs:2", "blind_spot", "Undo a mute before the day is over", round: 3, settled: 0,
+                  verdict: "unsettled", note: "", reply: nil, severity: "major")
+        ]
+        let data = try JSONSerialization.data(withJSONObject: ledger, options: [.sortedKeys])
+        return String(bytes: data, encoding: .utf8) ?? "[]"
+    }
+
+    /// A finished loop model: `ownerItems` picks the seeded ledger (no
+    /// picks made), else the default one with its two picks.
+    static func loopModel(_ key: String, end: String, round: Int, ownerItems: Bool = true) throws -> SpecReviewModel {
+        try model(key, status: "done", withResult: true, loop: true, loopEnd: end, loopRound: round, ownerItems: ownerItems)
+    }
+
     /// One model per state, built on its own test database.
-    private static func model(_ key: String, status: String, withResult: Bool, loop: Bool = false) throws -> SpecReviewModel {
+    static func model(
+        _ key: String,
+        status: String,
+        withResult: Bool,
+        loop: Bool = false,
+        loopEnd: String = "timeout",
+        loopRound: Int = 3,
+        ownerItems: Bool = false
+    ) throws -> SpecReviewModel {
         if let entry = built[key] { return entry.model }
         let (pool, path) = try TestDatabase.createPool()
         let snapshot = snapshot
@@ -188,8 +268,8 @@ enum SpecReviewShotFixtures {
                 """, arguments: [id, status, status == "failed" ? "the reviewer ran out of time after 10 minutes" : "", result])
             if loop {
                 try db.execute(sql: """
-                    UPDATE spec_reviews SET loop = 'owner', round = 3, loop_end = 'timeout', ledger = ? WHERE ask_id = ?
-                    """, arguments: [try loopLedgerJSON(), id])
+                    UPDATE spec_reviews SET loop = 'owner', round = ?, loop_end = ?, ledger = ? WHERE ask_id = ?
+                    """, arguments: [loopRound, loopEnd, ownerItems ? try ownerItemsLedgerJSON() : try loopLedgerJSON(), id])
             } else if withResult {
                 // A comment from the previous run, whose finding the re-run dropped.
                 try db.execute(sql: """
@@ -209,13 +289,16 @@ enum SpecReviewShotFixtures {
             let model = SpecReviewModel(ask: ask, dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()),
                                         asks: asks)
             await model.load()
-            if loop {
+            if loop, ownerItems {
+                // Nothing picked: every card shows its buttons.
+            } else if loop {
                 await model.pick("ag:3", reviewerRight: true, body: "Grey, as we agreed.")
                 await model.reopen("bs:1", body: "Say what a followed thread does while muted.")
             } else if withResult {
-                await model.mark("ag:1", .ok)
-                await model.mark("ag:2", .ok)
                 await model.mark("ag:3", .comment, body: "Grey it out as agreed; the bell is too loud.")
+                // A picked Fix without words keeps Add Comment; a check marked Checked.
+                await model.mark("bs:1", .comment)
+                await model.mark("ck:2", .ok)
                 await model.mark("ch:0", .viewed)
                 await model.mark("ch:1", .viewed)
                 model.chapterKey = "ch:2"
@@ -232,7 +315,7 @@ enum SpecReviewShotFixtures {
         return made
     }
 
-    private static func view(_ make: () throws -> AnyView) -> AnyView {
+    static func view(_ make: () throws -> AnyView) -> AnyView {
         do {
             return try make()
         } catch {
@@ -243,7 +326,7 @@ enum SpecReviewShotFixtures {
 
     /// The screen over the drawer's footer, as the drawer stacks them:
     /// Dismiss, then the screen's Request changes (N) / Approve.
-    private static func withFooter(_ model: SpecReviewModel, _ screen: some View) -> AnyView {
+    static func withFooter(_ model: SpecReviewModel, _ screen: some View) -> AnyView {
         AnyView(VStack(spacing: 0) {
             screen.frame(maxHeight: .infinity)
             Divider()
@@ -266,7 +349,9 @@ enum SpecReviewShotFixtures {
             let model = try model("done", status: "done", withResult: true)
             model.phase = phase
             let ask = model.ask
-            return withFooter(model, SpecReviewView(model: model, onReadSpec: {}, askContext: { OwnerAskHeaderCard(ask: ask) }))
+            // Threads on (Discuss offered); one finding has a folded thread.
+            return withFooter(model, SpecReviewView(model: model, onReadSpec: {}, askContext: { OwnerAskHeaderCard(ask: ask) })
+                .environment(\.specReviewThreads, threads(["ag:3": threadContent("folded")])))
         }
     }
 

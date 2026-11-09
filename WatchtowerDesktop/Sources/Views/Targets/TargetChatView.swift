@@ -140,6 +140,15 @@ struct TargetChatPane: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let notice = chatVM.toolsNotice {
+                // Draft-only because the provider catalog could not be read.
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(Tone.warning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Spacing.large)
+                    .padding(.bottom, Spacing.small)
+            }
 
             Divider()
 

@@ -21,7 +21,7 @@ kind: tip
 since: 0.24.0
 -->
 
-A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, about 15 seconds after the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. A cycle the Mac fell asleep in while fetching stops on wake and is replaced by that fresh one, so the digests never run on data the sleep kept from syncing. A cycle already building digests finishes them first. The daemon keeps running when you close the window and stops when you quit the app.
+A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, about 15 seconds after the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. During Power Nap, when the Mac wakes briefly in sleep without turning the screen on, no cycle and no scheduled automation starts; they run once the Mac fully wakes, about 15 seconds after the network is back, while **Sync Now** still runs at once. A cycle the Mac fell asleep in while fetching stops on wake and is replaced by that fresh one, so the digests never run on data the sleep kept from syncing. A cycle already building digests finishes them first. The daemon keeps running when you close the window and stops when you quit the app.
 
 ```mermaid
 flowchart LR

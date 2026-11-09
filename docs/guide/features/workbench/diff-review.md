@@ -4,7 +4,7 @@ Branch review lets you read what an agent session changed, comment on lines, and
 
 ## Why use it
 
-Here you review before anything is committed, and the agent reads your comments by itself. The next round shows only what changed since, and keeps your Viewed marks for files that did not move.
+You review before anything is committed, and the agent reads your comments by itself. The next round shows only what changed since.
 
 ## How it works
 <!-- learn
@@ -38,13 +38,13 @@ since: 0.25.0
 action: nav:projects
 -->
 
-**Review** on a session's strip, or **Review Branch** in its row menu, opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones), writing only git objects, and compares it with a base, the point where the branch left the default branch.
+**Review** on a session's strip, or **Review Branch** in its row menu, opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (untracked files too, not ignored ones), writing only git objects, and compares it with where the branch left the default branch. If the folder is on the default branch or detached and the task (its target or a parent) has a branch, the round reads that branch's commits only (**branch tip, read-only**, no **Undo**). An open round moves with its session to another folder or branch.
 
-The pane has a file list (a folder tree), a diff, and a list of comments. In the tree a folder shows how many files are unviewed (or **all viewed**) and its open comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated, binary and very large files show folded or as a placeholder.
+The pane has a file list (a folder tree), a diff, and a list of comments. In the tree a folder shows how many files are unviewed (or **all viewed**) and its open comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated, binary and huge files show folded or as a placeholder.
 
-The diff hides unchanged stretches and keeps three lines of context. Click a hidden stretch to open it, or **Full file** next to the file name for the whole file; **Changes** goes back.
+The diff hides unchanged stretches; click one to open it, or **Full file** for the whole file (**Changes** goes back).
 
-A round moves through three states: you collect drafts, then you close it with one of two verdicts. **Request changes** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then puts one line into the session telling the agent to read round N with `get_review`.
+You collect drafts, then close the round with one of two verdicts. **Request changes** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then types one line into the session asking the agent to read round N.
 
 **Approve** closes the round with no changes requested and tells the agent to finish the branch as its methodology says. It needs no drafts (send or delete them first) and a session that still exists. A popover names what you may have missed: unviewed chapters and Wrap-up items marked **Partly** or **Not done**. If earlier comments are still open, **Resolve N and approve** closes them too. A closed round shows **Approved** with the time.
 
@@ -64,9 +64,9 @@ The AI overview is a short summary of the round: whether the changes cover the l
 
 - **Deep** makes it by itself when the round opens and whenever **Refresh** finds new changes.
 - **Quick** shows a saved overview at once, and otherwise offers **Make overview**. Until you press it, files are grouped by the agent's chapters or by folder.
-- When **Refresh** finds new changes in **Quick** and nothing is saved for them, the old marks go away and **Make overview** comes back.
+- In **Quick**, new changes with nothing saved for them clear the old marks and bring back **Make overview**.
 
-If it fails, the reason shows with **Retry**. With the finish check on, an agent that changed files makes this overview before it finishes; a round on the same changes shows it at once, with no second call.
+If it fails, the reason shows with **Retry**. With the finish check on, the overview the agent made before finishing is reused, with no second call.
 
 ### Deep phases
 <!-- learn
@@ -100,7 +100,7 @@ action: nav:projects
 
 A lens is a set of review questions: **Correctness**, **Tests**, **Security**, **Simplicity** and **House rules**. Add your own in `.watchtower/review.md` in the workbench folder: `## Name` starts a lens, `- question` adds a question.
 
-**Find Repeats…** in the toolbar's **More** menu (…) looks through your comments of the last 20 sent rounds for remarks you keep making. **Accept** writes a proposed rule into `.watchtower/review.md` under its lens; **Dismiss** drops it.
+**Find Repeats…** in the toolbar's **More** menu (…) finds remarks you keep making in the last 20 sent rounds. **Accept** writes a proposed rule into `.watchtower/review.md` under its lens; **Dismiss** drops it.
 
 ### Ask the agent
 <!-- learn
@@ -155,10 +155,10 @@ After a verdict, the toolbar offers **Start next round** (the same as **Refresh*
 ## Using it
 
 1. Press **Review** on the session's strip, or choose **Review Branch** in a session's row menu.
-2. Click a file. Read the diff. **Inline** switches to one column.
+2. Click a file to read its diff; **Inline** shows one column.
 3. To comment, select lines, right-click and choose **Comment**, type your note and press **Add**. Comments on the removed side are allowed in the **All changes** view.
 4. Tick **Viewed** on files you have read. ⌥⌘↑ and ⌥⌘↓ jump to the previous and next unviewed file.
-5. **Request changes (n)**, or **Approve** when there is nothing to fix. A banner tells you what happened to the line: "Line pasted — press Return in the terminal", "Will be sent when the agent's turn ends", or "Copied — paste it into the terminal".
+5. **Request changes (n)**, or **Approve** when there is nothing to fix. A banner says what happened to the line: "Line pasted — press Return in the terminal", "Will be sent when the agent's turn ends", or "Copied — paste it into the terminal".
 
 A draft has **Delete**. A carried comment has **Edit** and **Resolve**; resolved comments are not carried again.
 
@@ -171,11 +171,12 @@ A draft has **Delete**. A carried comment has **Edit** and **Resolve**; resolved
 - **"The diff is too large; later files show without hunks".** Open those files in the [code viewer](code-viewer.md).
 - **"Undo is off while the agent is working".** Wait until the session stops, then **Undo**.
 - **"This round was already sent".** Press **Refresh** to open the next round.
+- **"The session's worktree was removed — this round stays where it was opened".** Send or approve it as it is.
 - **Git LFS files show a pointer or raw bytes.** Filters are switched off while reading.
 
 ## Related
 
-- [Sessions](sessions.md) and [Asks](asks.md): a review ask is another way to ask for your eyes.
+- [Sessions](sessions.md), [Asks](asks.md)
 - [Workbench](README.md)
 
 For developers: [docs/features/diff-reviewer.md](../../../features/diff-reviewer.md)

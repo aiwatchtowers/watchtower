@@ -92,13 +92,12 @@ func (r *Repo) copyOwnerIndex(ctx context.Context, dst string) bool {
 	return true
 }
 
-// hasHead: HEAD names a commit. A done context is an error, never "no commit".
+// hasHead: HEAD names a commit; false only on git's exit 1 (an unborn
+// HEAD). A done context or any other git failure is an error, never "no
+// commit".
 func (r *Repo) hasHead(ctx context.Context) (bool, error) {
-	_, err := r.git(ctx, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return false, ctxErr
-	}
-	return err == nil, nil
+	_, ok, err := r.revParse(ctx, "HEAD^{commit}")
+	return ok, err
 }
 
 // TreeExists reports whether sha names a tree in the repository (a pruned
@@ -119,4 +118,23 @@ func (r *Repo) SameTree(ctx context.Context, base, tree string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(string(out)) == tree, nil
+}
+
+// Uncommitted reports whether the work tree (tracked and untracked, not
+// ignored, as Snapshot reads it) differs from HEAD's tree; an unborn HEAD
+// compares with the empty tree. Only objects are written, as by Snapshot.
+func (r *Repo) Uncommitted(ctx context.Context) (bool, error) {
+	tree, err := r.Snapshot(ctx)
+	if err != nil {
+		return false, err
+	}
+	head, err := r.hasHead(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !head {
+		return tree != EmptyTree, nil
+	}
+	same, err := r.SameTree(ctx, "HEAD", tree)
+	return !same, err
 }

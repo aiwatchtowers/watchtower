@@ -1,0 +1,74 @@
+[
+  {
+    "name": "left_with_context",
+    "reason": "left",
+    "waited_min": 0,
+    "level": "",
+    "question": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (terminal_session_worktrees)?",
+    "context": "I found two places that read the folder; both assume one root. Extending them is a small change, and I recommend yes.",
+    "title": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (term",
+    "summary": "I found two places that read the folder; both assume one root. Extending them is a small change, and I recommend yes.\n\nAsked in the terminal; you left the session.",
+    "reason_line": "Asked in the terminal; you left the session.",
+    "body": "I found two places that read the folder; both assume one root. Extending them is a small change, and I recommend yes."
+  },
+  {
+    "name": "away_no_context",
+    "reason": "away",
+    "waited_min": 0,
+    "level": "",
+    "question": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (terminal_session_worktrees)?",
+    "context": "",
+    "title": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (term",
+    "summary": "Asked in the terminal while you were away.",
+    "reason_line": "Asked in the terminal while you were away.",
+    "body": ""
+  },
+  {
+    "name": "timeout_0_with_context",
+    "reason": "timeout",
+    "waited_min": 0,
+    "level": "",
+    "question": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (terminal_session_worktrees)?",
+    "context": "I found two places that read the folder; both assume one root. Extending them is a small change, and I recommend yes.",
+    "title": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (term",
+    "summary": "I found two places that read the folder; both assume one root. Extending them is a small change, and I recommend yes.\n\nAsked in the terminal; no answer for 0 min.",
+    "reason_line": "Asked in the terminal; no answer for 0 min.",
+    "body": "I found two places that read the folder; both assume one root. Extending them is a small change, and I recommend yes."
+  },
+  {
+    "name": "timeout_12_no_context",
+    "reason": "timeout",
+    "waited_min": 12,
+    "level": "",
+    "question": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (terminal_session_worktrees)?",
+    "context": "",
+    "title": "Extend `ai query --read-folder` from the workbench folder to the registered worktrees of this workbench's sessions (term",
+    "summary": "Asked in the terminal; no answer for 12 min.",
+    "reason_line": "Asked in the terminal; no answer for 12 min.",
+    "body": ""
+  },
+  {
+    "name": "full_timeout_12",
+    "reason": "timeout",
+    "waited_min": 12,
+    "level": "full",
+    "question": "Please decide three things before I go on.\n\n1. Keep the old endpoint for one release, or drop it now?\n2. Rename the flag to --read-folder everywhere?\n\n3. Ship it behind the setting, off by default?",
+    "context": "",
+    "title": "Please decide three things before I go on. 1. Keep the old endpoint for one release, or drop it now? 2. Rename the flag",
+    "summary": "Please decide three things before I go on.\n\n1. Keep the old endpoint for one release, or drop it now?\n2. Rename the flag to --read-folder everywhere?\n\n3. Ship it behind the setting, off by default?\nAsked in the terminal; no answer for 12 min.",
+    "reason_line": "Asked in the terminal; no answer for 12 min.",
+    "body": ""
+  },
+  {
+    "name": "full_left",
+    "reason": "left",
+    "waited_min": 0,
+    "level": "full",
+    "question": "Please decide three things before I go on.\n\n1. Keep the old endpoint for one release, or drop it now?\n2. Rename the flag to --read-folder everywhere?\n\n3. Ship it behind the setting, off by default?",
+    "context": "",
+    "title": "Please decide three things before I go on. 1. Keep the old endpoint for one release, or drop it now? 2. Rename the flag",
+    "summary": "Please decide three things before I go on.\n\n1. Keep the old endpoint for one release, or drop it now?\n2. Rename the flag to --read-folder everywhere?\n\n3. Ship it behind the setting, off by default?\nAsked in the terminal; you left the session.",
+    "reason_line": "Asked in the terminal; you left the session.",
+    "body": ""
+  }
+]

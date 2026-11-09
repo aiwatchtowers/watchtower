@@ -70,6 +70,11 @@ func (p policyCheckedProvider) QuerySync(ctx context.Context, systemPrompt, user
 // checkedAIClient is the configured provider's client behind a per-call
 // policy check, for the long-lived holders.
 func checkedAIClient(cfg *config.Config, dbPath string) ai.Provider {
+	if toolRoutingEnabled(cfg, "") {
+		return newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) {
+			return buildAIClient(actual, dbPath, ""), func() {}, nil
+		})
+	}
 	return policyCheckedProvider{inner: buildAIClient(cfg, dbPath, ""), provider: cfg.AI.Provider}
 }
 
@@ -86,6 +91,29 @@ func (g policyCheckedGenerator) Generate(ctx context.Context, systemPrompt, user
 		return "", nil, "", err
 	}
 	return g.inner.Generate(ctx, systemPrompt, userMessage, sessionID)
+}
+
+// SetIsolatedChild configures the leaf without dropping the policy decorator.
+func (g policyCheckedGenerator) SetIsolatedChild(dropEnv ...string) {
+	if s, ok := g.inner.(interface{ SetIsolatedChild(...string) }); ok {
+		s.SetIsolatedChild(dropEnv...)
+	}
+}
+
+// ImageCapability preserves optional image support while retaining the policy check.
+func (g policyCheckedGenerator) ImageCapability() bool {
+	_, ok := digest.ImageCapable(g.inner)
+	return ok
+}
+func (g policyCheckedGenerator) GenerateWithImage(ctx context.Context, system, user, path, media string) (string, *digest.Usage, error) {
+	if err := providers.Allowed(g.provider); err != nil {
+		return "", nil, err
+	}
+	inner, ok := digest.ImageCapable(g.inner)
+	if !ok {
+		return "", nil, providers.CapabilityError(g.provider, providers.Image, nil)
+	}
+	return inner.GenerateWithImage(ctx, system, user, path, media)
 }
 
 // checkedGenerator is the configured provider's generator behind a per-call

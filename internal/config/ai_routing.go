@@ -1,6 +1,10 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+
+	"watchtower/internal/providers/caps"
+)
 
 // Validate checks configuration, never policy: reading a managed installation
 // must preserve the owner's values even when policy currently forbids them.
@@ -25,14 +29,21 @@ func (a AIConfig) Validate() error {
 		if reserve == preferred {
 			return fmt.Errorf("fallback provider must differ from preferred provider")
 		}
-		if reserve == "ollama" {
+		if !inAnyPair(reserve) {
 			return fmt.Errorf("fallback provider must be claude or codex")
 		}
 	}
-	if a.Fallback.Enabled && (reserve == "" || preferred == "ollama") {
+	if a.Fallback.Enabled && (reserve == "" || !caps.Pairs(preferred, reserve)) {
 		return fmt.Errorf("enabled fallback requires a Claude/Codex pair")
 	}
 	return nil
+}
+
+// inAnyPair reports whether id has a fallback reserve peer (the capability
+// table's reserve_peer).
+func inAnyPair(id string) bool {
+	c, ok := caps.For(id)
+	return ok && c.ReservePeer != ""
 }
 
 // KnownAIProvider validates IDs without the registry's historical display fallback.

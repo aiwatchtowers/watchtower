@@ -71,27 +71,29 @@ func TestAskGuardPromptV3Fixture_IsTheGolden(t *testing.T) {
 	}
 }
 
-// The v4 classifier text (spec 2026-10-10-owner-asks-v2 Part 4.4) is the
-// golden, byte for byte.
-func TestAskGuardClassifier_IsTheV4Golden(t *testing.T) {
-	golden, err := os.ReadFile(filepath.Join("testdata", "askguard_classifier_v4.golden"))
+// The classifier text (spec 2026-10-10-owner-asks-v2 Part 4.4; v5 adds a
+// chat request's context and a yes/no question's two answers) is the golden,
+// byte for byte.
+func TestAskGuardClassifier_IsTheV5Golden(t *testing.T) {
+	golden, err := os.ReadFile(filepath.Join("testdata", "askguard_classifier_v5.golden"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if AskGuardClassifier != string(golden) {
-		t.Fatalf("the ask guard classifier drifted from the v4 golden:\n got %q\nwant %q", AskGuardClassifier, golden)
+		t.Fatalf("the ask guard classifier drifted from the v5 golden:\n got %q\nwant %q", AskGuardClassifier, golden)
 	}
 }
 
 // PROJ-13: the classifier passes a continued turn, a turn that filed an ask
 // and a finished session that says so, so it can never trap the agent. Since
 // v4 (spec 2026-10-10-owner-asks-v2 Part 11.1) each v3 clause this test
-// checked maps to a clause of the v4 golden below or to a named Go guard:
+// checked maps to a clause of the v4 golden below (kept word for word in
+// v5) or to a named Go guard:
 // the stop_hook_active pass is Go's (cmd TestProj13_ContinuedTurnNeverBlocks),
 // and "names no ask #<number>" is the decision table's covered row (cmd
 // TestProj13_StopGuardDecisionTable rows E7, E7a, E7b).
 func TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk(t *testing.T) {
-	golden, err := os.ReadFile(filepath.Join("testdata", "askguard_classifier_v4.golden"))
+	golden, err := os.ReadFile(filepath.Join("testdata", "askguard_classifier_v5.golden"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,14 +185,20 @@ func assertOneAskGuardCommand(t *testing.T, stop []any, bin string) {
 }
 
 // assertAskToolBlockGroup: a fresh install's PreToolUse event holds one
-// AskUserQuestion group running our synchronous block command.
+// AskUserQuestion group running our synchronous block command, after the
+// session state's "*" group (board #988).
 func assertAskToolBlockGroup(t *testing.T, pre []any, bin string) {
 	t.Helper()
 	cmd := WorkbenchAskGuardHookCommand(bin, 7)
-	if len(pre) != 1 || countCommand(pre, cmd) != 1 {
-		t.Fatalf("PreToolUse must hold one group running %q, got %#v", cmd, pre)
+	// Since board #988 the session state's "*" group sits beside it.
+	state := WorkbenchSessionStateHookCommand(bin, 7)
+	if len(pre) != 2 || countCommand(pre, cmd) != 1 || countCommand(pre, state) != 1 {
+		t.Fatalf("PreToolUse must hold one group running %q and the state group, got %#v", cmd, pre)
 	}
-	g := pre[0].(map[string]any)
+	g := pre[1].(map[string]any)
+	if countCommand([]any{g}, cmd) != 1 || len(g["hooks"].([]any)) != 1 {
+		t.Fatalf("the ask tool block sits alone in its own group: %#v", pre)
+	}
 	h := g["hooks"].([]any)[0].(map[string]any)
 	if g["matcher"] != "AskUserQuestion" || h["type"] != "command" || h["timeout"] != float64(5) || h["async"] != nil {
 		t.Fatalf("the PreToolUse group is %#v", g)
@@ -247,7 +255,10 @@ func TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks(t *testing.T) 
 	// and the owner's key on our replaced prompt is carried onto it.
 	assertOurAskGuardEntryUpdatedInPlace(t, stop[3], o.Bin)
 	pre := eventGroups(t, after, "PreToolUse")
-	if len(pre) != 2 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) {
+	// Three since board #988 (ask #525): the owner's, the state hook's "*"
+	// group and the ask tool block's.
+	if len(pre) != 3 || !reflect.DeepEqual(pre[0], eventGroups(t, before, "PreToolUse")[0]) ||
+		countCommand(pre, WorkbenchSessionStateHookCommand(o.Bin, 7)) != 1 || countCommand(pre, WorkbenchAskGuardHookCommand(o.Bin, 7)) != 1 {
 		t.Fatalf("PROJ-04: the owner's PreToolUse group must stay first and as it was, got %#v", pre)
 	}
 	assertOwnerNumberLiteralsKept(t, folder, `"x-owner": 1.50`, `"x-owner-stop": 4.50`, `"x-owner-pre": 2.50`, `"x-ours": 3.50`)

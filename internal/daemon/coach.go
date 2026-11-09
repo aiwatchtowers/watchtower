@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,13 +12,13 @@ import (
 
 	"watchtower/internal/agentlog"
 	"watchtower/internal/coach"
-	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
-	"watchtower/internal/ollama"
+	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
+	"watchtower/internal/providers/transport"
 	"watchtower/internal/sessionfeed"
 )
 
@@ -28,29 +30,29 @@ const (
 )
 
 // coachGeneratorFactory is the seam tests override. The coach prompt carries
-// the owner's own typed text, so the CLI generators are switched to their
-// stdin-only mode (CHAT-04: owner text is never on argv; the
-// cmd.terminalTitleGeneratorFactory precedent, which the daemon cannot
-// import); the model tier comes from digest.TierForSource("coach.propose")
-// (strong).
+// the owner's own typed text, which every CLI generator sends on stdin, never
+// argv (CHAT-04); the model tier comes from
+// digest.TierForSource("coach.propose") (strong). The reserve leaves are CLI
+// children only, isolated (digest.IsolateChild).
 var coachGeneratorFactory = func(cfg *config.Config) digest.Generator {
+	snapshot := *cfg
+	snapshot.AI.Providers = maps.Clone(cfg.AI.Providers)
+	cfg = &snapshot
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
 		return digest.RefusedGenerator{Err: err} // #608: the run fails with the policy error, no fallback
 	}
-	light, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	var gen digest.Generator
-	switch cfg.AI.Provider {
-	case "codex":
-		gen = codex.NewCodexGenerator(light, strong, cfg.CodexPath)
-	case "ollama":
-		gen = ollama.NewGenerator(light, strong, cfg.AI.OllamaURL)
-	default:
-		gen = digest.NewClaudeGenerator(light, strong, cfg.ClaudePath)
-	}
-	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
-		s.SetStdinOnly(true)
-	}
-	return digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
+	gen := transport.For(cfg.AI.Provider).NewGenerator(transport.Options{Config: cfg})
+	legacy := digest.WithCallTimeout(gen, digest.DaemonAICallTimeout)
+	return providerrouting.WrapGenerator(cfg, legacy, func(provider string) digest.Generator {
+		if !providers.RunsChild(provider) {
+			err := providers.Allowed(provider)
+			if err == nil {
+				err = fmt.Errorf("coach: reserve provider %q runs no CLI child", provider)
+			}
+			return digest.RefusedGenerator{Err: err}
+		}
+		return transport.For(provider).NewGenerator(transport.Options{Config: cfg, IsolatedChild: true})
+	}, providerrouting.GeneratorOptions{Timeout: digest.DaemonAICallTimeout})
 }
 
 // coachSessionDirs is the test seam for the transcript directories the owner
@@ -178,11 +180,12 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 			d.logger.Printf("coach: collecting signals: %v (retried tomorrow)", err)
 			return pipelineRunStats{err: err}
 		}
-		p := &coach.Proposer{DB: d.db, Gen: coachGeneratorFactory(d.config), Now: func() time.Time { return now }, Logger: d.logger, Lang: d.config.Digest.Language}
+		gen := d.coachGenerator(ctx)
+		p := &coach.Proposer{DB: d.db, Gen: gen, Now: func() time.Time { return now }, Logger: d.logger, Lang: d.config.Digest.Language}
 		n, usage, err := runCoachProposer(ctx, p, in)
 		stats := pipelineRunStats{items: n, err: err}
 		if usage != nil {
-			stats.inTok, stats.outTok, stats.totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+			stats.inTok, stats.outTok, stats.totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 		}
 		if ctx.Err() != nil { // a cycle cancelled mid-run (sleep/wake) is retried next cycle
 			return stats
@@ -197,4 +200,14 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		d.logger.Printf("coach: %d written", n)
 		return stats
 	})
+}
+
+// coachGenerator keeps the coach's stdin-only factory while sharing worker
+// admission and the caller's immutable routing inputs with the rest of the job.
+func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
+	gen := coachGeneratorFactory(config.RoutingSnapshot(ctx, d.config))
+	if d.aiWorkerPool != nil {
+		gen = digest.WithCallTimeout(digest.NewPooledGenerator(gen, d.aiWorkerPool), digest.DaemonAICallTimeout)
+	}
+	return gen
 }

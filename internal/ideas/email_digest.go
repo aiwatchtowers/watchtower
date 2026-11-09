@@ -3,6 +3,7 @@ package ideas
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -533,7 +534,8 @@ func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block, 
 		system += fmt.Sprintf("\n\nRef tags in this input start with %q: copy the tag in parentheses on the numbered line EXACTLY as the ref.", refPrefix)
 	}
 
-	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, promptID), system, block, "")
+	ctx = digest.WithSource(ctx, promptID)
+	reply, usage, _, err := p.generator.Generate(ctx, system, block, "")
 	p.accumulateUsage(usage)
 	if err != nil {
 		return nil, fmt.Errorf("generating %s: %w", promptID, err)
@@ -596,8 +598,7 @@ func (p *Pipeline) insertStreamTopics(row db.StreamDigest, topics []streamTopic,
 // IMAP/Outlook mailbox), over the thread window newer than that mailbox's
 // ideas floor (google_accounts / email_accounts .ideas_email_floor). A nil
 // generator is a clean no-op (the inbox pipeline.go:253 pattern). Per-account
-// errors are logged and the loop continues to the next account; the first
-// error encountered is returned once every account has had a turn. The
+// errors are logged and the loop continues to the next account; all errors are joined once every account has had a turn. The
 // thread window is unbounded above (Run's ordinary daemon/incremental path);
 // a backfill run bounds runEmailDigestAccount itself to scope one pass to a
 // slice of history.
@@ -613,9 +614,7 @@ func (p *Pipeline) runEmailDigests(ctx context.Context) error {
 	for _, mb := range boxes {
 		if err := p.runEmailDigestAccount(ctx, mb, time.Time{}); err != nil {
 			p.logf("ideas: email digest %s: %v", mb.what(), err)
-			if firstErr == nil {
-				firstErr = err
-			}
+			firstErr = errors.Join(firstErr, err)
 		}
 	}
 	return firstErr
@@ -696,7 +695,7 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, mb mailbox, bound 
 		return p.initEmailFloor(mb)
 	}
 	reached, err := p.emailDigestPass(ctx, mb, floor, bound)
-	if err != nil || reached == floor {
+	if err != nil || reached == floor || digest.RoutingEnabled(p.generator, ctx) {
 		return err
 	}
 	if err := p.setMailFloor(mb, reached); err != nil {
@@ -707,11 +706,22 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, mb mailbox, bound 
 
 // emailDigestPass mines one window of the account's mail above floor
 // (bounded by bound when non-zero) and returns the floor the pass reached —
-// floor itself when there was nothing to mine. It reads and writes no
-// stored floor: runEmailDigestAccount persists the result, and the history
-// backfill's drain keeps its own lowered floor in memory, so a process killed
-// mid-drain never leaves the live floor weeks back.
+// floor itself when there was nothing to mine. Routed passes atomically commit
+// output, completion and a monotonic live floor. Legacy passes leave persistence
+// to the caller. Historical drains never lower the live floor.
 func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float64, bound time.Time) (float64, error) {
+	ctx, bound, window, err := p.prepareExtraction(ctx, mb.source, mb.id, fmt.Sprint(floor), bound)
+	if err != nil {
+		return floor, err
+	}
+	floor, err = emailExtractionFloor(window, floor)
+	if err != nil {
+		return floor, err
+	}
+	if window != nil && window.Complete {
+		return floor, nil
+	}
+
 	var beforeTS float64
 	if !bound.IsZero() {
 		beforeTS = float64(bound.Unix())
@@ -721,7 +731,7 @@ func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float6
 		return floor, fmt.Errorf("listing %s threads: %w", mb.source, err)
 	}
 	if len(msgs) == 0 {
-		return floor, nil
+		return floor, p.completeEmptyExtraction(ctx, fmt.Sprint(floor))
 	}
 
 	budget := p.maxPromptChars()
@@ -736,6 +746,9 @@ func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float6
 	minTS, maxTS := win.minTS, win.maxTS
 
 	what := mb.what()
+	if err := digest.Preflight(digest.WithSource(ctx, "ideas.digest_email"), p.generator); err != nil {
+		return floor, err
+	}
 	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, mb.refPrefix(), tags)
 	if err != nil {
 		return floor, err
@@ -745,13 +758,13 @@ func (p *Pipeline) emailDigestPass(ctx context.Context, mb mailbox, floor float6
 	if err != nil {
 		return floor, err
 	}
-	if err := p.insertStreamTopics(db.StreamDigest{
+	if err := p.commitExtraction(ctx, db.StreamDigest{
 		Source:     mb.source,
 		AccountID:  mb.id,
 		Scope:      scope,
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
-	}, topics, what); err != nil {
+	}, topics, what, fmt.Sprint(maxTS)); err != nil {
 		return floor, err
 	}
 

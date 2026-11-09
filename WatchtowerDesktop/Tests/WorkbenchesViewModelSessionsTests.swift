@@ -87,7 +87,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
             return try titleResult.get()
         }
         vm.now = { [weak self] in self?.clock ?? Date() }
-        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
+        vm.resolveAgentHome = { _ in URL(fileURLWithPath: "/Users/example/.codex") } // no login shell in tests
         return vm
     }
 
@@ -406,7 +406,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data(status.utf8))),
                                       defaults: defaults, terminalCenter: center)
         vm.titleService = { _ in .init(title: "", written: false) }
-        vm.resolveCodexHome = { URL(fileURLWithPath: "/Users/example/.codex") }
+        vm.resolveAgentHome = { _ in URL(fileURLWithPath: "/Users/example/.codex") }
         center.codexLaunchArgs = { _ in
             CodexLaunchArgs(binary: "/Users/example/bin/codex", pathPrepend: "/Users/example/bin", args: [])
         }

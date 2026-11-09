@@ -5,19 +5,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/ai"
-	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionfeed"
 	"watchtower/internal/specreview"
 )
@@ -49,9 +50,11 @@ var workbenchSpecReviewShowCmd = &cobra.Command{
 	Use:   "show --ask N [--json]",
 	Short: "Show the spec review of ask N and the owner's marks",
 	Long: "--json prints {ask_id, status, reason, provider, model, dropped, attempt, queued_at,\n" +
-		"started_at, finished_at, result, marks}: result is the validated reviewer result or null,\n" +
-		"marks maps each item key to {state, body, about, updated_at} (about: a comment's finding\n" +
-		"text, left out when not known). The database is opened read-only.",
+		"started_at, finished_at, result, marks, loop, round, loop_end, open_items, ledger,\n" +
+		"thread_findings}: result is the validated reviewer result or null, marks maps each item key\n" +
+		"to {state, body, about, updated_at} (about: a comment's finding text, left out when not\n" +
+		"known), thread_findings lists the findings added from Discuss threads ([] when none).\n" +
+		"The database is opened read-only.",
 	Args: cobra.NoArgs,
 	RunE: runSpecReviewShow,
 }
@@ -86,9 +89,8 @@ func init() {
 
 // specReviewAgentFactory builds the reviewer agent; tests swap it so no test
 // reaches claude or codex.
-var specReviewAgentFactory = func(cfg *config.Config) specreview.Agent {
-	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	return &specReviewCLIAgent{cfg: cfg, model: strong}
+var specReviewAgentFactory = func(cfg *config.Config, model string) specreview.Agent {
+	return &specReviewCLIAgent{cfg: cfg, model: model}
 }
 
 // specReviewCLIAgent is the configured provider in read-folder mode with no
@@ -103,42 +105,34 @@ type specReviewCLIAgent struct {
 
 func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user string) (string, bool, error) {
 	ctx = digest.WithSource(ctx, specreview.ModelSource)
-	if a.cfg.AI.Provider == "ollama" {
+	if provider := providers.ByID(a.cfg.AI.Provider); !provider.Caps.ReadsFolder() {
+		// A transport with no file tools answers from the prompt's data.
 		out, _, _, err := cliBoundedGenerator(a.cfg).Generate(ctx, system, user, "")
-		return out, false, wrapSpecReviewErr("ollama reviewer", err)
+		return out, false, wrapSpecReviewErr(provider.ID+" reviewer", err)
 	}
 	if folder == "" {
-		// Never a claude or codex run outside read-folder mode.
+		// Never a file-reading run outside read-folder mode.
 		return "", false, errors.New("no folder to read")
 	}
-	var out string
-	var err error
-	if a.cfg.AI.Provider == "codex" {
-		out, _, err = specReviewCodexClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
-		return out, true, wrapSpecReviewErr("codex reviewer", err)
+	out, err := specReviewReadFolder(ctx, a.cfg, a.model, folder, system, user)
+	return out, true, err
+}
+
+// specReviewCodexHome is the codex reviewer's private CODEX_HOME, a fresh
+// 0700 temp folder the caller removes after the run: it holds the run's
+// rollout, so the review never reaches the owner's codex history. The
+// owner's sign-in and config.toml (model provider, profiles; its MCP
+// servers are switched off by SetNoMCPServers) are linked, never copied.
+// An owner signed in without an auth.json (codex's keyring store, which is
+// tied to the home) gets "": the reviewer keeps the owner's home, as before,
+// and its cap counts the stream (remove is then a no-op).
+func specReviewCodexHome() (dir string, remove func(), err error) {
+	_, err = os.Stat(filepath.Join(ownerCodexHome(), "auth.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		log.Printf("codex reviewer: no auth.json in the codex home; it runs there and its turn cap counts the stream")
+		return "", func() {}, nil
 	}
-	out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
-	return out, true, wrapSpecReviewErr("claude reviewer", err)
-}
-
-// specReviewClaudeClient: no database path, so no --mcp-config; with
-// --strict-mcp-config claude then mounts no server.
-func specReviewClaudeClient(cfg *config.Config, model, folder string) *ai.Client {
-	c := ai.NewClient(model, "", cfg.ClaudePath)
-	c.SetReadFolder(folder)
-	c.SetMaxTurns(specreview.MaxTurns)
-	c.SetProcessGroup(true)
-	return c
-}
-
-// specReviewCodexClient: SetNoMCPServers disables the owner's codex servers
-// and mounts none (an empty database path alone would leave them on).
-func specReviewCodexClient(cfg *config.Config, model, folder string) *codex.Client {
-	c := codex.NewClient(model, "", cfg.CodexPath)
-	c.SetReadFolder(folder)
-	c.SetNoMCPServers()
-	c.SetProcessGroup(true)
-	return c
+	return newCodexHome("wt-review-codex-home-*", "auth.json", "config.toml")
 }
 
 // wrapSpecReviewErr names the reviewer a failure came from; nil stays nil.
@@ -162,15 +156,18 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	id := specReviewFlagAsk
-	provider := cfg.AI.Provider
-	if provider == "" {
-		provider = "claude"
+	cfg, strong, selectionErr := specReviewSessionConfig(cmd.Context(), database, id, cfg)
+	var agent specreview.Agent
+	if selectionErr != nil {
+		agent = specReviewSelectionFailure{err: fmt.Errorf("choosing reviewer: %w", selectionErr)}
+	} else {
+		agent = specReviewAgentFactory(cfg, strong)
 	}
-	_, strong := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	provider := cfg.AI.Provider
 	store := prompts.New(database, nil)
 	deps := specreview.Deps{
 		DB:    database,
-		Agent: specReviewAgentFactory(cfg),
+		Agent: agent,
 		Prompt: func() string {
 			tmpl, _, err := prompts.Resolve(store, prompts.SpecReview, "")
 			if err != nil {
@@ -201,7 +198,7 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 // does; a shell session or a missing one is an error the run turns into a note.
 func specReviewFeed(database *db.DB) func(context.Context, int64) ([]sessionfeed.Entry, error) {
 	return func(ctx context.Context, id int64) ([]sessionfeed.Entry, error) {
-		sess, err := database.GetTerminalSession(id)
+		sess, err := sessionagent.LoadSession(database, id)
 		if err != nil {
 			return nil, fmt.Errorf("session %d: %w", id, err)
 		}
@@ -277,6 +274,9 @@ type specReviewShowJSON struct {
 	LoopEnd    string                        `json:"loop_end"`
 	OpenItems  json.RawMessage               `json:"open_items"`
 	Ledger     json.RawMessage               `json:"ledger"`
+	// ThreadFindings is the findings the owner added from Discuss threads
+	// (each a specreview.ThreadFinding), by key; [] when none.
+	ThreadFindings []json.RawMessage `json:"thread_findings"`
 }
 
 type specReviewMarkJSON struct {
@@ -309,12 +309,20 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("reading spec review marks of ask %d: %w", id, err)
 	}
+	threadFindings, err := database.ListSpecReviewThreadFindings(id)
+	if err != nil {
+		return fmt.Errorf("reading thread findings of ask %d: %w", id, err)
+	}
 	out := specReviewShowJSON{
 		AskID: row.AskID, Status: row.Status, Reason: row.Reason, Provider: row.Provider, Model: row.Model,
 		Dropped: row.Dropped, Attempt: row.Attempt, QueuedAt: row.QueuedAt, StartedAt: row.StartedAt,
 		FinishedAt: row.FinishedAt, Marks: map[string]specReviewMarkJSON{},
 		Loop: row.Loop, Round: row.Round, LoopEnd: row.LoopEnd,
 		OpenItems: listOrEmpty(row.OpenItems), Ledger: listOrEmpty(row.Ledger),
+		ThreadFindings: []json.RawMessage{},
+	}
+	for _, f := range threadFindings {
+		out.ThreadFindings = append(out.ThreadFindings, json.RawMessage(f.Finding))
 	}
 	if row.Result != "" {
 		out.Result = json.RawMessage(row.Result)
@@ -364,4 +372,11 @@ func runSpecReviewReveal(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "spec review of ask %d revealed\n", id)
 	return nil
+}
+
+// Route discovery failures through Run so it claims and fails the queued review normally.
+type specReviewSelectionFailure struct{ err error }
+
+func (a specReviewSelectionFailure) Review(context.Context, string, string, string) (string, bool, error) {
+	return "", false, a.err
 }

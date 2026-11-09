@@ -74,7 +74,7 @@ func (g *ClaudeGenerator) SetIsolatedChild(dropEnv ...string) {
 // modelForContext picks the tier model for a call: the source tag routes to
 // light or strong; an untagged call uses the strong model.
 func (g *ClaudeGenerator) modelForContext(ctx context.Context) string {
-	if s, ok := SourceFromContext(ctx); ok && TierForSource(s) == TierLight {
+	if TierForContext(ctx) == TierLight {
 		return g.modelLight
 	}
 	return g.modelStrong
@@ -177,6 +177,12 @@ type cliUsage struct {
 		FiveMin int `json:"ephemeral_5m_input_tokens"`
 		OneHour int `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
+}
+
+// tokens is the envelope's usage as a block, the cache writes split by TTL.
+func (u cliUsage) tokens() llmusage.Tokens {
+	return llmusage.ClaudeTokens(u.InputTokens, u.CacheReadInputTokens, u.CacheCreationInputTokens,
+		u.CacheCreation.FiveMin, u.CacheCreation.OneHour, u.OutputTokens)
 }
 
 // cliResponse is the JSON structure returned by `claude --output-format json`.
@@ -305,17 +311,11 @@ func generateDir() string {
 	return configDir
 }
 
-// cliUsageOf turns a result envelope's usage into a Usage for model.
+// cliUsageOf turns a result envelope's usage into a Usage for model. The
+// reported cost is left out (CostUSD() reads 0 on this path, as before): it
+// is recorded in the LLM ledger only.
 func cliUsageOf(model string, resp *cliResponse) *Usage {
-	// Total API tokens = everything the API processed (including cache reads/writes).
-	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
-	return &Usage{
-		Model:          model,
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		CostUSD:        0,
-		TotalAPITokens: totalAPI,
-	}
+	return &Usage{Model: model, Tokens: resp.Usage.tokens()}
 }
 
 // runClaude runs one claude child the way every generator call does — args

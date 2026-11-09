@@ -482,6 +482,12 @@ CREATE INDEX idx_situations_status_rank ON situations(status, rank DESC)
 index	idx_situations_updated
 CREATE INDEX idx_situations_updated ON situations(updated_at DESC)
 
+index	idx_spec_review_questions_ask
+CREATE INDEX idx_spec_review_questions_ask ON spec_review_questions(ask_id)
+
+index	idx_spec_review_questions_open
+CREATE UNIQUE INDEX idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open'
+
 index	idx_stream_digests_source
 CREATE INDEX idx_stream_digests_source ON stream_digests(source, account_id)
 
@@ -1061,7 +1067,7 @@ context_id TEXT,
 created_at REAL NOT NULL,
 updated_at REAL NOT NULL
 , pinned INTEGER NOT NULL DEFAULT 0, archived_at REAL, title_source TEXT NOT NULL DEFAULT 'prefix'
-CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL)
+CHECK(title_source IN ('prefix','ai','user')), provider TEXT, model TEXT, project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL, active_leaf_message_id INTEGER, read_at REAL, routing_mode TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')), actual_provider TEXT NOT NULL DEFAULT '', actual_model TEXT NOT NULL DEFAULT '', routing_reason TEXT NOT NULL DEFAULT '')
 
 table	chat_fts
 CREATE VIRTUAL TABLE chat_fts USING fts5(
@@ -1190,6 +1196,36 @@ verdict_value REAL,
 verdict_at TEXT NOT NULL DEFAULT ''
 )
 
+table	codex_plan_usage_samples
+CREATE TABLE codex_plan_usage_samples (
+scope TEXT NOT NULL CHECK (length(scope) = 64),
+limit_key TEXT NOT NULL,
+taken_at TEXT NOT NULL,
+percent REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+resets_at TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (scope, limit_key, taken_at)
+)
+
+table	codex_plan_usage_status
+CREATE TABLE codex_plan_usage_status (
+id INTEGER PRIMARY KEY CHECK (id = 1),
+state TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+reason TEXT NOT NULL DEFAULT '',
+plan TEXT NOT NULL DEFAULT '',
+fetched_at TEXT,
+last_error TEXT NOT NULL DEFAULT '',
+last_error_at TEXT,
+limits_json TEXT NOT NULL DEFAULT '[]',
+breakdown_json TEXT NOT NULL DEFAULT '[]',
+updated_at TEXT NOT NULL,
+plot_json TEXT NOT NULL DEFAULT '{}',
+publication_proof TEXT NOT NULL DEFAULT '',
+scope TEXT NOT NULL DEFAULT '',
+identity_known INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+)
+
 table	custom_emojis
 CREATE TABLE custom_emojis (
 name TEXT PRIMARY KEY, -- Emoji shortcode (without colons)
@@ -1301,7 +1337,7 @@ read_at TEXT, -- NULL = unread, ISO8601 = when read (local-only)
 prompt_version INTEGER NOT NULL DEFAULT 0, -- version of prompt used for generation
 people_signals TEXT NOT NULL DEFAULT '[]', -- JSON array of PersonSignals from MAP phase (legacy)
 situations TEXT NOT NULL DEFAULT '[]', -- JSON array of Situation objects from channel digest
-running_summary TEXT NOT NULL DEFAULT '', -- JSON running context for next digest (channel memory)
+running_summary TEXT NOT NULL DEFAULT '', daily_attempt_id TEXT NOT NULL DEFAULT '', -- JSON running context for next digest (channel memory)
 UNIQUE(channel_id, type, period_from, period_to)
 )
 
@@ -1515,6 +1551,26 @@ done_at TEXT, held_since TEXT,
 UNIQUE (source_kind, account_id)
 )
 
+table	history_backfill_considered
+CREATE TABLE history_backfill_considered (
+account_id INTEGER NOT NULL,
+channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+from_ts REAL NOT NULL,
+to_ts REAL NOT NULL,
+reached_ts REAL NOT NULL,
+PRIMARY KEY(account_id, channel_id, from_ts, to_ts)
+)
+
+table	history_backfill_daily
+CREATE TABLE history_backfill_daily (
+account_id INTEGER NOT NULL,
+chunk_from REAL NOT NULL,
+chunk_to REAL NOT NULL,
+day_from REAL NOT NULL,
+digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
+PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
+)
+
 table	idea_mentions
 CREATE TABLE "idea_mentions" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1550,6 +1606,18 @@ last_mention_at TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , seen_at TEXT, chat_born INTEGER NOT NULL DEFAULT 0)
+
+table	ideas_extraction_windows
+CREATE TABLE ideas_extraction_windows (
+source TEXT NOT NULL CHECK (source IN ('gmail', 'imap', 'jira')),
+account_id INTEGER NOT NULL,
+window_key TEXT NOT NULL,
+from_value TEXT NOT NULL,
+to_value TEXT NOT NULL,
+reached_value TEXT NOT NULL,
+complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+PRIMARY KEY (source, account_id, window_key)
+)
 
 table	imap_messages
 CREATE TABLE imap_messages (
@@ -2121,7 +2189,7 @@ duration_ms INTEGER NOT NULL DEFAULT 0,
 ok INTEGER NOT NULL DEFAULT 1,
 automation_id INTEGER,
 automation_run_id INTEGER
-)
+, operation_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, config_revision TEXT NOT NULL DEFAULT '')
 
 table	media_items
 CREATE TABLE media_items (
@@ -2608,7 +2676,7 @@ last_error_at TEXT,
 limits_json TEXT NOT NULL DEFAULT '[]',
 breakdown_json TEXT NOT NULL DEFAULT '[]',
 updated_at TEXT NOT NULL
-)
+, plot_json TEXT NOT NULL DEFAULT '{}', publication_proof TEXT NOT NULL DEFAULT '')
 
 table	project_comments
 CREATE TABLE "project_comments" (
@@ -2856,7 +2924,7 @@ active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 sent_at TEXT,
 delivered_at TEXT
-, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')))
+, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), branch TEXT NOT NULL DEFAULT '')
 
 table	review_viewed
 CREATE TABLE review_viewed (
@@ -2924,6 +2992,29 @@ updated_at TEXT NOT NULL,
 PRIMARY KEY (ask_id, item_key)
 )
 
+table	spec_review_questions
+CREATE TABLE spec_review_questions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+thread TEXT NOT NULL,
+item_key TEXT NOT NULL,
+question TEXT NOT NULL,
+answer TEXT NOT NULL DEFAULT '',
+state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+created_at TEXT NOT NULL,
+closed_at TEXT NOT NULL DEFAULT ''
+)
+
+table	spec_review_thread_findings
+CREATE TABLE spec_review_thread_findings (
+ask_id INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+item_key TEXT NOT NULL,
+thread TEXT NOT NULL,
+finding TEXT NOT NULL,
+created_at TEXT NOT NULL,
+PRIMARY KEY (ask_id, item_key)
+)
+
 table	spec_reviews
 CREATE TABLE spec_reviews (
 ask_id INTEGER PRIMARY KEY REFERENCES owner_asks(id) ON DELETE CASCADE,
@@ -2939,7 +3030,7 @@ attempt INTEGER NOT NULL DEFAULT 0,
 queued_at TEXT NOT NULL,
 started_at TEXT NOT NULL DEFAULT '',
 finished_at TEXT NOT NULL DEFAULT ''
-, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1)
+, loop TEXT NOT NULL DEFAULT '' CHECK (loop IN ('','author','owner')), round INTEGER NOT NULL DEFAULT 0, replies TEXT NOT NULL DEFAULT '', open_items TEXT NOT NULL DEFAULT '', ledger TEXT NOT NULL DEFAULT '', loop_end TEXT NOT NULL DEFAULT '', findings INTEGER NOT NULL DEFAULT -1, loop_rules INTEGER NOT NULL DEFAULT 0)
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -3056,7 +3147,7 @@ CREATE TABLE terminal_session_worktrees (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 root TEXT NOT NULL,
 branch TEXT NOT NULL DEFAULT '',
-first_at TEXT NOT NULL,
+first_at TEXT NOT NULL, last_at TEXT,
 PRIMARY KEY (session_id, root, branch)
 )
 
@@ -3086,7 +3177,8 @@ agent_background_at TEXT,
 chat_question TEXT,
 chat_question_at TEXT,
 agent_turns TEXT,
-agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, start_notice TEXT,
+agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
+CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -3465,6 +3557,66 @@ BEGIN
 INSERT INTO kb_dirty (source, key) VALUES ('gmail',
 'gmail:' || OLD.account_id || ':' || CASE WHEN OLD.thread_id = '' THEN 'm:' || OLD.id ELSE OLD.thread_id END)
 ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END
+
+trigger	history_backfill_considered_reset
+CREATE TRIGGER history_backfill_considered_reset AFTER DELETE ON history_backfill
+BEGIN
+DELETE FROM history_backfill_considered WHERE OLD.source_kind='slack' AND account_id=OLD.account_id;
+END
+
+trigger	history_backfill_daily_reset
+CREATE TRIGGER history_backfill_daily_reset AFTER DELETE ON history_backfill
+BEGIN
+DELETE FROM history_backfill_daily WHERE OLD.source_kind='slack' AND account_id=OLD.account_id AND chunk_from >= OLD.floor_ts AND chunk_to <= OLD.upper_ts;
+END
+
+trigger	ideas_extraction_gmail_delete
+CREATE TRIGGER ideas_extraction_gmail_delete AFTER DELETE ON google_accounts
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source='gmail' AND account_id=OLD.id;
+END
+
+trigger	ideas_extraction_gmail_reset
+CREATE TRIGGER ideas_extraction_gmail_reset AFTER UPDATE OF ideas_email_floor ON google_accounts WHEN NEW.ideas_email_floor = 0
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source='gmail' AND account_id=OLD.id;
+END
+
+trigger	ideas_extraction_history_reset
+CREATE TRIGGER ideas_extraction_history_reset AFTER DELETE ON history_backfill
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source=OLD.source_kind AND account_id=OLD.account_id AND window_key <> 'forward';
+END
+
+trigger	ideas_extraction_imap_delete
+CREATE TRIGGER ideas_extraction_imap_delete AFTER DELETE ON email_accounts
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source='imap' AND account_id=OLD.id;
+END
+
+trigger	ideas_extraction_imap_reset
+CREATE TRIGGER ideas_extraction_imap_reset AFTER UPDATE OF ideas_email_floor ON email_accounts WHEN NEW.ideas_email_floor = 0
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source='imap' AND account_id=OLD.id;
+END
+
+trigger	ideas_extraction_jira_delete
+CREATE TRIGGER ideas_extraction_jira_delete AFTER DELETE ON jira_accounts
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source='jira' AND account_id=OLD.id;
+END
+
+trigger	ideas_extraction_jira_reset
+CREATE TRIGGER ideas_extraction_jira_reset AFTER UPDATE OF ideas_jira_floor ON jira_accounts WHEN NEW.ideas_jira_floor = ''
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source='jira' AND account_id=OLD.id;
+END
+
+trigger	ideas_extraction_output_reset
+CREATE TRIGGER ideas_extraction_output_reset AFTER DELETE ON stream_digests
+BEGIN
+DELETE FROM ideas_extraction_windows WHERE source=OLD.source AND account_id=OLD.account_id;
 END
 
 trigger	jira_comments_kb_dirty
@@ -4387,6 +4539,10 @@ GROUP BY up.ancestor
 12	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
 13	active_leaf_message_id	INTEGER	notnull=0	dflt=NULL	pk=0
 14	read_at	REAL	notnull=0	dflt=NULL	pk=0
+15	routing_mode	TEXT	notnull=1	dflt='preferred_reserve'	pk=0
+16	actual_provider	TEXT	notnull=1	dflt=''	pk=0
+17	actual_model	TEXT	notnull=1	dflt=''	pk=0
+18	routing_reason	TEXT	notnull=1	dflt=''	pk=0
 
 ## chat_fts
 0	text		notnull=0	dflt=NULL	pk=0
@@ -4507,6 +4663,30 @@ GROUP BY up.ancestor
 20	verdict_value	REAL	notnull=0	dflt=NULL	pk=0
 21	verdict_at	TEXT	notnull=1	dflt=''	pk=0
 
+## codex_plan_usage_samples
+0	scope	TEXT	notnull=1	dflt=NULL	pk=1
+1	limit_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	taken_at	TEXT	notnull=1	dflt=NULL	pk=3
+3	percent	REAL	notnull=1	dflt=NULL	pk=0
+4	resets_at	TEXT	notnull=1	dflt=''	pk=0
+
+## codex_plan_usage_status
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	state	TEXT	notnull=1	dflt=NULL	pk=0
+2	reason	TEXT	notnull=1	dflt=''	pk=0
+3	plan	TEXT	notnull=1	dflt=''	pk=0
+4	fetched_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	last_error	TEXT	notnull=1	dflt=''	pk=0
+6	last_error_at	TEXT	notnull=0	dflt=NULL	pk=0
+7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
+8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
+9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
+12	scope	TEXT	notnull=1	dflt=''	pk=0
+13	identity_known	INTEGER	notnull=1	dflt=0	pk=0
+14	ordinary_usage_allowed	INTEGER	notnull=0	dflt=NULL	pk=0
+
 ## custom_emojis
 0	name	TEXT	notnull=0	dflt=NULL	pk=1
 1	url	TEXT	notnull=1	dflt=NULL	pk=0
@@ -4599,6 +4779,7 @@ GROUP BY up.ancestor
 17	people_signals	TEXT	notnull=1	dflt='[]'	pk=0
 18	situations	TEXT	notnull=1	dflt='[]'	pk=0
 19	running_summary	TEXT	notnull=1	dflt=''	pk=0
+20	daily_attempt_id	TEXT	notnull=1	dflt=''	pk=0
 
 ## doc_links
 0	from_kind	TEXT	notnull=1	dflt=NULL	pk=1
@@ -4778,6 +4959,20 @@ GROUP BY up.ancestor
 12	done_at	TEXT	notnull=0	dflt=NULL	pk=0
 13	held_since	TEXT	notnull=0	dflt=NULL	pk=0
 
+## history_backfill_considered
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	channel_id	TEXT	notnull=1	dflt=NULL	pk=2
+2	from_ts	REAL	notnull=1	dflt=NULL	pk=3
+3	to_ts	REAL	notnull=1	dflt=NULL	pk=4
+4	reached_ts	REAL	notnull=1	dflt=NULL	pk=0
+
+## history_backfill_daily
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	chunk_from	REAL	notnull=1	dflt=NULL	pk=2
+2	chunk_to	REAL	notnull=1	dflt=NULL	pk=3
+3	day_from	REAL	notnull=1	dflt=NULL	pk=4
+4	digest_id	INTEGER	notnull=1	dflt=NULL	pk=0
+
 ## idea_mentions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	idea_id	INTEGER	notnull=1	dflt=NULL	pk=0
@@ -4809,6 +5004,15 @@ GROUP BY up.ancestor
 17	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 18	seen_at	TEXT	notnull=0	dflt=NULL	pk=0
 19	chat_born	INTEGER	notnull=1	dflt=0	pk=0
+
+## ideas_extraction_windows
+0	source	TEXT	notnull=1	dflt=NULL	pk=1
+1	account_id	INTEGER	notnull=1	dflt=NULL	pk=2
+2	window_key	TEXT	notnull=1	dflt=NULL	pk=3
+3	from_value	TEXT	notnull=1	dflt=NULL	pk=0
+4	to_value	TEXT	notnull=1	dflt=NULL	pk=0
+5	reached_value	TEXT	notnull=1	dflt=NULL	pk=0
+6	complete	INTEGER	notnull=1	dflt=0	pk=0
 
 ## imap_messages
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5318,6 +5522,9 @@ GROUP BY up.ancestor
 17	ok	INTEGER	notnull=1	dflt=1	pk=0
 18	automation_id	INTEGER	notnull=0	dflt=NULL	pk=0
 19	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
+20	operation_id	TEXT	notnull=1	dflt=''	pk=0
+21	attempt	INTEGER	notnull=1	dflt=0	pk=0
+22	config_revision	TEXT	notnull=1	dflt=''	pk=0
 
 ## media_items
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -5738,6 +5945,8 @@ GROUP BY up.ancestor
 7	limits_json	TEXT	notnull=1	dflt='[]'	pk=0
 8	breakdown_json	TEXT	notnull=1	dflt='[]'	pk=0
 9	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+10	plot_json	TEXT	notnull=1	dflt='{}'	pk=0
+11	publication_proof	TEXT	notnull=1	dflt=''	pk=0
 
 ## project_comments
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -5949,6 +6158,7 @@ GROUP BY up.ancestor
 15	sent_at	TEXT	notnull=0	dflt=NULL	pk=0
 16	delivered_at	TEXT	notnull=0	dflt=NULL	pk=0
 17	outcome	TEXT	notnull=1	dflt=''	pk=0
+18	branch	TEXT	notnull=1	dflt=''	pk=0
 
 ## review_viewed
 0	round_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -6010,6 +6220,24 @@ GROUP BY up.ancestor
 4	about	TEXT	notnull=1	dflt=''	pk=0
 5	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 
+## spec_review_questions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	ask_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	thread	TEXT	notnull=1	dflt=NULL	pk=0
+3	item_key	TEXT	notnull=1	dflt=NULL	pk=0
+4	question	TEXT	notnull=1	dflt=NULL	pk=0
+5	answer	TEXT	notnull=1	dflt=''	pk=0
+6	state	TEXT	notnull=1	dflt='open'	pk=0
+7	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+8	closed_at	TEXT	notnull=1	dflt=''	pk=0
+
+## spec_review_thread_findings
+0	ask_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	item_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	thread	TEXT	notnull=1	dflt=NULL	pk=0
+3	finding	TEXT	notnull=1	dflt=NULL	pk=0
+4	created_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## spec_reviews
 0	ask_id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	status	TEXT	notnull=1	dflt=NULL	pk=0
@@ -6031,6 +6259,7 @@ GROUP BY up.ancestor
 17	ledger	TEXT	notnull=1	dflt=''	pk=0
 18	loop_end	TEXT	notnull=1	dflt=''	pk=0
 19	findings	INTEGER	notnull=1	dflt=-1	pk=0
+20	loop_rules	INTEGER	notnull=1	dflt=0	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6124,6 +6353,7 @@ GROUP BY up.ancestor
 1	root	TEXT	notnull=1	dflt=NULL	pk=2
 2	branch	TEXT	notnull=1	dflt=''	pk=3
 3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
+4	last_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6159,7 +6389,9 @@ GROUP BY up.ancestor
 30	worktree_base	TEXT	notnull=0	dflt=NULL	pk=0
 31	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
 32	target_bound_at	TEXT	notnull=0	dflt=NULL	pk=0
-33	start_notice	TEXT	notnull=0	dflt=NULL	pk=0
+33	agent_watch_issue	TEXT	notnull=0	dflt=NULL	pk=0
+34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
+35	start_notice	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1

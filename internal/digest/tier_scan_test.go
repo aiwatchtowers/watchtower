@@ -38,6 +38,7 @@ type allowedStrongSource struct {
 // tagged-but-unlisted source that stays strong, plus the untagged call sites
 // this same task tagged (tag-only — their tier did not change).
 var allowedStrongSources = []allowedStrongSource{
+	{"probe", "cmd/ai.go runAITest: explicit Test connection exercises the selected strong model; both leaf tiers are pinned to that form model (docs/features/provider-fallback.md)"},
 	// Already tagged before this task, deliberately strong (verify-tiers.md
 	// §4 "no change" tables — several already say so in their own code
 	// comments):
@@ -84,9 +85,11 @@ var allowedStrongSources = []allowedStrongSource{
 // caller before it reached the decorator. They are not new AI-call
 // origination points, so the scan does not require them to re-tag.
 var skipGenerateCallFiles = map[string]bool{
-	filepath.Join("internal", "digest", "pooled.go"):            true,
-	filepath.Join("internal", "digest", "timeout_generator.go"): true,
-	filepath.Join("cmd", "provider_policy.go"):                  true,
+	// Quota router decorator forwards the caller's context/source unchanged.
+	filepath.Join("internal", "providerrouting", "generator.go"): true,
+	filepath.Join("internal", "digest", "pooled.go"):             true,
+	filepath.Join("internal", "digest", "timeout_generator.go"):  true,
+	filepath.Join("cmd", "provider_policy.go"):                   true,
 }
 
 // TestTierForSource_EveryGenerateCallIsTagged is a property scan, not an

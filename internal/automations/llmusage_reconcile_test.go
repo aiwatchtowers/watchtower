@@ -39,7 +39,7 @@ func (g *recordingGenerator) Generate(ctx context.Context, system, user, session
 	reply, u, sid, err := g.FakeGenerator.Generate(ctx, system, user, session)
 	c := llmusage.Call{Provider: "fake", Model: "fake", OK: err == nil}
 	if u != nil {
-		c.Input, c.Output = int64(u.InputTokens), int64(u.OutputTokens)
+		c.Input, c.Output = int64(u.InputTokens()), int64(u.OutputTokens())
 	}
 	llmusage.Record(ctx, c)
 	return reply, u, sid, err
@@ -51,7 +51,7 @@ type recordingAgent struct{ automationstest.FakeAgent }
 
 func (a *recordingAgent) Run(ctx context.Context, req automations.AgentRequest) (automations.AgentResult, error) {
 	r, err := a.FakeAgent.Run(ctx, req)
-	llmusage.Record(ctx, llmusage.Call{Provider: "fake", Model: "fake", Input: r.InputTokens, Output: r.OutputTokens, OK: err == nil})
+	llmusage.Record(ctx, llmusage.Call{Provider: "fake", Model: "fake", OK: err == nil, Tokens: llmusage.Tokens{Input: r.InputTokens, Output: r.OutputTokens}})
 	return r, err
 }
 
@@ -64,7 +64,7 @@ func TestAutomationRunLedgerMatchesRun(t *testing.T) {
 	t.Cleanup(func() { llmusage.SetSink(nil) })
 
 	gen := &recordingGenerator{automationstest.FakeGenerator{Replies: []string{"done"},
-		Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}, {InputTokens: 70, OutputTokens: 30}}}}
+		Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}, {Tokens: llmusage.Tokens{Input: 70, Output: 30}}}}}
 	agent := &recordingAgent{automationstest.FakeAgent{Result: automations.AgentResult{Text: "triaged", InputTokens: 300, OutputTokens: 100}}}
 	f := newExFixture(t, exOpts{gen: gen, backends: func(_ *exFixture, b *automations.Backends) { b.Agent = agent }})
 	recipe := "---\nname: Ledger test\ntrigger:\n  manual: true\npermissions:\n  - llm:light\n  - agent:run\n" +

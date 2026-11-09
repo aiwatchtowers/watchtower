@@ -58,8 +58,10 @@ issues; each must be checkable. You are read-only.
 ## Codex (independent, parallel)
 
 ```bash
-timeout 300 codex review --base "$BASE" -c sandbox_mode="read-only" -c approval_policy="never"
+timeout 590 codex review --base "$BASE" -c sandbox_mode="read-only" -c approval_policy="never"
 ```
+
+Run it with the Bash tool's `timeout` at `600000` (the foreground maximum); 300 s was too short for a 20+ file branch.
 
 `codex review` (codex 0.130+) is the dedicated non-interactive review subcommand;
 `-c sandbox_mode="read-only"` lets it read anything but mutate nothing, and

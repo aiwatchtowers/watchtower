@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionstate"
 )
 
@@ -38,12 +39,14 @@ type Liveness struct {
 
 // ReportSummary is a session's line of `workbench session-report --summary`
 // (the Swift SessionReportSummary): the target the report is about, its
-// done/total leaves and the PR line.
+// done/total leaves, the merged share (board #986/#1008) and the PR line.
 type ReportSummary struct {
-	TargetID *int64
-	Done     int
-	Total    int
-	PRLine   string
+	TargetID    *int64
+	Done        int
+	Total       int
+	Merged      int  // not done, branch merged into its parent's
+	MergedStale bool // the merge ref could not be checked
+	PRLine      string
 }
 
 // TerminalSessionOptions wires the terminal_session source. Liveness (nil =
@@ -145,8 +148,25 @@ type sessionPayload struct {
 	ReportTargetID       *int64     `json:"report_target_id,omitempty"`
 	ReportDone           *int       `json:"report_done,omitempty"`
 	ReportTotal          *int       `json:"report_total,omitempty"`
-	ReportPRLine         *string    `json:"report_pr_line,omitempty"`
-	ReportPRLineClipped  *bool      `json:"report_pr_line_clipped,omitempty"`
+	// ReportMerged is present with the summary, 0 when none; ReportMergedStale
+	// only when true — the Desktop slice's wire (board #1008).
+	ReportMerged        *int    `json:"report_merged,omitempty"`
+	ReportMergedStale   *bool   `json:"report_merged_stale,omitempty"`
+	ReportPRLine        *string `json:"report_pr_line,omitempty"`
+	ReportPRLineClipped *bool   `json:"report_pr_line_clipped,omitempty"`
+	// WatchIssue is why the Mac cannot watch a working codex session
+	// (missing/permission/compressed/unreadable, spec 2026-11-05 §3.5);
+	// absent when watched. The caption then reads "Working · not watched".
+	WatchIssue *string `json:"watch_issue,omitempty"`
+	// WatchHelp is the Mac's tooltip for WatchIssue (watchHelp, the Swift
+	// SessionStatePresentation.watchIssueHelp), which the phone shows as
+	// given; absent when watched.
+	WatchHelp *string `json:"watch_help,omitempty"`
+	// Phone is what the hub takes from the phone for this session (U5,
+	// sessionagent.Caps.Phone): the phone shows the composer, the
+	// permission card and Interrupt by it. A record from a Mac older than
+	// the key has none, and the phone keeps that Mac's Claude-only rule.
+	Phone sessionagent.PhoneCaps `json:"phone"`
 }
 
 // publishedSession is one session of the window with its resolved state.
@@ -211,12 +231,23 @@ func (s *TerminalSessionSource) payload(p publishedSession, closedAsks int) sess
 		ClosedAsks:    closedAsks,
 		FinishSummary: finish, FinishSummaryClipped: finishClipped,
 		AgentError: agentErr, AgentErrorClipped: agentErrClipped,
+		Phone: sessionagent.CapsOf(string(p.agent)).Phone(),
+	}
+	if st.notWatched() {
+		issue, help := st.watchIssue, watchHelp(st.watchIssue)
+		out.WatchIssue, out.WatchHelp = &issue, &help
 	}
 	if s.o.ReportSummary != nil {
 		if sum, ok := s.o.ReportSummary(p.workbenchID, p.id); ok {
 			line, lineClipped := clipText(sum.PRLine, maxPRLine)
 			done, total := sum.Done, sum.Total
 			out.ReportTargetID, out.ReportDone, out.ReportTotal = sum.TargetID, &done, &total
+			merged := sum.Merged
+			out.ReportMerged = &merged
+			if sum.MergedStale {
+				stale := true
+				out.ReportMergedStale = &stale
+			}
 			out.ReportPRLine, out.ReportPRLineClipped = &line, lineClipped
 		}
 	}
@@ -276,7 +307,7 @@ func (s *TerminalSessionSource) published(ctx context.Context, tx *sql.Tx) ([]pu
 	err = scanRows(ctx, tx, `
 SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_active_at,
        s.agent_state, s.agent_state_at, s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
-       s.agent_background, s.agent_background_at,
+       s.agent_background, s.agent_background_at, COALESCE(s.agent_watch_issue, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+`),
        (SELECT COUNT(*) FROM owner_asks a
@@ -284,17 +315,17 @@ SELECT s.id, s.project_id, s.kind, s.title, s.target_id, s.created_at, s.last_ac
        (SELECT COUNT(*) FROM owner_asks a
         WHERE a.session_id = s.id AND a.status = 'open' AND `+askVisible+` AND a.kind = 'review')
 FROM terminal_sessions s
-WHERE s.project_id IS NOT NULL AND s.kind IN ('claude','codex')
+WHERE s.project_id IS NOT NULL AND s.kind IN `+agentkind.SQLKinds()+`
 ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		var (
-			p                publishedSession
-			kind, agentError string
-			target, oldest   sql.NullInt64
-			row              sessionstate.Row
+			p                            publishedSession
+			kind, agentError, watchIssue string
+			target, oldest               sql.NullInt64
+			row                          sessionstate.Row
 		)
 		if err := r.Scan(&p.id, &p.workbenchID, &kind, &p.title, &target, &p.createdAt, &p.lastActiveAt,
 			&row.AgentState, &row.AgentStateAt, &row.FinishedAt, &p.finishSummary, &row.AgentFailedAt, &agentError,
-			&row.AgentBackground, &row.AgentBackgroundAt,
+			&row.AgentBackground, &row.AgentBackgroundAt, &watchIssue,
 			&row.OpenAsks, &oldest, &row.OpenQuestionAsks, &row.OpenReviewAsks); err != nil {
 			return err
 		}
@@ -317,6 +348,7 @@ ORDER BY s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 			row.RunStartedAt = db.AgentStateStamp(start)
 		}
 		p.state = resolveState(row, now, agentError, nullInt(oldest))
+		p.state.watchIssue = watchIssue
 		p.stateAt = stateAt(row, p.state)
 		out = append(out, p)
 		return nil
@@ -389,7 +421,27 @@ type sessionState struct {
 	err                      string // agent_error of a failed turn
 	oldestAskID              *int64 // nil without open asks
 	agents                   int    // background agents of a background session
+	watchIssue               string // agent_watch_issue; shown only on a working session
 }
+
+// watchHelp is SessionStatePresentation.watchIssueHelp: the tooltip of a
+// session not watched for issue (U6); a code it does not know reads as
+// unreadable. The Kit fixture workbench/watch_help.json pins both.
+func watchHelp(issue string) string {
+	reason := "Watchtower can't read this session's log."
+	switch issue {
+	case db.WatchIssueMissing:
+		reason = "Watchtower can't find this session's log."
+	case db.WatchIssuePermission:
+		reason = "Watchtower isn't allowed to read this session's log."
+	case db.WatchIssueCompressed:
+		reason = "This session's log is compressed, so Watchtower can't read it."
+	}
+	return reason + " Watching starts again with the next prompt."
+}
+
+// notWatched: a working session the Mac cannot watch (§3.5, U6).
+func (st sessionState) notWatched() bool { return st.kind == kindWorking && st.watchIssue != "" }
 
 // resolveState maps sessionstate.Resolve's state onto the presentation
 // state, the way SessionAgentStatus.effective builds it.
@@ -519,10 +571,14 @@ func (st sessionState) glyph() string {
 func (st sessionState) caption() string {
 	switch st.kind {
 	case kindWorking:
-		if st.openAsks > 0 {
-			return "Working · " + asksOpen(st.openAsks)
+		working := "Working"
+		if st.notWatched() {
+			working = "Working · not watched"
 		}
-		return "Working"
+		if st.openAsks > 0 {
+			return working + " · " + asksOpen(st.openAsks)
+		}
+		return working
 	case kindWaitingOnAsk:
 		return "Waiting for you" + st.askSuffix()
 	case kindReadyToCheck:

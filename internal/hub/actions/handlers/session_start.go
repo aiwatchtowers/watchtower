@@ -10,8 +10,10 @@ import (
 
 	"github.com/rivo/uniseg"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/wire"
+	"watchtower/internal/sessionagent"
 )
 
 // SessionStartStopHandlers' values and messages, verbatim.
@@ -22,9 +24,6 @@ const (
 	startNotAllowedMessage = "This phone is not allowed to start sessions. " +
 		"On the Mac: Watchtower → Settings → Mobile → allow typing, then starting sessions."
 	startTimeoutMessage = "The Mac did not finish this in time — check the session on the Mac"
-	// TerminalLaunch.exitMessage(code: 127, agent:).
-	claudeNotFoundMessage = "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
-	codexNotFoundMessage  = "Codex was not found. Install it, or set codex_path in Watchtower's config, then try again."
 )
 
 // Start refusals the session port answers with (WorkbenchesViewModel's
@@ -171,10 +170,13 @@ func (h *Handlers) launch(ctx context.Context, req StartRequest) actions.Outcome
 	case err == nil:
 		return applied(map[string]any{"session_id": res.SessionID, "stage": "starting"})
 	case errors.As(err, &missing):
-		if missing.Agent == "codex" {
-			return failed("codex_not_found", codexNotFoundMessage)
+		// A value that is no agent kind of this version is refused as such,
+		// never read as another agent's.
+		agent, ok := sessionagent.Of(missing.Agent)
+		if !ok {
+			return failed(reasonNotSupported, agentkind.Unsupported(missing.Agent).Error())
 		}
-		return failed("claude_not_found", claudeNotFoundMessage)
+		return failed(agent.NotFoundReason(), agent.NotFoundMessage())
 	case errors.Is(err, ErrStartNotOnBoard):
 		return failed(reasonNotOnBoard, "That target is not on a workbench board")
 	case errors.Is(err, ErrStartInProgress):

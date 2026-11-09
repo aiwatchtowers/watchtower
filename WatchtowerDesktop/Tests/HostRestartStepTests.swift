@@ -593,7 +593,7 @@ final class HostRestartStepTests: XCTestCase {
     /// F5: a relaunch whose check fails says why in the pane and leaves the list.
     func testACodexRowWhoseCheckFailsShowsItsReason() async throws {
         center.codexRolloutExists = { _, _, _ in false }
-        vm.resolveCodexHome = { nil }
+        vm.resolveAgentHome = { _ in nil }
         let row = try await sessionRow(kind: .codex)
         await launch(listing: [run(row.id, pid: 5150)])
         let step = makeStep()
@@ -601,7 +601,7 @@ final class HostRestartStepTests: XCTestCase {
         await step.pressContinue()
 
         XCTAssertEqual(step.phase, .finished)
-        XCTAssertEqual(center.states[row.id], .unavailable(WorkbenchesViewModel.hostRestartCodexUnchecked))
+        XCTAssertEqual(center.states[row.id], .unavailable(WorkbenchesViewModel.hostRestartHomeUnchecked(.codex)))
         XCTAssertEqual(factoryCalls, 0)
         XCTAssertNil(try list())
     }

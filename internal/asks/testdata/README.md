@@ -25,3 +25,6 @@ Both sides must agree on every file.
   (`go test ./internal/asks -run TestRenderGolden -update` rewrites them).
 - `lines/*.json` — `{id, kind, answer, line}`: `asks.DeliveryLine` and the Swift
   `OwnerAskPrompt` both produce `line`.
+- `spec_review_question_lines/*.json` — `{ask_id, question_id, question, line}`:
+  `asks.SpecReviewQuestionLine` and its Swift twin both produce `line`, one line even when
+  `question` has a line break.

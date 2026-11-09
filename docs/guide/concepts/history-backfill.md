@@ -49,6 +49,14 @@ The menu bar and the status bar show "Loading history: N of M days". Another lin
 
 To stop loading, run `watchtower config set sync.backfill_days 0`. Running ones pause and setting it back resumes them. 0 also means a source connected later starts none.
 
+## When AI reaches its quota
+
+With a [reserve AI provider](ai-providers-and-cost.md#a-reserve-provider-for-quota-limits) enabled, history fetching continues while the AI step
+waits for an available provider. The history position stays at the unfinished
+chunk; the next cycle resumes its missing AI steps, including after a restart.
+Already saved results remain saved. A quota wait does not count toward skipping
+a chunk with bad material.
+
 ## Why numbers can look off
 
 "N of M days" adds days across sources, so it is not one source's month. Digests of the older days appear in the Digests tab sorted by when they were created, so they can sit at the top for hours.

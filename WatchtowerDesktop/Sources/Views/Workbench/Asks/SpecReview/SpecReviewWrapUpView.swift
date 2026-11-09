@@ -3,8 +3,9 @@ import WatchtowerCore
 
 /// Spec review, step 3 (spec §7): every finding grouped with the owner's
 /// mark, an unmarked one flagged (a click opens its chapter); **From the
-/// previous run** for comments whose finding the re-run did not find again;
-/// the note. **Request changes** and **Approve** sit in the drawer's footer
+/// previous run** for comments whose finding the re-run did not find again
+/// and for threads on items it dropped (readable, no new messages); the
+/// note. **Request changes** and **Approve** sit in the drawer's footer
 /// (`SpecReviewVerdictButtons`).
 struct SpecReviewWrapUpView: View {
     let model: SpecReviewModel
@@ -13,16 +14,17 @@ struct SpecReviewWrapUpView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.large) {
-                ForEach(SpecReviewPresentation.wrapUpGroups(result)) { group in
+                let groups = SpecReviewPresentation.wrapUpGroups(result, threadFindings: model.threadFindings)
+                ForEach(groups) { group in
                     VStack(alignment: .leading, spacing: Spacing.tight) {
                         SectionHeader(title: group.title, systemImage: icon(group.title), count: group.items.count)
                         ForEach(group.items) { itemRow($0) }
                     }
                 }
-                if SpecReviewPresentation.wrapUpGroups(result).isEmpty {
+                if groups.isEmpty {
                     Text("The reviewer raised no findings.").font(.callout).foregroundStyle(.secondary)
                 }
-                if !model.orphans.isEmpty { orphanList }
+                if !model.orphans.isEmpty || !model.orphanThreads.isEmpty { orphanList }
                 CommentTextEditor(
                     text: Binding(get: { model.note }, set: { model.note = $0 }),
                     placeholder: "Note for the author (optional)",
@@ -44,7 +46,7 @@ struct SpecReviewWrapUpView: View {
             model.phase = .chapters
         } label: {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                markGlyph(mark)
+                markGlyph(mark, kind: model.cardKind(for: item.key))
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(item.text).font(.callout).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
                     if mark?.state == .comment, let body = mark?.body, !body.isEmpty {
@@ -64,10 +66,12 @@ struct SpecReviewWrapUpView: View {
     }
 
     @ViewBuilder
-    private func markGlyph(_ mark: SpecReviewMark?) -> some View {
+    private func markGlyph(_ mark: SpecReviewMark?, kind: SpecReviewCardKind? = .actionable) -> some View {
         switch mark?.state {
         case .ok:
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success).accessibilityLabel("Fine as is")
+            // Skip or Checked: the label the card itself shows.
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success)
+                .accessibilityLabel(SpecReviewPresentation.okLabel(kind))
         case .comment where mark?.body.isEmpty ?? true:
             Image(systemName: "wrench.and.screwdriver.fill").foregroundStyle(.secondary).accessibilityLabel("Fix")
         case .comment:
@@ -81,32 +85,48 @@ struct SpecReviewWrapUpView: View {
 
     private var orphanList: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
-            SectionHeader(title: "From the previous run", systemImage: "clock.arrow.circlepath", count: model.orphans.count)
+            SectionHeader(title: "From the previous run", systemImage: "clock.arrow.circlepath",
+                          count: model.orphans.count + model.orphanThreads.count)
             Text("The re-run did not find these again; your comments still go to the author.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            ForEach(model.orphans, id: \.key) { mark in
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    markGlyph(mark)
-                    VStack(alignment: .leading, spacing: Spacing.tight) {
-                        if !mark.about.isEmpty {
-                            Text(mark.about).font(.callout).fixedSize(horizontal: false, vertical: true)
-                        }
-                        if !mark.body.isEmpty {
-                            Text(mark.body)
-                                .font(mark.about.isEmpty ? .callout : .caption)
-                                .foregroundStyle(mark.about.isEmpty ? .primary : .secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: Spacing.regular)
-                    Button("Remove") { Task { await model.unmark(mark.key) } }
-                        .buttonStyle(.kitQuiet)
-                        .controlSize(.small)
+            ForEach(model.orphanThreads, id: \.key) { thread in
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(thread.title).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    SpecReviewOrphanThreadSection(key: thread.key)
                 }
                 .padding(.horizontal, Spacing.regular)
                 .padding(.vertical, Spacing.compact)
             }
+            ForEach(model.orphans, id: \.key) { mark in
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    orphanMarkRow(mark)
+                    SpecReviewOrphanThreadSection(key: mark.key)
+                }
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.compact)
+            }
+        }
+    }
+
+    private func orphanMarkRow(_ mark: SpecReviewMark) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            markGlyph(mark)
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                if !mark.about.isEmpty {
+                    Text(mark.about).font(.callout).fixedSize(horizontal: false, vertical: true)
+                }
+                if !mark.body.isEmpty {
+                    Text(mark.body)
+                        .font(mark.about.isEmpty ? .callout : .caption)
+                        .foregroundStyle(mark.about.isEmpty ? .primary : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: Spacing.regular)
+            Button("Remove") { Task { await model.unmark(mark.key) } }
+                .buttonStyle(.kitQuiet)
+                .controlSize(.small)
         }
     }
 
@@ -118,7 +138,19 @@ struct SpecReviewWrapUpView: View {
         case "Decided alone": "person.fill.questionmark"
         case "Blind spots": "eye.slash"
         case "Concerns": "exclamationmark.bubble"
+        case "From discussion": "bubble.left.and.bubble.right"
         default: "circle.dashed"
         }
+    }
+}
+
+/// The thread of an item from the previous run: its folded "thread · N"
+/// line, read-only once opened.
+private struct SpecReviewOrphanThreadSection: View {
+    let key: String
+    @State private var visibility: SpecReviewThreadVisibility = .auto
+
+    var body: some View {
+        SpecReviewCardThreadSection(key: key, visibility: $visibility)
     }
 }

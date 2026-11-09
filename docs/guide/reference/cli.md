@@ -22,7 +22,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 
 | Command | What it does |
 |---|---|
-| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first) |
+| `watchtower slack`, `auth` | Slack workspaces (`slack add` connects another; `auth login` connects the first; `slack backfill --account N --from D --to D` fetches up to 31 past days of one account again, with digests for channel days that had none; on a day that already has a digest for a channel, the fetched messages are saved and searchable but not digested) |
 | `watchtower google`, `gmail` | Google accounts and Gmail |
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
@@ -115,8 +115,11 @@ Commands for a [headless host](../features/headless-host.md): a Linux box or a M
 |---|---|
 | `watchtower ai models` | Models per provider and tier |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
+| `watchtower usage plans --json [--now] [--provider all\|claude\|codex]` | Separate subscription snapshots; `--now` refreshes selected sources, with partial results on failure |
 | `watchtower usage llm [--since today\|7d\|30d] [--json]` | AI calls, tokens and cost: Watchtower, your automations, chats, workbenches ([AI providers, models and cost](../concepts/ai-providers-and-cost.md)) |
 | `watchtower prompts`, `tune` | Prompt templates and feedback-based tuning |
 | `--provider claude\|codex\|ollama` | Per-command provider override |
 
 `terminal`, `dictate` and `chat` are helpers the Desktop app calls; `ai` is too, apart from `ai models`.
+
+For `usage plans`, `--provider` selects subscriptions, independently of the AI backend. Read-only calls return saved data without creating or migrating a database. Refresh exits 3 when **Subscription plan limits** is off; source/read failures exit 1 with partial JSON, and SIGINT/SIGTERM use 130/143 when a partial response can be written.

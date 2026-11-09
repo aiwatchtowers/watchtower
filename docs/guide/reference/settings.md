@@ -55,7 +55,7 @@ since: 0.24.0
 
 ## System
 
-- **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), **Workers** (parallel AI calls, default 5), CLI paths (empty = auto-detected), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
+- **AI** — **Preferred provider** (Claude, Codex, Ollama / Local), independent **Light model**, **Strong model** and CLI paths for preferred and reserve (empty = provider defaults or auto-detection), **Use reserve when limits are reached** (off initially), **Workers** (parallel AI calls, default 5), **Check connection**, explicit paid **Test connection**, and **Saved provider limits**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
 - **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent). Your standing directions moved to **Profile → Instructions**; this tab keeps a pointer. See [Your instructions](../features/workbench/instructions.md).
 - **Sync** — **Poll Interval** (default `15m`), **Workers** (parallel sync work, default 1; not the AI one), **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
 - **Daemon** — read-only status; the app starts and stops it. **Open Logs** opens the live log window.

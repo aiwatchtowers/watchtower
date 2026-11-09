@@ -158,6 +158,21 @@ func ContextFailure(provider string, ctx context.Context, cause error) error {
 	return WithFailure(provider, category, errors.Join(cause, ctx.Err()))
 }
 
+// CleanExitFailure types a CLI run that exited 0 without its completion
+// (a missing result line or event, gap L12): the category its stderr names
+// when one of its lines is a narrow CLI diagnostic (diagnosticCategory: auth,
+// rate limit, overload or policy, never quota) — "sign in" or "wait" helps
+// the owner more — else InvalidOutput. The last such line wins.
+func CleanExitFailure(provider, stderr string, cause error) error {
+	lines := strings.Split(stderr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if category := diagnosticCategory(lines[i]); category != Unknown {
+			return WithFailure(provider, category, cause)
+		}
+	}
+	return WithFailure(provider, InvalidOutput, cause)
+}
+
 // diagnosticCategory deliberately has no quota dictionary. A human sentence
 // alone cannot prove subscription exhaustion. These narrow CLI diagnostics
 // remain distinct from confirmed machine-coded subscription failures.

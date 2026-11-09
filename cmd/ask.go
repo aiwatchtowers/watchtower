@@ -108,11 +108,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	timeHints := ai.FormatTimeHints(pq)
 	userMessage := ai.AssembleUserMessage(question, timeHints)
 
-	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	if askFlagModel != "" {
-		model = askFlagModel
-	}
-	aiClient := newAIClientWithModel(cfg, dbPath, model)
+	aiClient := newAIClientWithModel(cfg, dbPath, askFlagModel)
 
 	ctx, cancel := notifyShutdownContext(context.Background(), silentShutdownLogf)
 	defer cancel()
@@ -120,6 +116,10 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	renderer := ai.NewResponseRenderer(database, domain, teamID)
 
+	_, model := providers.ResolveModelsFor(cfg, cfg.AI.Provider)
+	if askFlagModel != "" {
+		model = askFlagModel
+	}
 	runID, _ := database.CreatePipelineRun("ask", "cli", model)
 
 	resp, usage, err := aiClient.QuerySync(digest.WithSource(ctx, "ask"), systemPrompt, userMessage, "")
@@ -132,7 +132,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 		}
 		inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
 		if usage != nil {
-			inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+			inTok, outTok, totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 		}
 		if runID > 0 {
 			_ = database.CompletePipelineRun(runID, 1, inTok, outTok, cost, totalAPI, nil, nil, errMsg)

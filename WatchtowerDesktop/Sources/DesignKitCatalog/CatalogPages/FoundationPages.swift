@@ -224,6 +224,27 @@ struct SpacingPage: View {
                     }
                 }
             }
+            plansLayout
+        }
+    }
+
+    private var plansLayout: some View {
+        PageSection("Plans layout") {
+            Sample("The approved responsive Plans composition", usage: "PlansLayout.twoColumnWidth") {
+                VStack(alignment: .leading, spacing: Spacing.compact) {
+                    ForEach([
+                        Step(name: "twoColumnWidth", value: PlansLayout.twoColumnWidth),
+                        Step(name: "maximumWidth", value: PlansLayout.maximumWidth),
+                        Step(name: "chartHeight", value: PlansLayout.chartHeight),
+                        Step(name: "emptyHeight", value: PlansLayout.emptyHeight),
+                        Step(name: "providerMinimumHeight", value: PlansLayout.providerMinimumHeight),
+                        Step(name: "chartInset", value: PlansLayout.chartInset),
+                        Step(name: "progressHeight", value: PlansLayout.progressHeight)
+                    ], id: \.name) { item in
+                        Text("\(item.name): \(Int(item.value))").font(.caption.monospacedDigit())
+                    }
+                }
+            }
         }
     }
 }

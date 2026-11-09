@@ -47,9 +47,11 @@ const (
 // {request_id, behavior: allow|deny}): decides one permission_requests row
 // that the session's waiting permission-wait hook polls. Order: the device's
 // own permissions_allowed grant (never implied by typing; else
-// device_not_allowed) → the row is this board Claude session's (else
-// not_found) and pending (else not_pending, its message naming why) → an
-// allow the phone may give (AllowBlock plus the resolved path; else
+// device_not_allowed) → a board agent session (else not_found) whose
+// capability row has PermissionWait (else not_supported: Codex) → the
+// row is this session's (else not_found) and pending (else not_pending,
+// its message naming why) → an allow the phone may give (AllowBlock plus
+// the resolved path; else
 // answer_on_mac, the row left pending; a deny always may) → the session runs
 // (else session_not_running) → one guarded UPDATE … WHERE status = 'pending',
 // so a Mac answer or a second phone that got there first leaves this one
@@ -84,12 +86,15 @@ func (h *Handlers) applyPermissionAnswer(ctx context.Context, r actions.Request)
 	if !linked || !device.PermissionsAllowed {
 		return failed(reasonDeviceNotAllowed, permissionsNotAllowedMsg)
 	}
-	board, err := h.claudeBoardSession(ctx, sessionID)
+	agent, board, err := h.boardSession(ctx, sessionID)
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
 	}
 	if !board {
 		return failed(reasonNotFound, requestGoneMessage)
+	}
+	if msg, refused := PhoneRefusal("permission_answer", agent); refused {
+		return failed(reasonNotSupported, msg)
 	}
 	stored, found, err := h.storedRequest(ctx, requestID, sessionID)
 	if err != nil {
@@ -176,7 +181,8 @@ func (h *Handlers) storedRequest(ctx context.Context, requestID, sessionID int64
 
 // sessionInterrupt is `session_interrupt` (entity the session id): one Esc
 // through session-host's InputTo, under the typing grant. Order:
-// typing_allowed → a board Claude session → running → its resolved state is
+// typing_allowed → a board agent session (else not_found) whose row
+// TakesInterrupt (else not_supported: Codex) → running → its resolved state is
 // Working (Agents working included; never Running, which is no turn
 // reported, and never Needs approval: an Esc must not answer a prompt; else
 // not_working) → the action at most InterruptMaxAge old (else expired) → no
@@ -201,12 +207,15 @@ func (h *Handlers) applySessionInterrupt(ctx context.Context, r actions.Request)
 	if !linked || !device.TypingAllowed {
 		return failed(reasonDeviceNotAllowed, typingNotAllowedMessage)
 	}
-	board, err := h.claudeBoardSession(ctx, sessionID)
+	agent, board, err := h.boardSession(ctx, sessionID)
 	if err != nil {
 		return failed(reasonWriteFailed, err.Error())
 	}
 	if !board {
 		return failed(reasonNotFound, sessionGoneMessage)
+	}
+	if msg, refused := PhoneRefusal("session_interrupt", agent); refused {
+		return failed(reasonNotSupported, msg)
 	}
 	live, running, err := h.d.Sessions.Live(ctx, sessionID)
 	if err != nil {
@@ -244,14 +253,4 @@ func (h *Handlers) hasPendingRequest(ctx context.Context, sessionID int64) (bool
 	err := h.d.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM permission_requests
 		WHERE terminal_session_id = ? AND status = 'pending')`, sessionID).Scan(&pending)
 	return pending, err
-}
-
-// claudeBoardSession: a claude session of a workbench that still exists
-// (BoardSessionScope.fetchBoardSession, kind claude). The phone sees nothing
-// else, and Codex keeps "Needs approval on the Mac".
-func (h *Handlers) claudeBoardSession(ctx context.Context, sessionID int64) (bool, error) {
-	var ok bool
-	err := h.d.DB.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM terminal_sessions s
-		JOIN projects p ON p.id = s.project_id WHERE s.id = ? AND s.kind = 'claude')`, sessionID).Scan(&ok)
-	return ok, err
 }

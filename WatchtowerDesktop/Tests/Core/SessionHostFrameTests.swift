@@ -105,6 +105,16 @@ final class SessionHostFrameTests: XCTestCase {
         for (type, byte) in pairs { XCTAssertEqual(type.rawValue, byte, "\(type)") }
     }
 
+    /// G5 (spec 2026-11-05 §3.5): `watched` is per run; an older host's
+    /// reply, without the key, reads not watched, so the app's bridge covers it.
+    func testSessionInfoWatchedDecodesAndDefaultsToFalse() throws {
+        let base = #""row":5,"run":"r","pid":42,"started_at_ms":1,"exited":false,"code":null"#
+        let watched = try JSONDecoder().decode(SessionHostSessionInfo.self, from: Data("{\(base),\"watched\":true}".utf8))
+        XCTAssertTrue(watched.watched)
+        let older = try JSONDecoder().decode(SessionHostSessionInfo.self, from: Data("{\(base)}".utf8))
+        XCTAssertFalse(older.watched)
+    }
+
     func testSessionInfoScopeDecodesAndDefaultsToEmpty() throws {
         let scoped = #"{"row":5,"run":"r","pid":42,"started_at_ms":1,"exited":false,"code":null,"scope":"ws-a"}"#
         XCTAssertEqual(try JSONDecoder().decode(SessionHostSessionInfo.self, from: Data(scoped.utf8)).scope, "ws-a")

@@ -61,7 +61,7 @@ final class LLMUsageViewModelTests: XCTestCase {
         let vm = model(QueuedUsageRunner([.success(try fixture())]))
         XCTAssertEqual(vm.screen(now: now), .loading)
         await vm.load()
-        XCTAssertEqual(vm.report?.watchtower.totals.calls, 1284)
+        XCTAssertEqual(vm.report?.watchtower.totals.calls, 632)
         XCTAssertNil(vm.error)
         XCTAssertEqual(vm.lastUpdated, now)
         guard case .report = vm.screen(now: now) else { return XCTFail("expected the report") }

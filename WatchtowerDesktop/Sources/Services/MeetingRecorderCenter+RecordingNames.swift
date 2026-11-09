@@ -72,45 +72,45 @@ extension MeetingRecorderCenter {
         }
         return directory.appendingPathComponent("\(stem).\(fileExtension)")
     }
-
-    /// Stems picked but not yet visible on disk or in a pending row (the Mac
-    /// capture before `recorder.start` creates its file, a phone ingest
-    /// before its row lands). Without it a Desktop start and a phone ingest
-    /// in the same second both see the name free and share it.
-    nonisolated private static let claimedStems = GuardedValue<Set<String>>([])
-
-    /// `uniqueRecordingURL` that also holds the picked stem until
-    /// `releaseRecordingClaim`, atomically with the pick.
-    nonisolated static func claimRecordingURL(
-        in directory: URL,
-        date: Date = Date(),
-        fileExtension: String = "caf",
-        taken: (String) -> Bool = { _ in false }
-    ) -> URL {
-        claimedStems.withLock { claimed in
-            let url = uniqueRecordingURL(in: directory, date: date, fileExtension: fileExtension) {
-                claimed.contains(directory.appendingPathComponent($0).path) || taken($0)
-            }
-            claimed.insert(directory.appendingPathComponent(url.deletingPathExtension().lastPathComponent).path)
-            return url
-        }
-    }
-
-    nonisolated static func releaseRecordingClaim(_ url: URL) {
-        let key = url.deletingLastPathComponent()
-            .appendingPathComponent(url.deletingPathExtension().lastPathComponent).path
-        claimedStems.withLock { _ = $0.remove(key) }
-    }
 }
 
-/// A value behind a lock.
-private final class GuardedValue<Value>: @unchecked Sendable {
+/// In-process claims on recording stems this app has picked but not yet backed
+/// by an audio file or a pending row. Both writers of `rec_*` names — a
+/// Desktop capture (`startRecording`) and a phone ingest
+/// (`reservePhoneRecording`) — pick through `claim`, which checks and claims
+/// under one lock, and hold the claim until their name is backed: the capture
+/// until its start resolves (the recorder has created the `.caf` and the
+/// pending row is written, or the start failed), the ingest until its
+/// exclusive row insert resolves. Without it a capture suspended inside
+/// `recorder.start` held a name that nothing on disk or in the database
+/// showed, and an ingest of the same second took it too (#1298). Memory only:
+/// a process that dies drops its claims with the starts that held them, and a
+/// relaunch picks names from the files and rows alone.
+final class RecordingNameClaims: @unchecked Sendable {
     private let lock = NSLock()
-    private var value: Value
-    init(_ value: Value) { self.value = value }
-    func withLock<R>(_ body: (inout Value) -> R) -> R {
+    private var stems: Set<String> = []
+
+    /// `uniqueRecordingURL` past every claimed stem and past `taken`, claimed
+    /// before the lock is released. Pair it with `release` once the name is
+    /// backed or abandoned.
+    func claim(
+        in directory: URL,
+        date: Date,
+        fileExtension: String = "caf",
+        taken: (String) -> Bool
+    ) -> URL {
         lock.lock()
         defer { lock.unlock() }
-        return body(&value)
+        let url = MeetingRecorderCenter.uniqueRecordingURL(in: directory, date: date, fileExtension: fileExtension) {
+            stems.contains($0) || taken($0)
+        }
+        stems.insert(url.deletingPathExtension().lastPathComponent)
+        return url
+    }
+
+    func release(_ url: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        stems.remove(url.deletingPathExtension().lastPathComponent)
     }
 }

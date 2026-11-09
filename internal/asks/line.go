@@ -29,6 +29,15 @@ func SpecReviewLine(askID int64, round, items int) string {
 	return OneLine(line)
 }
 
+// SpecReviewQuestionLine is the one line the Desktop types into the ask's
+// session when the owner's spec review thread asks the author a question
+// (spec 2026-11-08 "Asking the author"); the Swift twin is pinned by
+// testdata/spec_review_question_lines.
+func SpecReviewQuestionLine(askID, questionID int64, question string) string {
+	return OneLine(fmt.Sprintf("Owner's thread on spec review ask #%d asks you: %s — answer with answer_review_question %d.",
+		askID, question, questionID))
+}
+
 func short(kind string, a Answer) string {
 	switch {
 	case a.Dismissed:

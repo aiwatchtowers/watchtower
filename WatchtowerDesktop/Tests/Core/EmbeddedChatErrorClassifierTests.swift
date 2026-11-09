@@ -43,4 +43,15 @@ final class EmbeddedChatErrorClassifierTests: XCTestCase {
         XCTAssertNil(EmbeddedChatErrorClassifier.classify(message: "request 40123 failed").code)
         XCTAssertEqual(EmbeddedChatErrorClassifier.classify(message: "status: 401").code, .auth)
     }
+
+    /// `ai query --events v2` sends a refusal before the run as `internal`;
+    /// its text still names the kind, and a typed code stays as sent.
+    func testAnInternalFailureIsRefinedByItsText() {
+        let auth = ChatSessionError(turnID: "query", code: .internalError, message: "claude: not logged in", retryable: true)
+        XCTAssertEqual(EmbeddedChatErrorClassifier.classify(auth).code, .auth)
+        let plain = ChatSessionError(turnID: "query", code: .internalError, message: "invalid config: x", retryable: true)
+        XCTAssertEqual(EmbeddedChatErrorClassifier.classify(plain).code, .internalError)
+        let typed = ChatSessionError(turnID: "query", code: .providerUnavailable, message: "HTTP 429", retryable: true)
+        XCTAssertEqual(EmbeddedChatErrorClassifier.classify(typed).code, .providerUnavailable)
+    }
 }

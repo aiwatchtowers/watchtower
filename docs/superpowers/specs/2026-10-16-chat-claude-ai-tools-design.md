@@ -11,6 +11,8 @@ your Gmail, Calendar, Drive or anything else you connected on claude.ai. The
 workbench terminal (plain Claude Code) can do all of that; the chat cannot because
 we start it with every claude.ai tool switched off.
 
+> **Amended 2026-11-05 (owner decision):** pages, decks and docs stay in-app artifacts by default; the chat publishes to claude.ai only when the owner asks. The publish-at-once flow below applies to such a request.
+
 **After this change** (Claude provider, main AI Chat):
 
 - "Make a deck / a page / a doc about X" — the chat publishes it **privately** to

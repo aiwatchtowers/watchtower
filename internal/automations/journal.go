@@ -200,12 +200,21 @@ func (s *Step) record(hash, clock string, ok bool) {
 // result the script got or the error it threw. A result past
 // MaxReplayResultBytes, or a log past MaxReplayLogBytes, makes the run not
 // resumable.
-func (s *Step) recordOutcome(v any, err error) {
+func (s *Step) recordOutcome(v any, err error, unknownUsage bool) {
 	j := s.j
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if s.rec == nil || j.replayOff {
 		return
+	}
+	if unknownUsage {
+		metadata, metaErr := withUnknownModelUsage(s.rec.ClockJSON)
+		if metaErr != nil {
+			j.keepErr(metaErr)
+			j.stopReplayLocked()
+			return
+		}
+		s.rec.ClockJSON = metadata
 	}
 	s.rec.Pending, s.rec.ResultJSON, s.rec.ErrorJSON = false, nil, ""
 	switch {

@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/ideas"
+	"watchtower/internal/llmusage"
 )
 
 // TestDaemon_PhaseStreamDigests_RunsIndependentlyOfIdeasEnabled pins the core
@@ -127,7 +128,7 @@ func (g *usageFakeGen) Generate(_ context.Context, _, user, _ string) (string, *
 	if err != nil {
 		return "", nil, "", err
 	}
-	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}, "sess", nil
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 5}}, "sess", nil
 }
 
 // seedIdeasEmailMaterial seeds the singleton workspace row

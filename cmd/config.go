@@ -313,8 +313,8 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	// An unknown agent would read as Claude Code without a word (viper keys
 	// are case-insensitive).
 	if lk == "workbench.default_agent" && !agentkind.IsAgent(value) {
-		return fmt.Errorf("workbench.default_agent must be %s or %s, got %q; nothing was written",
-			agentkind.Claude, agentkind.Codex, value)
+		return fmt.Errorf("workbench.default_agent must be %s, got %q; nothing was written",
+			agentkind.Choices("or"), value)
 	}
 
 	// A live hub would stay off on a malformed relay origin; "" unsets it

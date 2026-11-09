@@ -50,7 +50,25 @@ A file named `.worktreeinclude` at the repository root lists ignored files, such
 
 In the title row's **…** menu, **Worktree Setup Command…** sets one shell command that runs in each new worktree before the agent starts, for example a dependency install. A failure prints a line and the agent starts anyway. It does not run on resume.
 
-A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session.
+A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session. A session resumes in its worktree on a branch its own agent switched to there, including a detached HEAD, once Watchtower has seen the agent on it. If the worktree is on a branch the session never used, for example after you switched it by hand, the row says to start a new session.
+
+### What the session line shows
+<!-- learn
+id: worktrees-session-line-branch
+title: See a session's branch and lanes
+text: The line under a session names the task's branch, such as **⎇ feature/login · 3 lanes**; hover for the folders.
+area: development
+level: next
+kind: tip
+since: 0.27.0
+action: nav:projects
+-->
+
+The line under a session shows where its agent works: **main folder · main**, **⑂ name · branch** in a git worktree, or **worktree removed**. Until Watchtower knows the place, it shows the main folder and counts no lanes.
+
+When the session works on a task with a branch, the line shows the branch the work is merged into, such as **⎇ feature/login**. A task without a branch uses its group's. Tasks on different branches show as **⎇ 2 target branches**.
+
+A helper the agent starts in its own git worktree is a lane, counted at the end: **⎇ feature/login · 3 lanes**. Only lanes from the current run that still exist count. Hover over the line for the branch names, the agent's terminal folder and the lane folders.
 
 ### What cleanup removes
 

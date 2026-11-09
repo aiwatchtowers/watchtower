@@ -68,6 +68,9 @@ protocol TerminalSessionProcess: AnyObject {
     /// Whether the session host runs the process, so it outlives the app
     /// (board #496). Every real session is hosted; test fakes are not.
     var isHosted: Bool { get }
+    /// The session host watches this run's transcript itself (spec
+    /// 2026-11-05 §3.5), so the app's bridge probe leaves it alone.
+    var isHostWatched: Bool { get }
     /// The current run never reached a process (the session host could
     /// not be reached or started): its exit is not the session's own.
     var neverStarted: Bool { get }
@@ -75,6 +78,7 @@ protocol TerminalSessionProcess: AnyObject {
 
 extension TerminalSessionProcess {
     var isHosted: Bool { false }
+    var isHostWatched: Bool { false }
     var neverStarted: Bool { false }
     var exitRequested: Bool { false }
     /// A test fake stands in for a v2 host unless it says otherwise.
@@ -247,6 +251,11 @@ final class TerminalCenter {
     /// (`SessionHostPaths.scope`): hosted launches carry it, and a reattach
     /// touches only runs of it ("" from an older host counts as it).
     @ObservationIgnored var sessionHostScope = ""
+    /// The current workspace's database file: a launch of an agent whose
+    /// turns the session host reads from its rollout asks the host to
+    /// watch it there (`SessionHostWatchSpec`, spec 2026-11-05 §3.5);
+    /// "" = no watch request.
+    @ObservationIgnored var sessionHostDatabase = ""
     /// The one client `connectSessionHost` made, answering or not. New
     /// sessions launch through it even when it did not answer at launch:
     /// each launch asks it to connect (or respawn the host) once more, and
@@ -329,8 +338,27 @@ final class TerminalCenter {
         HostedTerminalSession(
             client: client,
             scope: { [weak self] in self?.sessionHostScope ?? "" },
-            agent: { [weak self] row in self?.rows[row]?.kind.agent?.rawValue ?? "" }
+            agent: { [weak self] row in self?.rows[row]?.kind.agent?.rawValue ?? "" },
+            watch: { [weak self] row in self?.watchSpec(row: row) }
         )
+    }
+
+    /// The host's watch request for row `row`'s launch: its agent's kind
+    /// when that agent's turns are read from its rollout, with the
+    /// workspace database; nil otherwise.
+    private func watchSpec(row: Int64) -> SessionHostWatchSpec? {
+        guard !sessionHostDatabase.isEmpty, let agent = rows[row]?.kind.agent,
+              AgentSessionCaps.of(agent).rolloutWatch else { return nil }
+        return SessionHostWatchSpec(agent: agent.rawValue, database: sessionHostDatabase)
+    }
+
+    /// The live sessions the session host watches itself (each run's
+    /// Launched or Attached reply said so): the app's bridge probe leaves
+    /// them alone (spec §3.5, G5). A run the host could not watch (its
+    /// store did not open, no database yet, an older host) stays the
+    /// bridge's.
+    var hostWatchedIDs: Set<Int64> {
+        liveIDs.filter { processes[$0]?.isHostWatched == true }
     }
 
     /// Connects to the session host once per app run: a second call (the
@@ -367,10 +395,12 @@ final class TerminalCenter {
     }
 
     /// The live agent sessions (`claude` or `codex`) — the ones whose
-    /// workbench hooks report a state.
+    /// workbench hooks report a state, and a live run of a kind this build
+    /// does not know (a newer version's, adopted from the host: it may be an
+    /// agent, so placement and the branch guard count it, A7b).
     var liveAgentIDs: Set<Int64> {
         let live = liveIDs
-        return Set(rows.values.filter { $0.kind.isAgent && live.contains($0.id) }.map(\.id))
+        return Set(rows.values.filter { $0.kind.mayRunAgent && live.contains($0.id) }.map(\.id))
     }
 
     /// The live agent rows of `projectID`, as they were started.
@@ -424,7 +454,9 @@ final class TerminalCenter {
         }
         let live = liveIDs
         return rows.values.contains { row in
-            guard row.kind.isAgent, live.contains(row.id) else { return false }
+            // A kind this build does not know may be an agent: a newer
+            // version's run adopted from the host counts (A7b).
+            guard row.kind.mayRunAgent, live.contains(row.id) else { return false }
             guard row.projectID == workbenchID else { return inWorkTree(row.folderPath) }
             return Self.placeMayBeIn(place(row.id), mainFolder: row.folderPath, root: root, inWorkTree: inWorkTree)
         }
@@ -696,31 +728,6 @@ final class TerminalCenter {
     /// this center never started.
     func agent(of sessionID: Int64) -> AgentKind? {
         rows[sessionID]?.kind.agent
-    }
-
-    /// Whether the agent has a transcript for the row's stored session id:
-    /// Claude Code's under `~/.claude`, Codex's rollout. No id, no transcript.
-    /// A Codex lookup that failed reads as none here: a relaunch from the
-    /// view model decides with `codexResumes` instead and passes the answer.
-    func hasTranscript(_ session: TerminalSession) -> Bool {
-        guard let id = session.claudeSessionID else { return false }
-        switch session.kind {
-        case .claude: return transcriptExists(id)
-        case .codex: return (try? codexRolloutExists(id, session.transcriptPath, CodexRollout.home())) ?? false
-        case .shell: return false
-        }
-    }
-
-    /// Whether relaunching the Codex row (not fresh) resumes its stored id:
-    /// a valid id whose rollout exists — at its stored path, or under
-    /// `codexHome` (the login shell's, resolved by the caller; nil checks the
-    /// stored path alone). Throws when Codex's sessions folder could not be
-    /// listed, so the caller does not drop the id on it.
-    func codexResumes(_ session: TerminalSession, codexHome: URL?) throws -> Bool {
-        guard session.kind == .codex, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id) else {
-            return false
-        }
-        return try codexRolloutExists(id, session.transcriptPath, codexHome)
     }
 
     /// How lines are typed into the session (spec 2026-10-12 §8): its
@@ -1053,17 +1060,19 @@ final class TerminalCenter {
         codexResume: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
         setup: String? = nil
     ) async -> TerminalLaunch.Mode? {
-        guard session.kind == .codex else { return start(session, fresh: fresh, prompt: prompt, setup: setup) }
+        guard let agent = session.kind.agent, agent.session.caps.launchHooks else {
+            return start(session, fresh: fresh, prompt: prompt, setup: setup)
+        }
         let id = session.id
         guard states[id] != .running, pendingLaunches[id] == nil else { return nil }
         rows[id] = session
         missingAgent[id] = nil
         guard let workbenchID = session.projectID else {
-            states[id] = .unavailable("Codex sessions run in a workbench.")
+            states[id] = .unavailable("\(agent.displayName) sessions run in a workbench.")
             return nil
         }
         guard let codexLaunchArgs else {
-            states[id] = .unavailable("Codex cannot be launched: the watchtower CLI is not available.")
+            states[id] = .unavailable("\(agent.displayName) cannot be launched: the watchtower CLI is not available.")
             return nil
         }
         lastRun += 1
@@ -1077,7 +1086,7 @@ final class TerminalCenter {
             pendingLaunches[id] = nil
             if case let .agentNotFound(agent)? = error as? WorkbenchCLIError { missingAgent[id] = agent }
             states[id] = .unavailable(error is WorkbenchCLIError ? error.localizedDescription
-                : "Could not prepare the Codex launch: \(error.localizedDescription)")
+                : "Could not prepare the \(agent.displayName) launch: \(error.localizedDescription)")
             return nil
         }
         guard pendingLaunches[id] == token else { return nil }
@@ -1128,6 +1137,12 @@ final class TerminalCenter {
             states[id] = .unavailable(Self.launchHeldReason)
             return nil
         }
+        if let unsupported = session.kind.unsupportedMessage {
+            // A kind this build has no adapter for runs nothing: never a
+            // shell, never Claude Code in its place (A7b).
+            states[id] = .unavailable(unsupported)
+            return nil
+        }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: session.folderPath, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -1135,8 +1150,8 @@ final class TerminalCenter {
             return nil
         }
         guard let mode = mode(for: session, fresh: fresh, prompt: prompt, codexResume: codexResume) else { return nil }
-        if mode.agent == .codex, codex == nil {
-            states[id] = .unavailable("Codex cannot be launched without its launch arguments.")
+        if let agent = mode.agent, agent.session.caps.launchHooks, codex == nil {
+            states[id] = .unavailable("\(agent.displayName) cannot be launched without its launch arguments.")
             return nil
         }
         guard let process = processes[id] ?? makeProcess() else {
@@ -1148,29 +1163,28 @@ final class TerminalCenter {
     }
 
     /// The launch `start` makes for the row; nil (the row `.unavailable`)
-    /// for a `claude` row without a valid id. A Codex row resumes as
-    /// `codexResume` says when the caller decided it (`codexResumes`, one
-    /// walk of the rollout tree); else it looks for the rollout here.
+    /// for the row of an agent whose id the app chooses
+    /// (`AgentSessionCaps.appSessionID`) without a valid id. The row of an
+    /// agent that mints its own resumes as `codexResume` says when the caller
+    /// decided it (`resumesStoredID`, one walk of the transcript tree); else
+    /// it looks for the transcript here.
     private func mode(
         for session: TerminalSession, fresh: Bool, prompt: String?, codexResume: Bool? // swiftlint:disable:this discouraged_optional_boolean
     ) -> TerminalLaunch.Mode? {
-        switch session.kind {
-        case .shell:
-            return .shell
-        case .claude:
+        guard let agent = session.kind.agent else { return .shell }
+        if agent.session.caps.appSessionID {
             guard let uuid = session.claudeSessionID, TerminalLaunch.isValidSessionID(uuid) else {
-                states[session.id] = .unavailable("This session has no valid Claude Code session id.")
+                states[session.id] = .unavailable("This session has no valid \(agent.displayName) session id.")
                 return nil
             }
-            if fresh { return .newClaude(uuid: uuid, prompt: prompt) }
-            return hasTranscript(session) ? .resumeClaude(uuid: uuid) : .newClaude(uuid: uuid, prompt: nil)
-        case .codex:
-            if !fresh, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id),
-               codexResume ?? hasTranscript(session) {
-                return .resumeAgent(.codex, sessionID: id)
-            }
-            return .newAgent(.codex, sessionID: nil, prompt: fresh ? prompt : nil)
+            if fresh { return .newAgent(agent, sessionID: uuid, prompt: prompt) }
+            return hasTranscript(session) ? .resumeAgent(agent, sessionID: uuid) : .newAgent(agent, sessionID: uuid, prompt: nil)
         }
+        if !fresh, let id = session.claudeSessionID, TerminalLaunch.isValidSessionID(id),
+           codexResume ?? hasTranscript(session) {
+            return .resumeAgent(agent, sessionID: id)
+        }
+        return .newAgent(agent, sessionID: nil, prompt: fresh ? prompt : nil)
     }
 
     private func run(

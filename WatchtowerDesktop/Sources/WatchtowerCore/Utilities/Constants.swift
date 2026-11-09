@@ -91,8 +91,8 @@ package enum Constants {
 
     /// The AI provider id (`ai.provider` in config.yaml), defaulting to
     /// `"claude"` when unset. The target chat's `toolsAvailable` derives from
-    /// this — the only case a chat-mode call reaches no tools is the app-wide
-    /// Ollama provider (Ollama has no MCP tool support).
+    /// this — under the app-wide Ollama provider the target chat is
+    /// draft-only (AGENT-04).
     package nonisolated static func aiProviderID() -> String {
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),

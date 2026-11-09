@@ -359,3 +359,32 @@ func TestBuildInputs_OwnerWordsBySpeaker(t *testing.T) {
 	assert.Equal(t, []string{"Keep the mute local to this Mac"}, src.OwnerWords[fmt.Sprintf("comment:%d", owner)])
 	assert.NotContains(t, src.OwnerWords, fmt.Sprintf("comment:%d", agent))
 }
+
+func TestBuildInputs_ClosedItemsBlock(t *testing.T) {
+	f := newFixture(t)
+	first := f.ask(t, "spec", "# Spec\n\n## Goals\n\nMute a channel.\n")
+	finishRow(t, f.d, first.ID, "owner", chainResult,
+		[]AuthorItem{{Key: "bs:stillopen00", Kind: KindBlindSpot, Text: "Open", Round: 1}},
+		[]LedgerEntry{
+			entry("bs:fixed000000", KindBlindSpot, "Restart\nnow.", VerdictResolved, &Reply{Key: "bs:fixed000000", Reply: ReplyFixed}),
+			entry("da:disputed000", KindDecidedAlone, "Open dispute.", VerdictDisputed, nil),
+		})
+	mark(t, f.d, first.ID, "ck:okcheck0000", "ok")
+	second := f.reround(t, first.ID)
+
+	src, user, _, err := BuildInputs(context.Background(), f.deps(nil), second, f.folder)
+	require.NoError(t, err)
+	block := between(t, user, "<<<closed_items", ">>>")
+	assert.Contains(t, block, "[bs:fixed000000] blind_spot: Restart now.\n")
+	assert.Contains(t, block, "[ck:okcheck0000] check:")
+	assert.NotContains(t, block, "check: ", "no trailing space without a where-quote")
+	assert.NotContains(t, block, "da:disputed000")
+	assert.Less(t, strings.Index(user, "<<<previous_round"), strings.Index(user, "<<<closed_items"), "after the previous round's blocks")
+	assert.Len(t, src.Closed, 2)
+	assert.Equal(t, map[string]bool{"bs:stillopen00": true, "bs:fixed000000": true, "da:disputed000": true}, src.KnownKeys)
+
+	// The root of a chain: no block.
+	_, user, _, err = BuildInputs(context.Background(), f.deps(nil), first, f.folder)
+	require.NoError(t, err)
+	assert.NotContains(t, user, "<<<closed_items")
+}

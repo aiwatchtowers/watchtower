@@ -24,6 +24,7 @@ import (
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tools"
 )
 
@@ -41,7 +42,7 @@ func newAutoCLI(t *testing.T) *autoCLI {
 	d := writeActionsConfig(t)
 	cfg, err := loadAutomationsConfig()
 	require.NoError(t, err)
-	gen := &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+	gen := &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 10, Output: 5}}}}
 	orig := automationsDryRunGenerator
 	automationsDryRunGenerator = func(*config.Config) digest.Generator { return gen }
 	t.Cleanup(func() { automationsDryRunGenerator = orig })

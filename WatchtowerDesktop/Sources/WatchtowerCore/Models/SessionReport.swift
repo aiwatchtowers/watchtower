@@ -123,20 +123,25 @@ package struct SessionReport: Decodable, Equatable, Sendable {
     package struct Progress: Decodable, Equatable, Sendable {
         package var done: Int
         package var total: Int
+        /// Not done, but git found the task's branch in its parent's branch
+        /// (board #986); 0 from an older CLI.
+        package var merged: Int
 
-        package init(done: Int = 0, total: Int = 0) {
+        package init(done: Int = 0, total: Int = 0, merged: Int = 0) {
             self.done = done
             self.total = total
+            self.merged = merged
         }
 
         package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             done = try c.decode(.done, or: 0)
             total = try c.decode(.total, or: 0)
+            merged = try c.decode(.merged, or: 0)
         }
 
         enum CodingKeys: String, CodingKey {
-            case done, total
+            case done, total, merged
         }
     }
 
@@ -218,6 +223,8 @@ package struct SessionReport: Decodable, Equatable, Sendable {
         package var text: String
         package var done: Int
         package var total: Int
+        /// Not done, branch merged into its parent's (as `Progress.merged`).
+        package var merged: Int
         package var startedAt: String
         package var finishedAt: String
         package var items: [Item]
@@ -229,6 +236,7 @@ package struct SessionReport: Decodable, Equatable, Sendable {
             text: String,
             done: Int,
             total: Int,
+            merged: Int = 0,
             startedAt: String = "",
             finishedAt: String = "",
             items: [Item] = []
@@ -237,6 +245,7 @@ package struct SessionReport: Decodable, Equatable, Sendable {
             self.text = text
             self.done = done
             self.total = total
+            self.merged = merged
             self.startedAt = startedAt
             self.finishedAt = finishedAt
             self.items = items
@@ -248,13 +257,14 @@ package struct SessionReport: Decodable, Equatable, Sendable {
             text = try c.decode(.text, or: "")
             done = try c.decode(.done, or: 0)
             total = try c.decode(.total, or: 0)
+            merged = try c.decode(.merged, or: 0)
             startedAt = try c.decode(.startedAt, or: "")
             finishedAt = try c.decode(.finishedAt, or: "")
             items = try c.decode(.items, or: [])
         }
 
         enum CodingKeys: String, CodingKey {
-            case text, done, total, items
+            case text, done, total, merged, items
             case targetID = "target_id"
             case startedAt = "started_at"
             case finishedAt = "finished_at"
@@ -333,6 +343,12 @@ package struct SessionReportSummary: Decodable, Equatable, Sendable, Identifiabl
     package var targetID: Int64?
     package var done: Int
     package var total: Int
+    /// Not done, branch merged into its parent's (board #986); 0 from an older CLI.
+    package var merged: Int
+    /// The refresh before this line could not check a verdict `merged`
+    /// reads (Go's `merged_stale`): it counts the last ones known. false
+    /// from an older CLI.
+    package var mergedStale: Bool
     /// "PR #147 open", "2 PRs merged", "no PR yet", "not checked", or "".
     package var prLine: String
     /// "" when the session is not finished.
@@ -345,6 +361,8 @@ package struct SessionReportSummary: Decodable, Equatable, Sendable, Identifiabl
         targetID: Int64? = nil,
         done: Int = 0,
         total: Int = 0,
+        merged: Int = 0,
+        mergedStale: Bool = false,
         prLine: String = "",
         finishedAt: String = ""
     ) {
@@ -352,6 +370,8 @@ package struct SessionReportSummary: Decodable, Equatable, Sendable, Identifiabl
         self.targetID = targetID
         self.done = done
         self.total = total
+        self.merged = merged
+        self.mergedStale = mergedStale
         self.prLine = prLine
         self.finishedAt = finishedAt
     }
@@ -362,16 +382,19 @@ package struct SessionReportSummary: Decodable, Equatable, Sendable, Identifiabl
         targetID = try c.decodeIfPresent(Int64.self, forKey: .targetID)
         done = try c.decode(.done, or: 0)
         total = try c.decode(.total, or: 0)
+        merged = try c.decode(.merged, or: 0)
+        mergedStale = try c.decode(.mergedStale, or: false)
         prLine = try c.decode(.prLine, or: "")
         finishedAt = try c.decode(.finishedAt, or: "")
     }
 
     enum CodingKeys: String, CodingKey {
-        case done, total
+        case done, total, merged
         case sessionID = "session_id"
         case targetID = "target_id"
         case prLine = "pr_line"
         case finishedAt = "finished_at"
+        case mergedStale = "merged_stale"
     }
 }
 

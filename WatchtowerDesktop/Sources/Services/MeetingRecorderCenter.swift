@@ -549,9 +549,12 @@ final class MeetingRecorderCenter {
     /// between the two invalidates the parked engine instead of serving it.
     private let engineKey: () -> String
     /// Injectable clock (the MeetingReminderCenter convention) for the
-    /// warm-policy poll and for the timestamp that names an ingested phone
-    /// recording (`ingestPhoneRecording`).
+    /// warm-policy poll and for the timestamp that names a new recording
+    /// (`startRecording`, `ingestPhoneRecording`).
     let clock: () -> Date
+    /// Stems a capture start or a phone ingest picked that no file or pending
+    /// row backs yet (`RecordingNameClaims`).
+    let recordingNameClaims = RecordingNameClaims()
     /// Reads the meeting window the warm policy decides against. The default
     /// stub sees no meetings (the Center is constructed before the DB pool
     /// exists); AppState hands in the real GRDB-backed provider via
@@ -972,9 +975,11 @@ final class MeetingRecorderCenter {
         let recorder = recorderFactory()
         self.recorder = recorder
         let store = pendingStore
-        let url = Self.claimRecordingURL(in: recordingsDirectory) { Self.isReserved($0, in: store) }
-        // Held until the file and the pending row exist (or the start failed).
-        defer { Self.releaseRecordingClaim(url) }
+        // Claimed until this start resolves: by then the recorder has created
+        // the file and the pending row is written (or the start failed);
+        // until then the claim alone keeps a phone ingest off the name.
+        let url = recordingNameClaims.claim(in: recordingsDirectory, date: clock()) { Self.isReserved($0, in: store) }
+        defer { recordingNameClaims.release(url) }
 
         do {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)

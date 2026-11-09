@@ -1,0 +1,12 @@
+{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000000"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"`[features].codex_hooks` is deprecated. Use `[features].hooks` instead. (Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.)"}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"I'll check both."}}
+{"type":"item.started","item":{"id":"item_2","type":"web_search","id":"exec-00000000-0000-0000-0000-000000000001","query":"","action":{"type":"other"}}}
+{"type":"item.completed","item":{"id":"item_2","type":"web_search","id":"exec-00000000-0000-0000-0000-000000000001","query":"example query","action":{"type":"search","query":"example query"},"results":[{"type":"text_result","domain":"example.com","ref_id":"turn0search0","snippet":"Snippet 1.","title":"Page 1","url":"https://example.com/page-1"},{"type":"text_result","domain":"example.com","ref_id":"turn0search1","snippet":"Snippet 2.","title":"Page 2","url":"https://example.com/page-2"}]}}
+{"type":"item.started","item":{"id":"item_3","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_3","type":"mcp_tool_call","server":"watchtower","tool":"list_targets","arguments":{},"result":{"content":[{"type":"text","text":"[]"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_4","type":"web_search","id":"exec-00000000-0000-0000-0000-000000000002","query":"","action":{"type":"other"}}}
+{"type":"item.completed","item":{"id":"item_4","type":"web_search","id":"exec-00000000-0000-0000-0000-000000000002","query":"example query","action":{"type":"search","query":"example query"},"results":[{"type":"text_result","domain":"example.com","ref_id":"turn1search0","snippet":"Snippet 3.","title":"Page 3","url":"https://example.com/page-3"},{"type":"text_result","domain":"example.com","ref_id":"turn1search1","snippet":"Snippet 4.","title":"Page 4","url":"https://example.com/page-4"}]}}
+{"type":"item.completed","item":{"id":"item_5","type":"agent_message","text":"pineapple, red, 1.0, yes."}}
+{"type":"turn.completed","usage":{"input_tokens":53626,"cached_input_tokens":30720,"cache_write_input_tokens":0,"output_tokens":238,"reasoning_output_tokens":50}}

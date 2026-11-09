@@ -28,6 +28,7 @@ func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"--skip-git-repo-check",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",
+		"-c", "skills.include_instructions=false",
 		"-c", "features.shell_tool=false",
 		"-c", "features.unified_exec=false",
 		"-c", "features.view_image=false",
@@ -36,6 +37,28 @@ func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"-c", "features.browser_use_external=false",
 		"-c", "features.apps=false",
 		"-c", "features.plugins=false",
+		"-c", "features.shell_snapshot=false",
+		"-c", "features.shell_snapshot_v2=false",
+		"-c", "features.multi_agent=false",
+		"-c", "features.multi_agent_v2=false",
+		"-c", "features.image_generation=false",
+		"-c", "features.skill_search=false",
+		"-c", "features.skill_mcp_dependency_install=false",
+		"-c", "features.hooks=false",
+		"-c", "features.codex_hooks=false",
+		"-c", "features.in_app_browser=false",
+		"-c", "features.tool_suggest=false",
+		"-c", "features.code_mode=false",
+		"-c", "features.goals=false",
+		"-c", "features.memories=false",
+		"-c", "features.external_agent_memory_import=false",
+		"-c", "features.chronicle=false",
+		"-c", "features.realtime_conversation=false",
+		"-c", "features.remote_plugin=false",
+		"-c", "features.plugin_sharing=false",
+		"-c", "features.recommended_plugins=false",
+		"-c", "features.daemon_auto_start=false",
+		"-c", `web_search="disabled"`,
 		"--cd", "/tmp/wd",
 		"-c", "model_instructions_file=" + strconv.Quote(instructionsFileOf(t, args)),
 		"-",
@@ -110,6 +133,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"$(pwd -P)|$cd_arg\"}}"
+echo '{"type":"turn.completed"}'
 `
 	require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
 

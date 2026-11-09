@@ -35,6 +35,12 @@ final class ConfigService {
     var aiWorkers: Int?
     var briefingHour: Int = 8
     var aiProvider: String?
+    var aiFallbackEnabled = false
+    var aiFallbackProvider: String?
+    @ObservationIgnored private var loadedFallbackEnabled = false
+    @ObservationIgnored private var loadedFallbackProvider: String?
+    let providerConnection: ProviderConnection
+    let providerHealth = ProviderSettingsHealth()
     var claudePath: String?
     var codexPath: String?
     /// `workbench.default_agent` (board #399, D1): the agent a new workbench
@@ -77,6 +83,7 @@ final class ConfigService {
     /// config only at startup, so Settings restarts it after such a Save.
     private(set) var lastSaveChangedPurge = false
     var parseError: String?
+    let routingApplication: ProviderRoutingApplication
 
     private let configPath: String
     /// Raw YAML dictionary — preserved for round-trip editing
@@ -90,6 +97,10 @@ final class ConfigService {
     private var diskGmailEnabled = true
     /// `privacy.purge_revoked_data` as last read from or written to disk.
     private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The providers' capability rows: the fallback pair is their
+    /// `reserve_peer` (LLMTRANSPORT-01), never a Swift copy of the rule.
+    @ObservationIgnored private let catalog: AIModelCatalog
+
     /// The editable fields as the last `reload()` or `save()` left them.
     @ObservationIgnored private var loadedFields: [String: String] = [:]
 
@@ -98,7 +109,19 @@ final class ConfigService {
     }
 
     /// Test-friendly initializer accepting an explicit config file path.
-    init(configPath: String) {
+    init(
+        configPath: String,
+        routingRead: (() async throws -> ChatRoutingStatus)? = nil,
+        connection: ProviderConnection? = nil,
+        catalog: AIModelCatalog = .shared
+    ) {
+        self.catalog = catalog
+        providerConnection = connection ?? ProviderConnection()
+        routingApplication = ProviderRoutingApplication(read: routingRead ?? {
+            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+            let data = try await runner.run(args: ["--config", configPath, "ai", "routing-status"], timeout: 5)
+            return try ChatRoutingStatus.parse(data)
+        })
         self.configPath = configPath
         reload()
     }
@@ -121,6 +144,8 @@ final class ConfigService {
     }
 
     func reload() {
+        resetProviderOperations()
+        routingApplication.configurationReloaded()
         defer { resetModelEditTracking() }
         guard let str = readConfigText() else { return }
 
@@ -134,9 +159,7 @@ final class ConfigService {
                 }
                 return
             }
-            rawYAML = yaml
-
-            activeWorkspace = yaml["active_workspace"] as? String
+            adoptRawConfiguration(yaml)
 
             if let sync = yaml["sync"] as? [String: Any] {
                 syncInterval = sync["poll_interval"] as? String
@@ -158,6 +181,7 @@ final class ConfigService {
             }
 
             if let ai = yaml["ai"] as? [String: Any] {
+                loadFallback(ai)
                 prepareProviderModels(ai)
                 aiModel = ai["model"] as? String
                 aiWorkers = ai["workers"] as? Int
@@ -170,9 +194,7 @@ final class ConfigService {
             }
 
             loadProviderModels()
-            claudePath = yaml["claude_path"] as? String
-            codexPath = yaml["codex_path"] as? String
-            workbenchDefaultAgent = Self.agent(fromYAML: yaml)
+            loadCLIPaths(yaml)
 
             if let calendar = yaml["calendar"] as? [String: Any] {
                 calendarEnabled = (calendar["enabled"] as? Bool) ?? true
@@ -218,6 +240,11 @@ final class ConfigService {
         } catch {
             parseError = error.localizedDescription
         }
+    }
+
+    private func adoptRawConfiguration(_ yaml: [String: Any]) {
+        rawYAML = yaml
+        activeWorkspace = yaml["active_workspace"] as? String
     }
 
     /// `calendar.enabled` is known to be off. False when config.yaml is
@@ -287,6 +314,7 @@ final class ConfigService {
         cached["models"] = currentModels
         providerBuckets[old] = cached
         aiProvider = provider
+        providerConnection.invalidate()
         let models = providerBuckets[provider]?["models"] as? [String: Any] ?? [:]
         aiModelLight = models["light"] as? String
         aiModelStrong = models["strong"] as? String
@@ -294,10 +322,62 @@ final class ConfigService {
         editedModelTiers = []
     }
 
+    /// The Settings picker changes the pair together. The lower-level selector
+    /// retains validation semantics for callers editing only ai.provider.
+    func selectPreferredProvider(_ provider: String) {
+        selectAIProvider(provider)
+        // Before the catalog is read nothing is known about the pair, and Go
+        // refuses to load a file whose enabled fallback is not a pair: the
+        // reserve is turned off until the owner picks it again.
+        guard catalog.isLoaded else {
+            aiFallbackEnabled = false
+            if aiFallbackProvider == provider { aiFallbackProvider = nil }
+            return
+        }
+        if let peer = catalog.reservePeer(of: provider) {
+            if aiFallbackProvider != nil { aiFallbackProvider = peer }
+        } else {
+            aiFallbackEnabled = false
+            aiFallbackProvider = nil
+        }
+    }
+
+    /// The reserve the preferred provider pairs with (the catalog's
+    /// `reserve_peer`); nil when it pairs with nothing or the catalog is not
+    /// read yet — Settings then hides the reserve.
+    var reservePeer: String? { catalog.reservePeer(of: aiProvider ?? "claude") }
+
+    var connectionConfigPath: String { configPath }
+    func refreshProviderHealth() async {
+        await providerHealth.refresh {
+            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+            let data = try await runner.run(args: ["--config", configPath, "ai", "routing-status", "--check-again"], timeout: 5)
+            return try ChatRoutingStatus.parse(data)
+        }
+    }
+
+    func reserveModel(_ tier: String) -> String? {
+        guard let id = aiFallbackProvider ?? reservePeer else { return nil }
+        return (providerBuckets[id]?["models"] as? [String: Any])?[tier] as? String
+    }
+
+    func setReserveModel(_ tier: String, value: String?) {
+        guard let id = aiFallbackProvider else { return }
+        var bucket = providerBuckets[id] ?? [:]
+        var models = bucket["models"] as? [String: Any] ?? [:]
+        models[tier] = value ?? ""
+        bucket["models"] = models
+        providerBuckets[id] = bucket
+        var edits = editedProviderBuckets[id]?["models"] as? [String: Any] ?? [:]
+        edits[tier] = value ?? ""
+        editedProviderBuckets[id] = ["models": edits]
+        providerConnection.invalidate()
+    }
+
     private func captureLegacyModels(
         _ ai: [String: Any], original: String, selected: String, buckets: inout [String: [String: Any]]
     ) {
-        guard original != selected || editedProviderBuckets[original] != nil,
+        guard original != selected || !editedProviderBuckets.isEmpty,
               buckets[original] == nil else { return }
         let legacy = ai["models"] as? [String: Any] ?? [:]
         let model = ai["model"] as? String
@@ -309,17 +389,65 @@ final class ConfigService {
         ]]
     }
 
+    private func loadCLIPaths(_ yaml: [String: Any]) {
+        claudePath = yaml["claude_path"] as? String
+        codexPath = yaml["codex_path"] as? String
+        workbenchDefaultAgent = Self.agent(fromYAML: yaml)
+    }
+
+    private func resetProviderOperations() {
+        providerConnection.invalidate()
+        providerHealth.invalidate()
+        aiFallbackEnabled = false
+        aiFallbackProvider = nil
+        loadedFallbackEnabled = false
+        loadedFallbackProvider = nil
+    }
+
+    private func loadFallback(_ ai: [String: Any]) {
+        aiFallbackEnabled = (ai["fallback"] as? [String: Any])?["enabled"] as? Bool ?? false
+        aiFallbackProvider = (ai["fallback"] as? [String: Any])?["provider"] as? String
+        loadedFallbackEnabled = aiFallbackEnabled
+        loadedFallbackProvider = aiFallbackProvider
+    }
+
+    private func applyFallback(to ai: inout [String: Any]) {
+        if aiFallbackEnabled != loadedFallbackEnabled || aiFallbackProvider != loadedFallbackProvider {
+            var fallback = ai["fallback"] as? [String: Any] ?? [:]
+            fallback["enabled"] = aiFallbackEnabled
+            fallback["provider"] = aiFallbackProvider ?? ""
+            ai["fallback"] = fallback
+        }
+    }
+
+    /// The provider and the reserve pair against the catalog's rows. With no
+    /// catalog read yet the pair cannot be confirmed, so an enabled fallback
+    /// is refused (Go refuses to load a file whose fallback is not a pair).
     private func validateAISelection(_ selected: String, ai: [String: Any]) throws {
-        guard ["claude", "codex", "ollama"].contains(selected) else {
+        let fallback = ai["fallback"] as? [String: Any] ?? [:]
+        let reserve = fallback["provider"] as? String ?? ""
+        let enabled = fallback["enabled"] as? Bool == true
+        guard catalog.isLoaded else {
+            if !reserve.isEmpty && reserve == selected {
+                throw ConfigUnreadableError(reason: "Reserve must be a different provider")
+            }
+            // Only an edit to the pair is refused: a save of other settings
+            // keeps the file's fallback as Go last loaded it.
+            let pairEdited = aiFallbackEnabled != loadedFallbackEnabled || aiFallbackProvider != loadedFallbackProvider
+                || editableFields["_aiProvider"] != loadedFields["_aiProvider"]
+            if enabled && pairEdited {
+                throw ConfigUnreadableError(reason: "Provider details are still loading; turn the reserve on again once they load")
+            }
+            return
+        }
+        guard catalog.provider(selected) != nil else {
             throw ConfigUnreadableError(reason: "Unknown AI provider")
         }
-        guard let fallback = ai["fallback"] as? [String: Any] else { return }
-        let reserve = fallback["provider"] as? String ?? ""
-        if !reserve.isEmpty && (!["claude", "codex"].contains(reserve) || reserve == selected) {
-            throw ConfigUnreadableError(reason: "Reserve must be a different Claude or Codex provider")
+        if !reserve.isEmpty && (catalog.reservePeer(of: reserve) == nil || reserve == selected) {
+            throw ConfigUnreadableError(reason: "Reserve must be a different provider that has a reserve pair")
         }
-        if fallback["enabled"] as? Bool == true && (reserve.isEmpty || selected == "ollama") {
-            throw ConfigUnreadableError(reason: "Enabled fallback requires different Claude and Codex providers")
+        if enabled && (reserve.isEmpty || catalog.reservePeer(of: selected) != reserve) {
+            throw ConfigUnreadableError(reason: "Enabled fallback requires the preferred provider's reserve pair")
         }
     }
 
@@ -327,6 +455,7 @@ final class ConfigService {
         var ai = (yaml["ai"] as? [String: Any]) ?? [:]
         var buckets = ai["providers"] as? [String: [String: Any]] ?? [:]
         let selected = aiProvider ?? "claude"
+        applyFallback(to: &ai)
         try validateAISelection(selected, ai: ai)
         let original = ai["provider"] as? String ?? "claude"
         captureLegacyModels(ai, original: original, selected: selected, buckets: &buckets)
@@ -469,6 +598,8 @@ final class ConfigService {
     }
 
     func save() throws {
+        providerConnection.invalidate()
+        providerHealth.invalidate()
         // Re-read the config file right before writing instead of using the
         // in-memory `rawYAML` snapshot captured at the last reload(). Between
         // load and save, an external process (e.g. `watchtower jira login`,
@@ -546,8 +677,10 @@ final class ConfigService {
         }
 
         try write(yaml)
+        routingApplication.saved()
 
         rawYAML = yaml
+        loadFallback(yaml["ai"] as? [String: Any] ?? [:])
         lastSaveChangedPurge = purgeChanged
         diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
@@ -574,9 +707,10 @@ final class ConfigService {
 
     /// Bookkeeping, not settings: left out of the edit check.
     private static let nonEditableFields: Set<String> = [
-        "configPath", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
+        "configPath", "routingApplication", "_rawYAML", "_parseError", "_lastSaveChangedPurge",
         "_diskCalendarEnabled", "_diskGmailEnabled", "_diskPurgeRevokedData", "loadedFields",
-        "_providerBuckets", "_editedProviderBuckets", "editedModelTiers"
+        "_providerBuckets", "_editedProviderBuckets", "editedModelTiers",
+        "_providerConnection", "_providerHealth", "providerConnection", "providerHealth", "loadedFallbackEnabled", "loadedFallbackProvider"
     ]
 
     /// Every settings field (the stored properties, by reflection, so a new
@@ -635,6 +769,18 @@ final class ConfigService {
         }
         return yaml
     }
+
+    /// Once disk Save succeeds, acknowledge routing even when an independent
+    /// feature/privacy operation fails. Keep that operation's error visible.
+    func saveAndApply(extraSave: (() async throws -> Void)? = nil) async throws {
+        try save()
+        var extraError: (any Error)?
+        do { try await extraSave?() } catch { extraError = error }
+        await applySavedRouting()
+        if let extraError { throw extraError }
+    }
+
+    func applySavedRouting() async { await routingApplication.applyLatest() }
 
     func openInEditor() {
         let url = URL(fileURLWithPath: configPath)

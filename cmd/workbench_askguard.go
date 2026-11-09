@@ -90,7 +90,7 @@ var workbenchAskGuardCmd = &cobra.Command{
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: ask guard skipped: %v\n", err)
 			return nil // never refuse the tool or block the turn over our own flags
 		}
-		if agent == agentkind.Codex {
+		if launchHooks(agent) {
 			runCodexAskGuard(cmd)
 			return nil
 		}

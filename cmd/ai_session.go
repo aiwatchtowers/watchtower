@@ -11,11 +11,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"watchtower/internal/agentloop"
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/claude"
-	"watchtower/internal/codex"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/providers"
@@ -85,22 +83,6 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := notifyShutdownContext(ctx, stderrLogf)
 	defer cancel()
 
-	if err := providers.Allowed(cfg.AI.Provider); err != nil {
-		return fail(chat.CodeProviderUnavailable, err.Error())
-	}
-	model := aiSessionFlagModel
-	if model == "" {
-		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
-	}
-	// One decision drives the prompt, the flags and the gate (#737).
-	claudeAI := resolveClaudeAI(cfg, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
-	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
-	prompt, err := chat.BuildSystemPrompt(ctx, database, cfg,
-		sessionPromptOptions(cfg, aiSessionFlagSurface, aiSessionFlagProjectID, time.Now(), claudeAI.prompt))
-	if err != nil {
-		return fail(chat.CodeInternal, fmt.Sprintf("building the system prompt: %v", err))
-	}
-
 	turnFile, err := newTurnFile()
 	if err != nil {
 		return fail(chat.CodeInternal, fmt.Sprintf("creating the turn file: %v", err))
@@ -113,23 +95,14 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	}
 	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
-	var mounted []ai.ExternalMCPServer
-	backend, err := newSessionBackend(sessionWiring{
-		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
-		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
-		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI,
-		onMounted: func(ext []ai.ExternalMCPServer) { mounted = ext },
-	})
+	backend, err := routedSessionBackend(cmd, cfg, database, dbPath, conv, turnFile, project, chatProjectID, mcpArgs, cancel)
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
 	}
+	s := chat.NewSession(backend, out)
+	s.Provider = cfg.AI.Provider
+	_, s.Model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 
-	// The policy is asked again at every turn (#608).
-	s := chat.NewSession(policyCheckedBackend{
-		Backend: backend, provider: cfg.AI.Provider, mounted: mounted, claudeAIOn: claudeAI.mode.On, end: cancel,
-	}, out)
-	s.Provider = providers.ByID(cfg.AI.Provider).ID
-	s.Model = model
 	s.TurnFile = turnFile
 	return s.Run(ctx, cmd.InOrStdin())
 }
@@ -207,8 +180,7 @@ func sessionPromptOptions(cfg *config.Config, surface string, projectID int64, n
 		Surface: surface, ProjectID: projectID, ToolsAvailable: true,
 		Provider: cfg.AI.Provider, SkillsDir: skills.Dir(cfg.WorkspaceDir()), VaultDir: memoryVaultPath(cfg),
 		MemoryChat: cfg.Memory.Enabled && cfg.Memory.Surfaces.Chat, Now: now,
-		// Only the Claude backend unhides WebSearch (newSessionBackend).
-		WebSearch: cfg.AI.Provider != "codex" && cfg.AI.Provider != "ollama",
+		WebSearch: providers.CapsOf(cfg.AI.Provider).WebSearch, // the capability row
 		ClaudeAI:  claudeAI,
 	}
 }
@@ -232,55 +204,10 @@ type sessionWiring struct {
 	onMounted func([]ai.ExternalMCPServer)
 }
 
-// newSessionBackend picks the provider backend for `ai session`.
+// newSessionBackend is the configured provider's backend for `ai session`;
+// also the tests' seam.
 func newSessionBackend(w sessionWiring) (chat.Backend, error) {
-	switch w.cfg.AI.Provider {
-	case "codex":
-		// Stateless per turn: the backend replays the active path every turn.
-		// The MCP server reads the running turn from the turn file.
-		return chat.NewTurnBackend(codexSessionClient(w), w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
-	case "ollama":
-		// Ollama ships no default model: without one every turn would fail
-		// as a retryable internal error, so the session refuses to start
-		// (provider_unavailable) with the fix in the message.
-		if w.model == "" {
-			return nil, errors.New("no Ollama model is configured: pick one in Settings → AI")
-		}
-		// Runtime B: the registry runs in-process; proposals bind to the
-		// running turn through the same turn file.
-		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), sessionToolBinding(w))
-		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
-	default:
-		ext := loadExternalMCPServers(w.cfg, w.dbPath)
-		if w.onMounted != nil {
-			w.onMounted(ext)
-		}
-		opts := claudeSessionOptions(w, ext)
-		if w.claudeAI.mode.On {
-			sink := newRegistrySink(buildToolRegistry(w.cfg, w.database), w.database, w.conv, w.warn)
-			opts = withClaudeAI(opts, w, ext, sink)
-		}
-		return chat.NewClaudeBackend(opts), nil
-	}
-}
-
-// codexSessionClient is the codex chat session's client: only the
-// watchtower server and the enabled Quick Connections — the owner's own
-// codex MCP servers are disabled per launch (board #594). Connections load
-// per turn on the session's open database: each turn is a new codex
-// launch, so OAuth tokens are refreshed as for claude (QC-04); tools are
-// re-listed only when the cache needs it (mountConnection). A connection a
-// launch cannot mount says so on its row (markCodexSkipped). The session's surfaces are main and target only,
-// never automation_editor (D11).
-func codexSessionClient(w sessionWiring) *codex.Client {
-	c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
-	c.SetMCPArgs(w.mcpArgs)
-	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
-		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
-	})
-	// CHAT-04 (spec §9): the client always routes the system prompt and
-	// replayed history through stdin, never this process's argv.
-	return c
+	return wiringFor(w.cfg.AI.Provider).newChatBackend(w)
 }
 
 // sessionToolBinding is the in-process registry's binding (runtime B): the
@@ -309,8 +236,8 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 		// attachment_unsupported; their prompt still lists the files.
 		ProjectAttachments: chat.ProjectAttachments(w.project, w.warn),
 		Warn:               w.warn,
-		Replay: func(turnID string) (string, error) {
-			return chat.ReplayFromDB(w.database, w.conv.ID, turnID)
+		Replay: func(turnID string, current []chat.Attachment) (string, error) {
+			return chat.ReplayFromDB(w.database, w.conv.ID, turnID, current)
 		},
 	}
 }

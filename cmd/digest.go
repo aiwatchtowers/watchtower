@@ -444,7 +444,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 			}
 			inTok, outTok, totalAPI := 0, 0, 0
 			if usage != nil {
-				inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+				inTok, outTok, totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 			}
 			_ = database.CompletePipelineRun(runID, n, inTok, outTok, 0, totalAPI, nil, nil, errMsg)
 		}
@@ -481,7 +481,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 	if runID > 0 {
 		inTok, outTok, totalAPI := 0, 0, 0
 		if usage != nil {
-			inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+			inTok, outTok, totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 		}
 		_ = database.CompletePipelineRun(runID, n, inTok, outTok, 0, totalAPI, nil, nil, "")
 	}
@@ -490,11 +490,11 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		spinner.Stop("No channels with enough messages to generate digests")
 	} else {
 		msg := fmt.Sprintf("Generated %d channel digest(s).", n)
-		if usage != nil && (usage.InputTokens > 0 || usage.OutputTokens > 0) {
+		if usage != nil && (usage.InputTokens() > 0 || usage.OutputTokens() > 0) {
 			msg = fmt.Sprintf("Generated %d channel digest(s). Tokens: %s in + %s out",
 				n,
-				humanize.Comma(int64(usage.InputTokens)),
-				humanize.Comma(int64(usage.OutputTokens)))
+				humanize.Comma(int64(usage.InputTokens())),
+				humanize.Comma(int64(usage.OutputTokens())))
 		}
 		spinner.Stop(msg)
 		fmt.Fprintln(out, "Run 'watchtower digest' to view them.")
@@ -653,7 +653,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 		}
 		inTok, outTok, totalAPI := 0, 0, 0
 		if usage != nil {
-			inTok, outTok, totalAPI = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
+			inTok, outTok, totalAPI = usage.InputTokens(), usage.OutputTokens(), usage.TotalAPITokens()
 		}
 		fromUnix := float64(from.Unix())
 		toUnix := float64(to.Unix())
@@ -695,8 +695,8 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 
 	if usage != nil {
 		fmt.Fprintf(&buf, "---\nTokens: %s in + %s out\n",
-			humanize.Comma(int64(usage.InputTokens)),
-			humanize.Comma(int64(usage.OutputTokens)))
+			humanize.Comma(int64(usage.InputTokens())),
+			humanize.Comma(int64(usage.OutputTokens())))
 	}
 
 	fmt.Fprint(out, ui.RenderMarkdown(buf.String()))

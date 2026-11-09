@@ -49,3 +49,11 @@ func SplitCacheWrites(total, fiveMin, oneHour int64) (int64, int64) {
 	}
 	return fiveMin, oneHour
 }
+
+// ClaudeTokens is a Claude usage object as a block: fresh input, cache
+// reads, the cache creation split by TTL (SplitCacheWrites), output.
+func ClaudeTokens(input, cacheRead, cacheCreation, fiveMin, oneHour, output int) Tokens {
+	t := Tokens{Input: int64(input), CacheRead: int64(cacheRead), Output: int64(output)}
+	t.CacheWrite5m, t.CacheWrite1h = SplitCacheWrites(int64(cacheCreation), int64(fiveMin), int64(oneHour))
+	return t
+}

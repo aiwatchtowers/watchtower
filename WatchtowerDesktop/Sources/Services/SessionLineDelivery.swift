@@ -52,6 +52,10 @@ final class SessionLineDelivery {
         /// A spec review round's findings line for the author (#1121), by
         /// ask id.
         case specReview(Int64)
+        /// A Discuss thread's question to the author (spec 2026-11-08 §3),
+        /// by question id. It shares the session's order with `specReview`
+        /// lines (`SpecReviewLineOrder`).
+        case specReviewQuestion(Int64)
     }
 
     /// What became of a held line when the held lines were tried again.
@@ -107,6 +111,12 @@ final class SessionLineDelivery {
     private var ownReads = 0
     /// When a line was last submitted into each session.
     private var lastSubmit: [Int64: Date] = [:]
+    /// The spec review lines' own order per session: a round's findings
+    /// line and a thread's question go one at a time, in filing order.
+    private(set) lazy var specReviewLines = SpecReviewLineOrder { [weak self] line, key, sessionID in
+        // No delivery left (the app is going away): held, never "no session".
+        await self?.deliverSpecReviewKeyed(line, key: key, sessionID: sessionID) ?? .held
+    }
 
     init(terminalCenter: TerminalCenter?) {
         self.terminalCenter = terminalCenter
@@ -348,7 +358,7 @@ extension SessionLineDelivery.LineKey {
     var keepsFormatCharacters: Bool {
         switch self {
         case .input, .workchat: true
-        case .ask, .review, .specReview: false
+        case .ask, .review, .specReview, .specReviewQuestion: false
         }
     }
 
@@ -373,13 +383,14 @@ extension SessionLineDelivery.LineKey {
         case .review: "review"
         case .workchat: "Workchat"
         case .specReview: "SpecReviewLoop"
+        case .specReviewQuestion: "SpecReviewThread"
         }
     }
 
     fileprivate var logNoun: String {
         switch self {
         case .ask: "answer"
-        case .input, .review, .workchat, .specReview: "line"
+        case .input, .review, .workchat, .specReview, .specReviewQuestion: "line"
         }
     }
 }

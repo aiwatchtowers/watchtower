@@ -200,6 +200,7 @@ CREATE TABLE IF NOT EXISTS digests (
     people_signals  TEXT NOT NULL DEFAULT '[]',   -- JSON array of PersonSignals from MAP phase (legacy)
     situations      TEXT NOT NULL DEFAULT '[]',   -- JSON array of Situation objects from channel digest
     running_summary TEXT NOT NULL DEFAULT '',     -- JSON running context for next digest (channel memory)
+    daily_attempt_id TEXT NOT NULL DEFAULT '',    -- local scheduled daily completion receipt, not replicated
     UNIQUE(channel_id, type, period_from, period_to)
 );
 CREATE INDEX IF NOT EXISTS idx_digests_channel ON digests(channel_id);
@@ -2432,7 +2433,11 @@ CREATE TABLE IF NOT EXISTS chat_conversations (
     model                  TEXT,
     project_id             INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL,
     active_leaf_message_id INTEGER,
-    read_at                REAL
+    read_at                REAL,
+    routing_mode           TEXT NOT NULL DEFAULT 'preferred_reserve' CHECK(routing_mode IN ('pinned','preferred_reserve')),
+    actual_provider        TEXT NOT NULL DEFAULT '',
+    actual_model           TEXT NOT NULL DEFAULT '',
+    routing_reason         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_chat_conversations_project ON chat_conversations(project_id);
 
@@ -2728,7 +2733,9 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     worktree_base     TEXT, -- the commit the branch was cut from; NULL with worktree_branch (00114)
     automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- the automation run that started the session (00122); NULL = none
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
-    start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00169)
+    agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
+    agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
+    start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2794,7 +2801,8 @@ CREATE TABLE IF NOT EXISTS spec_reviews (
     open_items  TEXT NOT NULL DEFAULT '',   -- JSON this round hands the author
     ledger      TEXT NOT NULL DEFAULT '',   -- JSON of the loop's settled items so far
     loop_end    TEXT NOT NULL DEFAULT '',
-    findings    INTEGER NOT NULL DEFAULT -1  -- findings counted in result at the first finish (00162); -1 = not counted
+    findings    INTEGER NOT NULL DEFAULT -1, -- findings counted in result at the first finish (00162); -1 = not counted
+    loop_rules  INTEGER NOT NULL DEFAULT 0   -- author loop rules (00177): 0 = cap of 3 (2026-10-26), 2 = runs while fixes hold, fuse 8
 );
 
 -- The owner's per-item marks on a spec review (00158); the Desktop writes them.
@@ -2805,6 +2813,33 @@ CREATE TABLE IF NOT EXISTS spec_review_marks (
     body       TEXT NOT NULL DEFAULT '',
     about      TEXT NOT NULL DEFAULT '',   -- a comment's finding text, kept when a re-run drops the finding
     updated_at TEXT NOT NULL,
+    PRIMARY KEY (ask_id, item_key)
+);
+
+-- An author question from a spec review thread (00178); Go is the only
+-- writer, every state change is a conditional update from 'open'.
+CREATE TABLE IF NOT EXISTS spec_review_questions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    thread     TEXT NOT NULL,              -- the thread's conversation key
+    item_key   TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    answer     TEXT NOT NULL DEFAULT '',
+    state      TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','expired','gone')),
+    created_at TEXT NOT NULL,
+    closed_at  TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_spec_review_questions_open ON spec_review_questions(thread) WHERE state = 'open';
+CREATE INDEX IF NOT EXISTS idx_spec_review_questions_ask ON spec_review_questions(ask_id);
+
+-- A finding the owner added from a spec review thread (00178); Go writes it,
+-- a reviewer re-run never touches it. finding is the JSON.
+CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
+    ask_id     INTEGER NOT NULL REFERENCES owner_asks(id) ON DELETE CASCADE,
+    item_key   TEXT NOT NULL,
+    thread     TEXT NOT NULL,
+    finding    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
 
@@ -2876,12 +2911,14 @@ CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_sessi
 
 -- Worktrees and branches a workbench session's agents worked in (00111):
 -- one row per new (session, root, branch), written by the session-state hook
--- (at most 64 per session) and read by `workbench cleanup`. Go only.
+-- (at most 64 per session; last_at moved once per run it is seen in) and read
+-- by `workbench cleanup` and the Desktop's lanes count. Go only writes it.
 CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,             -- worktree root (the dir holding .git), symlink-resolved, absolute
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
+    last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
     PRIMARY KEY (session_id, root, branch)
 );
 
@@ -2898,7 +2935,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    ref         TEXT NOT NULL, -- 'pr:<number>' or 'branch:<name>'
+    ref         TEXT NOT NULL, -- 'pr:<number>', 'branch:<name>' or 'into:<base>:<branch>' (a merge verdict, board #986)
     state       TEXT NOT NULL CHECK(state IN ('merged','open','closed','none','unknown')),
     pr_number   INTEGER, -- set for a pr ref, and for a branch whose PR gh found
     title       TEXT NOT NULL DEFAULT '',
@@ -3126,8 +3163,39 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     last_error_at  TEXT,
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
-    updated_at     TEXT NOT NULL
+    updated_at     TEXT NOT NULL,
+    plot_json      TEXT NOT NULL DEFAULT '{}',
+    publication_proof TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS codex_plan_usage_status (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    state                  TEXT NOT NULL CHECK (state IN ('ok','stale','unavailable','error','disabled')),
+    reason                 TEXT NOT NULL DEFAULT '',
+    plan                   TEXT NOT NULL DEFAULT '',
+    fetched_at             TEXT,
+    last_error             TEXT NOT NULL DEFAULT '',
+    last_error_at          TEXT,
+    limits_json            TEXT NOT NULL DEFAULT '[]',
+    breakdown_json         TEXT NOT NULL DEFAULT '[]',
+    updated_at             TEXT NOT NULL,
+    plot_json              TEXT NOT NULL DEFAULT '{}',
+    publication_proof      TEXT NOT NULL DEFAULT '',
+    scope                  TEXT NOT NULL DEFAULT '',
+    identity_known         INTEGER NOT NULL DEFAULT 0 CHECK (identity_known IN (0,1)),
+    ordinary_usage_allowed INTEGER CHECK (ordinary_usage_allowed IN (0,1)),
+    CHECK ((identity_known = 0 AND scope = '') OR (identity_known = 1 AND length(scope) = 64))
+);
+
+CREATE TABLE IF NOT EXISTS codex_plan_usage_samples (
+    scope      TEXT NOT NULL CHECK (length(scope) = 64),
+    limit_key  TEXT NOT NULL,
+    taken_at   TEXT NOT NULL,
+    percent    REAL NOT NULL CHECK (percent >= 0 AND percent <= 100),
+    resets_at  TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (scope, limit_key, taken_at)
+);
+
 
 -- One row per built-in whose one-time move from the old pipeline settings
 -- ran (done) or failed (00150); attempts counts the tries.
@@ -3189,7 +3257,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
   delivered_at   TEXT,
-  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')) -- how the owner closed a sent round (00155)
+  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), -- how the owner closed a sent round (00155)
+  branch         TEXT NOT NULL DEFAULT '' -- the branch a source='pr' round reviews; '' for a folder round (00173)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
@@ -3555,7 +3624,81 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     duration_ms           INTEGER NOT NULL DEFAULT 0,
     ok                    INTEGER NOT NULL DEFAULT 1,
     automation_id         INTEGER,                             -- automations.id, no FK; NULL = not an automation run
-    automation_run_id     INTEGER                              -- automation_runs.id, no FK
+    automation_run_id     INTEGER,                             -- automation_runs.id, no FK
+    operation_id          TEXT NOT NULL DEFAULT '',
+    attempt               INTEGER NOT NULL DEFAULT 0,
+    config_revision       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_llm_calls_at ON llm_calls(at);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_surface_at ON llm_calls(surface, at);
+CREATE TABLE ideas_extraction_windows (
+    source TEXT NOT NULL CHECK (source IN ('gmail', 'imap', 'jira')),
+    account_id INTEGER NOT NULL,
+    window_key TEXT NOT NULL,
+    from_value TEXT NOT NULL,
+    to_value TEXT NOT NULL,
+    reached_value TEXT NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+    PRIMARY KEY (source, account_id, window_key)
+);
+
+CREATE TRIGGER ideas_extraction_gmail_delete AFTER DELETE ON google_accounts
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='gmail' AND account_id=OLD.id;
+END;
+CREATE TRIGGER ideas_extraction_gmail_reset AFTER UPDATE OF ideas_email_floor ON google_accounts WHEN NEW.ideas_email_floor = 0
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='gmail' AND account_id=OLD.id;
+END;
+CREATE TRIGGER ideas_extraction_imap_delete AFTER DELETE ON email_accounts
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='imap' AND account_id=OLD.id;
+END;
+CREATE TRIGGER ideas_extraction_imap_reset AFTER UPDATE OF ideas_email_floor ON email_accounts WHEN NEW.ideas_email_floor = 0
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='imap' AND account_id=OLD.id;
+END;
+CREATE TRIGGER ideas_extraction_jira_delete AFTER DELETE ON jira_accounts
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='jira' AND account_id=OLD.id;
+END;
+CREATE TRIGGER ideas_extraction_jira_reset AFTER UPDATE OF ideas_jira_floor ON jira_accounts WHEN NEW.ideas_jira_floor = ''
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source='jira' AND account_id=OLD.id;
+END;
+CREATE TRIGGER ideas_extraction_history_reset AFTER DELETE ON history_backfill
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source=OLD.source_kind AND account_id=OLD.account_id AND window_key <> 'forward';
+END;
+CREATE TRIGGER ideas_extraction_output_reset AFTER DELETE ON stream_digests
+BEGIN
+ DELETE FROM ideas_extraction_windows WHERE source=OLD.source AND account_id=OLD.account_id;
+END;
+
+CREATE TABLE history_backfill_considered (
+ account_id INTEGER NOT NULL,
+ channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+ from_ts REAL NOT NULL,
+ to_ts REAL NOT NULL,
+ reached_ts REAL NOT NULL,
+ PRIMARY KEY(account_id, channel_id, from_ts, to_ts)
+);
+
+CREATE TRIGGER history_backfill_considered_reset AFTER DELETE ON history_backfill
+BEGIN
+ DELETE FROM history_backfill_considered WHERE OLD.source_kind='slack' AND account_id=OLD.account_id;
+END;
+
+CREATE TABLE history_backfill_daily (
+ account_id INTEGER NOT NULL,
+ chunk_from REAL NOT NULL,
+ chunk_to REAL NOT NULL,
+ day_from REAL NOT NULL,
+ digest_id INTEGER NOT NULL REFERENCES digests(id) ON DELETE CASCADE,
+ PRIMARY KEY(account_id,chunk_from,chunk_to,day_from)
+);
+
+CREATE TRIGGER history_backfill_daily_reset AFTER DELETE ON history_backfill
+BEGIN
+ DELETE FROM history_backfill_daily WHERE OLD.source_kind='slack' AND account_id=OLD.account_id AND chunk_from >= OLD.floor_ts AND chunk_to <= OLD.upper_ts;
+END;

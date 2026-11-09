@@ -1,0 +1,5 @@
+{"timestamp":"2026-11-05T12:00:00.000Z","type":"session_meta","payload":{"id":"SESSION","cwd":"/work"},"synthetic":true}
+{"timestamp":"2026-11-05T12:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1"},"synthetic":true}
+{"timestamp":"2026-11-05T12:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"please add a flag"},"synthetic":true}
+{"timestamp":"2026-11-05T12:00:03.000Z","type":"event_msg","payload":{"type":"agent_message","message":"done, flag added"},"synthetic":true}
+{"timestamp":"2026-11-05T12:00:04.000Z","type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted"},"synthetic":true}

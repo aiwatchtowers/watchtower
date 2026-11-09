@@ -57,9 +57,17 @@ type generatorWrapper interface {
 // ImageCapable returns g's image call when g, through any of the daemon's
 // wrappers (PooledGenerator, WithCallTimeout), ends in a generator that takes
 // images.
-func ImageCapable(g Generator) (ImageGenerator, bool) {
+func ImageCapable(g Generator, contexts ...context.Context) (ImageGenerator, bool) {
+	ctx := context.Background()
+	if len(contexts) > 0 {
+		ctx = contexts[0]
+	}
+	g = ResolveGenerator(ctx, g)
+	if c, ok := g.(interface{ ImageCapability() bool }); ok && !c.ImageCapability() {
+		return nil, false
+	}
 	if w, ok := g.(generatorWrapper); ok {
-		if _, ok := ImageCapable(w.wrappedGenerator()); !ok {
+		if _, ok := ImageCapable(w.wrappedGenerator(), ctx); !ok {
 			return nil, false
 		}
 	}

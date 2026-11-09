@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/llmusage"
+	"watchtower/internal/providers"
 )
 
 // `watchtower usage llm` (spec
@@ -90,11 +91,16 @@ type usageLLMAutomationRow struct {
 	Runs             int64    `json:"runs"`
 	Calls            int64    `json:"calls"`
 	Input            int64    `json:"input"`
+	CacheRead        int64    `json:"cache_read"`
+	CacheWrite       int64    `json:"cache_write"`
 	Output           int64    `json:"output"`
 	CostUSD          *float64 `json:"cost_usd"`
 	CostIsEstimate   bool     `json:"cost_is_estimate"`
 	CostIsLowerBound bool     `json:"cost_is_lower_bound"`
 }
+
+// tokens is the sum the process rows and every total use.
+func (r usageLLMAutomationRow) tokens() int64 { return r.Input + r.CacheRead + r.CacheWrite + r.Output }
 
 // usageLLMReport is the pinned --json shape (TestUsageLLM_JSONKeysPinned);
 // the Desktop's LLMUsageReport decodes it.
@@ -132,7 +138,8 @@ func (a *usageAcc) addGroup(g db.LLMUsageGroup) {
 	a.errors += g.Errors
 	a.estimated += g.Estimated
 	a.noPrice += g.NoPrice
-	if g.Purpose == "" {
+	// A chat turn carries no purpose by design: not a tagging gap.
+	if g.Purpose == "" && g.Surface != "chat" {
 		a.untagged += g.Calls
 	}
 	a.input += g.Input
@@ -267,7 +274,8 @@ func openUsageDB(path string) (*db.DB, error) {
 
 // readUsageSpool returns the spool's calls (the .importing file and the live
 // one, which overlap while an import runs) once per call_id, dropping the
-// surfaces llm_calls would refuse and the lines without a parsable time.
+// surfaces llm_calls would refuse and the lines without a parsable time; a
+// provider reads through providers.LedgerLabel.
 func readUsageSpool(path string) ([]llmusage.Call, error) {
 	calls, err := llmusage.ReadSpool(path)
 	if err != nil {
@@ -288,6 +296,7 @@ func readUsageSpool(path string) ([]llmusage.Call, error) {
 			continue
 		}
 		c.At = at.UTC().Format(time.RFC3339)
+		c.Provider = providers.LedgerLabel(c.Provider) // N3: runtime B's old "http"
 		out = append(out, c)
 	}
 	return out, nil
@@ -636,7 +645,8 @@ func usageAutomationRows(autos map[int64]*usageAutomationAcc, runs map[int64]map
 		costs[a.id] = a.acc.cost
 		rows = append(rows, usageLLMAutomationRow{
 			AutomationID: a.id, Name: name, Runs: int64(len(runs[a.id])), Calls: a.acc.calls,
-			Input: a.acc.input, Output: a.acc.output, CostUSD: a.acc.costPtr(), CostIsEstimate: a.acc.estCost > 0,
+			Input: a.acc.input, CacheRead: a.acc.cacheRead, CacheWrite: a.acc.cacheWrite, Output: a.acc.output,
+			CostUSD: a.acc.costPtr(), CostIsEstimate: a.acc.estCost > 0,
 			CostIsLowerBound: a.acc.noPrice > 0,
 		})
 	}
@@ -675,6 +685,14 @@ func usageTotalsLine(t usageLLMTotals) string {
 		usageCostText(t.CostUSD, t.CostIsEstimate, t.CostIsLowerBound))
 }
 
+// printUsageGaps prints a total's gap counts under it, when any is non-zero.
+func printUsageGaps(w io.Writer, indent string, t usageLLMTotals) {
+	if t.EstimatedCalls+t.NoPriceCalls+t.UntaggedCalls > 0 {
+		fmt.Fprintf(w, "%s%d with estimated usage · %d without a price · %d untagged\n",
+			indent, t.EstimatedCalls, t.NoPriceCalls, t.UntaggedCalls)
+	}
+}
+
 func printUsageLLM(w io.Writer, rep usageLLMReport) error {
 	since := "nothing recorded yet"
 	if rep.LedgerSince != "" {
@@ -682,10 +700,7 @@ func printUsageLLM(w io.Writer, rep usageLLMReport) error {
 	}
 	fmt.Fprintf(w, "AI usage, period %s (%s)\n", rep.Period, since)
 	fmt.Fprintf(w, "Watchtower:        %s\n", usageTotalsLine(rep.Watchtower.Totals))
-	if t := rep.Watchtower.Totals; t.EstimatedCalls+t.NoPriceCalls+t.UntaggedCalls > 0 {
-		fmt.Fprintf(w, "                   %d with estimated usage · %d without a price · %d untagged\n",
-			t.EstimatedCalls, t.NoPriceCalls, t.UntaggedCalls)
-	}
+	printUsageGaps(w, "                   ", rep.Watchtower.Totals)
 	fmt.Fprintf(w, "Your automations:  %s\n", usageTotalsLine(rep.OwnAutomations.Totals))
 	fmt.Fprintf(w, "Chats:             %s\n", usageTotalsLine(rep.Chats))
 	fmt.Fprintf(w, "Workbenches:       %s (sessions %d, Watchtower helpers %d calls)\n",
@@ -694,6 +709,7 @@ func printUsageLLM(w io.Writer, rep usageLLMReport) error {
 		fmt.Fprintf(w, "                   agent analytics off, not counted: %s\n", strings.Join(rep.Workbenches.AnalyticsOff, ", "))
 	}
 	fmt.Fprintf(w, "Total (no workbenches): %s\n", usageTotalsLine(rep.PageTotal))
+	printUsageGaps(w, "                        ", rep.PageTotal)
 
 	if len(rep.Watchtower.Rows) > 0 {
 		fmt.Fprintln(w)
@@ -718,9 +734,9 @@ func printUsageLLM(w io.Writer, rep usageLLMReport) error {
 	if len(rep.OwnAutomations.Rows) > 0 {
 		fmt.Fprintln(w)
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(tw, "AUTOMATION\tRUNS\tCALLS\tINPUT\tOUTPUT\tCOST")
+		fmt.Fprintln(tw, "AUTOMATION\tRUNS\tCALLS\tTOKENS\tOUTPUT\tCOST")
 		for _, r := range rep.OwnAutomations.Rows {
-			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\n", r.Name, r.Runs, r.Calls, r.Input, r.Output,
+			fmt.Fprintf(tw, "%s\t%d\t%d\t%d\t%d\t%s\n", r.Name, r.Runs, r.Calls, r.tokens(), r.Output,
 				usageCostText(r.CostUSD, r.CostIsEstimate, r.CostIsLowerBound))
 		}
 		return tw.Flush()

@@ -18,6 +18,9 @@ type SessionOutcome struct {
 	// LaunchFailed: the Desktop could not launch it (`session-ended
 	// launch_failed --error LaunchFailed`); session() throws NotAvailable.
 	LaunchFailed string
+	// WatchIssue: the session works on but the Mac cannot watch it
+	// (agent_watch_issue on a working row); session() ends not_watched.
+	WatchIssue string
 }
 
 // SessionLaunch is one session FakeSessionDesk launched: the step it was for,
@@ -110,6 +113,9 @@ func (d *FakeSessionDesk) launch(p db.PendingSessionStep) error {
 		if ok, err = d.DB.EndAutomationSessionStep(p.StepID, db.SessionStepStopped, ""); err == nil && !ok {
 			err = fmt.Errorf("ending step %d stopped was refused", p.StepID)
 		}
+	case out.WatchIssue != "":
+		_, err = d.DB.Exec(`UPDATE terminal_sessions SET agent_state = 'working', agent_state_at = '2026-10-14T12:30:00.000Z',
+			agent_watch_issue = ?, agent_watch_issue_at = '2026-10-14T12:30:30.000Z' WHERE id = ?`, out.WatchIssue, l.SessionID)
 	case out.AgentError != "":
 		_, err = d.DB.Exec(`UPDATE terminal_sessions SET agent_failed_at = '2026-10-14T12:30:00.000Z', agent_error = ? WHERE id = ?`,
 			out.AgentError, l.SessionID)

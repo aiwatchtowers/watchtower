@@ -42,7 +42,7 @@ final class HomeAISpendTests: XCTestCase {
         XCTAssertEqual(runner.argsSeen, [["usage", "llm", "--since", "today", "--json"]])
         XCTAssertEqual(runner.timeoutsSeen, [10])
         XCTAssertEqual(center.aiSpend, HomeAISpend(
-            value: "$124.60",
+            value: "$119.90",
             tooltip: "Watchtower, your automations and chats — workbenches are on Usage → Watchtower"))
     }
 
@@ -53,9 +53,9 @@ final class HomeAISpendTests: XCTestCase {
         ])
         let (center, usage) = center { runner }
         await usage.load()
-        XCTAssertEqual(center.aiSpend.value, "≥ $124.60", "a lower bound wins over an estimate, as on the tab")
+        XCTAssertEqual(center.aiSpend.value, "≥ $119.90", "a lower bound wins over an estimate, as on the tab")
         await usage.load()
-        XCTAssertEqual(center.aiSpend.value, "≈ $124.60")
+        XCTAssertEqual(center.aiSpend.value, "≈ $119.90")
     }
 
     func testCLIErrorShowsDash() async throws {
@@ -82,7 +82,7 @@ final class HomeAISpendTests: XCTestCase {
             XCTAssertEqual(center.aiSpend, Self.unavailable, "\(failure)")
             XCTAssertNotEqual(center.aiSpend.value, "$0.00")
             await usage.load()
-            XCTAssertEqual(center.aiSpend.value, "$124.60", "\(failure)")
+            XCTAssertEqual(center.aiSpend.value, "$119.90", "\(failure)")
             await usage.load()
             XCTAssertEqual(center.aiSpend, Self.unavailable, "\(failure)")
         }

@@ -34,6 +34,18 @@ final class ReviewCommentAnchorTests: XCTestCase {
         XCTAssertTrue(plan.lost.isEmpty && plan.moved.isEmpty)
     }
 
+    /// Codex round 6: among identical blocks with identical surroundings the
+    /// comment stays at (or nearest to) the line it sat on, not the first.
+    func testATieKeepsTheCommentNearItsLine() {
+        let text = String(repeating: "same\n", count: 200)
+        let c = ReviewComment.fixture(id: 9, path: "a.go", start: 150, end: 150,
+                                      anchor: ReviewCommentAnchor.anchor(text: text, startLine: 150, endLine: 150))
+        XCTAssertEqual(ReviewCommentAnchor.plan([c]) { _ in text }.moved[9], .init(startLine: 150, endLine: 150))
+        let shifted = "new\n" + text
+        XCTAssertEqual(ReviewCommentAnchor.plan([c]) { _ in shifted }.moved[9], .init(startLine: 150, endLine: 150),
+                       "nearest to its stored line, whichever identical line that is")
+    }
+
     private func comment(id: Int64, start: Int, end: Int) -> ReviewComment {
         ReviewComment.fixture(id: id, path: "a.go", start: start, end: end,
                               anchor: ReviewCommentAnchor.anchor(text: original, startLine: start, endLine: end))

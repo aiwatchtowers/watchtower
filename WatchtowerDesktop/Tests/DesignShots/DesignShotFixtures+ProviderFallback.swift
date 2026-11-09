@@ -2,23 +2,26 @@ import AppKit
 import DesignKit
 import SwiftUI
 import WatchtowerCore
+import WatchtowerTestSupport
+@testable import WatchtowerDesktop
 
 /// Design-only scenes; controls never write settings or start a provider.
 @MainActor
 enum ProviderFallbackShotFixtures {
     static var shots: [DesignShot] {
         ProviderFallbackPreview.State.allCases.map { state in
-            shot(state, preferred: .claude)
-        } + [shot(.ready, preferred: .codex), shot(.fallback, preferred: .codex),
-             shot(.recovered, preferred: .codex), shot(.bothLimited, preferred: .claude, narrow: true),
-             shot(.stopped, preferred: .claude, narrow: true)]
+            shot(state, pair: .claudeFirst)
+        } + [shot(.ready, pair: .codexFirst), shot(.fallback, pair: .codexFirst),
+             shot(.recovered, pair: .codexFirst), shot(.bothLimited, pair: .claudeFirst, narrow: true),
+             shot(.stopped, pair: .claudeFirst, narrow: true)]
     }
 
     private static func shot(
-        _ state: ProviderFallbackPreview.State, preferred: ProviderFallbackPreview.Provider, narrow: Bool = false
+        _ state: ProviderFallbackPreview.State, pair: ProviderFallbackPreview.Pair, narrow: Bool = false
     ) -> DesignShot {
-        let preview = ProviderFallbackPreview(preferred: preferred, state: state)
-        let suffix = preferred == .codex ? "-codex" : ""
+        let preview = ProviderFallbackPreview(pair: pair, state: state, nextCheck: "14:30",
+                                              chatTitle: "Quarterly planning", modelDescription: "Light: Default · Strong: Default")
+        let suffix = pair == .codexFirst ? "-codex" : ""
         return DesignShot(name: "provider-fallback-\(state.rawValue)\(suffix)\(narrow ? "-narrow" : "")",
                           size: NSSize(width: narrow ? 360 : 640, height: 0)) {
             AnyView(ProviderFallbackPreviewView(preview: preview))
@@ -42,12 +45,12 @@ private struct ProviderFallbackPreviewView: View {
                 }
             } else {
                 SettingsSection(title: ProviderFallbackPreview.preferredLabel) {
-                    Text(preview.preferred.rawValue).font(.headline)
+                    Text(preview.preferred.name).font(.headline)
                     modelLine
                 }
                 SettingsSection(title: ProviderFallbackPreview.reserveLabel) {
                     HStack {
-                        Text(preview.reserve.rawValue).font(.headline)
+                        Text(preview.reserve.name).font(.headline)
                         Spacer()
                         Text(preview.connectionLabel).font(.caption).foregroundStyle(.secondary)
                     }
@@ -72,32 +75,94 @@ private struct ProviderFallbackPreviewView: View {
     private var modelLine: some View {
         VStack(alignment: .leading, spacing: Spacing.small) {
             Text(ProviderFallbackPreview.modelsLabel).font(.caption).foregroundStyle(.secondary)
-            Text(ProviderFallbackPreview.modelsValue).font(.caption)
+            Text(preview.modelDescription).font(.caption)
         }
     }
 
     private var status: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            Text(preview.copy.title).font(.headline).foregroundStyle(tone)
-            Text(preview.copy.detail).font(.body).fixedSize(horizontal: false, vertical: true)
-            if preview.copy.busy {
-                ProgressView().controlSize(.small).accessibilityLabel(preview.copy.title)
-            }
-            if let action = preview.copy.action {
-                Button(action) {}.buttonStyle(.kitPrimary)
+        ProviderFallbackStatus(copy: preview.copy) {}
+    }
+}
+
+extension ProviderFallbackShotFixtures {
+    static var runtimeShots: [DesignShot] {
+        var result: [DesignShot] = []
+        for pair in ProviderFallbackPreview.Pair.fixturePairs {
+            for narrow in [false, true] {
+                for state in [ProviderFallbackPreview.State.fallback, .recovered, .stopped, .pinned] {
+                    let name = "provider-chat-\(state.rawValue)-\(pair.preferred.id)\(narrow ? "-narrow" : "")"
+                    result.append(DesignShot(name: name, size: NSSize(width: narrow ? 360 : 640, height: 0)) {
+                        AnyView(RuntimeProviderChatShot(pair: pair, state: state))
+                    })
+                }
             }
         }
-        .padding(Spacing.medium)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.container))
+        return result
+    }
+}
+
+private struct RuntimeProviderChatShot: View {
+    let pair: ProviderFallbackPreview.Pair
+    let state: ProviderFallbackPreview.State
+    var actualReason = "quota_exhausted"
+    private static func ignoreAutomatic() {}
+
+    private var model: ChatRoutingPresentation {
+        let catalog = AIModelCatalog(providers: ProviderCatalogFixture.providers())
+        let actual = state == .pinned ? pair.preferred.id : pair.reserve.id
+        let health = try? ChatRoutingStatus.parse(Data("""
+            {"preferred_provider":"\(pair.preferred.id)","enabled":true,"revision":"fixture",
+             "providers":[{"provider":"\(pair.preferred.id)","state":"\(state == .fallback ? "quota_wait" : "available")"}]}
+            """.utf8))
+        return ChatRoutingPresentation(pair: pair, automatic: state != .pinned,
+                                       actualProvider: state == .pinned ? pair.preferred.id : pair.reserve.id,
+                                       actualModel: state == .pinned ? "sample-pinned-model" : "sample-model",
+                                       reason: actualReason, health: health, busy: false,
+                                       capabilities: catalog.capabilities(for: actual))
     }
 
-    private var tone: Color {
-        switch preview.copy.emphasis {
-        case .neutral: .secondary
-        case .success: Tone.success
-        case .warning: Tone.warning
-        case .error: Tone.error
+    private var preview: ProviderFallbackPreview? {
+        state == .stopped ? ProviderFallbackPreview(pair: pair, state: .stopped) : model.preview
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.large) {
+            Text(ProviderFallbackPreview.chatPolicyLabel).font(.headline)
+            Text(preview?.chatPolicyValue ?? model.choice).font(.caption)
+            Text(model.actual ?? "").font(.caption).foregroundStyle(.secondary)
+            if state == .stopped {
+                stoppedRow
+            } else if let preview {
+                ChatRoutingStatusView(preview: preview, nativeToolsNotice: model.nativeToolsNotice,
+                                      onAction: state == .pinned ? nil : Self.ignoreAutomatic)
+            }
+            ChatModelPicker(provider: AIProvider(rawValue: pair.preferred.id) ?? .claude,
+                            model: state == .pinned ? "sample-pinned-model" : "", suggestions: [],
+                            onSelectProvider: { _ in }, onSelectModel: { _ in },
+                            automatic: state != .pinned, onSelectAutomatic: Self.ignoreAutomatic)
+        }
+        .padding(Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .detailBackground()
+    }
+
+    private var stoppedRow: some View {
+        let message = ChatMessageRecord(id: 1, conversationID: 1, role: "assistant",
+                                        text: "The draft was saved before the limit was reached.", createdAt: 0,
+                                        status: "partial", provider: pair.preferred.id, errorCode: "quota_exhausted")
+        let item = ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: 1)
+        return ChatMessageRow(item: item, isLast: true, isEditing: false,
+                              actions: ChatRowActions(regenerate: nil, retry: nil, reviewActions: { _ in }, continueStopped: nil))
+    }
+}
+
+extension ProviderFallbackShotFixtures {
+    static var historicalActualShots: [DesignShot] {
+        ProviderFallbackPreview.Pair.fixturePairs.map { pair in
+            DesignShot(name: "provider-chat-historical-\(pair.preferred.id)-narrow",
+                       size: NSSize(width: 360, height: 0)) {
+                AnyView(RuntimeProviderChatShot(pair: pair, state: .recovered, actualReason: "preferred"))
+            }
         }
     }
 }

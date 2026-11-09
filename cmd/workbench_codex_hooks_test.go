@@ -14,7 +14,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
+	"watchtower/internal/sessionagent"
 )
 
 // The Codex hook mapping (spec 2026-10-12-codex-workbench-agent §5, §6.3,
@@ -47,7 +49,7 @@ func codexRowIn(t *testing.T, database *db.DB, pid int64, sessionID string) int6
 
 func codexRow(t *testing.T, database *db.DB, row int64) *db.TerminalSession {
 	t.Helper()
-	s, err := database.GetTerminalSession(row)
+	s, err := sessionagent.LoadSession(database, row)
 	require.NoError(t, err)
 	return s
 }
@@ -403,10 +405,18 @@ func assertForeignNote(t *testing.T, errOut, stored string, row int64, name stri
 	assert.Contains(t, errOut, "ignored: terminal session "+strconv.FormatInt(row, 10)+" stores session "+stored, name)
 }
 
-// Codex has no StopFailure or Notification: a payload naming one records
-// nothing, and the Stop's waiting carries no error (business limit 1).
-func TestProj11_CodexRowNeverGetsFailure(t *testing.T) {
+// Codex has no StopFailure or Notification, and its Stop does not fire on a
+// failed turn: a hook payload naming one records nothing and the Stop's
+// waiting carries no error. The Error state comes only from the session's
+// rollout through `workbench session-probe` (board #959, owner approved in
+// ask #499): none without a failed last turn in the rollout — no rollout, a
+// turn that ended fine, a failure older than the stored state, a row not
+// working — and one, with codex_error_info as the error, with it; the next
+// prompt clears it as it clears Claude Code's. (An interrupted turn is a
+// plain `waiting` with no error: TestSessionProbe_CodexBridgeAbortedTurnIsWaiting.)
+func TestProj11_CodexRowGetsFailureOnlyFromItsRollout(t *testing.T) {
 	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
 	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
 	before := rowSnapshot(t, database, row)
 	for _, event := range []map[string]any{
@@ -418,10 +428,184 @@ func TestProj11_CodexRowNeverGetsFailure(t *testing.T) {
 	}
 	assert.Equal(t, before, rowSnapshot(t, database, row))
 
+	// No rollout at all.
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+
+	now := time.Now().UTC()
+	for name, lines := range map[string][]string{
+		"ended fine":    {codexTurnLine(now, "task_started", ""), codexTurnLine(now, "task_complete", "")},
+		"running":       {codexTurnLine(now, "task_started", "")},
+		"older failed":  {codexTurnLine(now.Add(-2*time.Minute), "task_complete", "usage_limit_exceeded")},
+		"older aborted": {codexTurnLine(now.Add(-2*time.Minute), "turn_aborted", "")},
+	} {
+		writeCodexRollout(t, home, codexTUISession, lines...)
+		assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"], name)
+		assert.Equal(t, before, rowSnapshot(t, database, row), name)
+	}
+
+	writeCodexRollout(t, home, codexTUISession,
+		codexTurnLine(now, "task_started", ""), codexTurnLine(now, "task_complete", "usage_limit_exceeded"))
+	got, logged := runSessionProbeLogged(t, pid, row)
+	assert.Equal(t, probeFailed, got["outcome"])
+	assert.Equal(t, false, got["ended"])
+	assert.Contains(t, logged, `codex turn failed (error "usage_limit_exceeded")`)
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWaiting, s.AgentState.String)
+	require.NotNil(t, s.AgentFailure)
+	assert.Equal(t, "usage_limit_exceeded", s.AgentFailure.Error)
+	assert.Equal(t, db.AgentStateStamp(now), s.AgentFailure.At)
+	assert.Equal(t, now.Truncate(time.Millisecond), s.AgentStateAt, "agent_failed_at = agent_state_at: the Desktop reads Error")
+
+	// A failed row is not working: a second probe writes nothing.
+	failed := rowSnapshot(t, database, row)
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, failed, rowSnapshot(t, database, row))
+
+	// The Stop never carries an error, and the next prompt clears it.
 	runCodexStop(t, codexPayload(t, "stop", map[string]any{"error": "rate_limit"}))
+	assert.Equal(t, "usage_limit_exceeded", codexRow(t, database, row).AgentFailure.Error, "a plain waiting keeps it")
+	runCodexState(t, string(codexHookFixture(t, "user_prompt_submit")))
+	s = codexRow(t, database, row)
+	assert.Equal(t, agentStateWorking, s.AgentState.String)
+	assert.Nil(t, s.AgentFailure, "a prompt clears the error")
+}
+
+// A prompt sent before any probe saw the failed turn (the row still reads
+// working, so the prompt is a repeat) restamps the row: the old turn's error
+// never lands on the new turn while its task_started is not yet written.
+func TestProj11_CodexPromptAfterAnUnseenFailureIsNeverMarkedFailed(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	writeCodexRollout(t, home, codexTUISession,
+		codexTurnLine(time.Now().Add(-30*time.Second), "task_complete", "usage_limit_exceeded"))
+
+	runCodexState(t, string(codexHookFixture(t, "user_prompt_submit")))
+	before := rowSnapshot(t, database, row)
+
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWorking, s.AgentState.String)
+	assert.Nil(t, s.AgentFailure)
+}
+
+// A prompt over a finished working row still clears finished_at (the
+// restamp leaves a finished row to the state write).
+func TestCodexPromptOverAFinishedWorkingRowClearsFinished(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	_, err := database.Exec(`UPDATE terminal_sessions SET finished_at = ? WHERE id = ?`,
+		db.AgentStateStamp(time.Now().Add(-30*time.Second)), row)
+	require.NoError(t, err)
+	require.True(t, codexRow(t, database, row).Finished)
+
+	runCodexState(t, string(codexHookFixture(t, "user_prompt_submit")))
+
+	s := codexRow(t, database, row)
+	assert.Equal(t, agentStateWorking, s.AgentState.String)
+	assert.False(t, s.Finished, "a new prompt clears finished")
+}
+
+// A failed turn whose time cannot be read cannot be ordered against the
+// stored state: no state is written, and the row is marked not watched
+// (`unreadable`, as the host's watch marks it), never left a silent
+// `working`; one stderr line with the class.
+func TestSessionProbe_CodexFailureWithoutATimeIsNotWatched(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	line := strings.Replace(codexTurnLine(time.Now(), "task_complete", "other"), `"timestamp":"`, `"timestamp":"x`, 1)
+	writeCodexRollout(t, home, codexTUISession, line)
+	before := rowSnapshot(t, database, row)
+
+	got, logged := runSessionProbeLogged(t, pid, row)
+
+	assert.Equal(t, probeNotWatched, got["outcome"])
+	assert.Contains(t, logged, "not watched (unreadable)")
+	after := rowSnapshot(t, database, row)
+	assert.Equal(t, db.WatchIssueUnreadable, after["agent_watch_issue"])
+	delete(after, "agent_watch_issue")
+	delete(after, "agent_watch_issue_at")
+	delete(before, "agent_watch_issue")
+	delete(before, "agent_watch_issue_at")
+	assert.Equal(t, before, after, "no state written")
+}
+
+// A probe of another session's rollout, or of a row with no session id yet,
+// writes nothing.
+func TestSessionProbe_CodexFailureNeedsTheRowsOwnRollout(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	home := codexHomeFixture(t)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+	now := time.Now().UTC()
+	writeCodexRollout(t, home, codexExecSession, codexTurnLine(now, "task_complete", "other"))
+	before := rowSnapshot(t, database, row)
+
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+
+	_, err := database.Exec(`UPDATE terminal_sessions SET claude_session_id = NULL WHERE id = ?`, row)
+	require.NoError(t, err)
+	writeCodexRollout(t, home, codexTUISession, codexTurnLine(now, "task_complete", "other"))
+	before = rowSnapshot(t, database, row)
+	assert.Equal(t, probeNotStale, runSessionProbe(t, pid, row)["outcome"])
+	assert.Equal(t, before, rowSnapshot(t, database, row))
+}
+
+// codexHomeFixture points the codex readers at an empty temp CODEX_HOME.
+func codexHomeFixture(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	prev := terminalCodexHome
+	terminalCodexHome = func() string { return home }
+	t.Cleanup(func() { terminalCodexHome = prev })
+	return home
+}
+
+// writeCodexRollout (re)writes session sessionID's rollout under home.
+func writeCodexRollout(t *testing.T, home, sessionID string, lines ...string) {
+	t.Helper()
+	dir := filepath.Join(home, "sessions", "2026", "11", "05")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	p := filepath.Join(dir, "rollout-2026-11-05T12-00-00-"+sessionID+".jsonl")
+	require.NoError(t, os.WriteFile(p, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+}
+
+// codexTurnLine is one rollout turn lifecycle line stamped at; a
+// task_complete with errType carries the error a failed turn ends with.
+func codexTurnLine(at time.Time, typ, errType string) string {
+	payload := map[string]any{"type": typ, "turn_id": "t1"}
+	if errType != "" {
+		payload["error"] = map[string]any{"message": "example", "codex_error_info": errType}
+	}
+	b, _ := json.Marshal(map[string]any{
+		"timestamp": at.UTC().Format("2006-01-02T15:04:05.000Z"), "type": "event_msg", "payload": payload,
+	})
+	return string(b)
+}
+
+// Interrupt (the owner's Esc; codex fires no Stop then) ends the turn as the
+// Stop does: `waiting`, with no error and the open subagent turns as the
+// count; another session's Interrupt writes nothing (board #959).
+func TestProj11_CodexInterruptEndsTheTurn(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexTUISession)
+	storeCodexState(t, database, pid, row, codexTUISession, agentStateWorking)
+
+	before := rowSnapshot(t, database, row)
+	out, errOut := runCodexHook(t, codexPayload(t, "interrupt", map[string]any{"session_id": codexExecSession}),
+		"session-state", "--agent", "codex")
+	assert.Empty(t, out)
+	assertForeignNote(t, errOut, codexTUISession, row, "Interrupt")
+	assert.Equal(t, before, rowSnapshot(t, database, row), "a foreign session's Interrupt")
+
+	runCodexState(t, string(codexHookFixture(t, "interrupt")))
+
 	s := codexRow(t, database, row)
 	assert.Equal(t, agentStateWaiting, s.AgentState.String)
 	assert.Nil(t, s.AgentFailure)
+	assert.False(t, s.Background.Valid, "no open subagent turn, no count")
 }
 
 // The Stop gate (HasCoreStateHooks reads settings.local.json) is true for a
@@ -622,4 +806,33 @@ func TestHookCwd_CodexHooksRecordTheMainAgentCwd(t *testing.T) {
 	_, errOut := runCodexStop(t, codexPayload(t, "stop", map[string]any{"cwd": "/tmp/acme/wt-b"}))
 	assert.Empty(t, errOut)
 	assert.Equal(t, "/tmp/acme/wt-b", storedCwd(t, database, row).Path, "the Stop records it with the state")
+}
+
+// S10 (plan 2026-11-05 Task G7, spike (c)): codex reports no idle prompt and
+// no MCP elicitation, so its capability row says so, the Desktop discloses it
+// (Settings → Notifications) and PROJ-11's Codex v1 limits name it with that
+// pointer; nothing pretends a codex row can get Claude's idle_prompt.
+func TestProj11_CodexNoIdleSignalIsDisclosedNotSilent(t *testing.T) {
+	caps := sessionagent.CapsOf(string(agentkind.Codex))
+	assert.False(t, caps.IdleSignal, "codex has no idle signal")
+	assert.False(t, caps.Elicitation, "codex reports no elicitation")
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex_hooks", "spikes", "hook_events.json"))
+	require.NoError(t, err)
+	var recorded struct {
+		Events []string `json:"events"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &recorded))
+	assert.NotContains(t, recorded.Events, "Notification", "a codex Notification event would carry an idle signal")
+	for ev := range codexStateEvents {
+		assert.Contains(t, recorded.Events, ev, "a recorded codex state event must exist in the spike's event set")
+	}
+	assert.False(t, codexStateEvents["Notification"], "a codex payload naming Notification must record nothing")
+
+	inv, err := os.ReadFile(filepath.Join("..", "docs", "inventory", "workbench.md"))
+	require.NoError(t, err)
+	assert.Contains(t, string(inv), "no idle notice and no elicitation approval",
+		"PROJ-11's Codex v1 limits must name the missing idle signal")
+	assert.Contains(t, string(inv), "Idle notices are not available for Codex sessions.",
+		"the v1 limits line must point at the Settings caption")
 }

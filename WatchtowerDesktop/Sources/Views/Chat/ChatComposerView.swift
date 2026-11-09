@@ -56,6 +56,8 @@ struct ChatComposerView: View {
                 attachmentProgress: AttachmentProgress(importing: chatVM.composerAttachments.importing,
                                                        removing: chatVM.composerAttachments.removing,
                                                        sendWaits: chatVM.isWaitingForAttachments),
+                attachUnavailableReason: chatVM.attachUnavailableReason,
+                pdfUnavailableReason: chatVM.pdfUnavailableReason,
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
                     chatVM.composer.update(text: text, cursor: cursor)
@@ -64,12 +66,45 @@ struct ChatComposerView: View {
                 hasPendingContent: !chatVM.pendingQuotes.isEmpty,
                 focusRequest: chatVM.composerFocusRequest
             )) {
+                routingState
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }
+        }
+        .task(id: chatVM.conversationID) { await chatVM.refreshRoutingStatus() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await chatVM.refreshRoutingStatus() }
+        }
+        .onChange(of: chatVM.isBusy) { _, busy in
+            if !busy { Task { await chatVM.refreshRoutingStatus() } }
         }
         .onChange(of: chatVM.draft) { old, new in
             if old.isEmpty, !new.isEmpty { Task { await chatVM.draftStarted() } }
         }
+    }
+
+    @ViewBuilder private var routingState: some View {
+        if let presentation = chatVM.routingPresentation {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                if let actual = presentation.actual { Text(actual).font(.caption).foregroundStyle(.secondary) }
+                // U3: what the provider lacks (images among them, U1).
+                if let missing = presentation.missingCapabilities {
+                    Text(missing).font(.caption).foregroundStyle(.secondary)
+                }
+                if let preview = presentation.preview {
+                    ChatRoutingStatusView(preview: preview, nativeToolsNotice: presentation.nativeToolsNotice, actionEnabled: !chatVM.isBusy,
+                                          onAction: routingAction(for: preview))
+                }
+                if let error = chatVM.routingStatusError {
+                    Text(error).font(.caption).foregroundStyle(Tone.warning)
+                }
+            }
+            .padding(.horizontal, Spacing.large)
+        }
+    }
+
+    private func routingAction(for preview: ProviderFallbackPreview) -> (() -> Void)? {
+        guard preview.state == .recovered else { return nil }
+        return { Task { await chatVM.useAutomaticRouting() } }
     }
 
     private var modelPill: some View {
@@ -78,11 +113,13 @@ struct ChatComposerView: View {
             model: chatVM.selectedModel,
             suggestions: modelSuggestions,
             onSelectProvider: { chatVM.switchProvider($0) },
-            onSelectModel: { chatVM.selectedModel = $0 }
+            onSelectModel: { chatVM.selectedModel = $0 },
+            automatic: chatVM.automaticRouting,
+            onSelectAutomatic: chatVM.requestAutomaticRouting
         )
         // Also while a turn's end is written (board #670): a pick then would
         // close the session under it.
-        .disabled(chatVM.isStreaming || chatVM.isFinishingTurn)
+        .disabled(chatVM.isBusy)
     }
 }
 
@@ -95,12 +132,17 @@ struct ChatModelPicker: View {
     let suggestions: [String]
     let onSelectProvider: (AIProvider) -> Void
     let onSelectModel: (String) -> Void
+    var automatic = false
+    var onSelectAutomatic: (() -> Void)?
 
     var body: some View {
         Menu {
+            if let onSelectAutomatic {
+                Button(ProviderFallbackPreview.automaticChoice, action: onSelectAutomatic)
+            }
             Section("Provider") {
-                ForEach(AIProvider.allCases) { provider in
-                    Button(provider.displayName) { onSelectProvider(provider) }
+                ForEach(AIProvider.offered(by: .shared, current: provider)) { provider in
+                    Button(ProviderFallbackPreview.pinnedChoice(provider: provider.displayName)) { onSelectProvider(provider) }
                 }
             }
             Section("Model") {
@@ -110,7 +152,8 @@ struct ChatModelPicker: View {
                 }
             }
         } label: {
-            Text("\(provider.displayName) · \(model.isEmpty ? "Auto" : model)")
+            Text(automatic ? ProviderFallbackPreview.chatPolicyAutomatic + " · Auto"
+                 : ProviderFallbackPreview.pinnedChoice(provider: provider.displayName, model: model))
                 .font(.caption)
         }
         .menuStyle(.borderlessButton)

@@ -125,3 +125,18 @@ final class EmbeddedChatStoreTests: XCTestCase {
         XCTAssertNotEqual(other, created)
     }
 }
+
+extension EmbeddedChatStoreTests {
+    func testMemoryActualMetadataSurvivesProgressAndTerminalError() async throws {
+        let store = MemoryEmbeddedChatStore()
+        let ids = try await store.beginTurn(ownerText: "Owner", turnID: "t", provider: "claude")
+        try await store.saveActual(messageID: ids.assistantID, provider: "codex", model: "actual-model")
+        try await store.saveProgress(messageID: ids.assistantID, text: "Partial")
+        try await store.finalize(messageID: ids.assistantID, text: "Partial", status: "partial",
+                                 errorCode: "quota_exhausted", errorMessage: "Quota reached")
+        let row = try XCTUnwrap(store.loadMessages().last)
+        XCTAssertEqual(row.provider, "codex")
+        XCTAssertEqual(row.model, "actual-model")
+        XCTAssertEqual(row.errorCode, "quota_exhausted")
+    }
+}

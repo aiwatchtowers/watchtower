@@ -13,6 +13,7 @@ import (
 
 	"github.com/rivo/uniseg"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/wire"
@@ -128,10 +129,14 @@ type tryResult struct {
 // `session_finish_request` (the session id; FinishLine) and
 // `session_input_cancel` (entity the original action's id), PROJ-16: a line
 // goes only from a device the owner allowed to type, only to a live board
-// claude session, and only through session-host's typed-never-submitted
-// Deliver with HoldIfPromptText. Right before every paste the agent must be
-// idle for the current run or working (a Claude session queues a line typed
-// mid-turn; the echo then says while_busy), never at a permission prompt and
+// agent session whose capability row has PhoneInput (another kind is
+// refused not_supported, a deleted one not_found), and only through
+// session-host's typed-never-submitted Deliver with HoldIfPromptText. Right
+// before every paste the agent must be idle for the current run or, for an
+// agent whose row TakesLineWhileWorking (Claude Code), working (it takes a
+// line pasted mid-turn at its next step; the echo then says while_busy;
+// Codex waits for idle: an MCP form it opens mid-turn raises no state),
+// never at a permission prompt and
 // never right after a submit until a hook reported; otherwise the line is
 // held (agent_busy, needs_approval, prompt_has_text — the host's answer —,
 // state_unknown), kept in the sidecar, retried on each read of the session
@@ -202,12 +207,15 @@ func (h *Handlers) sendLine(ctx context.Context, r actions.Request, commit func(
 	if !h.mayType(r) {
 		return failed(reasonDeviceNotAllowed, inputNotAllowedMessage)
 	}
-	kind, onBoard, err := h.boardSession(ctx, sessionID)
+	agent, onBoard, err := h.boardSession(ctx, sessionID)
 	if err != nil {
 		return failed(reasonWriteFailed, "Could not read the session: "+err.Error())
 	}
-	if !onBoard || kind != "claude" {
+	if !onBoard {
 		return failed(reasonNotFound, sessionGoneMessage)
+	}
+	if msg, refused := PhoneRefusal(r.Action.Kind, agent); refused {
+		return failed(reasonNotSupported, msg)
 	}
 	l := phoneLine{req: r, sessionID: sessionID, line: line}
 	res := h.tryLine(ctx, l, nil)
@@ -266,13 +274,11 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 		row.RunStartedAt = db.AgentStateStamp(live.StartedAt)
 	}
 	now := h.d.Clock()
-	s := sessionstate.Resolve(row, now)
-	switch {
-	case sessionstate.NeedsApproval(s):
-		res.held = inputReasonNeedsApproval
-	case !sessionstate.IsIdle(row, s) && !sessionstate.IsWorking(s), h.justSubmitted(l.sessionID, row, now):
-		res.held = inputReasonAgentBusy
+	hold, working := LineGate(row, now)
+	if hold == "" && h.justSubmitted(l.sessionID, row, now) {
+		hold = inputReasonAgentBusy
 	}
+	res.held = hold
 	if res.held != "" {
 		return res
 	}
@@ -291,14 +297,35 @@ func (h *Handlers) tryLine(ctx context.Context, l phoneLine, held *heldLine) try
 		}
 		res.claimed = true
 	}
-	whileBusy := sessionstate.IsWorking(s)
-	out, heldBy := h.deliverPhoneLine(ctx, l, live, whileBusy)
+	out, heldBy := h.deliverPhoneLine(ctx, l, live, working)
 	if heldBy != "" {
 		res.held = heldBy
 		return res
 	}
 	res.final = &out
 	return res
+}
+
+// LineGate is PROJ-16's session condition for a phone line right before
+// its paste, from the session's state row (RunStartedAt set for the live
+// run) and its agent's capability row: hold is "" when the line may go,
+// needs_approval at a permission prompt, agent_busy when the agent is
+// neither idle nor working, or works and its row does not
+// TakesLineWhileWorking (an MCP form it opens mid-turn would take the
+// line). whileBusy reports a line that goes while the agent works. The hub
+// also holds a line just submitted into the session (justSubmitted). The
+// transport contract suite asserts each agent's answer through it.
+func LineGate(row sessionstate.Row, now time.Time) (hold string, whileBusy bool) {
+	s := sessionstate.Resolve(row, now)
+	agent, _ := agentkind.Parse(row.Kind)
+	working := sessionstate.IsWorking(s) && sessionCaps(agent).Phone().InputWhileWorking
+	switch {
+	case sessionstate.NeedsApproval(s):
+		return inputReasonNeedsApproval, false
+	case !sessionstate.IsIdle(row, s) && !working:
+		return inputReasonAgentBusy, false
+	}
+	return "", working
 }
 
 // deliverPhoneLine is the Deliver of a line that passed its gate; heldBy is
@@ -372,15 +399,20 @@ func (h *Handlers) mayType(r actions.Request) bool {
 	return err == nil && linked && d.TypingAllowed
 }
 
-// boardSession is the session's kind when it is an agent session (claude or
-// codex) of a workbench that exists (BoardSessionScope.fetchBoardSession).
-func (h *Handlers) boardSession(ctx context.Context, sessionID int64) (kind string, ok bool, err error) {
+// boardSession is the session's agent when it is an agent session of a
+// workbench that exists (BoardSessionScope.fetchBoardSession).
+func (h *Handlers) boardSession(ctx context.Context, sessionID int64) (agent agentkind.Kind, ok bool, err error) {
+	var kind string
 	err = h.d.DB.QueryRowContext(ctx, `SELECT t.kind FROM terminal_sessions t JOIN projects p ON p.id = t.project_id
-		WHERE t.id = ? AND t.kind IN ('claude', 'codex')`, sessionID).Scan(&kind)
+		WHERE t.id = ? AND t.kind IN `+agentkind.SQLKinds(), sessionID).Scan(&kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
-	return kind, err == nil, err
+	if err != nil {
+		return "", false, err
+	}
+	agent, ok = agentkind.Parse(kind)
+	return agent, ok, nil
 }
 
 // launchKey names one launch of a session for a held line: the host's run

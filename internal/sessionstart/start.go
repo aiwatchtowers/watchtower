@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/sessionhost"
 	"watchtower/internal/workbenchgit"
 )
@@ -468,18 +469,19 @@ func startAgent(d Deps, name string) (agentkind.Kind, error) {
 	return agent, nil
 }
 
-// codexArgs is `launch-args` for a Codex launch (nil for Claude); a missing
-// codex binary is *handlers.AgentNotFoundError.
+// codexArgs is `launch-args` for the launch of an agent whose hooks arrive
+// with its launch flags (sessionagent.Caps.LaunchHooks: Codex; nil for
+// Claude); a missing binary is *handlers.AgentNotFoundError.
 func codexArgs(ctx context.Context, d Deps, agent agentkind.Kind, wb int64) (*devpack.LaunchArgs, error) {
-	if agent != agentkind.Codex {
+	if a, ok := sessionagent.For(agent); !ok || !a.Caps().LaunchHooks {
 		return nil, nil
 	}
 	if d.CodexArgs == nil {
-		return nil, &handlers.AgentNotFoundError{Agent: string(agentkind.Codex)}
+		return nil, &handlers.AgentNotFoundError{Agent: string(agent)}
 	}
 	la, err := d.CodexArgs(ctx, wb)
 	if errors.Is(err, devpack.ErrCodexNotFound) {
-		return nil, &handlers.AgentNotFoundError{Agent: string(agentkind.Codex)}
+		return nil, &handlers.AgentNotFoundError{Agent: string(agent)}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("codex launch arguments: %w", err)
@@ -532,7 +534,7 @@ func (s *newStart) insert(ctx context.Context) error {
 		n.Title = s.title
 	}
 	n.AutomationRunID = s.automationRun
-	if s.agent == agentkind.Claude {
+	if a, ok := sessionagent.For(s.agent); ok && a.Caps().AppSessionID {
 		s.claudeID = NewSessionID()
 		n.ClaudeSessionID = s.claudeID
 	}

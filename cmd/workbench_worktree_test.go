@@ -215,3 +215,24 @@ func TestWorkbenchWorktree_AgentClaudeSkipsTheCodexInstall(t *testing.T) {
 	_, err = runWorktree(t, "create", "--workbench", f.idArg, "--name", "bad", "--agent", "gpt", "--json")
 	require.Error(t, err)
 }
+
+// An --agent value that is no agent kind of this version (a newer Desktop's
+// kind) is refused with agentkind's not-supported text before anything is
+// made or installed: never the "installs both" of an empty value (A7b).
+func TestWorkbenchWorktree_UnknownAgentIsRefusedAsNotSupported(t *testing.T) {
+	f := newWorktreeFixture(t)
+	codexFake := useFakeCmdCodex(t)
+	path := filepath.Join(f.folder, ".claude", "worktrees", "newer")
+	for _, sub := range [][]string{
+		{"create", "--workbench", f.idArg, "--name", "newer"},
+		{"ensure", "--workbench", f.idArg, "--path", path, "--branch", "wt/newer"},
+	} {
+		out, err := runWorktree(t, append(sub, "--agent", "gemini", "--json")...)
+		require.Error(t, err, out)
+		assert.Contains(t, err.Error(), "--agent")
+		assert.Contains(t, err.Error(), `agent kind "gemini" is not supported by this version`)
+		assert.Empty(t, out, "no envelope: nothing ran")
+	}
+	assert.NoDirExists(t, path)
+	assert.Nil(t, codexFake.ctx, "no integration install for an unsupported agent")
+}

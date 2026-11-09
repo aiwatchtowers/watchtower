@@ -3,6 +3,19 @@ import Foundation
 // Codable mirrors of the Go session host's JSON payloads (a dual path:
 // keep the keys in step with `internal/sessionhost`).
 
+/// What a launch asks the host to watch (Go `sessionhost.WatchSpec`, spec
+/// 2026-11-05 §3.5): the agent kind whose rollout the host reads and the
+/// workspace database the row lives in.
+package struct SessionHostWatchSpec: Codable, Equatable, Sendable {
+    package let agent: String
+    package let database: String
+
+    package init(agent: String, database: String) {
+        self.agent = agent
+        self.database = database
+    }
+}
+
 package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
     package let row: Int64
     package let run: String
@@ -18,6 +31,9 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
     /// `claude`, `codex` or "" (a shell): the host types lines into the run
     /// with that agent's input profile (Go `ProfileFor`).
     package let agent: String
+    /// The host's transcript watch for this launch; nil = none (a shell, a
+    /// Claude Code session).
+    package let watch: SessionHostWatchSpec?
 
     package init(
         row: Int64,
@@ -29,7 +45,8 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         cols: Int,
         rows: Int,
         scope: String = "",
-        agent: String = ""
+        agent: String = "",
+        watch: SessionHostWatchSpec? = nil
     ) {
         self.row = row
         self.run = run
@@ -41,6 +58,7 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         self.rows = rows
         self.scope = scope
         self.agent = agent
+        self.watch = watch
     }
 
     package init(from decoder: any Decoder) throws {
@@ -55,6 +73,7 @@ package struct SessionHostLaunchRequest: Codable, Equatable, Sendable {
         rows = try container.decode(Int.self, forKey: .rows)
         scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? ""
         agent = try container.decodeIfPresent(String.self, forKey: .agent) ?? ""
+        watch = try container.decodeIfPresent(SessionHostWatchSpec.self, forKey: .watch)
     }
 }
 
@@ -78,12 +97,24 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
     package let code: Int?
     /// The launch's scope; "" from a host older than the field.
     package let scope: String
+    /// The host watches this run's transcript (Go `SessionInfo.Watched`,
+    /// spec 2026-11-05 §3.5), so the app's bridge probe leaves it alone;
+    /// false from an older host and for every run it does not watch.
+    package let watched: Bool
     /// The host's per-row launch counter (v2); 0 from a v1 host. A delivery
     /// and a stop name it, so neither reaches a newer run.
     package let launch: UInt64
 
     package init(
-        row: Int64, run: String, pid: Int, startedAtMs: Int64, exited: Bool, code: Int?, scope: String = "", launch: UInt64 = 0
+        row: Int64,
+        run: String,
+        pid: Int,
+        startedAtMs: Int64,
+        exited: Bool,
+        code: Int?,
+        scope: String = "",
+        watched: Bool = false,
+        launch: UInt64 = 0
     ) {
         self.row = row
         self.run = run
@@ -92,6 +123,7 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
         self.exited = exited
         self.code = code
         self.scope = scope
+        self.watched = watched
         self.launch = launch
     }
 
@@ -104,11 +136,12 @@ package struct SessionHostSessionInfo: Codable, Equatable, Sendable {
         exited = try container.decode(Bool.self, forKey: .exited)
         code = try container.decodeIfPresent(Int.self, forKey: .code)
         scope = try container.decodeIfPresent(String.self, forKey: .scope) ?? ""
+        watched = try container.decodeIfPresent(Bool.self, forKey: .watched) ?? false
         launch = try container.decodeIfPresent(UInt64.self, forKey: .launch) ?? 0
     }
 
     enum CodingKeys: String, CodingKey {
-        case row, run, pid, exited, code, scope, launch
+        case row, run, pid, exited, code, scope, watched, launch
         case startedAtMs = "started_at_ms"
     }
 }

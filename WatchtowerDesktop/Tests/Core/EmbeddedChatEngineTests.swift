@@ -136,6 +136,66 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNil(sessionID, "no session is resumed, so its id is not kept (#604 G11)")
     }
 
+    /// `ai query --events v2` (claude and codex): a tool call is a step on the
+    /// live row and in `chat_turn_steps` as it happens, the text streamed
+    /// before it stays (no reset, CHAT-02), the usage lands on the reply,
+    /// and the finished row still shows its steps.
+    func testToolStepsAndUsageReachTheLiveRowAndTheDatabase() async throws {
+        let engine = makeEngine()
+        XCTAssertTrue(engine.send("Which targets are open?"))
+        await engine.finished()
+        let turnID = try XCTUnwrap(engine.liveTurn?.turnID)
+        let messageID = try XCTUnwrap(engine.liveTurn?.messageID)
+
+        ai.emit(.text("Let me check."),
+                .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")))
+        expectTrue(await waitForCondition { engine.liveTurn?.steps.map(\.id) == ["t1"] })
+        expectTrue(await waitForCondition {
+            (try? self.pool.read { db in try ChatStepQueries.fetch(db, messageIDs: [messageID])[messageID]?.count }) == 1
+        }, "the step is written as it starts, not at the turn's end")
+
+        ai.emit(.toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: false, summary: "no access", sources: [])),
+                .text("\n\nTwo are open."),
+                .usage(ChatUsage(turnID: "query", tokensIn: 50, tokensOut: 7, model: "gpt-x")), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+
+        let reply = try XCTUnwrap(try rows().last)
+        XCTAssertEqual(reply.turnID, turnID)
+        XCTAssertEqual(reply.text, "Let me check.\n\nTwo are open.", "the pre-tool text is never wiped")
+        XCTAssertEqual(reply.tokensIn, 50)
+        XCTAssertEqual(reply.tokensOut, 7)
+        XCTAssertEqual(reply.model, "gpt-x")
+        let stored = try await pool.read { db in try ChatStepQueries.fetch(db, messageIDs: [messageID])[messageID] ?? [] }
+        XCTAssertEqual(stored.map(\.toolID), ["t1"])
+        XCTAssertEqual(stored.first?.okFlag, 0, "a failed tool is a red step, not a turn error")
+        XCTAssertEqual(engine.messages.last?.steps.map(\.toolID), ["t1"], "the finished row keeps its steps")
+    }
+
+    /// postTurn reads directives from the text after the reply's last tool
+    /// call started only (TGT-BRIEF-03); the stored reply keeps the whole
+    /// text, and a late synthetic step end moves nothing.
+    func testPostTurnGetsTheTextAfterTheLastToolStep() async throws {
+        var input: ChatPostTurnInput?
+        let engine = makeEngine(spec: spec { input = $0; return .identity($0) })
+        engine.send("q")
+        await engine.finished()
+        ai.emit(.text("Draft."),
+                .toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "query", id: "t1", ok: true, summary: "ok", sources: [])),
+                .text(" Middle."),
+                .toolStart(ChatToolStart(turnID: "query", id: "t2", name: "get_target", argsJSON: "{}")),
+                .toolEnd(ChatToolEnd(turnID: "query", id: "t2", ok: true, summary: "ok", sources: [])),
+                .text(" Final."),
+                // A provider closing a step whose result line it skipped,
+                // after the final text: not a cutoff.
+                .toolEnd(ChatToolEnd(turnID: "query", id: "t3", ok: false, summary: "", sources: [])), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(input?.reply, "Draft. Middle. Final.")
+        XCTAssertEqual(input?.finalText, " Final.")
+    }
+
     /// A stored session id is never resumed (#604 G11): a Claude turn of a
     /// chat with history sends the system prompt and replays the history.
     func testAStoredSessionIsNeverResumedAndTheHistoryIsReplayed() async throws {
@@ -383,6 +443,25 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(engine.bannerError, "This chat no longer exists.")
         XCTAssertFalse(engine.isBusy)
         XCTAssertEqual(gate.active.count, 0, "the slot is given back")
+    }
+
+    /// A step that cannot be saved raises the banner and leaves the turn
+    /// running: bookkeeping never ends the owner's answer (as in the main chat).
+    func testAFailedStepWriteRaisesTheBannerAndTheReplyStillCompletes() async throws {
+        let store = FlakyStore()
+        store.failSteps = true
+        let engine = makeEngine(store: store)
+        engine.send("q")
+        await engine.finished()
+        ai.emit(.toolStart(ChatToolStart(turnID: "query", id: "t1", name: "list_targets", argsJSON: "{}")))
+        expectTrue(await waitForCondition { engine.bannerError?.contains("Couldn't save a step of the reply") == true })
+        ai.emit(.text("Done."), .done)
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        let reply = try XCTUnwrap(engine.messages.last?.message)
+        XCTAssertEqual(reply.status, "complete")
+        XCTAssertEqual(reply.text, "Done.")
+        XCTAssertNotNil(engine.bannerError, "a banner raised while the turn ran stays")
     }
 
     func testAFailedProgressWriteFailsTheTurnAndFreesTheSlot() async throws {
@@ -975,8 +1054,13 @@ private final class FlakyStore: EmbeddedChatStore {
     /// Fails the next finalize only (a transient lock).
     var failFinalizeOnce = false
     var failAppend = false
+    var failSteps = false
 
     var dbPath: String? { nil }
+
+    func stepStarted(messageID: Int64, seq: Int, start: ChatToolStart, at date: Date) async throws {
+        if failSteps { throw Failure() }
+    }
 
     func loadMessages() throws -> [ChatMessageRecord] {
         if failLoad { throw Failure() }
@@ -1073,5 +1157,95 @@ final class EmbeddedChatEngineSurfaceHookTests: XCTestCase {
         XCTAssertTrue(done)
         XCTAssertEqual(ai.calls.count, 1, "no turn about a context that is gone")
         XCTAssertFalse(engine.hasPendingWork)
+    }
+}
+
+extension EmbeddedChatEngineTests {
+    func testTypedStartedQuotaPersistsActualAndNeverRetriesEvenAfterReload() async throws {
+        for provider in ["claude", "codex"] {
+            for text in ["", "Partial before quota"] {
+                let engine = makeEngine()
+                XCTAssertTrue(engine.send("A new owner message"))
+                await engine.finished()
+                ai.emit(.routing(provider: provider, model: "actual-model", metadata: nil))
+                ai.emit(.text(text))
+                ai.emit(.failure(ChatSessionError(turnID: nil, code: .rateLimit, message: "Quota reached", retryable: false,
+                                                  reason: "quota_exhausted")))
+                ai.finish()
+                expectTrue(await waitIdle(engine))
+                let reply = try XCTUnwrap(try rows().last)
+                XCTAssertEqual(reply.provider, provider)
+                XCTAssertEqual(reply.model, "actual-model")
+                XCTAssertEqual(reply.errorCode, "quota_exhausted")
+                XCTAssertEqual(reply.text, text)
+                XCTAssertEqual(reply.status, text.isEmpty ? "error" : "partial")
+                XCTAssertFalse(engine.canRetry)
+                let convID = conversationID
+                let actionID = try await pool.write { db in
+                    try db.execute(sql: """
+                        INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status)
+                        VALUES ('fake_write', '{}', ?, ?, 'applied')
+                        """, arguments: [convID, reply.turnID])
+                    return db.lastInsertedRowID
+                }
+                let callCount = ai.calls.count
+                engine.reviewActions(messageID: reply.id)
+                XCTAssertEqual(engine.reviewedActions.map(\.id), [actionID])
+                engine.retry()
+                XCTAssertEqual(ai.calls.count, callCount)
+                let reloaded = makeEngine()
+                XCTAssertEqual(reloaded.messages.last?.message.errorCode, "quota_exhausted")
+                XCTAssertFalse(reloaded.canRetry)
+                reloaded.reviewActions(messageID: reply.id)
+                XCTAssertEqual(reloaded.reviewedActions.map(\.id), [actionID])
+                XCTAssertEqual(ai.calls.count, callCount)
+                XCTAssertFalse(ChatErrorPresentation.isRetryable(reply.errorCode))
+            }
+        }
+    }
+}
+
+extension EmbeddedChatEngineTests {
+    func testTypedQuotaBeforeStreamEOFStillWinsLaterStopAndReload() async throws {
+        for text in ["", "Partial before quota"] {
+            let engine = makeEngine()
+            XCTAssertTrue(engine.send("A new owner message"))
+            await engine.finished()
+            let failure = ChatSessionError(turnID: nil, code: .rateLimit, message: "Quota reached",
+                                           retryable: false, reason: "quota_exhausted")
+            ai.emit(.text(text), .failure(failure), .routing(provider: "codex", model: "consumed-after-quota", metadata: nil))
+            // A subsequent ordered metadata write proves the error was consumed,
+            // while the scripted process deliberately keeps stdout/EOF open.
+            let consumed = await waitForCondition { (try? self.rows().last?.model) == "consumed-after-quota" }
+            XCTAssertTrue(consumed)
+            XCTAssertTrue(engine.isStreaming)
+            let beforeStop = try XCTUnwrap(try rows().last)
+            let convID = conversationID
+            let actionID = try await pool.write { db in
+                try db.execute(sql: """
+                    INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status)
+                    VALUES ('fake_write', '{}', ?, ?, 'applied')
+                    """, arguments: [convID, beforeStop.turnID])
+                return db.lastInsertedRowID
+            }
+            let calls = ai.calls.count
+            engine.stop()
+            ai.finish() // release EOF only AFTER the later owner Stop
+            expectTrue(await waitIdle(engine))
+            let saved = try XCTUnwrap(try rows().last)
+            XCTAssertEqual(saved.text, text)
+            XCTAssertEqual(saved.status, text.isEmpty ? "error" : "partial")
+            XCTAssertEqual(saved.errorCode, "quota_exhausted")
+            XCTAssertEqual(saved.errorMessage, "Quota reached")
+            XCTAssertFalse(engine.canRetry)
+            engine.retry()
+            XCTAssertEqual(ai.calls.count, calls)
+            let reloaded = makeEngine()
+            XCTAssertEqual(reloaded.messages.last?.message.errorCode, "quota_exhausted")
+            reloaded.reviewActions(messageID: saved.id)
+            XCTAssertEqual(reloaded.reviewedActions.map(\.id), [actionID])
+            reloaded.retry()
+            XCTAssertEqual(ai.calls.count, calls)
+        }
     }
 }

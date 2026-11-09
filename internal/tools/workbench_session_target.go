@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 )
 
@@ -91,7 +92,7 @@ func planSessionTarget(ctx context.Context, d *db.DB, b Binding, a setSessionTar
 // a non-zero targetID) a target that is not in the workbench, not on the
 // board or dismissed; it returns the leaves of the target's subtree.
 func checkSessionTarget(d *db.DB, workbenchID int64, s *db.TerminalSession, targetID int64) ([]int64, error) {
-	if s.WorkbenchID.Int64 != workbenchID || (s.Kind != "claude" && s.Kind != "codex") {
+	if s.WorkbenchID.Int64 != workbenchID || !agentkind.IsAgent(s.Kind) {
 		return nil, &ValidationError{Msg: fmt.Sprintf("session %d is not an agent session of this workbench", s.ID)}
 	}
 	if targetID == 0 {

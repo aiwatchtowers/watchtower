@@ -18,18 +18,19 @@ enum SessionInputDelivery: String, Equatable {
         }
     }
 
-    /// What the delivery means for `agent`'s session: send while busy is
-    /// Claude's alone (PROJ-16 amended), so another agent's `queued` reads
-    /// as `submitted` even if a hub said `while_busy`.
-    func resolved(for agent: TerminalSessionState.Agent) -> Self {
-        self == .queued && agent != .claudeCode ? .submitted : self
+    /// What the delivery means for `session`: send while busy is only for a
+    /// session that takes a line while its agent works (PROJ-16 amended,
+    /// `TerminalSessionState.takesFromPhone`), so another session's `queued`
+    /// reads as `submitted` even if a hub said `while_busy`.
+    func resolved(for session: TerminalSessionState) -> Self {
+        self == .queued && !session.takesFromPhone.inputWhileWorking ? .submitted : self
     }
 
     /// The line under the owner's bubble in the workchat (spec §5.4).
-    func caption(for agent: TerminalSessionState.Agent) -> String {
-        switch resolved(for: agent) {
+    func caption(for session: TerminalSessionState) -> String {
+        switch resolved(for: session) {
         case .submitted: "Sent"
-        case .typed, .queued: resolved(for: agent).text
+        case .typed, .queued: resolved(for: session).text
         }
     }
 
@@ -183,9 +184,28 @@ final class SessionInputSender {
     }
 }
 
+extension TerminalSessionState {
+    /// What this phone may send to the session (U5): the Mac's `phone` key,
+    /// so the composer, Finish, the permission card and Interrupt follow
+    /// what the hub takes, never the agent kind. A Mac older than the key
+    /// took lines, permission answers and Interrupt from Claude Code
+    /// sessions only, as Claude Code's capability row says, and refuses
+    /// every other agent: such a record keeps that rule.
+    var takesFromPhone: PhoneCaps {
+        if let phone { return phone }
+        guard agent == .claudeCode, let claude = AgentSessionCapabilities.of("claude") else { return .none }
+        return PhoneCaps(claude)
+    }
+}
+
 /// The workchat's input (spec §5.4, §6.6, PROJ-16): the composer and Finish
 /// show only on a phone whose typing the Mac allowed and whose own toggle
-/// is on, for a live Claude session (the Mac refuses any other agent's). A session at a permission prompt takes
+/// is on, for a live session that takes lines from the phone
+/// (`takesFromPhone`). A Codex session takes them on a Mac since plan
+/// 2026-11-05 Task G7, which holds a line until the agent is idle (ask
+/// #523); on an older Mac it keeps "Write to Codex sessions on the Mac.". A
+/// line the Mac refused shows the Mac's message, whatever its reason (U5: an
+/// older phone reads `not_supported` that way). A session at a permission prompt takes
 /// nothing from the phone: "Needs approval on the Mac" (or "Answer the
 /// request above" when the screen's permission card takes this phone's
 /// answer, #517), no send. Each line on its way shows how far the Mac got,
@@ -201,7 +221,7 @@ struct SessionInputModel: Equatable {
         case turnOn
         /// Asked; the Mac has not allowed it yet.
         case waitingForMac
-        /// Not a Claude session: the Mac takes phone lines and Finish for Claude sessions only (PROJ-16).
+        /// The session takes no line from the phone (an older Mac's Codex session, PROJ-16).
         case macOnly(TerminalSessionState.Agent)
 
         var text: String {
@@ -253,7 +273,7 @@ struct SessionInputModel: Equatable {
         answersPermission: Bool = false
     ) {
         let allowed = typingRequested && grant?.typingAllowed == true
-        let takesLines = session.agent == .claudeCode
+        let takesLines = session.takesFromPhone.input
         showsBar = allowed && session.live && takesLines
         showsFinish = showsBar
         typingHint = if !session.live {

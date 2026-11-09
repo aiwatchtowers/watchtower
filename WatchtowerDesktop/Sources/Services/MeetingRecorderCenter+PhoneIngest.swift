@@ -49,10 +49,10 @@ extension MeetingRecorderCenter {
     /// single-engine invariant). `eventID` links the transcript and scopes
     /// voice matching to the event's attendees.
     ///
-    /// The name is reserved on the main actor, the same actor `startRecording`
-    /// picks and reserves its `.caf` name on without suspending, so ingests and
-    /// a Desktop capture of the same second never share a stem (the exclusive
-    /// create also guards writers off this actor); only the copy runs off it.
+    /// The name is picked through `recordingNameClaims` — the claims
+    /// `startRecording` picks its `.caf` name through and holds until its
+    /// start resolves — and reserved by an exclusive row insert, so ingests
+    /// and a Desktop capture of the same second never share a stem (#1298).
     /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
     /// report under — without awaiting the job. Throws when the source is not
     /// an audio recording (`PhoneIngestError.notAudio`) or cannot be read
@@ -72,7 +72,8 @@ extension MeetingRecorderCenter {
         guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
         let isPrivate = config.privateByDefault // no per-recording choice on the phone
         let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate, uploadID: uploadID,
-                                                            in: recordingsDirectory, store: store, date: clock())
+                                                            in: recordingsDirectory, store: store,
+                                                            claims: recordingNameClaims, date: clock())
         onReserved?(audioURL) // before the job can report anything under it
         try await Task.detached {
             try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
@@ -90,10 +91,12 @@ extension MeetingRecorderCenter {
     /// capture's best-effort row, a failure here throws. Returns the reserved
     /// audio URL; nothing exists there yet.
     ///
-    /// Call it on the main actor (as `ingestPhoneRecording` does); the
-    /// exclusive insert makes it safe against other reservers on any thread.
-    /// Internal (and `nonisolated`) only so the reservers' race is testable
-    /// off the main actor.
+    /// The name is picked through `claims` and held there until the insert
+    /// resolves, so a Desktop capture still starting (its name claimed, no
+    /// file or row yet) never shares its stem with an ingest, and a capture
+    /// starting while this insert is in flight moves past it. `nonisolated`:
+    /// the claims and the exclusive insert make it safe on any thread, and the
+    /// reservers' race is testable off the main actor.
     nonisolated static func reservePhoneRecording(
         eventID: String?,
         title: String?,
@@ -101,16 +104,17 @@ extension MeetingRecorderCenter {
         uploadID: String? = nil,
         in directory: URL,
         store: PendingTranscriptStore,
+        claims: RecordingNameClaims,
         date: Date = Date()
     ) async throws -> URL {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         var lost: Set<String> = []
         while true {
-            let audioURL = claimRecordingURL(in: directory, date: date, fileExtension: "m4a") {
+            let audioURL = claims.claim(in: directory, date: date, fileExtension: "m4a") {
                 lost.contains($0) || isReserved($0, in: store)
             }
-            // The row (or the loss) settles the name; the claim only bridges the pick.
-            defer { releaseRecordingClaim(audioURL) }
+            // Held across the insert; once it commits the row guards the name.
+            defer { claims.release(audioURL) }
             if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title,
                                        isPrivate: isPrivate, uploadID: uploadID, at: date) {
                 return audioURL

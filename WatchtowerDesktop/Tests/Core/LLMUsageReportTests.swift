@@ -21,15 +21,19 @@ final class LLMUsageReportTests: XCTestCase {
         let rep = try report()
         XCTAssertEqual(rep.period, "7d")
         XCTAssertEqual(rep.ledgerSince, "2026-10-20T07:12:03Z")
-        XCTAssertEqual(rep.watchtower.totals.calls, 1284)
+        XCTAssertEqual(rep.watchtower.totals.calls, 632)
         XCTAssertEqual(rep.watchtower.totals.estimatedCalls, 12)
         XCTAssertEqual(rep.watchtower.totals.noPriceCalls, 30)
         XCTAssertEqual(rep.watchtower.totals.untaggedCalls, 3)
-        XCTAssertEqual(rep.watchtower.totals.cacheRead, 9_000_000)
-        XCTAssertEqual(rep.watchtower.totals.cacheWrite, 400_000)
-        XCTAssertEqual(rep.watchtower.totals.costUSD, 41.2)
+        XCTAssertEqual(rep.watchtower.totals.cacheRead, 5_500_000)
+        XCTAssertEqual(rep.watchtower.totals.cacheWrite, 172_000)
+        XCTAssertEqual(rep.watchtower.totals.costUSD, 36.5)
         XCTAssertTrue(rep.watchtower.totals.costIsLowerBound)
         XCTAssertEqual(rep.watchtower.rows.count, 7)
+        // The demo rows add up to their section header, as the CLI's do.
+        XCTAssertEqual(rep.watchtower.rows.map(\.calls).reduce(0, +), rep.watchtower.totals.calls)
+        XCTAssertEqual(rep.watchtower.rows.map(\.tokens).reduce(0, +), rep.watchtower.totals.tokens)
+        XCTAssertEqual(rep.watchtower.rows.compactMap(\.costUSD).reduce(0, +), 36.5, accuracy: 1e-9)
 
         let digest = try XCTUnwrap(rep.watchtower.rows.first { $0.purpose == "digest.channel" })
         XCTAssertEqual(digest.models, ["haiku", "sonnet"])
@@ -51,7 +55,7 @@ final class LLMUsageReportTests: XCTestCase {
         XCTAssertFalse(rep.ownAutomations.rows[0].costIsLowerBound, "absent key: not a lower bound")
         XCTAssertTrue(rep.ownAutomations.rows[1].costIsLowerBound)
         XCTAssertEqual(rep.chats.costUSD, 61.0)
-        XCTAssertEqual(rep.pageTotal.calls, 1606)
+        XCTAssertEqual(rep.pageTotal.calls, 954)
         XCTAssertEqual(rep.workbenches.sessions.sessions, 41)
         XCTAssertEqual(rep.workbenches.helpers.calls, 120)
         XCTAssertEqual(rep.workbenches.analyticsOff, ["demo-bench"])
@@ -82,6 +86,7 @@ final class LLMUsageReportTests: XCTestCase {
         XCTAssertEqual(LLMPurposeNames.display(purpose: "digest.channel").name, "Slack digests")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "briefing.daily").name, "Morning brief")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "ideas.consolidate").name, "Idea finder")
+        XCTAssertEqual(LLMPurposeNames.display(purpose: "spec_review.discuss").name, "Spec review — Discuss")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "media.describe").name, "Image descriptions")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "instructions.suggest").name, "Agent instruction suggestions")
         XCTAssertEqual(LLMPurposeNames.display(purpose: "jira.boards").group, "Jira")
@@ -151,6 +156,51 @@ final class LLMUsageReportTests: XCTestCase {
             "digest.channel", "briefing.daily", "instructions.suggest", "ideas.consolidate",
             "media.describe", "memory.extract_episodes", ""
         ])
+    }
+
+    /// An automation row's Tokens is the same sum as a process row's and as
+    /// the section header's, cache included (#916).
+    func testAutomationRowTokensIncludeTheCacheAndAddUpToTheHeader() throws {
+        let automations = try report().ownAutomations
+        let weekly = try XCTUnwrap(automations.rows.first { $0.automationID == 7 })
+        XCTAssertEqual(weekly.cacheRead, 400_000)
+        XCTAssertEqual(weekly.cacheWrite, 20000)
+        XCTAssertEqual(weekly.tokens, 37000 + 400_000 + 20000 + 3000)
+        XCTAssertEqual(automations.rows.map(\.tokens).reduce(0, +), automations.totals.tokens)
+    }
+
+    /// A CLI older than #916 sends no cache keys on automation rows.
+    func testAutomationRowWithoutCacheKeysDecodes() throws {
+        let json = #"{"automation_id":1,"name":"A","runs":1,"calls":1,"input":10,"output":5,"cost_usd":null}"#
+        let row = try JSONDecoder().decode(LLMUsageAutomationRow.self, from: Data(json.utf8))
+        XCTAssertEqual(row.cacheRead, 0)
+        XCTAssertEqual(row.cacheWrite, 0)
+        XCTAssertEqual(row.tokens, 15)
+    }
+
+    /// The top card is the page total: the three sections it names add up to it.
+    func testTotalsCardIsThePageTotal() throws {
+        let rep = try report()
+        let card = LLMUsagePresentation.cardTotals(rep)
+        XCTAssertEqual(card, rep.pageTotal)
+        XCTAssertNotEqual(card, rep.watchtower.totals, "the card is the whole page, not Watchtower's section")
+        let parts = [rep.watchtower.totals, rep.ownAutomations.totals, rep.chats]
+        XCTAssertEqual(card.calls, parts.map(\.calls).reduce(0, +))
+        XCTAssertEqual(card.tokens, parts.map(\.tokens).reduce(0, +))
+        XCTAssertEqual(card.noPriceCalls, parts.map(\.noPriceCalls).reduce(0, +))
+        XCTAssertEqual(LLMUsagePresentation.totalsScope, "Watchtower, your automations and chats · workbenches not included")
+        XCTAssertEqual(LLMUsagePresentation.gaps(card), [
+            .init(text: "12 calls with estimated usage", isWarning: false),
+            .init(text: "31 calls without a price (Codex/Ollama)", isWarning: false),
+            .init(text: "3 untagged calls", isWarning: true)
+        ])
+    }
+
+    func testSectionSummary() throws {
+        let rep = try report()
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.watchtower.totals), "6.1 M tokens · ≥ $36.50")
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(rep.ownAutomations.totals), "5.2 M tokens · ≥ $22.40")
+        XCTAssertEqual(LLMUsagePresentation.sectionSummary(.zero), "0 tokens · —")
     }
 
     func testAutomationsSortByCost() throws {

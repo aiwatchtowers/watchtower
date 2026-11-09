@@ -97,7 +97,7 @@ missing agent binary answers exit 3 with `{"error":"agent_not_found","agent":"â€
 the workbench's placement lock (`<workspace>/workbench-<id>.place.lock`, `sessionstart.PlacementLockPath`; the
 Desktop's own launch path takes the same flock) from the place decision until the run is in the host, at most 60 s
 (then the row fails with "another start of this workbench is still placing"). It writes the owner's line about the
-place on the row (`terminal_sessions.start_notice`, migration 00169), fails a row it could not move into its worktree
+place on the row (`terminal_sessions.start_notice`, migration 00179), fails a row it could not move into its worktree
 with `Could not move the session into its worktree: â€¦` instead of deleting it, and watches the launch 3 s for an
 exit 127 (`<agent> was not found`). The Desktop's reasons are pinned by `internal/sessionstart/testdata/desktop_contract.json`.
 `workbench session stop --session N` is the host's Stop request (`session_id`, `stopped`). Both refuse another workbench
@@ -232,7 +232,7 @@ Recorded for the owner; each was a review ruling during phase 1.
    `testFailureClassesPinned` pins the classes) never ask it to send the recording again. Only a job failed with one
    of these classes claims again (`state.DesktopFailureClasses`); `hub_moved`, an adopted Swift failure and `done`
    stay terminal. **Exactly once:** the upload is remembered as `ingesting` before the ingest starts, and the
-   ingest's reservation keeps the upload id (`pending_transcripts.upload_id`, migration 00170), so after a crash a
+   ingest's reservation keeps the upload id (`pending_transcripts.upload_id`, migration 00180), so after a crash a
    claimed job is matched to its reservation (`phoneRecording(forUpload:)`) instead of being ingested again;
    unreadable bookkeeping matches claimed jobs by upload id only and leaves an unmatched one alone. The uploads it
    took (ids, the Mac's recording path, the hub's audio path, an unsent finish) are remembered in the app's

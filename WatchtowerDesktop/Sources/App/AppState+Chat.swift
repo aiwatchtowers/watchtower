@@ -2,6 +2,15 @@ import Foundation
 import WatchtowerCore
 
 extension AppState {
+    /// A new automatic context reads the current saved preference; a running
+    /// host keeps its existing snapshot until its turn finishes.
+    func makeMainChatViewModel(_ db: DatabaseManager) -> ChatViewModel {
+        let currentProvider = { AIProvider.fromConfig(Constants.aiProviderID()) }
+        return ChatViewModel(dbManager: db, pool: ensureChatSessionPool(db),
+                             provider: AIProvider.fromConfig(ConfigService().aiProvider),
+                             cliRunner: ProcessCLIRunner.makeDefault(), preferredProviderSource: currentProvider)
+    }
+
     /// The main chat's two view models: the history list follows the chat's
     /// writes, the landing's first turn becomes the history selection, and
     /// the panel's "Answering" state reads the chat's session pool.
@@ -79,5 +88,25 @@ extension AppState {
         }
         model.onSwitched = { [weak self] in self?.chatSessionPool?.retireIdleSessions() }
         return model
+    }
+}
+
+extension AppState {
+    /// The app's one provider catalog. Read-only: every chat surface reads
+    /// `AIModelCatalog.shared`, so a second instance here could only drift.
+    var aiModelCatalog: AIModelCatalog { AIModelCatalog.shared }
+
+    /// Reads the provider catalog at launch, tray-only launches included
+    /// (not when a window opens): the capability rows, the fallback pair and
+    /// AGENT-04's tool access need it. Not awaited by the launch; a failed
+    /// read is logged and tried again a few times (`loadRetrying`), and a
+    /// second read while one runs waits for it (`AIModelCatalog.load`).
+    /// Tests replace the read with `modelCatalogLaunchOverride`.
+    func loadModelCatalogAtLaunch() {
+        if let modelCatalogLaunchOverride {
+            Task { await modelCatalogLaunchOverride() }
+            return
+        }
+        Task { await AIModelCatalog.shared.loadRetrying() }
     }
 }

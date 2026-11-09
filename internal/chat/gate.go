@@ -651,6 +651,18 @@ func (g *gate) onResult(r toolResult) {
 	}
 }
 
+// lost records a claimed call whose result was on a stdout line the reader
+// skipped as of unknown outcome; nothing for a call the gate did not claim.
+// It reuses the gone-session reason: the Desktop card, its Dismiss and the
+// awaiting-owner count match that exact text (an over-cap result line is
+// rare enough not to earn a text of its own).
+func (g *gate) lost(toolUseID string) {
+	if g == nil {
+		return
+	}
+	g.finish(toolUseID, "", reasonOutcomeUnknown)
+}
+
 // procGone records every claimed call of p whose result never arrived (the
 // child exited or was replaced) as of unknown outcome.
 func (g *gate) procGone(p *claudeProc) {

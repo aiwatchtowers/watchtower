@@ -35,6 +35,10 @@ var _ ToolRegistry = (*tools.Registry)(nil)
 // the daemon and the CLI; a module that needs a nil backend throws
 // NotAvailable. Later phases append fields here, never rename one.
 type Backends struct {
+	// ForJob captures all AI dependencies once, before SDK modules are built.
+	// A resumed run retains the existing replay and meter setup.
+	ForJob func(context.Context, Backends) (context.Context, Backends)
+
 	DB        *db.DB
 	Generator digest.Generator
 	Registry  ToolRegistry
@@ -89,6 +93,12 @@ type AgentResult struct {
 type AgentRunner interface {
 	Name() string
 	Run(ctx context.Context, req AgentRequest) (AgentResult, error)
+}
+
+// AgentPreparer selects a backend using known health before creating the SDK
+// step or launching a child. The returned runner is bound to that selection.
+type AgentPreparer interface {
+	Prepare(context.Context, string) (AgentRunner, error)
 }
 
 // MCPCaller calls one tool of an enabled Quick Connection (P6). Only a tool

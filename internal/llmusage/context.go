@@ -47,3 +47,22 @@ func AutomationFrom(ctx context.Context) (automationID, runID int64, ok bool) {
 	ids, ok := ctx.Value(automationKey{}).(automationIDs)
 	return ids.automationID, ids.runID, ok
 }
+
+// Attempt links physical leaf calls to a logical routing operation. It carries
+// no provider/model: those remain the leaf's actual values.
+type Attempt struct {
+	OperationID string
+	Number      int
+	Revision    string
+}
+type attemptKey struct{}
+type attemptContext struct {
+	attempt Attempt
+	observe func(Call)
+}
+
+// WithAttempt attaches linkage and a leaf-completion observer. Observers must
+// be safe for the leaf's calling goroutine and must not write another row.
+func WithAttempt(ctx context.Context, attempt Attempt, observe func(Call)) context.Context {
+	return context.WithValue(ctx, attemptKey{}, attemptContext{attempt, observe})
+}

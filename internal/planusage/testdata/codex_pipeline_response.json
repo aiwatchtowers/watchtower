@@ -1,0 +1,22 @@
+{
+  "before": {
+    "accountId": "fixture-account-one",
+    "ordinaryUsageAllowed": true,
+    "rateLimitsByLimitId": {
+      "codex": {
+        "primary": {"usedPercent": 40, "windowDurationMins": 10080, "resetsAt": 1793782800},
+        "secondary": {"usedPercent": 20, "windowDurationMins": 300, "resetsAt": 1793617200}
+      }
+    }
+  },
+  "after": {
+    "accountId": "fixture-account-one",
+    "ordinaryUsageAllowed": true,
+    "rateLimitsByLimitId": {
+      "codex": {
+        "primary": {"usedPercent": 50, "windowDurationMins": 10080, "resetsAt": 1793782800},
+        "secondary": {"usedPercent": 30, "windowDurationMins": 300, "resetsAt": 1793617200}
+      }
+    }
+  }
+}

@@ -121,8 +121,8 @@ func printFinalError(w io.Writer, err error, detached bool) {
 	}
 }
 
-// staleTempAge matches the daemon's sweep: a live call never keeps a prompt
-// temp file this long.
+// staleTempAge matches the daemon's sweep: a live call never keeps an unheld
+// prompt temp file this long (a held one is skipped, fsutil.HoldTempFile).
 const staleTempAge = 10 * time.Minute
 
 // sweepStaleTemp removes the prompt and MCP-config temp files a killed

@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/tools"
 )
 
@@ -54,7 +55,7 @@ func TestAgent_WaitOptionRefused(t *testing.T) {
 }
 
 func TestAgent_BudgetCarvedFromRun(t *testing.T) {
-	spend := &automationstest.FakeGenerator{Replies: []string{"ok"}, Usage: []digest.Usage{{InputTokens: 20000}}}
+	spend := &automationstest.FakeGenerator{Replies: []string{"ok"}, Usage: []digest.Usage{{Tokens: llmusage.Tokens{Input: 20000}}}}
 	a := &automationstest.FakeAgent{Result: automations.AgentResult{Text: "done", InputTokens: 10, OutputTokens: 5}}
 	r := mustReturn(t, `llm("spend"); agent("one", {budget: {tokens: 100000, minutes: 100}}); agent("two"); return "ok"`,
 		agentCase(t, a, spend, "agent:run", "llm:light"), "ok")

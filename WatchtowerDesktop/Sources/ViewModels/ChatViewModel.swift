@@ -30,12 +30,15 @@ enum AIProvider: String, CaseIterable, Identifiable {
         value.flatMap(Self.init(rawValue:)) ?? .claude
     }
 
-    var displayName: String {
-        switch self {
-        case .claude: "Claude"
-        case .codex: "Codex"
-        case .ollama: "Ollama"
-        }
+    /// The provider's name from the Go catalog (A7b).
+    @MainActor var displayName: String { AIModelCatalog.shared.displayName(rawValue) }
+
+    /// The providers the chat's menu offers: the catalog's, in its order
+    /// (`AIProviderRegistryTests` pins this enum to the catalog's ids); only
+    /// `current` before the first read, so no Swift list stands in for it.
+    @MainActor static func offered(by catalog: AIModelCatalog, current: Self) -> [Self] {
+        let listed = catalog.providerIDs.compactMap(Self.init(rawValue:))
+        return listed.isEmpty ? [current] : listed
     }
 }
 
@@ -75,9 +78,94 @@ final class ChatViewModel {
         didSet { if errorMessage != nil { isInspectorExpanded = false } }
     }
     private(set) var selectedProvider: AIProvider
+    private(set) var automaticRouting = true
+    private var configuredPreferred: AIProvider
+    @ObservationIgnored private let preferredProviderSource: (() -> AIProvider)?
+    private var preferredProvider: AIProvider { preferredProviderSource?() ?? configuredPreferred }
+    private(set) var isChangingRouting = false
+    private(set) var reviewedActionIDs: [Int64] = []
+    private(set) var reviewedMessageID: Int64?
+    var sessionPersistenceError: String? {
+        pool.client(for: conversationID)?.driver.actualPersistenceErrorMessage
+    }
+    private(set) var routingStatus: ChatRoutingStatus?
+    private(set) var routingStatusError: String?
+    private var readingRoutingStatus = false
+    @ObservationIgnored private var lastRoutingRevision: String?
+
+    var routingPresentation: ChatRoutingPresentation? {
+        let provider = automaticRouting ? preferredProvider : selectedProvider
+        let catalog = AIModelCatalog.shared
+        // The routing card belongs to a provider with a reserve peer (its
+        // capability row, U3); before the catalog is read no pair is known,
+        // so the line shows without the card.
+        let pair = catalog.fallbackPair(preferred: provider.rawValue)
+        let driver = pool.client(for: conversationID)?.driver
+        let actualProvider = driver?.actualProvider ?? currentConversation?.actualProvider
+        return ChatRoutingPresentation(pair: pair, automatic: automaticRouting,
+                                       actualProvider: actualProvider,
+                                       actualModel: driver?.actualModel ?? currentConversation?.actualModel,
+                                       reason: driver?.routing?.reason ?? currentConversation?.routingReason,
+                                       health: routingStatus, busy: isBusy,
+                                       actualDisplayName: actualProvider.flatMap { catalog.provider($0)?.displayName },
+                                       capabilities: providerCapabilities)
+    }
+
+    /// The capability row of the provider this chat runs on: the session's
+    /// own (its session_ready), else the catalog's for the provider the next
+    /// turn runs on: a pinned chat's choice; an automatic chat's preferred
+    /// provider, or its last actual provider when that is the preferred
+    /// one's reserve and fallback is not known off (Go keeps a chat on the
+    /// reserve until the owner switches or turns fallback off); nil while
+    /// neither is known.
+    var providerCapabilities: ProviderCapabilities? {
+        let driver = pool.client(for: conversationID)?.driver
+        if let capabilities = driver?.actualCapabilities { return capabilities }
+        let catalog = AIModelCatalog.shared
+        guard catalog.isLoaded else { return nil }
+        let provider = automaticRouting ? preferredProvider : selectedProvider
+        let history = currentConversation?.actualProvider.flatMap { actual in
+            automaticRouting && routingStatus?.enabled != false
+                && actual == catalog.reservePeer(of: provider.rawValue) ? actual : nil
+        }
+        let id = driver?.actualProvider ?? history ?? provider.rawValue
+        return catalog.capabilities(for: id)
+    }
+
+    /// Why the composer takes no images or PDFs here (U1); nil when it does
+    /// or the provider's row is not known yet.
+    var attachUnavailableReason: String? { providerCapabilities?.attachUnavailableReason }
+    /// Why the composer refuses a PDF from a provider that takes images only.
+    var pdfUnavailableReason: String? { providerCapabilities?.pdfUnavailableReason }
+
+    /// Refresh only local metadata on chat/lifecycle/turn events; never an upstream probe.
+    func refreshRoutingStatus() async {
+        guard !readingRoutingStatus, let cliRunner else { return }
+        readingRoutingStatus = true
+        defer { readingRoutingStatus = false }
+        do {
+            let data = try await cliRunner.run(args: ["ai", "routing-status"], timeout: 5)
+            let status = try ChatRoutingStatus.parse(data)
+            if let previous = lastRoutingRevision, previous != status.revision { pool.retireRoutingSessions() }
+            lastRoutingRevision = status.revision
+            routingStatus = status
+            if let provider = AIProvider(rawValue: routingStatus?.preferredProvider ?? "") {
+                configuredPreferred = provider
+            }
+            routingStatusError = nil
+        } catch {
+            routingStatus = nil
+            routingStatusError = "Couldn't read provider availability: \(error.localizedDescription)"
+        }
+    }
     /// Model override; "" = the provider's resolved strong model (the CLI resolves it).
     var selectedModel = "" {
-        didSet { if selectedModel != oldValue { recycleSession() } }
+        didSet {
+            if selectedModel != oldValue, !applyingConversationSettings {
+                automaticRouting = false
+                recycleSession()
+            }
+        }
     }
     var scrollTarget: Int64?
     var editingMessageID: Int64?
@@ -198,7 +286,7 @@ final class ChatViewModel {
     }
     /// A turn is running or about to: what the composer and the actions
     /// that start a turn wait for.
-    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn }
+    var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn || isChangingRouting }
     /// Every write of this view model, one after another (board #670).
     @ObservationIgnored private let writes = SerialWrites()
     /// The composer's conversation being created: one at a time, so a
@@ -220,6 +308,7 @@ final class ChatViewModel {
         pool: ChatSessionPool,
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
+        preferredProviderSource: (() -> AIProvider)? = nil,
         defaults: UserDefaults = .standard,
         attachmentsRoot: URL? = ChatAttachmentStore.defaultRootDir(),
         makeTurnID: @escaping () -> String = { UUID().uuidString }
@@ -228,6 +317,8 @@ final class ChatViewModel {
         self.dbManager = dbManager
         self.pool = pool
         self.selectedProvider = provider
+        self.configuredPreferred = provider
+        self.preferredProviderSource = preferredProviderSource
         self.cliRunner = cliRunner
         self.makeTurnID = makeTurnID
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
@@ -476,6 +567,11 @@ final class ChatViewModel {
         restorePendingAttachments(conversationID: nil)
         conversationID = nil
         currentConversation = nil
+        applyingConversationSettings = true
+        automaticRouting = true
+        selectedProvider = preferredProvider
+        selectedModel = ""
+        applyingConversationSettings = false
         thread = []
         editingMessageID = nil
         errorMessage = nil
@@ -639,10 +735,50 @@ final class ChatViewModel {
     }
 
     func switchProvider(_ provider: AIProvider) {
-        guard provider != selectedProvider else { return }
+        guard !isBusy, !isChangingRouting else { return }
+        automaticRouting = false
+        guard provider != selectedProvider else { recycleSession(); return }
         selectedProvider = provider
         selectedModel = ""
         recycleSession()
+    }
+
+    /// The combined choice explicitly removes BOTH historical pins. No global preference is written.
+    func requestAutomaticRouting() { Task { await useAutomaticRouting() } }
+
+    func useAutomaticRouting() async {
+        guard !isBusy, !isChangingRouting else { return }
+        isChangingRouting = true
+        defer { isChangingRouting = false }
+        let changedConversationID = conversationID
+        if let id = changedConversationID {
+            guard await pool.closeIdleAndWait(conversationID: id) else { return }
+            do {
+                let provider = preferredProvider.rawValue
+                try await write { db in
+                    try ChatConversationQueries.setRouting(db, id: id, automatic: true, provider: provider, model: nil)
+                }
+            } catch {
+                errorMessage = "Couldn't change provider choice: \(error.localizedDescription)"
+                return
+            }
+        }
+        guard conversationID == changedConversationID else { return }
+        applyingConversationSettings = true
+        selectedProvider = preferredProvider
+        selectedModel = ""
+        automaticRouting = true
+        applyingConversationSettings = false
+        reload()
+    }
+
+    func reviewActions(messageID: Int64) {
+        guard let item = thread.first(where: { $0.id == messageID }) else { return }
+        actionFeed.refresh()
+        reviewedMessageID = messageID
+        reviewedActionIDs = actionFeed.rows.filter { $0.turnID == item.message.turnID }.map(\.id)
+        isInspectorExpanded = false
+        scrollTarget = messageID
     }
 
     // MARK: - Artifacts
@@ -974,12 +1110,15 @@ final class ChatViewModel {
     }
 
     func retry(messageID: Int64) async {
+        guard let item = thread.first(where: { $0.id == messageID }),
+              ChatErrorPresentation.isRetryable(item.message.errorCode) else { return }
         await regenerate(messageID: messageID)
     }
 
     /// "Stopped" + Continue: asks the model to carry on from its partial reply.
     func continueStopped(messageID: Int64) async {
-        guard let last = thread.last?.message, last.id == messageID, last.isAssistant, last.status == "partial" else { return }
+        guard let last = thread.last?.message, last.id == messageID, last.isAssistant, last.status == "partial",
+              last.errorCode != ChatErrorCode.quotaExhausted.rawValue else { return }
         await send(text: "Continue")
     }
 
@@ -990,7 +1129,8 @@ final class ChatViewModel {
     func regenerate(messageID: Int64) async {
         guard !isBusy, let id = conversationID,
               let index = thread.firstIndex(where: { $0.message.id == messageID }), index > 0,
-              thread[index].message.isAssistant, thread[index - 1].message.isUser else { return }
+              thread[index].message.isAssistant, thread[index - 1].message.isUser,
+              thread[index].message.errorCode != ChatErrorCode.quotaExhausted.rawValue else { return }
         let owner = thread[index - 1]
         await startTurnBusy(TurnPlan(conversationID: id, historyTipID: owner.message.parentID,
                                      userText: owner.message.text, reuseUserMessageID: owner.message.id,
@@ -1172,10 +1312,14 @@ final class ChatViewModel {
                 try ChatConversationQueries.setPrefixTitle(db, id: plan.conversationID, text: plan.titleText ?? plan.userText)
                 try plan.alsoWrite?(db)
             }
-            try ChatConversationQueries.setProviderModel(db, id: plan.conversationID, provider: config.provider, model: config.model)
+            if !config.automatic {
+                // Recording an ordinary next turn never resets automatic sticky metadata.
+                try ChatConversationQueries.setRouting(db, id: plan.conversationID, automatic: false,
+                                                       provider: config.provider, model: config.model)
+            }
             let assistant = try ChatTreeQueries.insertAssistant(db, conversationID: plan.conversationID, parentID: userID,
-                                                                turnID: turnID, provider: config.provider,
-                                                                model: config.model ?? "")
+                                                                turnID: turnID, provider: config.automatic ? "" : config.provider,
+                                                                model: config.automatic ? "" : config.model ?? "")
             return PersistedTurn(assistant: assistant, userID: userID, wroteUser: plan.reuseUserMessageID == nil,
                                  historyTipID: historyTip)
         }
@@ -1200,24 +1344,26 @@ final class ChatViewModel {
         // history from the database (#604 G11).
         ChatSessionConfig(conversationID: id, provider: selectedProvider.rawValue,
                           model: selectedModel.isEmpty ? nil : selectedModel,
-                          projectID: currentConversation?.projectID)
+                          automatic: automaticRouting, projectID: currentConversation?.projectID)
     }
 
     /// A conversation remembers the provider/model it last ran with; a new
     /// one keeps the current picker selection.
     private func applyConversationSettings() {
-        guard let conv = currentConversation, let raw = conv.provider else { return }
+        guard let conv = currentConversation else { return }
+        automaticRouting = conv.isAutomatic
+        let raw = conv.isAutomatic ? preferredProvider.rawValue : conv.provider ?? preferredProvider.rawValue
         applyingConversationSettings = true
         defer { applyingConversationSettings = false }
         if let provider = AIProvider(rawValue: raw) { selectedProvider = provider }
-        selectedModel = conv.model ?? ""
+        selectedModel = conv.isAutomatic ? "" : conv.model ?? ""
     }
 
     /// The live process was spawned for the old provider/model: close it; the
     /// next turn spawns a matching one, which replays the history. Never
     /// mid-turn — the picker is disabled while streaming.
     private func recycleSession() {
-        guard !applyingConversationSettings, !isStreaming, !isFinishingTurn, let id = conversationID else { return }
+        guard !applyingConversationSettings, !isBusy, let id = conversationID else { return }
         pool.close(conversationID: id)
     }
 

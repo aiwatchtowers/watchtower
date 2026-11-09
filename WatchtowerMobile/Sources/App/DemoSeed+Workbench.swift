@@ -97,7 +97,7 @@ extension DemoSeed {
             JSON.session(10, workbench: acmeID, [
                 "title": "Session report", "state_kind": "working", "state_caption": "Working · running tests",
                 "state_tone": "green", "target_id": 430, "last_active_at": JSON.stamp(ago(30)), "state_at": JSON.stamp(ago(194)),
-                "report_target_id": 430, "report_done": 1, "report_total": 3
+                "report_target_id": 430, "report_done": 1, "report_total": 3, "report_merged": 1
             ]),
             JSON.session(11, workbench: acmeID, [
                 "title": "Archive closed targets", "created_at": JSON.stamp(ago(4_000)), "state_kind": "waiting_on_ask",

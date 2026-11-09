@@ -57,8 +57,16 @@ func usageLLMJSON(t *testing.T, args ...string) usageLLMReport {
 func usageAt() string { return time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) }
 
 func usageCall(id, surface, purpose, process, model string, est float64) llmusage.Call {
-	c := llmusage.Call{CallID: id, At: usageAt(), Surface: surface, Purpose: purpose, Process: process,
-		Model: model, Input: 100, CacheRead: 1000, CacheWrite5m: 10, CacheWrite1h: 5, Output: 50, OK: true}
+	c := llmusage.Call{
+		CallID:  id,
+		At:      usageAt(),
+		Surface: surface,
+		Purpose: purpose,
+		Process: process,
+		Model:   model,
+		OK:      true,
+		Tokens:  llmusage.Tokens{Input: 100, CacheRead: 1000, CacheWrite5m: 10, CacheWrite1h: 5, Output: 50},
+	}
 	if est >= 0 {
 		c.EstCostUSD = &est
 	}
@@ -166,8 +174,8 @@ func TestUsageLLM_JSONKeysPinned(t *testing.T) {
 	var autoRows []json.RawMessage
 	require.NoError(t, json.Unmarshal(own["rows"], &autoRows))
 	require.Len(t, autoRows, 1)
-	assert.Equal(t, []string{"automation_id", "calls", "cost_is_estimate", "cost_is_lower_bound", "cost_usd", "input",
-		"name", "output", "runs"},
+	assert.Equal(t, []string{"automation_id", "cache_read", "cache_write", "calls", "cost_is_estimate",
+		"cost_is_lower_bound", "cost_usd", "input", "name", "output", "runs"},
 		usageKeys(t, autoRows[0]))
 	var ledgerSince string
 	require.NoError(t, json.Unmarshal(top["ledger_since"], &ledgerSince))
@@ -461,4 +469,65 @@ func TestUsageLLM_RejectsUnknownPeriod(t *testing.T) {
 	err := rootCmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "today, 7d or 30d")
+}
+
+// An automation row carries the same token split as its section's total, so
+// the rows add up to the header (#916); a call with no purpose is untagged
+// in every section but chats, whose turns carry none by design.
+func TestUsageLLM_AutomationRowsCarryCacheAndChatsAreNeverUntagged(t *testing.T) {
+	database, _ := usageLLMEnv(t)
+	aid := seedUsageAutomation(t, database, "mine", "Mine", "owner")
+	require.NoError(t, database.InsertLLMCalls([]llmusage.Call{
+		withAutomation(usageCall("a1", "watchtower", "automation.llm", "daemon", "haiku", 0.1), aid, 1),
+		withAutomation(usageCall("a2", "watchtower", "", "daemon", "sonnet", 0.1), aid, 1),
+		usageCall("w1", "watchtower", "", "cli:jira boards", "haiku", 0.1),
+		usageCall("c1", "chat", "", "ai session", "opus", 1),
+		usageCall("h1", "workbench", "", "cli:workbench", "opus", 1),
+	}))
+	rep := usageLLMJSON(t)
+
+	require.Len(t, rep.OwnAutomations.Rows, 1)
+	row := rep.OwnAutomations.Rows[0]
+	tot := rep.OwnAutomations.Totals
+	assert.Equal(t, int64(2*1000), row.CacheRead)
+	assert.Equal(t, int64(2*15), row.CacheWrite)
+	assert.Equal(t, tot.Input+tot.CacheRead+tot.CacheWrite+tot.Output, row.tokens(), "the one row is the whole section")
+
+	assert.Equal(t, int64(1), rep.Watchtower.Totals.UntaggedCalls)
+	assert.Equal(t, int64(1), rep.OwnAutomations.Totals.UntaggedCalls)
+	assert.Equal(t, int64(0), rep.Chats.UntaggedCalls, "chat turns carry no purpose by design")
+	assert.Equal(t, int64(1), rep.Workbenches.Helpers.UntaggedCalls)
+	assert.Equal(t, int64(2), rep.PageTotal.UntaggedCalls, "Watchtower + your automations, no chats")
+
+	var text bytes.Buffer
+	require.NoError(t, printUsageLLM(&text, rep))
+	assert.Regexp(t, `Mine\s+1\s+2\s+2330\s+100\s`, text.String(), "the text row's tokens include the cache")
+	assert.Regexp(t, `Total \(no workbenches\).*\n\s+0 with estimated usage · 0 without a price · 2 untagged\n`,
+		text.String(), "the total's gaps are printed under it")
+}
+
+// N3 (ask #514): the CLI reads a spooled runtime-B call labelled "http" as
+// ollama, through providers.LedgerLabel, the one place a future provider
+// dimension of the report maps it; the spool file itself is not rewritten.
+func TestLLMUSAGE01_UsageLLMSpoolHTTPReadsAsOllama(t *testing.T) {
+	ws := t.TempDir()
+	spool := llmusage.SpoolPath(ws)
+	old := usageCall("old-http", "watchtower", "automation.agent", "daemon", "local-model", 0)
+	old.Provider = "http"
+	cur := usageCall("cur", "watchtower", "automation.agent", "daemon", "haiku", 0)
+	cur.Provider = "claude"
+	writeUsageSpool(t, spool, old, cur)
+	before, err := os.ReadFile(spool)
+	require.NoError(t, err)
+
+	calls, err := readUsageSpool(spool)
+	require.NoError(t, err)
+	got := map[string]string{}
+	for _, c := range calls {
+		got[c.CallID] = c.Provider
+	}
+	assert.Equal(t, map[string]string{"old-http": "ollama", "cur": "claude"}, got)
+	after, err := os.ReadFile(spool)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "history is not rewritten")
 }

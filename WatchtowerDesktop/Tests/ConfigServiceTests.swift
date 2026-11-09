@@ -3,10 +3,120 @@ import Testing
 import Yams
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 @MainActor
 @Suite("ConfigService")
 struct ConfigServiceTests {
+    /// The fallback pair is the catalog's reserve_peer: the shared catalog
+    /// holds the Go-written rows, as after the app's launch read.
+    init() { ProviderCatalogFixture.seedShared() }
+
+    @Test("The reserve pair comes from the catalog; a catalog without reserve_peer hides the reserve")
+    func testReservePairComesFromCatalog() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let paired = ConfigService(configPath: path)
+        #expect(paired.reservePeer == "codex")
+        paired.selectPreferredProvider("codex")
+        #expect(paired.aiFallbackProvider == "claude")
+
+        let unpaired = AIModelCatalog(providers: ProviderCatalogFixture.providers().map { row in
+            var row = row
+            if let caps = row.capabilities {
+                row.capabilities = ProviderCapabilities(
+                    tools: caps.tools, images: caps.images, pdfs: caps.pdfs, readFolder: caps.readFolder)
+            }
+            return row
+        })
+        let service = ConfigService(configPath: makeTempConfig("ai: {provider: claude}"), catalog: unpaired)
+        #expect(service.reservePeer == nil)
+        #expect(service.reserveModel("strong") == nil)
+        service.aiFallbackProvider = "codex"
+        service.aiFallbackEnabled = true
+        service.selectPreferredProvider("codex")
+        #expect(service.aiFallbackProvider == nil)
+        #expect(!service.aiFallbackEnabled)
+    }
+
+    @Test("Before the catalog is read a provider switch turns the reserve off and an enabled fallback is refused")
+    func testUnreadCatalogKeepsGoLoadable() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let service = ConfigService(configPath: path, catalog: AIModelCatalog())
+        service.selectPreferredProvider("codex")
+        #expect(!service.aiFallbackEnabled)
+        #expect(service.aiFallbackProvider == nil)
+        service.aiFallbackProvider = "claude"
+        service.aiFallbackEnabled = true
+        #expect(throws: (any Error).self) { try service.save() }
+    }
+
+    @Test("Before the catalog is read a save of other settings keeps the file's enabled fallback")
+    func testUnreadCatalogSavesOtherSettings() throws {
+        let path = makeTempConfig("ai: {provider: claude, fallback: {enabled: true, provider: codex}}")
+        let service = ConfigService(configPath: path, catalog: AIModelCatalog())
+        service.aiWorkers = 3
+        try service.save()
+        let saved = try String(contentsOfFile: path, encoding: .utf8)
+        #expect(saved.contains("enabled: true"))
+    }
+
+    @Test("Reserve starts off and independent models survive switches and Saves", arguments: ["claude", "codex"])
+    func reserveBuckets(provider: String) throws {
+        let other = provider == "claude" ? "codex" : "claude"
+        let path = makeTempConfig("ai: {provider: \(provider), providers: {"
+            + "\(provider): {models: {strong: preferred-model}}, \(other): {models: {strong: reserve-model}}}}")
+        let service = ConfigService(configPath: path)
+        #expect(!service.aiFallbackEnabled)
+        #expect(service.reserveModel("strong") == "reserve-model")
+        service.aiFallbackProvider = other
+        service.setReserveModel("light", value: "reserve-light")
+        service.aiFallbackEnabled = true
+        try service.save()
+        let saved = ConfigService(configPath: path)
+        #expect(saved.aiFallbackEnabled)
+        #expect(saved.aiModelStrong == "preferred-model")
+        #expect(saved.reserveModel("light") == "reserve-light")
+        saved.selectPreferredProvider(other)
+        #expect(saved.aiModelStrong == "reserve-model")
+        #expect(saved.reserveModel("strong") == "preferred-model")
+        try saved.save()
+        saved.selectPreferredProvider("ollama")
+        #expect(!saved.aiFallbackEnabled)
+        try saved.save()
+        saved.selectPreferredProvider(provider)
+        #expect(saved.aiModelStrong == "preferred-model")
+    }
+
+    @Test("Editing only reserve models preserves legacy preferred overrides")
+    func reserveEditPreservesLegacyPreferred() throws {
+        let path = makeTempConfig("ai: {provider: claude, model: opus, models: {light: haiku}}")
+        let service = ConfigService(configPath: path)
+        service.aiFallbackProvider = "codex"
+        service.setReserveModel("strong", value: "reserve-model")
+        try service.save()
+        let saved = ConfigService(configPath: path)
+        #expect(saved.aiModelStrong == "opus")
+        #expect(saved.aiModelLight == "haiku")
+        #expect(saved.reserveModel("strong") == "reserve-model")
+    }
+
+    @Test("Unedited reserve keeps newer CLI edits even after a previous Save")
+    func reserveExternalWinner() throws {
+        let path = makeTempConfig("ai: {provider: claude}")
+        let service = ConfigService(configPath: path)
+        service.aiFallbackProvider = "codex"
+        service.aiFallbackEnabled = true
+        try service.save()
+        var yaml = try #require(try Yams.load(yaml: String(contentsOfFile: path)) as? [String: Any])
+        var ai = try #require(yaml["ai"] as? [String: Any])
+        ai["fallback"] = ["enabled": false, "provider": "codex"]
+        yaml["ai"] = ai
+        try Yams.dump(object: yaml).write(toFile: path, atomically: true, encoding: .utf8)
+        service.syncInterval = "2m"
+        try service.save()
+        #expect(!ConfigService(configPath: path).aiFallbackEnabled)
+    }
+
     @Test("Migrated model edits update authoritative provider bucket")
     func migratedModelEdits() throws {
         let path = makeTempConfig("ai: {provider: claude, model: sonnet, providers: {claude: {models: {strong: opus}}, codex: {}}}")
@@ -59,8 +169,8 @@ struct ConfigServiceTests {
     @Test("Invalid enabled reserve pair is refused before saving")
     func invalidReservePairPreservesFile() throws {
         let cases = [
-            ("codex", "Reserve must be a different Claude or Codex provider"),
-            ("ollama", "Enabled fallback requires different Claude and Codex providers"),
+            ("codex", "Reserve must be a different provider that has a reserve pair"),
+            ("ollama", "Enabled fallback requires the preferred provider's reserve pair"),
             ("unknown", "Unknown AI provider")
         ]
         for (destination, reason) in cases {
@@ -1057,5 +1167,123 @@ struct ConfigServiceTests {
         #expect(!svc.hasUnsavedEdits)
         svc.jiraFeatures["signal_0"] = false
         #expect(svc.hasUnsavedEdits)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("Apply and Retry read latest saved metadata without rewriting a newer Save")
+    func routingApplyReadsLatestSaved() async throws {
+        let path = makeTempConfig("ai: {provider: claude}")
+        var revision = "first"
+        let service = ConfigService(configPath: path) {
+            try ChatRoutingStatus.parse(Data("""
+                {"revision":"\(revision)","saved_version":"current-file","preferred_provider":"codex",
+                 "enabled":true,"providers":[],"application":{"identity":"current-run",
+                 "revision":"\(revision)","saved_version":"current-file","preferred_provider":"codex"}}
+                """.utf8))
+        }
+        service.selectAIProvider("codex")
+        try service.save()
+        #expect(service.routingApplication.phase == .applying)
+        #expect(!service.hasUnsavedEdits)
+        let before = try Data(contentsOf: URL(fileURLWithPath: path))
+        revision = "newer-save"
+        await service.applySavedRouting()
+        #expect(service.routingApplication.phase == .applied)
+        #expect(service.routingApplication.savedRevision == "newer-save")
+        #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == before)
+        #expect(!service.hasUnsavedEdits)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("A separate save failure does not strand saved routing in Applying")
+    func routingApplyCompletesAfterExtraSaveFailure() async throws {
+        let path = makeTempConfig("ai: {provider: claude}")
+        var reads = 0
+        let service = ConfigService(configPath: path) {
+            reads += 1
+            return try ChatRoutingStatus.parse(Data("""
+                {"revision":"saved","saved_version":"current","preferred_provider":"claude",
+                 "enabled":false,"providers":[],"application":{"identity":"run","revision":"saved",
+                 "saved_version":"current","preferred_provider":"claude"}}
+                """.utf8))
+        }
+        do {
+            try await service.saveAndApply { throw CocoaError(.fileWriteNoPermission) }
+            Issue.record("The independent save error must remain visible")
+        } catch {
+            #expect((error as NSError).code == CocoaError.fileWriteNoPermission.rawValue)
+        }
+        #expect(reads == 1)
+        #expect(service.routingApplication.phase == .applied)
+        #expect(!service.hasUnsavedEdits)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("Reloading a different workspace rejects an older pending acknowledgement")
+    func workspaceReloadInvalidatesPendingRoutingAck() async throws {
+        let path = makeTempConfig("active_workspace: first\nai: {provider: claude}")
+        var pending: CheckedContinuation<ChatRoutingStatus, Never>?
+        let service = ConfigService(configPath: path) {
+            await withCheckedContinuation { pending = $0 }
+        }
+        let task = Task { await service.applySavedRouting() }
+        while pending == nil { await Task.yield() }
+        try "active_workspace: second\nai: {provider: claude}".write(toFile: path, atomically: true, encoding: .utf8)
+        service.reload()
+        let old = try ChatRoutingStatus.parse(Data("""
+            {"revision":"old","saved_version":"old","preferred_provider":"claude","enabled":false,"providers":[],
+             "application":{"identity":"old-run","revision":"old","saved_version":"old","preferred_provider":"claude"}}
+            """.utf8))
+        pending?.resume(returning: old)
+        await task.value
+        #expect(service.activeWorkspace == "second")
+        #expect(service.routingApplication.phase == .failed)
+        #expect(service.routingApplication.confirmed == nil)
+        #expect(service.routingApplication.savedRevision == nil)
+    }
+}
+
+extension ConfigServiceTests {
+    @Test("Same-workspace Reload revokes old applied and pending acknowledgements")
+    func sameWorkspaceReloadRejectsOldAppliedAndPendingAck() async throws {
+        func status(_ revision: String, _ provider: String) throws -> ChatRoutingStatus {
+            try ChatRoutingStatus.parse(Data("""
+                {"revision":"\(revision)","saved_version":"\(revision)","preferred_provider":"\(provider)",
+                 "enabled":false,"providers":[],"application":{"identity":"run","revision":"\(revision)",
+                 "saved_version":"\(revision)","preferred_provider":"\(provider)"}}
+                """.utf8))
+        }
+        let path = makeTempConfig("active_workspace: first\nai: {provider: claude}")
+        let old = try status("A", "claude")
+        var current = old
+        var block = false
+        var pending: CheckedContinuation<ChatRoutingStatus, Never>?
+        let service = ConfigService(configPath: path) {
+            if block { return await withCheckedContinuation { pending = $0 } }
+            return current
+        }
+        await service.applySavedRouting()
+        #expect(service.routingApplication.phase == .applied)
+        block = true
+        let task = Task { await service.applySavedRouting() }
+        while pending == nil { await Task.yield() }
+        let saved = "active_workspace: first\nai: {provider: codex}"
+        try saved.write(toFile: path, atomically: true, encoding: .utf8)
+        service.reload()
+        #expect(service.routingApplication.phase == .failed)
+        #expect(service.aiProvider == "codex")
+        pending?.resume(returning: old)
+        await task.value
+        #expect(service.routingApplication.phase == .failed)
+        #expect(service.routingApplication.confirmed == nil)
+        block = false
+        current = try status("B", "codex")
+        await service.applySavedRouting()
+        #expect(service.routingApplication.phase == .applied)
+        #expect(service.routingApplication.savedRevision == "B")
+        #expect(try String(contentsOfFile: path, encoding: .utf8) == saved)
     }
 }

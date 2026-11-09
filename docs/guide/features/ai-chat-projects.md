@@ -16,6 +16,8 @@ action: nav:chat
 
 Open the menu in the **Chats** panel header (**All chats ⌄**) and pick **New Project…**, or pick a project to open its page. Inside a project the panel lists only its chats, with **Project overview** as the first row.
 
+The menu also has **Find project**, your recent projects with a status ("2 new answers", "1 waiting for approval", "answering" or the age) and **‹ All Chats**. Picking a project opens its page unless the chat on screen is in it. The panel remembers which level you were on.
+
 The page has:
 
 - **The name**, editable in place, and a **⋯** menu with **Rename** and **Delete Project…**. Deleting a project deletes its files and keeps its chats; they move out of the project.

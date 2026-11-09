@@ -9,8 +9,20 @@ Three agents ran overnight. The progress line under each session name, the **Rep
 ## How it works
 
 ### The session report
+<!-- learn
+id: session-report-merged-share
+title: Count tasks already merged
+text: The progress line counts tasks whose branch is already merged above them apart, such as "3/32 · 25 merged".
+area: development
+level: next
+kind: tip
+since: 0.27.0
+action: nav:projects
+-->
 
 Under the caption, Watchtower shows a progress line once it has read the report: for example "#314 · 14/15 · PR #147 open" for the target the session works on, its done tasks and its pull requests. The line refreshes every 15 seconds while the Workbench tab is on screen. If a refresh fails, the last line stays with "· stale" at the end.
+
+When tasks are not done yet but git already finds their branch in the branch of the task above them (the epic's feature branch, say), the line counts them apart: "#942 · 3/32 · 25 merged". Done still means done on the board. Watchtower checks this with local git only, so a new merge shows within about a minute, and a task stays merged after its branch is cleaned up. A task on the same branch as the nearest task above it that has one, or with no branch, is never counted as merged. The bar under the line shows the merged share in a lighter colour after the done share. If git could not check it this time (a base branch it can't find, say), the line reads "25 merged (unchecked)", or "merged not checked" when nothing was counted yet.
 
 The count covers the session target picked with **Session Target** in the session's right-click menu. With no target, it covers what the session touched, leaving out targets another session has taken over since. The agent can finish only once its target is closed, so changing the target changes that check too.
 
@@ -49,7 +61,7 @@ The **Report** button on a session's strip shows the report of one Claude Code s
 - **On you**: the session's open asks, each with **Open**.
 - **Now**: tasks in progress, in review or blocked.
 - **Pull requests**: each one's state and size, or "no PR yet" or "not checked".
-- **Done**: one line per phase.
+- **Done**: one line per phase, with its merged share when there is one ("3/8 · 5 merged").
 - **Agent's last word**: the summary the agent wrote when it finished. It becomes **Previous summary** once you send a new prompt.
 
 While the session is **Ready to check**, **Review Branch** next to its analytics line opens its [Branch review](diff-review.md).
@@ -69,6 +81,7 @@ The **Analytics** icon in the title row shows where this folder's Claude Code se
 
 - **"Pick a session" in the Report view.** No Claude Code session is selected, or it is a plain shell, or it was deleted.
 - **"· stale" at the end of the progress line.** The last refresh failed; the line updates again on the next one.
+- **A merged task isn't counted as merged.** The task needs its own branch on the board, and the nearest task above it that has a branch a different one. A branch cut from the feature branch with no commits of its own isn't merged yet.
 - **Pull requests show no details.** Install the GitHub CLI (`gh`); without it only whether a branch is merged is known.
 
 ## Related
