@@ -31,6 +31,21 @@
 # and the Kit half gets WT_GO_HUB_INTEROP_DESKTOP=1. Unset or 0: the relay-only
 # run above, unchanged.
 #
+# RELAY_INTEROP_ROTATION=1 is the rotation run (relay client Phase 5 Task 11):
+# the desktop host's run as above, the Go half -run
+# '^TestInterop_KitPhoneRotates$' with -kit-desktop -kit-rotation, the Kit half
+# with WT_GO_HUB_INTEROP_DESKTOP=1 and WT_GO_HUB_INTEROP_ROTATION=1 (its other
+# desktop test skips). It implies RELAY_INTEROP_DESKTOP=1.
+#
+# RELAY_INTEROP_UPGRADE=1 is the first-upgrade run (Phase 5 Task 11, the PR C
+# review's case): one phone linked over iCloud upgrades a Go hub that runs on
+# CloudKit to the relay as the app's upgrader does (the reader wait reads its
+# keybox from the relay data zone first). The Go half -run
+# '^TestInterop_KitPhoneUpgradesOnCloudKit$' with -kit-desktop -kit-upgrade,
+# the Kit half with WT_GO_HUB_INTEROP_DESKTOP=1 and
+# WT_GO_HUB_INTEROP_UPGRADE=1. It implies RELAY_INTEROP_DESKTOP=1 and excludes
+# RELAY_INTEROP_ROTATION=1.
+#
 # Environment: RELAY_INTEROP_PORT (default 8787), RELAY_INTEROP_KEEP=1 keeps
 # the temp dir (wrangler's log, the handoff files). WATCHTOWER_CHECKOUT is the
 # Watchtower checkout to test (default: this script's repo; needs a Makefile and
@@ -145,6 +160,35 @@ case "${RELAY_INTEROP_DESKTOP:-0}" in
 	;;
 esac
 
+ROTATION=0
+case "${RELAY_INTEROP_ROTATION:-0}" in
+0) ;;
+1)
+	ROTATION=1
+	DESKTOP=1
+	GO_RUN='^TestInterop_KitPhoneRotates$'
+	;;
+*)
+	echo "relay-interop-kit-hub: RELAY_INTEROP_ROTATION is 1 or 0" >&2
+	exit 2
+	;;
+esac
+
+UPGRADE=0
+case "${RELAY_INTEROP_UPGRADE:-0}" in
+0) ;;
+1)
+	[ "$ROTATION" = 1 ] && { echo "relay-interop-kit-hub: RELAY_INTEROP_UPGRADE and RELAY_INTEROP_ROTATION exclude each other" >&2; exit 2; }
+	UPGRADE=1
+	DESKTOP=1
+	GO_RUN='^TestInterop_KitPhoneUpgradesOnCloudKit$'
+	;;
+*)
+	echo "relay-interop-kit-hub: RELAY_INTEROP_UPGRADE is 1 or 0" >&2
+	exit 2
+	;;
+esac
+
 case "$PORT" in
 '' | *[!0-9]*)
 	echo "relay-interop-kit-hub: RELAY_INTEROP_PORT is not a port number" >&2
@@ -192,7 +236,7 @@ cd "$ROOT" || exit 1
 echo "relay-interop-kit-hub: building the Go test and the Kit tests" >&2
 go test -count=1 -tags interop -run '^$' ./internal/hub >"$STATE/go-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/go-build.log" >&2; die "the Go interop test does not build"; }
-env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR -u WT_GO_HUB_INTEROP_DESKTOP make kit-test FILTER=KitGoHubInteropTests \
+env -u WATCHTOWER_RELAY_INTEROP_URL -u WT_GO_HUB_INTEROP_DIR -u WT_GO_HUB_INTEROP_DESKTOP -u WT_GO_HUB_INTEROP_ROTATION -u WT_GO_HUB_INTEROP_UPGRADE make kit-test FILTER=KitGoHubInteropTests \
 	>"$STATE/kit-build.log" 2>&1 </dev/null ||
 	{ tail -n 40 "$STATE/kit-build.log" >&2; die "the Kit tests do not build"; }
 
@@ -261,15 +305,23 @@ mark() {
 run_go() {
 	local desktop=()
 	[ "$DESKTOP" = 1 ] && desktop=(-kit-desktop)
+	[ "$ROTATION" = 1 ] && desktop+=(-kit-rotation)
+	[ "$UPGRADE" = 1 ] && desktop+=(-kit-upgrade)
 	go test -count=1 -timeout 30m -tags interop -run "$GO_RUN" -v ./internal/hub \
 		-relay="$ORIGIN" -kit-dir="$HANDOFF" ${desktop[@]+"${desktop[@]}"} </dev/null
 }
 run_kit() {
-	if [ "$DESKTOP" = 1 ]; then
-		WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" WT_GO_HUB_INTEROP_DESKTOP=1 \
+	if [ "$UPGRADE" = 1 ]; then
+		WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" WT_GO_HUB_INTEROP_DESKTOP=1 WT_GO_HUB_INTEROP_UPGRADE=1 \
+			make kit-test FILTER=KitGoHubInteropTests </dev/null
+	elif [ "$ROTATION" = 1 ]; then
+		env -u WT_GO_HUB_INTEROP_UPGRADE WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" WT_GO_HUB_INTEROP_DESKTOP=1 WT_GO_HUB_INTEROP_ROTATION=1 \
+			make kit-test FILTER=KitGoHubInteropTests </dev/null
+	elif [ "$DESKTOP" = 1 ]; then
+		env -u WT_GO_HUB_INTEROP_ROTATION -u WT_GO_HUB_INTEROP_UPGRADE WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" WT_GO_HUB_INTEROP_DESKTOP=1 \
 			make kit-test FILTER=KitGoHubInteropTests </dev/null
 	else
-		env -u WT_GO_HUB_INTEROP_DESKTOP WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" \
+		env -u WT_GO_HUB_INTEROP_DESKTOP -u WT_GO_HUB_INTEROP_ROTATION -u WT_GO_HUB_INTEROP_UPGRADE WATCHTOWER_RELAY_INTEROP_URL="$ORIGIN" WT_GO_HUB_INTEROP_DIR="$HANDOFF" \
 			make kit-test FILTER=KitGoHubInteropTests </dev/null
 	fi
 }
