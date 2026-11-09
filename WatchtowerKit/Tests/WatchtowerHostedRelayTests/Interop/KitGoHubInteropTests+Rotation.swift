@@ -186,12 +186,20 @@ extension KitGoHubInteropTests {
         handoff.step = "r3_held"
         await held.releaseFlushes()
         _ = try await held.flush()
-        try await rig.settle(rig.a, "the echo of the action sealed in epoch \(e2)")
+        // A real late echo: the hub's answer lands in the mailbox sealed in e2 (the phone's acked epoch) before the
+        // phone reads it; the phone then merges e3 and promotes, so only the stored e2 pair can open it.
+        let echo = try await rig.hubWrite(over: heldRow)
+        XCTAssertEqual(try Envelope.parse(echo).header.epoch, e2, "the echo is sealed in epoch \(e2)")
         let fetchA = try await rig.a.fetchKeybox(atLeast: e2 + 1)
         let e3 = fetchA.keys.epoch
         XCTAssertEqual(e3, e2 + 1)
         XCTAssertEqual(fetchA.keys.relayKX.flatMap { WireBytes.fromBase64URL($0.devicePub) }, offer.publicKey)
         try checkPromoted(fetchA, offer: offer, oldCurrent: current)
+        XCTAssertEqual(try rig.phoneA.newestEpoch(), e3)
+        XCTAssertEqual(try rig.linkA().currentKX?.publicKey, offer.publicKey, "the current key is e3's before the echo is read")
+        XCTAssertNotNil(try rig.linkA().epochs.first { $0.epoch == e2 }?.relayKeys, "the e2 pair stays for its late echoes")
+        handoff.step = "r3_late_echo"
+        try await rig.settle(rig.a, "the late echo sealed in epoch \(e2)")
         try checkPrevious(fetchA)
         XCTAssertNotNil(fetchA.keys.previousRelayKX, "the hub holds epoch \(e2)'s row: previous_relay_kx is sent")
         let fetchB = try await rig.b.fetchKeybox(atLeast: e3)
@@ -524,12 +532,17 @@ extension KitGoHubInteropTests {
         let pair = try XCTUnwrap(after.epochs.first { $0.epoch == fetch.keys.epoch }?.relayKeys, "the epoch's pair is stored")
         XCTAssertEqual(pair.devicePub, offer.publicKey)
         guard let oldCurrent else { return }
-        let encoded = try JSONEncoder().encode(after)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        let encoded = try encoder.encode(after)
         let text = String(bytes: encoded, encoding: .utf8) ?? ""
         XCTAssertFalse(text.contains(oldCurrent.privateKey.base64EncodedString()), "the old private key is gone from the item")
         let decoded = try JSONDecoder().decode(HubLinkKeys.self, from: encoded)
-        XCTAssertNotEqual(decoded.currentKX?.privateKey, oldCurrent.privateKey)
-        XCTAssertNotEqual(decoded.offeredKX?.privateKey, oldCurrent.privateKey)
+        var held = [decoded.currentKX?.privateKey, decoded.offeredKX?.privateKey]
+        for keys in decoded.epochs.compactMap(\.relayKeys) {
+            held += [keys.p2h, keys.h2p, keys.hubPub, keys.devicePub]
+        }
+        XCTAssertFalse(held.contains(oldCurrent.privateKey), "no field of the decoded item holds the old private key")
     }
 
     /// The hub sends `previous_relay_kx` while it holds that row: whenever the phone holds a pair for the keybox's
@@ -638,6 +651,19 @@ struct RotationRig {
         await outbox.setHubID(phoneA.code.hubID)
         await outbox.holdFlushes()
         return outbox
+    }
+
+    /// The hub's write over the phone's action record `row` in the offering phone's relay mailbox (its echo), read
+    /// straight from the relay without the feed, so the phone has not opened it yet. Returns its envelope.
+    func hubWrite(over row: OutboxRow) async throws -> Data {
+        let deadline = Date().addingTimeInterval(KitGoHubInteropTests.stepWait)
+        while true {
+            try await relayA.pull(only: [.relay])
+            let record = try await relayA.changes(in: .relay, since: nil).changed.last { $0.recordName == row.wireName }
+            if let record, record.payload != row.envelope { return record.payload }
+            guard Date() < deadline else { throw GoHubInteropFailure.timedOut("the hub's echo of \(row.wireName)") }
+            try await Task.sleep(for: .seconds(1))
+        }
     }
 
     /// One marked action through the follower's outbox, flushed; returns its mark.
