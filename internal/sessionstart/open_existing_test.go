@@ -128,3 +128,41 @@ func TestPhoneStartUsesDefaultAgent(t *testing.T) {
 		return err == nil
 	})
 }
+
+// twin of SessionStartHandlerTests.testOpenExistingOnAnUnknownKindIsRefusedNotSupported
+// (A7b, main #686): the target's latest session runs an agent kind this
+// version does not know (a newer Mac wrote it). open_existing refuses it
+// with that kind — the hub answers not_supported — and launches nothing: no
+// shell, no Claude Code in its place, and no new session beside it.
+func TestOpenExistingOnAnUnknownKindIsRefused(t *testing.T) {
+	w := newWorld(t)
+	tid := w.target("Ship it")
+	w.existingSession(tid)
+	ctx := context.Background()
+	conn, err := w.db.Conn(ctx)
+	require.NoError(t, err)
+	_, err = conn.ExecContext(ctx, `PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
+	res, err := conn.ExecContext(ctx, `INSERT INTO terminal_sessions (project_id, target_id, kind, title, folder_path, last_active_at)
+		VALUES (?, ?, 'gemini', 'Newer', ?, '2999-01-01T00:00:00Z')`, w.wb, tid, w.folder)
+	require.NoError(t, err)
+	newer, _ := res.LastInsertId()
+	_, err = conn.ExecContext(ctx, `PRAGMA ignore_check_constraints = OFF`)
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	_, err = Start(ctx, w.deps(), handlers.StartRequest{Workbench: w.wb, Target: ptr(tid), OpenExisting: true})
+	var missing *handlers.AgentNotFoundError
+	require.ErrorAs(t, err, &missing)
+	assert.Equal(t, "gemini", missing.Agent)
+	assert.Equal(t, 2, w.sessionCount(), "no new row")
+	_, live := findRun(w.list(), sessionhost.Scope(w.dbPath), newer)
+	assert.False(t, live, "nothing launched for the unknown kind")
+
+	// Asked for a named agent, the unknown row is not that agent's: the
+	// target's Claude session reopens as before.
+	got, err := Start(ctx, w.deps(), handlers.StartRequest{Workbench: w.wb, Target: ptr(tid), OpenExisting: true,
+		Agent: string(agentkind.Claude)})
+	require.NoError(t, err)
+	assert.NotEqual(t, newer, got.SessionID)
+}

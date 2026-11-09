@@ -912,10 +912,13 @@ type existingRow struct {
 
 // latestTargetSession is the target's most recently active session on the
 // workbench (TerminalSessionPolicy.sessionForTarget), of agent when one is
-// named, never one of hidden (the Desktop's Undo batch, PROJ-17).
+// named, never one of hidden (the Desktop's Undo batch, PROJ-17). With no
+// agent named, a row of a kind this version does not know (a newer
+// version's) counts too, so reopen refuses it rather than a new session
+// starting beside it (A7b).
 func latestTargetSession(ctx context.Context, q *db.DB, target, wb int64, agent string, hidden map[int64]bool) (existingRow, bool, error) {
 	rows, err := q.QueryContext(ctx, `SELECT id, kind, folder_path, COALESCE(claude_session_id, '')
-		FROM terminal_sessions WHERE target_id = ? AND project_id = ? AND kind IN ('claude', 'codex')
+		FROM terminal_sessions WHERE target_id = ? AND project_id = ? AND kind <> 'shell'
 		  AND (? = '' OR kind = ?)
 		ORDER BY last_active_at DESC, id DESC`, target, wb, agent, agent)
 	if err != nil {
@@ -939,15 +942,22 @@ func latestTargetSession(ctx context.Context, q *db.DB, target, wb int64, agent 
 
 // reopen answers a target's existing session: running in the host already,
 // it is answered as is; else it resumes (a Codex row with no id of its own
-// yet starts again with no prompt).
+// yet starts again with no prompt). A row of a kind this version does not
+// know is never launched — no shell and no Claude Code in its place (A7b):
+// it is *handlers.AgentNotFoundError with that kind, which the hub refuses
+// not_supported.
 func reopen(ctx context.Context, d Deps, r existingRow) (handlers.StartResult, error) {
 	agent := agentkind.Kind(r.kind)
-	if err := providers.Allowed(r.kind); err != nil {
-		return handlers.StartResult{}, err //nolint:wrapcheck // the policy's own sentence is the message
-	}
-	codex, err := codexArgs(ctx, d, agent, r.workbench)
-	if err != nil {
-		return handlers.StartResult{}, err
+	_, known := agentkind.Parse(r.kind)
+	var codex *devpack.LaunchArgs
+	if known {
+		if err := providers.Allowed(r.kind); err != nil {
+			return handlers.StartResult{}, err //nolint:wrapcheck // the policy's own sentence is the message
+		}
+		var err error
+		if codex, err = codexArgs(ctx, d, agent, r.workbench); err != nil {
+			return handlers.StartResult{}, err
+		}
 	}
 	c, done, err := d.lease(ctx)
 	if err != nil {
@@ -962,6 +972,9 @@ func reopen(ctx context.Context, d Deps, r existingRow) (handlers.StartResult, e
 	}
 	if info, ok := findRun(list, d.scope(), r.id); ok && !info.Exited {
 		return handlers.StartResult{SessionID: r.id, State: StateRunning}, nil
+	}
+	if !known {
+		return handlers.StartResult{}, &handlers.AgentNotFoundError{Agent: r.kind}
 	}
 	if _, err := d.DB.ExecContext(ctx, `UPDATE terminal_sessions SET last_active_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`, r.id); err != nil {
