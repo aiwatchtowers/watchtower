@@ -112,6 +112,22 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
         release(Self.readKey)
     }
 
+    /// How many reads wait.
+    var heldReads: Int {
+        lock.withLock { waiting[Self.readKey]?.count ?? 0 }
+    }
+
+    /// The oldest waiting read goes on; the others and later ones still wait.
+    func releaseFirstRead() {
+        let waiter: CheckedContinuation<Void, Never>? = lock.withLock {
+            guard var queue = waiting[Self.readKey], !queue.isEmpty else { return nil }
+            let first = queue.removeFirst()
+            waiting[Self.readKey] = queue
+            return first
+        }
+        waiter?.resume()
+    }
+
     /// The next submit answers `state` whatever the fake would.
     func answerNextSubmit(_ state: Relay_V1_EntitlementKind) {
         lock.withLock { answers.append(state) }

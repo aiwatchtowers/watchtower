@@ -211,6 +211,10 @@ final class RelayAccountCenter {
     @ObservationIgnored private var lastAnsweredAt: Date?
     /// The last answered account state (the term's check reads it after its pass).
     @ObservationIgnored private var lastAnswer: RelayAccountState?
+    /// The relay refused a write for the entitlement (`syncThenLapse`) and no read has settled it yet: the newest read
+    /// that finishes does. An answer settles it in `apply` (paying: nothing lapses; not paying: the Macs lapse there); a
+    /// failure leaves the relay's word standing, so the Macs lapse (PR C final review M4).
+    @ObservationIgnored private var lapseOwed = false
     /// One slot check at a time; a `synced()` pass running holds it back (its read is never superseded), and it runs
     /// once that pass ends (`slotCheckOwed`).
     @ObservationIgnored private var slotCheckRunning = false
@@ -558,12 +562,23 @@ final class RelayAccountCenter {
             return try await account.state()
         } catch {
             Self.logger.notice("relay account: read failed: \(Self.code(error), privacy: .public)")
-            if generation == readGeneration { phase = .unknown }
+            if generation == readGeneration {
+                phase = .unknown
+                await lapseIfOwed()
+            }
             return nil
         }
     }
 
+    /// The newest read failed: an owed lapse goes on the relay's word.
+    private func lapseIfOwed() async {
+        guard lapseOwed else { return }
+        lapseOwed = false
+        await lapseRelayMacs()
+    }
+
     private func apply(_ state: RelayAccountState) async -> ReadOutcome {
+        lapseOwed = false
         let previous = phase
         lastAnsweredAt = now()
         lastAnswer = state
@@ -658,6 +673,7 @@ final class RelayAccountCenter {
             await syncThenLapse()
         case .control(.subscriptionMoved, _):
             readGeneration += 1
+            lapseOwed = false // the lapse below settles it
             movedAway()
             await lapseRelayMacs()
         case .control(.slotRemoved, _):
@@ -721,9 +737,11 @@ final class RelayAccountCenter {
     /// the phase: if it answers paying, its answer is the newer one and no Mac goes back to iCloud. A failed read leaves the
     /// relay's word standing.
     private func syncThenLapse() async {
+        lapseOwed = true
         let outcome = await synced { await sweep(answered: $0) }
-        // A newer read took over: its own answer lapses the Macs if it says so (review M3).
-        guard outcome != .superseded else { return }
+        // A newer read took over: the newest read that finishes settles `lapseOwed` (review M3; PR C final review M4).
+        guard outcome != .superseded, lapseOwed else { return }
+        lapseOwed = false
         if outcome != .lapsed, !Self.isPaying(phase) { await lapseRelayMacs() }
     }
 

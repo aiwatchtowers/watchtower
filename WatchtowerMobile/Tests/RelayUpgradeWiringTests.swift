@@ -175,7 +175,7 @@ final class RelayUpgradeWiringTests: XCTestCase {
     /// epoch however long the phone was away.
     func testAwaitReaderMergesTheKeyboxBeforeTheRequest() async throws {
         let (bed, session) = try await upgradeBed()
-        try await allowReader(bed, keyboxEpoch: 2)
+        try await allowReader(bed, keybox: (2, true))
         var newestAtQueue: UInt32?
         session.relayUpgrader?.queue = { session, id in
             newestAtQueue = try? bed.keys.hubLink(TestE2E.hubID.uuidString)?.epochs.map(\.epoch).max()
@@ -187,9 +187,33 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(newestAtQueue, 2, "the keybox's epoch was merged before the request was queued")
     }
 
+    /// A first upgrade from a Mac on iCloud: the Mac publishes nothing into its relay data zone but the marker, so a
+    /// read that finds no keybox counts as read (the switch's `transport_switched` carries the keys).
+    func testAFirstUpgradeFromAMacOnICloudFindsNoKeyboxAndAsks() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed)
+        let outcome = await session.upgradeToRelay()
+        XCTAssertEqual(outcome, .underWay(.requested))
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
+        let asked = try await switchRequests(bed, session)
+        XCTAssertEqual(asked.map(\.target), ["relay"])
+    }
+
+    /// A keyless keybox left in the relay data zone by a hub that has since moved to iCloud does not hold the step.
+    func testAKeylessStaleKeyboxFromAHubNowOnICloudDoesNotBlock() async throws {
+        let (bed, session) = try await upgradeBed()
+        try await allowReader(bed, keybox: (1, false))
+        XCTAssertNil(try bed.row()?.link.hubOnRelayAt)
+        let outcome = await session.upgradeToRelay()
+        XCTAssertEqual(outcome, .underWay(.requested))
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested, "a hub on iCloud: the keyless keybox counts as read")
+    }
+
+    /// Coming back with the hub still on the relay: the keyless keybox holds the step until the keyed one merges.
     func testAwaitReaderWithNoKeysYetKeepsWaiting() async throws {
         let (bed, session) = try await upgradeBed()
-        try await allowReader(bed, withKeys: false)
+        try markHubOnRelay(bed)
+        try await allowReader(bed, keybox: (1, false))
         let outcome = await session.upgradeToRelay()
         XCTAssertNil(outcome.refusal)
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .awaitingReader, "a read with no keys counts as not read")
@@ -204,7 +228,8 @@ final class RelayUpgradeWiringTests: XCTestCase {
 
     func testAwaitReaderLimitStillEndsInReaderNotConfirmed() async throws {
         let (bed, session) = try await upgradeBed()
-        try await allowReader(bed, withKeys: false)
+        try markHubOnRelay(bed)
+        try await allowReader(bed, keybox: (1, false))
         let outcome = await session.upgradeToRelay()
         XCTAssertNil(outcome.refusal)
         bed.clock.advance(RelayUpgrade.readerWaitLimit + 1)
@@ -795,11 +820,19 @@ final class RelayUpgradeWiringTests: XCTestCase {
         return session
     }
 
-    /// The Mac names the phone a reader of its data zone (its `set_hub_readers`), and its keybox there carries keys
-    /// (relay client Phase 5: the reader wait merges it before the request).
-    private func allowReader(_ bed: Bed, keyboxEpoch: UInt32 = 1, withKeys: Bool = true) async throws {
+    /// The Mac names the phone a reader of its data zone (its `set_hub_readers`). A Mac on iCloud writes no keybox
+    /// there, so none is published unless `keybox` names one: a hub on the relay's, with its keys or without (relay
+    /// client Phase 5, "Coming back").
+    private func allowReader(_ bed: Bed, keybox: (epoch: UInt32, withKeys: Bool)? = nil) async throws {
         try await bed.fake.pair(mac: bed.mac.deviceID, phones: [bed.phone.deviceID])
-        try await bed.publishRelayKeybox(epoch: keyboxEpoch, withKeys: withKeys)
+        if let keybox { try await bed.publishRelayKeybox(epoch: keybox.epoch, withKeys: keybox.withKeys) }
+    }
+
+    /// The row as left by an opened `hub_on_relay`: the hub runs on the relay without this phone.
+    private func markHubOnRelay(_ bed: Bed) throws {
+        var link = try XCTUnwrap(bed.row()?.link)
+        link.hubOnRelayAt = bed.clock.now
+        XCTAssertTrue(try bed.registry.updateLink(link))
     }
 
     /// One fetch, then the passes it started.

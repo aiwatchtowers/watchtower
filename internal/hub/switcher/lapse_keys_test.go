@@ -279,11 +279,11 @@ func TestLapseEndedByRenewalAcceptsANewOffer(t *testing.T) {
 // keys does not wait for the next full diff.
 func TestALapseRepublishesTheGrantAtOnce(t *testing.T) {
 	w, a, _ := relayPair(t)
-	if w.pub.Dirty(hubslices.KindDeviceGrant) {
+	if w.pub.DirtyForTest(hubslices.KindDeviceGrant) {
 		t.Skip("device_grant already waits for a publish")
 	}
 	w.expire(a)
-	if !w.pub.Dirty(hubslices.KindDeviceGrant) {
+	if !w.pub.DirtyForTest(hubslices.KindDeviceGrant) {
 		t.Fatal("the lapse did not ask for the grant to be published")
 	}
 }

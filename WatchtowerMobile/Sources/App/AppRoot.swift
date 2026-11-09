@@ -1258,9 +1258,9 @@ extension AppRoot: RelayUpgradeHost {
         }
     }
 
-    func mergeKeybox(_ sealed: Data, hubID: String) async -> Bool {
-        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return false }
-        return await linking.mergeSwitchKeys(keybox, hubID: hubID)
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> RelayKeyboxMerge {
+        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return .noKeys }
+        return await linking.mergeSwitchKeys(keybox, hubID: hubID) ? .merged : .notStored
     }
 
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {

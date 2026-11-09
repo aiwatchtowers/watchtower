@@ -241,7 +241,7 @@ final class TransportFollower {
         guard await moveOutbox(plan, moves: moves) else { return false }
         await keySource(input, plan, host: host)
         let effects = RequestEffects(plan: plan, moves: moves)
-        if let move = plan.move, !persist(move, next: next, link: link, effects: effects, host: host) {
+        if let move = plan.move, !persist(move, next: next, effects: effects, host: host) {
             // Nothing moved: the session goes on on its route, so its outbox writes there again.
             if moves { await outbox.releaseFlushes() }
             return false
@@ -362,14 +362,16 @@ final class TransportFollower {
     }
 
     /// The row takes the route, who switched and when, and the transport left, in one write (`refusal` checked
-    /// first).
+    /// first). Applied to the row as it stands now, not the one read before the move's awaits: a newer write meanwhile
+    /// (an answered account read clearing `relayRefused`, the term's `termReadAt`) is kept, as the writers table
+    /// says the newest event wins. No row left (unlinked meanwhile): nothing moves.
     private func persist(
         _ move: (to: TransportKind, by: String, at: Date),
         next: FollowerState,
-        link: LinkRecord,
         effects: RequestEffects,
         host: any TransportFollowerHost
     ) -> Bool {
+        guard let link = host.followerLink(hubID: hubID) else { return false }
         var moved = link
         switch move.to {
         case .relay:
