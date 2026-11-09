@@ -21,6 +21,8 @@ While the relay gives no answer, **Now** shows "Relay unavailable for 3 min. You
 
 When your subscription ends and the Mac moves to iCloud, changes the Mac had not confirmed go out again over iCloud. If the Mac stays on Relay because another subscribed phone uses it, they land under **Not delivered** with "Work Mac runs over Relay now". See [iPhone: Relay](iphone-relay.md).
 
+When the phone is waiting for keys after the Mac's weekly key change, **Now** says the feed is parked rather than empty; your changes stay queued and nothing is lost. If your Mac moved on without this iPhone, a banner on **Now** and in **Settings → Macs** shows a date. Paying alone may not bring the phone back; opening the Mac app may not either. After that date, when you open the app and Relay still refuses this iPhone a second time, the link ends: its history on this iPhone and unsent changes go, and you link the Mac again. If this iPhone pays while its Mac moved to iCloud, the Mac's row stays until you press **Forget This Mac**. If the phone cannot read the Mac's move at all, it shows no banner and keeps a stale row; use **Forget This Mac** in **Settings → Macs**.
+
 ## Using it
 <!-- learn: none -->
 

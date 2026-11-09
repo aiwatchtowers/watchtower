@@ -80,7 +80,7 @@ Suite 1 only: X25519, Ed25519, HKDF-SHA256, ChaCha20-Poly1305, HPKE RFC 9180 `DH
 | `hub_eph` (X25519, relay client Phase 5) | hub, one rotation | drawn per phone at a rotation, used for both directions, then cleared; its public half travels in the keybox `relay_kx.hub_pub` (§5.4) |
 | ephemeral relay key `K_relay[dir, e]` (relay client Phase 5) | hub + one phone that offered | `HKDF-SHA256(X25519(hub_eph, dev_eph) ‖ X25519(hub_kx, dev_kx), salt: link_nonce, info: "wt/relay/v2/" ‖ p2h\|h2p ‖ 0x00 ‖ hub_id(16) ‖ device_id(16) ‖ epoch u32 BE ‖ hub_eph_pub(32) ‖ dev_eph_pub(32))`; an all-zero X25519 secret is refused on either side. Used for an epoch whose keybox names the pair; else the `wt/relay/v1/` key. Vector: `Fixtures/e2e/kdf.json` `ephemeralRelayKeys` (Go `secure.EphemeralRelayKey`, Kit `KeyDerivation.ephemeralRelayKey`) |
 
-- **Epochs.** A new epoch on a phone's removal, on the cap (90 days or 2^28 seqs) and, with the relay, on every transport switch (RC §9). The previous epoch's relay-lane envelopes are accepted for 7 days — for every rotation, transport-switch epochs included (ask #843: sim rule 14's "no longer than 14 days" is not used; the hub may retire an epoch earlier once every phone acked a newer one and nothing sealed in it is held); the hub publishes the window again under `e+1`.
+- **Epochs.** A new epoch on a phone's removal, on the cap (90 days on iCloud, 7 days on a relay link, or 2^28 seqs) and, with the relay, on every transport switch (RC §9). The previous epoch's relay-lane envelopes are accepted for 7 days — for every rotation, transport-switch epochs included (ask #843: sim rule 14's "no longer than 14 days" is not used; the hub may retire an epoch earlier once every phone acked a newer one and nothing sealed in it is held); the hub publishes the window again under `e+1`.
 - **Sequence numbers.** Each sender draws envelope `seq` (u64, from 1) from a crash-safe allocator; `0` means "none". Envelope `seq` is the rollback counter only; it is not an action order (§7.5).
 
 ### 4.3 Envelope
@@ -524,6 +524,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 8. The owner's recording switch published as `capabilities.recordings` in the heartbeat, the upload echo's `reason`, `ActionReason.not_supported`, and the held-upload expiry (§7.7, §9).
 9. The Go hub's remaining kinds: `device` records, the session start/stop/input handlers, `session_report`, `session_chat`, `calendar_event`, `meeting_transcript`, `recording_job` sources.
 10. ~~A shared hello case (`relay_device_id`) in `hub_contract_cases.json`~~ — **Done** (relay client Phase 3a, `device_hello`).
+11. ~~Weekly relay key rotation with ephemeral X25519 (§4.2, §7.6, §7.7)~~ — **Done** (relay client Phase 5, ask #1066; Go hub half ask #1067).
 
 ## Decisions
 
@@ -552,6 +553,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 - Phone UI and mockups are out of this document; they belong to the relay client spec — decided by agent; owner confirms on this review (ask #832).
 - On every transport switch, both directions, the hub writes a sealed switch notice (`transport_switched` to each phone's mailbox plus the transport marker in the data zone) into the transport it is leaving, before it stops publishing there; a phone reads them independently of the ordered path. This closes open point 6 — owner, ask #843.
 - Old-epoch keys are kept 7 days for every rotation, transport-switch epochs included; sim rule 14's 14 days is not used. A phone away longer gets `resend_from` for its old-epoch actions and reseals them with the same `action_seq` — owner, ask #843.
+- Relay links rotate weekly with ephemeral X25519: the frozen bytes `relay_kx`, `previous_relay_kx`, `next_kx`, the `wt/relay/v2/` info string and an HPKE recipient that is not always `dev_kx` are approved; envelope header, classes and existing vectors unchanged — ask #1066.
 
 ## Open points
 

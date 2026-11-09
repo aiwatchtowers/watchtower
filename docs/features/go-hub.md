@@ -625,3 +625,7 @@ Measured with `TestMeasure_HubLatencyOverTheStand` (200 actions, local stand, hu
   start and get no CloudKit signal.
 - An alert sealed in an epoch the phone's alert material no longer holds does not open; the notification extension
   shows the generic notification.
+
+## Relay key rotation (relay client Phase 5, ask #1066/#1067)
+
+On a relay route the keyring rotates every 7 days (`relayRotationAge`; 90 days on iCloud). A phone's `epoch_ack.next_kx` is stored as `devices.kx_offer`/`kx_offer_epoch` (only on the relay, only while not lapsed); at the rotation the hub draws `hub_eph` per offering phone, seals the derived keys as `epoch_relay_keys`, clears `hub_eph`, and sends a keybox sealed to the offer (`KeyboxRecipient`, `relay_kx`/`previous_relay_kx`), in the data zone for timer rotations. A free phone gets a grant and no keys on the relay. Erasure runs only on epochs that began on the relay (`hub_epochs.on_relay`). Each republish after a rotation logs `hub: rotation republish: complete|interrupted|resumed, N records, B asset bytes, E envelope bytes, D s`. Limits: see relay-client.md "Phase 5 limits".

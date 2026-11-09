@@ -616,7 +616,7 @@ Task 13, Task 0 ─ Task 17 ─ Task 11 (PR C)
 
 **Interfaces:**
 - Consumes: Tasks 3–5.
-- Produces: tests, plus a content-free log line for each republish after a rotation: `hub: rotation republish: complete|interrupted, N records, B asset bytes, D s`. A next rotation that wipes the hashes first writes `interrupted`, with the counts so far. **The log line is an instrument, not the measurement.** On the fake transport it proves only that the count is right; "Measuring the cost" says how real numbers get taken.
+- Produces: tests, plus a content-free log line for each republish after a rotation: `hub: rotation republish: complete|interrupted|resumed, N records, B asset bytes, E envelope bytes, D s`. A next rotation that wipes the hashes first writes `interrupted`, with the counts so far. **The log line is an instrument, not the measurement.** On the fake transport it proves only that the count is right; "Measuring the cost" says how real numbers get taken.
 
 - [ ] **Step 1: Failing tests.** `TestRuntime_RestartAfterRotationRepublishesOnce`. `TestRotationWhileRelayDownPublishesOnReturn`. `TestRuntime_ThreeRotationsTwoPhones`: one offered, one static, each opens slices, echoes and controls in every epoch. `TestRotationRepublishLogsCounts`, with no names or bytes in the line (`logcanary`-style check). `TestRotationRepublishInterruptedSaysSo`. `TestPermissionAnswerAcrossARotationAppliedOnce`, `TestSessionInterruptAcrossARotationExpires` (PROJ-21). `TestLostResendFromFilledByResendingUnechoed`.
 - [ ] **Step 2: Run** `go test ./internal/hub -run 'Runtime_|RotationWhile|RotationRepublish|PermissionAnswer|SessionInterrupt|LostResendFrom'`. Expected: FAIL.

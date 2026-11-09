@@ -361,6 +361,8 @@ Three Macs in slots shows the "Add Mac" screen (`RelaySlotsModel`, `RelaySlotsVi
 - **R9.** `epoch_ack` goes out on every raise of the newest epoch, to an ordered hub only (`TransportFollowerPolicy` command `sendEpochAck`).
 - **R10.** On `resend_from`, `ActionOutbox` reseals rows sealed in an epoch older than the current one (`resealOlderEpochs`) by opening the phone's own envelope with the derived `K_relay[dir, e]`, with the same `action_seq`; rule 13's switch resend and a plain gap resend stay byte for byte.
 
+**Phase 5:** the 7-day retention above is unchanged; relay epochs now also rotate weekly, see "Phase 5".
+
 ### Interop and CI entry points
 
 `make relay-interop-kit-hub RELAY=<relay checkout>` (`scripts/relay-interop-kit-hub.sh`) runs the real Go hub's `TestInterop_KitPhone` (`internal/hub/interop_kit_test.go`, build tag `interop`, test-only) beside the Kit's `KitGoHubInteropTests` (`FILTER=KitGoHubInteropTests`) on the relay's stand, handing off through files: link, vouch, promote, actions and unlink. With attestation off, today's Go hub registering as a Mac is a hub the phone vouches for. The CI mode's switches, `RELAY_INTEROP_CI=1` (`scripts/relay-interop-ci-lib.sh`) and `WATCHTOWER_CHECKOUT`, are in "CI mode of the interop scripts" above.
@@ -407,6 +409,27 @@ Plan: `docs/superpowers/plans/2026-11-03-relay-client-phase-4.md`; its Decisions
 
 A creator check that needs the Mac's iCloud user and cannot read it is no refusal. A device record gets `link.ErrOwnerUnreadable` and stays unmarked (#1532); a private CloudKit hello from a named creator gets the same error from `HandleCloudKitHello` (no answer, not remembered as decided). The processor strikes both per record (`MaxRecordStrikes` over `StrikeWindow`); the hello is then passed over with the error-level line `record <name> ... (owner_unreadable): passed over`, and the phone's request goes unanswered until it sends a fresh hello. The strikes live in memory: a daemon restart starts the count again. A readable owner that is not the creator stays `ErrHelloDropped`, decided once and never retried.
 
+## Phase 5 — weekly key rotation with ephemeral X25519 (2026-11-09, board #1248; ask #1066: on with launch)
+
+Relay links rotate their epoch every 7 days (iCloud links keep 90 days). Each rotation draws a fresh ephemeral X25519 pair per phone on both sides, so a stolen `dev_kx` plus recorded keyboxes no longer opens old relay records. Design: plan `docs/superpowers/plans/2026-11-05-relay-client-phase-5.md`, protocol spec §4.2, §7.6, §7.7.
+
+- **Scheme.** `K_relay[dir, e]` = HKDF over `X25519(hub_eph, dev_eph) ‖ X25519(hub_kx, dev_kx)` under `wt/relay/v2/` (Kit `KeyDerivation`, Go `secure`, shared vector `ephemeralRelayKeys`); an all-zero shared secret is refused. The phone offers its next public key in `epoch_ack.next_kx`; the hub draws `hub_eph` per phone at the rotation, seals the derived pair at rest and clears `hub_eph`; the keybox (`relay_kx`, `previous_relay_kx`) names the pair and is sealed to the offer, not to `dev_kx`. Timer-rotation keyboxes go in the data zone (`keybox-<device>`); switch keyboxes stay in the mailbox.
+- **Phone.** `HubLinkKeys` holds `offered`/`current` ephemeral state and the stored pair per epoch; the key rule is in the plan's "The scheme" table. An epoch above the newest held waits at most `keyboxWaitCap` = 1 h, then the feed parks (token kept, nothing skipped) until a merge, foreground or launch; a record in a gone epoch is dropped. A merge reseals the phone's own undelivered rows of epochs it drops; recordings waiting to upload are resealed before sending (relay routes only).
+- **Hub.** Offers are stored only on a relay route and while the phone is paying. The old private key is erased (`hub_epochs.on_relay` epochs only); an iCloud link gets only the inert sidecar migration. Echoes and controls are sealed in the phone's acked epoch while retained.
+- **Losing reader status.** A phone that stops paying or reading loses its keys at the next rotation and is told by `hub_on_relay` (opened by the static key as the one exception). The Now screen says when the feed is parked, and a left-behind phone shows a banner with a term date; after the term, if Relay still refuses it, the link ends (history and unsent actions go) and it is linked again. A phone that pays while its Mac moved to iCloud keeps the Mac's row until Forget This Mac.
+- **Measuring.** The hub logs `hub: rotation republish: complete|interrupted|resumed, N records, B asset bytes, E envelope bytes, D s` per republish (content-free). The phone logs a traffic meter line (Task 15). The thresholds and the staging run are in the plan's "Measuring the cost"; they block launch, not the merge.
+
+**Difference from the relay's text (launch condition 5).** The client implements rotation as a launch requirement (ask #1066). The relay repository's text still says, at the commit last read, "Launch for users waits for items 1–7 and 9; item 8 (key rotation) may come in the next client release", and its design §7 wording on ephemeral keys and `sim/README.md` rule 5's note (ask #1073) are missing. The relay session has to make those edits (listed in the plan's Launch condition 5); until the launch gate reads them there, this note is the record. Not edited from this repository.
+
+**Phase 5 limits.**
+
+- A lost or late ack across two rotations within 7 days, with an echo overwrite between them, can delay one late echo overwrite until its epoch retires.
+- A sidecar from before migration 00016 (headless) that is unlinked offline before any start on the new code treats its NULL epoch as iCloud.
+- When two lapses overtake each other, the term date can only move later, never an early end.
+- S58's "open the Mac" advice does not help a phone whose Mac moved with a marker it cannot open: it does not know the Mac moved, shows no banner and keeps a stale row, left for Forget This Mac in Settings → Macs (ask #1100, "Оставить S58").
+- Paying alone may not bring a left-behind phone back.
+- A phone away three or more rotations returns with its old outbox; rows sealed in a gone epoch are resealed or refused for good with `skip_to`, so a stale action may reach the hub and be answered expired.
+
 ## v1 limits
 
 - **A resync that the relay refuses mid-way is silent.** Every pull from 0 sets `Changes.resync` (relay `bcca870`, Phase 3 Task 17), so the tombstone floor no longer stalls a multi-page resync. What can still stall one is the relay refusing a flagged middle page with `TOKEN_EXPIRED` (a zone rebuilt mid-resync); the pull is then held, and the only trace is one `relay resync stalled partway, held` log line (category `HostedRelay`, zone kind only). No `relayEvents` case or screen reports it.
@@ -450,3 +473,4 @@ A creator check that needs the Mac's iCloud user and cannot read it is no refusa
 - **Phase 4: a tab switch counts as closing the subscription screen,** which clears a finished press.
 - **Phase 4: a process iOS never brings forward leaves the relay with the last token.** A token changed meanwhile is dropped on `BadDeviceToken`, and Desktop shows the no-token line until the next open.
 - **Smaller parked items.** A pull after a terminal stop redials the socket each time. A `ZoneChanged` that carries a record still costs one `changes` round trip (R9).
+- **Phase 5 limits** are listed with the Phase 5 section above.

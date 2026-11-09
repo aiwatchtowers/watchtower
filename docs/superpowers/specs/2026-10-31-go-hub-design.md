@@ -46,7 +46,7 @@ Everything the relay client spec decided for the hub (Decisions list there: one 
 - Phone recordings and transcription on a headless host (the transcriber is the Desktop's ML stack). A headless hub does not offer recording; the phone hides it for that hub.
 - The phone and Kit work of the relay client spec (§2).
 - A self-hosted relay, a LAN/direct transport, Tailscale.
-- Key rotation with ephemeral X25519 (RC §1: after launch, Phase 5 there).
+- ~~Key rotation with ephemeral X25519~~ — no longer a non-goal: the Go hub builds its half in relay client Phase 5 (ask #1067).
 
 **Anti-goals (failure even if it works)**
 - Any phone has to pair again after the upgrade.
