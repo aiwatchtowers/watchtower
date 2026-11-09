@@ -75,6 +75,8 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
     private var held: Set<String> = []
     private var waiting: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var answers: [Relay_V1_EntitlementKind] = []
+    /// Held reads are answered by the fake first and wait with the answer (`holdReadAnswers()`).
+    private var readsAnswerFirst = false
 
     init(inner: any RelayHTTP) {
         self.inner = inner
@@ -101,6 +103,13 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
 
     /// Reads wait until `releaseReads()`.
     func holdReads() {
+        hold(Self.readKey)
+    }
+
+    /// Reads are answered by the fake at once, on its state then, and wait with that answer until released: a read in
+    /// flight that answers what the relay said when it was asked, however late it lands.
+    func holdReadAnswers() {
+        lock.withLock { readsAnswerFirst = true }
         hold(Self.readKey)
     }
 
@@ -135,7 +144,15 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
 
     func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
         let request = try? Relay_V1_Request(serializedBytes: body)
-        if case .getAccountState? = request?.op { await waitIfHeld(Self.readKey) }
+        if case .getAccountState? = request?.op {
+            guard lock.withLock({ readsAnswerFirst }) else {
+                await waitIfHeld(Self.readKey)
+                return try await inner.post(url, body: body, headers: headers)
+            }
+            let answer = try await inner.post(url, body: body, headers: headers)
+            await waitIfHeld(Self.readKey)
+            return answer
+        }
         if case .submitTransaction(let submit)? = request?.op {
             await waitIfHeld(submit.signedTransaction)
             let scripted = lock.withLock { answers.isEmpty ? nil : answers.removeFirst() }

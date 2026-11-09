@@ -220,6 +220,9 @@ final class RelayAccountCenter {
     @ObservationIgnored private var slotCheckRunning = false
     @ObservationIgnored private var syncedRunning = 0
     @ObservationIgnored private var slotCheckOwed = false
+    /// How many relay events the loop has finished handling, in order: a test waits on it to know a handling ended (as
+    /// on `lapseEndsFinished()`).
+    @ObservationIgnored private(set) var handledEvents = 0
     /// How long an answered read stands for a slot check (relay client Phase 5, review M5).
     private static let slotCheckFresh: TimeInterval = 60
 
@@ -310,6 +313,7 @@ final class RelayAccountCenter {
         Task { [weak self] in
             for await event in events {
                 await self?.handle(event)
+                self?.handledEvents += 1
             }
         }
     }

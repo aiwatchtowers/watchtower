@@ -28,9 +28,12 @@ final class RelayTermWiringTests: XCTestCase {
     }
 
     /// A relay-only link, the phone paying with the Mac in its slot, the account center wired.
-    private func rig(farewellLive: Bool = false, secondRelayHub: String? = nil) async throws -> Rig {
+    private func rig(
+        farewellLive: Bool = false, secondRelayHub: String? = nil, relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil
+    ) async throws -> Rig {
         let bed = try await Bed.make(
-            self, on: .relay, hubTransports: ["relay"], farewellLive: farewellLive, secondRelayHub: secondRelayHub)
+            self, on: .relay, hubTransports: ["relay"], relayHTTP: relayHTTP, farewellLive: farewellLive,
+            secondRelayHub: secondRelayHub)
         let session = try await bed.orderedSession()
         let store = FakeSubscriptionStore()
         bed.root.wireRelayAccount { store }
@@ -423,16 +426,44 @@ final class RelayTermWiringTests: XCTestCase {
         XCTAssertTrue(rig.session.waitsForKeybox, "the key source stays")
     }
 
-    /// Review M3: a superseded `syncThenLapse` does not lapse; the read that took over decides.
+    /// Review M3, PR C final review M4: a superseded `syncThenLapse` does not lapse; the newest read that finishes decides.
+    /// The test sets the order: the relay's `ENTITLEMENT_EXPIRED` read is in flight (it answered "expired") when a newer
+    /// read starts (it answered paying); the lapse's read lands first, overtaken, then the newer one. The phone's last
+    /// read had failed, so no paying phase holds the lapse back: only the superseded guard does.
     func testASupersededLapseReadDoesNotLapse() async throws {
-        let rig = try await rig()
+        var made: SubmitGateHTTP?
+        let rig = try await rig { inner in
+            let gate = SubmitGateHTTP(inner: inner)
+            made = gate
+            return gate
+        }
+        let gate = try XCTUnwrap(made)
         let center = try rig.center
-        try await entitlement(rig.bed, "expired") // sends ENTITLEMENT_EXPIRED: the center's syncThenLapse
-        try await entitlement(rig.bed, "active")
+        let mac = rig.bed.mac.deviceID
+        // The socket's `.reachable(true)` is the first event: its pass reads paying.
+        try await poll({ center.handledEvents == 1 && center.phase == .paying(grace: false, macs: [mac]) }, "the first pass")
+        rig.bed.fake.failNext("getAccountState", with: .unspecified)
         await center.refresh()
-        try await poll({ center.phase == .paying(grace: false, macs: [rig.bed.mac.deviceID]) }, "paying")
+        XCTAssertEqual(center.phase, .unknown, "the last read failed")
+
+        gate.holdReadAnswers()
+        try await entitlement(rig.bed, "expired") // ENTITLEMENT_EXPIRED: the center's syncThenLapse reads
+        try await poll({ gate.heldReads == 1 }, "the lapse's read answered \"expired\" and waits")
+        try await entitlement(rig.bed, "active")
+        let newer = Task { await center.refresh() }
+        try await poll({ gate.heldReads == 2 }, "the newer read answered paying and waits")
+
+        gate.releaseFirstRead() // the lapse's read lands, overtaken
+        try await poll({ center.handledEvents == 2 }, "the expiry's handling ended")
+        XCTAssertNil(try rig.bed.row()?.link.relayRefused, "the overtaken lapse read lapsed nothing")
+        XCTAssertEqual(center.phase, .unknown, "its answer was dropped")
+
+        gate.releaseReads() // the newer read lands: paying
+        await newer.value
         await center.lapseEndsFinished()
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: [mac]))
         XCTAssertNil(try rig.bed.row()?.link.relayRefused, "no lapse marked a paying phone")
+        XCTAssertTrue(rig.session.waitsForKeybox, "the key source stays")
     }
 
     /// Review M4: two relay-only Macs whose terms end in one foreground each get their notice, one at a time.
