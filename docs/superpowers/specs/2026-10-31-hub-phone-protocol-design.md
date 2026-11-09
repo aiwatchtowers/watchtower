@@ -553,7 +553,7 @@ CloudKit: the hub deletes action and upload records older than 7 days once a day
 - Phone UI and mockups are out of this document; they belong to the relay client spec — decided by agent; owner confirms on this review (ask #832).
 - On every transport switch, both directions, the hub writes a sealed switch notice (`transport_switched` to each phone's mailbox plus the transport marker in the data zone) into the transport it is leaving, before it stops publishing there; a phone reads them independently of the ordered path. This closes open point 6 — owner, ask #843.
 - Old-epoch keys are kept 7 days for every rotation, transport-switch epochs included; sim rule 14's 14 days is not used. A phone away longer gets `resend_from` for its old-epoch actions and reseals them with the same `action_seq` — owner, ask #843.
-- Relay links rotate weekly with ephemeral X25519: the frozen bytes `relay_kx`, `previous_relay_kx`, `next_kx`, the `wt/relay/v2/` info string and an HPKE recipient that is not always `dev_kx` are approved; envelope header, classes and existing vectors unchanged — ask #1066.
+- Relay links rotate weekly with ephemeral X25519: the frozen bytes `relay_kx`, `previous_relay_kx`, `next_kx`, the `wt/relay/v2/` info string and an HPKE recipient that is not always `dev_kx` are approved; envelope header, classes and existing vectors unchanged — ask #1066. What this does and does not protect, with no fixed bound on exposure: `docs/features/relay-client.md` "What rotation protects, and what it does not".
 
 ## Open points
 

@@ -21,7 +21,9 @@ While the relay gives no answer, **Now** shows "Relay unavailable for 3 min. You
 
 When your subscription ends and the Mac moves to iCloud, changes the Mac had not confirmed go out again over iCloud. If the Mac stays on Relay because another subscribed phone uses it, they land under **Not delivered** with "Work Mac runs over Relay now". See [iPhone: Relay](iphone-relay.md).
 
-When the phone is waiting for keys after the Mac's weekly key change, **Now** says the feed is parked rather than empty; your changes stay queued and nothing is lost. If your Mac moved on without this iPhone, a banner on **Now** and in **Settings → Macs** shows a date. Paying alone may not bring the phone back; opening the Mac app may not either. After that date, when you open the app and Relay still refuses this iPhone a second time, the link ends: its history on this iPhone and unsent changes go, and you link the Mac again. If this iPhone pays while its Mac moved to iCloud, the Mac's row stays until you press **Forget This Mac**. If the phone cannot read the Mac's move at all, it shows no banner and keeps a stale row; use **Forget This Mac** in **Settings → Macs**.
+After the Mac's weekly key change, a phone that has not yet received the new keys waits for them. Your changes stay queued; nothing is lost.
+
+If your Mac moved on without this iPhone, **Now** and **Settings → Macs** show a banner with a date. After that date, if Relay still refuses this iPhone when you open the app, the link ends: its history on this iPhone and unsent changes go, and you link the Mac again.
 
 ## Using it
 <!-- learn: none -->
@@ -51,6 +53,7 @@ Each row in the **Not delivered** list has **Retry**, which sends that change ag
 
 - **No delivery lists on Now.** Your hub does not enable ordered delivery, or there are no queued or undelivered changes.
 - **Unlock your iPhone to retry.** Unlock the phone, then press **Retry** again.
+- **A Mac row you no longer use, or no banner though the Mac moved.** Open **Settings → Macs**, press **Forget This Mac**, then link the Mac again by QR code. This also applies when this iPhone pays for Relay but the Mac moved to iCloud.
 
 ## Related
 <!-- learn: none -->

@@ -18,13 +18,17 @@ import (
 // another name; it does not match, and the workflow scan below pins that it
 // does not set the phone's.
 
-var phoneOriginSetting = regexp.MustCompile(`WATCHTOWER_RELAY_ORIGIN\s*[:=]\s*(.*)`)
+var phoneOriginSetting = regexp.MustCompile(`WATCHTOWER_RELAY_ORIGIN(?:\[[^\]]*\])*\s*[:=]\s*(.*)`)
 
 // nonEmptyOriginValues returns the non-empty values text assigns to the
 // phone's relay origin setting.
 func nonEmptyOriginValues(text string) []string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
+		// A documented example in a comment is not a setting.
+		if t := strings.TrimSpace(line); strings.HasPrefix(t, "//") || strings.HasPrefix(t, "#") {
+			continue
+		}
 		m := phoneOriginSetting.FindStringSubmatch(line)
 		if m == nil {
 			continue
@@ -33,7 +37,7 @@ func nonEmptyOriginValues(text string) []string {
 		if i := strings.Index(v, "#"); i >= 0 {
 			v = v[:i]
 		}
-		v = strings.TrimSpace(v)
+		v = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(v), ";"))
 		v = strings.Trim(v, `"'`)
 		if v != "" {
 			out = append(out, v)
@@ -86,6 +90,24 @@ func TestNoReleasePhoneBuildSetsRelayOrigin(t *testing.T) {
 	for _, target := range []string{"mobile-archive", "mobile-testflight"} {
 		texts["Makefile:"+target] = makeTarget(t, makefile, target)
 	}
+	texts["WatchtowerMobile/WatchtowerMobile.xcodeproj/project.pbxproj"] = readRepoFile(t, "WatchtowerMobile/WatchtowerMobile.xcodeproj/project.pbxproj")
+	texts["WatchtowerMobile/ExportOptions.plist"] = readRepoFile(t, "WatchtowerMobile/ExportOptions.plist")
+	// The origin reaches the app only through Info.plist's WTRelayOrigin,
+	// which must stay a build-setting reference.
+	info := readRepoFile(t, "WatchtowerMobile/Info.plist")
+	if !regexp.MustCompile(`<key>WTRelayOrigin</key>\s*<string>\$\(WATCHTOWER_RELAY_ORIGIN\)</string>`).MatchString(info) {
+		t.Error("Info.plist's WTRelayOrigin must be exactly $(WATCHTOWER_RELAY_ORIGIN), a hard-coded origin would bypass the build settings")
+	}
+	// Scripts that archive the phone; the relay-interop stand scripts set an
+	// origin for local test runs and do not build a release.
+	scripts, _ := filepath.Glob(filepath.Join("..", "..", "scripts", "*"))
+	for _, sc := range scripts {
+		b, err := os.ReadFile(sc)
+		if err != nil || !strings.Contains(string(b), "WatchtowerMobile") || !strings.Contains(strings.ToLower(string(b)), "archive") {
+			continue
+		}
+		texts["scripts/"+filepath.Base(sc)] = string(b)
+	}
 	workflows, err := filepath.Glob(filepath.Join("..", "..", ".github", "workflows", "*"))
 	if err != nil || len(workflows) == 0 {
 		t.Fatalf("no workflow files found: %v", err)
@@ -115,10 +137,16 @@ func TestNonEmptyOriginValuesRecognisesAssignments(t *testing.T) {
 		want int
 	}{
 		{"WATCHTOWER_RELAY_ORIGIN =", 0},
+		{`WATCHTOWER_RELAY_ORIGIN = "";`, 0},
+		{`WATCHTOWER_RELAY_ORIGIN = "https://relay.example.com";`, 1},
 		{`WATCHTOWER_RELAY_ORIGIN: ""`, 0},
 		{`WATCHTOWER_RELAY_ORIGIN: "https://relay.example.com"`, 1},
 		{"WATCHTOWER_RELAY_ORIGIN = https://relay.example.com", 1},
 		{"\t@make X WATCHTOWER_RELAY_ORIGIN='https://r.example.com'", 1},
+		{"WATCHTOWER_RELAY_ORIGIN[config=Release] = https://relay.example.com", 1},
+		{"WATCHTOWER_RELAY_ORIGIN[sdk=iphoneos*][config=Release] = https://relay.example.com", 1},
+		{"WATCHTOWER_RELAY_ORIGIN[config=Release] =", 0},
+		{"// WATCHTOWER_RELAY_ORIGIN = https://relay.example.com", 0},
 		{"RELAY_ORIGIN: ${{ vars.RELAY_ORIGIN }}", 0},
 	} {
 		if got := len(nonEmptyOriginValues(c.in)); got != c.want {
