@@ -294,6 +294,30 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertGreaterThan(after, before, "the outbox writes on its route again")
     }
 
+    /// PR C final review M3: the move is written on the row as it stands after the follower's awaits, so a newer write
+    /// meanwhile (here an answered account read clearing the refusal mark) is kept, not undone by the row read before.
+    func testTheMoveKeepsARowWriteMadeDuringItsAwaits() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let first = try await bed.orderedSession()
+        var marked = try XCTUnwrap(bed.row()?.link)
+        marked.relayRefused = RelayRefusedRecord(since: Date(), cause: .slot)
+        XCTAssertTrue(try bed.registry.updateLink(marked))
+        let host = FlakyMergeHost(root: bed.root, failsFirstMerge: false)
+        host.duringKeySourceGone = {
+            guard var renewed = try? bed.row()?.link else { return }
+            renewed.relayRefused = nil
+            XCTAssertTrue(bed.root.persistRoute(renewed))
+        }
+        let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: host)
+
+        let decided = await follower.handle(.slotLost)
+
+        XCTAssertTrue(decided)
+        let link = try XCTUnwrap(bed.row()?.link)
+        XCTAssertEqual(link.transport, .cloudKit, "the lost slot moved the link to its iCloud route")
+        XCTAssertNil(link.relayRefused, "the newer write is kept")
+    }
+
     /// Final review M5: decisions of one hub run one at a time, so the same control read twice (two transports, or the
     /// feed and the side reader) is decided once from the moved row, never twice from a stale one.
     func testTwoDecisionsOfOneHubNeverInterleave() async throws {
@@ -1163,6 +1187,8 @@ private final class FlakyMergeHost: TransportFollowerHost {
     private let failsFirstMerge: Bool
     private(set) var merges = 0
     var persistFails = false
+    /// Runs inside `relayKeySourceGone`, between the follower's read of the row and its route write.
+    var duringKeySourceGone: (@MainActor () -> Void)?
     private var relayCalls = 0
     /// The most `relayUse` calls that were in flight at once.
     private(set) var mostRelayCallsAtOnce = 0
@@ -1179,7 +1205,10 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
     func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
     func dropEphemeral(hubID: String) -> Bool { root.dropEphemeral(hubID: hubID) }
-    func relayKeySourceGone(hubID: String) async { await root.relayKeySourceGone(hubID: hubID) }
+    func relayKeySourceGone(hubID: String) async {
+        await root.relayKeySourceGone(hubID: hubID)
+        duringKeySourceGone?()
+    }
     func relayKeySourceBack(hubID: String) async { await root.relayKeySourceBack(hubID: hubID) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
 

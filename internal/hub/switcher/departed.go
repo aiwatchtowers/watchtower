@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,11 +48,14 @@ type departures struct {
 	// read of the current run that omitted it was made.
 	missed map[string]time.Time
 	// owed is the phones a ReaderLost started for and did not finish (its
-	// first clear committed, the lapsed mark or hub_on_relay did not): with no
-	// ephemeral state left, only this set brings them back at the next poll.
-	// Kept in hub_meta (MetaReaderLostOwed), so a restart finishes them too;
-	// reset never drops it.
-	owed map[string]bool
+	// first clear committed, the lapsed mark or hub_on_relay did not), each
+	// with the link time it was owed under: with no ephemeral state left, only
+	// this set brings them back at the next poll. Kept in hub_meta
+	// (MetaReaderLostOwed), so a restart finishes them too; reset never drops
+	// it. The hub leaving the relay drops all of it (the rotation toward
+	// iCloud has cleared every offer, and hub_on_relay means nothing there),
+	// and a re-link drops that phone's entry (finishOwed).
+	owed map[string]time.Time
 }
 
 // checkDeparted is one tick of the departure check (see above). It runs at
@@ -66,7 +70,12 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 	if !s.dp.last.IsZero() && now.Sub(s.dp.last) < NoPayerPoll {
 		return
 	}
-	if s.activeKind() != transport.KindRelay || s.Pending() {
+	if s.activeKind() != transport.KindRelay {
+		s.dropOwed()
+		s.dp = departures{}
+		return
+	}
+	if s.Pending() {
 		s.dp = departures{owed: s.dp.owed}
 		return
 	}
@@ -85,6 +94,9 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 	s.dp.last = now
 	if err != nil {
 		return // unknown: nothing moves, nothing clears, the count holds
+	}
+	if s.leaving() {
+		return // the hub left or is leaving the relay during the read: the next poll resets
 	}
 	if after, _ := s.linkedPhones(); after != fp || s.dp.fp != fp {
 		s.dp = departures{last: now, fp: after, owed: s.dp.owed}
@@ -108,7 +120,7 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 	}
 	for _, d := range devices {
 		id := canonical(d.ID)
-		if s.dp.owed[id] {
+		if _, owed := s.dp.owed[id]; owed {
 			continue // finishOwed's
 		}
 		if d.RelayDeviceID == "" || listed[d.RelayDeviceID] {
@@ -128,21 +140,35 @@ func (s *Switcher) checkDeparted(ctx context.Context) {
 			continue
 		}
 		delete(s.dp.missed, id)
+		if s.leaving() {
+			return // a Step's lapse moved the hub meanwhile: hub_on_relay must not go ahead of its switch
+		}
 		if err := s.ReaderLost(d.ID); err != nil {
 			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
-			s.setOwed(id, true)
+			s.setOwed(id, d.LinkedAt)
 		}
 	}
+}
+
+// leaving is true when the hub no longer runs on the relay or a switch is
+// pending: a departure found then waits for the next poll, which resets.
+func (s *Switcher) leaving() bool {
+	return s.activeKind() != transport.KindRelay || s.Pending()
 }
 
 // finishOwed retries every ReaderLost that failed after its first clear
 // (dpMu held), before the poll's account read: the mark, hub_on_relay and
 // the last clear, whatever the list says now. A phone marked lapsed
-// meanwhile has only the clear left; one no longer linked is done.
+// meanwhile has only the clear left; one no longer linked, or linked again
+// since (another link time), is done.
 func (s *Switcher) finishOwed() {
-	for id := range s.dp.owed {
+	for id, linkedAt := range s.dp.owed {
 		d, linked, err := s.c.Store.Device(id)
 		if err != nil {
+			continue
+		}
+		if linked && !linkedAt.IsZero() && !d.LinkedAt.Equal(linkedAt) {
+			s.setOwed(id, time.Time{}) // a re-link: the new link starts with no relay keys and owes nothing
 			continue
 		}
 		if linked && d.RelayLapsedAt == nil {
@@ -155,23 +181,43 @@ func (s *Switcher) finishOwed() {
 			log.Printf("hub: a departed relay reader is finished at the next poll (%s)", errClass(err))
 			continue
 		}
-		s.setOwed(id, false)
+		s.setOwed(id, time.Time{})
 	}
 }
 
-// setOwed adds or removes id in the owed set and writes the set to hub_meta
-// (dpMu held). A failed write keeps memory as it is: the poll runs again.
-func (s *Switcher) setOwed(id string, owed bool) {
+// setOwed adds id, owed under the link of linkedAt, to the owed set, or
+// removes it when linkedAt is zero, and writes the set to hub_meta (dpMu
+// held). A failed write keeps memory as it is: the poll runs again.
+func (s *Switcher) setOwed(id string, linkedAt time.Time) {
 	if s.dp.owed == nil {
-		s.dp.owed = map[string]bool{}
+		s.dp.owed = map[string]time.Time{}
 	}
-	if owed {
-		s.dp.owed[id] = true
+	if !linkedAt.IsZero() {
+		s.dp.owed[id] = linkedAt
 	} else {
 		delete(s.dp.owed, id)
 	}
-	ids := slices.Sorted(maps.Keys(s.dp.owed))
-	if err := s.c.Store.SetMeta(state.MetaReaderLostOwed, strings.Join(ids, ",")); err != nil {
+	s.saveOwed()
+}
+
+// dropOwed forgets every unfinished departure (dpMu held): the hub left the
+// relay.
+func (s *Switcher) dropOwed() {
+	if len(s.dp.owed) == 0 {
+		return
+	}
+	s.dp.owed = nil
+	s.saveOwed()
+}
+
+// saveOwed writes the owed set to hub_meta as "ID@<link time, unix ns>",
+// comma-joined and sorted.
+func (s *Switcher) saveOwed() {
+	entries := make([]string, 0, len(s.dp.owed))
+	for _, id := range slices.Sorted(maps.Keys(s.dp.owed)) {
+		entries = append(entries, id+"@"+strconv.FormatInt(s.dp.owed[id].UnixNano(), 10))
+	}
+	if err := s.c.Store.SetMeta(state.MetaReaderLostOwed, strings.Join(entries, ",")); err != nil {
 		log.Printf("hub: the unfinished departures are not saved (%s)", errClass(err))
 	}
 }
@@ -184,11 +230,14 @@ func (s *Switcher) loadOwed() {
 	}
 	s.dpMu.Lock()
 	defer s.dpMu.Unlock()
-	s.dp.owed = map[string]bool{}
-	for _, id := range strings.Split(v, ",") {
-		if id != "" {
-			s.dp.owed[id] = true
+	s.dp.owed = map[string]time.Time{}
+	for _, entry := range strings.Split(v, ",") {
+		id, at, _ := strings.Cut(entry, "@")
+		ns, err := strconv.ParseInt(at, 10, 64)
+		if id == "" || err != nil {
+			continue
 		}
+		s.dp.owed[id] = time.Unix(0, ns)
 	}
 }
 

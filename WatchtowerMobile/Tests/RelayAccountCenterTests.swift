@@ -1359,6 +1359,52 @@ final class RelayAccountCenterTests: XCTestCase {
         XCTAssertEqual(center.phase, .free(ended: true))
     }
 
+    /// PR C final review M4: `ENTITLEMENT_INACTIVE`'s read is overtaken by a newer read that fails. The relay's word then
+    /// stands, as on a failed read of its own: the relay Macs lapse.
+    func testALapseReadOvertakenByAFailedReadStillLapses() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let macs = targets(on: bed)
+        let center = await started(bed)
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "expired", for: .zero)
+        bed.http.holdReads()
+        bed.emit(.entitlementInactive)
+        try await bed.until("the lapse's read in flight") { bed.http.heldReads == 1 }
+        let newer = Task { await center.refresh() }
+        try await bed.until("the newer read in flight") { bed.http.heldReads == 2 }
+
+        let reads = bed.reads
+        bed.http.releaseFirstRead() // the lapse's read answers "not paying", overtaken
+        try await bed.until("the lapse's read answered") { bed.reads == reads + 1 }
+        bed.fake.failNext("getAccountState", with: .unspecified)
+        bed.http.releaseReads() // the newer read fails
+        await newer.value
+
+        try await bed.until("the relay's word stands") { macs.relay.lapses == 1 }
+        XCTAssertEqual(macs.cloud.lapses, 0)
+    }
+
+    /// M4's other half: a newer read that answers paying settles it, and nothing lapses.
+    func testALapseReadOvertakenByAPayingReadDoesNotLapse() async throws {
+        let (bed, token) = try await registeredBed()
+        try await paying(bed, token)
+        let macs = targets(on: bed)
+        let center = await started(bed)
+        bed.http.holdReads()
+        bed.emit(.entitlementInactive)
+        try await bed.until("the lapse's read in flight") { bed.http.heldReads == 1 }
+        let newer = Task { await center.refresh() }
+        try await bed.until("the newer read in flight") { bed.http.heldReads == 2 }
+
+        bed.http.releaseReads()
+        await newer.value
+        bed.emit(.unsupportedVersion) // events run in order: once this one is seen, the lapse's handling ended
+        try await bed.until("handled") { center.updateRequired }
+
+        XCTAssertEqual(macs.relay.lapses, 0)
+        XCTAssertEqual(center.phase, .paying(grace: false, macs: []))
+    }
+
     func testAnOlderReadDoesNotOverwriteAMove() async throws {
         let (bed, token) = try await registeredBed()
         try await paying(bed, token)

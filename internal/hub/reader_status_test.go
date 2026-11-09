@@ -37,7 +37,7 @@ func TestLapsedPhoneKeyboxHasNoKeysAndIsRepublished(t *testing.T) {
 	if err := g.h.sw.OnControl(context.Background(), transport.Control{Kind: transport.EntitlementExpired, Detail: dev.RelayDeviceID}); err != nil {
 		t.Fatal(err)
 	}
-	if !g.h.pub.Dirty(hubslices.KindDeviceGrant) {
+	if !g.h.pub.DirtyForTest(hubslices.KindDeviceGrant) {
 		t.Fatal("the lapse did not ask for the grant to be published")
 	}
 	if k := g.zoneKeys(dev); k != nil {
@@ -178,12 +178,12 @@ func TestAReadersSyncThatAddsAPhonePublishesTheGrant(t *testing.T) {
 		t.Fatal("a phone that is no reader has keys in the zone")
 	}
 	h.syncReaders(context.Background(), rel, true) // unchanged: nothing to publish
-	if h.pub.Dirty(hubslices.KindDeviceGrant) {
+	if h.pub.DirtyForTest(hubslices.KindDeviceGrant) {
 		t.Fatal("an unchanged reader list asked for a publish")
 	}
 	account = &relayv1.AccountState{Phones: []*relayv1.SlotHolder{holder(ph, true)}}
 	h.syncReaders(context.Background(), rel, true)
-	if !h.pub.Dirty(hubslices.KindDeviceGrant) {
+	if !h.pub.DirtyForTest(hubslices.KindDeviceGrant) {
 		t.Fatal("the new reader's grant was not published soon")
 	}
 	if k := r.zoneKeysOf(h.center, ph); k == nil {
@@ -296,7 +296,7 @@ func TestAReadersSyncFromUnknownToEmptyPublishesTheGrant(t *testing.T) {
 	if rel.Readers() == nil {
 		t.Fatal("the sync set no list")
 	}
-	if !h.pub.Dirty(hubslices.KindDeviceGrant) {
+	if !h.pub.DirtyForTest(hubslices.KindDeviceGrant) {
 		t.Fatal("unknown to empty published nothing")
 	}
 }
