@@ -50,7 +50,7 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 - **IMAP item key** is `<uidvalidity>:<uid>` under the account (there is no mailbox column; each account syncs one folder); Jira keys are `issue:<KEY>` and `comment:<id>` (Task 1.2). The trigger and Go builders are the dual path `TestSRCDEL03`-shape test pins.
 - **Pack re-render points:** Accept/Rollback, `integrate`, and every `workbenchSetupOptions` path (workbench open / resync, new worktrees). There is no daemon pack drift pass today and none is added (the spec's "daemon drift check" maps to these paths).
 - **Run launch:** the Desktop starts `prompts replay <id> --json` as a detached child (its own session / process group, not in the quit kill list), polls the row every 2 s, and reads the outcome from the row, not from the child's exit (Task 5.8).
-- **Chats panel listing and the "Settings → AI" wording** wait on the owner's ask #1123; Tasks 5.11/5.13 follow its answer (if tuning chats stay out of the Chats panel, the `…-in-chats` mockup and its Swift test are dropped).
+- **Chats panel and the settings path** (owner, ask #1123, spec D48): tuning conversations are shown only in the tuning panel, never in the Chats panel; the no-tools line reads "Tuning tools need Claude or Codex — pick one in Settings → System → AI". The `…-conversation-removed-in-chats` mockup and `ChatsRemovedShot` are gone; no task shows the removed line outside the tuning panel.
 
 ## Owner decisions this plan waits on
 
@@ -58,8 +58,8 @@ Choices found in recon that the spec does not settle. The plan follows the recom
 
 | Choice | Plan follows | Tasks | Source |
 |---|---|---|---|
-| Tuning chats in the Chats panel | not listed there; tuning panel only | 5.7, 5.11, 5.13 | ask #1123 |
-| The no-tools line's settings path | "Settings → System → AI" | 5.4 | ask #1123 |
+| Tuning chats in the Chats panel | not listed there; tuning panel only — **decided** | 5.7, 5.11, 5.13 | ask #1123 |
+| The no-tools line's settings path | "Settings → System → AI" — **decided** | 5.4 | ask #1123 |
 | Memory and catch-up captures name every account in `refs` | yes (any account purge removes them) | 1.11, 1.12 | ask #1125 |
 | `media.*`, `chat.title`, `instructions.suggest`, `terminal.title` not captured (no A/B for them) | yes, v1 limit | 1.13 | ask #1125 |
 | An owned Codex session row stores the header cwd in `home_cwd` (file rows never store a cwd) | yes, like Claude | 4.7 | ask #1125 |
@@ -2603,7 +2603,7 @@ The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `Assistant
 
 **Interfaces:**
 - Produces (`package enum TuningChatTexts`, all `static`):
-  - constants: `title = "Tuning"`, `newChat = "New tuning chat"`, `newButton = "New"`, `closeHelp = "Close (Esc)"`, `tune = "Tune"`, `tuneIcon = "slider.horizontal.3"`, `tuneHelp = "Tune prompts, skills and agent instructions in a chat"`, `placeholder = "Ask about cost, prompts, skills or instructions…"`, `loading = "Reading this workbench's analytics…"`, `noTools = "Tuning tools need Claude or Codex — pick one in Settings → AI"`, `noToolsDetail = "Without them the chat can talk, but it cannot read the report, prompts or skills, or propose an edit."`, `openSettings = "Open Settings"`, `accepted = "Accepted · measuring for 14 days"`, `showAccepted = "Show in Accepted edits"`, `conversationRemoved = "This conversation was removed: data it read was deleted, made private or purged. Proposals built on that data are withdrawn unless accepted."`, `tooFewTail = "It will be possible after the prompt runs again."`.
+  - constants: `title = "Tuning"`, `newChat = "New tuning chat"`, `newButton = "New"`, `closeHelp = "Close (Esc)"`, `tune = "Tune"`, `tuneIcon = "slider.horizontal.3"`, `tuneHelp = "Tune prompts, skills and agent instructions in a chat"`, `placeholder = "Ask about cost, prompts, skills or instructions…"`, `loading = "Reading this workbench's analytics…"`, `noTools = "Tuning tools need Claude or Codex — pick one in Settings → System → AI"`, `noToolsDetail = "Without them the chat can talk, but it cannot read the report, prompts or skills, or propose an edit."`, `openSettings = "Open Settings"`, `accepted = "Accepted · measuring for 14 days"`, `showAccepted = "Show in Accepted edits"`, `conversationRemoved = "This conversation was removed: data it read was deleted, made private or purged. Proposals built on that data are withdrawn unless accepted."`, `tooFewTail = "It will be possible after the prompt runs again."`.
   - `struct Figures: Equatable { days, sessions, tasks: Int; costUSD: Double; perTaskUSD, previousPerTaskUSD: Double? }`, `static func figures(_ f: Figures) -> String`.
   - `struct StarterInputs { costPerTaskGrew: Bool; topHintFinding: String? }`, `static func starters(_ s: StarterInputs) -> [ChatStarterPrompt]` (≤ 4, `sendsImmediately: true`).
   - `static func toolLine(name: String, args: String) -> String?` (nil for a non-tuning tool).
@@ -2702,7 +2702,7 @@ The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `Assistant
   - `testRecentListsTenNewestOfThisWorkbenchOnly`: 12 conversations for workbench 3, 1 for workbench 30 → 10 ids, newest first, none of workbench 30.
   - `testNewConversationIsAnotherRow`: `newConversation` twice → two ids, both `analytics_tuning`/`"3"`.
   - `testNoKnowledgePrefixInTuning`: `EmbeddedChatEngineFactory.savesKnowledge(contextType: "analytics_tuning") == false`, `"meeting"` → true.
-  - `testTuningConversationNotInMainChatHistory` (holds if the owner keeps tuning chats out of the Chats panel in ask #1123; if the answer is to list them, this test is replaced by the listing task's tests): the conversation is absent from `ChatHistoryQueries` panel rows (as `testConversationNotInMainChatHistory` for automations).
+  - `testTuningConversationNotInMainChatHistory` (owner, ask #1123: tuning chats stay out of the Chats panel): the conversation is absent from `ChatHistoryQueries` panel rows (as `testConversationNotInMainChatHistory` for automations).
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=TuningChatSurfaceTests`.
 - [ ] **Step 3: Implement** — the rules block, exact text:
 ```
@@ -2800,12 +2800,11 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
 **Files:**
 - Create: `Sources/Views/Workbench/Analytics/TuningPanelView.swift` (`TuningPanelView`, `TuningEmptyState`, `TuningNoToolsCard`, `TuningRemovedLine`, `TuningAcceptedLine`)
 - Create: `Sources/Views/Workbench/Analytics/TuningReplayCardView.swift`
-- Modify: `Sources/Views/Chat/Embedded/EmbeddedChatView.swift` (above the composer: `TuningRemovedLine(offersNew: false)` when `engine.conversationGone` — the "same conversation open elsewhere" view)
 - Test: Create `Tests/TuningPanelViewTests.swift`
 
 **Interfaces:**
 - Consumes: `TuningChat`, `CoachCenter`, `CoachProposalCardView(proposal:isFirst:coach:actions:onEdit:)`, `CoachEditSheet`, `TuningReplayCardModel`, `EmbeddedChatRows(engine:accessory:)`, `EmbeddedChatComposer`, `ChatFeedView`, `MenuLabel`, `.kitQuiet`, `.kitIcon(isOn:)`, `.kitSecondary`, `.kitPrimary`, `Chip`, `.card()`.
-- Produces: `TuningPanelView(chat: TuningChat, coach: CoachCenter?, figures: TuningChatTexts.Figures?, starters: [ChatStarterPrompt], loading: Bool, actions: CoachActions, onClose: () -> Void, onOpenSettings: () -> Void, onShowAccepted: (Int64) -> Void)`; `TuningReplayCardView(model: TuningReplayCardModel, stacked: Bool, onButton: (TuningReplayCardModel.Button) -> Void)`; `TuningRemovedLine(offersNew: Bool, onNew: () -> Void)`.
+- Produces: `TuningPanelView(chat: TuningChat, coach: CoachCenter?, figures: TuningChatTexts.Figures?, starters: [ChatStarterPrompt], loading: Bool, actions: CoachActions, onClose: () -> Void, onOpenSettings: () -> Void, onShowAccepted: (Int64) -> Void)`; `TuningReplayCardView(model: TuningReplayCardModel, stacked: Bool, onButton: (TuningReplayCardModel.Button) -> Void)`; `TuningRemovedLine( Bool, onNew: () -> Void)`.
 
 - [ ] **Step 1: Write the failing tests** (ViewInspector; the chat from Task 5.8's test helpers)
   - `testTitleRowHasPickerNewAndClose`: texts `"Tuning"`, picker label `newChat` for an empty conversation, buttons `"New"`; the close button has help `"Close (Esc)"`; the picker menu lists `chat.recent` titles (≤ 10).
@@ -2814,7 +2813,7 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
   - `testNoToolsHidesStartersAndOffersSettings`: tools off → figures line stays, no starter, `noTools` + `"Open Settings"` calls `onOpenSettings`; with messages (midway) the card sits above the composer and an open proposal card keeps **Accept** enabled.
   - `testInlineProposalAcceptIsSecondary`: an open chat proposal card renders with `isFirst: false` (its Accept uses `.kitSecondary`; no `.kitPrimary` button in the panel besides an A/B card's).
   - `testAcceptedFoldsToOneLine`: an accepted chat proposal → `"Accepted · measuring for 14 days"` + `"Show in Accepted edits"` calls `onShowAccepted(21)`.
-  - `testRemovedLineAndNew`: `isRemoved` → `conversationRemoved` + `"New tuning chat"` calls `chat.startNew()`; `EmbeddedChatView` over a gone engine shows the line with no button and keeps `engine.draft`.
+  - `testRemovedLineAndNew`: `isRemoved` → `conversationRemoved` + `"New tuning chat"` calls `chat.startNew()`.
   - `testTooFewLine`, `testReplayRemovedLine`: `.tooFew` and `.replayRemoved` render their texts with no card.
   - `testReplayCardButtonsPerPhase`: proposed → `"Not now"`, `"Run"`; done → `"Discard"`, `"Propose this addition"`; refused → `"Discard"` only; discarded → folded `"A/B discarded · digest.channel"`; running → no button.
   - `testNoAddToKnowledgeInThePanel`: a reply with an artifact block → `find(button: "Add to Knowledge")` throws.
@@ -2867,7 +2866,6 @@ How the real views replace the fixture views:
 - `TuningAnalyticsHeader` → `AgentAnalyticsHeaderView` over the `agent-report-overview` fixture with `agents ["claude","codex"]`.
 - `TuningPanelShot`/`TuningFeed`/`TuningToolLines` → `TuningPanelView` over a `TuningChat` whose `EmbeddedChatCenter` uses a factory with a temp `DatabasePool` (WatchtowerTestSupport schema) seeded with the fixture turns, and a `ScriptedAIService` held mid-stream for **streaming** (tool steps `get_llm_usage`, `get_prompt`, `list_prompt_inputs` give the quiet lines through `TuningChatTexts.toolLine`) or failed for **error**; proposal states keep the existing `CoachCenter` runner variants (`open`, `accepting`, `stale`, `accepted`); A/B states seed `prompt_replays`/`prompt_inputs` rows per phase; **no tools** / **no tools midway** use provider `ollama`; **conversation removed** deletes the row and calls `checkPresence()`.
 - `TuningReplayCard` → `TuningReplayCardView(model:stacked:)` (narrow: `stacked: true`).
-- `ChatsRemovedShot` → `EmbeddedChatView` over the removed engine (Task 5.11's line, no button).
 - Statistics shots → real `AgentAnalyticsContextView`/`SkillsView` with `scopeNote` from `AgentAnalyticsFormat.scopeNote` and the real `codexUnreadLine`.
 
 - [ ] **Step 1: Keep the shot list fixed** — `DesignShotsTests.testShotNamesAreUnique` and the shot names stay exactly the 28 `tuning-chat-*` names of the README table.
@@ -2980,12 +2978,12 @@ action: nav:projects
 | §6 inventory CHAT-01, COACH-01 (both amendments), AGENT-01, DEV-04, new capture contract | 6.4 |
 
 ### Phase 5–6 notes from recon (resolved above where they conflict)
-1. **Tuning chats in the Chats panel.** The spec says they "appear in the Chats panel under the workbench project, as embedded chats do today", but no embedded chat is listed there: the panel reads `context_type IS NULL` only, and `chat_projects` are not workbenches. The plan ships the removed line generically in `EmbeddedChatView` (5.11) and the `conversation-removed-in-chats` shot renders it, but does not add a Chats-panel listing. Needs an owner call: drop that sentence, or add a listing (a new query branch + opening an embedded engine from the Chats panel — its own task).
+1. **Tuning chats in the Chats panel.** (Decided by the owner in ask #1123: not listed; spec D48.) The spec says they "appear in the Chats panel under the workbench project, as embedded chats do today", but no embedded chat is listed there: the panel reads `context_type IS NULL` only, and `chat_projects` are not workbenches. The plan ships the removed line generically in `EmbeddedChatView` (5.11) and the `conversation-removed-in-chats` shot renders it, but does not add a Chats-panel listing. Needs an owner call: drop that sentence, or add a listing (a new query branch + opening an embedded engine from the Chats panel — its own task).
 2. **Cross-phase contracts this plan assumes** (pin them in Phases 2–4 or adjust 5.x): `coach proposals --json` keys `origin`/`conversation_id`/`source_removed_at` and a CLI error code `source_removed` for Accept losing the trigger race (5.1); Go testdata `internal/chat/testdata/actions_contract_tuning.txt` (5.2); tool argument keys `days`, `prompt_id`, `skill`, `name` (5.4); `agent_actions.result_json` keys `proposal_id` / `replay_id`, and a refused `propose_prompt_replay` recorded as a `failed` row with the refusal text in `error` (5.6 — if Phase 3 writes no row on refusal, the too-few line needs another source); a shared fixture `internal/db/testdata/prompt_replay_results.json` for the `results` JSON shape (5.5); report keys `agents` (top level = agents with sessions in the period, per block = agents the block reads) and `codex_unread` (5.10).
 3. **Swift twin ownership.** 5.1 (Swift `CoachProposal`/`+Row`) and 5.2 (`AgentToolsContract`/`AssistantToolSurface`) are Swift and placed here; Phases 2/3 must not also do them.
 4. **Done-card cost.** (Resolved: actual cost stored per side, Tasks 3.3, 3.12, 5.4, 5.5.) `db.SetPromptReplayResult` stores text only, so the Desktop has no actual cost per replay; the plan shows the estimate (`"10 calls · ≈ $0.14 · …"`) where the mockup shows `"$0.12"`. Either Phase 3 stores per-call cost in `results`, or the mockup difference is accepted.
 5. **"Detached" Run.** The Desktop has no detached CLI launcher; (Resolved: Run and Retry use `--detach`, Tasks 3.13 and 5.8.) Earlier draft: Run uses an unstructured task like `CoachCenter.runNow`. If `ProcessCLIRunner` kills children on quit, the run stops and the daemon sweep offers **Retry** (spec allows it), but "keeps going after the Desktop quits" holds only if the child survives — confirm or add a detached spawn.
 6. **Coach tiles and the agent filter.** (Resolved: `coach status --agent`, Task 5.10.) "The Analytics tiles keep the owner's chosen filter" — the tiles are `coach status`, which gets no `--agent` flag in Phase 4's list; 5.10 leaves the coach tiles unfiltered.
 7. **Claude-hint notes.** (Resolved: `hints[].agents`, Tasks 4.15 and 5.10.) §4.7 names "Claude hints" among the Claude-only blocks; the plan puts `scopeNote` on the Context, Skills and Trouble blocks only (the mockup shows Context and Skills). Hints need a per-hint `agents` key to do the same.
-8. **No-tools text.** "pick one in Settings → AI": the AI section is under Settings → **System**; **Open Settings** opens `.system`. Wording kept from the mockup; change to "Settings → System → AI" if wanted.
+8. **No-tools text.** (Decided by the owner in ask #1123: "Settings → System → AI".) "pick one in Settings → System → AI": the AI section is under Settings → **System**; **Open Settings** opens `.system`. Wording kept from the mockup; change to "Settings → System → AI" if wanted.
 9. **Inventory guard names.** 6.4 cites `TestCAPTURE01_*` / `TestCAPTURE02_*`; Phases 1/3 should name their capture/removal guards that way.

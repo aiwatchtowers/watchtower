@@ -25,11 +25,9 @@ enum TuningChatShotFixtures {
         case abProposeRefused = "ab-propose-refused", conversationRemoved = "conversation-removed"
         /// Retry (or Run) refused because the prompt changed since the run: Discard only.
         case abRunRefused = "ab-run-refused"
-        /// The same removed conversation open in the Chats panel: no New button, the typed text kept.
-        case conversationRemovedInChats = "conversation-removed-in-chats"
 
         /// A removed conversation keeps the owner's typed text in the composer (§4.5).
-        var keepsDraft: Bool { self == .conversationRemoved || self == .conversationRemovedInChats }
+        var keepsDraft: Bool { self == .conversationRemoved }
 
         /// Which fixture coach backs the state.
         var coachVariant: String {
@@ -77,15 +75,11 @@ enum TuningChatShotFixtures {
     private static func size(_ state: State) -> NSSize {
         switch state {
         case .narrow: NSSize(width: 820, height: 1200)
-        case .conversationRemovedInChats: NSSize(width: 640, height: 480)
         default: NSSize(width: 1040, height: 800)
         }
     }
 
     static func screen(_ state: State) -> AnyView {
-        if state == .conversationRemovedInChats {
-            return AnyView(ChatsRemovedShot())
-        }
         do {
             return AnyView(TuningPaneShot(state: state, coach: try loaded(state.coachVariant)))
         } catch {
@@ -237,7 +231,7 @@ enum TuningChatTexts {
     static let loading = "Reading this workbench's analytics…"
     static let placeholder = "Ask about cost, prompts, skills or instructions…"
     static let codexUnread = "2 Codex sessions were not read: too large or damaged."
-    static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → AI"
+    static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → System → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
     static let runRefused = "The prompt changed since this A/B ran — start a new one."
@@ -484,8 +478,7 @@ private struct TuningFeed: View {
             case .abRemoved: replayTurn(nil, line: (TuningChatTexts.abRemoved, "trash", .secondary))
             case .abProposeRefused: replayTurn(.proposeRefused)
             case .abRunRefused: replayTurn(.runRefused)
-            case .conversationRemoved: Self.conversationRemoved(offersNew: true)
-            case .conversationRemovedInChats: Self.conversationRemoved(offersNew: false)
+            case .conversationRemoved: Self.conversationRemoved
             case .abTooFew: tooFew
             case .narrow:
                 skillTurn(folded: false)
@@ -587,16 +580,14 @@ private struct TuningFeed: View {
     }
 
     /// The whole conversation was deleted with the captured inputs it read (§4.5).
-    /// In the Chats panel the removed line offers no New button (§4.5).
-    static func conversationRemoved(offersNew: Bool) -> some View {
+    /// Shown only in the tuning panel (D48, ask #1123).
+    static var conversationRemoved: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Label(TuningChatTexts.conversationRemoved, systemImage: "trash")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if offersNew {
-                Button(TuningChatTexts.newChat) {}.buttonStyle(.kitSecondary)
-            }
+            Button(TuningChatTexts.newChat) {}.buttonStyle(.kitSecondary)
         }
         .padding(Spacing.cozy)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -650,44 +641,5 @@ private struct TuningToolLines: View {
                 }
             }
         }
-    }
-}
-
-// MARK: - Chats panel
-
-/// A tuning conversation open in the Chats panel when its source data is
-/// removed (§4.5): the removed line without New, the typed text kept.
-private struct ChatsRemovedShot: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Spacing.regular) {
-                Text("Digests miss the decision owner").font(.headline).lineLimit(1)
-                Spacer(minLength: Spacing.regular)
-            }
-            .padding(Spacing.medium)
-            ScrollView {
-                TuningFeed.conversationRemoved(offersNew: false)
-                    .padding(.horizontal, Spacing.medium)
-                    .padding(.vertical, Spacing.regular)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .defaultScrollAnchor(.bottom)
-            HStack(spacing: Spacing.compact) {
-                Text(TuningChatTexts.keptDraft).lineLimit(1)
-                Spacer(minLength: Spacing.compact)
-                Image(systemName: "arrow.up")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .frame(width: IconSize.composerLarge, height: IconSize.composerLarge)
-                    .help("Send")
-            }
-            .font(.callout)
-            .padding(Spacing.cozy)
-            .background(Fill.card, in: RoundedRectangle(cornerRadius: Radius.control))
-            .padding(.horizontal, Spacing.medium)
-            .padding(.bottom, Spacing.medium)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .detailBackground()
     }
 }
