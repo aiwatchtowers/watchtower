@@ -72,6 +72,18 @@ func makeTarget(t *testing.T, makefile, name string) string {
 	return strings.Join(out, "\n")
 }
 
+// scriptMayBuildPhone says whether a scripts/ file could archive or upload
+// the phone: it mentions archive, mobile-archive or testflight, whether or
+// not it names WatchtowerMobile (a wrapper may call `make mobile-archive`).
+// The relay-interop stand scripts set an origin for local test runs.
+func scriptMayBuildPhone(name, text string) bool {
+	if strings.HasPrefix(name, "relay-interop") {
+		return false
+	}
+	l := strings.ToLower(text)
+	return strings.Contains(l, "archive") || strings.Contains(l, "testflight")
+}
+
 func readRepoFile(t *testing.T, rel string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", rel))
@@ -103,7 +115,7 @@ func TestNoReleasePhoneBuildSetsRelayOrigin(t *testing.T) {
 	scripts, _ := filepath.Glob(filepath.Join("..", "..", "scripts", "*"))
 	for _, sc := range scripts {
 		b, err := os.ReadFile(sc)
-		if err != nil || !strings.Contains(string(b), "WatchtowerMobile") || !strings.Contains(strings.ToLower(string(b)), "archive") {
+		if err != nil || !scriptMayBuildPhone(filepath.Base(sc), string(b)) {
 			continue
 		}
 		texts["scripts/"+filepath.Base(sc)] = string(b)
@@ -152,5 +164,20 @@ func TestNonEmptyOriginValuesRecognisesAssignments(t *testing.T) {
 		if got := len(nonEmptyOriginValues(c.in)); got != c.want {
 			t.Errorf("%q: %d values, want %d", c.in, got, c.want)
 		}
+	}
+}
+
+func TestScriptFilterCatchesAWrapperThatDoesNotNameThePhone(t *testing.T) {
+	if !scriptMayBuildPhone("ship.sh", "#!/bin/sh\nmake mobile-archive WATCHTOWER_RELAY_ORIGIN=https://relay.example.com\n") {
+		t.Error("a wrapper calling make mobile-archive must be scanned")
+	}
+	if !scriptMayBuildPhone("up.sh", "make mobile-testflight") {
+		t.Error("a testflight wrapper must be scanned")
+	}
+	if scriptMayBuildPhone("relay-interop.sh", "xcodebuild archive WATCHTOWER_RELAY_ORIGIN=$ORIGIN") {
+		t.Error("the interop stand scripts are excluded")
+	}
+	if scriptMayBuildPhone("lint.sh", "swiftlint") {
+		t.Error("an unrelated script is not scanned")
 	}
 }
