@@ -52,18 +52,18 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 - **Run launch:** the Desktop starts `prompts replay <id> --json` as a detached child (its own session / process group, not in the quit kill list), polls the row every 2 s, and reads the outcome from the row, not from the child's exit (Task 5.8).
 - **Chats panel and the settings path** (owner, ask #1123, spec D48): tuning conversations are shown only in the tuning panel, never in the Chats panel; the no-tools line reads "Tuning tools need Claude or Codex — pick one in Settings → System → AI". The `…-conversation-removed-in-chats` mockup and `ChatsRemovedShot` are gone; no task shows the removed line outside the tuning panel.
 
-## Owner decisions this plan waits on
+## Owner decisions found in recon (all answered: asks #1123, #1125)
 
-Choices found in recon that the spec does not settle. The plan follows the recommended option; a different answer changes the named tasks before they start.
+Choices found in recon that the spec did not settle; the owner chose each one as listed.
 
 | Choice | Plan follows | Tasks | Source |
 |---|---|---|---|
 | Tuning chats in the Chats panel | not listed there; tuning panel only — **decided** | 5.7, 5.11, 5.13 | ask #1123 |
 | The no-tools line's settings path | "Settings → System → AI" — **decided** | 5.4 | ask #1123 |
-| Memory and catch-up captures name every account in `refs` | yes (any account purge removes them) | 1.11, 1.12 | ask #1125 |
-| `media.*`, `chat.title`, `instructions.suggest`, `terminal.title` not captured (no A/B for them) | yes, v1 limit | 1.13 | ask #1125 |
-| An owned Codex session row stores the header cwd in `home_cwd` (file rows never store a cwd) | yes, like Claude | 4.7 | ask #1125 |
-| **Propose this addition** text: title "Add to <prompt>: <line>", why "Tried on N past calls in A/B #id.", metric `corrections` | yes | 3.13 | ask #1125 |
+| Memory and catch-up captures name every account in `refs` | yes (any account purge removes them) — **decided** | 1.11, 1.12 | ask #1125 (owner chose this) |
+| `media.*`, `chat.title`, `instructions.suggest`, `terminal.title` not captured (no A/B for them) | yes, v1 limit — **decided** | 1.13 | ask #1125 (owner chose this) |
+| An owned Codex session row stores the header cwd in `home_cwd` (file rows never store a cwd) | yes, like Claude — **decided** | 4.7 | ask #1125 (owner chose this) |
+| **Propose this addition** text: title "Add to <prompt>: <line>", why "Tried on N past calls in A/B #id.", metric `corrections` | yes — **decided** | 3.13 | ask #1125 (owner chose this) |
 
 Settled by the plan without an owner choice (they follow the code or the spec): the IMAP item key `<uidvalidity>:<uid>` (no mailbox column exists); pack re-renders at Accept/Rollback (all of the owner's workbench folders at once), `integrate` and `workbenchSetupOptions` (the spec's "daemon drift check" does not exist; no folder is left unrendered after an overlay change); a Codex interrupt maps to `outcome = interrupted` only, as the spec says.
 
