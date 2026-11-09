@@ -278,8 +278,17 @@ protocol RelayUpgradeHost: AnyObject {
     /// A transport to the relay Mac `mac` on the hub's relay store, on the process's one relay session (R2).
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport
     /// Opens this phone's sealed keybox `sealed` from the Mac's relay data zone and merges its epoch keys (relay client
-    /// Phase 5, "Coming back"); false when it does not open, carries no keys yet, or could not be stored.
-    func mergeKeybox(_ sealed: Data, hubID: String) async -> Bool
+    /// Phase 5, "Coming back").
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> RelayKeyboxMerge
+}
+
+/// What the reader wait's merge of the keybox found in the Mac's relay data zone did.
+enum RelayKeyboxMerge: Equatable {
+    case merged
+    /// It does not open, or it carries no keys (the hub has not named this phone a reader, or its lapse has not ended).
+    case noKeys
+    /// It carries keys that could not be stored (a locked keychain); the next pass tries again.
+    case notStored
 }
 
 /// Runs one hub's upgrade to the relay (steps 0–5 of Task 19). A pass does what it can and returns: the first checks,
@@ -522,12 +531,7 @@ final class RelayUpgrader {
         let since = run.upgrade.slotSince ?? now()
         let device = session.linkedDevice?.deviceID
         let read = await withSide(mac, host: host, session: session) { side, _ in await Self.readData(side, keyboxOf: device) }
-        // Relay client Phase 5, "Coming back": the keybox found there is merged before the request, so the phone's
-        // newest epoch is the hub's current one and its request is not sealed in a retired epoch. A read with no keys
-        // yet (the hub has not named it a reader, or its lapse has not ended) counts as not read.
-        var merged = false
-        if case .read(let sealed?)? = read { merged = await host.mergeKeybox(sealed, hubID: hubID) }
-        guard merged else {
+        guard await readerConfirmed(read, host: host, session: session) else {
             if now().timeIntervalSince(since) >= RelayUpgrade.readerWaitLimit {
                 Self.logger.notice("relay upgrade: the Mac did not name this phone a reader within the wait")
                 return end(.readerNotConfirmed, &run)
@@ -535,6 +539,24 @@ final class RelayUpgrader {
             return nil
         }
         return await request(&run, mac: mac, host: host, session: session)
+    }
+
+    /// Whether one read of the Mac's relay data zone lets the request go (relay client Phase 5, "Coming back"). A read
+    /// that finds no keybox of this phone counts, as a Mac on iCloud writes none there: the switch's
+    /// `transport_switched` carries the keys. A keybox with keys is merged first, so the phone's newest epoch is the
+    /// hub's current one and its request is not sealed in a retired epoch. A keybox with no keys holds the step only
+    /// while the hub runs on the relay (`hubOnRelayAt` on the row, or the session's transport marker): that one gets
+    /// keys once the hub names the phone a reader and ends its lapse. Left by a hub now on iCloud, it counts as read.
+    private func readerConfirmed(_ read: DataRead?, host: any RelayUpgradeHost, session: HubSession) async -> Bool {
+        guard case .read(let found)? = read else { return false }
+        guard let sealed = found else { return true }
+        switch await host.mergeKeybox(sealed, hubID: hubID) {
+        case .merged: return true
+        case .notStored: return false
+        case .noKeys:
+            let onRelay = host.followerLink(hubID: hubID)?.hubOnRelayAt != nil || session.runsOnRelay()
+            return !onRelay
+        }
     }
 
     /// Step 4: the row names the request and waits for its answer first, then `transport_switch{relay}` goes into

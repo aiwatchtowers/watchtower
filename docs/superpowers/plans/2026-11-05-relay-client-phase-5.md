@@ -616,7 +616,7 @@ Task 13, Task 0 ─ Task 17 ─ Task 11 (PR C)
 
 **Interfaces:**
 - Consumes: Tasks 3–5.
-- Produces: tests, plus a content-free log line for each republish after a rotation: `hub: rotation republish: complete|interrupted, N records, B asset bytes, D s`. A next rotation that wipes the hashes first writes `interrupted`, with the counts so far. **The log line is an instrument, not the measurement.** On the fake transport it proves only that the count is right; "Measuring the cost" says how real numbers get taken.
+- Produces: tests, plus a content-free log line for each republish after a rotation: `hub: rotation republish: complete|interrupted|resumed, N records, B asset bytes, E envelope bytes, D s`. A next rotation that wipes the hashes first writes `interrupted`, with the counts so far. **The log line is an instrument, not the measurement.** On the fake transport it proves only that the count is right; "Measuring the cost" says how real numbers get taken.
 
 - [ ] **Step 1: Failing tests.** `TestRuntime_RestartAfterRotationRepublishesOnce`. `TestRotationWhileRelayDownPublishesOnReturn`. `TestRuntime_ThreeRotationsTwoPhones`: one offered, one static, each opens slices, echoes and controls in every epoch. `TestRotationRepublishLogsCounts`, with no names or bytes in the line (`logcanary`-style check). `TestRotationRepublishInterruptedSaysSo`. `TestPermissionAnswerAcrossARotationAppliedOnce`, `TestSessionInterruptAcrossARotationExpires` (PROJ-21). `TestLostResendFromFilledByResendingUnechoed`.
 - [ ] **Step 2: Run** `go test ./internal/hub -run 'Runtime_|RotationWhile|RotationRepublish|PermissionAnswer|SessionInterrupt|LostResendFrom'`. Expected: FAIL.
@@ -960,11 +960,11 @@ Never a dev CLI on the live database. **The numbers go to the ask's answer only,
 
 | Reading | Pass |
 |---|---|
-| Hub upload per rotation | at most 500 MB |
-| Phone download per rotation | at most 500 MB, so at most about 2.2 GB a month against the relay's 100 GB |
+| Hub upload per rotation | at most 1 GB |
+| Phone download per rotation | at most 1 GB, so at most about 4.4 GB a month against the relay's 100 GB |
 | Background wakes per rotation, locked phone | at most 6. Over that, the battery rule (#724) applies: the owner rules before launch |
 
-These numbers are the agent's proposal, and 6 is a guess with no data behind it: **the owner sets them before the measuring run** (ask #1077; the controller asks). The reasoning: 500 MB per rotation because four a month is about 2 % of the relay's 100 GB per phone; 6 wakes to say "a handful, not one every 2 s". A fail goes to the owner before launch; the known way out is to reuse the already-uploaded asset (`K_asset` is unchanged by rotation), which needs a transport change and possibly relay work, and is not in this plan. **By whom and when:** M-A by the owner before the staging run; M-B by the controller with the owner's device, in the staging run. They do not block merging into the branch; they block launch.
+These numbers are set by the owner, ask #1131. A fail goes to the owner before launch; the known way out is to reuse the already-uploaded asset (`K_asset` is unchanged by rotation), which needs a transport change and possibly relay work, and is not in this plan. **By whom and when:** M-A by the owner before the staging run; M-B by the controller with the owner's device, in the staging run. They do not block merging into the branch; they block launch.
 
 ## The staging run
 
@@ -992,6 +992,7 @@ Moving a real hub's clock is not possible (`interopOpts.clock` exists only on th
 | Decision | Source |
 |---|---|
 | Rotation ships **on, with launch**; launch waits for this phase's reviews and its staging run, which depends on Phase 4's owner steps and M1–M11. Against the spec's "after launch" (ask #799), the agent's recommendation (dark landing) and its earlier advice on ask #1051 | ask #1066 |
+| Measuring thresholds: hub upload and phone download at most 1 GB per rotation, at most 6 background wakes per rotation on a locked phone | set by the owner, ask #1131 |
 | Timer rotation keyboxes go in the **data zone**, `keybox-<device>`: latest version only, not cut by the 14-day mailbox TTL, sealed to the offer. Amends the spec's "travel in the phone's mailbox inside `transport_switched`" (ask #799), which now covers switches only | ask #1066 |
 | Frozen bytes approved: `relay_kx`, `previous_relay_kx`, `next_kx`, `wt/relay/v2/`, an HPKE recipient that is not always `dev_kx`. Envelope header, classes and existing vectors unchanged | ask #1066 |
 | iCloud users get **only the inert migration**; erasure and the upload reseal are limited to relay links, with no pragma or checkpoint when nothing is erased | ask #1066 |

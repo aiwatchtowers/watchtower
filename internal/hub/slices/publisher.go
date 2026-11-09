@@ -236,9 +236,10 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 	p.poke()
 }
 
-// Dirty reports whether k waits for a publish (PublishSoon or PublishNow
-// marked it and no cycle has diffed it since).
-func (p *Publisher) Dirty(k Kind) bool {
+// DirtyForTest reports whether k waits for a publish (PublishSoon or
+// PublishNow marked it and no cycle has diffed it since). A test seam: no
+// production code reads it, and none may decide on a publish by it.
+func (p *Publisher) DirtyForTest(k Kind) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.dirty[k] || p.nowDirty[k]

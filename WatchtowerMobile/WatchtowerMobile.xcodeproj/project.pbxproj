@@ -172,6 +172,7 @@
 		8946EF2CD8CF8C89B01CC292 /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = C68A6FC9A37EB91641EBFCAB /* DeviceIdentity.swift */; };
 		89AB9D775F2DF39C5E7D5EDB /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DD07929D977D2F7FEA3B461 /* WelcomeView.swift */; };
 		8EE51E7A85C5FE1C582B4761 /* Pill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8273B56D197DE1234DF9D87B /* Pill.swift */; };
+		8FB166E987D0412D7DDBC10E /* HubSession+ReaderStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4856D6B222E9182B2632BE9B /* HubSession+ReaderStatus.swift */; };
 		8FECCC9474F30F5548A93588 /* LinkSeams.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4AE5C921A6AC94DFAB6997 /* LinkSeams.swift */; };
 		905BE097FAAB91211DD5F909 /* HubDisplayName.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FC342668572B15131C541C /* HubDisplayName.swift */; };
 		9123C82A7C74BBD898B28393 /* OrderedActionsWiringTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D8BB14D242560434FB94E9 /* OrderedActionsWiringTests.swift */; };
@@ -422,6 +423,7 @@
 		46CDBFA25D9AFF13C4D67ECB /* BoardWriteModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardWriteModel.swift; sourceTree = "<group>"; };
 		46FE4B06EBF72ED88325BDAC /* AlertSubscriptionRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertSubscriptionRegistrar.swift; sourceTree = "<group>"; };
 		4848648462D5CFE94D4E58D3 /* MacStatusChip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacStatusChip.swift; sourceTree = "<group>"; };
+		4856D6B222E9182B2632BE9B /* HubSession+ReaderStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HubSession+ReaderStatus.swift"; sourceTree = "<group>"; };
 		491131329A6A04AA4B8908F4 /* SessionInputWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionInputWiringTests.swift; sourceTree = "<group>"; };
 		49728A0913682F844134761D /* ReplicaKindTrackingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReplicaKindTrackingTests.swift; sourceTree = "<group>"; };
 		4A19A75AFD15E6FBEE8798CB /* CalendarWiringTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarWiringTests.swift; sourceTree = "<group>"; };
@@ -880,6 +882,7 @@
 				E1BEF5D37AF70BBF7FB6C533 /* HubPaths.swift */,
 				39F534AB8FCE553B8BC57C4D /* HubRegistry.swift */,
 				8CE5870D1C2DF528494FD4A0 /* HubSession.swift */,
+				4856D6B222E9182B2632BE9B /* HubSession+ReaderStatus.swift */,
 				2C7BE965E32256F4C81D29A0 /* HubSession+RecordingHandover.swift */,
 				1AD41B1E3AB91B5552C46EF2 /* OutboxBacklog.swift */,
 				3D9BD2D3D252DAA71D12ABD1 /* PromotedLinkResumer.swift */,
@@ -1414,6 +1417,7 @@
 				4CF6B8088DE86AE15CD85609 /* HubListSheet.swift in Sources */,
 				FB663831976B7F90B3275229 /* HubPaths.swift in Sources */,
 				B4A66F05DE7C4B0EDB09BC6A /* HubRegistry.swift in Sources */,
+				8FB166E987D0412D7DDBC10E /* HubSession+ReaderStatus.swift in Sources */,
 				ED65ED4CF15623705631BC86 /* HubSession+RecordingHandover.swift in Sources */,
 				DC20254FEA64E44647E9EB4C /* HubSession.swift in Sources */,
 				B13D19119CF5FEBCB8801027 /* HubSwitcherChip.swift in Sources */,

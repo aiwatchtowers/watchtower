@@ -13,7 +13,7 @@ This spec does not repeat the relay spec. It says how Watchtower (Kit, Desktop h
   2. the hub publishes on change (§6) — on both transports, faster spacing on the hosted relay only (ask #735).
 
   The reasons for (1), by the owner's weight: order for everyone; one path in the code instead of two kept forever (§5.11, rejected); and the transport switch, which moves unechoed actions with the same bytes and order (sim rule 13) and so needs the ordered path before the switch.
-- **At launch, relay links keep today's key scheme** (90-day epochs, static-static pairwise keys) plus a new epoch at every transport switch. The 7-day rotation with ephemeral X25519 (relay spec §7.4) comes in Phase 5, after launch; relay spec §9 allows that. Until then the relay's "middle" forward secrecy rests on delete-after-delivery and latest-version-only storage alone.
+- **Relay links rotate every 7 days with ephemeral X25519 (relay spec §7.4), with launch** (Phase 5, ask #1066; amends ask #799, which put it after launch). iCloud links keep 90-day epochs and static keys; every transport switch still adds an epoch.
 - The relay server, its protocol and its Go reference client are the relay repository's; changes there go through the relay session (ask #734). This spec only lists what it needs from there (§12).
 - Not in this spec: Android, web, the full ratchet.
 
@@ -165,9 +165,9 @@ Implemented exactly as sim rules 8–16 (they change only together, relay spec �
 | 3a | Phone identity (`relay_auth` and the App Attest key id in the Keychain, the App Attest entitlement, an empty-by-default relay origin), `LinkPayload` v4 and the hello's `relay_device_id`, linking from the phone over a relay pairing slot with `vouch_hub`, the follower and the side mailbox reader on CloudKit-visible controls, the phone's epoch keys (7-day retention, `epoch_ack`, the rule 14 reseal), Kit ↔ Go hub interop and the CI entry point. Ships dark: no Release origin. Blockers: none that is missing (Go hub 1a/1b on `main`, relay `bcca870`) | 1, 2, relay §12 p. 2 | #1241, #1242, #1247 |
 | 3b | Upgrade of a CloudKit link to the relay (`device_grant` relay fields, `add_slot`), the switch end to end with the Go hub (`transport_switched`, marker, `hub_on_relay`). Blockers: Go hub Phase 3 Tasks 18 and 20 (the switcher), Tasks 12 and 21 (relay identity in `device_grant`); a headless host with vouched admission also needs Go hub Phase 2 Task 10 | 3a, the Go hub | #1241, #1242, #1247 |
 | 4 | Phone: subscription, pushes, notification service, screens, measurements. Desktop indicators are the Go hub's | 3 | #1243, #1244, #1246 |
-| 5 | 7-day rotation with ephemeral X25519 (relay spec §7.4) — after launch | 3 | #1248 |
+| 5 | 7-day rotation with ephemeral X25519 (relay spec §7.4) — with launch (ask #1066) | 3 | #1248 |
 
-Launch for users waits for Phases 0a and 1–4, the Go hub's side and §12 p. 5. Each phase gets its own plan.
+Launch for users waits for Phases 0a and 1–5, the Go hub's side and §12 p. 5. Each phase gets its own plan.
 
 Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is unvouched again and may read only its pair zone, so the Kit ↔ Go hub interop has the hub read the phone's unlink farewell before the phone's `remove_slot`.
 
@@ -202,10 +202,10 @@ Interop and unlink note (Phase 3, relay `bcca870`): a hub that no slot holds is 
 - The 30 s battery test is rewritten into a per-transport minimum-spacing test, not removed — author's decision, approved in ask #799
 - `action_seq` is a separate gapless counter inside the sealed payload; the envelope `seq` stays the rollback-guard counter — author's decision, approved in ask #799
 - Seam grows only through optional protocols (`ConditionalTransport`, `MailboxAddressing`, `PagedChanges`, `LiveTransport`) — author's decision, approved in ask #799
-- Rotation keyboxes on the relay travel in the phone's mailbox inside `transport_switched` — author's decision, approved in ask #799
+- Switch keyboxes on the relay travel in the phone's mailbox inside `transport_switched` (ask #799); timer rotation keyboxes go in the data zone as `keybox-<device>`, latest version only (ask #1066)
 - `relay_auth` is created on first use of the hosted relay, not at install; never synced or backed up — author's decision, approved in ask #799
 - Latency measurements stay on the device, shown in Diagnostics; p50 is checked on our devices and the relay probe, not on users' devices — author's decision, approved in ask #799
-- 7-day rotation with ephemeral keys comes after launch (relay spec §9 allows it); at launch relay links keep 90-day static-key epochs plus a new epoch per switch — author's decision, approved in ask #799 (security scope narrowed at launch)
+- 7-day rotation with ephemeral keys ships with launch — ask #1066 (replaces ask #799's "after launch")
 - Mockups for every new screen in `docs/design/mockups/relay-client/` — conversation (spec review round 1)
 - Phase 3 splits into 3a (Tasks 1–18, shippable now) and 3b (blocked on Go hub Phase 3); 3a ships with no Release relay origin, against §4's earlier "default the production origin", until §12 p. 5 — Phase 3 plan Owner approval 1, ask #904
 - A code links over the hub's current transport; a phone that cannot use Relay is refused for a Mac on Relay on every path (iCloud included) instead of §8's iCloud link that only receives `hub_on_relay`; a relay-only hub is refused with "works over Relay only"; a failed paying check refuses with "Couldn't reach Relay" — Phase 3 plan Owner approval 2 (R4), ask #904

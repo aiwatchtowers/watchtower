@@ -475,6 +475,7 @@ final class AppRoot {
         guard !isDemo else { return }
         // The hub's switch controls and transport marker (relay client Phase 3 Task 11), read on this session's route.
         let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self, now: upgradeClock)
+        follower.onHubOnRelayEnded = { [weak session] in session?.forgetHubOnRelay() }
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
@@ -1258,9 +1259,9 @@ extension AppRoot: RelayUpgradeHost {
         }
     }
 
-    func mergeKeybox(_ sealed: Data, hubID: String) async -> Bool {
-        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return false }
-        return await linking.mergeSwitchKeys(keybox, hubID: hubID)
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> RelayKeyboxMerge {
+        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return .noKeys }
+        return await linking.mergeSwitchKeys(keybox, hubID: hubID) ? .merged : .notStored
     }
 
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {
