@@ -100,6 +100,13 @@ Desktop's own launch path takes the same flock) from the place decision until th
 place on the row (`terminal_sessions.start_notice`, migration 00179), fails a row it could not move into its worktree
 with `Could not move the session into its worktree: …` instead of deleting it, and watches the launch 3 s for an
 exit 127 (`<agent> was not found`). The Desktop's reasons are pinned by `internal/sessionstart/testdata/desktop_contract.json`.
+**Migration numbers (merge of main, 2026-11-09).** The branch's `start_notice` and `upload_id` migrations were first
+numbered 00169/00170, which main took for `llm_call_attempts`/`daily_digest_attempt`; they are now 00179/00180. A
+dev database that ran a branch build with the old numbers recorded 169/170 under the branch's names, so main's
+00169/00170 are skipped and 00179 fails with "duplicate column". Repair (on a backup copy, then reopen with a current
+build; a fresh database works too):
+`ALTER TABLE terminal_sessions DROP COLUMN start_notice; ALTER TABLE pending_transcripts DROP COLUMN upload_id;
+DELETE FROM goose_db_version WHERE version_id IN (169, 170);`. No release tag ever shipped the old numbers.
 `workbench session stop --session N` is the host's Stop request (`session_id`, `stopped`). Both refuse another workbench
 inside an agent's terminal session.
 

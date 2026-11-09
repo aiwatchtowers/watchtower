@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/sessionfeed"
 	"watchtower/internal/sessionhost"
 )
 
@@ -46,6 +48,9 @@ type world struct {
 
 	mu         sync.Mutex
 	integrated []string
+	// watched is every database a launch asked the host to watch
+	// (Options.CodexWatch), in order.
+	watched []string
 }
 
 func newWorld(t *testing.T) *world {
@@ -70,7 +75,7 @@ func newWorld(t *testing.T) *world {
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- sessionhost.NewServer(sessionhost.Options{}).Serve(ctx, l) }()
+	go func() { done <- sessionhost.NewServer(sessionhost.Options{CodexWatch: w.codexWatch}).Serve(ctx, l) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -87,6 +92,34 @@ func newWorld(t *testing.T) *world {
 	require.NoError(t, w.db.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, w.wb).Scan(&w.folder))
 	return w
 }
+
+// codexWatch is the host's watch store opener: it records the database a
+// launch named and opens a store whose row is gone, so the watch starts
+// (the run lists Watched) and ends at its first read.
+func (w *world) codexWatch(dbPath string) (sessionhost.CodexWatchStore, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.watched = append(w.watched, dbPath)
+	return goneWatchStore{}, nil
+}
+
+func (w *world) watchRequests() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.watched)
+}
+
+// goneWatchStore is a watch store whose row no longer exists.
+type goneWatchStore struct{}
+
+func (goneWatchStore) Row(int64) (db.CodexWatchRow, error) {
+	return db.CodexWatchRow{}, db.ErrTerminalSessionNotFound
+}
+func (goneWatchStore) RecordTurn(db.CodexWatchRow, sessionfeed.CodexTurn) error { return nil }
+func (goneWatchStore) SetIssue(db.CodexWatchRow, string, time.Time) (bool, error) {
+	return false, nil
+}
+func (goneWatchStore) Close() error { return nil }
 
 func writeScript(t *testing.T, path, body string) {
 	t.Helper()

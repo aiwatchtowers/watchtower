@@ -750,7 +750,10 @@ type agentRow struct {
 // occupied reports whether a live agent already works in the workbench
 // folder (SessionStartPlacement.occupies over the live agent rows and the
 // earlier starts still launching) and how many such rows work on the
-// workbench at all (the worktree's session number is one more).
+// workbench at all (the worktree's session number is one more). A live run
+// of a kind this version does not know (a newer version's, adopted from the
+// host) may be an agent and counts too (A7b, TerminalCenter.liveAgentIDs'
+// mayRunAgent).
 func (s *newStart) occupied(ctx context.Context, c *sessionhost.Client) (occupied bool, working int, err error) {
 	list, err := c.List(ctx)
 	if err != nil {
@@ -765,7 +768,7 @@ func (s *newStart) occupied(ctx context.Context, c *sessionhost.Client) (occupie
 	}
 	rows, err := s.d.DB.QueryContext(ctx, `SELECT id, folder_path, COALESCE(worktree_branch, ''),
 		COALESCE(agent_cwd, ''), COALESCE(agent_cwd_at, '')
-		FROM terminal_sessions WHERE project_id = ? AND kind IN ('claude', 'codex') AND id <> ?`, s.wb.id, s.id)
+		FROM terminal_sessions WHERE project_id = ? AND kind <> 'shell' AND id <> ?`, s.wb.id, s.id)
 	if err != nil {
 		return false, 0, fmt.Errorf("reading the workbench's sessions: %w", err)
 	}
@@ -859,13 +862,24 @@ func launch(ctx context.Context, d Deps, c *sessionhost.Client, row int64, dir s
 	_, err = c.Launch(ctx, sessionhost.LaunchReq{
 		Row: row, Run: run, Executable: spec.Executable, Args: spec.Args,
 		Env: append(baseEnv(spec.Executable), spec.Env...), Cwd: spec.Dir, Cols: launchCols, Rows: launchRows,
-		Scope: d.scope(), Agent: m.Agent,
+		Scope: d.scope(), Agent: m.Agent, Watch: watchSpec(d, m.Agent),
 	})
 	if err != nil {
 		failed(launchFailure(err))
 		return "", fmt.Errorf("session %d did not launch: %w", row, err)
 	}
 	return run, nil
+}
+
+// watchSpec is the host's watch request for a launch of agent
+// (TerminalCenter.watchSpec's twin, spec 2026-11-05 §3.5): an agent whose
+// failed and interrupted turns are read from its rollout, with the
+// workspace database; nil otherwise (a shell, Claude Code, no database).
+func watchSpec(d Deps, agent string) *sessionhost.WatchSpec {
+	if d.DBPath == "" || !sessionagent.CapsOf(agent).RolloutWatch() {
+		return nil
+	}
+	return &sessionhost.WatchSpec{Agent: agent, Database: d.DBPath}
 }
 
 // errClass is an error's class for a log line: its type, never its text.
