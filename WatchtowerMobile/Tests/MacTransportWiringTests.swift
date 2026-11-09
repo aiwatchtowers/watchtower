@@ -207,6 +207,7 @@ final class MacTransportWiringTests: XCTestCase {
     func testARefusalIsKeptAcrossARelaunch() async throws {
         let (bed, session) = try await upgradeBed()
         try await bed.fake.pair(mac: bed.mac.deviceID, phones: [bed.phone.deviceID])
+        try await bed.publishRelayKeybox(epoch: 1, withKeys: true) // the reader wait merges it (relay client Phase 5)
         await MacTransportPress.run(.chooseRelay, session: session, center: nil)
         await session.outbox.drain()
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)

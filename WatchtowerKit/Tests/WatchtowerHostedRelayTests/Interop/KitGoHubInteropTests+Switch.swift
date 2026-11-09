@@ -20,6 +20,12 @@ extension KitGoHubInteropTests {
         guard ProcessInfo.processInfo.environment[Self.desktopVariable] == "1" else {
             throw XCTSkip("\(Self.desktopVariable) is not 1: the switch runs only in the desktop host's run")
         }
+        if ProcessInfo.processInfo.environment[Self.rotationVariable] == "1" {
+            throw XCTSkip("\(Self.rotationVariable)=1: the handoff folder is the rotation run's")
+        }
+        if ProcessInfo.processInfo.environment[Self.upgradeVariable] == "1" {
+            throw XCTSkip("\(Self.upgradeVariable)=1: the handoff folder is the first-upgrade run's")
+        }
         let handoff = Handoff(dir: try handoffDir())
         do {
             try await followBothWays(handoff)
@@ -329,14 +335,17 @@ final class ICloudPhone: @unchecked Sendable {
     /// The link over iCloud: the hello in RelayZone (no relay id), the awaiting keybox, SAS v2, the owner's
     /// confirmation, the keys.
     static func link(
-        _ handoff: Handoff, endpoint: LoopbackCloudEndpoint, files: (url: String, sas: String, confirmed: String)
+        _ handoff: Handoff,
+        endpoint: LoopbackCloudEndpoint,
+        files: (url: String, sas: String, confirmed: String),
+        now: @escaping @Sendable () -> Date = { Date() }
     ) async throws -> ICloudPhone {
         let text = try await handoff.wait(files.url, KitGoHubInteropTests.goWait)
         guard let url = URL(string: text), case .success(let code) = LinkPayload.parse(url) else {
             throw GoHubInteropFailure.goFailed("\(files.url) is not a link code")
         }
         XCTAssertEqual(code.v, 4)
-        let phone = ICloudPhone(link: try PhoneLink(code: code), cloud: LoopbackCloudTransport(endpoint: endpoint, user: nil), code: code)
+        let phone = ICloudPhone(link: try PhoneLink(code: code, now: now), cloud: LoopbackCloudTransport(endpoint: endpoint, user: nil), code: code)
         let hello = DeviceHello(
             device: phone.link.device(nonce: code.nonce, unlinked: false),
             signingKey: WireBytes.base64URL(phone.link.identity.signing.publicKey.rawRepresentation),
@@ -443,11 +452,16 @@ actor KitFollower {
     /// This phone's `transport_switch{relay}` waits for its answer (`FollowerState.relaySwitchRequested`, as the app's
     /// upgrade at `.requested`).
     private var relayRequested = false
+    /// The rotation run's keys (relay client Phase 5 Task 11); nil in the switch run.
+    private let keysMode: FollowerKeys?
+    /// Every keybox this phone merged, for the rotation run's checks.
+    private(set) var keyboxLog = KeyboxLog()
 
-    init(phone: ICloudPhone, canUseRelay: RelayUse) async throws {
+    init(phone: ICloudPhone, canUseRelay: RelayUse, keys: FollowerKeys? = nil) async throws {
         self.phone = phone
         self.canUseRelay = canUseRelay
-        let outbox = try await Self.makeOutbox(phone, phone.secureCloud, route: .cloudKit(.private))
+        keysMode = keys
+        let outbox = try await Self.makeOutbox(phone, phone.secureCloud, route: .cloudKit(.private), clock: keys?.clock.closure ?? { Date() })
         self.outbox = outbox
         feed = RelayFeed(transport: phone.secureCloud, store: phone.replica, outbox: outbox)
         _ = try phone.replica.adoptRoute(TransportKind.cloudKit.rawValue)
@@ -455,11 +469,10 @@ actor KitFollower {
     }
 
     private static func makeOutbox(
-        _ phone: ICloudPhone, _ secure: SecureTransport, route: HubRoute, offset: TimeInterval = 0
+        _ phone: ICloudPhone, _ secure: SecureTransport, route: HubRoute, clock: @escaping @Sendable () -> Date
     ) async throws -> ActionOutbox {
         let outbox = ActionOutbox(
-            transport: secure, store: phone.replica, deviceID: phone.link.deviceID.uuidString, route: route
-        ) { Date().addingTimeInterval(offset) }
+            transport: secure, store: phone.replica, deviceID: phone.link.deviceID.uuidString, route: route, now: clock)
         await outbox.setHubID(phone.code.hubID)
         try await outbox.enableOrderedActions()
         return outbox
@@ -660,29 +673,95 @@ actor KitFollower {
             case .sendEpochAck(let epoch): ack = epoch
             case .listUnechoedAsUndelivered: _ = try await outbox.listUnechoedAsUndelivered(reason: .hubOnRelay)
             case .markHandled, .ignore, .requestAnswered: handled = true
-            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch: break
+            case .withdrawUnechoed, .dropEphemeral: try await loseReaderStatus(command)
+            case .mergeKeybox, .drainMailbox, .pollOtherMailbox, .requestSwitch, .markRefused, .markMoved, .clearMoved: break
             }
         }
         if move?.to == .relay || commands.contains(.requestAnswered) { relayRequested = false }
-        if let move, move.to != route {
-            try await moveRoute(to: move.to, resend: resend)
-        }
-        if let move, !move.by.isEmpty { switchedBy = move.by }
+        if let move { try await apply(move, resend: resend) }
         left = next.leftTransport
         if commands.contains(.mergeKeybox) {
             guard let keys = keybox?.keys else { return false }
-            try phone.link.merge(keys)
+            try await merge(keys, reseal: .droppedEpochs)
         }
-        if let ack {
-            if try phone.newestEpoch() < ack {
-                // A marker carries no keybox: the new route's data zone holds this phone's.
-                let box = try await phone.keybox(over: try inner(route)) { ($0.keys?.epoch ?? 0) >= ack }
-                try phone.link.merge(try XCTUnwrap(box.keys))
-            }
-            try await outbox.enqueueEpochAck(epoch: ack, nextKX: nil)
+        if let move, move.to == .cloudKit, keysMode?.offers == true {
+            // The app's follower clears the private ephemeral keys after the merge when it stays on iCloud.
+            _ = try phone.link.keys.updateHubLink(phone.link.hubID) { $0.clearingEphemeral() }
         }
+        if let ack { try await acknowledge(ack) }
         if case .marker = input { return true }
         return handled
+    }
+
+    private func apply(_ move: (to: TransportKind, by: String), resend: Bool) async throws {
+        if move.to != route { try await moveRoute(to: move.to, resend: resend) }
+        if !move.by.isEmpty { switchedBy = move.by }
+    }
+
+    /// Losing reader status (Phase 5): the rotation run's `hub_on_relay` drops the keys and withdraws, as the app's
+    /// follower does. The link-record marks are the app's; the switch run loses no slot and does nothing here.
+    private func loseReaderStatus(_ command: FollowerCommand) async throws {
+        guard keysMode != nil else { return }
+        switch command {
+        case .withdrawUnechoed: _ = try await outbox.withdrawUnechoed()
+        case .dropEphemeral: _ = try phone.link.keys.updateHubLink(phone.link.hubID) { $0.droppingEphemeral() }
+        default: break
+        }
+    }
+
+    /// The epoch ack after a follow; a marker carries no keybox, so the new route's data zone gives this phone's.
+    private func acknowledge(_ ack: UInt32) async throws {
+        if try phone.newestEpoch() < ack {
+            let box = try await phone.keybox(over: try inner(route)) { ($0.keys?.epoch ?? 0) >= ack }
+            try await merge(try XCTUnwrap(box.keys), reseal: .belowNewest)
+        }
+        try await outbox.enqueueEpochAck(epoch: ack, nextKX: try offer())
+    }
+
+    // MARK: Keys (the rotation run)
+
+    /// A keybox's keys into the link: in the rotation run the app's merge (`ActionOutbox.mergeKeybox`, the real
+    /// `HubLinkKeys.merging` over the in-memory key store), logged; in the switch run the plain join.
+    private func merge(_ keys: KeyboxKeys, reseal: KeyboxMergeReseal) async throws {
+        guard let mode = keysMode else { return try phone.link.merge(keys) }
+        keyboxLog.saw(keys)
+        _ = try await outbox.mergeKeybox(keys, into: phone.link.keys, hubID: phone.link.hubID, now: mode.clock.now, reseal: reseal)
+    }
+
+    /// The offer an ack carries: the link's outstanding one, else a fresh one (`withOffer`, as the app's
+    /// `relayOffer`), only for an offering phone on the relay route.
+    private func offer() throws -> Data? {
+        guard keysMode?.offers == true, route == .relay else { return nil }
+        var offered: Data?
+        _ = try phone.link.keys.updateHubLink(phone.link.hubID) { link in
+            let (next, publicKey) = link.withOffer()
+            offered = publicKey
+            return next
+        }
+        return offered
+    }
+
+    /// A rotation's keybox, read from the route's data zone as the app's fetch reads it, merged as a fetched keybox
+    /// (`.belowNewest`) and acknowledged (with an offer when this phone offers). Returns the link right before and
+    /// right after the merge.
+    func fetchKeybox(atLeast epoch: UInt32) async throws -> KeyboxFetch {
+        let before = try XCTUnwrap(try phone.link.keys.hubLink(phone.link.hubID))
+        let box = try await phone.keybox(over: try inner(route)) { ($0.keys?.epoch ?? 0) >= epoch }
+        let keys = try XCTUnwrap(box.keys)
+        try await merge(keys, reseal: .belowNewest)
+        let after = try XCTUnwrap(try phone.link.keys.hubLink(phone.link.hubID))
+        _ = try await outbox.enqueueEpochAck(epoch: keys.epoch, nextKX: try offer())
+        _ = try await outbox.flush()
+        return KeyboxFetch(keys: keys, before: before, after: after)
+    }
+
+    /// The relay data zone's keybox at the reader wait (a phone on iCloud paying again), merged as a fetched keybox;
+    /// no ack: the request that follows is answered with the switch's.
+    func mergeRelayKeybox(atLeast epoch: UInt32) async throws -> KeyboxKeys {
+        let box = try await phone.keybox(over: try inner(.relay)) { ($0.keys?.epoch ?? 0) >= epoch }
+        let keys = try XCTUnwrap(box.keys)
+        try await merge(keys, reseal: .belowNewest)
+        return keys
     }
 
     private func inner(_ kind: TransportKind) throws -> any CloudSyncTransport {
@@ -705,7 +784,9 @@ actor KitFollower {
             guard let relay else { throw GoHubInteropFailure.goFailed("no relay transport") }
             hubRoute = .hostedRelay(macDeviceID: relay.mac)
         }
-        let next = try await Self.makeOutbox(phone, secure, route: hubRoute, offset: clockOffset)
+        let offset = clockOffset
+        let next = try await Self.makeOutbox(
+            phone, secure, route: hubRoute, clock: keysMode?.clock.closure ?? { Date().addingTimeInterval(offset) })
         if holdNext {
             holdNext = false
             await next.holdFlushes()

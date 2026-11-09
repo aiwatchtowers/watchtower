@@ -236,6 +236,15 @@ func (p *Publisher) PublishSoon(kinds ...Kind) {
 	p.poke()
 }
 
+// DirtyForTest reports whether k waits for a publish (PublishSoon or
+// PublishNow marked it and no cycle has diffed it since). A test seam: no
+// production code reads it, and none may decide on a publish by it.
+func (p *Publisher) DirtyForTest(k Kind) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dirty[k] || p.nowDirty[k]
+}
+
 // PublishNow marks kinds dirty for an applied phone action: they are due at
 // once instead of after the debounce, so a steady stream of actions is not
 // held to MaxDebounceWait; kinds PublishSoon marked keep their debounce.

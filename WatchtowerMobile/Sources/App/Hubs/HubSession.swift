@@ -401,6 +401,10 @@ final class HubSession {
     /// This link reseals its own sealed bytes across epochs (ask #1066): a relay route, or a link that has moved
     /// routes. An iCloud-only link keeps today's bytes: its static keys exist for every epoch.
     @ObservationIgnored let resealsAcrossEpochs: Bool
+    /// The phone has no relay key source for this hub (relay client Phase 5): the relay refused it (a lapse, a lost
+    /// slot) or its link carries `relayRefused` or `macMoved`. While set, `SecureTransport.waitsForKeybox` is false, so a record
+    /// waiting for a keybox stops the feed silently, with no parked mark. Read with no hop to the main actor.
+    @ObservationIgnored private let noKeySource: OSAllocatedUnfairLock<Bool>
     /// A return to the foreground owes the relay feed a resume (it may have parked): taken by the next fetch, right
     /// before the feed reads, so no fetch of the return can run ahead of it.
     @ObservationIgnored private var feedResumeOwed = false
@@ -408,6 +412,13 @@ final class HubSession {
     /// rebuilt on it, so a session leaving the relay offers no more meanwhile; its `leftTransport` holds a fetched
     /// merge's reseal back until the left mailbox is drained. nil: the session's own route, nothing left.
     @ObservationIgnored var linkOnRow: (@MainActor () -> LinkRecord?)?
+    /// Saves the hub's registry row's link in one write (set by `AppRoot.wire`, the follower's `persistRoute`): the
+    /// term mark an answered account read sets or clears, and the term's first read. false when it was not written.
+    @ObservationIgnored var writeLinkOnRow: (@MainActor (LinkRecord) -> Bool)?
+    /// Answered account reads seen (`relayAccountAnswered`), and whether the last one showed paying with this Mac in a
+    /// slot: a lapse that such an answer overtook drops its mark (review M3).
+    @ObservationIgnored private var answersSeen = 0
+    @ObservationIgnored private var lastAnswerClears = false
     /// The uploader's pass after a raise (`keysMerged`): stale recordings re-armed and sent. Not awaited (tests wait).
     @ObservationIgnored private(set) var uploadKick: Task<Void, Never>?
     /// The unlock signal's registration (`protectedDataDidBecomeAvailable`), removed by `stop()`.
@@ -507,7 +518,7 @@ final class HubSession {
         self.secure = secure
         sealKeys = sealed.keys
         (hasDeviceKeys, keyStore) = (sealed.hasDeviceKeys, sealed.hasDeviceKeys ? keys?.store : nil)
-        resealsAcrossEpochs = Self.resealsAcrossEpochs(route: route, link: link)
+        (resealsAcrossEpochs, noKeySource) = (Self.resealsAcrossEpochs(route: route, link: link), Self.keySourceFlag(link, secure))
         self.hubLink = hubLink
 
         // Each fetch reaches CloudKit once (`remoteFetch`); the hydrator and
@@ -1313,13 +1324,12 @@ final class HubSession {
     /// opened and a parked relay feed reads again. When the newest epoch went up, an ordered hub gets `epoch_ack` for
     /// it (the outbox sends none to a hub on today's path, and never one for an epoch it already acknowledged), and on
     /// a link that reseals across epochs stale recordings are re-armed and sent (an iCloud-only link starts no upload
-    /// pass, ask #1066). `droppedNewestPair` (the hub cleared this phone's relay keys) puts the
-    /// offer out again: the ack's carried offer is forgotten first (`offerAgain`), so the same epoch is due once more.
-    /// A locked keychain or a missing link leaves it to the next raise.
+    /// pass, ask #1066). `droppedNewestPair` (the hub cleared this phone's relay keys) puts the offer out again: the
+    /// ack's carried offer is forgotten first (`offerAgain`), so the same epoch is due once more. A locked keychain or
+    /// a missing link leaves it to the next raise.
     func keysMerged(newestEpochRaised: Bool, droppedNewestPair: Bool) async {
         indexStoredRows()
         await feed.resumeIfParked()
-        // An iCloud-only link keeps today's behaviour (ask #1066): no upload pass on a raise there.
         if newestEpochRaised, resealsAcrossEpochs { kickUploads() }
         guard newestEpochRaised || droppedNewestPair else { return }
         acknowledgeNewestEpoch(offerAgain: droppedNewestPair)
@@ -1416,9 +1426,7 @@ final class HubSession {
     /// meanwhile, and an offer drawn then would outlive the clear on an iCloud link (nil, nothing drawn).
     func relayOffer() async throws -> Data? {
         guard let keyStore, try await outbox.orderedActions(), offersOnItsRoute else { return nil }
-        return try keyStore.updateHubLink(hubID) { [self] link in
-            offersOnItsRoute ? link.withOffer().0 : link
-        }?.offeredKX?.publicKey
+        return try keyStore.updateHubLink(hubID) { [self] in offersOnItsRoute ? $0.withOffer().0 : $0 }?.offeredKX?.publicKey
     }
 
     /// Opens what `ReplicaStore.indexPending` can now; a keybox among them reaches the link flow, as one indexed
@@ -1563,6 +1571,12 @@ final class HubSession {
         }
     }
 
+    /// The follower ended `hubOnRelayAt` (a later move or the hub's answer for where it runs): a `hub_on_relay` this
+    /// session read no longer says the hub runs on the relay.
+    func forgetHubOnRelay() {
+        hubOnRelay.forget()
+    }
+
     /// The hub's transport marker's plain record name.
     static let transportMarkerName = TransportMarker.recordName
 
@@ -1610,15 +1624,77 @@ final class HubSession {
     /// The relay refused this phone because its subscription ended (a `ENTITLEMENT_INACTIVE` answer, a move learned
     /// from the account state): `TransportFollowerPolicy.decide(.relayLapsed)` asks the hub for iCloud once, and a
     /// repeated notice re-sends the request a failed copy left behind.
+    /// A paying-with-slot answer that came while the lapse ran is newer than the refusal: the mark the lapse wrote goes
+    /// again (review M3), so a spurious lapse leaves no term, no S61 line and no stopped feed behind it.
     func lapseRelay() async {
+        let seen = answersSeen
         await transportRequester?.lapse()
+        guard answersSeen != seen, lastAnswerClears, var link = linkOnRow?(), link.relayRefused != nil else { return }
+        link.relayRefused = nil
+        guard writeLinkOnRow?(link) == true else { return }
+        Self.logger.notice("a lapse overtaken by a paying answer: its mark dropped")
+        await keySourceBack()
     }
 
     /// The subscription is paying again: a lapse's request (open, or kept after its day) is withdrawn and cleared, so
     /// the Mac does not move behind the phone's back and a later lapse asks anew. An owner's request is left alone.
+    /// The key source is back unless the link still carries `relayRefused` (cleared by an answered read), and a
+    /// stopped feed reads again.
     func lapseEnded() async {
         await transportRequester?.lapseEnded()
+        await keySourceBack()
     }
+
+    /// The key source is back once the link carries neither `relayRefused` nor `macMoved` (relay client Phase 5): the
+    /// flag goes and a stopped feed reads again. Nothing while a mark stands.
+    func keySourceBack() async {
+        let link = linkOnRow?()
+        guard link?.relayRefused == nil, link?.macMoved == nil else { return }
+        noKeySource.withLock { $0 = false }
+        await feed.resumeIfParked()
+    }
+
+    /// An answered account read (relay client Phase 5, Task 17, review M7): on a link the relay refuses, paying with
+    /// this Mac in a slot clears the term's mark (its first read with it), not paying makes the cause `.lapse`, paying
+    /// with the Mac in no slot `.slot`; `since` never moves. A link with no mark is untouched. Clearing it brings the key
+    /// source back (`waitsForKeybox`). The follower is the mark's other writer; both write on the main actor, each on the
+    /// row as it reads it then, so the last write wins and neither ever moves `since`.
+    func relayAccountAnswered(paying: Bool, macs: [String]) async {
+        answersSeen += 1
+        lastAnswerClears = paying && linkOnRow?()?.relayMacDeviceID.map(macs.contains) == true
+        guard var link = linkOnRow?(), var refused = link.relayRefused, let mac = link.relayMacDeviceID else { return }
+        if paying, macs.contains(mac) {
+            link.relayRefused = nil
+        } else {
+            refused.cause = paying ? .slot : .lapse
+            link.relayRefused = refused
+        }
+        guard link != linkOnRow?(), writeLinkOnRow?(link) == true else { return }
+        if link.relayRefused == nil { await keySourceBack() }
+    }
+
+    /// The relay key source is gone (the follower, on a lapse, a lost slot or `hub_on_relay`): the parked mark goes,
+    /// and a record waiting for a keybox stops the feed silently until a merge, a foreground or a launch. No key is
+    /// erased: the hub may not have acted yet, and a slot given back must still open a keybox sealed to the offer.
+    func keySourceGone() async {
+        noKeySource.withLock { $0 = true }
+        do {
+            try await feed.keySourceGone()
+        } catch {
+            Self.logger.error("the parked mark was not cleared: \(String(describing: type(of: error)), privacy: .public)")
+        }
+    }
+
+    /// The no-key-source flag, wired into `secure`'s `waitsForKeybox` (false while set); set at start for a link the relay
+    /// refuses.
+    private static func keySourceFlag(_ link: LinkRecord?, _ secure: SecureTransport) -> OSAllocatedUnfairLock<Bool> {
+        let flag = OSAllocatedUnfairLock(initialState: link?.relayRefused != nil || link?.macMoved != nil)
+        secure.setWaitsForKeybox { !flag.withLock { $0 } }
+        return flag
+    }
+
+    /// Whether `SecureTransport.waitsForKeybox` answers yes (a test reads it).
+    var waitsForKeybox: Bool { secure.waitsForKeybox() }
 
     /// The request toward iCloud, or the end it came to, as the hub's row holds it.
     var transportRequest: TransportRequestRecord? { transportRequester?.record }
@@ -1975,17 +2051,5 @@ extension PhoneRecording {
     /// and waiting for the Mac's receipt, while it still retries by itself.
     var needsUpload: Bool {
         (state == .waiting || state == .uploading) && !isUploadStuck
-    }
-}
-
-/// Whether a `hub_on_relay` control was read, set from the relay feed's actor.
-final class HubOnRelaySighting: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = false
-
-    var seen: Bool { lock.withLock { value } }
-
-    func note() {
-        lock.withLock { value = true }
     }
 }

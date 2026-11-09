@@ -20,8 +20,24 @@ final class FakeLapseTarget: RelayLapseTarget {
     private(set) var lapseParked = false
     private var parkedLapse: CheckedContinuation<Void, Never>?
 
-    init(isOnRelay: Bool) {
+    /// The Mac's relay id (`relayMacDeviceID`); `slotLosses` counts `relaySlotLost()` (relay client Phase 5).
+    var relayMacDeviceID: String?
+    private(set) var slotLosses = 0
+
+    init(isOnRelay: Bool, relayMacDeviceID: String? = nil) {
         self.isOnRelay = isOnRelay
+        self.relayMacDeviceID = relayMacDeviceID
+    }
+
+    func relaySlotLost() async {
+        slotLosses += 1
+    }
+
+    /// Every answered account read the center told this target of (relay client Phase 5, Task 17).
+    private(set) var answers: [(paying: Bool, macs: [String])] = []
+
+    func relayAccountAnswered(paying: Bool, macs: [String]) async {
+        answers.append((paying, macs))
     }
 
     func releaseEnd() {
@@ -59,6 +75,8 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
     private var held: Set<String> = []
     private var waiting: [String: [CheckedContinuation<Void, Never>]] = [:]
     private var answers: [Relay_V1_EntitlementKind] = []
+    /// Held reads are answered by the fake first and wait with the answer (`holdReadAnswers()`).
+    private var readsAnswerFirst = false
 
     init(inner: any RelayHTTP) {
         self.inner = inner
@@ -88,12 +106,35 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
         hold(Self.readKey)
     }
 
+    /// Reads are answered by the fake at once, on its state then, and wait with that answer until released: a read in
+    /// flight that answers what the relay said when it was asked, however late it lands.
+    func holdReadAnswers() {
+        lock.withLock { readsAnswerFirst = true }
+        hold(Self.readKey)
+    }
+
     var isHoldingRead: Bool {
         isHolding(Self.readKey)
     }
 
     func releaseReads() {
         release(Self.readKey)
+    }
+
+    /// How many reads wait.
+    var heldReads: Int {
+        lock.withLock { waiting[Self.readKey]?.count ?? 0 }
+    }
+
+    /// The oldest waiting read goes on; the others and later ones still wait.
+    func releaseFirstRead() {
+        let waiter: CheckedContinuation<Void, Never>? = lock.withLock {
+            guard var queue = waiting[Self.readKey], !queue.isEmpty else { return nil }
+            let first = queue.removeFirst()
+            waiting[Self.readKey] = queue
+            return first
+        }
+        waiter?.resume()
     }
 
     /// The next submit answers `state` whatever the fake would.
@@ -103,7 +144,15 @@ final class SubmitGateHTTP: RelayHTTP, @unchecked Sendable {
 
     func post(_ url: URL, body: Data, headers: [String: String]) async throws -> (status: Int, body: Data) {
         let request = try? Relay_V1_Request(serializedBytes: body)
-        if case .getAccountState? = request?.op { await waitIfHeld(Self.readKey) }
+        if case .getAccountState? = request?.op {
+            guard lock.withLock({ readsAnswerFirst }) else {
+                await waitIfHeld(Self.readKey)
+                return try await inner.post(url, body: body, headers: headers)
+            }
+            let answer = try await inner.post(url, body: body, headers: headers)
+            await waitIfHeld(Self.readKey)
+            return answer
+        }
         if case .submitTransaction(let submit)? = request?.op {
             await waitIfHeld(submit.signedTransaction)
             let scripted = lock.withLock { answers.isEmpty ? nil : answers.removeFirst() }

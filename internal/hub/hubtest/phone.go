@@ -765,24 +765,49 @@ func (p *Phone) seal(name string, f secure.InnerFrame) ([]byte, error) {
 		secure.Context{Zone: secure.ZoneRelay, WireName: name}, nil, nil)
 }
 
-// open opens a hub relayToPhone record addressed to this phone.
+// open opens a hub relayToPhone record addressed to this phone. The Kit's
+// one exception to the key rule (relay client Phase 5): when its key does not
+// open the record, the static key is tried, and what it opens is taken only if
+// it is a hub_on_relay control (the hub clears a leaving phone's relay keys
+// first, so it seals that notice static).
 func (p *Phone) open(name string, env []byte) (secure.InnerFrame, error) {
-	_, f, err := secure.OpenSymmetric(env, []secure.EnvelopeClass{secure.ClassRelayToPhone},
-		secure.Context{Zone: secure.ZoneRelay, WireName: name}, nil,
-		func(h secure.Header) ([]byte, error) {
-			if h.Hub != p.cfg.Hub || h.Sender != p.cfg.Hub {
-				return nil, errors.New("hubtest: not from the hub")
-			}
-			return p.relayKey(secure.HubToPhone, h.Epoch)
-		})
+	f, err := p.openWith(name, env, p.relayKey)
 	if err != nil {
-		return secure.InnerFrame{}, err
+		static := func(dir secure.Direction, epoch uint32) ([]byte, error) {
+			return secure.RelayKey(p.kx, p.cfg.HubKX, p.nonce, p.cfg.Hub, p.id, epoch, dir)
+		}
+		sf, serr := p.openWith(name, env, static)
+		if serr != nil || !isHubOnRelay(sf) {
+			return secure.InnerFrame{}, err
+		}
+		f = sf
 	}
 	kind, id, _ := strings.Cut(f.ID, "-")
 	if secure.RecordName(p.cfg.MetaKey, secure.ZoneRelay, kind, id) != name {
 		return secure.InnerFrame{}, secure.ErrNameMismatch
 	}
 	return f, nil
+}
+
+func (p *Phone) openWith(name string, env []byte, key func(secure.Direction, uint32) ([]byte, error)) (secure.InnerFrame, error) {
+	_, f, err := secure.OpenSymmetric(env, []secure.EnvelopeClass{secure.ClassRelayToPhone},
+		secure.Context{Zone: secure.ZoneRelay, WireName: name}, nil,
+		func(h secure.Header) ([]byte, error) {
+			if h.Hub != p.cfg.Hub || h.Sender != p.cfg.Hub {
+				return nil, errors.New("hubtest: not from the hub")
+			}
+			return key(secure.HubToPhone, h.Epoch)
+		})
+	return f, err
+}
+
+// isHubOnRelay: f is a hub_on_relay control.
+func isHubOnRelay(f secure.InnerFrame) bool {
+	if f.Kind != "control" {
+		return false
+	}
+	var c wire.Control
+	return json.Unmarshal(f.Payload, &c) == nil && c.Kind == wire.ControlHubOnRelay
 }
 
 func newUUID() string {

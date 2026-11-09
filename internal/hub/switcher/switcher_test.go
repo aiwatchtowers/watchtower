@@ -74,6 +74,11 @@ type world struct {
 	// zoneOut: the phones (uppercase ids) the runtime's KeysInZone keeps out
 	// of the data zone's keys (a free phone on the relay).
 	zoneOut map[string]bool
+	// gone: the phones (uppercase ids) the account no longer holds in a
+	// slot; emptyList: the account lists no phone at all (departed_test.go).
+	gone      map[string]bool
+	emptyList bool
+	slotReads int // account reads made through Slotted
 }
 
 var flavours = []string{"memfake", "bridgefake"}
@@ -155,6 +160,11 @@ func newWorld(t *testing.T, flavour string) *world {
 			w.payReads++
 			hang, err, hook := w.payHang, w.payErr, w.onPayRead
 			paying := maps.Clone(w.paying)
+			for id := range paying { // a phone out of every slot is not listed
+				if w.emptyList || w.gone[strings.ToUpper(id)] {
+					delete(paying, id)
+				}
+			}
 			w.mu.Unlock()
 			if hook != nil {
 				hook()
@@ -192,8 +202,14 @@ func newWorld(t *testing.T, flavour string) *world {
 				return nil, derr
 			}
 			var out []switcher.AccountPhone
+			w.mu.Lock()
+			gone, empty := maps.Clone(w.gone), w.emptyList
+			w.mu.Unlock()
+			if empty {
+				return nil, nil
+			}
 			for _, d := range devices {
-				if d.RelayDeviceID != "" {
+				if d.RelayDeviceID != "" && !gone[strings.ToUpper(d.ID)] {
 					out = append(out, switcher.AccountPhone{RelayDeviceID: d.RelayDeviceID, Paying: paying[strings.ToLower(d.ID)] || paying[d.ID]})
 				}
 			}
@@ -210,9 +226,9 @@ func newWorld(t *testing.T, flavour string) *world {
 				hook()
 			}
 			w.mu.Lock()
-			hang, err, anyPays := w.payHang, w.payErr, w.unmatched
-			for _, p := range w.paying {
-				anyPays = anyPays || p
+			hang, err, anyPays := w.payHang, w.payErr, w.unmatched && !w.emptyList
+			for id, p := range w.paying {
+				anyPays = anyPays || (p && !w.gone[strings.ToUpper(id)] && !w.emptyList)
 			}
 			w.mu.Unlock()
 			if hang {
@@ -221,6 +237,7 @@ func newWorld(t *testing.T, flavour string) *world {
 			}
 			return anyPays, err
 		},
+		Slotted:        w.slotted,
 		OldSideTimeout: testOldSide,
 	}
 	w.rebuild(nil)

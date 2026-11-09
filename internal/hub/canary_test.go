@@ -533,6 +533,7 @@ var hubMetaKeys = map[string]string{
 	state.MetaWorkAlertsStartedAt: "timestamp",
 	state.MetaWorkAlertsAwaySince: "timestamp",
 	state.MetaServingNobodySince:  "timestamp",
+	state.MetaReaderLostOwed:      "id", // device ids with their link times
 	"handlers_held_asks":          "id", // ask, session and run ids
 	"hygiene_last_run":            "timestamp",
 }

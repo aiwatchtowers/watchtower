@@ -399,12 +399,33 @@ final class AppRoot {
                 await linking.retrySlotRemovals()
                 await linking.resumePromotedLinks()
                 await resumeRelayUpgrades()
+                await runRelayTerms()
                 endWork?()
             }
             farewellRetry = nil
         }
         farewellRetry = retry
         return retry
+    }
+
+    /// The term of every relay-only link the relay refuses (relay client Phase 5, Task 17), in the foreground only
+    /// (`becameActive`; never on a background or push launch, ask #1098): after the foreground's account pass, each hub's
+    /// session checks its own (`HubSession.runTerm`), one at a time, and a link whose refusal stood on two reads at
+    /// least five minutes apart ends (`LinkingViewModel.endAtTerm`). Nothing without the relay's account center. The
+    /// scene is checked before each hub's step and again before an end (review M2): the retries ahead of this can take
+    /// seconds, and a person who left the app meanwhile must not lose a link with no S60 on screen.
+    func runRelayTerms() async {
+        guard let center = env.relayAccount else { return }
+        await center.passTask?.value
+        for hubID in env.order {
+            guard env.isSceneActive else { return }
+            guard let session = env.session(hubID) else { continue }
+            let ends = await session.runTerm(now: upgradeClock) { mac, holds in
+                await center.termCheck(mac: mac, purchaseHolds: holds)
+            }
+            guard env.isSceneActive else { return }
+            if ends { await linking.endAtTerm(hubID) }
+        }
     }
 
     /// A `watchtower://link` URL from the system Camera app. The demo has no
@@ -431,6 +452,7 @@ final class AppRoot {
     private func wire(_ session: HubSession) {
         let hubID = session.hubID
         session.linkOnRow = { [weak self] in self?.followerLink(hubID: hubID) }
+        session.writeLinkOnRow = { [weak self] link in self?.persistRoute(link) ?? false }
         session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
         session.onFetched = { [weak self, weak session] in
             self?.checkLink(hubID: hubID)
@@ -453,6 +475,7 @@ final class AppRoot {
         guard !isDemo else { return }
         // The hub's switch controls and transport marker (relay client Phase 3 Task 11), read on this session's route.
         let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self, now: upgradeClock)
+        follower.onHubOnRelayEnded = { [weak session] in session?.forgetHubOnRelay() }
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
@@ -1236,6 +1259,11 @@ extension AppRoot: RelayUpgradeHost {
         }
     }
 
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> RelayKeyboxMerge {
+        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return .noKeys }
+        return await linking.mergeSwitchKeys(keybox, hubID: hubID) ? .merged : .notStored
+    }
+
     func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {
         try factory.makeSide(hubID, .hostedRelay(macDeviceID: mac))
     }
@@ -1284,6 +1312,18 @@ extension AppRoot: TransportFollowerHost {
 
     func clearEphemeral(hubID: String) -> Bool {
         linking.clearEphemeral(hubID: hubID)
+    }
+
+    func dropEphemeral(hubID: String) -> Bool {
+        linking.dropEphemeral(hubID: hubID)
+    }
+
+    func relayKeySourceGone(hubID: String) async {
+        await env.session(hubID)?.keySourceGone()
+    }
+
+    func relayKeySourceBack(hubID: String) async {
+        await env.session(hubID)?.keySourceBack()
     }
 
     func persistRoute(_ link: LinkRecord) -> Bool {

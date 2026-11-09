@@ -294,6 +294,30 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertGreaterThan(after, before, "the outbox writes on its route again")
     }
 
+    /// PR C final review M3: the move is written on the row as it stands after the follower's awaits, so a newer write
+    /// meanwhile (here an answered account read clearing the refusal mark) is kept, not undone by the row read before.
+    func testTheMoveKeepsARowWriteMadeDuringItsAwaits() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let first = try await bed.orderedSession()
+        var marked = try XCTUnwrap(bed.row()?.link)
+        marked.relayRefused = RelayRefusedRecord(since: Date(), cause: .slot)
+        XCTAssertTrue(try bed.registry.updateLink(marked))
+        let host = FlakyMergeHost(root: bed.root, failsFirstMerge: false)
+        host.duringKeySourceGone = {
+            guard var renewed = try? bed.row()?.link else { return }
+            renewed.relayRefused = nil
+            XCTAssertTrue(bed.root.persistRoute(renewed))
+        }
+        let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: host)
+
+        let decided = await follower.handle(.slotLost)
+
+        XCTAssertTrue(decided)
+        let link = try XCTUnwrap(bed.row()?.link)
+        XCTAssertEqual(link.transport, .cloudKit, "the lost slot moved the link to its iCloud route")
+        XCTAssertNil(link.relayRefused, "the newer write is kept")
+    }
+
     /// Final review M5: decisions of one hub run one at a time, so the same control read twice (two transports, or the
     /// feed and the side reader) is decided once from the moved row, never twice from a stale one.
     func testTwoDecisionsOfOneHubNeverInterleave() async throws {
@@ -456,7 +480,24 @@ final class Bed {
         let keys: InMemoryPhoneKeyStore
         let looksAtWake: Bool
         let stopLookCap: Duration
+        /// The farewell's delivery reads the hub's own send queue, as the live app's does, so a save the relay refuses
+        /// keeps it (relay client Phase 5, Task 17); otherwise every farewell reads as sent.
+        var farewellLive = false
+        let farewellResends = FarewellResends()
     }
+
+    /// Kept farewells sent again at launch (none goes out on the bed).
+    final class FarewellResends: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ids: [String] = []
+        var hubIDs: [String] { lock.withLock { ids } }
+        func append(_ hubID: String) { lock.withLock { ids.append(hubID) } }
+    }
+
+    /// The bed's kept-farewell resends.
+    var farewellResends: [String] { launch.farewellResends.hubIDs }
+    /// The root's settings (the account center's claim lives here).
+    var defaults: UserDefaults { launch.defaults }
 
     static func make(
         _ test: XCTestCase,
@@ -469,6 +510,8 @@ final class Bed {
         alertWake: (any PushWake)? = nil,
         startsActive: Bool = true,
         relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
+        farewellLive: Bool = false,
+        secondRelayHub: String? = nil,
         refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
@@ -513,6 +556,16 @@ final class Bed {
         )
         if route == .relay { link.setRelay(mac: mac.deviceID) }
         try registry.upsert(link, now: Date())
+        if let secondRelayHub {
+            // A second relay-only Mac row on the same relay Mac (Task 17's terms ending together); its keys are not in
+            // the store, so its feed never opens a record, which the term does not need.
+            var home = LinkRecord(
+                hubID: secondRelayHub, macName: "Home Mac", scope: .private, ownerName: "", userRecordName: "_owner-acme",
+                nonce: "nonce-home", dataShareURL: nil, relayShareURL: nil, deviceID: TestE2E.deviceID.uuidString,
+                linkedAt: Date(timeIntervalSince1970: 1_700_000_000), hubTransports: ["relay"])
+            home.setRelay(mac: mac.deviceID)
+            try registry.upsert(home, now: Date())
+        }
         let identity = DeviceIdentity(
             deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let cloud = RecordingCloud()
@@ -525,9 +578,10 @@ final class Bed {
         let clock = SideClock()
         let relayOps = FakeRelayOps(
             clock: FakeLinkClock(now: Date()), availability: relayOff ? .off(.notConfigured) : .available(FakeRelayOps.origin))
-        let launch = Launch(
+        var launch = Launch(
             paths: paths, factory: factory, identity: identity, defaults: defaults, relay: rootRelay, keys: keys,
             looksAtWake: looksAtWake, stopLookCap: stopLookCap)
+        launch.farewellLive = farewellLive
         let root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
         Self.tearDown(root, in: test)
         return Bed(
@@ -549,13 +603,28 @@ final class Bed {
                 identity: launch.identity, keys: launch.keys, clock: FakeLinkClock(now: Date()), relay: relayOps
             ),
             startWork: nil,
-            farewellDelivery: AppRoot.FarewellDelivery { _, _ in false },
+            farewellDelivery: farewellDelivery(launch),
             sideMailbox: SideMailboxTiming(
                 now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
                 looksAtWake: launch.looksAtWake, stopLookCap: launch.stopLookCap)
         ) { clock.now }
         root.linking.refreshLinks()
         return root
+    }
+
+    private static func farewellDelivery(_ launch: Launch) -> AppRoot.FarewellDelivery {
+        guard launch.farewellLive else { return AppRoot.FarewellDelivery { _, _ in false } }
+        let resends = launch.farewellResends
+        var delivery = AppRoot.FarewellDelivery { session, record in
+            (try? session.transportStore?.isPending(recordName: record.recordName, zone: record.zone)) ?? false
+        }
+        delivery.cap = .milliseconds(500)
+        delivery.pause = .milliseconds(20)
+        delivery.resend = { farewell in
+            resends.append(farewell.hubID)
+            return false
+        }
+        return delivery
     }
 
     private static func tearDown(_ root: AppRoot, in test: XCTestCase) {
@@ -627,7 +696,12 @@ final class Bed {
                 hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), defaults: defaults,
                 recordingsDirectory: paths.recordingsDirectory(hubID), route: route, link: row?.link, startsActive: startsActive,
                 uploadRetriesAllowed: false,
-                sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
+                // A fake microphone: the term waits for a running recording (relay client Phase 5, Task 17).
+                makeRecorder: { uploader in
+                    PhoneRecorderController(
+                        uploader: uploader, engine: FakeAudioEngine(), notificationCenter: NotificationCenter(), tickInterval: nil)
+                },
+                sleep: { try await sleeper.sleep($0) }
             )
         }
     }
@@ -756,6 +830,17 @@ final class Bed {
         } else {
             try await TestPhone.hub(over: cloud.inner).save(records)
         }
+    }
+
+    /// This phone's keybox of `epoch` in the Mac's relay data zone, with its keys or without (a phone the hub does not
+    /// name a reader of the zone yet).
+    func publishRelayKeybox(epoch: UInt32, withKeys: Bool) async throws {
+        let grant = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: hubID, name: "Colleague A's iPhone", scope: .private,
+            linked: true, typingAllowed: true, startSessionsAllowed: true, mayStartSessions: true, orderedActions: 1,
+            transports: ["cloudkit", "relay"], relayDeviceID: mac.deviceID, relayAuthPub: WireBytes.base64URL(macAuthPub))
+        let record = try TestPhone.grantRecord(grant, keys: withKeys ? TestPhone.keyboxKeys(epoch: epoch) : nil, modifiedAt: Date())
+        try await macSave(record, zone: "data/\(mac.deviceID)")
     }
 
     func publishBriefings(_ ids: [String], on route: TransportKind) async throws {
@@ -1102,6 +1187,8 @@ private final class FlakyMergeHost: TransportFollowerHost {
     private let failsFirstMerge: Bool
     private(set) var merges = 0
     var persistFails = false
+    /// Runs inside `relayKeySourceGone`, between the follower's read of the row and its route write.
+    var duringKeySourceGone: (@MainActor () -> Void)?
     private var relayCalls = 0
     /// The most `relayUse` calls that were in flight at once.
     private(set) var mostRelayCallsAtOnce = 0
@@ -1117,6 +1204,12 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
     func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
     func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
+    func dropEphemeral(hubID: String) -> Bool { root.dropEphemeral(hubID: hubID) }
+    func relayKeySourceGone(hubID: String) async {
+        await root.relayKeySourceGone(hubID: hubID)
+        duringKeySourceGone?()
+    }
+    func relayKeySourceBack(hubID: String) async { await root.relayKeySourceBack(hubID: hubID) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
 
     func relayUse(for link: LinkRecord) async -> RelayUse {

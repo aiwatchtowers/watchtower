@@ -10,6 +10,13 @@ protocol RelayLapseTarget: AnyObject {
     @MainActor var isOnRelay: Bool { get }
     /// The entitlement came back: a lapse's kept request is withdrawn. No-op on a session with none.
     @MainActor func lapseEnded() async
+    /// The Mac's relay device id while the session runs over the relay; nil otherwise.
+    @MainActor var relayMacDeviceID: String? { get }
+    /// An answered read shows the Mac in none of this phone's slots (relay client Phase 5).
+    @MainActor func relaySlotLost() async
+    /// Every answered account read, before anything else acts on it (relay client Phase 5, Task 17): a link the relay
+    /// refuses clears its term's mark or sets its cause by what the read shows.
+    @MainActor func relayAccountAnswered(paying: Bool, macs: [String]) async
 }
 
 extension HubSession: RelayLapseTarget {
@@ -91,6 +98,16 @@ final class RelayAccountCenter {
 
     private enum Press { case buy, restore }
 
+    /// What the term's check came to for one Mac (relay client Phase 5, Task 17, `termCheck`).
+    enum TermAnswer: Equatable {
+        /// Paying with this Mac in a slot: the mark is cleared, the link stays.
+        case refusalOver
+        /// Not paying, or this Mac in none of the slots, and nothing that holds the term.
+        case refusalStands
+        /// No answer (a failed read or a send that did not reach the relay), or a purchase that holds the term.
+        case wait
+    }
+
     /// What one `get_account_state` came to.
     private enum ReadOutcome {
         /// No answer.
@@ -121,6 +138,20 @@ final class RelayAccountCenter {
     private(set) var unconfirmed: UnconfirmedPurchase?
     /// This phone was seen paying and has not dismissed the loss (`relay.wasPaying`): the moved and ended banners.
     private(set) var wasPaying: Bool
+    /// A current purchase this phone paid that the relay has not seen (relay client Phase 5, Task 17): not a renewal,
+    /// sold to this phone's account, held back by the claim (`.movedAway`: only a press sends it). Recomputed from
+    /// StoreKit on every pass and term check; a renewal never counts, as StoreKit hands it to every phone on the Apple ID.
+    private(set) var heldPurchase = false
+
+    /// What holds a refused link's term (`RelayBannerModel.termLine`): a held purchase, or a current row the relay refused
+    /// for a reason not about the payment (`unconfirmed`, cleared once no such row is current).
+    var termHold: RelayTermHold {
+        if heldPurchase { return .held }
+        switch unconfirmed {
+        case .transferLimit, .notImplemented, .updateRequired: return .refusedRow
+        case .confirming, .notReached, .refused, nil: return .none
+        }
+    }
 
     /// `TransportFollowerPolicy.lapseReason` on `.free` and `.moved`; nil while paying or unknown.
     var switchReason: String? {
@@ -176,6 +207,24 @@ final class RelayAccountCenter {
     @ObservationIgnored private var lastPress = Press.buy
     /// Only the newest read writes: a slower older answer, or one a control overtook, is dropped.
     @ObservationIgnored private var readGeneration = 0
+    /// When the last answered account read was applied: a slot check right after it reads nothing.
+    @ObservationIgnored private var lastAnsweredAt: Date?
+    /// The last answered account state (the term's check reads it after its pass).
+    @ObservationIgnored private var lastAnswer: RelayAccountState?
+    /// The relay refused a write for the entitlement (`syncThenLapse`) and no read has settled it yet: the newest read
+    /// that finishes does. An answer settles it in `apply` (paying: nothing lapses; not paying: the Macs lapse there); a
+    /// failure leaves the relay's word standing, so the Macs lapse (PR C final review M4).
+    @ObservationIgnored private var lapseOwed = false
+    /// One slot check at a time; a `synced()` pass running holds it back (its read is never superseded), and it runs
+    /// once that pass ends (`slotCheckOwed`).
+    @ObservationIgnored private var slotCheckRunning = false
+    @ObservationIgnored private var syncedRunning = 0
+    @ObservationIgnored private var slotCheckOwed = false
+    /// How many relay events the loop has finished handling, in order: a test waits on it to know a handling ended (as
+    /// on `lapseEndsFinished()`).
+    @ObservationIgnored private(set) var handledEvents = 0
+    /// How long an answered read stands for a slot check (relay client Phase 5, review M5).
+    private static let slotCheckFresh: TimeInterval = 60
 
     init(
         link: RelayAccountLink,
@@ -264,6 +313,7 @@ final class RelayAccountCenter {
         Task { [weak self] in
             for await event in events {
                 await self?.handle(event)
+                self?.handledEvents += 1
             }
         }
     }
@@ -283,6 +333,7 @@ final class RelayAccountCenter {
     private func pass() async {
         let outcome = await synced { await sweep(answered: $0) }
         if outcome != .failed { lastPassAt = now() }
+        await refreshHeld()
     }
 
     /// The account read, then what the automatic paths may send, sent. The read goes first on every claim, so a phone that
@@ -290,6 +341,14 @@ final class RelayAccountCenter {
     /// failed read sends nothing (`send(false)`: it says nothing about a move, and the next pass sends); an answer of no
     /// entitlement waits behind the send, so an unsent renewal lapses no Mac. A send is followed by a new read.
     private func synced(_ send: (_ answered: Bool) async -> Bool) async -> ReadOutcome {
+        syncedRunning += 1
+        defer {
+            syncedRunning -= 1
+            if syncedRunning == 0, slotCheckOwed {
+                slotCheckOwed = false
+                Task { await slotCheck(fresh: false) }
+            }
+        }
         readGeneration += 1
         let generation = readGeneration
         guard let state = await fetchedState(generation: generation) else {
@@ -507,13 +566,29 @@ final class RelayAccountCenter {
             return try await account.state()
         } catch {
             Self.logger.notice("relay account: read failed: \(Self.code(error), privacy: .public)")
-            if generation == readGeneration { phase = .unknown }
+            if generation == readGeneration {
+                phase = .unknown
+                await lapseIfOwed()
+            }
             return nil
         }
     }
 
+    /// The newest read failed: an owed lapse goes on the relay's word.
+    private func lapseIfOwed() async {
+        guard lapseOwed else { return }
+        lapseOwed = false
+        await lapseRelayMacs()
+    }
+
     private func apply(_ state: RelayAccountState) async -> ReadOutcome {
+        lapseOwed = false
         let previous = phase
+        lastAnsweredAt = now()
+        lastAnswer = state
+        for target in targets() {
+            await target.relayAccountAnswered(paying: state.paying && !state.moved, macs: state.macs)
+        }
         if state.moved {
             movedAway()
         } else if state.paying {
@@ -602,10 +677,13 @@ final class RelayAccountCenter {
             await syncThenLapse()
         case .control(.subscriptionMoved, _):
             readGeneration += 1
+            lapseOwed = false // the lapse below settles it
             movedAway()
             await lapseRelayMacs()
         case .control(.slotRemoved, _):
-            await read()
+            await slotCheck(fresh: true)
+        case .forbidden:
+            await slotCheck(fresh: false)
         case .unsupportedVersion, .attestation(.updateRequired):
             updateRequired = true
         case .attestation(.notSupported):
@@ -614,9 +692,48 @@ final class RelayAccountCenter {
             updateRequired = false
             pushRegistrar?.reachable()
             await pass()
-        case .control, .attestation(.retryLater), .forbidden, .reachable(false):
+        case .control, .attestation(.retryLater), .reachable(false):
             break
         }
+    }
+
+    /// A `FORBIDDEN` or `SLOT_REMOVED` (relay client Phase 5, ask #1081): the account is read, and a relay-route
+    /// hub whose Mac is in none of this phone's slots while it pays hears `relaySlotLost()`. A failed read does
+    /// nothing and waits for the next event; a Mac still in a slot (a hub that has not named this phone a reader
+    /// yet) does nothing; a phone not paying is the lapse's (`apply`).
+    ///
+    /// Coalesced (review M5): every refused read of a slot-less phone says `FORBIDDEN`, so one check runs at a time,
+    /// an answered read younger than `slotCheckFresh` is used as it stands (the phase's Macs), and a `synced()` pass
+    /// running is never superseded: the check runs once it ends.
+    /// `fresh` (`SLOT_REMOVED`, a real change): always a new read, as before this check existed.
+    private func slotCheck(fresh: Bool) async {
+        guard !slotCheckRunning else { return }
+        guard syncedRunning == 0 else {
+            slotCheckOwed = true
+            return
+        }
+        slotCheckRunning = true
+        defer { slotCheckRunning = false }
+        guard let macs = await slottedMacs(fresh: fresh) else { return }
+        for target in targets() where target.isOnRelay {
+            guard let mac = target.relayMacDeviceID, !macs.contains(mac) else { continue }
+            await target.relaySlotLost()
+        }
+    }
+
+    /// The Macs in this phone's slots while it pays (nil: not paying, moved, or no answer): from an answered read
+    /// younger than `slotCheckFresh`, else from a new one.
+    private func slottedMacs(fresh: Bool) async -> [String]? {
+        if !fresh, let at = lastAnsweredAt, abs(now().timeIntervalSince(at)) < Self.slotCheckFresh {
+            guard case .paying(_, let macs) = phase else { return nil }
+            return macs
+        }
+        readGeneration += 1
+        let generation = readGeneration
+        guard let state = await fetchedState(generation: generation), generation == readGeneration else { return nil }
+        _ = await apply(state)
+        guard state.paying, !state.moved else { return nil }
+        return state.macs
     }
 
     /// The relay said the entitlement ended. A renewal Apple sold and the relay has not seen goes before any lapse (past the
@@ -624,8 +741,85 @@ final class RelayAccountCenter {
     /// the phase: if it answers paying, its answer is the newer one and no Mac goes back to iCloud. A failed read leaves the
     /// relay's word standing.
     private func syncThenLapse() async {
+        lapseOwed = true
         let outcome = await synced { await sweep(answered: $0) }
+        // A newer read took over: the newest read that finishes settles `lapseOwed` (review M3; PR C final review M4).
+        guard outcome != .superseded, lapseOwed else { return }
+        lapseOwed = false
         if outcome != .lapsed, !Self.isPaying(phase) { await lapseRelayMacs() }
+    }
+
+    // MARK: - The term (relay client Phase 5, Task 17)
+
+    /// The term's check for the Mac `mac`, run by `HubSession.runTerm` in the foreground once a refused link is past its
+    /// date. In the order `synced` uses on a refusal: read, send, read again. Every current row the claim allows is sent,
+    /// past the refused set, so only this send's answer counts; one the claim holds back is never sent. Then the last
+    /// answered read decides (`apply` has already cleared or set each link's mark):
+    /// - paying with `mac` in a slot: `.refusalOver`;
+    /// - a failed read, a superseded one, or a send that did not reach the relay: `.wait`, with no cap;
+    /// - not paying while `purchaseHolds` (a needs-Relay link) and a held purchase, or a row this send got refused with
+    ///   `transferLimit`, `notImplemented` or `updateRequired`, is current: `.wait`;
+    /// - else `.refusalStands`.
+    /// `purchaseHolds` is asked after the read (review I1): the read itself can turn a `.slot` mark into `.lapse`, and the
+    /// hold follows the cause the row has then (ask #1100).
+    func termCheck(mac: String, purchaseHolds: @MainActor () -> Bool) async -> TermAnswer {
+        guard running else { return .wait }
+        var sent = TermSend()
+        let outcome = await synced { answered in
+            guard answered else { return false }
+            sent = await termSend()
+            return sent.sent
+        }
+        let heldKnown = await refreshHeld()
+        guard !sent.unreachable, outcome != .failed, outcome != .superseded, let state = lastAnswer else { return .wait }
+        let paying = state.paying && !state.moved
+        if paying, state.macs.contains(mac) { return .refusalOver }
+        // An account id that could not be read leaves a held purchase unknown: nothing ends on it.
+        if !paying, sent.refusedRow || heldPurchase || !heldKnown, purchaseHolds() { return .wait }
+        return .refusalStands
+    }
+
+    /// What the term's send came to.
+    private struct TermSend {
+        var sent = false
+        var unreachable = false
+        /// A row refused for a reason not about the payment, in this send.
+        var refusedRow = false
+    }
+
+    private func termSend() async -> TermSend {
+        let rows = await currentRows()
+        recomputeUnconfirmed(current: rows)
+        var result = TermSend()
+        for row in rows {
+            guard await claimAllows(row) else { continue }
+            result.sent = true
+            switch await submit(row, byPress: false, tracksCharge: true) {
+            case .entitled, .refused(.refused), .refused(.confirming), .refused(.notReached): break
+            case .unreachable: result.unreachable = true
+            case .refused(.transferLimit), .refused(.notImplemented), .refused(.updateRequired): result.refusedRow = true
+            }
+        }
+        return result
+    }
+
+    /// `heldPurchase` from what StoreKit holds now. Only a moved-away claim can hold a row back from this phone's own
+    /// account, so with any other claim nothing is asked of StoreKit. false when this phone's account id could not be
+    /// read: `heldPurchase` then keeps its last value.
+    @discardableResult
+    private func refreshHeld() async -> Bool {
+        guard claim == .movedAway else {
+            heldPurchase = false
+            return true
+        }
+        let rows = await currentRows().filter { !$0.isRenewal && $0.appAccountToken != nil }
+        guard !rows.isEmpty else {
+            heldPurchase = false
+            return true
+        }
+        guard let own = await ownAccountID() else { return false }
+        heldPurchase = rows.contains { $0.appAccountToken == own }
+        return true
     }
 
     // MARK: - The submit path

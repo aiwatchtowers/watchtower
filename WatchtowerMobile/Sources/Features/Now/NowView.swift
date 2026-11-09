@@ -1,10 +1,12 @@
 import SwiftUI
 
 /// A screen pushed on Now's stack: Settings, from the gear (design pass
-/// spec §5); the Not delivered list, from its row (relay client mockup 5a).
+/// spec §5); the Not delivered list, from its row (relay client mockup 5a); Settings → Macs, from a refused Mac's term
+/// row (relay client Phase 5, S61).
 enum NowRoute: Hashable, CaseIterable {
     case settings
     case notDelivered
+    case macs
 }
 
 /// The Now tab (spec §5.5, mockup 1): the Mac status chip, Waiting for you
@@ -25,9 +27,12 @@ struct NowView: View {
     @State private var showsSubscription = false
     /// A banner to show in place of the live one (the screenshot tour's frames); its actions do nothing.
     private let bannerOverride: RelayBannerModel?
+    /// Term rows to show in place of the live ones (the screenshot tour's frames).
+    private let termRowsOverride: [NowTermRow]?
 
-    init(banner: RelayBannerModel? = nil) {
+    init(banner: RelayBannerModel? = nil, termRows: [NowTermRow]? = nil) {
         bannerOverride = banner
+        termRowsOverride = termRows
     }
 
     private var replica: WorkbenchReplicaModel { env.workbenchReplica }
@@ -64,6 +69,7 @@ struct NowView: View {
                 switch route {
                 case .settings: SettingsView()
                 case .notDelivered: NotDeliveredView()
+                case .macs: MacsView()
                 }
             }
             .navigationDestination(for: String.self) { EventDetailView(eventID: $0) }
@@ -110,7 +116,7 @@ struct NowView: View {
                     case .chip:
                         MacStatusChip(model: model.chip)
                     case .relayBanner:
-                        NowRelayBanner(override: bannerOverride) { showsSubscription = true }
+                        NowRelayBanner(override: bannerOverride, termRowsOverride: termRowsOverride) { showsSubscription = true }
                     case .outbox:
                         if let outbox = model.outbox {
                             NowOutboxGroup(rows: outbox)
@@ -217,12 +223,35 @@ private struct NowRelayBanner: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(LinkingViewModel.self) private var linking
     let override: RelayBannerModel?
+    let termRowsOverride: [NowTermRow]?
     let openSubscription: () -> Void
     @State private var isPressing = false
     /// Per hub: a request refused before anything reached the hub's row.
     @State private var refused: [String: TransportRequestRefusal] = [:]
+    /// S59's **Forget This Mac** asks first, as Settings → Macs does.
+    @State private var forgetting: String?
 
     var body: some View {
+        content
+            .confirmationDialog(
+                forgetAsk?.title ?? "", isPresented: Binding(get: { forgetting != nil }, set: { if !$0 { forgetting = nil } }),
+                titleVisibility: .visible, presenting: forgetAsk
+            ) { ask in
+                Button(ask.button, role: .destructive) {
+                    Task { await linking.forget(ask.hubID) }
+                }
+            } message: { ask in
+                Text(ask.message)
+            }
+    }
+
+    private var forgetAsk: MacsModel.Ask? {
+        guard let forgetting else { return nil }
+        let name = linking.links.first { $0.hubID == forgetting }?.link.macName ?? ""
+        return MacsModel.Ask(forgetting: forgetting, name: name)
+    }
+
+    @ViewBuilder private var content: some View {
         let session = env.activeSession
         if RelayBannerModel.needsClock(route: session.route, unansweredSince: session.relayUnansweredSince) {
             TimelineView(.periodic(from: .now, by: 5)) { context in
@@ -235,10 +264,24 @@ private struct NowRelayBanner: View {
 
     @ViewBuilder
     private func card(now: Date) -> some View {
-        if let model = model(now: now) {
+        let model = model(now: now)
+        if let model {
             RelayBannerCard(model: model, isPressing: isPressing, onPress: press)
                 .padding(.top, Spacing.regular)
         }
+        ForEach(termRows(banner: model, now: now)) { row in
+            NowTermRowView(row: row)
+                .padding(.top, Spacing.regular)
+        }
+    }
+
+    /// S61: the refused Macs' rows (the screenshot tour's override shows its own).
+    private func termRows(banner: RelayBannerModel?, now: Date) -> [NowTermRow] {
+        if let termRowsOverride { return termRowsOverride }
+        guard override == nil else { return [] }
+        return NowTermRow.rows(
+            links: linking.links, activeHubID: env.activeSession.hubID, activeBanner: banner,
+            hold: env.relayAccount?.termHold ?? .none, now: now)
     }
 
     private func model(now: Date) -> RelayBannerModel? {
@@ -252,7 +295,8 @@ private struct NowRelayBanner: View {
             wasPaying: center?.wasPaying ?? false, route: session.route, relayOnly: relayOnly(link, session),
             hubOnRelayAt: link?.hubOnRelayAt, unansweredSince: session.relayUnansweredSince, request: link?.transportRequest,
             pressRefusal: refused[session.hubID], lastUpdate: session.heartbeat?.updatedAt,
-            macName: NowHubName.of(links: linking.links, hubID: session.hubID, hubName: session.hubName), now: now
+            macName: NowHubName.of(links: linking.links, hubID: session.hubID, hubName: session.hubName), now: now,
+            link: link, termHold: center?.termHold ?? .none
         )
     }
 
@@ -265,13 +309,38 @@ private struct NowRelayBanner: View {
     private func press(_ action: RelayBannerModel.Action) {
         guard override == nil, !isPressing else { return }
         let session = env.activeSession
-        guard let work = RelayBannerPress.run(action, session: session, center: env.relayAccount, open: openSubscription) else { return }
+        guard let work = RelayBannerPress.run(
+            action, session: session, center: env.relayAccount, open: openSubscription, forget: { forgetting = session.hubID }
+        ) else { return }
         isPressing = true
         refused[session.hubID] = nil
         Task {
             refused[session.hubID] = await work.value
             isPressing = false
         }
+    }
+}
+
+/// A refused Mac's quiet row on Now (S61): its name and the term's line in the secondary tone, opening Settings → Macs.
+/// No button of its own, no divider.
+private struct NowTermRowView: View {
+    let row: NowTermRow
+
+    var body: some View {
+        NavigationLink(value: row.destination) {
+            HStack(spacing: Spacing.medium) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(row.title).font(TypeScale.rowTitle).foregroundStyle(.primary)
+                    Text(row.line).font(TypeScale.meta).foregroundStyle(row.tone.color)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.right").font(.footnote).foregroundStyle(.tertiary).accessibilityHidden(true)
+            }
+            .frame(minHeight: PhoneMetrics.minTouch)
+            .contentShape(Rectangle())
+            .card()
+        }
+        .buttonStyle(.plain)
     }
 }
 

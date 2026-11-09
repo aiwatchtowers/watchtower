@@ -465,7 +465,14 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             opened = try openOwnEcho(record, header: header, context: context)
         case let (.phone(hubID, deviceID), .relayToPhone):
             guard header.senderID == hubID else { return .refused("wrongSender") }
-            opened = try openSymmetric(record, header: header, context: context, direction: .hubToPhone, device: deviceID)
+            do {
+                opened = try openSymmetric(record, header: header, context: context, direction: .hubToPhone, device: deviceID)
+            } catch let error where Self.triesStatic(error) {
+                guard let notice = try openStaticHubOnRelay(record, header: header, context: context, device: deviceID) else {
+                    throw error
+                }
+                opened = notice
+            }
         case let (.phone(_, deviceID), .relayToHub):
             guard header.senderID == deviceID else { return .refused("notForThisDevice") }
             opened = try openSymmetric(record, header: header, context: context, direction: .phoneToHub, device: deviceID)
@@ -517,6 +524,33 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         let key = try keys.relayKey(direction, deviceID: device, epoch: header.epoch)
         return try EnvelopeSealer.openSymmetric(
             record.payload, accepting: [header.envelopeClass], context: context, verifier: nil) { _ in key }
+    }
+
+    /// The one exception to the phone's key rule (relay client Phase 5, "The scheme"): when no key of the rule opens
+    /// an h2p record (a wrong key, an epoch whose keys are gone or still pending), the static key is tried, and what
+    /// it opens is taken only if it is a `hub_on_relay` control. The hub clears a leaving phone's relay keys before it
+    /// writes that notice, so it is sealed static; anything else opened that way stays unopenable, so an old `dev_kx`
+    /// alone can at worst push the phone off the relay, visibly, and never forge an echo.
+    private static func triesStatic(_ error: any Error) -> Bool {
+        switch error {
+        case EnvelopeError.authenticationFailed, SecureTransportError.epochKeysGone, SecureTransportError.epochKeysPending:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// nil when the static key does not open it or it is not a `hub_on_relay` control.
+    private func openStaticHubOnRelay(
+        _ record: CloudRecord, header: EnvelopeHeader, context: EnvelopeContext, device: UUID
+    ) throws -> (header: EnvelopeHeader, frame: InnerFrame)? {
+        let key = try keys.staticRelayKey(.hubToPhone, deviceID: device, epoch: header.epoch)
+        guard let opened = try? EnvelopeSealer.openSymmetric(
+            record.payload, accepting: [header.envelopeClass], context: context, verifier: nil, key: { _ in key }),
+              opened.frame.kind == RelayRecordKind.control.rawValue,
+              let control = try? RelayCoder.makeDecoder().decode(ControlPayload.self, from: opened.frame.payload),
+              control.kind == .hubOnRelay else { return nil }
+        return opened
     }
 
     /// F2: an h2p header names the hub, not the recipient, so the hub tries each linked device's h2p key.
