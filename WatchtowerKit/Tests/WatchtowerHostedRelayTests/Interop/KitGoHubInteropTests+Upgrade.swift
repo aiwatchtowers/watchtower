@@ -7,13 +7,12 @@ import XCTest
 /// The first upgrade from a Go hub on CloudKit (relay client Phase 5 Task 11, the PR C final review's case), run by
 /// `make relay-interop-kit-hub RELAY=<relay checkout> RELAY_INTEROP_UPGRADE=1` beside the Go side's
 /// `TestInterop_KitPhoneUpgradesOnCloudKit`. One Kit phone links over iCloud and upgrades as the app's `RelayUpgrade`
-/// does since Task 13: pay, the proven relay id, vouch, add_slot, then the reader wait, which merges this phone's
-/// keybox from the Mac's relay data zone before the request goes. The hub is still on CloudKit at that point, so it
-/// must have written that keybox to the relay data zone; the app waits 24 h for it, the stand `readerWait`.
+/// does: pay, the proven relay id, vouch, add_slot, then the reader wait under the PR C fix's rule, then the request
+/// and the follow. A hub on CloudKit writes no relay keybox: the first read of `data/<mac>` must be enough.
 extension KitGoHubInteropTests {
     /// Set to 1 by `RELAY_INTEROP_UPGRADE=1` (with `WT_GO_HUB_INTEROP_DESKTOP=1`).
     static let upgradeVariable = "WT_GO_HUB_INTEROP_UPGRADE"
-    /// The stand's bound on the reader wait (the app's `RelayUpgrade.readerWaitLimit` is 24 h).
+    /// The stand's bound on becoming a reader (the app's `RelayUpgrade.readerWaitLimit` is 24 h).
     static let readerWait: TimeInterval = 90
 
     func testKitPhoneUpgradesAGoHubOnCloudKit() async throws {
@@ -58,19 +57,24 @@ extension KitGoHubInteropTests {
         let relayT = try HostedRelayTransport(session: session, store: try TransportStore.inMemory(), macDeviceID: mac, mode: .hub)
         await follower.attachRelay(relayT, mac: mac)
 
-        // The reader wait (`RelayUpgrade.awaitReader`): a read with no keybox of this phone counts as not read.
+        // The reader wait (`RelayUpgrade.readerConfirmed`, the PR C fix): FORBIDDEN is not read; a read with no keybox
+        // of this phone counts as read; a keybox with keys is merged before the request; a keyless one holds the step
+        // only while the hub runs on the relay, which this hub (on CloudKit) does not.
         handoff.step = "reader_wait"
         let name = Keybox.recordName(deviceID: phone.link.deviceID.uuidString)
-        try await poll(within: Self.readerWait, "this phone's keybox in the relay data zone while the hub is on CloudKit") {
+        try await poll(within: Self.readerWait, "the first read of data/<mac>") {
             do {
                 try await relayT.pull(only: [.data])
-                return try await relayT.changes(in: .data, since: nil).changed.contains { $0.recordName == name }
+                return true
             } catch HostedRelayError.server(code: .forbidden, _) {
                 return false
             }
         }
-        let merged = try await follower.mergeRelayKeybox(atLeast: 0)
-        XCTAssertEqual(merged.epoch, try phone.newestEpoch())
+        let found = try await relayT.changes(in: .data, since: nil).changed.last { $0.recordName == name }
+        if let found, let keys = try phone.link.opener.openKeybox(wireName: found.recordName, envelope: found.payload).keys {
+            _ = try await follower.mergeRelayKeybox(atLeast: keys.epoch)
+        }
+        KitFollower.trace("reader wait: keybox in the relay data zone \(found == nil ? "absent" : "present")")
 
         // Step 4: the request in the iCloud mailbox, its copy in the relay mailbox, one id; then the follow.
         handoff.step = "request"

@@ -1494,10 +1494,11 @@ var kitUpgrade = flag.Bool("kit-upgrade", false, "the Kit run is the first-upgra
 
 // TestInterop_KitPhoneUpgradesOnCloudKit: a phone linked over iCloud upgrades
 // a Go hub that runs on CloudKit to the relay the way the app's upgrader
-// does: after vouch and add_slot it waits, as a reader, for its keybox in the
-// relay data zone, merges it, and only then asks for the relay. The hub must
-// write that keybox while it is still on CloudKit, or the request never goes
-// (the app's reader wait lasts 24 h). The handoff, beyond kitLink's pair.*
+// does (RelayUpgrade.readerConfirmed after the PR C fix): after vouch and
+// add_slot, the first read of data/<mac> confirms it a reader whether or not
+// a keybox of it is there (this hub, on CloudKit, writes none); a keybox with
+// keys would be merged first. Then it asks for the relay and follows. The
+// handoff, beyond kitLink's pair.*
 // files and ck.url: the phone writes upgraded (its relay device id) once it
 // follows the move; the hub answers go.ok or go.fail.
 func TestInterop_KitPhoneUpgradesOnCloudKit(t *testing.T) {
