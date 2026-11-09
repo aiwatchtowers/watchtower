@@ -3,6 +3,7 @@ import Foundation
 import os
 import WatchtowerHostedRelay
 import WatchtowerHostedRelayTesting
+import WatchtowerRelayProto
 @testable import WatchtowerSync
 import XCTest
 
@@ -51,6 +52,7 @@ extension KitGoHubInteropTests {
         try await stepLongAway(handoff, &rig)
         try await stepICloudAndBack(handoff, &rig)
         try await stepLapse(handoff, &rig)
+        try await stepRelayAnswers(handoff, rig)
         handoff.step = "done"
         _ = try await handoff.wait("go.ok", Self.goWait)
         await rig.a.stop()
@@ -103,8 +105,8 @@ extension KitGoHubInteropTests {
         for follower in [a, b] {
             try await follower.pollUntil(within: Self.stepWait, "the move to the relay") { await $0.route == .relay }
         }
-        let rig = RotationRig(a: a, b: b, phoneA: phoneA, phoneB: phoneB, relayA: relays[0], mac: mac, clock: clock,
-                              relayIDs: (relayIDs[0], relayIDs[1]))
+        let rig = RotationRig(a: a, b: b, phoneA: phoneA, phoneB: phoneB, relayA: relays[0], mac: mac, hubAuth: hubAuth,
+                              clock: clock, relayIDs: (relayIDs[0], relayIDs[1]))
         let e1 = try phoneA.newestEpoch()
         XCTAssertEqual(try phoneB.newestEpoch(), e1)
         // The switch's keybox: dev_kx, no relay_kx (no offer was out yet).
@@ -426,6 +428,91 @@ extension KitGoHubInteropTests {
         _ = try await rig.report("s8.done", report, into: "s8.done.ok")
     }
 
+    // MARK: Step 7: the real relay's answers to a phone without a slot
+
+    /// A third paying phone, never linked to the hub (the stand makes one: a relay account the hub never saw), at the
+    /// transport level (the app's slot handling is the phone wiring tests' of Tasks 13 and 17). With no slot for the
+    /// Mac: a save into its mailbox with the Mac and a read of `data/<mac>` are `FORBIDDEN`. With the slot and the
+    /// entitlement expired on the stand: a save is `ENTITLEMENT_INACTIVE`. Paying again, slot removed: the record it
+    /// wrote while slotted is deleted with no slot, and save and read are `FORBIDDEN` again.
+    private func stepRelayAnswers(_ handoff: Handoff, _ rig: RotationRig) async throws {
+        handoff.step = "s7_relay_answers"
+        let client = try await makeClient(kind: .phone, seed: 3)
+        try await pay(client)
+        let mailbox = HostedRelayZones.mailbox(mac: rig.mac, phone: client.deviceID)
+        let data = HostedRelayZones.data(mac: rig.mac)
+        let own = "wt-own-" + UUID().uuidString.lowercased()
+
+        let unslottedSave = await Self.relayCode { try await Self.saveOne(client, mailbox, own) }
+        XCTAssertEqual(unslottedSave, .forbidden, "a save into the Mac's mailbox with no slot")
+        let unslottedRead = await Self.relayCode { try await Self.read(client, data) }
+        XCTAssertEqual(unslottedRead, .forbidden, "a read of data/<mac> with no slot")
+
+        let pairing = HostedRelayPairing(session: HostedRelaySession(client: client))
+        try await pairing.vouch(hubDeviceID: rig.mac, authPub: rig.hubAuth)
+        try await pairing.addSlot(mac: rig.mac)
+        let seq = try await Self.saveOne(client, mailbox, own)
+        let account = try await stand.accountID(ofPhone: client.deviceID)
+        try await stand.setEntitlement(accountID: account, state: "expired", for: .zero)
+        let lapsedSave = await Self.relayCode { try await Self.saveOne(client, mailbox, own + "-lapsed") }
+        XCTAssertEqual(lapsedSave, .entitlementInactive, "a save by a slotted phone that does not pay")
+
+        try await stand.setEntitlement(accountID: account, state: "active", for: .seconds(365 * 86_400))
+        try await pairing.removeSlot(mac: rig.mac)
+        let removedSave = await Self.relayCode { try await Self.saveOne(client, mailbox, own + "-after") }
+        XCTAssertEqual(removedSave, .forbidden, "a save after the slot is removed")
+        let removedRead = await Self.relayCode { try await Self.read(client, data) }
+        XCTAssertEqual(removedRead, .forbidden, "a read of data/<mac> after the slot is removed")
+        var delete = Relay_V1_Delete()
+        delete.zone = mailbox
+        var item = Relay_V1_DeleteItem()
+        item.name = own
+        item.expectedSeq = seq
+        delete.items = [item]
+        let deleted = await Self.relayCode {
+            let result = try await client.delete(delete)
+            XCTAssertTrue(result.conflicts.isEmpty, "its own record, at the seq it wrote")
+        }
+        XCTAssertNil(deleted, "a phone with no slot deletes its own record")
+        KitFollower.trace("""
+            relay answers: unslotted save \(String(describing: unslottedSave)), read \(String(describing: unslottedRead)); \
+            lapsed save \(String(describing: lapsedSave)); removed save \(String(describing: removedSave)), \
+            read \(String(describing: removedRead)); own delete \(deleted.map { String(describing: $0) } ?? "ok")
+            """)
+    }
+
+    /// The relay's error code for `body`, nil when it succeeded; any other error fails the test.
+    private static func relayCode(_ body: () async throws -> Void) async -> Relay_V1_ErrorCode? {
+        do {
+            try await body()
+            return nil
+        } catch HostedRelayError.server(let code, _) {
+            return code
+        } catch {
+            XCTFail("not a relay answer: \(error)")
+            return nil
+        }
+    }
+
+    /// Saves one record (its name as the envelope, must not exist) and returns its seq.
+    private static func saveOne(_ client: HostedRelayClient, _ zone: String, _ name: String) async throws -> UInt64 {
+        var item = Relay_V1_SaveItem()
+        item.record.zone = zone
+        item.record.name = name
+        item.record.envelope = Data(name.utf8)
+        item.mustNotExist = true
+        var save = Relay_V1_Save()
+        save.items = [item]
+        let result = try await client.save(save)
+        return try XCTUnwrap(result.saved.first, "saved, no conflict").recordSeq
+    }
+
+    private static func read(_ client: HostedRelayClient, _ zone: String) async throws {
+        var changes = Relay_V1_Changes()
+        changes.zone = zone
+        _ = try await client.changes(changes)
+    }
+
     // MARK: Checks
 
     /// The keybox opened with the offer, the pair derived and stored, the offer promoted; the private key of the
@@ -516,6 +603,8 @@ struct RotationRig {
     let phoneB: ICloudPhone
     let relayA: HostedRelayTransport
     let mac: String
+    /// The hub's relay auth key from the grant, for a vouch.
+    let hubAuth: Data
     let clock: HubClock
     let relayIDs: (a: String, b: String)
 
