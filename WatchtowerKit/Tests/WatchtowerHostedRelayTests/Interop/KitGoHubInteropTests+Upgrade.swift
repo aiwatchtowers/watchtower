@@ -8,7 +8,9 @@ import XCTest
 /// `make relay-interop-kit-hub RELAY=<relay checkout> RELAY_INTEROP_UPGRADE=1` beside the Go side's
 /// `TestInterop_KitPhoneUpgradesOnCloudKit`. One Kit phone links over iCloud and upgrades as the app's `RelayUpgrade`
 /// does: pay, the proven relay id, vouch, add_slot, then the reader wait under the PR C fix's rule, then the request
-/// and the follow. A hub on CloudKit writes no relay keybox: the first read of `data/<mac>` must be enough.
+/// and the follow. A hub on CloudKit writes no relay keybox: the first read of `data/<mac>` must be enough. The app's
+/// own rule is guarded by `RelayUpgradeWiringTests.testAFirstUpgradeFromAMacOnICloudFindsNoKeyboxAndAsks`; this run pins
+/// that test bed's assumption against the real Go hub.
 extension KitGoHubInteropTests {
     /// Set to 1 by `RELAY_INTEROP_UPGRADE=1` (with `WT_GO_HUB_INTEROP_DESKTOP=1`).
     static let upgradeVariable = "WT_GO_HUB_INTEROP_UPGRADE"
@@ -71,6 +73,7 @@ extension KitGoHubInteropTests {
             }
         }
         let found = try await relayT.changes(in: .data, since: nil).changed.last { $0.recordName == name }
+        XCTAssertNil(found, "a Go hub on CloudKit writes no keybox into data/<mac>: RelayUpgradeWiringTests' bed assumes it")
         if let found, let keys = try phone.link.opener.openKeybox(wireName: found.recordName, envelope: found.payload).keys {
             _ = try await follower.mergeRelayKeybox(atLeast: keys.epoch)
         }

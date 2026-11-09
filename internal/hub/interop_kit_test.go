@@ -635,6 +635,9 @@ func TestInterop_KitPhoneFollowsASwitch(t *testing.T) {
 	if *kitRotation {
 		t.Skip("-kit-rotation: the handoff folder is the rotation run's (RELAY_INTEROP_ROTATION=1)")
 	}
+	if *kitUpgrade {
+		t.Skip("-kit-upgrade: the handoff folder is the first-upgrade run's (RELAY_INTEROP_UPGRADE=1)")
+	}
 	k := kitRun{t: t, dir: *kitDir}
 	logs := &logTap{}
 	log.SetOutput(logs)
@@ -1085,6 +1088,7 @@ type kitRotWorld struct {
 	marks  *kitMarks
 	alerts *pushSource
 	pushes *pushCapture
+	logs   *logTap
 }
 
 func (w *kitRotWorld) device(id string) state.Device {
@@ -1191,7 +1195,7 @@ func TestInterop_KitPhoneRotates(t *testing.T) {
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	w := &kitRotWorld{t: t, k: k, clock: &jumpClock{}, cycle: make(chan struct{}, 1), marks: &kitMarks{},
-		alerts: &pushSource{}, pushes: &pushCapture{}}
+		alerts: &pushSource{}, pushes: &pushCapture{}, logs: logs}
 	w.h = startDesktopHub(t, interopOpts{
 		passEvery: time.Second, linkEvery: time.Second, clock: w.clock.now, cycle: w.cycle, away: alwaysAway{},
 		httpWrap: w.pushes.wrap, register: w.marks.register,
@@ -1333,9 +1337,14 @@ func (w *kitRotWorld) rotStepLongAway(phone string, e3 uint32) {
 	if _, ok := w.relayKX(e3, phone); ok {
 		w.k.fail("r4_erased", "epoch %d's relay-key row is still there", e3)
 	}
+	mark := w.logs.len()
 	w.k.rotAnswer("r4.go", w.clock, nil)
 
 	rep = w.k.rotStep("r4")
+	// The held action, sealed in the erased e3, drew resend_from from the hub.
+	if !strings.Contains(w.logs.since(mark), "sealed in an epoch the hub no longer holds: resend_from asked") {
+		w.k.fail("r4_resend_from", "the hub did not answer the action sealed in erased epoch %d with resend_from", e3)
+	}
 	appliedOnce(w.k, w.marks, "r4_held", rep.HeldMark)
 	seqOf(w.k, w.marks, "r4_held_seq", rep.HeldMark, rep.HeldSeq)
 	appliedOnce(w.k, w.marks, "r4_after", rep.Marks...)
