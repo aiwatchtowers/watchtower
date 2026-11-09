@@ -475,6 +475,7 @@ final class AppRoot {
         guard !isDemo else { return }
         // The hub's switch controls and transport marker (relay client Phase 3 Task 11), read on this session's route.
         let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self, now: upgradeClock)
+        follower.onHubOnRelayEnded = { [weak session] in session?.forgetHubOnRelay() }
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }

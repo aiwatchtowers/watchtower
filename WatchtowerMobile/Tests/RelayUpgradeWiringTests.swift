@@ -209,6 +209,26 @@ final class RelayUpgradeWiringTests: XCTestCase {
         XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested, "a hub on iCloud: the keyless keybox counts as read")
     }
 
+    /// The sighting is forgotten on the follow: this process read `hub_on_relay`, then the hub moved to iCloud. Use Relay
+    /// in the same process with a stale keyless keybox in the relay data zone reaches `.requested`, not the 24 h wait.
+    func testAHubOnRelaySeenBeforeTheHubMovedToICloudDoesNotHoldTheStep() async throws {
+        let (bed, session) = try await upgradeBed()
+        _ = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
+        try await fetch(bed, session)
+        XCTAssertTrue(session.runsOnRelay(), "the hub_on_relay was read")
+        XCTAssertNotNil(try bed.row()?.link.hubOnRelayAt)
+        _ = try await bed.writeSwitch(target: .cloudKit, epoch: 2, on: .cloudKit)
+        try await fetch(bed, session)
+        XCTAssertNil(try bed.row()?.link.hubOnRelayAt, "the move to iCloud ended it")
+        XCTAssertFalse(session.runsOnRelay(), "the sighting went with it")
+
+        try await allowReader(bed, keybox: (1, false))
+        let outcome = await session.upgradeToRelay()
+
+        XCTAssertEqual(outcome, .underWay(.requested))
+        XCTAssertEqual(try bed.row()?.link.relayUpgrade?.step, .requested)
+    }
+
     /// Coming back with the hub still on the relay: the keyless keybox holds the step until the keyed one merges.
     func testAwaitReaderWithNoKeysYetKeepsWaiting() async throws {
         let (bed, session) = try await upgradeBed()
