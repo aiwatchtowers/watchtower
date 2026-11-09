@@ -40,7 +40,7 @@ final class InboxReadingPaneTests: XCTestCase {
         navScreens: Set<String> = [],
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in }
     ) -> PlaceholderPane {
-        InboxReadingPane(item: .output(card), navScreens: navScreens, onCommand: onCommand)
+        InboxReadingPane(item: .output(card), navScreens: navScreens, targets: InboxTargetButtonSource(), onCommand: onCommand)
     }
 
     private func buttonLabels(_ view: PlaceholderPane) throws -> [String] {
@@ -154,7 +154,7 @@ final class InboxReadingPaneTests: XCTestCase {
     }
 
     func testNothingSelectedSaysSo() throws {
-        let sut = InboxReadingPane(item: nil, navScreens: []) { _ in }
+        let sut = InboxReadingPane(item: nil, navScreens: [], targets: InboxTargetButtonSource()) { _ in }
         XCTAssertNoThrow(try sut.inspect().find(text: "Select a card"))
     }
 
@@ -222,7 +222,7 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertEqual(kinds.count, 7, "every InboxListItem case")
         for (item, texts) in kinds {
             let sut = InboxReadingPane(
-                item: item, navScreens: [], now: try local(10, 30), onCommand: { _ in },
+                item: item, navScreens: [], targets: InboxTargetButtonSource(), now: try local(10, 30), onCommand: { _ in },
                 proposalCard: { action in
                     AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
                 })
@@ -254,7 +254,7 @@ final class InboxReadingPaneTests: XCTestCase {
         let owner = Owner(id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "",
                           displayName: "Me")
         let sut = InboxReadingPane(
-            item: .day(card), navScreens: [], onCommand: { _ in },
+            item: .day(card), navScreens: [], targets: InboxTargetButtonSource(), onCommand: { _ in },
             dayCard: { card in
                 InboxDayPane(card: card, today: date, plan: plan, owner: owner,
                              onCommand: { _ in }, onOpenSource: { _ in })
@@ -445,7 +445,7 @@ final class InboxReminderPaneTests: XCTestCase {
     private func reminderPane(messageRef: String) -> PlaceholderPane {
         let reminder = Reminder(row: Row(["id": 1, "message_ref": messageRef, "note": "Ping Ann",
                                           "remind_at": "2000-01-01T00:00:00Z", "status": "pending"]))
-        return InboxReadingPane(item: .reminder(reminder), navScreens: []) { _ in }
+        return InboxReadingPane(item: .reminder(reminder), navScreens: [], targets: InboxTargetButtonSource()) { _ in }
     }
 
     func testReminderWithAMessageRefLinksTheSlackMessage() throws {
@@ -487,7 +487,8 @@ final class InboxAgentPressTests: XCTestCase {
 
     private func buttons(_ card: AutomationOutputCard, onCommand: @escaping (InboxCardCommand) -> Void)
         -> InboxCardButtons {
-        InboxCardButtons(card: card, navScreens: [], onCommand: onCommand, workbenches: workbenches)
+        InboxCardButtons(card: card, navScreens: [], onCommand: onCommand, workbenches: workbenches,
+                         targets: InboxTargetButtonSource())
     }
 
     func testResolvedWorkbenchGoesOutAsItsID() throws {
@@ -551,11 +552,11 @@ final class SaveAutomationProposalPaneTests: XCTestCase {
         let pane: (AgentAction) -> SaveAutomationProposalPane = { action in
             SaveAutomationProposalPane(action: action, workbenchName: { _ in nil }, onOpenDraft: { _ in }, onReject: {})
         }
-        let pending = InboxReadingPane(item: .proposal(try proposal()), navScreens: [], onCommand: { _ in },
+        let pending = InboxReadingPane(item: .proposal(try proposal()), navScreens: [], targets: InboxTargetButtonSource(), onCommand: { _ in },
                                        saveProposal: pane)
         XCTAssertNoThrow(try pending.inspect().find(SaveAutomationProposalPane.self))
 
-        let decided = InboxReadingPane(item: .proposal(try proposal(status: "rejected")), navScreens: [],
+        let decided = InboxReadingPane(item: .proposal(try proposal(status: "rejected")), navScreens: [], targets: InboxTargetButtonSource(),
                                        onCommand: { _ in }, saveProposal: pane)
         XCTAssertThrowsError(try decided.inspect().find(SaveAutomationProposalPane.self),
                              "a decided proposal shows its card and result")

@@ -42,7 +42,7 @@ final class InboxArtifactCardTests: XCTestCase {
     func testReadingPaneDrawsEachState() throws {
         func pane(_ blocks: String) -> InboxReadingPane<
             InboxCardPlaceholder, InboxCardColumn<InboxCardPlaceholder>, InboxCardPlaceholder> {
-            InboxReadingPane(item: .output(card(blocks: blocks)), navScreens: []) { _ in }
+            InboxReadingPane(item: .output(card(blocks: blocks)), navScreens: [], targets: InboxTargetButtonSource()) { _ in }
         }
         XCTAssertNoThrow(try pane("").inspect().find(MarkdownView.self))
         XCTAssertNoThrow(try pane(#"{"v":1,"blocks":[{"type":"heading","text":"Due today","level":1}]}"#)
@@ -94,7 +94,7 @@ final class InboxArtifactCardTests: XCTestCase {
         let target = #"{"label":"Make a task","kind":"target","target":{"title":"Follow up"}}"#
         let shown = card(blocks: #"{"v":1,"blocks":[{"type":"actions","actions":[\#(target),\#(chat)]}]}"#)
         var commands: [InboxCardCommand] = []
-        let sut = InboxReadingPane(item: .output(shown), navScreens: []) { commands.append($0) }
+        let sut = InboxReadingPane(item: .output(shown), navScreens: [], targets: InboxTargetButtonSource()) { commands.append($0) }
         let button = try sut.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self)
         XCTAssertFalse(button.isDisabled())
         try button.tap()
@@ -104,7 +104,7 @@ final class InboxArtifactCardTests: XCTestCase {
 
         let source = InboxTargetButtonSource { _ in InboxTargetButtonFacts() } isProposing: { _ in true }
         let ignore: (InboxCardCommand) -> Void = { _ in }
-        let busy = InboxReadingPane(item: .output(shown), navScreens: [], onCommand: ignore, targets: source)
+        let busy = InboxReadingPane(item: .output(shown), navScreens: [], targets: source, onCommand: ignore)
         XCTAssertTrue(try busy.inspect().find(ArtifactTargetButton.self).find(ViewType.Button.self).isDisabled())
     }
 
@@ -124,7 +124,7 @@ final class InboxArtifactCardTests: XCTestCase {
         }
         let blocks = #"{"v":1,"blocks":["# + person("Ann Example", "acme:U1") + ","
             + person("Bo Example", "acme:U9") + "]}"
-        let sut = InboxReadingPane(item: .output(card(blocks: blocks)), navScreens: [], onCommand: { _ in },
+        let sut = InboxReadingPane(item: .output(card(blocks: blocks)), navScreens: [], targets: InboxTargetButtonSource(), onCommand: { _ in },
                                    artifactPeople: ["acme:U1": "Colleague Alpha"])
         let view = try sut.inspect()
         XCTAssertNoThrow(try view.find(text: "CA"), "known user: initials of the local name")

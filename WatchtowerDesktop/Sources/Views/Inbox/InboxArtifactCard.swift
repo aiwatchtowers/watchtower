@@ -56,7 +56,7 @@ struct InboxArtifactCard: View {
     let onDismiss: () -> Void
     let workbenches: [Workbench]
     /// The target buttons' state, from the Inbox center.
-    var targets = InboxTargetButtonSource()
+    let targets: InboxTargetButtonSource
     /// False: no Done or Dismiss (`InboxCardButtons.showsDoneDismiss`).
     var showsDoneDismiss = true
     /// The native row actions of rows with a `ref` (`InboxRefHooks`).
@@ -87,7 +87,7 @@ struct InboxArtifactCard: View {
             }
             InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
                              onDone: onDone, onDismiss: onDismiss, workbenches: workbenches,
-                             drawsOwnActions: false, showsDoneDismiss: showsDoneDismiss)
+                             drawsOwnActions: false, targets: targets, showsDoneDismiss: showsDoneDismiss)
                 .padding(.top, Spacing.small)
         }
     }

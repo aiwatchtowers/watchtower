@@ -21,7 +21,7 @@ struct InboxCardButtons: View {
     /// False: only the common row (the card's actions are drawn with its blocks).
     var drawsOwnActions = true
     /// The target buttons' state, from the Inbox center.
-    var targets = InboxTargetButtonSource()
+    let targets: InboxTargetButtonSource
     /// False: no Done or Dismiss in the common row (a card in Needs
     /// approval, `InboxReadingPane.stackedInApprovals()`).
     var showsDoneDismiss = true

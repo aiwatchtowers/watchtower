@@ -191,6 +191,7 @@ struct InboxSplitView<EmptyList: View>: View {
         return InboxReadingPane(
             item: shown,
             navScreens: navScreens,
+            targets: vm.targetButtons(now: now),
             now: now,
             isWriting: shown.map { vm.isWriting($0.id) } ?? false,
             onCommand: onCardAction,
@@ -205,11 +206,6 @@ struct InboxSplitView<EmptyList: View>: View {
             onRetryBuiltin: onRetryBuiltin,
             workbenches: workbenches,
             artifactPeople: vm.feed.artifactPeople,
-            targets: InboxTargetButtonSource(
-                facts: { vm.targetFacts(contextID: $0) },
-                isProposing: { vm.proposingTargets.contains($0) },
-                now: now
-            ),
             dayCard: { card in
                 if let pane = dayPane?(card) {
                     pane

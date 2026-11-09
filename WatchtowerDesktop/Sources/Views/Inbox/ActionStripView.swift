@@ -511,6 +511,7 @@ struct ActionStripActionsView: View {
         let pane = InboxReadingPane(
             item: item,
             navScreens: navScreens,
+            targets: vm.targetButtons(now: now),
             now: now,
             isWriting: item.map { vm.isWriting($0.id) } ?? false,
             onCommand: onCardAction,

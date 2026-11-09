@@ -57,6 +57,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     init(
         item: InboxListItem?,
         navScreens: Set<String>,
+        targets: InboxTargetButtonSource,
         now: Date = Date(),
         isWriting: Bool = false,
         onCommand: @escaping (InboxCardCommand) -> Void,
@@ -69,7 +70,6 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
         artifactPeople: [String: String] = [:],
-        targets: InboxTargetButtonSource = InboxTargetButtonSource(),
         @ViewBuilder dayCard: @escaping (InboxDayCard) -> DayCard,
         @ViewBuilder trackCard: @escaping (InboxTrackCard) -> TrackCard,
         @ViewBuilder ideaCard: @escaping (Idea) -> IdeaCard
@@ -318,6 +318,7 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
     init(
         item: InboxListItem?,
         navScreens: Set<String>,
+        targets: InboxTargetButtonSource,
         now: Date = Date(),
         isWriting: Bool = false,
         onCommand: @escaping (InboxCardCommand) -> Void,
@@ -329,14 +330,13 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
-        artifactPeople: [String: String] = [:],
-        targets: InboxTargetButtonSource = InboxTargetButtonSource()
+        artifactPeople: [String: String] = [:]
     ) {
         self.init(
-            item: item, navScreens: navScreens, now: now, isWriting: isWriting, onCommand: onCommand,
+            item: item, navScreens: navScreens, targets: targets, now: now, isWriting: isWriting, onCommand: onCommand,
             onOpenAutomationRun: onOpenAutomationRun, onDone: onDone, onDismiss: onDismiss, onSnooze: onSnooze,
             proposalCard: proposalCard, saveProposal: saveProposal, onRetryBuiltin: onRetryBuiltin,
-            workbenches: workbenches, artifactPeople: artifactPeople, targets: targets,
+            workbenches: workbenches, artifactPeople: artifactPeople,
             dayCard: { InboxCardPlaceholder(day: $0) },
             trackCard: { card in InboxCardColumn { InboxCardPlaceholder(track: card, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0) }
