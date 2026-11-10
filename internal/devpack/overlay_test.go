@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -386,5 +387,45 @@ func TestRerenderSkill_PreSplitCoreLeftForTheInstall(t *testing.T) {
 	}
 	if readTestFile(t, file) != string(v8) {
 		t.Fatal("a pre-split core must stay as it is")
+	}
+}
+
+func TestRerenderFolderSkill_RefusesASkillsDirLinkedOutside(t *testing.T) {
+	folder := t.TempDir()
+	outside := t.TempDir()
+	s, _ := PackSkill(WorkbenchSkillName)
+	if err := os.MkdirAll(filepath.Join(outside, WorkbenchSkillName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(outside, WorkbenchSkillName, "SKILL.md")
+	if err := os.WriteFile(file, []byte(s.Content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(folder, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(folder, ".claude", "skills")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RerenderFolderSkill(folder, filepath.Join(folder, ".claude", "skills"), WorkbenchSkillName, []string{"Be brief."})
+	if !errors.Is(err, ErrSymlinkOutsideFolder) {
+		t.Fatalf("want ErrSymlinkOutsideFolder, got %v", err)
+	}
+	if b, _ := os.ReadFile(file); string(b) != s.Content {
+		t.Fatal("the copy outside the folder must not be written")
+	}
+
+	// Inside the folder it renders as RerenderSkill does.
+	in := t.TempDir()
+	dir := filepath.Join(in, ".agents", "skills")
+	if err := os.MkdirAll(filepath.Join(dir, WorkbenchSkillName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, WorkbenchSkillName, "SKILL.md"), []byte(s.Content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := RerenderFolderSkill(in, dir, WorkbenchSkillName, []string{"Be brief."})
+	if err != nil || st != StateUpdated {
+		t.Fatalf("rerender: %v %v", st, err)
 	}
 }

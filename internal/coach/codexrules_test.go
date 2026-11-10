@@ -104,7 +104,7 @@ func TestAccept_CodexRulesAppendsAndRollbackRemovesOnlyItsLines(t *testing.T) {
 	original := "# mine\n" + ruleMake + "\n"
 	writeFile(t, path, original)
 	id := propose(t, d, rulesProposal(original, ruleCat))
-	require.NoError(t, a.Accept(id, ""))
+	require.NoError(t, a.acceptErr(id, ""))
 	assert.Equal(t, original+ruleCat+"\n", readFile(t, path))
 	fi, err := os.Stat(path)
 	require.NoError(t, err)
@@ -125,7 +125,7 @@ func TestAccept_CodexRulesUnsafeEditRefused(t *testing.T) {
 	path := codexRulesPath(a.env())
 	writeFile(t, path, ruleMake+"\n")
 	id := propose(t, d, rulesProposal(ruleMake+"\n", `prefix_rule(pattern=["rm"], decision="allow")`))
-	require.ErrorIs(t, a.Accept(id, ""), ErrInvalidEdit)
+	require.ErrorIs(t, a.acceptErr(id, ""), ErrInvalidEdit)
 	assert.Equal(t, ruleMake+"\n", readFile(t, path))
 }
 
@@ -133,7 +133,7 @@ func TestAccept_CodexRulesMissingFileRefused(t *testing.T) {
 	d := openDBs(t)
 	a := fileApplier(t, d)
 	id := propose(t, d, rulesProposal("", ruleCat))
-	require.ErrorIs(t, a.Accept(id, ""), errCodexRulesMissing)
+	require.ErrorIs(t, a.acceptErr(id, ""), errCodexRulesMissing)
 	_, err := os.Lstat(codexRulesPath(a.env()))
 	assert.ErrorIs(t, err, os.ErrNotExist, "never created")
 	assert.Equal(t, "open", proposal(t, d, id).Status)
@@ -156,7 +156,7 @@ func TestRollback_CodexRulesLineGone_ChangedSince(t *testing.T) {
 	original := ruleMake + "\n"
 	writeFile(t, path, original)
 	id := propose(t, d, rulesProposal(original, ruleCat))
-	require.NoError(t, a.Accept(id, ""))
+	require.NoError(t, a.acceptErr(id, ""))
 	writeFile(t, path, original+ruleLs+"\n") // cat removed by hand, ls added
 
 	diff, err := a.Rollback(id, false)
@@ -202,7 +202,7 @@ func TestCodexRules_SymlinkedCodexHomeWorks(t *testing.T) {
 	require.NoError(t, os.Symlink(target, filepath.Join(a.Home, ".codex")))
 	writeFile(t, filepath.Join(target, "rules", "default.rules"), ruleMake+"\n")
 	id := propose(t, d, rulesProposal(ruleMake+"\n", ruleCat))
-	require.NoError(t, a.Accept(id, ""))
+	require.NoError(t, a.acceptErr(id, ""))
 	assert.Equal(t, ruleMake+"\n"+ruleCat+"\n", readFile(t, filepath.Join(target, "rules", "default.rules")))
 }
 

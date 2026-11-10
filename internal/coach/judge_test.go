@@ -189,6 +189,7 @@ func TestWithoutEdit(t *testing.T) {
 		{"line in the middle", DestChat, "A\nC", "A\nB\nC", "A\nB\nC", "A\nC"},
 		{"replaced word", DestChat, "Be long.", "Be short.", "Be short.", "Be long."},
 		{"replaced line", DestPromptAdd, "A\nOld", "A\nNew", "A\nNew\nZ", "A\nOld\nZ"},
+		{"overlay line", DestPackOverlay, "A\nOld", "A\nNew", "A\nNew\nZ", "A\nOld\nZ"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -241,7 +242,7 @@ func TestJudge_ReverseOfReplaceIsAcceptedEndToEnd(t *testing.T) {
 	assert.Equal(t, "Be long.", open[0].AfterText)
 
 	ap := newApplier(t, d)
-	require.NoError(t, ap.Accept(open[0].ID, ""))
+	require.NoError(t, ap.acceptErr(open[0].ID, ""))
 	got, err := d.GetWorkbenchInstructions(wb)
 	require.NoError(t, err)
 	assert.Equal(t, "Be long.", got.Procedure)

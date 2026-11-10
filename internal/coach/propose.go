@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 	"watchtower/internal/digest"
 	"watchtower/internal/instructions"
 	"watchtower/internal/prompts"
@@ -397,7 +399,7 @@ func signalSources(sigs []Signal) int {
 
 // applyEdit returns the text with find replaced by replace (find "" appends
 // replace as a new line). find must occur exactly once. For a prompt's
-// additions find must be whole lines, and the result is normalised to one
+// additions and a pack skill's overlay find must be whole lines, and the result is normalised to one
 // trimmed addition per line. The allow list and the Codex rules only grow:
 // find must be ""; the Codex rules get replace appended as newline-terminated
 // lines, the rest of the file untouched.
@@ -426,12 +428,12 @@ func applyEdit(t CurrentText, find, replace string) (string, bool) {
 		if i < 0 || strings.Count(t.Text, find) != 1 {
 			return "", false
 		}
-		if t.Destination == DestPromptAdd && !wholeLines(t.Text, i, i+len(find)) {
+		if lineDestinations[t.Destination] && !wholeLines(t.Text, i, i+len(find)) {
 			return "", false
 		}
 		after = t.Text[:i] + replace + t.Text[i+len(find):]
 	}
-	if t.Destination == DestPromptAdd || t.Destination == DestSettingsAllow {
+	if lineDestinations[t.Destination] || t.Destination == DestSettingsAllow {
 		after = strings.Join(nonEmptyLines(after), "\n")
 	}
 	return after, true
@@ -462,7 +464,9 @@ func kindFits(kind, before, after string) bool {
 // at most prompts.MaxAdditionRunes in all, for a prompt the store tunes; an
 // allow list that keeps every rule it had and adds at least one rule, only
 // safe Bash rules (SafeAllowRule); the Codex rules file kept byte for byte
-// with whole lines appended, each a new CodexSafeAllowRule.
+// with whole lines appended, each a new CodexSafeAllowRule; a pack skill's
+// overlay one line per row, at most packOverlayMaxRunes in all, for a skill
+// the pack ships.
 func ValidateAfter(t CurrentText, after string) error {
 	switch t.Destination {
 	case DestSession, DestProcedure, DestChat, DestClaudeMDUser,
@@ -512,6 +516,21 @@ func ValidateAfter(t CurrentText, after string) error {
 		return nil
 	case DestCodexRulesAllow:
 		return validateCodexRules(t.Text, after)
+	case DestPackOverlay:
+		if !slices.Contains(devpack.PackSkillNames(), t.Skill) {
+			return fmt.Errorf("%s is not a Watchtower pack skill", t.Skill)
+		}
+		total := 0
+		for _, line := range nonEmptyLines(after) {
+			if strings.ContainsRune(line, '\r') {
+				return errors.New("every overlay line must be one line")
+			}
+			total += utf8.RuneCountInString(line)
+		}
+		if total > packOverlayMaxRunes {
+			return fmt.Errorf("the overlay is over its budget of %d characters", packOverlayMaxRunes)
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown destination %q", t.Destination)
 }

@@ -74,7 +74,7 @@ func TestCOACH01_NothingAppliedWithoutAccept(t *testing.T) {
 		}
 	}
 	require.NotZero(t, chat.ID)
-	require.NoError(t, (&Applier{DB: d.DB, AgentLog: d.al, Home: home, Now: func() time.Time { return applyNow }}).Accept(chat.ID, ""))
+	require.NoError(t, (&Applier{DB: d.DB, AgentLog: d.al, Home: home, Now: func() time.Time { return applyNow }}).acceptErr(chat.ID, ""))
 	after := coach01State(t, d, home)
 	assert.NotEqual(t, before["chat"], after["chat"], "Accept applies the edit")
 	for _, k := range []string{"session", "procedure", "additions", "settings.json", "CLAUDE.md"} {

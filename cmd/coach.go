@@ -382,6 +382,15 @@ type coachDecisionJSON struct {
 	Status string `json:"status"`
 }
 
+// coachAcceptJSON is an Accept's decision plus, for a pack overlay, the
+// installed copies re-rendered and the copies left because the owner edited
+// them by hand (both 0 for any other destination).
+type coachAcceptJSON struct {
+	coachDecisionJSON
+	PackCopiesUpdated int `json:"pack_copies_updated"`
+	PackCopiesDrifted int `json:"pack_copies_drifted"`
+}
+
 func parseCoachID(s string) (int64, error) {
 	id, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || id <= 0 {
@@ -411,10 +420,12 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	if err := coachConfirm(e, "accept a coach proposal", id, edited); err != nil {
 		return nil, err
 	}
-	if err := e.applier().Accept(id, edited); err != nil {
+	res, err := e.applier().Accept(id, edited)
+	if err != nil {
 		return nil, codedCoachErr(err)
 	}
-	return coachDecisionJSON{OK: true, ID: id, Status: "accepted"}, nil
+	return coachAcceptJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
+		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted}, nil
 }
 
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
@@ -588,6 +599,12 @@ func printCoach(w io.Writer, v any) {
 		printCoachProposals(w, r.Proposals)
 	case coachDecisionJSON:
 		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
+	case coachAcceptJSON:
+		fmt.Fprintf(w, "Proposal %d: %s\n", r.ID, r.Status)
+		if r.PackCopiesUpdated > 0 || r.PackCopiesDrifted > 0 {
+			fmt.Fprintf(w, "Installed copies updated: %d; edited by hand and not updated: %d\n",
+				r.PackCopiesUpdated, r.PackCopiesDrifted)
+		}
 	case coachRunJSON:
 		if r.Skipped != "" {
 			fmt.Fprintln(w, r.Skipped)

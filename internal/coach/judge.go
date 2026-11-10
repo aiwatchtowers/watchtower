@@ -161,11 +161,11 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 
 // withoutEdit is cur with p's edit undone: for an owner text the added part
 // (where it still appears exactly once) is replaced by what the edit removed,
-// or dropped for a pure addition; for a prompt's additions the added lines are
-// dropped and the removed ones come back in place. ok is false when none of the
-// added part is left.
+// or dropped for a pure addition; for a prompt's additions or a pack skill's
+// overlay the added lines are dropped and the removed ones come back in place.
+// ok is false when none of the added part is left.
 func withoutEdit(p db.CoachProposal, cur string) (string, bool) {
-	if p.Destination == DestPromptAdd {
+	if lineDestinations[p.Destination] {
 		drop := countLines(linesAdded(p.BeforeText, p.AfterText))
 		back := linesAdded(p.AfterText, p.BeforeText) // lines a replacing edit removed
 		var keep []string

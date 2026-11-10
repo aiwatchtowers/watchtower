@@ -219,6 +219,22 @@ func TestCoachProposals_JSONKeysPinned(t *testing.T) {
 	assert.JSONEq(t, `{"ok":true,"proposals":[]}`, out)
 }
 
+func TestCoachAccept_JSONKeysPinned(t *testing.T) {
+	d := coachSetup(t)
+	id := insertCoachProposal(t, d, "fp1", "Be brief.")
+
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err)
+	top := coachJSONObject(t, out)
+	var got []string
+	for k := range top {
+		got = append(got, k)
+	}
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted"}, got)
+	assert.Equal(t, "accepted", strings.Trim(string(top["status"]), `"`))
+	assert.Equal(t, "0", string(top["pack_copies_updated"]))
+}
+
 func TestCoachStatus_JSONKeysPinned(t *testing.T) {
 	coachSetup(t)
 	out, err := runCoach(t, "", "status", "--json")
