@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	hubwire "watchtower/internal/hub/wire"
 )
 
 // InMemoryKeySource is the fixed test KeySource over the Kit fixture keys:
@@ -28,6 +30,9 @@ type InMemoryKeySource struct {
 	seq      uint64
 	handed   [][]byte
 	metaErr  error
+	// keyboxTo, when set, is the keybox recipient in place of dev_kx (the
+	// phone's offered ephemeral key, relay client Phase 5).
+	keyboxTo *ecdh.PublicKey
 }
 
 func newKeySource(t *testing.T) *InMemoryKeySource {
@@ -76,7 +81,25 @@ func (s *InMemoryKeySource) KeyboxRecipient(device ID) (*ecdh.PublicKey, error) 
 	if device != s.k.deviceID {
 		return nil, fmt.Errorf("unknown device %s", device)
 	}
+	if s.keyboxTo != nil {
+		return s.keyboxTo, nil
+	}
 	return s.k.devKX.PublicKey(), nil
+}
+
+// fixtureEphemeral is the Kit fixture's ephemeral pair (E2EFixtureKeys.hubEph,
+// devEph): the hub's drawn hub_eph and the phone's offered dev_eph.
+func fixtureEphemeral(t *testing.T) (hubEph, devEph *ecdh.PrivateKey) {
+	t.Helper()
+	hubEph, err := ecdh.X25519().NewPrivateKey(run(0x81, 0xA0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	devEph, err = ecdh.X25519().NewPrivateKey(run(0x91, 0xB0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hubEph, devEph
 }
 
 // memGuard is relay_seen in memory; records counts every Record call.
@@ -268,6 +291,39 @@ func TestSealer_ZeroesEveryKeyItWasHanded(t *testing.T) {
 		if !bytes.Equal(k, make([]byte, len(k))) {
 			t.Errorf("key %d left unzeroed", i)
 		}
+	}
+}
+
+// InEpoch seals in an older epoch the phone still holds (the switch notice
+// into the transport being left), never in a newer or unaccepted one.
+func TestSealer_InEpochSealsInTheOlderEpoch(t *testing.T) {
+	ks := newKeySource(t)
+	ks.epoch, ks.accepted = 2, map[uint32]bool{1: true, 2: true}
+	old := NewSealer(ks).InEpoch(1)
+	dev := ks.k.deviceID
+	plain := "c-" + dev.String()
+	wire, _ := old.WireName(ZoneRelay, plain)
+	rec, err := old.ToPhone("mb", dev, wire, "control", plain, []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := parseHeader(rec.Envelope())
+	if err != nil || h.Epoch != 1 {
+		t.Fatalf("relay record epoch %d, %v", h.Epoch, err)
+	}
+	data, err := old.Data("dz", "transport-marker", "", []byte(`{}`), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h, err := parseHeader(data.Envelope()); err != nil || h.Epoch != 1 {
+		t.Fatalf("data record epoch %d, %v", h.Epoch, err)
+	}
+	if _, err := NewSealer(ks).InEpoch(3).Data("dz", "transport-marker", "", []byte(`{}`), nil, ""); !errors.Is(err, ErrEpochNotCurrent) {
+		t.Fatalf("a newer epoch: %v", err)
+	}
+	ks.accepted = map[uint32]bool{2: true}
+	if _, err := old.ToPhone("mb", dev, wire, "control", plain, []byte(`{}`)); !errors.Is(err, ErrEpochNotAccepted) {
+		t.Fatalf("an epoch the phone's keys are no longer accepted in: %v", err)
 	}
 }
 
@@ -581,6 +637,36 @@ func sealGoVectors(t *testing.T) goSealedFile {
 	boxFrame := InnerFrame{Kind: "device_grant", ID: "device_grant-" + dev.String(), Payload: []byte(`{"grant":{"device_id":"` + dev.String() + `"}}`)}
 	r, err = s.Keybox("DataZone", dev, boxFrame.Payload)
 	add("keybox", ClassKeybox, r, err, boxFrame, "DataZone", fixtureHubID)
+
+	// Relay client Phase 5: a keybox sealed to the phone's offered ephemeral
+	// key, naming the pair of this epoch's wt/relay/v2/ keys in relay_kx.
+	hubEph, devEph := fixtureEphemeral(t)
+	kxBox, err := hubwire.Marshal(hubwire.Keybox{
+		Grant: hubwire.DeviceGrant{DeviceID: dev.String(), HubID: fixtureHubID.String(), Name: "Acme iPhone", Scope: "private",
+			Linked: true, StartSessionsAllowed: true},
+		Keys: &hubwire.KeyboxKeys{Epoch: 1, DataKey: base64URL(dataKey), AlertKey: base64URL(alertKey), MetaKey: base64URL(metaKey),
+			RelayKX: &hubwire.KeyboxRelayKX{HubPub: base64URL(hubEph.PublicKey().Bytes()), DevicePub: base64URL(devEph.PublicKey().Bytes())}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kxFrame := InnerFrame{Kind: "device_grant", ID: "device_grant-" + dev.String(), Payload: kxBox}
+	ks.keyboxTo = devEph.PublicKey()
+	r, err = s.Keybox("DataZone", dev, kxFrame.Payload)
+	ks.keyboxTo = nil
+	add("keyboxRelayKX", ClassKeybox, r, err, kxFrame, "DataZone", fixtureHubID)
+
+	// The relay push: no zone record, the AAD names AlertPushWireName in the
+	// data zone (the Kit's AlertOpener.open(wireName: "alert-push", …)).
+	push := WorkAlertFields{Event: "ask", Key: "ask-42", WorkbenchID: 7, WorkbenchName: "Acme", SessionID: int64p(9),
+		AskID: int64p(42), RequestID: int64p(11), Title: "Acme · Build", Body: "Which database?", Quick: true}
+	pushPayload, err := hubwire.Marshal(push)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := s.AlertPush(push.Key, push)
+	add("alertPush", ClassAlert, Record{wireName: AlertPushWireName, envelope: p.Envelope()}, err,
+		InnerFrame{Kind: "ask_alert", ID: "ask_alert-" + push.Key, Payload: pushPayload}, "DataZone", fixtureHubID)
 	return out
 }
 
@@ -639,7 +725,11 @@ func TestWriteGoSealed(t *testing.T) {
 		case ClassRelayToPhone:
 			h, f, err = OpenSymmetric(env, []EnvelopeClass{ClassRelayToPhone}, ctx, nil, func(Header) ([]byte, error) { return h2p, nil })
 		case ClassKeybox:
-			h, f, err = OpenHPKE(env, ClassKeybox, k.devKX, KeyboxInfo(fixtureHubID, k.deviceID), ctx, hubSigPub)
+			recipient := k.devKX
+			if name == "keyboxRelayKX" {
+				_, recipient = fixtureEphemeral(t)
+			}
+			h, f, err = OpenHPKE(env, ClassKeybox, recipient, KeyboxInfo(fixtureHubID, k.deviceID), ctx, hubSigPub)
 		default:
 			t.Fatalf("%s: class %d", name, c.Class)
 		}
@@ -748,5 +838,28 @@ func TestSealer_SignalOnlyForAnAlert(t *testing.T) {
 	}
 	if _, err := s.Signal(Record{}); !errors.Is(err, ErrUnsealed) {
 		t.Errorf("an unsealed record got a signal: %v", err)
+	}
+}
+
+// OwnEchoFor attributes the hub's own record to the one phone whose h2p key
+// opens it: another linked phone's key answers ErrNoRelayKey.
+func TestOpener_OwnEchoForOpensOnlyUnderItsPhonesKey(t *testing.T) {
+	ks := newKeySource(t)
+	other := ID{0x42}
+	ks.devices = append(ks.devices, other)
+	s := NewSealer(ks)
+	dev := ks.k.deviceID
+	plain := "a-" + dev.String() + "-1"
+	wire, _ := s.WireName(ZoneRelay, plain)
+	echo, err := s.ToPhone("mb", dev, wire, "action", plain, []byte(`{"status":"applied"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := NewOpener(ks, newGuard())
+	if opened, err := o.OwnEchoFor(dev, wire, echo.Envelope()); err != nil || opened.Frame.ID != plain || opened.Sender != fixtureHubID {
+		t.Fatalf("own echo for its phone: %+v, %v", opened, err)
+	}
+	if _, err := o.OwnEchoFor(other, wire, echo.Envelope()); !errors.Is(err, ErrNoRelayKey) {
+		t.Fatalf("own echo for another phone: %v", err)
 	}
 }

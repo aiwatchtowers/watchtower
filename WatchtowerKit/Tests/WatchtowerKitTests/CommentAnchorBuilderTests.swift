@@ -58,7 +58,7 @@ final class CommentAnchorBuilderTests: XCTestCase {
 
     func testTheContextLengthIsCores() throws {
         XCTAssertEqual(try load().contextLength, CommentAnchorBuilder.contextLength)
-        XCTAssertEqual(try load().cases.count, 4)
+        XCTAssertEqual(try load().cases.count, 10)
     }
 
     func testEachCasesSnapshotRendersToItsTextAndHeadings() throws {

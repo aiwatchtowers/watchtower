@@ -11,7 +11,10 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rivo/uniseg"
 	"golang.org/x/crypto/chacha20poly1305"
+
+	"watchtower/internal/hub/wire"
 )
 
 // The names SecureTransport keeps key-free.
@@ -124,14 +127,16 @@ func canonicalID(raw string) string {
 // dataKinds is SliceKind without device_grant (Keybox) and ask_alert (Alert);
 // relayKinds is SecureTransport.relayKinds. A new Kit kind is added here in the
 // same change. "control" is the RC control record (`c-<uuid>`: resend_from,
-// skip_to and the switch controls, wire.Control in the payload).
+// skip_to and the switch controls, wire.Control in the payload). "transport"
+// is the switcher's transport marker (transport-marker, phone contract
+// point 4), not a slice: a Kit that predates it stores it unindexed.
 var (
 	dataKinds = []string{
 		"briefing", "inbox_item", "target", "track", "digest", "digest_topic", "calendar_event", "person_card",
 		"situation", "meeting_transcript", "day_plan", "day_plan_item", "feature_state", "stream_digest",
 		"slack_account", "google_account", "jira_account", heartbeatName, "recording_job", "workbench",
 		"workbench_target", "workbench_comment", "terminal_session", "owner_ask", "session_report",
-		"session_timeline", "permission_request", "session_chat",
+		"session_timeline", "permission_request", "session_chat", "transport",
 	}
 	relayKinds = []string{"action", "recording_upload", "device", "control"}
 )
@@ -144,6 +149,47 @@ func NewSealer(k KeySource) *Sealer { return &Sealer{k: k} }
 
 // WireName maps a plain record name to its wire name in z.
 func (s *Sealer) WireName(z Zone, plain string) (string, error) { return wireName(s.k, z, plain) }
+
+// InEpoch is a Sealer that seals in epoch instead of the current one: the
+// transport switch's notice into the transport it leaves, which the phones
+// there open with the keys they hold (phone contract point 6a). epoch must
+// not be newer than the current one; a relay record needs an epoch the
+// phone's keys are still accepted in (AcceptsRelayEpoch), a data record an
+// epoch the keyring holds. Everything else is the Sealer's.
+func (s *Sealer) InEpoch(epoch uint32) *Sealer {
+	return &Sealer{k: pinnedEpoch{KeySource: s.k, epoch: epoch}}
+}
+
+// pinnedEpoch is a KeySource whose current epoch is a given older one.
+type pinnedEpoch struct {
+	KeySource
+	epoch uint32
+}
+
+// ErrEpochNotCurrent refuses a pinned epoch newer than the current one.
+var ErrEpochNotCurrent = errors.New("secure: the pinned epoch is newer than the current one")
+
+func (p pinnedEpoch) CurrentEpoch() (uint32, error) {
+	current, err := p.KeySource.CurrentEpoch()
+	if err != nil {
+		return 0, err
+	}
+	if p.epoch > current {
+		return 0, ErrEpochNotCurrent
+	}
+	return p.epoch, nil
+}
+
+func (p pinnedEpoch) RelayKey(dir Direction, device ID, epoch uint32) ([]byte, error) {
+	ok, err := p.KeySource.AcceptsRelayEpoch(epoch, device)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrEpochNotAccepted
+	}
+	return p.KeySource.RelayKey(dir, device, epoch)
+}
 
 // Data seals a DataZone slice record (class data, signed by hub_sig): frame
 // kind = the plain name before its first '-', frame id = the plain name. A
@@ -203,17 +249,33 @@ func (s *Sealer) signedSymmetric(zone, plain string, f InnerFrame, c EnvelopeCla
 	if zone == "" {
 		return Record{}, errors.New("secure: record without a zone")
 	}
-	signer := s.k.Signer()
-	if len(signer) != ed25519.PrivateKeySize {
+	// Checked before WireName as well as in sealSigned: a sealer without a
+	// signing key refuses before it reads the meta key.
+	if len(s.k.Signer()) != ed25519.PrivateKeySize {
 		return Record{}, ErrSignatureRequired
 	}
-	wire, err := s.WireName(ZoneData, plain)
+	name, err := s.WireName(ZoneData, plain)
 	if err != nil {
 		return Record{}, err
 	}
+	env, err := s.sealSigned(name, f, c, 0)
+	if err != nil {
+		return Record{}, err
+	}
+	return Record{zone: zone, wireName: name, envelope: env, assetPath: assetPath, sealed: true}, nil
+}
+
+// sealSigned seals f as class c (data or alert) in the current epoch, signed
+// by hub_sig, with the data-zone AAD of wireName and the frame padded to at
+// least minPadded bytes (0 = its bucket).
+func (s *Sealer) sealSigned(wireName string, f InnerFrame, c EnvelopeClass, minPadded int) ([]byte, error) {
+	signer := s.k.Signer()
+	if len(signer) != ed25519.PrivateKeySize {
+		return nil, ErrSignatureRequired
+	}
 	epoch, err := s.k.CurrentEpoch()
 	if err != nil {
-		return Record{}, fmt.Errorf("secure: current epoch: %w", err)
+		return nil, fmt.Errorf("secure: current epoch: %w", err)
 	}
 	var key []byte
 	if c == ClassAlert {
@@ -223,18 +285,138 @@ func (s *Sealer) signedSymmetric(zone, plain string, f InnerFrame, c EnvelopeCla
 	}
 	defer clear(key)
 	if err != nil {
-		return Record{}, fmt.Errorf("secure: epoch key: %w", err)
+		return nil, fmt.Errorf("secure: epoch key: %w", err)
 	}
 	seq, err := s.k.NextSeq()
 	if err != nil {
-		return Record{}, fmt.Errorf("secure: next seq: %w", err)
+		return nil, fmt.Errorf("secure: next seq: %w", err)
 	}
 	hub := s.k.HubID()
-	env, err := SealSymmetric(f, c, key, hub, hub, epoch, seq, Context{Zone: ZoneData, WireName: wire}, signer, nil)
-	if err != nil {
-		return Record{}, err
+	return sealSymmetric(f, c, key, hub, hub, epoch, seq, Context{Zone: ZoneData, WireName: wireName}, signer, nil, minPadded)
+}
+
+// The relay push (protocol §4.8, phone contract points 1–2).
+const (
+	// AlertPushWireName is the AAD wire name of every push envelope: a push is
+	// no zone record, so it is bound to this fixed name instead of an HMAC
+	// record name (the NSE opens it with AlertOpener under this name).
+	AlertPushWireName = "alert-push"
+	// AlertPushMaxEnvelope is the largest envelope a push may carry: relay
+	// MAX_PAYLOAD_BYTES 4096 minus the 67-byte APNs body, in base64.
+	AlertPushMaxEnvelope = 3021
+	// alertPushFrame is the push's one padded frame size (the 1 KiB bucket).
+	alertPushFrame = 1024
+	// alertPushEnvelope is what that frame seals to: header, frame, tag, signature.
+	alertPushEnvelope = HeaderLen + alertPushFrame + tagLen + signatureLen
+)
+
+// ErrAlertTooLarge refuses an alert that does not fit a push even with an
+// empty title and body.
+var ErrAlertTooLarge = errors.New("secure: alert does not fit a push")
+
+// WorkAlertFields is the Kit's WorkAlertPayload (AlertOpener.swift, keys
+// pinned by TestAlertPushPayloadKeysMatchTheKit): titles only, never chat
+// text. It is the payload of both the ask_alert record and its push.
+type WorkAlertFields struct {
+	Event         string `json:"event"`
+	Key           string `json:"key"`
+	WorkbenchID   int64  `json:"workbench_id"`
+	WorkbenchName string `json:"workbench_name"`
+	SessionID     *int64 `json:"session_id,omitempty"`
+	AskID         *int64 `json:"ask_id,omitempty"`
+	RequestID     *int64 `json:"request_id,omitempty"`
+	Title         string `json:"title"`
+	Body          string `json:"body"`
+	Quick         bool   `json:"quick"`
+}
+
+// Push is a sealed alert for send_alert. Its fields are unexported, so only
+// AlertPush builds one; the zero value reports Sealed() false.
+type Push struct {
+	envelope []byte
+	key      string
+	sealed   bool
+}
+
+// Envelope is a copy of the sealed envelope bytes.
+func (p Push) Envelope() []byte { return bytes.Clone(p.envelope) }
+
+// Key is the alert's key (ask-<id>, perm-<id>, stop-<session>-<ms>): ids only.
+func (p Push) Key() string { return p.key }
+
+// Sealed is true only for a Push the Sealer produced.
+func (p Push) Sealed() bool { return p.sealed }
+
+// AlertPush seals the frame ask_alert-<key> as class alert under
+// K_alert[current], signed by hub_sig, with the data-zone AAD of
+// AlertPushWireName and the frame padded to the 1 KiB bucket whatever its
+// text. When the payload does not fit that bucket, Body, then Title, then
+// WorkbenchName lose one grapheme cluster at a time and end in "…" until it
+// does; every other field stays as it is. Only the push is clipped, never
+// the data-zone record. payload.Key must be key.
+func (s *Sealer) AlertPush(key string, payload WorkAlertFields) (Push, error) {
+	if key == "" || payload.Key != key {
+		return Push{}, fmt.Errorf("%w: the push key is not the payload's", ErrNameMismatch)
 	}
-	return Record{zone: zone, wireName: wire, envelope: env, assetPath: assetPath, sealed: true}, nil
+	f := InnerFrame{Kind: alertKind, ID: alertKind + "-" + key}
+	// Clipped in this order, each only once the one before is empty.
+	texts := []*string{&payload.Body, &payload.Title, &payload.WorkbenchName}
+	clusters := make([][]string, len(texts))
+	kept := make([]int, len(texts))
+	for i, t := range texts {
+		clusters[i] = graphemes(*t)
+		kept[i] = len(clusters[i])
+	}
+	for {
+		for i, t := range texts {
+			*t = clipGraphemes(clusters[i], kept[i])
+		}
+		b, err := wire.Marshal(payload)
+		if err != nil {
+			return Push{}, fmt.Errorf("secure: encoding an alert push: %w", err)
+		}
+		f.Payload = b
+		if f.EncodedLength() <= alertPushFrame {
+			break
+		}
+		i := slices.IndexFunc(kept, func(n int) bool { return n > 0 })
+		if i < 0 {
+			return Push{}, ErrAlertTooLarge
+		}
+		kept[i]--
+	}
+	env, err := s.sealSigned(AlertPushWireName, f, ClassAlert, alertPushFrame)
+	if err != nil {
+		return Push{}, err
+	}
+	if len(env) > AlertPushMaxEnvelope {
+		return Push{}, ErrAlertTooLarge
+	}
+	return Push{envelope: env, key: key, sealed: true}, nil
+}
+
+// graphemes splits s into its grapheme clusters (what the sources' clipText
+// counts), so a clip never leaves half an emoji, a dangling ZWJ or a lone
+// regional indicator.
+func graphemes(s string) []string {
+	var out []string
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		out = append(out, g.Str())
+	}
+	return out
+}
+
+// clipGraphemes is the first n clusters of g, ending in "…" when any are
+// dropped, and "" once none is kept.
+func clipGraphemes(g []string, n int) string {
+	switch {
+	case n >= len(g):
+		return strings.Join(g, "")
+	case n == 0:
+		return ""
+	}
+	return strings.Join(g[:n], "") + "…"
 }
 
 // ToPhone seals a RelayZone record for device (class relayToPhone, its h2p
@@ -441,6 +623,32 @@ func (o *Opener) OwnEcho(_, wireName string, envelope []byte) (Opened, error) {
 		return o.accept(wireName, opened, f)
 	}
 	return Opened{}, ErrNoRelayKey
+}
+
+// OwnEchoFor is OwnEcho under device's h2p key only: in a mailbox zone
+// several phones share (CloudKit's RelayZone) the hub's own record read back
+// belongs to the one phone whose key opens it, never to the phone a payload
+// names (a phone holds its own h2p key too, so it could seal a "hub" record
+// naming another phone). ErrNoRelayKey when device's key does not open it.
+func (o *Opener) OwnEchoFor(device ID, wireName string, envelope []byte) (Opened, error) {
+	h, err := o.header(envelope)
+	if err != nil {
+		return Opened{}, err
+	}
+	if h.Class != ClassRelayToPhone {
+		return Opened{}, fmt.Errorf("%w: %d", ErrWrongClass, h.Class)
+	}
+	if h.Sender != h.Hub {
+		return Opened{}, ErrWrongSender
+	}
+	opened, f, err := o.openRelay(envelope, wireName, ClassRelayToPhone, HubToPhone, device, h.Epoch)
+	if errors.Is(err, ErrAuthenticationFailed) || errors.Is(err, ErrEpochNotAccepted) {
+		return Opened{}, ErrNoRelayKey
+	}
+	if err != nil {
+		return Opened{}, err
+	}
+	return o.accept(wireName, opened, f)
 }
 
 // Requeue rebuilds the Record of a relayToPhone envelope the hub sealed

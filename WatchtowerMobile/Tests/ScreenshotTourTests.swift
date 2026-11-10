@@ -1,8 +1,9 @@
+import CryptoKit
 import SwiftUI
 import UIKit
 import WatchtowerHostedRelay
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -31,8 +32,42 @@ final class ScreenshotTourTests: XCTestCase {
         let make: @MainActor (AppEnvironment) -> AnyView
     }
 
+    /// `make mobile-shots SHOTS_ONLY=relay-phase4` runs `testTheRelayPhase4Shots` alone (a frame or two of a
+    /// new screen in minutes, not the whole tour's half hour); the plain run is the whole tour, which covers them too.
+    private static let onlyRelayPhase4 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase4"
+    /// `SHOTS_ONLY=relay-phase5` runs `testTheRelayPhase5Shots` alone, the same way.
+    private static let onlyRelayPhase5 = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_ONLY"] == "relay-phase5"
+
+    func testTheRelayPhase4Shots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase4 else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=relay-phase4")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        let host = ScreenshotHost(directory: dir, env: root.env, linking: root.linking)
+        let rows = try await captureRelayPhase4(host: host)
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
+    func testTheRelayPhase5Shots() async throws {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], Self.onlyRelayPhase5 else {
+            throw XCTSkip("Only with make mobile-shots SHOTS_ONLY=relay-phase5")
+        }
+        let dir = URL(fileURLWithPath: path, isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let (root, _) = try makeDemoRoot()
+        var rows = try await captureParkedFeed(into: dir, linking: root.linking)
+        rows += try await captureTerm(host: ScreenshotHost(directory: dir, env: root.env, linking: root.linking))
+        let written = try FileManager.default.contentsOfDirectory(atPath: path)
+            .filter { name in rows.contains { name.hasPrefix($0.number + "-") } && name.hasSuffix(".png") }
+        XCTAssertEqual(written.count, 3 * rows.count)
+    }
+
     func testTheTour() async throws {
-        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"] else {
+        guard let path = ProcessInfo.processInfo.environment["WATCHTOWER_SHOTS_DIR"], !Self.onlyRelayPhase4, !Self.onlyRelayPhase5 else {
             throw XCTSkip("Screenshot tour: run make mobile-shots")
         }
         let dir = URL(fileURLWithPath: path, isDirectory: true)
@@ -50,8 +85,11 @@ final class ScreenshotTourTests: XCTestCase {
         let outboxRows = try await captureOutbox(into: dir, linking: root.linking)
         let relayRows = try await captureRelayLinking(host: host)
         let onRelayRows = try await captureHubOnRelay(into: dir, linking: root.linking)
+        let phase4Rows = try await captureRelayPhase4(host: host)
+        let phase5Rows = try await captureParkedFeed(into: dir, linking: root.linking)
         try ScreenshotHost.writeIndex(
-            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows, to: dir)
+            Self.indexRows(shots) + asleepRows + recorderRows + outboxRows + relayRows + onRelayRows + phase4Rows + phase5Rows,
+            to: dir)
 
         let pngs = try FileManager.default
             .contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey])
@@ -59,7 +97,7 @@ final class ScreenshotTourTests: XCTestCase {
         XCTAssertEqual(
             pngs.count,
             2 * (shots.count + shots.filter(\.hasEnd).count + asleepRows.count + recorderRows.count + outboxRows.count)
-                + 3 * (relayRows.count + onRelayRows.count)
+                + 3 * (relayRows.count + onRelayRows.count + phase4Rows.count + phase5Rows.count)
         )
         for png in pngs {
             XCTAssertGreaterThan(try png.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0, 0, png.lastPathComponent)
@@ -209,7 +247,7 @@ final class ScreenshotTourTests: XCTestCase {
         try await poll({ slotsRelay.isParked("removeSlot") }, "the removal is running")
         try await shot("R08", "relay-slots-removing", slots, "sheet, a removal running", RelaySlotsView {}.environment(slotsLinking))
         slotsRelay.release("removeSlot")
-        await removal.value
+        try await removal.value(within: 60, "removal")
         try await shot("R09", "relay-slots-remove-error", slots, "sheet, the removal failed", RelaySlotsView {}.environment(slotsLinking))
 
         try await captureRelayMacs(now: now) { number, slug, reached, view, settle in
@@ -240,7 +278,7 @@ final class ScreenshotTourTests: XCTestCase {
             AnyView(NavigationStack { MacsView() }.environment(busy)), .milliseconds(600)
         )
         busyRelay.release("vouch")
-        await attempt.value
+        try await attempt.value(within: 60, "attempt")
 
         let (failed, _, failedHost) = try relayLinking(.promoted, now: now)
         failedHost.prepareError = CocoaError(.fileReadCorruptFile)
@@ -263,6 +301,340 @@ final class ScreenshotTourTests: XCTestCase {
             "R20", "macs-finishing-cancel-confirm", "bare stack, Cancel pressed. \(Self.alertGap)",
             AnyView(NavigationStack { MacsView(cancelling: row) }.environment(cancel)), .seconds(2)
         )
+    }
+
+    // MARK: - Relay client Phase 4 (mockup section 8, S01 upward)
+
+    /// A link flow whose Macs are `links` (the fake host's), for Settings → Macs.
+    private func macsLinking(_ links: [LinkRecord], now: Date) throws -> LinkingViewModel {
+        let clock = FakeLinkClock(now: now)
+        let host = FakeLinkHost(log: LinkEventLog())
+        for link in links {
+            host.seed(link)
+            host.noteHeartbeat(now, hubID: link.hubID)
+        }
+        let device = DemoSeed.device
+        let linking = LinkingViewModel(
+            access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: try makeDefaults()),
+            identity: DeviceIdentity(deviceID: device.deviceID, name: device.name, model: device.model, appVersion: device.appVersion),
+            keys: InMemoryPhoneKeyStore(), clock: clock, relay: FakeRelayOps(clock: clock)
+        )
+        linking.host = host
+        return linking
+    }
+
+    /// S01–S07, S41, S55: Settings → Macs' Relay card in each state and the Macs' transport lines, each light, dark
+    /// and narrow. The card is handed to the view (`MacsView(card:)`) over a never-started account center, which is
+    /// what turns the rows' transport lines on; S07 alone runs over a center whose subscription ended.
+    private func captureRelayPhase4(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let env = host.env
+        let defaults = try makeDefaults()
+        env.relayAccount = RelayAccountCenter(
+            link: RelayAccountLink(hasIdentity: { false }, account: { nil }, events: { nil }),
+            store: FakeSubscriptionStore(), defaults: defaults
+        ) { [] }
+        defer { env.relayAccount = nil }
+        let source = "Features/Settings/MacsView.swift"
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shot(_ number: String, _ slug: String, _ reached: String, _ view: some View) async throws {
+            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: Self.toTheEnd)
+            rows.append(ScreenshotHost.IndexRow(number: number, view: "MacsView", source: source, reached: "\(reached), light/dark/narrow"))
+        }
+        func macLink(_ id: String, _ name: String, relay: Bool = false) -> LinkRecord {
+            var record = LinkRecord(
+                hubID: id, macName: name, scope: .private, ownerName: "", userRecordName: "", nonce: id,
+                dataShareURL: nil, relayShareURL: nil, deviceID: DemoSeed.device.deviceID, linkedAt: now
+            )
+            if relay { record.setRelay(mac: DemoSeed.Relay.workMac) }
+            return record
+        }
+        let origin = try RelayOrigin("https://relay.example.com")
+        let twoMacs = try macsLinking([macLink("p4-work", "Work Mac"), macLink("p4-home", "Home Mac")], now: now)
+        let cards: [(String, String, RelayAccountCenter.Phase, Bool)] = [
+            ("S01", "relay-card-not-subscribed", .free(ended: false), false),
+            ("S02", "relay-card-loading", .checking, false),
+            ("S03", "relay-card-error", .unknown, false),
+            ("S04", "relay-card-active", .paying(grace: false, macs: ["a", "b"]), false),
+            ("S05", "relay-card-grace", .paying(grace: true, macs: ["a", "b"]), false),
+            ("S06", "relay-card-ended", .free(ended: true), false),
+            ("S41", "relay-card-moved", .moved, false),
+            ("S55", "relay-card-purchase-not-confirmed", .free(ended: false), true)
+        ]
+        for (number, slug, phase, unconfirmed) in cards {
+            let card = try XCTUnwrap(RelayCardModel(
+                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed
+            ))
+            try await shot(number, slug, "bare stack, the Relay card", NavigationStack { MacsView(card: card) }.environment(twoMacs))
+        }
+
+        let home = macLink("p4-home", "Home Mac")
+        var thisPhone = macLink("p4-this", "Work Mac", relay: true)
+        thisPhone.switchedBy = DemoSeed.device.deviceID
+        var another = macLink("p4-other", "Work Mac", relay: true)
+        another.switchedBy = "another-phone"
+        var ended = macLink("p4-ended", "build-box")
+        ended.switchedBy = TransportFollowerPolicy.lapseReason
+        var switching = macLink("p4-lab", "Lab Mac")
+        switching.relayUpgrade = RelayUpgradeRecord(step: .vouching)
+        let at = Calendar.current.startOfDay(for: now).addingTimeInterval(10 * 3_600 + 42 * 60)
+        thisPhone.switchedAt = at
+        another.switchedAt = at
+        ended.switchedAt = at
+        let lines = try macsLinking([home, thisPhone, another, ended, switching], now: now)
+        // The lapse row says "your subscription ended" only on a phone whose own subscription ended (S06): a center
+        // that read a revoked entitlement from the fake relay, in place of the never-started one for this frame.
+        let bed = AccountBed()
+        let token = try await bed.register()
+        try await bed.fake.setEntitlement(accountID: token.uuidString.lowercased(), state: "revoked", for: .seconds(86_400))
+        let endedCenter = bed.makeCenter()
+        endedCenter.start()
+        await endedCenter.foreground()?.value
+        XCTAssertEqual(endedCenter.phase, .free(ended: true))
+        let neverStarted = env.relayAccount
+        env.relayAccount = endedCenter
+        try await shot(
+            "S07", "macs-transport-lines", "bare stack, iCloud / Relay / lapse / switching rows",
+            NavigationStack { MacsView() }.environment(lines)
+        )
+        env.relayAccount = neverStarted // the frames after S07 run over the never-started center again
+
+        rows += try await captureDiagnostics(host: host)
+        rows += try await captureConnection(host: host, origin: origin, now: now) { macLink($0, $1, relay: $2) }
+        rows += try await captureSubscription(host: host)
+        rows += try await captureBanners(host: host, origin: origin, now: now)
+        return rows
+    }
+
+    /// S30–S36, S34b, S34c, S36b, S41b, S41c, S47, S50, S51, S53: Now's Relay banner in each state of Task 1's table, each light, dark and narrow, handed to
+    /// the view (`NowView(banner:)`). The outage frames sit on the outbox demo, for the Waiting to send row under them.
+    private func captureBanners(host: ScreenshotHost, origin: RelayOrigin, now: Date) async throws -> [ScreenshotHost.IndexRow] {
+        func banner(
+            availability: RelayAvailability? = nil,
+            phase: RelayAccountCenter.Phase = .paying(grace: false, macs: []),
+            updateRequired: Bool = false,
+            wasPaying: Bool = false,
+            route: HubRoute? = .cloudKit(.private),
+            relayOnly: Bool = false,
+            hubOnRelay: Bool = false,
+            outageMinutes: Double? = nil,
+            request: TransportRequestRecord? = nil,
+            macName: String = "Work Mac"
+        ) throws -> RelayBannerModel {
+            let lastUpdate = Calendar.current.startOfDay(for: now).addingTimeInterval(10 * 3_600 + 41 * 60)
+            return try XCTUnwrap(RelayBannerModel.banner(
+                availability: availability ?? .available(origin), phase: phase, unconfirmedPurchase: false, updateRequired: updateRequired,
+                wasPaying: wasPaying, route: route, relayOnly: relayOnly, hubOnRelayAt: hubOnRelay ? now : nil,
+                unansweredSince: outageMinutes.map { now.addingTimeInterval(-$0 * 60) }, request: request, pressRefusal: nil,
+                lastUpdate: lastUpdate, macName: macName, now: now
+            ))
+        }
+        let onRelay = HubRoute.hostedRelay(macDeviceID: DemoSeed.Relay.workMac)
+        func request(lapse: Bool = false, refusal: TransportRequestRefusal? = nil) -> TransportRequestRecord {
+            let reason = lapse ? TransportFollowerPolicy.lapseReason : nil
+            return TransportRequestRecord(target: .cloudKit, controlID: "c", reason: reason, at: now, refusal: refusal)
+        }
+        let plain: [(String, String, RelayBannerModel)] = [
+            ("S30", "banner-free-mac-on-relay", try banner(phase: .free(ended: false), hubOnRelay: true)),
+            ("S51", "banner-mac-on-relay-no-relay", try banner(availability: .off(.notConfigured), hubOnRelay: true)),
+            ("S47", "banner-relay-only-ended", try banner(phase: .free(ended: true), route: onRelay, relayOnly: true, macName: "build-box")),
+            ("S53", "banner-relay-only-moved", try banner(phase: .moved, route: onRelay, relayOnly: true, macName: "build-box")),
+            ("S33", "banner-moved", try banner(phase: .moved, wasPaying: true)),
+            ("S34", "banner-ended", try banner(phase: .free(ended: true), wasPaying: true)),
+            ("S34b", "banner-ended-mac-not-moved", try banner(
+                phase: .free(ended: true), wasPaying: true, route: onRelay, request: request(lapse: true)
+            )),
+            ("S41b", "banner-moved-mac-not-moved", try banner(phase: .moved, wasPaying: true, route: onRelay, request: request(lapse: true))),
+            ("S34c", "banner-ended-mac-refused", try banner(
+                phase: .free(ended: true), wasPaying: true, route: onRelay, request: request(lapse: true, refusal: .unavailable)
+            )),
+            ("S41c", "banner-moved-mac-refused", try banner(
+                phase: .moved, wasPaying: true, route: onRelay, request: request(lapse: true, refusal: .unavailable)
+            )),
+            ("S35", "banner-update-the-app", try banner(updateRequired: true, wasPaying: true)),
+            ("S36b", "banner-switching-relay-answers", try banner(route: onRelay, request: request()))
+        ]
+        let waiting: [(String, String, RelayBannerModel)] = [
+            ("S31", "banner-relay-unavailable", try banner(route: onRelay, outageMinutes: 3)),
+            ("S32", "banner-relay-unavailable-offer", try banner(route: onRelay, outageMinutes: 12)),
+            ("S36", "banner-switching", try banner(route: onRelay, outageMinutes: 12, request: request())),
+            ("S50", "banner-refused", try banner(route: onRelay, outageMinutes: 12, request: request(refusal: .unavailable)))
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shots(_ frames: [(String, String, RelayBannerModel)], on host: ScreenshotHost, reached: String) async throws {
+            for (number, slug, model) in frames {
+                // At the largest type a sentence fills the narrow screen: the frame scrolls to its second line and links.
+                let hasMore = model.secondLine != nil || !model.actions.isEmpty
+                let reach: CGFloat = model.text.count > 100 ? 620 : model.actions.count > 2 ? 520 : 340
+                let scroll = hasMore ? reach : nil
+                try await host.captureThree("\(number)-\(slug)", NowView(banner: model), narrowScroll: scroll)
+                rows.append(ScreenshotHost.IndexRow(
+                    number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "\(reached), light/dark/narrow"
+                ))
+            }
+        }
+        try await shots(plain, on: host, reached: "NowView, demo hub")
+        let (env, _) = try await outboxDemoEnv()
+        let outboxHost = ScreenshotHost(directory: host.directory, env: env, linking: host.linking)
+        try await shots(waiting, on: outboxHost, reached: "NowView, outbox demo")
+        return rows
+    }
+
+    /// S20–S29, S42–S46, S57: the subscription screen in each state of Task 1's table, each light, dark and narrow, handed to
+    /// the view (`RelaySubscriptionView(model:)`).
+    private func captureSubscription(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        let product = RelayProduct(id: "relay", displayPrice: "$4.99")
+        let config = RelayConfig(
+            origin: nil, termsURL: URL(string: "https://example.com/terms"), privacyURL: URL(string: "https://example.com/privacy")
+        )
+        let frames: [(String, String, RelayAccountCenter.PurchaseState)] = [
+            ("S20", "subscription-loaded", .ready(product)),
+            ("S21", "subscription-loading", .loadingProduct),
+            ("S22", "subscription-error", .productFailed),
+            ("S23", "subscription-buying", .buying),
+            ("S24", "subscription-confirming", .confirming),
+            ("S44", "subscription-restoring", .restoring),
+            ("S45", "subscription-none-found", .noSubscriptionFound),
+            ("S46", "subscription-account-failed", .accountFailed),
+            ("S46b", "subscription-restore-failed", .restoreFailed),
+            ("S25", "subscription-pending", .pending),
+            ("S26", "subscription-not-reached", .boughtNotConfirmed),
+            ("S27", "subscription-refused", .refused),
+            ("S28", "subscription-transfer-limit", .transferLimit),
+            ("S42", "subscription-no-purchases", .notImplemented),
+            ("S43", "subscription-app-too-old", .updateRequired),
+            ("S29", "subscription-done", .done),
+            ("S57", "subscription-store-failed", .storeFailed)
+        ]
+        // A Restore pressed before any load found a price.
+        let noPrice: [(String, String, RelayAccountCenter.PurchaseState)] = [
+            ("S45b", "subscription-none-found-no-price", .noSubscriptionFound),
+            ("S57b", "subscription-store-failed-no-price", .storeFailed)
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (number, slug, purchase, price) in frames.map({ ($0.0, $0.1, $0.2, Optional(product)) }) + noPrice.map({ ($0.0, $0.1, $0.2, nil) }) {
+            let model = RelaySubscriptionModel(
+                purchase: purchase, unconfirmed: nil, phase: .free(ended: false), config: config, product: price
+            )
+            try await host.captureThree(
+                "\(number)-\(slug)", NavigationStack { RelaySubscriptionView(model: model) }, narrowScroll: Self.toTheEnd
+            )
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "RelaySubscriptionView", source: "Features/Settings/RelaySubscriptionView.swift",
+                reached: "bare stack, the subscription screen, light/dark/narrow"
+            ))
+        }
+        return rows
+    }
+
+    /// S08–S19, S49, S52, S54, S56: a Mac's Connection section in each state of Task 1's table, each light, dark and narrow,
+    /// handed to the view (`MacDetailView(model:)`).
+    private func captureConnection(
+        host: ScreenshotHost, origin: RelayOrigin, now: Date, makeLink: (String, String, Bool) -> LinkRecord
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 7, count: 32)).publicKey.rawRepresentation
+        let device = DemoSeed.device.deviceID
+        func grant(ordered: Bool = true) -> DeviceGrant {
+            DeviceGrant(
+                deviceID: device, hubID: "p4-work", name: "iPhone", scope: .private, linked: true, typingAllowed: true,
+                startSessionsAllowed: true, orderedActions: ordered ? 1 : nil, transports: ["cloudkit", "relay"],
+                relayDeviceID: RelayIDs.deviceID(publicKey: key), relayAuthPub: WireBytes.base64URL(key)
+            )
+        }
+        let at = Calendar.current.startOfDay(for: now).addingTimeInterval(10 * 3_600 + 42 * 60)
+        var iCloud = makeLink("p4-work", "Work Mac", false)
+        iCloud.switchedBy = device
+        iCloud.switchedAt = at
+        var onRelay = makeLink("p4-work", "Work Mac", true)
+        onRelay.switchedBy = device
+        onRelay.switchedAt = at
+        let freshICloud = makeLink("p4-work", "Work Mac", false)
+        var relayOnly = makeLink("p4-work", "build-box", true)
+        relayOnly.hubTransports = ["relay"]
+        let paying = RelayAccountCenter.Phase.paying(grace: false, macs: [])
+        let free = RelayAccountCenter.Phase.free(ended: false)
+        func request(_ refusal: TransportRequestRefusal? = nil) -> TransportRequestRecord {
+            TransportRequestRecord(target: .cloudKit, controlID: "c", reason: nil, at: now, refusal: refusal)
+        }
+        func facts(
+            step: RelayUpgradeStep? = nil, refusal: RelayUpgradeRefusal? = nil, request: TransportRequestRecord? = nil, reachable: Bool = true
+        ) -> SessionTransportFacts {
+            SessionTransportFacts(upgradeStep: step, upgradeRefusal: refusal, request: request, macReachable: reachable)
+        }
+        func model(
+            _ link: LinkRecord,
+            phase: RelayAccountCenter.Phase = paying,
+            grant given: DeviceGrant? = nil,
+            unconfirmed: Bool = false,
+            _ session: SessionTransportFacts? = nil
+        ) -> MacTransportModel {
+            MacTransportModel(
+                link: link, grant: given ?? grant(), phase: phase, unconfirmedPurchase: unconfirmed,
+                availability: .available(origin), session: session ?? facts(), macName: link.macName, ownDeviceID: device, now: now
+            )
+        }
+        let frames: [(String, String, MacTransportModel)] = [
+            ("S08", "connection-relay-chosen", model(onRelay)),
+            ("S09", "connection-icloud-chosen", model(iCloud)),
+            ("S10", "connection-free-phone", model(freshICloud, phase: free)),
+            ("S11", "connection-too-soon", model(freshICloud, facts(refusal: .tooSoon(retryAt: now.addingTimeInterval(240))))),
+            ("S12", "connection-mac-needs-update", model(freshICloud, grant: grant(ordered: false))),
+            ("S12b", "connection-relay-route-mac-needs-update", model(onRelay, grant: grant(ordered: false))),
+            ("S13", "connection-relay-only", model(relayOnly)),
+            ("S13b", "connection-relay-only-lapse", model(relayOnly, phase: free)),
+            ("S54", "connection-relay-no-answer", model(freshICloud, phase: .unknown)),
+            ("S56", "connection-purchase-not-confirmed", model(freshICloud, phase: free, unconfirmed: true)),
+            ("S14", "connection-slots-full", model(freshICloud, phase: .paying(grace: false, macs: ["a", "b", "c"]))),
+            ("S49", "connection-request-refused", model(onRelay, facts(request: request(.unavailable)))),
+            ("S52", "connection-no-answer", model(onRelay, facts(request: request(.macNoAnswer)))),
+            ("S52b", "connection-no-answer-lapse", model(onRelay, phase: free, facts(request: request(.lapseNoAnswer)))),
+            ("S15", "connection-upgrade-running", model(freshICloud, facts(step: .vouching))),
+            ("S16", "connection-waiting-closed-mac", model(freshICloud, facts(step: .requested, reachable: false))),
+            ("S17", "connection-toward-icloud", model(onRelay, facts(request: request()))),
+            ("S18", "connection-refusal", model(freshICloud, facts(refusal: .readerNotConfirmed))),
+            ("S19", "connection-checking", model(freshICloud, phase: .checking)),
+            ("S19b", "connection-checking-relay-route", model(onRelay, phase: .checking))
+        ]
+        let linking = try macsLinking([makeLink("p4-work", "Work Mac", false)], now: now)
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (number, slug, frame) in frames {
+            try await host.captureThree(
+                "\(number)-\(slug)", NavigationStack { MacDetailView(hubID: "p4-work", model: frame) }.environment(linking),
+                narrowScroll: Self.toTheEnd
+            )
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "MacDetailView", source: "Features/Settings/MacDetailView.swift",
+                reached: "bare stack, the Connection section, light/dark/narrow"
+            ))
+        }
+        return rows
+    }
+
+    /// S37–S40, S37b, S48: Settings → Diagnostics, each state through a fixed reader, light, dark and narrow.
+    private func captureDiagnostics(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
+        var rows: [ScreenshotHost.IndexRow] = []
+        let settings = SettingsViewModel()
+        settings.refreshBattery()
+        let diagnostics: [(String, String, LatencyDiagnosticsModel.State)] = [
+            ("S37", "diagnostics-rows", .rows([
+                .init(title: "Relay", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+            ])),
+            ("S37b", "diagnostics-rows-icloud", .rows([
+                .init(title: "iCloud", count: "214 actions", result: "p50 0.31 s · p90 0.7 s", answer: "Mac's answer: p50 0.12 s · p90 0.3 s")
+            ])),
+            ("S38", "diagnostics-empty", .empty),
+            ("S48", "diagnostics-needs-mac-update", .needsMacUpdate),
+            ("S39", "diagnostics-loading", .loading),
+            ("S40", "diagnostics-error", .failed)
+        ]
+        for (number, slug, state) in diagnostics {
+            let view = NavigationStack { DiagnosticsView(settings: settings, reader: LatencyDiagnosticsReader(fixed: state)) }
+            try await host.captureThree("\(number)-\(slug)", view)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "DiagnosticsView", source: "Features/Settings/DiagnosticsView.swift",
+                reached: "bare stack, a fixed reader, light/dark/narrow"))
+        }
+        return rows
     }
 
     /// A narrow scroll past any list's end: `captureThree` stops at the end.
@@ -325,9 +697,26 @@ final class ScreenshotTourTests: XCTestCase {
     /// 37–38r (relay client mockup 5a): the demo outbox state on its own demo session — three actions waiting to
     /// send behind a stopped flush, two Not delivered (one withdrawn after 24 h, one refused) — on Now, then the
     /// list, its Dismiss All confirmation, and a retry running under the last one's "Unlock your iPhone" error.
-    private func captureOutbox(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+    /// A demo session with three actions waiting to send and two not delivered (mockup 5a).
+    private func outboxDemoEnv() async throws -> (AppEnvironment, HubSession) {
         let clock = MutableClock()
         let transport = RefusingTransport()
+        let (env, session) = try await bareOutboxEnv(transport: transport, clock: clock)
+        let now = Date()
+        try await DemoSeed.loadOutboxDemo(
+            outbox: session.outbox, now: now,
+            setClock: { clock.advance($0.timeIntervalSince(clock.now)) },
+            refuse: { await transport.refuse($0) })
+        try await poll(timeout: 20, {
+            let backlog = session.outboxBacklog
+            return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
+                && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
+        }, "the outbox demo state landed")
+        return (env, session)
+    }
+
+    /// A booted demo session over `transport`, its outbox empty.
+    private func bareOutboxEnv(transport: RefusingTransport, clock: MutableClock) async throws -> (AppEnvironment, HubSession) {
         let defaults = try makeDefaults()
         let session = try HubSession(
             transport: transport,
@@ -340,18 +729,178 @@ final class ScreenshotTourTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in session.stop() }
         try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the outbox demo booted")
-        await session.outboxWork?.value
+        try await session.outboxWork?.value(within: 60, "session.outboxWork")
+        return (AppEnvironment.single(session, defaults: defaults), session)
+    }
+
+    /// S58, S58a, S58b2, S58c (relay client Phase 5, Task 16): Now with the relay feed parked waiting for the Mac's new
+    /// keys, with two, one and no sent actions, then with three waiting to send under it; each on its own demo session
+    /// (named as its link names it, as the chip does), light, dark and narrow. The tour writes the parked mark, as the feed would after its hour.
+    private func captureParkedFeed(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+        let frames: [(String, String, Int, Bool)] = [
+            ("S58", "now-parked-two-sent", 2, false),
+            ("S58a", "now-parked-one-sent", 1, false),
+            ("S58b2", "now-parked-none-sent", 0, false),
+            ("S58c", "now-parked-waiting-to-send", 2, true)
+        ]
+        var rows: [ScreenshotHost.IndexRow] = []
+        for (number, slug, sent, waiting) in frames {
+            let transport = RefusingTransport()
+            let (env, session) = try await bareOutboxEnv(transport: transport, clock: MutableClock())
+            try await DemoSeed.loadParkedDemo(outbox: session.outbox, sent: sent, waiting: waiting) { await transport.refuse($0) }
+            try session.store.markRelayFeedParked(at: Date())
+            try await poll(timeout: 20, {
+                let backlog = session.outboxBacklog
+                return backlog.parked?.sent == sent && backlog.queued == (waiting ? 3 : 0)
+                    && backlog.lastFlushStopped == waiting
+            }, "the parked demo state landed")
+            let host = ScreenshotHost(directory: dir, env: env, linking: linking)
+            try await host.captureThree("\(number)-\(slug)", NowView(), narrowScroll: nil)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "NowView, parked demo, light/dark/narrow"
+            ))
+        }
+        return rows
+    }
+
+    /// S59–S61 (relay client Phase 5, Task 17): the left-behind phone's banner, the link ended at its term (the notice
+    /// over the app) and the term's warning on the banner, on Now's row for another Mac and on its Settings → Macs row;
+    /// each light, dark and narrow. Banners and Now's rows are handed to the view; the Macs rows come from links whose
+    /// term started two days ago (before the date) or thirty (past it), over centers holding nothing, a held purchase
+    /// or a refused row.
+    private func captureTerm(host: ScreenshotHost) async throws -> [ScreenshotHost.IndexRow] {
         let now = Date()
-        try await DemoSeed.loadOutboxDemo(
-            outbox: session.outbox, now: now,
-            setClock: { clock.advance($0.timeIntervalSince(clock.now)) },
-            refuse: { await transport.refuse($0) })
-        try await poll(timeout: 20, {
-            let backlog = session.outboxBacklog
-            return backlog.queued == 3 && backlog.undelivered == 2 && backlog.lastFlushStopped
-                && OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).count == 2
-        }, "the outbox demo state landed")
-        let env = AppEnvironment.single(session, defaults: defaults)
+        let origin = try RelayOrigin("https://relay.example.com")
+        let before = now.addingTimeInterval(-2 * 86_400)
+        let past = now.addingTimeInterval(-30 * 86_400)
+        func link(_ name: String, _ cause: RelayRefusal?, since: Date, moved: Bool = false) -> LinkRecord {
+            var record = LinkRecord(
+                hubID: "term-\(name)", macName: name, scope: .private, ownerName: "", userRecordName: "", nonce: name,
+                dataShareURL: nil, relayShareURL: nil, deviceID: DemoSeed.device.deviceID, linkedAt: now,
+                transport: .relay, relayMacDeviceID: DemoSeed.Relay.workMac, hubTransports: ["relay"])
+            record.relayRefused = cause.map { RelayRefusedRecord(since: since, cause: $0) }
+            record.macMoved = moved ? 2 : nil
+            return record
+        }
+        func banner(
+            _ link: LinkRecord,
+            phase: RelayAccountCenter.Phase = .free(ended: true),
+            hold: RelayTermHold = .none,
+            unconfirmed: Bool = false,
+            updateRequired: Bool = false
+        ) throws -> RelayBannerModel {
+            try XCTUnwrap(RelayBannerModel.banner(
+                availability: .available(origin), phase: phase, unconfirmedPurchase: unconfirmed, updateRequired: updateRequired,
+                wasPaying: true, route: .hostedRelay(macDeviceID: DemoSeed.Relay.workMac), relayOnly: true, hubOnRelayAt: nil,
+                unansweredSince: nil, request: nil, pressRefusal: nil, lastUpdate: nil, macName: link.macName, now: now,
+                link: link, termHold: hold))
+        }
+        func row(_ link: LinkRecord, hold: RelayTermHold = .none) throws -> NowTermRow {
+            let line = try XCTUnwrap(RelayBannerModel.termLine(for: link, surface: .now, now: now, heldPurchase: hold))
+            return NowTermRow(id: link.hubID, title: link.macName, line: line)
+        }
+        let work = "Work Mac"
+        let home = "Home Mac"
+        // Work Mac's own banner with no term: the frames are about Home Mac's row under it.
+        let workEnded = try banner(link(work, nil, since: now))
+        var rows: [ScreenshotHost.IndexRow] = []
+        func nowShot(_ number: String, _ slug: String, _ view: NowView, _ reached: String) async throws {
+            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: 620)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "NowView", source: "Features/Now/NowView.swift", reached: "\(reached), light/dark/narrow"))
+        }
+        let paying = RelayAccountCenter.Phase.paying(grace: false, macs: [])
+        let nowFrames: [(String, String, NowView)] = [
+            ("S59", "banner-link-gone", NowView(banner: try banner(link(work, nil, since: before, moved: true), phase: paying))),
+            ("S59b", "banner-link-gone-before-date", NowView(banner: try banner(link(work, .slot, since: before), phase: paying))),
+            ("S59c", "banner-link-gone-past-date", NowView(banner: try banner(link(work, .slot, since: past), phase: paying, hold: .held))),
+            ("S59d", "banner-link-gone-moved-lapse", NowView(banner: try banner(link(work, .lapse, since: before, moved: true), hold: .held))),
+            ("S61a", "banner-needs-relay-before-date", NowView(banner: try banner(link(work, .lapse, since: before)))),
+            ("S61b", "banner-needs-relay-past-date", NowView(banner: try banner(link(work, .lapse, since: past)))),
+            ("S61c", "banner-needs-relay-held-free", NowView(banner: try banner(link(work, .lapse, since: before), hold: .held))),
+            ("S61c2", "banner-needs-relay-held-moved", NowView(banner: try banner(link(work, .lapse, since: before), phase: .moved, hold: .held))),
+            ("S61d", "now-row-before-date", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: before))])),
+            ("S61e", "now-row-past-date", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: past))])),
+            ("S61f", "now-row-refused-row", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: past), hold: .refusedRow)])),
+            ("S61g", "now-row-held", NowView(banner: workEnded, termRows: [try row(link(home, .lapse, since: before), hold: .held)])),
+            ("S61l", "banner-transfer-limit-past-date", NowView(
+                banner: try banner(link(work, .lapse, since: past), hold: .refusedRow, unconfirmed: true))),
+            ("S61n", "banner-update-row-refused", NowView(
+                banner: try banner(link(work, .lapse, since: past), hold: .refusedRow, unconfirmed: true, updateRequired: true),
+                termRows: [try row(link(work, .lapse, since: past), hold: .refusedRow)]))
+        ]
+        for (number, slug, view) in nowFrames {
+            try await nowShot(number, slug, view, "NowView, handed the banner and rows")
+        }
+
+        let s60: [(String, String, LinkNotice)] = [
+            ("S60", "notice-link-ended", .relayEnded(macName: work, notSent: 0)),
+            ("S60b", "notice-link-ended-not-sent", .relayEnded(macName: work, notSent: 2)),
+            ("S60c", "notice-two-ended-first", .relayEnded(macName: work, notSent: 0)),
+            ("S60d", "notice-two-ended-second", .relayEnded(macName: home, notSent: 2))
+        ]
+        for (number, slug, notice) in s60 {
+            host.env.navigation.tab = .now
+            try await host.captureThree("\(number)-\(slug)", TabsWithNotice(notice: notice), narrowScroll: nil)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "TabsWithNotice", source: "App/AppRootView.swift", reached: "full app with the notice, light/dark/narrow"))
+        }
+
+        rows += try await captureTermMacs(
+            host: host, origin: origin, homeBefore: link(home, .lapse, since: before), homePast: link(home, .lapse, since: past))
+        return rows
+    }
+
+    /// S61h–S61k: the Settings → Macs row's term line, over centers holding nothing, a held purchase (a moved-away claim
+    /// with this phone's own purchase in StoreKit) or a refused row (a `transferLimit` answer).
+    private func captureTermMacs(
+        host: ScreenshotHost, origin: RelayOrigin, homeBefore: LinkRecord, homePast: LinkRecord
+    ) async throws -> [ScreenshotHost.IndexRow] {
+        let now = Date()
+        let env = host.env
+        let saved = env.relayAccount
+        defer { env.relayAccount = saved }
+        let movedCard = try XCTUnwrap(RelayCardModel(availability: .available(origin), phase: .moved, unconfirmedPurchase: false))
+        var rows: [ScreenshotHost.IndexRow] = []
+        func shot(_ number: String, _ slug: String, _ links: [LinkRecord], card: RelayCardModel?, center: RelayAccountCenter) async throws {
+            env.relayAccount = center
+            let view = NavigationStack { MacsView(card: card) }.environment(try macsLinking(links, now: now))
+            try await host.captureThree("\(number)-\(slug)", view, narrowScroll: Self.toTheEnd)
+            rows.append(ScreenshotHost.IndexRow(
+                number: number, view: "MacsView", source: "Features/Settings/MacsView.swift", reached: "bare stack, light/dark/narrow"))
+        }
+        let plain = RelayAccountCenter(
+            link: RelayAccountLink(hasIdentity: { false }, account: { nil }, events: { nil }), store: FakeSubscriptionStore(),
+            defaults: try makeDefaults()
+        ) { [] }
+        try await shot("S61h", "macs-row-before-date", [homeBefore], card: nil, center: plain)
+        try await shot("S61i", "macs-row-past-date", [homePast], card: nil, center: plain)
+
+        let refusedBed = AccountBed()
+        let refusedToken = try await refusedBed.register()
+        refusedBed.defaults.set(true, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        refusedBed.store.unfinishedResult = [refusedBed.row(token: refusedToken)]
+        refusedBed.fake.failNext("submitTransaction", with: .transferLimit)
+        let refused = refusedBed.makeCenter()
+        refused.start()
+        await refused.foreground()?.value
+        XCTAssertEqual(refused.termHold, .refusedRow)
+        try await shot("S61j", "macs-row-refused-row", [homePast], card: movedCard, center: refused)
+
+        let heldBed = AccountBed()
+        let heldToken = try await heldBed.register()
+        heldBed.defaults.set(false, forKey: RelayAccountCenter.holdsSubscriptionKey)
+        heldBed.store.unfinishedResult = [heldBed.row(token: heldToken)]
+        let held = heldBed.makeCenter()
+        held.start()
+        await held.foreground()?.value
+        XCTAssertEqual(held.termHold, .held)
+        try await shot("S61k", "macs-row-held", [homeBefore], card: movedCard, center: held)
+        return rows
+    }
+
+    private func captureOutbox(into dir: URL, linking: LinkingViewModel) async throws -> [ScreenshotHost.IndexRow] {
+        let (env, session) = try await outboxDemoEnv()
         let host = ScreenshotHost(directory: dir, env: env, linking: linking)
         let first = try XCTUnwrap(OutboxItem.rows(session.workbenchReplica.snapshot.pending, .undelivered).first).id
 
@@ -385,7 +934,7 @@ final class ScreenshotTourTests: XCTestCase {
         )
         addTeardownBlock { @MainActor in session.stop() }
         try await poll(timeout: 20, { session.isBootstrapped && !session.workbenchReplica.snapshot.workbenches.isEmpty }, "the demo booted")
-        await session.outboxWork?.value
+        try await session.outboxWork?.value(within: 60, "session.outboxWork")
         try await session.outbox.enableOrderedActions()
         await transport.refuse(.unreachable)
         let workbench = DemoSeed.acmeID

@@ -364,17 +364,40 @@ func TestEpochs(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
 	at := time.Unix(1_700_000_000, 0)
-	for _, e := range []Epoch{{Epoch: 1, SealedKeys: []byte{1}, CreatedAt: at, FirstSeq: 1}, {Epoch: 2, SealedKeys: []byte{2}, CreatedAt: at, FirstSeq: 1025}} {
+	for _, e := range []Epoch{{Epoch: 1, SealedKeys: []byte{1}, CreatedAt: at, FirstSeq: 1}, {Epoch: 2, SealedKeys: []byte{2}, CreatedAt: at, FirstSeq: 1025, Reason: "transport_switch"}} {
 		if err := s.WithTx(ctx, func(tx *sql.Tx) error { return InsertEpoch(tx, e) }); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.WithTx(ctx, func(tx *sql.Tx) error { return RetireEpoch(tx, 1, at.Add(time.Hour)) }); err != nil {
+	retired, after := at.Add(time.Hour), at.Add(7*24*time.Hour)
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error { return RetireEpoch(tx, 1, retired, after) }); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.Epochs()
 	if err != nil || len(got) != 2 || got[0].Epoch != 1 || got[0].RetiredAt == nil || got[1].RetiredAt != nil || got[1].FirstSeq != 1025 {
 		t.Fatalf("Epochs = %+v %v", got, err)
+	}
+	if got[0].Reason != "" || got[1].Reason != "transport_switch" || got[0].RetireAfter == nil || !got[0].RetireAfter.Equal(after) || got[1].RetireAfter != nil {
+		t.Fatalf("reason/retire_after = %+v", got)
+	}
+	// EndRetention only shortens a retired epoch's retention.
+	for _, step := range []struct {
+		epoch uint32
+		at    time.Time
+	}{{1, at.Add(8 * 24 * time.Hour)}, {2, at}, {1, at.Add(2 * time.Hour)}} {
+		if err := s.WithTx(ctx, func(tx *sql.Tx) error { return EndRetention(tx, step.epoch, step.at) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, _ = s.Epochs()
+	if !got[0].RetireAfter.Equal(at.Add(2*time.Hour)) || got[1].RetireAfter != nil {
+		t.Fatalf("after EndRetention: %+v", got)
+	}
+	// A reason outside the enum is refused by the CHECK.
+	if err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		return InsertEpoch(tx, Epoch{Epoch: 3, SealedKeys: []byte{3}, CreatedAt: at, Reason: "other"})
+	}); err == nil {
+		t.Fatal("an unknown reason was written")
 	}
 }
 
@@ -540,5 +563,42 @@ func TestControlQueueKeepsA64BitRecordVersion(t *testing.T) {
 	got, err := s.PendingControls("m")
 	if err != nil || len(got) != 1 || got[0].ExpectSeq != tag {
 		t.Fatalf("PendingControls = %+v %v", got, err)
+	}
+}
+
+// A checkpoint a reader blocks reports busy as an error: its WAL is not
+// truncated, so the caller can retry.
+func TestCheckpointBlockedByAReaderIsAnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.SetMeta("k", "v"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(path) // another process's read-only reader
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = other.Close() })
+	tx, err := other.db.BeginTx(context.Background(), &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v string
+	if err := tx.QueryRow(`SELECT value FROM hub_meta WHERE key = 'k'`).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMeta("k", "w"); err != nil { // a frame the reader's snapshot pins
+		t.Fatal(err)
+	}
+	if err := s.Checkpoint(); !errors.Is(err, ErrCheckpointBusy) {
+		t.Fatalf("Checkpoint under a reader = %v, want ErrCheckpointBusy", err)
+	}
+	_ = tx.Rollback()
+	if err := s.Checkpoint(); err != nil {
+		t.Fatalf("Checkpoint with no reader = %v", err)
 	}
 }

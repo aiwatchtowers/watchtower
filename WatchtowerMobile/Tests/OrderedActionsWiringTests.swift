@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import WatchtowerE2ETesting
 import WatchtowerKit
-import WatchtowerSync
+@testable import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
@@ -86,6 +86,13 @@ final class OrderedActionsWiringTests: XCTestCase {
         await fetch(env)
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .sent)
         try await poll({ env.outboxBacklog == .empty }, "nothing waits, and the last flush went through")
+
+        // A parked feed (relay client Phase 5, S58) brings the written action into the session's backlog, and a
+        // read with no pending record takes it out again.
+        try env.store.markRelayFeedParked(at: Date())
+        try await poll({ env.outboxBacklog.parked?.sent == 1 }, "the session's backlog carries the parked feed")
+        try env.store.endRelayWait()
+        try await poll({ env.outboxBacklog == .empty }, "the merge ends it")
     }
 
     /// Every fetch sweeps (not only the boot's): a phone that stays up still withdraws an action the Mac never
@@ -278,8 +285,8 @@ final class OrderedActionsWiringTests: XCTestCase {
         let keys = try TestPhone.keys()
         let env = try await orderedSession(over: transport, keys: keys)
 
-        env.keysMerged(newestEpochRaised: false)
-        await env.epochAckWork?.value
+        await env.keysMerged(newestEpochRaised: false, droppedNewestPair: false)
+        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
         XCTAssertEqual(adopted.map(\.epoch), [1], "the adoption's ack only: no raise, no new ack")
@@ -288,11 +295,11 @@ final class OrderedActionsWiringTests: XCTestCase {
         link.epochs.append(EpochKeys(
             epoch: 2, dataKey: Data(repeating: 2, count: 32), alertKey: Data(repeating: 3, count: 32)))
         try keys.store.saveHubLink(link)
-        env.keysMerged(newestEpochRaised: true)
-        await env.epochAckWork?.value
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
+        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
-        env.keysMerged(newestEpochRaised: true)
-        await env.epochAckWork?.value
+        await env.keysMerged(newestEpochRaised: true, droppedNewestPair: false)
+        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
 
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -310,7 +317,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await first.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(first)
-        await first.epochAckWork?.value
+        try await first.epochAckWork?.value(within: 60, "first.epochAckWork")
         await first.shutDown()
         first.closeDatabases()
         let adopted = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
@@ -319,7 +326,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let second = try session(over: transport, path: path, keys: keys)
         await second.waitForBoot()
         await fetch(second)
-        await second.epochAckWork?.value
+        try await second.epochAckWork?.value(within: 60, "second.epochAckWork")
         await second.outbox.drain()
         let after = try await phoneControls(in: transport).filter { $0.kind == .epochAck }
         XCTAssertEqual(after.map(\.epoch), [1], "no raise: no second ack")
@@ -335,7 +342,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         await first.waitForBoot()
         try await publishGrant(orderedActions: 1, over: transport)
         await fetch(first)
-        await first.epochAckWork?.value
+        try await first.epochAckWork?.value(within: 60, "first.epochAckWork")
         await first.shutDown()
         first.closeDatabases()
 
@@ -346,11 +353,37 @@ final class OrderedActionsWiringTests: XCTestCase {
 
         let second = try session(over: transport, path: path, keys: keys)
         await second.waitForBoot()
-        await second.epochAckWork?.value
+        try await second.epochAckWork?.value(within: 60, "second.epochAckWork")
         await second.outbox.drain()
         let acks = try await phoneControls(in: transport).filter { $0.kind == .epochAck }.compactMap(\.epoch)
         XCTAssertEqual(acks.max(), 2, "the boot acknowledged the raise")
         XCTAssertEqual(acks.filter { $0 == 2 }.count, 1)
+    }
+
+    // MARK: - Action timings
+
+    /// A slice stored while the keys were locked opens in `indexStoredRows` (a key arrived): that pass is where the
+    /// timing sees it, so the effect is stamped there (relay client Phase 4, Task 14).
+    func testALateIndexedSliceStampsTheActionTimingEffect() async throws {
+        let transport = SwitchableTransport()
+        let phoneKeys = try TestE2E.phoneStore()
+        let env = try await orderedSession(
+            over: transport, keys: PhoneKeys(store: phoneKeys, hubID: hubID))
+        let written = Date()
+        try env.store.latencyWritten(
+            actionID: "a", kind: "board_target_status", transport: .cloudKit, at: written)
+        try env.store.latencyAnswered(actionID: "a", applied: true, at: written)
+
+        phoneKeys.isLocked = true
+        try await TestPhone.hub(over: transport.inner).save([CloudRecord(
+            recordName: SliceKind.workbench.recordName(id: "1"), zone: .data, kind: SliceKind.workbench.rawValue,
+            modifiedAt: written, payload: Data("{\"id\":1}".utf8))])
+        await fetch(env)
+        XCTAssertEqual(try env.store.latencySamples(since: .distantPast), [], "stored but not opened yet")
+
+        phoneKeys.isLocked = false
+        env.indexStoredRows()
+        XCTAssertEqual(try env.store.latencySamples(since: .distantPast).count, 1)
     }
 
     // MARK: - Helpers
@@ -392,7 +425,7 @@ final class OrderedActionsWiringTests: XCTestCase {
         let on = try await env.outbox.orderedActions()
         XCTAssertTrue(on)
         // The adoption's epoch_ack is written before the test starts counting saves.
-        await env.epochAckWork?.value
+        try await env.epochAckWork?.value(within: 60, "env.epochAckWork")
         await env.outbox.drain()
         return env
     }

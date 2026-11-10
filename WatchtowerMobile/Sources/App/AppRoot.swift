@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import os
 import UserNotifications
+import WatchtowerHostedRelay
 import WatchtowerSync
 
 /// The app's root for its lifetime: one `AppEnvironment` (a session per
@@ -67,6 +68,8 @@ final class AppRoot {
     let env: AppEnvironment
     let linking: LinkingViewModel
 
+    /// The APNs token's registrar; nil while the relay is off (`wireRelayPush`).
+    @ObservationIgnored private(set) var relayPush: RelayPushRegistrar?
     @ObservationIgnored private let registry: HubRegistry
     @ObservationIgnored private let paths: HubPaths
     @ObservationIgnored private let factory: HubSessionFactory
@@ -79,6 +82,8 @@ final class AppRoot {
     /// nil holds nothing (tests).
     @ObservationIgnored private let startWork: BackgroundWork.Starter?
     @ObservationIgnored private let farewellDelivery: FarewellDelivery
+    /// One push of a session's send queue after `linked`'s record; tests replace it.
+    @ObservationIgnored var sendLinkedQueue: @MainActor (_ session: HubSession) async -> Void = { await $0.sendNow() }
     /// The removal running per hub: a second one for the same hub waits
     /// for it and counts nothing.
     @ObservationIgnored private var removals: [String: Task<LocalWipe, Never>] = [:]
@@ -112,6 +117,8 @@ final class AppRoot {
     @ObservationIgnored private let sideMailbox: SideMailboxTiming
     /// What this launch's side mailbox readers share: refused drains (sim rule 16), mailboxes read from the start.
     @ObservationIgnored private let sideLedger = SideDrainLedger()
+    /// The upgrades' clock (relay client Phase 3b Task 19): the 24 h reader wait, `retry_after_s`, the pass cadence.
+    @ObservationIgnored private let upgradeClock: @MainActor () -> Date
     nonisolated private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AppRoot")
 
     init(
@@ -124,9 +131,11 @@ final class AppRoot {
         linking: LinkingViewModel,
         startWork: BackgroundWork.Starter?,
         farewellDelivery: FarewellDelivery,
-        sideMailbox: SideMailboxTiming = .live
+        sideMailbox: SideMailboxTiming = .live,
+        upgradeClock: @escaping @MainActor () -> Date = { Date() }
     ) {
         self.sideMailbox = sideMailbox
+        self.upgradeClock = upgradeClock
         self.env = env
         self.registry = registry
         self.paths = paths
@@ -253,6 +262,9 @@ final class AppRoot {
             startWork: BackgroundWork.starter(),
             farewellDelivery: .live(transports: transports)
         )
+        let relayConfig = RelayConfig.from(bundle: .main)
+        root.wireRelayAccount { relayConfig.productID.map { StoreKitRelayStore(productID: $0) } }
+        root.wireRelayPush(environment: relayConfig.pushEnvironment)
         root.launch { Set([store.pending?.link.hubID].compactMap { $0 } + store.promoted.keys + store.unreadablePromotedHubIDs) }
         return root
     }
@@ -289,6 +301,26 @@ final class AppRoot {
             startWork: nil,
             farewellDelivery: FarewellDelivery { _, _ in false }
         )
+    }
+
+    /// Builds and starts the Relay account center, only while the relay is available: with an empty origin `makeStore`
+    /// is never called, so nothing touches StoreKit.
+    func wireRelayAccount(makeStore: () -> (any RelaySubscriptionStore)?) {
+        guard case .available = env.relay.availability, let store = makeStore() else { return }
+        let center = RelayAccountCenter(link: .live(env.relay), store: store, defaults: defaults) { [weak env] in
+            env.map { Array($0.sessions.values) } ?? []
+        }
+        env.relayAccount = center
+        center.start()
+    }
+
+    /// Builds the APNs token's registrar, only while the relay is available. The account center forwards its identity
+    /// points and `.reachable(true)` to it.
+    func wireRelayPush(environment: RelayPushEnvironment?) {
+        guard case .available = env.relay.availability else { return }
+        let registrar = RelayPushRegistrar.live(relay: env.relay, environment: environment)
+        relayPush = registrar
+        env.relayAccount?.pushRegistrar = registrar
     }
 
     /// The launch's clean-up: links saved before encryption go first (their
@@ -335,6 +367,16 @@ final class AppRoot {
         await linking.resumePendingLink()
         await linking.resumePromotedLinks()
         await accountCheck()
+        await resumeRelayUpgrades()
+    }
+
+    /// Every hub's pending upgrade from iCloud to the relay goes on (at launch and on the return to the foreground);
+    /// a hub with none makes no relay call. Returns once each ran a pass.
+    func resumeRelayUpgrades() async {
+        for hubID in env.order {
+            await env.session(hubID)?.relayUpgrader?.resume()
+            await env.session(hubID)?.transportRequester?.resume()
+        }
     }
 
     /// The app became active (the scene's phase; a cold launch in the
@@ -345,6 +387,8 @@ final class AppRoot {
     /// meanwhile joins it. Returns the retry (a test awaits it).
     @discardableResult
     func becameActive() -> Task<Void, Never> {
+        env.relayAccount?.foreground()
+        relayPush?.foreground()
         if let farewellRetry { return farewellRetry }
         let retry = Task {
             await launched?.value
@@ -354,12 +398,34 @@ final class AppRoot {
                 // A Relay Mac's farewell first, then its slot removal; then the confirmed links go on.
                 await linking.retrySlotRemovals()
                 await linking.resumePromotedLinks()
+                await resumeRelayUpgrades()
+                await runRelayTerms()
                 endWork?()
             }
             farewellRetry = nil
         }
         farewellRetry = retry
         return retry
+    }
+
+    /// The term of every relay-only link the relay refuses (relay client Phase 5, Task 17), in the foreground only
+    /// (`becameActive`; never on a background or push launch, ask #1098): after the foreground's account pass, each hub's
+    /// session checks its own (`HubSession.runTerm`), one at a time, and a link whose refusal stood on two reads at
+    /// least five minutes apart ends (`LinkingViewModel.endAtTerm`). Nothing without the relay's account center. The
+    /// scene is checked before each hub's step and again before an end (review M2): the retries ahead of this can take
+    /// seconds, and a person who left the app meanwhile must not lose a link with no S60 on screen.
+    func runRelayTerms() async {
+        guard let center = env.relayAccount else { return }
+        await center.passTask?.value
+        for hubID in env.order {
+            guard env.isSceneActive else { return }
+            guard let session = env.session(hubID) else { continue }
+            let ends = await session.runTerm(now: upgradeClock) { mac, holds in
+                await center.termCheck(mac: mac, purchaseHolds: holds)
+            }
+            guard env.isSceneActive else { return }
+            if ends { await linking.endAtTerm(hubID) }
+        }
     }
 
     /// A `watchtower://link` URL from the system Camera app. The demo has no
@@ -385,8 +451,17 @@ final class AppRoot {
     /// final review Phone I-1).
     private func wire(_ session: HubSession) {
         let hubID = session.hubID
+        session.linkOnRow = { [weak self] in self?.followerLink(hubID: hubID) }
+        session.writeLinkOnRow = { [weak self] link in self?.persistRoute(link) ?? false }
         session.onLinkSignal = { [weak self] signal in self?.handle(signal, hubID: hubID) }
-        session.onFetched = { [weak self] in self?.checkLink(hubID: hubID) }
+        session.onFetched = { [weak self, weak session] in
+            self?.checkLink(hubID: hubID)
+            // A pending upgrade goes on at the feed's cadence while the app is active (at most every 30 s).
+            if session?.isActive == true {
+                session?.relayUpgrader?.resumeAfterFetch()
+                session?.transportRequester?.resumeAfterFetch()
+            }
+        }
         session.onKeyboxChanged = { [weak self] in
             guard let self, !self.isDemo else { return }
             let linking = self.linking
@@ -399,10 +474,22 @@ final class AppRoot {
         }
         guard !isDemo else { return }
         // The hub's switch controls and transport marker (relay client Phase 3 Task 11), read on this session's route.
-        let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self)
+        let follower = TransportFollower(hubID: hubID, outbox: session.outbox, host: self, now: upgradeClock)
+        follower.onHubOnRelayEnded = { [weak session] in session?.forgetHubOnRelay() }
         let on = session.route.map(HubSession.transportKind(of:)) ?? .cloudKit
         session.transportSignals.onControl = { control in await follower.handle(control: control, on: on) }
         session.transportSignals.onMarker = { marker in await follower.handle(marker: marker, on: on) }
+        // The upgrade from iCloud to the relay (Phase 3b Task 19) and the hub's rejections of its request.
+        let upgrader = RelayUpgrader(session: session, follower: follower, host: self, now: upgradeClock)
+        session.attach(upgrader)
+        // Relay client Phase 4 Task 5: the request toward iCloud (the owner's, the lapse's). A rejection answers the
+        // request when one is open, else the upgrade.
+        let requester = TransportRequester(session: session, follower: follower, host: self, now: upgradeClock)
+        session.attach(requester)
+        session.transportSignals.onRejection = { control in
+            if requester.awaitsAnswer { return requester.rejected(control) }
+            return await upgrader.rejected(control)
+        }
         // The mailbox on the hub's other transport (Task 12), only for a hub with both routes.
         if session.sideReader == nil, followerLink(hubID: hubID)?.otherRoute != nil {
             let factory = factory
@@ -420,6 +507,9 @@ final class AppRoot {
         session.onKeysAvailable = nil
         session.transportSignals.onControl = nil
         session.transportSignals.onMarker = nil
+        session.transportSignals.onRejection = nil
+        session.relayUpgrader?.stop()
+        session.transportRequester?.stop()
     }
 
     private func handle(_ signal: LinkSignal, hubID: String) {
@@ -562,8 +652,9 @@ final class AppRoot {
             session.onKeyboxChanged = nil
             session.onKeysAvailable = nil
             var farewellKept = false
+            var farewellOut = false
             if let farewell {
-                farewellKept = await deliver(farewell, through: session, of: rows.first { $0.hubID == hubID })
+                (farewellKept, farewellOut) = await deliver(farewell, through: session, of: rows.first { $0.hubID == hubID })
             }
             let stoppedCapture = await session.recorder.stopForWipe()
             // After the shutdown the boot (and its launch recovery) has
@@ -580,7 +671,8 @@ final class AppRoot {
                 notSent: Self.pendingActionCount(session) + handover.lost,
                 stoppedRecording: handover.stoppedCaptureKept,
                 problem: handover.problem,
-                farewellKept: farewellKept
+                farewellKept: farewellKept,
+                farewellOut: farewellOut
             )
             // The last read of its databases is done: closed before their
             // files go (or before the next launch's orphan pass opens them).
@@ -625,15 +717,15 @@ final class AppRoot {
     /// the sealed record for `row`'s hub in the registry (#143) before the
     /// wait, so a kill during it keeps it too, then waits until it has left
     /// the send queue (`FarewellDelivery`) and stops keeping it. Returns
-    /// whether it stays kept (still queued at the cap); false once it went
-    /// out, or when it could not be queued or kept (logged).
-    private func deliver(_ record: CloudRecord, through session: HubSession, of row: HubRow?) async -> Bool {
+    /// whether it stays kept (still queued at the cap) and whether it went
+    /// out; neither when it could not be queued or kept (logged).
+    private func deliver(_ record: CloudRecord, through session: HubSession, of row: HubRow?) async -> (kept: Bool, out: Bool) {
         let sealed: CloudRecord
         do {
             sealed = try await session.saveSealing(record)
         } catch {
             Self.logger.warning("unlinked record not queued: \(error.localizedDescription, privacy: .public)")
-            return false
+            return (false, false)
         }
         let kept = keepFarewell(sealed, of: row)
         let delivery = farewellDelivery
@@ -644,10 +736,10 @@ final class AppRoot {
         )
         if sent {
             if let kept { dropFarewell(kept) }
-            return false
+            return (false, true)
         }
         Self.logger.warning("unlinked record still queued when the hub went: kept to send again")
-        return kept != nil
+        return (kept != nil, false)
     }
 
     /// Pushes a send queue (`send`) until `isPending` reads false, again
@@ -820,6 +912,8 @@ extension AppRoot: LinkHost {
 
     func prepare(route: HubRoute, hubID: String, fresh: Bool) async throws -> any CloudSyncTransport {
         guard HubPaths.isValidHubID(hubID) else { throw CocoaError(.fileWriteInvalidFileName) }
+        // A finished relay link: its identity exists, so the account center starts with no relaunch.
+        if case .hostedRelay = route { env.relayAccount?.identityAppeared() }
         // The launch's orphan pass never deletes the files of a hub being
         // linked (a cold launch by a link URL); a removal of this hub still
         // running decides what is left; a kept farewell being sent again
@@ -916,8 +1010,13 @@ extension AppRoot: LinkHost {
         }
     }
 
-    func keysMerged(hubID: String, newestEpochRaised: Bool) {
-        env.session(hubID)?.keysMerged(newestEpochRaised: newestEpochRaised)
+    func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge? {
+        guard let session = env.session(hubID) else { return nil }
+        return try await session.mergeKeybox(keys, now: now, reseal: reseal)
+    }
+
+    func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async {
+        await env.session(hubID)?.keysMerged(newestEpochRaised: newestEpochRaised, droppedNewestPair: droppedNewestPair)
     }
 
     func linked(_ record: LinkRecord, device: LinkedDevice) async throws {
@@ -932,8 +1031,16 @@ extension AppRoot: LinkHost {
         _ = await session.adoption?.value
         await session.setLinkedDevice(device, writesAllowed: true)
         env.activate(record.hubID)
+        // The hub's switch starts on with every link, and the hello carries none it keeps. The link screen waits on
+        // this function, so only the save is awaited: a dead network holds the send, not the screen.
+        if !session.deviceSettings.workAlerts, await session.deviceSettings.sendWorkAlertsChange() {
+            Task { [sendLinkedQueue] in await sendLinkedQueue(session) }
+        }
     }
 
+    /// The phone's `device` record for `hubID`. While the hub's link has an upgrade to the relay
+    /// (`LinkRecord.relayUpgrade`, Phase 3b Task 19) and the relay is available, it names this phone's relay id with
+    /// its proof (`RelayIDProof`, R22); else it is the record of an iCloud link, byte for byte.
     func devicePayload(hubID: String, for device: LinkedDevice, linkNonce: String?, unlinked: Bool, now: Date) -> DevicePayload {
         guard let session = env.session(hubID) else {
             Self.logger.warning("device record of a hub with no session: the default choices")
@@ -944,7 +1051,29 @@ extension AppRoot: LinkHost {
                 updatedAt: now
             )
         }
-        return session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
+        let payload = session.deviceSettings.devicePayload(for: device, linkNonce: linkNonce, unlinked: unlinked, now: now)
+        return withRelayID(payload, hubID: hubID)
+    }
+
+    /// `payload` with this phone's relay id, its `relay_auth` key and the key's signature, while the hub's link is
+    /// upgrading (or upgraded) to the relay; else `payload` as it is.
+    private func withRelayID(_ payload: DevicePayload, hubID: String) -> DevicePayload {
+        guard followerLink(hubID: hubID)?.relayUpgrade != nil, case .available = linking.relay.availability,
+              let hub = UUID(uuidString: hubID), let device = UUID(uuidString: payload.deviceID) else { return payload }
+        let claim: RelayIDClaim
+        do {
+            claim = try linking.relay.relayIDProof(hubID: hub, deviceID: device)
+        } catch {
+            Self.logger.error("device record without the relay id: no proof (\(String(describing: type(of: error)), privacy: .public))")
+            return payload
+        }
+        return DevicePayload(
+            deviceID: payload.deviceID, name: payload.name, model: payload.model, appVersion: payload.appVersion,
+            scope: payload.scope, userRecordName: payload.userRecordName, linkNonce: payload.linkNonce,
+            unlinked: payload.unlinked, typingRequested: payload.typingRequested, startSessions: payload.startSessions,
+            permissionsRequested: payload.permissionsRequested, seenAt: payload.seenAt, updatedAt: payload.updatedAt,
+            relayDeviceID: claim.relayDeviceID, relayAuthPub: claim.authPub, relayIDSig: claim.sig,
+            workAlertsOff: payload.workAlertsOff)
     }
 
     func removeHub(_ hubID: String, keepRecordings: Bool, farewell: CloudRecord?) async -> LocalWipe {
@@ -1111,6 +1240,43 @@ extension AppRoot: LinkHost {
     }
 }
 
+// MARK: - The upgrade from iCloud to the relay (relay client Phase 3b Task 19)
+
+extension AppRoot: RelayUpgradeHost {
+    var upgradeRelay: any RelayLinkOps { linking.relay }
+
+    func rewriteDeviceRecord(hubID: String) async -> Bool {
+        guard let session = env.session(hubID), let device = session.linkedDevice else { return false }
+        let payload = devicePayload(hubID: hubID, for: device, linkNonce: nil, unlinked: false, now: upgradeClock())
+        // An upgrade's first step made the relay identity (the record's proof): the account center starts with no relaunch.
+        env.relayAccount?.identityAppeared()
+        do {
+            try await session.writeDeviceRecord(payload)
+            return true
+        } catch {
+            Self.logger.warning("device record not rewritten: \(String(describing: type(of: error)), privacy: .public)")
+            return false
+        }
+    }
+
+    func mergeKeybox(_ sealed: Data, hubID: String) async -> RelayKeyboxMerge {
+        guard let keybox = await env.session(hubID)?.openSwitchKeybox(sealed), keybox.keys != nil else { return .noKeys }
+        return await linking.mergeSwitchKeys(keybox, hubID: hubID) ? .merged : .notStored
+    }
+
+    func makeRelaySide(hubID: String, mac: String) throws -> SideTransport {
+        try factory.makeSide(hubID, .hostedRelay(macDeviceID: mac))
+    }
+}
+
+// MARK: - The request toward iCloud (relay client Phase 4 Task 5)
+
+extension AppRoot: TransportRequestHost {
+    func makeOtherSide(hubID: String, route: HubRoute) throws -> SideTransport {
+        try factory.makeSide(hubID, route)
+    }
+}
+
 // MARK: - Following the hub's transport (relay client Phase 3 Task 11)
 
 extension AppRoot: TransportFollowerHost {
@@ -1140,6 +1306,26 @@ extension AppRoot: TransportFollowerHost {
         await linking.mergeSwitchKeys(keybox, hubID: hubID)
     }
 
+    func relayOffer(hubID: String) async throws -> Data? {
+        try await env.session(hubID)?.relayOffer()
+    }
+
+    func clearEphemeral(hubID: String) -> Bool {
+        linking.clearEphemeral(hubID: hubID)
+    }
+
+    func dropEphemeral(hubID: String) -> Bool {
+        linking.dropEphemeral(hubID: hubID)
+    }
+
+    func relayKeySourceGone(hubID: String) async {
+        await env.session(hubID)?.keySourceGone()
+    }
+
+    func relayKeySourceBack(hubID: String) async {
+        await env.session(hubID)?.keySourceBack()
+    }
+
     func persistRoute(_ link: LinkRecord) -> Bool {
         do {
             guard try registry.updateLink(link) else { return false }
@@ -1163,8 +1349,10 @@ extension AppRoot: TransportFollowerHost {
     /// ended (the feed marked and deleted the control on the old transport), the old session stops its transport and
     /// closes its files, then a new one opens the same replica (its tokens reset there, `ReplicaStore.adoptRoute`)
     /// on the new route's own transport store, and takes its place on screen. One socket at a time: the old relay
-    /// transport detaches before the new one attaches (carry-over 4). A session that cannot be built leaves the hub
-    /// unopened, as at launch.
+    /// transport detaches before the new one attaches (carry-over 4). The old session's alert subscription call ends
+    /// (or its cap passes) before the new session is built, so a queued delete or save does not overlap the new one's.
+    /// The row is read again after those waits: a hub removed meanwhile is the removal's, and never comes back. A
+    /// session that cannot be built leaves the hub unopened, as at launch, its alert subscription kept: it is still linked.
     private func performRouteMove(_ hubID: String) async {
         guard let old = env.session(hubID) else { return }
         await old.waitForFetches()
@@ -1177,16 +1365,21 @@ extension AppRoot: TransportFollowerHost {
             return
         }
         guard env.session(hubID) === old, old.route != row.link.route else { return }
+        // An upgrade's pass closes its relay transport first: the new session opens the same store.
+        await old.relayUpgrader?.idle()
         unwire(old)
         await old.shutDown()
-        old.closeDatabases()
+        await old.alertRegistrar?.idle()
         do {
-            let session = try AppEnvironment.makeSession(for: row, factory: factory, identity: identity)
+            guard let fresh = try registry.row(hubID), fresh.state == .linked, env.session(hubID) === old else { return }
+            old.closeDatabases()
+            let session = try AppEnvironment.makeSession(for: fresh, factory: factory, identity: identity)
             wire(session)
             env.add(session)
             env.nameHubs(linkedHubs())
         } catch {
-            env.remove(hubID)
+            old.closeDatabases()
+            env.dropSession(hubID)
             env.markUnopened(hubID, error: error)
         }
     }

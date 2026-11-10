@@ -841,4 +841,85 @@ final class SecureTransportTests: XCTestCase {
         XCTAssertEqual(rejections.values.map(\.wireName), [carrying.recordName])
         XCTAssertEqual(rejections.values.map(\.reason), ["malformedSignal"])
     }
+
+    // MARK: - Keybox candidates and stored pairs (relay client Phase 5, Task 8)
+
+    func testNoCandidateOpensIsNotALockError() async throws {
+        let store = try TestE2E.phoneStore()
+        try EphemeralLink.make(store, epochs: [1])
+        let phone = try phoneTransport(inner: InMemoryCloudTransport(), keys: try TestE2E.phone(store: store))
+        let sealed = try EphemeralLink.sealedKeybox(to: Curve25519.KeyAgreement.PrivateKey().publicKey)
+
+        do {
+            _ = try await phone.openKeybox(sealed: sealed, deviceID: TestE2E.deviceID)
+            XCTFail("sealed to a key this phone does not hold")
+        } catch EnvelopeError.authenticationFailed {}
+        XCTAssertThrowsError(try TestE2E.opener(store: store).openKeybox(
+            wireName: Keybox.recordName(deviceID: TestE2E.deviceID.uuidString), envelope: sealed)
+        ) { XCTAssertEqual($0 as? EnvelopeError, .authenticationFailed) }
+
+        store.isLocked = true
+        do {
+            _ = try await phone.openKeybox(sealed: sealed, deviceID: TestE2E.deviceID)
+            XCTFail("locked")
+        } catch SecureTransportError.keysUnavailable {}
+    }
+
+    func testASignatureFailureIsNotRetriedOnOtherKeys() async throws {
+        let store = try TestE2E.phoneStore()
+        try EphemeralLink.make(store, epochs: [1])
+        let forged = try EphemeralLink.sealedKeybox(
+            to: TestE2E.deviceIdentity.agreement.publicKey, signer: Curve25519.Signing.PrivateKey())
+        let phone = try phoneTransport(inner: InMemoryCloudTransport(), keys: try TestE2E.phone(store: store))
+
+        do {
+            _ = try await phone.openKeybox(sealed: forged, deviceID: TestE2E.deviceID)
+            XCTFail("a forged keybox")
+        } catch EnvelopeError.signatureInvalid {}
+        // Checked once, before any key is tried: even the key it was sealed to never opens it.
+        XCTAssertThrowsError(try SealedBox.open(
+            forged, envelopeClass: .keybox, recipients: [TestE2E.deviceIdentity.agreement],
+            info: SealedBox.keyboxInfo(hubID: TestE2E.hubID, deviceID: TestE2E.deviceID),
+            context: EnvelopeContext(zone: .data, wireName: Keybox.recordName(deviceID: TestE2E.deviceID.uuidString)),
+            verifier: TestE2E.hubSigningKey.publicKey)
+        ) { XCTAssertEqual($0 as? EnvelopeError, .signatureInvalid) }
+    }
+
+    /// Sim rule 14 under stored pairs: the old envelope opens with its epoch's stored p2h key and goes out sealed with
+    /// the current epoch's.
+    func testResealUsesStoredKeysForTheOldEpochAndTheCurrentForTheNew() async throws {
+        let store = try TestE2E.phoneStore()
+        let device = Curve25519.KeyAgreement.PrivateKey()
+        let two = try EphemeralLink.pair(epoch: 2, device: device, hub: Curve25519.KeyAgreement.PrivateKey())
+        let three = try EphemeralLink.pair(epoch: 3, device: device, hub: Curve25519.KeyAgreement.PrivateKey())
+        try EphemeralLink.make(store, epochs: [])
+        try EphemeralLink.add(store, epoch: 2, pair: two)
+        let phone = try phoneTransport(inner: InMemoryCloudTransport(), keys: try TestE2E.phone(store: store))
+        let sealed = try await phone.seal(action("a7"))
+        let context = EnvelopeContext(zone: .relay, wireName: sealed.recordName)
+        XCTAssertEqual(try EnvelopeSealer.openSymmetric(
+            sealed.payload, accepting: [.relayToHub], context: context, verifier: nil) { _ in SymmetricKey(data: two.p2h) }
+            .header.epoch, 2)
+
+        try EphemeralLink.add(store, epoch: 3, pair: three)
+        let maybeResealed = try await phone.reseal(ownEnvelope: sealed.payload, wireName: sealed.recordName, modifiedAt: stamp)
+        let resealed = try XCTUnwrap(maybeResealed)
+
+        let opened = try EnvelopeSealer.openSymmetric(
+            resealed.payload, accepting: [.relayToHub], context: context, verifier: nil) { _ in SymmetricKey(data: three.p2h) }
+        XCTAssertEqual(opened.header.epoch, 3)
+        XCTAssertEqual(opened.frame.id, "action-a7")
+        XCTAssertThrowsError(try EnvelopeSealer.openSymmetric(
+            resealed.payload, accepting: [.relayToHub], context: context, verifier: nil
+        ) { header in
+            try KeyDerivation.relayKey(
+                agreementPrivate: TestE2E.hubAgreementKey, peerPublic: TestE2E.deviceIdentity.agreement.publicKey,
+                linkNonce: TestE2E.linkNonce, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, epoch: header.epoch,
+                direction: .phoneToHub)
+        }, "never the static key")
+        // The replica's overlay opens both with the same rule.
+        let opener = try TestE2E.opener(store: store)
+        XCTAssertEqual(try opener.openOwnRelay(wireName: sealed.recordName, envelope: resealed.payload).id, "action-a7")
+        XCTAssertEqual(try opener.openOwnRelay(wireName: sealed.recordName, envelope: sealed.payload).id, "action-a7")
+    }
 }

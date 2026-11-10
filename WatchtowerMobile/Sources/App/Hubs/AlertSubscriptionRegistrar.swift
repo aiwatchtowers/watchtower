@@ -6,6 +6,10 @@ import WatchtowerSync
 /// when it is off. A private-scope hub gets the `WatchtowerSignal` query subscription (saving by ID replaces, so a
 /// repeat is harmless); a shared-scope hub has none: the phone posts its alerts itself after each fetch
 /// (`SharedAlertPoster`, ask #622).
+///
+/// `route` is the hub's CloudKit route whatever transport the session is on (Open decision 18): the subscription stays
+/// while the phone is on the relay, where a hub writes no signal, so it is silent there, and it is in place for the
+/// signals a hub re-sends at a switch back to CloudKit.
 @MainActor
 final class AlertSubscriptionRegistrar {
     private static let logger = Logger(subsystem: "WatchtowerMobile", category: "AlertSubscription")
@@ -16,7 +20,7 @@ final class AlertSubscriptionRegistrar {
     private enum Applied { case unknown, registered, removed }
 
     /// What this process last got CloudKit to do; `unknown` until the first success, so a failure is retried by the
-    /// next call (the next launch, or the next toggle).
+    /// next call (the next launch, the next foreground, or the next toggle).
     private var applied = Applied.unknown
 
     init(hubID: String, route: HubRoute, wake: any PushWake) {
@@ -24,6 +28,12 @@ final class AlertSubscriptionRegistrar {
         self.route = route
         self.wake = wake
     }
+
+    /// How long `idle()` waits at most.
+    var idleCap: Duration = .seconds(10)
+    /// `apply` and `idle()` calls so far: a test awaits them.
+    private(set) var requests = 0
+    private(set) var idleCalls = 0
 
     /// The newest requested state.
     private var desired = false
@@ -33,6 +43,7 @@ final class AlertSubscriptionRegistrar {
     /// Queues the change and returns when it (or a newer one that overtook it) has run. The newest request wins:
     /// each run applies `desired`, not the value it was asked with.
     func apply(enabled: Bool) async {
+        requests += 1
         desired = enabled
         let prior = lastRun
         let run = Task { [weak self] in
@@ -41,6 +52,41 @@ final class AlertSubscriptionRegistrar {
         }
         lastRun = run
         await run.value
+    }
+
+    /// Returns once no run is queued or at CloudKit, or at `idleCap`: a route move waits for it, so the old session's
+    /// call does not overlap the new session's, and a hung call never holds the hub on a stopped session. A call cut off
+    /// this way may overlap the new session's; the two agree unless the owner flipped the switch meanwhile, and the
+    /// next launch or toggle heals that.
+    func idle() async {
+        idleCalls += 1
+        let cap = idleCap
+        let finished = OSAllocatedUnfairLock(initialState: false)
+        var timer: Task<Void, Never>?
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let finish: @Sendable () -> Void = {
+                if finished.withLock({ done in defer { done = true }; return !done }) { continuation.resume() }
+            }
+            Task {
+                await self.runsEnded()
+                finish()
+            }
+            timer = Task {
+                try? await Task.sleep(for: cap)
+                if !Task.isCancelled {
+                    Self.logger.notice("alert subscription wait cut off at a route move")
+                }
+                finish()
+            }
+        }
+        timer?.cancel()
+    }
+
+    private func runsEnded() async {
+        while let run = lastRun {
+            await run.value
+            if lastRun == run { return }
+        }
     }
 
     private func applyDesired() async {
@@ -56,7 +102,8 @@ final class AlertSubscriptionRegistrar {
             applied = wanted
         } catch {
             let what = enabled ? "save" : "delete"
-            Self.logger.error("alert subscription \(what, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            let code = CloudKitPushWake.errorCode(error) ?? String(describing: type(of: error))
+            Self.logger.error("alert subscription \(what, privacy: .public) failed: \(code, privacy: .public)")
         }
     }
 }

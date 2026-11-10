@@ -98,7 +98,7 @@ final class AppRootWiringTests: XCTestCase {
     /// Sessions as the live factory lays them out (`paths`), each over a
     /// fresh in-memory transport, or a `CloudKitTransport` on the hub's
     /// persistent store (`persistentTransport`; no engine starts in the
-    /// unsigned test host). Every session gets its own hub's keys
+    /// test host, which has no iCloud entitlement). Every session gets its own hub's keys
     /// (`TestHub`); a hub id that is not a UUID gets none (key-less).
     private func makeFactory(persistentTransport: Bool = false) throws -> HubSessionFactory {
         let paths = try XCTUnwrap(paths)
@@ -309,13 +309,13 @@ final class AppRootWiringTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(TestHub.acme), [false, false, false])
     }
 
-    /// A `CloudKitTransport` in a process without the iCloud entitlement (this unsigned host) gets no alert
+    /// A `CloudKitTransport` in a process without the iCloud entitlement (this test host) gets no alert
     /// subscription: neither its start nor its removal may build a `CKContainer`, which would kill the process.
     func testAnUnentitledCloudKitHubNeverTouchesCloudKitForItsAlertSubscription() async throws {
         let root = try makeRoot(links: [linkRecord()], persistentTransport: true)
         let first = try session(root, TestHub.acme)
         try await poll { first.isBootstrapped }
-        XCTAssertFalse(CloudKitTransport.entitlementPresent(), "the test host is unsigned")
+        XCTAssertFalse(CloudKitTransport.entitlementPresent(), "the test host has no iCloud entitlement")
         XCTAssertTrue(first.startsEngine)
         XCTAssertNil(first.alertRegistrar, "no live saver without the entitlement")
 

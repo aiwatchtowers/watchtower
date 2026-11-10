@@ -254,7 +254,8 @@ final class LiveLearnEnvironment: LearnEnvironment {
         guard let visibility = appState?.featureVisibility, visibility.isLoaded else { return nil }
         return visibility.disabledFeatureIDs
     }
-    var iphonePaired: Bool { !(appState?.mobileLinkCenter?.devices.isEmpty ?? true) }
+    /// A phone is linked, from `hub status --json`'s `phones` (the Go hub).
+    var iphonePaired: Bool { (appState?.hubCenter?.status?.phones ?? 0) > 0 }
     var dictationUsed: Bool { defaults.bool(forKey: LearnInputs.dictationUsedKey) }
     var goals: Set<OnboardingGoal> { appState?.onboardingGoals.savedGoals ?? [] }
 

@@ -4,11 +4,15 @@
 // running hub inside the watchtower daemon, and serves the local control
 // socket the `watchtower hub …` CLI writes through.
 //
-// Phase 1 (spec §14 row 1): the daemon starts the hub only when FromEnv says
-// so — WATCHTOWER_HUB_DIR (absolute, never the Swift hub's MobileHub dir),
-// WATCHTOWER_RELAY_ORIGIN, and WATCHTOWER_HUB_TEST_WORKSPACE naming the
-// daemon's own active workspace, which must be a hubtest-* one. A headless
-// host runs relay-only.
+// The daemon starts a hub only through Resolve. Its test mode (phase 1,
+// spec §14 row 1) is FromEnv: WATCHTOWER_HUB_DIR (absolute, never the Swift
+// hub's MobileHub dir), WATCHTOWER_RELAY_ORIGIN, and
+// WATCHTOWER_HUB_TEST_WORKSPACE naming the daemon's own active workspace,
+// which must be a hubtest-* one. Its live mode runs in DefaultDir: on a
+// headless host relay-only (phase 2, spec §7.3); on a desktop host (phase 3,
+// desktop.go) on CloudKit and the relay behind the switcher, and never
+// beside the Swift hub's state (§12.1): Run holds it off, without the lock
+// or a sidecar, until the adoption finished.
 //
 // One hub per state dir: Run holds <dir>/hub.lock from before it opens the
 // sidecar until it returns, so a second Run (or a CLI writing directly)
@@ -35,6 +39,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -43,12 +48,19 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/hub/actions"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/identity"
+	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
+	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/policy"
+	"watchtower/internal/sessionhost"
+	"watchtower/internal/sessionstart"
 )
 
 // The phase-1 environment.
@@ -73,6 +85,8 @@ const (
 	controlWriteTimeout = 5 * time.Second
 	// startBackoffMax caps the wait between failed hub starts.
 	startBackoffMax = time.Minute
+	// wipeRetry spaces a desktop host's stopped policy wipes.
+	wipeRetry = time.Minute
 )
 
 // Why the hub does not start.
@@ -80,7 +94,7 @@ var (
 	ErrDirNotAbsolute    = errors.New("hub: WATCHTOWER_HUB_DIR is not an absolute path")
 	ErrSwiftHubDir       = errors.New("hub: the hub dir is the Swift hub's MobileHub dir")
 	ErrNotTestWorkspace  = errors.New("hub: not a hubtest-* test workspace named by WATCHTOWER_HUB_TEST_WORKSPACE")
-	ErrNoRelayOrigin     = errors.New("hub: WATCHTOWER_RELAY_ORIGIN is not set to an http(s) origin")
+	ErrNoRelayOrigin     = errors.New("hub: no relay origin is set (WATCHTOWER_RELAY_ORIGIN, hub.relay_origin or the build's default)")
 	ErrSidecarUnreadable = errors.New("hub: the hub state is unreadable")
 	// ErrStartFailed: a start step other than reading the sidecar failed
 	// (the identity file, a first-start write, the asset dir); retried.
@@ -104,7 +118,13 @@ func Refusal(err error) string {
 	case errors.Is(err, ErrSwiftHubDir):
 		return "swift_hub_dir"
 	case errors.Is(err, ErrNoRelayOrigin):
-		return "no_relay_origin"
+		return ReasonNoRelayOrigin
+	case errors.Is(err, ErrHubDisabled):
+		return ReasonDisabled
+	case errors.Is(err, ErrPolicyOff):
+		return ReasonPolicyOff
+	case errors.Is(err, sessionhost.ErrRunDirUnusable):
+		return ReasonRunDirUnusable
 	case errors.Is(err, context.Canceled):
 		return "stopped"
 	default:
@@ -123,9 +143,34 @@ type Options struct {
 	Clock                           func() time.Time
 	Register                        func(*actions.Dispatcher)
 	Sources                         func(*state.Store) []slices.Source
-	// Sessions is the session-host port of the handlers; nil answers no
-	// session live (the real port is Plan 1b Task 15).
+	// Sessions is the session-host port of the handlers; nil = the real
+	// port (sessionstart.Port) over SessionStart, whose DB and DBPath the
+	// runtime fills from DB.
 	Sessions handlers.SessionPort
+	// SessionStart is what the real port starts sessions with: the host
+	// socket (FromEnv: WATCHTOWER_SESSION_HOST_SOCKET only — the phase-1
+	// test workspace never reaches the host the Desktop uses; "" leaves
+	// the hub with no session host), the CLI path and cmd's seams
+	// (launch-args, the worktree integration, the default agent).
+	SessionStart sessionstart.Deps
+	// Mode and Host are what Resolve found (shown by `hub status`; zero in
+	// a hub started without Resolve).
+	Mode Mode
+	Host hostkind.Kind
+	// Transports is what a desktop host's hub runs and announces to phones
+	// (["cloudkit","relay"], or ["cloudkit"] with no relay origin); nil = the
+	// hosted relay alone (a headless host, the test mode).
+	Transports []string
+	// Desktop is a desktop host's live mode (resolveDesktop): the gate, the
+	// identity store and the CloudKit bridge. nil on every other hub.
+	Desktop *Desktop
+	// RelayOnlyRules turns on spec §7.3's rules of a headless hub (the live
+	// mode sets it; FromEnv's test mode leaves it off): with no paying phone
+	// in the account state the hub pauses — it publishes nothing, applies no
+	// action and writes no echo or control, keeps its state and local work,
+	// and goes on pairing — and resumes when a paying phone is back. The
+	// transport must have the relay's get_account_state.
+	RelayOnlyRules bool
 
 	// Test seams (zero = production).
 	newTransport func(ctx context.Context, id identity.Identity, st *state.Store, zones []string) (transport.Transport, error)
@@ -142,11 +187,40 @@ type Options struct {
 	writeTimeout time.Duration
 	pairQueue    int // events one pairing stream may have waiting (0 = pairQueue)
 	trace        func(step string)
+	onPass       func()              // called as a mailbox pass starts
 	reportFetch  sources.ReportFetch // nil = the in-process report
 	gitFetch     sources.GitFetch    // nil = the in-process git status
 	laneBackstop time.Duration       // 0 = laneBackstop
 	runnerGap    time.Duration       // 0 = the runners' standard 5 s
+	liveEvery    time.Duration       // 0 = livenessEvery
+	away         platform.Away       // nil = platform.NewAway(), the console's state
 	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
+	// payTimer is the PayingWatch's poll timer (nil = a real one).
+	payTimer func(time.Duration) (<-chan time.Time, func())
+	// soonTimer is the link check's short retry after a link change (nil =
+	// a real one).
+	soonTimer func(time.Duration) (<-chan time.Time, func())
+	// passTicker is the worker's mailbox pass ticker (nil = a real one).
+	passTicker func(time.Duration) (<-chan time.Time, func())
+	// staleAfter is the stale check's delay after a Desktop heartbeat (0 =
+	// staleCheckAfter); published sees every publishSoon (nil = none).
+	staleAfter time.Duration
+	published  func(kinds []slices.Kind)
+	// afterFreshRead runs between the heartbeat freshness read and its
+	// caching (nil = none).
+	afterFreshRead func()
+	// started sees each hub runtime once it runs (nil = none).
+	started func(h *hubRuntime)
+	// switcherRun runs a desktop host's switcher loop (nil = sw.Run).
+	switcherRun func(ctx context.Context, sw *switcher.Switcher) error
+}
+
+// staleCheck is the stale check's delay after a Desktop heartbeat.
+func (o Options) staleCheck() time.Duration {
+	if o.staleAfter > 0 {
+		return o.staleAfter
+	}
+	return staleCheckAfter
 }
 
 func (o Options) withDefaults() Options {
@@ -157,7 +231,7 @@ func (o Options) withDefaults() Options {
 		o.openStore = state.Open
 	}
 	if o.peerUID == nil {
-		o.peerUID = socketPeerUID
+		o.peerUID = platform.PeerUID
 	}
 	if o.mobileSync == nil {
 		o.mobileSync = policy.MobileSync
@@ -179,6 +253,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.linkEvery <= 0 {
 		o.linkEvery = linkEvery
+	}
+	if o.soonTimer == nil {
+		o.soonTimer = realTimer
+	}
+	if o.passTicker == nil {
+		o.passTicker = realTicker
 	}
 	if o.writeTimeout <= 0 {
 		o.writeTimeout = controlWriteTimeout
@@ -211,7 +291,8 @@ func FromEnv(cfg *config.Config, database *db.DB) (Options, bool, error) {
 		return Options{}, false, ErrNoRelayOrigin
 	}
 	dir = filepath.Clean(dir)
-	return Options{Dir: dir, RelayOrigin: origin, RecordingsDir: filepath.Join(dir, "recordings"), DB: database}, true, nil
+	return Options{Dir: dir, RelayOrigin: origin, RecordingsDir: filepath.Join(dir, "recordings"), DB: database,
+		SessionStart: sessionstart.Deps{Socket: os.Getenv(sessionhost.SocketEnv)}}, true, nil
 }
 
 // checkDir refuses a relative dir and the Swift hub's <AppSupportDir>/MobileHub
@@ -260,41 +341,74 @@ func Run(ctx context.Context, o Options) error {
 	if err := checkDir(o.Dir); err != nil {
 		return err
 	}
-	s := &supervisor{o: o, run: newRunID(), wake: make(chan struct{}, 1), pairs: map[*pairListener]bool{}}
+	s := &supervisor{o: o, run: newRunID(), wake: make(chan struct{}, 1), pairs: map[*pairListener]bool{}, watches: map[*pairListener]bool{}}
+	for {
+		if o.Desktop != nil && !s.awaitDesktop(ctx) {
+			// Never two hubs: no lock was taken and no sidecar opened.
+			s.setStatus(Status{State: StateOff})
+			return nil
+		}
+		regate, err := s.runLocked(ctx)
+		if !regate {
+			return err
+		}
+		// A desktop host's Swift state waits for its adoption again: the
+		// lock and the sidecar are let go (the adoption needs them).
+	}
+}
+
+// runLocked is Run with the hub lock: the store, the control socket and the
+// reconcile loop until ctx ends (nil), or until a desktop host's gate closes
+// again (regate true: the hub, the socket, the sidecar and the lock are let
+// go first).
+func (s *supervisor) runLocked(ctx context.Context) (regate bool, err error) {
+	o := s.o
 	lock, err := s.acquire(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	defer func() { _ = lock.Release() }()
 	s.locked = true
+	defer func() { s.locked = false }()
 	st, err := o.openStore(o.Dir)
+	// Opening the sidecar re-points this process's dblock.jsonl sink: the
+	// daemon's stays its database's.
+	keepLockMetrics(o.DB)
 	if err != nil {
 		s.setStatus(Status{State: StateOff, Reason: ReasonSidecarUnreadable})
 		log.Printf("hub: off (%s)", ReasonSidecarUnreadable)
-		return fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
 	defer func() { _ = st.Close() }()
 	s.st = st
 	if err := s.markImpl(); err != nil {
 		s.setStatus(Status{State: StateOff, Reason: ReasonSidecarUnreadable})
 		log.Printf("hub: off (%s)", ReasonSidecarUnreadable)
-		return fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
+		return false, fmt.Errorf("%w: %w", ErrSidecarUnreadable, err)
 	}
-	stopControl := s.serveControl(ctx)
+	cctx, cancelControl := context.WithCancel(ctx)
+	defer cancelControl()
+	stopControl := s.serveControl(cctx)
 	defer stopControl()
+	defer s.stopStaleCheck()
 	defer s.setStatus(Status{State: StateOff})
 
 	tick := time.NewTicker(o.checkEvery)
 	defer tick.Stop()
 	for {
+		if s.desktopRegate() {
+			s.stopHub(nil)
+			log.Printf("hub: off (%s): a Swift hub's state waits for its adoption", ReasonAwaitingAdoption)
+			return true, nil
+		}
 		s.reconcile(ctx)
 		select {
 		case <-ctx.Done():
 			s.stopHub(nil)
-			return nil
+			return false, nil
 		case <-s.wake:
 		case <-tick.C:
 		case <-o.CycleTick:
@@ -324,12 +438,41 @@ type supervisor struct {
 	nextStart time.Time
 	backoff   time.Duration
 	failure   string
+	// held is why a desktop host's hub waits to start ("" = it does not):
+	// a v1 session host answers. laterLogged: the later MobileHub/ line was
+	// logged.
+	held        string
+	laterLogged bool
+	// nextWipe: a desktop host's stopped policy wipe (which starts the
+	// bridge) is not tried again before it.
+	nextWipe time.Time
+	// The owner's off wipe (off_delete.go): its last try, whether it left
+	// published records, and when the stopped retry may run again.
+	offDeleteAt     time.Time
+	offDeleteFailed bool
+	nextOffWipe     time.Time
+	// offWipeBackoff: the wait before the next stopped retry, doubling while
+	// tries leave records (offWipeRetry .. offWipeMaxBackoff); readLogged:
+	// a failed read of what is left was logged in this streak.
+	offWipeBackoff    time.Duration
+	offWipeReadLogged bool
+	// offUnlinkLogged: a failed unlink of the phones at the owner's off was
+	// logged in this streak (unlinkForOff).
+	offUnlinkLogged bool
+	// v1 is the last v1 session-host probe's answer (v1Known: probed in
+	// this daemon cycle; the cycle's tick forgets it).
+	v1, v1Known bool
 
 	statusMu sync.Mutex
 	status   Status
 
-	pairMu sync.Mutex
-	pairs  map[*pairListener]bool
+	// pairMu guards the pairing streams and the desktop_watch streams.
+	pairMu  sync.Mutex
+	pairs   map[*pairListener]bool
+	watches map[*pairListener]bool
+
+	// view is the Desktop's last desktop_view (in memory only).
+	view desktopViewBox
 }
 
 func newRunID() string {
@@ -413,7 +556,10 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	if h := s.hub; h != nil && (!want || h.mode != mode || h.name != name) {
 		switch {
 		case mode == policy.MobileOff:
-			s.stopHub(func(slices.Kind) bool { return false })
+			// Also while paused: deleting published data is the safe direction.
+			s.stopHub(keepNothing)
+		case !on:
+			s.ownerOff()
 		case mode == policy.MobileWorkbenchOnly && h.mode != mode:
 			s.stopHub(workbenchOnly)
 		default:
@@ -423,14 +569,27 @@ func (s *supervisor) reconcile(ctx context.Context) {
 	if s.hub == nil && on && mode == policy.MobileOff {
 		s.wipeStopped(ctx)
 	}
+	if s.hub == nil && !on {
+		s.unlinkForOff() // ask #956: the owner's off unlinks the phones
+	}
+	if s.hub == nil && !on && mode != policy.MobileOff && !time.Now().Before(s.nextOffWipe) {
+		s.retryOffWipe(ctx)
+	}
+	if !want || s.hub != nil {
+		s.held = ""
+	}
+	s.laterMobileHub()
 	if want && s.hub == nil && !time.Now().Before(s.nextStart) {
-		s.startHub(ctx, mode, name)
+		if s.held = s.desktopHold(ctx); s.held == "" {
+			s.startHub(ctx, mode, name)
+		}
 	}
 	s.refreshStatus(mode, on)
 }
 
 // cycle is the daemon cycle's tick: the running hub does its housekeeping.
 func (s *supervisor) cycle() {
+	s.v1Known = false
 	if h := s.hub; h != nil {
 		h.kick(h.houseKick)
 	}
@@ -450,6 +609,9 @@ func (s *supervisor) startHub(ctx context.Context, mode, name string) {
 	s.hubMu.Lock()
 	s.hub = h
 	s.hubMu.Unlock()
+	if s.o.started != nil {
+		s.o.started(h)
+	}
 	log.Printf("hub: running (hub %s, %s)", h.kr.HubID(), h.tr.Kind())
 }
 
@@ -477,6 +639,15 @@ func (s *supervisor) wipeStopped(ctx context.Context) {
 	if len(published) == 0 {
 		return
 	}
+	if s.o.Desktop != nil {
+		// A bridge is started for it: not more often than wipeRetry.
+		if time.Now().Before(s.nextWipe) {
+			return
+		}
+		s.nextWipe = time.Now().Add(wipeRetry)
+		s.wipeStoppedDesktop(ctx, published)
+		return
+	}
 	id, err := loadIdentity(s.o.Dir)
 	if err != nil {
 		log.Printf("hub: policy off: wipe skipped (%s)", errClass(err))
@@ -493,7 +664,7 @@ func (s *supervisor) wipeStopped(ctx context.Context) {
 }
 
 // hostName is the name the hub shows phones: hub_meta.display_name, else
-// the host name.
+// the host name up to its first '.' (pi-acme.local shows as pi-acme).
 func (s *supervisor) hostName() string {
 	v, ok, err := s.st.Meta(state.MetaDisplayName)
 	if err != nil {
@@ -502,8 +673,17 @@ func (s *supervisor) hostName() string {
 	if ok && v != "" {
 		return v
 	}
-	n, err := os.Hostname()
+	return shortHostName(os.Hostname)
+}
+
+// shortHostName is hostname() up to its first '.', or "Watchtower hub" when
+// it fails or is empty.
+func shortHostName(hostname func() (string, error)) string {
+	n, err := hostname()
 	if err != nil {
+		return "Watchtower hub"
+	}
+	if n, _, _ = strings.Cut(n, "."); n == "" {
 		return "Watchtower hub"
 	}
 	return n
@@ -519,18 +699,31 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 		log.Printf("hub: reading the status facts failed (%s)", errClass(err))
 	}
 	st.Impl, st.HubID, st.Phones = impl, hubID, len(devices)
+	var err error
+	if st.Adoption, st.Identity, st.SwitchedAt, st.SwitchedBy, err = statusFacts(s.st, s.o.Desktop != nil); err != nil {
+		log.Printf("hub: reading the status facts failed (%s)", errClass(err))
+	}
 	switch h := s.hub; {
 	case mode == policy.MobileOff:
 		st.Reason = ReasonPolicyOff
 	case !on:
 		st.Reason = ReasonDisabled
+		st.OffDelete = s.offDeleteStatus()
+	case h == nil && s.held != "":
+		st.Reason = s.held
 	case h == nil && s.failure == ReasonSidecarUnreadable:
 		st.Reason = s.failure
 	case h == nil:
 		st.State, st.Reason = StateStarting, s.failure
 	default:
 		st.State, st.Reason = StateRunning, h.reason()
+		if h.isPaused() || h.iCloudPaused() {
+			st.State = StatePaused
+		}
 		st.RelayDeviceID, st.Transport = h.relayID, string(h.tr.Kind())
+		st.Bridge = h.bridgeState()
+		st.CloudKit = h.cloudKitStatus()
+		st.Relay, st.PayingPhones, st.MailboxFullPhones = h.relayFacts(devices, devErr == nil)
 	}
 	s.setStatus(st)
 }
@@ -539,10 +732,15 @@ func (s *supervisor) refreshStatus(mode string, on bool) {
 // the lock while another live run's status is there; the report hook then
 // sees every one (after the file, so a reader that saw it reads it there).
 func (s *supervisor) setStatus(st Status) {
-	st.Dir = s.o.Dir
+	st.Dir, st.Host, st.Mode = s.o.Dir, string(s.o.Host), string(s.o.Mode)
+	if d := s.o.Desktop; d != nil && st.Bridge == "" && !d.hasBridge() {
+		st.Bridge = BridgeUnavailable // also while the hub is off
+	}
+	st.CloudKit.Signed = s.o.Desktop != nil && signedBuild(st)
+	st = st.withLists()
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
-	if st == s.status {
+	if reflect.DeepEqual(st, s.status) {
 		return
 	}
 	s.status = st
@@ -554,6 +752,7 @@ func (s *supervisor) setStatus(st Status) {
 	if s.o.report != nil {
 		s.o.report(st)
 	}
+	s.notifyDesktop(ControlAnswer{Event: EventStatus, OK: true, State: st.State, Reason: st.Reason})
 }
 
 // otherLiveStatus: the status file holds a live status of another run.
@@ -572,8 +771,11 @@ func errClass(err error) string {
 		{transport.ErrUnavailable, "unavailable"}, {transport.ErrForbidden, "forbidden"},
 		{transport.ErrEntitlementInactive, "entitlement_inactive"}, {transport.ErrRateLimited, "rate_limited"},
 		{transport.ErrTokenExpired, "token_expired"}, {transport.ErrUnsupportedVersion, "unsupported_version"},
+		{transport.ErrNotVouched, "not_vouched"},
 		{identity.ErrSealedKeyUnreadable, "sealed_key_unreadable"}, {identity.ErrInsecureMode, "insecure_mode"},
 		{identity.ErrKeysUnavailable, "keys_unavailable"}, {state.ErrNoDevice, "no_device"},
+		{sessionhost.ErrRunDirUnusable, "run_dir_unusable"}, {cloudkit.ErrBridgeRefused, "bridge_refused"},
+		{transport.ErrUnsupportedZone, "unsupported_zone"}, {link.ErrOwnerUnreadable, "owner_unreadable"},
 	} {
 		if errors.Is(err, c.err) {
 			return c.class
@@ -589,6 +791,8 @@ func startFailure(err error) string {
 		return ReasonSidecarUnreadable
 	case errors.Is(err, ErrStartFailed):
 		return ReasonStartFailed
+	case errors.Is(err, transport.ErrNotVouched):
+		return ReasonNotVouched
 	case errors.Is(err, transport.ErrForbidden), errors.Is(err, transport.ErrEntitlementInactive):
 		return ReasonNotAdmitted
 	default:

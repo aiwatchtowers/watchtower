@@ -31,10 +31,16 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     private static let grantPrefix = "\(SliceKind.deviceGrant.rawValue)-"
     private static let helloPrefix = "\(RelayRecordKind.hello.rawValue)-"
     private static let rolledBackReason = "rolledBack"
+    /// The reason of a relay record sealed in an epoch whose keys this phone will never hold (`epochKeysGone`).
+    static let epochGoneReason = "epochGone"
+    /// How long the phone's relay feed replays a batch held by an epoch above its newest (`epochKeysPending`), from
+    /// the first sighting (`relay_wait_since` in replica meta), before it parks (relay client Phase 5, F15/F26).
+    public static let keyboxWaitCap: TimeInterval = 3600
 
     /// Internal only for `SecureTransport+Conditional.swift`; nothing else writes past the sealing layer.
     let inner: any CloudSyncTransport & Sendable
-    private let keys: any SecureKeyProvider
+    /// Internal only for `SecureTransport+Conditional.swift`.
+    let keys: any SecureKeyProvider
     private let rollback: any RollbackGuard
     private let names: (any WireNameIndex)?
     private let onRejected: (@Sendable (_ wireName: String, _ reason: String) -> Void)?
@@ -42,6 +48,9 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     private var knownNames: [String: String] = [:]
     /// "<wire name>|<reason>" already reported: another phone's records come back on every full read.
     private var reported: Set<String> = []
+    /// The check behind `waitsForKeybox`, read without a hop to this actor.
+    private static let alwaysWaits: @Sendable () -> Bool = { true }
+    private let waitsForKeyboxCheck = OSAllocatedUnfairLock<@Sendable () -> Bool>(initialState: alwaysWaits)
     private let logger = Logger(subsystem: "WatchtowerKit", category: "SecureTransport")
 
     public init(
@@ -56,6 +65,19 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         self.rollback = rollback
         self.names = names
         self.onRejected = onRejected
+    }
+
+    /// Whether this phone has a source for the keybox a pending epoch waits for (relay client Phase 5). true by
+    /// default; the session sets it (Task 13): false while the relay refuses this phone or the Mac moved, when the
+    /// feed stops at a pending record at once, silently, instead of waiting. Nonisolated: the feed reads it with no
+    /// suspension, so nothing can interleave between this read and the feed's park.
+    nonisolated public var waitsForKeybox: @Sendable () -> Bool {
+        waitsForKeyboxCheck.withLock { $0 }
+    }
+
+    /// Sets the keybox-source check (`waitsForKeybox`).
+    nonisolated public func setWaitsForKeybox(_ check: @escaping @Sendable () -> Bool) {
+        waitsForKeyboxCheck.withLock { $0 = check }
     }
 
     // MARK: - Naming
@@ -132,8 +154,10 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
 
     /// Opens a keybox envelope taken from a control (`transport_switched`'s `keybox`, relay client Phase 3) as the
     /// replica opens the data zone's: under its wire name `keybox-<DEVICE_ID>` on the data lane, signed by `hub_sig`
-    /// and sealed to this phone's `dev_kx`. Phone only, for this phone's own device id. The envelope and the keys it
-    /// carries are secrets: never logged.
+    /// and sealed to one of this phone's keys (`keyboxRecipients`: the offered ephemeral key, the current one, then
+    /// `dev_kx`). Phone only, for this phone's own device id. A locked keychain throws `keysUnavailable`; no
+    /// candidate opening it is the envelope's `authenticationFailed`. The envelope and the keys it carries are
+    /// secrets: never logged.
     public func openKeybox(sealed: Data, deviceID: UUID) throws -> Keybox {
         guard case let .phone(hubID, own) = keys.role, own == deviceID else { throw SecureTransportError.wrongRole }
         let header = try Envelope.parse(sealed).header
@@ -141,10 +165,17 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         guard header.senderID == hubID else { throw EnvelopeError.wrongSender }
         guard header.envelopeClass == .keybox else { throw EnvelopeError.wrongClass(header.envelopeClass) }
         let context = EnvelopeContext(zone: .data, wireName: Keybox.recordName(deviceID: deviceID.uuidString))
+        let recipients: [Curve25519.KeyAgreement.PrivateKey]
+        let verifier: Curve25519.Signing.PublicKey
+        do {
+            recipients = try keys.keyboxRecipients()
+            verifier = try keys.hubSigningPublicKey()
+        } catch KeyStoreError.locked {
+            throw SecureTransportError.keysUnavailable
+        }
         let frame = try SealedBox.open(
-            sealed, envelopeClass: .keybox, recipient: try keys.deviceAgreement(),
-            info: SealedBox.keyboxInfo(hubID: hubID, deviceID: deviceID), context: context,
-            verifier: try keys.hubSigningPublicKey()
+            sealed, envelopeClass: .keybox, recipients: recipients,
+            info: SealedBox.keyboxInfo(hubID: hubID, deviceID: deviceID), context: context, verifier: verifier
         ).frame
         do { return try RelayCoder.makeDecoder().decode(Keybox.self, from: frame.payload) } catch {
             throw EnvelopeError.frameMalformed
@@ -210,10 +241,11 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             hubID: hubID, senderID: deviceID, epoch: epoch, seq: try keys.nextSeq(), context: context, signer: nil)
     }
 
-    /// Sim rule 14: this phone's own stored p2h envelope, opened with its relay key at the envelope's epoch (derived
-    /// from the static link keys, so no kept epoch key is needed) and sealed again under the current epoch with a
-    /// fresh envelope seq, under the same wire name; the plain frame (an action's `action_seq` with it) is unchanged.
-    /// nil when it does not open as this phone's own relay record. A locked keychain throws `keysUnavailable`.
+    /// Sim rule 14: this phone's own stored p2h envelope, opened with its relay key at the envelope's epoch (the
+    /// link's rule: that epoch's stored pair, else the static key) and sealed again under the current epoch's key
+    /// with a fresh envelope seq, under the same wire name; the plain frame (an action's `action_seq` with it) is
+    /// unchanged. nil when it does not open as this phone's own relay record, or its epoch's keys are gone for good
+    /// (`epochKeysGone`, F7: the row is Not delivered). A locked keychain throws `keysUnavailable`.
     func reseal(ownEnvelope envelope: Data, wireName: String, modifiedAt: Date) throws -> CloudRecord? {
         guard case let .phone(hubID, deviceID) = keys.role else { throw SecureTransportError.wrongRole }
         do {
@@ -236,6 +268,8 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
                 notifyLevel: frame.notifyLevel, asset: frame.asset))
         } catch KeyStoreError.locked {
             throw SecureTransportError.keysUnavailable
+        } catch SecureTransportError.epochKeysGone {
+            return nil
         }
     }
 
@@ -258,18 +292,37 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         try await inner.delete(recordNames: wire, in: zone)
     }
 
+    /// A relay record in an epoch above the phone's newest (`epochKeysPending`) throws `keysUnavailable` here, as a
+    /// lock does: the consumer keeps its token and replays. The phone's feed reads through `relayChanges`, which
+    /// tells the two apart.
     public func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
-        let batch = try await inner.changes(in: zone, since: token)
-        guard zone == .relay else { return filterDataSignals(batch) }
+        guard zone == .relay else { return filterDataSignals(try await inner.changes(in: zone, since: token)) }
+        do {
+            return try await relayChanges(since: token).batch
+        } catch SecureTransportError.epochKeysPending {
+            throw SecureTransportError.keysUnavailable
+        }
+    }
+
+    /// The relay read with what the feed needs beyond the batch: `epochGone` counts the hub's records dropped because
+    /// their epoch's keys are gone for good (the feed queues the unechoed actions again once for them). Throws
+    /// `epochKeysPending` for a record whose epoch's keybox has not come yet, `keysUnavailable` for a lock.
+    func relayChanges(since token: CloudChangeToken?) async throws -> (batch: CloudChangeBatch, epochGone: Int) {
+        let batch = try await inner.changes(in: .relay, since: token)
         var changed: [CloudRecord] = []
+        var gone = 0
         for record in batch.changed {
             switch try open(record) {
             case .opened(let plain): changed.append(plain)
-            case .unopenable(let reason): report(record.recordName, reason: reason)
+            case .unopenable(let reason):
+                // Only the hub's records ask for a resend: the phone's own reflecting back carry nothing it lacks.
+                if reason == Self.epochGoneReason,
+                   (try? Envelope.parse(record.payload).header.envelopeClass) == .relayToPhone { gone += 1 }
+                report(record.recordName, reason: reason)
             case .rolledBack: break
             }
         }
-        return CloudChangeBatch(changed: changed, deletedRecordNames: batch.deletedRecordNames, newToken: batch.newToken)
+        return (CloudChangeBatch(changed: changed, deletedRecordNames: batch.deletedRecordNames, newToken: batch.newToken), gone)
     }
 
     /// DataZone envelopes pass through untouched (the replica verifies and opens them). A plaintext `sig` record
@@ -306,12 +359,21 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
     /// The full-scan view of RelayZone: the opened records (`changes` semantics, own h2p echoes included) plus every
     /// record nobody here can open or the rollback guard refuses, by wire name, plaintext `modifiedAt` and reason.
     /// Reports nothing through `onRejected`.
-    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord]) {
+    /// A record whose epoch's keybox has not come yet (the phone) is in neither list, only counted in `pending`: it is
+    /// neither handled nor deleted, and the records around it are read (the plan's pending row: the side reader holds
+    /// nothing back and drops nothing). A locked keychain still throws `keysUnavailable` for the whole scan.
+    public func relayHygieneScan() async throws -> (opened: [CloudRecord], unopenable: [UnopenableRecord], pending: Int) {
         let batch = try await inner.changes(in: .relay, since: nil)
         var opened: [CloudRecord] = []
         var unopenable: [UnopenableRecord] = []
+        var pending = 0
         for record in batch.changed {
-            switch try open(record) {
+            let outcome: OpenOutcome
+            do { outcome = try open(record) } catch SecureTransportError.epochKeysPending {
+                pending += 1
+                continue
+            }
+            switch outcome {
             case .opened(let plain): opened.append(plain)
             case .unopenable(let reason):
                 unopenable.append(UnopenableRecord(
@@ -324,7 +386,7 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
                     origin: record.origin))
             }
         }
-        return (opened, unopenable)
+        return (opened, unopenable, pending)
     }
 
     /// Deletes by wire name (records that never opened have no plain name).
@@ -340,8 +402,9 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         case rolledBack
     }
 
-    /// Throws only `keysUnavailable` (a locked keychain) and the provider's or the guard's other errors unchanged;
-    /// everything about the record itself is an `.unopenable` outcome.
+    /// Throws only `keysUnavailable` (a locked keychain), `epochKeysPending` (the phone: an epoch above its newest,
+    /// whose keybox may yet come) and the provider's or the guard's other errors unchanged; everything about the
+    /// record itself is an `.unopenable` outcome, `epochGone` included (the phone: an epoch it will never hold).
     func open(_ record: CloudRecord) throws -> OpenOutcome {
         // Signals live in DataZone only (D14), which passes through untouched; a "sig" record in RelayZone is
         // unauthenticated plaintext anyone could write, so it is never handed over.
@@ -365,6 +428,10 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         } catch let error as EnvelopeError {
             // Wrong key, moved record, flipped bit, malformed frame: the record's fault, never the keychain's.
             return .unopenable(Self.code(error))
+        } catch SecureTransportError.epochKeysGone {
+            // The phone: an epoch it will never hold keys for (retired, or never sent to it). A hub never throws it.
+            guard case .phone = keys.role else { throw SecureTransportError.epochKeysGone }
+            return .unopenable(Self.epochGoneReason)
         }
         switch decrypted {
         case .passThrough(let sealed): return .opened(sealed)
@@ -398,7 +465,14 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
             opened = try openOwnEcho(record, header: header, context: context)
         case let (.phone(hubID, deviceID), .relayToPhone):
             guard header.senderID == hubID else { return .refused("wrongSender") }
-            opened = try openSymmetric(record, header: header, context: context, direction: .hubToPhone, device: deviceID)
+            do {
+                opened = try openSymmetric(record, header: header, context: context, direction: .hubToPhone, device: deviceID)
+            } catch let error where Self.triesStatic(error) {
+                guard let notice = try openStaticHubOnRelay(record, header: header, context: context, device: deviceID) else {
+                    throw error
+                }
+                opened = notice
+            }
         case let (.phone(_, deviceID), .relayToHub):
             guard header.senderID == deviceID else { return .refused("notForThisDevice") }
             opened = try openSymmetric(record, header: header, context: context, direction: .phoneToHub, device: deviceID)
@@ -450,6 +524,33 @@ public actor SecureTransport: CloudSyncTransport, CompactingTransport, SweepingT
         let key = try keys.relayKey(direction, deviceID: device, epoch: header.epoch)
         return try EnvelopeSealer.openSymmetric(
             record.payload, accepting: [header.envelopeClass], context: context, verifier: nil) { _ in key }
+    }
+
+    /// The one exception to the phone's key rule (relay client Phase 5, "The scheme"): when no key of the rule opens
+    /// an h2p record (a wrong key, an epoch whose keys are gone or still pending), the static key is tried, and what
+    /// it opens is taken only if it is a `hub_on_relay` control. The hub clears a leaving phone's relay keys before it
+    /// writes that notice, so it is sealed static; anything else opened that way stays unopenable, so an old `dev_kx`
+    /// alone can at worst push the phone off the relay, visibly, and never forge an echo.
+    private static func triesStatic(_ error: any Error) -> Bool {
+        switch error {
+        case EnvelopeError.authenticationFailed, SecureTransportError.epochKeysGone, SecureTransportError.epochKeysPending:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// nil when the static key does not open it or it is not a `hub_on_relay` control.
+    private func openStaticHubOnRelay(
+        _ record: CloudRecord, header: EnvelopeHeader, context: EnvelopeContext, device: UUID
+    ) throws -> (header: EnvelopeHeader, frame: InnerFrame)? {
+        let key = try keys.staticRelayKey(.hubToPhone, deviceID: device, epoch: header.epoch)
+        guard let opened = try? EnvelopeSealer.openSymmetric(
+            record.payload, accepting: [header.envelopeClass], context: context, verifier: nil, key: { _ in key }),
+              opened.frame.kind == RelayRecordKind.control.rawValue,
+              let control = try? RelayCoder.makeDecoder().decode(ControlPayload.self, from: opened.frame.payload),
+              control.kind == .hubOnRelay else { return nil }
+        return opened
     }
 
     /// F2: an h2p header names the hub, not the recipient, so the hub tries each linked device's h2p key.

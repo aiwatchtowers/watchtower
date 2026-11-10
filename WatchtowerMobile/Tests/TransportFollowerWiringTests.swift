@@ -96,8 +96,8 @@ final class TransportFollowerWiringTests: XCTestCase {
         let first = try await bed.orderedSession()
 
         try await bed.writeMarker(target: .relay, epoch: 1)
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.fetch(first)
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
 
         XCTAssertEqual(try bed.row()?.link.transport, .cloudKit)
         XCTAssertTrue(bed.root.env.session(hubID) === first)
@@ -118,7 +118,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         let control = try await bed.writeHubControl(.hubOnRelay, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
 
         let listed = try Bed.rows(first, .undelivered)
         XCTAssertEqual(listed.count, 2)
@@ -136,8 +136,8 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.fetch(first)
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
 
         XCTAssertEqual(try Bed.rows(first, .undelivered).count, 2)
         XCTAssertTrue(try Bed.handled(first, bed.switchID))
@@ -153,7 +153,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.fail("accountState", with: HostedRelayPairing.Refusal.unreachable)
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
 
         XCTAssertFalse(try Bed.handled(first, bed.switchID))
         let cloudNames = try await bed.cloudMailboxNames()
@@ -174,13 +174,13 @@ final class TransportFollowerWiringTests: XCTestCase {
         let bed = try await Bed.make(self, on: .cloudKit)
         let first = try await bed.orderedSession()
         try await bed.publishBriefings(["kept", "gone"], on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         XCTAssertEqual(try bed.briefings(first), ["briefing-gone", "briefing-kept"])
         try await bed.publishBriefings(["kept"], on: .relay)
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
         let second = try await bed.fetchAndFollow(first)
-        await bed.fetch(second)
+        try await bed.fetch(second)
 
         XCTAssertEqual(try bed.briefings(second), ["briefing-kept"])
         XCTAssertNotNil(try second.keybox(deviceID: TestE2E.deviceID), "the keybox stays")
@@ -214,7 +214,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         let first = try bed.session()
         await first.waitForBoot()
         try await bed.publishGrant(ordered: false)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         let ordered = try await first.outbox.orderedActions()
         XCTAssertFalse(ordered)
 
@@ -256,7 +256,7 @@ final class TransportFollowerWiringTests: XCTestCase {
         first.transportSignals.onControl = { control in await follower.handle(control: control, on: .cloudKit) }
 
         try await bed.writeSwitch(target: .relay, epoch: 2, on: .cloudKit)
-        await bed.fetch(first)
+        try await bed.fetch(first)
         XCTAssertEqual(try bed.row()?.link.transport, .relay, "the move was written")
         XCTAssertEqual(try bed.keys.hubLink(hubID)?.epochs.map(\.epoch), [1], "the merge failed")
         XCTAssertFalse(try Bed.handled(first, bed.switchID))
@@ -294,6 +294,30 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertGreaterThan(after, before, "the outbox writes on its route again")
     }
 
+    /// PR C final review M3: the move is written on the row as it stands after the follower's awaits, so a newer write
+    /// meanwhile (here an answered account read clearing the refusal mark) is kept, not undone by the row read before.
+    func testTheMoveKeepsARowWriteMadeDuringItsAwaits() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let first = try await bed.orderedSession()
+        var marked = try XCTUnwrap(bed.row()?.link)
+        marked.relayRefused = RelayRefusedRecord(since: Date(), cause: .slot)
+        XCTAssertTrue(try bed.registry.updateLink(marked))
+        let host = FlakyMergeHost(root: bed.root, failsFirstMerge: false)
+        host.duringKeySourceGone = {
+            guard var renewed = try? bed.row()?.link else { return }
+            renewed.relayRefused = nil
+            XCTAssertTrue(bed.root.persistRoute(renewed))
+        }
+        let follower = TransportFollower(hubID: hubID, outbox: first.outbox, host: host)
+
+        let decided = await follower.handle(.slotLost)
+
+        XCTAssertTrue(decided)
+        let link = try XCTUnwrap(bed.row()?.link)
+        XCTAssertEqual(link.transport, .cloudKit, "the lost slot moved the link to its iCloud route")
+        XCTAssertNil(link.relayRefused, "the newer write is kept")
+    }
+
     /// Final review M5: decisions of one hub run one at a time, so the same control read twice (two transports, or the
     /// feed and the side reader) is decided once from the moved row, never twice from a stale one.
     func testTwoDecisionsOfOneHubNeverInterleave() async throws {
@@ -322,8 +346,8 @@ final class TransportFollowerWiringTests: XCTestCase {
         bed.relayOps.paying = false
 
         let control = try await bed.writeHubControl(.hubOnRelay, on: .relay)
-        await bed.fetch(first)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.fetch(first)
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
 
         XCTAssertEqual(try bed.row()?.link.transport, .relay)
         XCTAssertNil(try bed.row()?.link.leftTransport)
@@ -350,17 +374,17 @@ final class TransportFollowerWiringTests: XCTestCase {
         XCTAssertFalse(try Bed.handled(first, control.id))
         let cloudNames = try await bed.cloudMailboxNames()
         XCTAssertTrue(cloudNames.contains(try bed.switchWire))
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
         let second = try XCTUnwrap(bed.root.env.session(hubID))
         await second.waitForBoot()
-        await second.outboxWork?.value
+        try await second.outboxWork?.value(within: 60, "second.outboxWork")
         await second.outbox.drain()
         let relayWrites = try await bed.relayMailbox().count
 
         // Read again: the same epoch on the same route answers the request and changes nothing.
         let again = TransportFollower(hubID: hubID, outbox: second.outbox, host: bed.root)
         let decidedAgain = await again.handle(control: control, on: .cloudKit)
-        await bed.root.routeMoves[hubID]?.value
+        try await bed.root.routeMoves[hubID]?.value(within: 60, "bed.root.routeMoves[hubID]")
         XCTAssertTrue(decidedAgain)
         XCTAssertEqual(try bed.row()?.link, moved)
         XCTAssertTrue(bed.root.env.session(hubID) === second, "no second move")
@@ -389,10 +413,29 @@ final class Bed {
     let cloud: RecordingCloud
     let keys: InMemoryPhoneKeyStore
     let relayOps: FakeRelayOps
-    let root: AppRoot
+    private(set) var root: AppRoot
     let registry: HubRegistry
     let clock: SideClock
     let sides: SideBuilds
+    /// The Mac's `relay_auth` public key (raw).
+    let macAuthPub: Data
+    /// A file in the relay store's stash that no row refers to, as a running engine's just-stashed one looks to a sweep.
+    func relayStashFile(hubID: String, mac: String) throws -> URL {
+        let store = try TransportStore(path: launch.paths.transportStorePath(hubID, route: .hostedRelay(macDeviceID: mac)))
+        defer { try? store.close() }
+        let marker = try XCTUnwrap(store.stashDirectory).appendingPathComponent("just-stashed")
+        try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: marker)
+        return marker
+    }
+
+    /// What a relaunch builds the root from again (`relaunch`).
+    private let launch: Launch
+
+    /// The hub's replica file.
+    var replicaPath: String { launch.paths.replicaPath(hubID) }
+    /// The root's relay session (an empty origin's is off and never built).
+    var rootRelay: SharedRelaySession { launch.relay }
     /// The last `transport_switched` written.
     private(set) var switchID = ""
     private(set) var switchName = ""
@@ -408,7 +451,9 @@ final class Bed {
         root: AppRoot,
         registry: HubRegistry,
         clock: SideClock,
-        sides: SideBuilds
+        sides: SideBuilds,
+        macAuthPub: Data,
+        launch: Launch
     ) {
         self.fake = fake
         self.sockets = sockets
@@ -421,20 +466,59 @@ final class Bed {
         self.relayOps = relayOps
         self.root = root
         self.registry = registry
+        self.macAuthPub = macAuthPub
+        self.launch = launch
     }
+
+    /// The root's parts, kept for a relaunch over the same registry, files, keys, settings and relay.
+    private struct Launch {
+        let paths: HubPaths
+        let factory: HubSessionFactory
+        let identity: DeviceIdentity
+        let defaults: UserDefaults
+        let relay: SharedRelaySession
+        let keys: InMemoryPhoneKeyStore
+        let looksAtWake: Bool
+        let stopLookCap: Duration
+        /// The farewell's delivery reads the hub's own send queue, as the live app's does, so a save the relay refuses
+        /// keeps it (relay client Phase 5, Task 17); otherwise every farewell reads as sent.
+        var farewellLive = false
+        let farewellResends = FarewellResends()
+    }
+
+    /// Kept farewells sent again at launch (none goes out on the bed).
+    final class FarewellResends: @unchecked Sendable {
+        private let lock = NSLock()
+        private var ids: [String] = []
+        var hubIDs: [String] { lock.withLock { ids } }
+        func append(_ hubID: String) { lock.withLock { ids.append(hubID) } }
+    }
+
+    /// The bed's kept-farewell resends.
+    var farewellResends: [String] { launch.farewellResends.hubIDs }
+    /// The root's settings (the account center's claim lives here).
+    var defaults: UserDefaults { launch.defaults }
 
     static func make(
         _ test: XCTestCase,
         on route: TransportKind,
         hubTransports: [String] = ["cloudkit", "relay"],
         looksAtWake: Bool = false,
-        stopLookCap: Duration = .seconds(10)
+        stopLookCap: Duration = .seconds(10),
+        macRelayID: Bool = true,
+        relayOff: Bool = false,
+        alertWake: (any PushWake)? = nil,
+        startsActive: Bool = true,
+        relayHTTP: ((any RelayHTTP) -> any RelayHTTP)? = nil,
+        farewellLive: Bool = false,
+        secondRelayHub: String? = nil,
+        refusing: @escaping @Sendable (HubRoute) -> Bool = { _ in false }
     ) async throws -> Bed {
         let relayClock = ManualRelayClock(now: Date())
         let fake = FakeHostedRelay(attest: .off, clock: relayClock)
         let sockets = SocketCounter(inner: fake.sockets)
         let parts = RelayParts(
-            attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: fake.http,
+            attest: FakeAppAttest(), keychain: InMemoryKeychainBackend(), keychainGroup: nil, http: relayHTTP?(fake.http) ?? fake.http,
             sockets: sockets, clock: relayClock
         )
         let shared = SharedRelaySession(config: RelayConfig.parse(fake.origin)) { parts }
@@ -468,43 +552,99 @@ final class Bed {
             hubID: TestE2E.hubID.uuidString, macName: "Work Mac", scope: .private, ownerName: "",
             userRecordName: "_owner-acme", nonce: "nonce", dataShareURL: nil, relayShareURL: nil,
             deviceID: TestE2E.deviceID.uuidString, linkedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            transport: .cloudKit, relayMacDeviceID: mac.deviceID, hubTransports: hubTransports
+            transport: .cloudKit, relayMacDeviceID: macRelayID ? mac.deviceID : nil, hubTransports: macRelayID ? hubTransports : nil
         )
         if route == .relay { link.setRelay(mac: mac.deviceID) }
         try registry.upsert(link, now: Date())
+        if let secondRelayHub {
+            // A second relay-only Mac row on the same relay Mac (Task 17's terms ending together); its keys are not in
+            // the store, so its feed never opens a record, which the term does not need.
+            var home = LinkRecord(
+                hubID: secondRelayHub, macName: "Home Mac", scope: .private, ownerName: "", userRecordName: "_owner-acme",
+                nonce: "nonce-home", dataShareURL: nil, relayShareURL: nil, deviceID: TestE2E.deviceID.uuidString,
+                linkedAt: Date(timeIntervalSince1970: 1_700_000_000), hubTransports: ["relay"])
+            home.setRelay(mac: mac.deviceID)
+            try registry.upsert(home, now: Date())
+        }
         let identity = DeviceIdentity(
             deviceID: TestE2E.deviceID.uuidString, name: "Colleague A's iPhone", model: "iPhone", appVersion: "1.0")
         let cloud = RecordingCloud()
         let sides = SideBuilds()
-        var factory = Self.factory(paths: paths, cloud: cloud, shared: shared, keys: keys, defaults: defaults)
-        factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: shared, sides: sides)
+        // An empty origin: the root's relay is off, its parts never built (dark ship); the stand still has its relay.
+        let rootRelay = relayOff ? SharedRelaySession(config: RelayConfig.parse("")) { parts } : shared
+        var factory = alertWake.map { Self.liveFactory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, wake: $0, refusing: refusing) }
+            ?? Self.factory(paths: paths, cloud: cloud, shared: rootRelay, keys: keys, defaults: defaults, startsActive: startsActive)
+        factory.makeSide = Self.sideFactory(paths: paths, cloud: cloud, shared: rootRelay, sides: sides)
         let clock = SideClock()
-        let relayOps = FakeRelayOps(clock: FakeLinkClock(now: Date()))
+        let relayOps = FakeRelayOps(
+            clock: FakeLinkClock(now: Date()), availability: relayOff ? .off(.notConfigured) : .available(FakeRelayOps.origin))
+        var launch = Launch(
+            paths: paths, factory: factory, identity: identity, defaults: defaults, relay: rootRelay, keys: keys,
+            looksAtWake: looksAtWake, stopLookCap: stopLookCap)
+        launch.farewellLive = farewellLive
+        let root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
+        Self.tearDown(root, in: test)
+        return Bed(
+            fake: fake, sockets: sockets, phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root,
+            registry: registry, clock: clock, sides: sides, macAuthPub: macKey.publicKey.rawRepresentation, launch: launch)
+    }
+
+    /// The live root over `launch`'s parts, its links read.
+    private static func root(_ launch: Launch, registry: HubRegistry, relayOps: FakeRelayOps, clock: SideClock) throws -> AppRoot {
         let env = try AppEnvironment.live(
-            registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults, relay: shared
+            registry: registry, paths: launch.paths, factory: launch.factory, identity: launch.identity,
+            defaults: launch.defaults, relay: launch.relay
         ) { _ in }
         let root = AppRoot(
-            env: env, registry: registry, paths: paths, factory: factory, identity: identity, defaults: defaults,
+            env: env, registry: registry, paths: launch.paths, factory: launch.factory, identity: launch.identity,
+            defaults: launch.defaults,
             linking: LinkingViewModel(
-                access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: defaults), identity: identity,
-                keys: keys, clock: FakeLinkClock(now: Date()), relay: relayOps
+                access: FakeLinkAccess(log: LinkEventLog()), store: LinkStore(defaults: launch.defaults),
+                identity: launch.identity, keys: launch.keys, clock: FakeLinkClock(now: Date()), relay: relayOps
             ),
             startWork: nil,
-            farewellDelivery: AppRoot.FarewellDelivery { _, _ in false },
+            farewellDelivery: farewellDelivery(launch),
             sideMailbox: SideMailboxTiming(
-                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) }, looksAtWake: looksAtWake,
-                stopLookCap: stopLookCap)
-        )
+                now: { clock.now }, sleep: { _ in try await Task.sleep(for: .seconds(86_400)) },
+                looksAtWake: launch.looksAtWake, stopLookCap: launch.stopLookCap)
+        ) { clock.now }
         root.linking.refreshLinks()
+        return root
+    }
+
+    private static func farewellDelivery(_ launch: Launch) -> AppRoot.FarewellDelivery {
+        guard launch.farewellLive else { return AppRoot.FarewellDelivery { _, _ in false } }
+        let resends = launch.farewellResends
+        var delivery = AppRoot.FarewellDelivery { session, record in
+            (try? session.transportStore?.isPending(recordName: record.recordName, zone: record.zone)) ?? false
+        }
+        delivery.cap = .milliseconds(500)
+        delivery.pause = .milliseconds(20)
+        delivery.resend = { farewell in
+            resends.append(farewell.hubID)
+            return false
+        }
+        return delivery
+    }
+
+    private static func tearDown(_ root: AppRoot, in test: XCTestCase) {
         test.addTeardownBlock { @MainActor in
             for session in root.env.sessions.values {
                 await session.shutDown()
                 session.closeDatabases()
             }
         }
-        return Bed(
-            fake: fake, sockets: sockets, phone: phone, mac: mac, cloud: cloud, keys: keys, relayOps: relayOps, root: root,
-            registry: registry, clock: clock, sides: sides)
+    }
+
+    /// A relaunch: every session shut down and its files closed, then a new root over the same registry, files,
+    /// keys, settings, relay and clock (the relay ops' account is the server's, kept).
+    func relaunch(_ test: XCTestCase) async throws {
+        for session in root.env.sessions.values {
+            await session.shutDown()
+            session.closeDatabases()
+        }
+        root = try Self.root(launch, registry: registry, relayOps: relayOps, clock: clock)
+        Self.tearDown(root, in: test)
     }
 
     /// The side readers' transports on the other route's own store: CloudKit a `CloudSide` over `cloud` (its store's
@@ -534,9 +674,10 @@ final class Bed {
         cloud: RecordingCloud,
         shared: SharedRelaySession,
         keys: InMemoryPhoneKeyStore,
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        startsActive: Bool
     ) -> HubSessionFactory {
-        HubSessionFactory { _, hubID, route, device in
+        HubSessionFactory { row, hubID, route, device in
             try paths.prepare(hubID)
             let transport: any CloudSyncTransport & Sendable
             var store: TransportStore?
@@ -553,10 +694,45 @@ final class Bed {
             return try HubSession(
                 transport: transport, replicaPath: paths.replicaPath(hubID), backend: .live, transportStore: store,
                 hubID: hubID, linkedDevice: device, keys: PhoneKeys(store: keys, hubID: hubID), defaults: defaults,
-                recordingsDirectory: paths.recordingsDirectory(hubID), route: route, uploadRetriesAllowed: false,
-                sleep: { try await sleeper.sleep($0) } // swiftlint:disable:this trailing_closure
+                recordingsDirectory: paths.recordingsDirectory(hubID), route: route, link: row?.link, startsActive: startsActive,
+                uploadRetriesAllowed: false,
+                // A fake microphone: the term waits for a running recording (relay client Phase 5, Task 17).
+                makeRecorder: { uploader in
+                    PhoneRecorderController(
+                        uploader: uploader, engine: FakeAudioEngine(), notificationCenter: NotificationCenter(), tickInterval: nil)
+                },
+                sleep: { try await sleeper.sleep($0) }
             )
         }
+    }
+
+    /// The app's own factory (so the app's rule on the alert subscription's route) over the bed's transports and `wake`.
+    /// A route `refusing` names cannot be built, as a route the factory does not serve.
+    private static func liveFactory(
+        paths: HubPaths,
+        cloud: RecordingCloud,
+        shared: SharedRelaySession,
+        keys: InMemoryPhoneKeyStore,
+        wake: any PushWake,
+        refusing: @escaping @Sendable (HubRoute) -> Bool
+    ) -> HubSessionFactory {
+        let marker = FileManager.default.temporaryDirectory.appendingPathComponent("no-leftover-\(UUID().uuidString)")
+        let transports = TransportFactory(
+            isAvailable: { true },
+            serves: { !refusing($0) },
+            make: { route, store, _, energy in
+                switch route {
+                case .cloudKit:
+                    return CloudSide(inner: cloud, marker: marker)
+                case .hostedRelay(let macDeviceID):
+                    return try HostedRelayTransport(
+                        session: try XCTUnwrap(try shared.session()), store: store, macDeviceID: macDeviceID, mode: .hub, energy: energy)
+                }
+            },
+            sendDirectly: { _, _, _ in },
+            wake: wake
+        )
+        return .live(paths: paths, keys: keys, transports: transports)
     }
 
     // MARK: Sessions
@@ -570,30 +746,30 @@ final class Bed {
         let session = try session()
         await session.waitForBoot()
         try await publishGrant(ordered: true)
-        await fetch(session)
+        try await fetch(session)
         let on = try await session.outbox.orderedActions()
         XCTAssertTrue(on)
-        await session.epochAckWork?.value
+        try await session.epochAckWork?.value(within: 60, "session.epochAckWork")
         await session.outbox.drain()
         return session
     }
 
     /// One fetch, then the outbox work it started.
-    func fetch(_ session: HubSession) async {
+    func fetch(_ session: HubSession) async throws {
         _ = await session.refresh(.pull)
-        await session.outboxWork?.value
+        try await session.outboxWork?.value(within: 60, "session.outboxWork")
         await session.outbox.drain()
     }
 
     /// A fetch that follows a move: the move, then the new session booted and its outbox flushed.
     func fetchAndFollow(_ session: HubSession) async throws -> HubSession {
-        await fetch(session)
-        await root.routeMoves[hubID]?.value
+        try await fetch(session)
+        try await root.routeMoves[hubID]?.value(within: 60, "root.routeMoves[hubID]")
         let next = try self.session()
         XCTAssertFalse(next === session, "the session moved")
         await next.waitForBoot()
-        await fetch(next)
-        await next.epochAckWork?.value
+        try await fetch(next)
+        try await next.epochAckWork?.value(within: 60, "next.epochAckWork")
         await next.outbox.drain()
         return next
     }
@@ -636,11 +812,13 @@ final class Bed {
 
     // MARK: The scripted hub
 
-    func publishGrant(ordered: Bool) async throws {
+    /// This phone's grant (with the Mac's relay identity when `macRelay`, as a desktop host's) and a fresh heartbeat.
+    func publishGrant(ordered: Bool, macRelay: Bool = false) async throws {
         let grant = DeviceGrant(
             deviceID: TestE2E.deviceID.uuidString, hubID: hubID, name: "Colleague A's iPhone", scope: .private,
             linked: true, typingAllowed: true, startSessionsAllowed: true, mayStartSessions: true,
-            orderedActions: ordered ? 1 : nil)
+            orderedActions: ordered ? 1 : nil, transports: macRelay ? ["cloudkit", "relay"] : nil,
+            relayDeviceID: macRelay ? mac.deviceID : nil, relayAuthPub: macRelay ? WireBytes.base64URL(macAuthPub) : nil)
         // A heartbeat after `linkedAt`: the link came alive, so a `hub_on_relay` never ends it (Task 10).
         let now = Date()
         let heartbeat = HeartbeatPayload(
@@ -652,6 +830,17 @@ final class Bed {
         } else {
             try await TestPhone.hub(over: cloud.inner).save(records)
         }
+    }
+
+    /// This phone's keybox of `epoch` in the Mac's relay data zone, with its keys or without (a phone the hub does not
+    /// name a reader of the zone yet).
+    func publishRelayKeybox(epoch: UInt32, withKeys: Bool) async throws {
+        let grant = DeviceGrant(
+            deviceID: TestE2E.deviceID.uuidString, hubID: hubID, name: "Colleague A's iPhone", scope: .private,
+            linked: true, typingAllowed: true, startSessionsAllowed: true, mayStartSessions: true, orderedActions: 1,
+            transports: ["cloudkit", "relay"], relayDeviceID: mac.deviceID, relayAuthPub: WireBytes.base64URL(macAuthPub))
+        let record = try TestPhone.grantRecord(grant, keys: withKeys ? TestPhone.keyboxKeys(epoch: epoch) : nil, modifiedAt: Date())
+        try await macSave(record, zone: "data/\(mac.deviceID)")
     }
 
     func publishBriefings(_ ids: [String], on route: TransportKind) async throws {
@@ -726,8 +915,9 @@ final class Bed {
         try await cloud.inner.save([try TestE2E.sealedDataRecord(plain, seq: TestPhone.nextSeqBlock())])
     }
 
-    private func writeControl(_ control: ControlPayload, on route: TransportKind) async throws {
-        let record = try sealedControl(control, to: TestE2E.deviceID)
+    /// `control` sealed as the Go hub does, in `epoch` (the test hub's static keys exist for any epoch).
+    func writeControl(_ control: ControlPayload, on route: TransportKind, epoch: UInt32 = 1) async throws {
+        let record = try sealedControl(control, to: TestE2E.deviceID, epoch: epoch)
         switch route {
         case .cloudKit: try await cloud.inner.save([record])
         case .relay: try await macSaveSealed(record, zone: "relay/\(mac.deviceID)/\(phone.deviceID)")
@@ -735,8 +925,8 @@ final class Bed {
     }
 
     /// `control` sealed to `device` as the Go hub's `sealControl` does.
-    private func sealedControl(_ control: ControlPayload, to device: UUID) throws -> CloudRecord {
-        let keys = TestE2E.hub(firstSeq: TestPhone.nextSeqBlock())
+    private func sealedControl(_ control: ControlPayload, to device: UUID, epoch: UInt32 = 1) throws -> CloudRecord {
+        let keys = TestE2E.hub(epoch: epoch, firstSeq: TestPhone.nextSeqBlock())
         if device == TestE2E.strangerDeviceID { keys.link(TestE2E.strangerIdentity) }
         let wire = try TestPhone.hub(over: InMemoryCloudTransport()).wireName(plain: control.recordName, zone: .relay)
         let frame = InnerFrame(
@@ -759,7 +949,7 @@ final class Bed {
         try await macSaveSealed(sealed, zone: zone)
     }
 
-    private func macSaveSealed(_ sealed: CloudRecord, zone: String) async throws {
+    func macSaveSealed(_ sealed: CloudRecord, zone: String) async throws {
         var item = Relay_V1_SaveItem()
         item.record.zone = zone
         item.record.name = sealed.recordName
@@ -997,6 +1187,8 @@ private final class FlakyMergeHost: TransportFollowerHost {
     private let failsFirstMerge: Bool
     private(set) var merges = 0
     var persistFails = false
+    /// Runs inside `relayKeySourceGone`, between the follower's read of the row and its route write.
+    var duringKeySourceGone: (@MainActor () -> Void)?
     private var relayCalls = 0
     /// The most `relayUse` calls that were in flight at once.
     private(set) var mostRelayCallsAtOnce = 0
@@ -1010,6 +1202,14 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func newestEpoch(hubID: String) -> UInt32? { root.newestEpoch(hubID: hubID) }
     func openSwitchKeybox(_ sealed: Data, hubID: String) async -> Keybox? { await root.openSwitchKeybox(sealed, hubID: hubID) }
     func persistRoute(_ link: LinkRecord) -> Bool { persistFails ? false : root.persistRoute(link) }
+    func relayOffer(hubID: String) async throws -> Data? { try await root.relayOffer(hubID: hubID) }
+    func clearEphemeral(hubID: String) -> Bool { root.clearEphemeral(hubID: hubID) }
+    func dropEphemeral(hubID: String) -> Bool { root.dropEphemeral(hubID: hubID) }
+    func relayKeySourceGone(hubID: String) async {
+        await root.relayKeySourceGone(hubID: hubID)
+        duringKeySourceGone?()
+    }
+    func relayKeySourceBack(hubID: String) async { await root.relayKeySourceBack(hubID: hubID) }
     func moveSession(hubID: String) { root.moveSession(hubID: hubID) }
 
     func relayUse(for link: LinkRecord) async -> RelayUse {
@@ -1023,5 +1223,55 @@ private final class FlakyMergeHost: TransportFollowerHost {
     func mergeSwitchKeys(_ keybox: Keybox, hubID: String) async -> Bool {
         merges += 1
         return merges > 1 || !failsFirstMerge ? await root.mergeSwitchKeys(keybox, hubID: hubID) : false
+    }
+}
+
+// MARK: - A pending sweep asks the relay for the whole data zone again (board #1497)
+
+extension TransportFollowerWiringTests {
+    /// A session that opens on the relay with the replica's sweep pending and a transport store whose data cursor is
+    /// above 0 (a route return after a lapse) reads the data zone from 0 again: the load is reported, so the sweep
+    /// runs after its last page. Deleting `HubSession.restartPendingLoad`'s call leaves the first read at the cursor.
+    func testASessionWithAPendingSweepReadsTheDataZoneFromZero() async throws {
+        let bed = try await Bed.make(self, on: .relay)
+        let zone = HostedRelayZones.data(mac: bed.mac.deviceID)
+        for name in ["a", "b"] {
+            var item = Relay_V1_SaveItem()
+            item.record.zone = zone
+            item.record.name = name
+            item.record.envelope = Data(name.utf8)
+            var save = Relay_V1_Save()
+            save.items = [item]
+            _ = try await bed.mac.save(save)
+            let session = try bed.session()
+            await session.waitForBoot()
+            try await bed.fetch(session)
+        }
+        func dataReads(after count: Int) -> [(since: UInt64, resync: Bool)] {
+            bed.fake.log.dropFirst(count).compactMap { op in
+                guard case .changes(let changes) = op, changes.zone == zone else { return nil }
+                return (changes.sinceSeq, changes.resync)
+            }
+        }
+        XCTAssertTrue(dataReads(after: 0).contains { $0.since > 0 }, "the store's cursor is above 0")
+
+        for session in bed.root.env.sessions.values {
+            await session.shutDown()
+            session.closeDatabases()
+        }
+        let replica = try ReplicaStore(
+            path: bed.replicaPath, opener: try TestE2E.opener(store: bed.keys))
+        XCTAssertTrue(try replica.adoptRoute("cloudkit"), "the route moved away")
+        XCTAssertTrue(try replica.adoptRoute("relay"), "and back: the sweep is pending")
+        try replica.reader.close()
+
+        let before = bed.fake.log.count
+        try await bed.relaunch(self)
+        let reopened = try bed.session()
+        await reopened.waitForBoot()
+        try await bed.fetch(reopened)
+        let reads = dataReads(after: before)
+        XCTAssertEqual(reads.first?.since, 0, "the first read after the open starts at 0: \(reads)")
+        XCTAssertEqual(reads.first?.resync, true)
     }
 }

@@ -106,9 +106,17 @@ final class SQLCipherInteropTests: XCTestCase {
             cwd: tempDir, env: nil, timeout: 1))
         let child = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines)))
-        let alive = kill(child, 0)
-        let err = errno
-        XCTAssertEqual(alive, -1, "the grandchild still runs")
+        // The group's SIGKILL is delivered, but the orphaned grandchild lingers
+        // as a zombie until launchd reaps it: poll for it to go, bounded.
+        let deadline = Date().addingTimeInterval(5)
+        var alive = kill(child, 0)
+        var err = errno
+        while alive == 0, Date() < deadline {
+            usleep(20_000)
+            alive = kill(child, 0)
+            err = errno
+        }
+        XCTAssertEqual(alive, -1, "the grandchild still runs 5 s after the timeout")
         XCTAssertEqual(err, ESRCH)
     }
 

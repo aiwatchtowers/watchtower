@@ -99,7 +99,7 @@ struct LinkNoticeBanner: View {
             // a frame outside it would not grow it to 44 pt.
             Button("Scan") { linking.startScan() }
                 .buttonStyle(BannerButtonStyle())
-        case .macOnRelay, .finishingInBackground, .needsOwner:
+        case .macOnRelay, .finishingInBackground, .needsOwner, .relayEnded:
             Button(notice.dismissTitle ?? "") { linking.dismissNotice() }
                 .buttonStyle(BannerButtonStyle())
         case .removed, .notSent, .recordingKept, .recordingsProblem:

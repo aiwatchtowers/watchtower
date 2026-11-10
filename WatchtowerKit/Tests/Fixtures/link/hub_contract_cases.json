@@ -770,5 +770,926 @@
         "relay_device_id": null
       }
     }
+  ],
+  "device_payload": [
+    {
+      "name": "with_proven_relay_id",
+      "relay_auth_seed": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "relay_auth_pub": "5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA",
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa",
+        "relay_id_sig": "-Tg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000"
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA\",\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"relay_id_sig\":\"-Tg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"}",
+      "proof": true,
+      "kit": {
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "without_relay_id",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000"
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"}",
+      "proof": false,
+      "kit": {
+        "relay_device_id": null
+      }
+    },
+    {
+      "name": "invalid_relay_id_reads_as_none",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "relay_auth_pub": "5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA",
+        "relay_device_id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "relay_id_sig": "t53dQ5k1-P3syzYs0DtuJH64QtLUGA0SaU6a93KfJrPpfcIvB_8wK1TaULDVBfqxCj45FEHzwENlyn4-tQeYCQ",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000"
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA\",\"relay_device_id\":\"CCCCCCCC-0000-4000-8000-000000000003\",\"relay_id_sig\":\"t53dQ5k1-P3syzYs0DtuJH64QtLUGA0SaU6a93KfJrPpfcIvB_8wK1TaULDVBfqxCj45FEHzwENlyn4-tQeYCQ\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"}",
+      "proof": false,
+      "kit": {
+        "relay_device_id": null
+      }
+    },
+    {
+      "name": "wrong_key",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "relay_auth_pub": "rcFAEfgtHFbZVqpPnXPYhYNhpgYEhSXg0Ixjjcdd2Mc",
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa",
+        "relay_id_sig": "g1XM1Q-TMdgAmVsXx_rnVJnYYMhPesGnGWMv7O8kYk1KuAPPPpamkDZTvRh2_xuXAqpQYEdqfLL6NdyePdgFBw",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000"
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"rcFAEfgtHFbZVqpPnXPYhYNhpgYEhSXg0Ixjjcdd2Mc\",\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"relay_id_sig\":\"g1XM1Q-TMdgAmVsXx_rnVJnYYMhPesGnGWMv7O8kYk1KuAPPPpamkDZTvRh2_xuXAqpQYEdqfLL6NdyePdgFBw\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"}",
+      "proof": false,
+      "kit": {
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "bad_signature",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "relay_auth_pub": "5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA",
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa",
+        "relay_id_sig": "-Dg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000"
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA\",\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"relay_id_sig\":\"-Dg8tg3zgpQ4nMHHpSeo948iODWK6twd6RxjqkwlP9348Jm3XBe1kqowpnXVH7Rgm4TgOb4TyoPV1D4eif8rCA\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"}",
+      "proof": false,
+      "kit": {
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "other_hub",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "relay_auth_pub": "5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA",
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa",
+        "relay_id_sig": "Aq76Fbngtyi1bYcuO_GWE5iFLpLX9RpQDmLUOpNEq3azfKQtpMYJV_LD6Fv1cjF-LBlG1_LbTf7oiD7J5F2YBw",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000"
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"relay_auth_pub\":\"5_FioQvsVZr-oZXk3OhLaVaNXSywlj60RsBoXisX8vA\",\"relay_device_id\":\"zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa\",\"relay_id_sig\":\"Aq76Fbngtyi1bYcuO_GWE5iFLpLX9RpQDmLUOpNEq3azfKQtpMYJV_LD6Fv1cjF-LBlG1_LbTf7oiD7J5F2YBw\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\"}",
+      "proof": false,
+      "kit": {
+        "relay_device_id": "zfc4x4vfmaqaefa6f645c4cu23fangkr35z7jhi7rlfip6mhr5qa"
+      }
+    },
+    {
+      "name": "work_alerts_off",
+      "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+      "json": {
+        "app_version": "1.0",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "model": "iPhone",
+        "name": "Test Phone",
+        "scope": "private",
+        "start_sessions": true,
+        "typing_requested": false,
+        "updated_at": 1730000000,
+        "user_record_name": "_owner0000",
+        "work_alerts_off": true
+      },
+      "relay_coder": "{\"app_version\":\"1.0\",\"device_id\":\"BBBBBBBB-0000-4000-8000-000000000002\",\"model\":\"iPhone\",\"name\":\"Test Phone\",\"scope\":\"private\",\"start_sessions\":true,\"typing_requested\":false,\"updated_at\":1730000000,\"user_record_name\":\"_owner0000\",\"work_alerts_off\":true}",
+      "proof": false,
+      "kit": {}
+    }
+  ],
+  "heartbeat": [
+    {
+      "name": "capabilities_on",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true
+      }
+    },
+    {
+      "name": "capabilities_off",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": false
+      }
+    },
+    {
+      "name": "capabilities_absent",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true
+      }
+    },
+    {
+      "name": "capabilities_unknown_value",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "partial"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "partial"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": true
+      }
+    },
+    {
+      "name": "unknown_capability_key",
+      "json": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off",
+          "screen_share": "on"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "expect": {
+        "accounts": [],
+        "app_version": "1.0.0",
+        "capabilities": {
+          "recordings": "off"
+        },
+        "enabled_at": 1730000000,
+        "flavor": "default",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "mac_name": "Test Hub",
+        "owner_user": "",
+        "relay_backlog": 0,
+        "sharing": "none",
+        "updated_at": 1730000100
+      },
+      "kit": {
+        "recordings_offered": false
+      }
+    }
+  ],
+  "upload_echo": [
+    {
+      "name": "failed_not_supported",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "This host can't transcribe recordings. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "not_supported",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "This host can't transcribe recordings. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "not_supported",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "kit": {
+        "status": "failed",
+        "reason": "not_supported",
+        "keeps_audio": true
+      }
+    },
+    {
+      "name": "failed_expired",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac's transcriber did not run for 7 days. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "expired",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac's transcriber did not run for 7 days. Your recording stays on your phone.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "reason": "expired",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "kit": {
+        "status": "failed",
+        "reason": "expired",
+        "keeps_audio": true
+      }
+    },
+    {
+      "name": "received",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "received"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "received"
+      },
+      "kit": {
+        "status": "received",
+        "reason": null,
+        "keeps_audio": false
+      }
+    },
+    {
+      "name": "failed_legacy_no_reason",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac could not save this recording.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "duration_sec": 5,
+        "ended_at": 1730000060,
+        "error_message": "Your Mac could not save this recording.",
+        "id": "CCCCCCCC-0000-4000-8000-000000000003",
+        "sample_format": "aac-64k-mono",
+        "started_at": 1730000000,
+        "status": "failed"
+      },
+      "kit": {
+        "status": "failed",
+        "reason": null,
+        "keeps_audio": true
+      }
+    }
+  ],
+  "transport_switched": [
+    {
+      "name": "switched_with_keybox",
+      "json": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "expect": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "kit": {
+        "target": "relay",
+        "epoch": 3,
+        "keybox": "AQIDBAUGBwg"
+      }
+    },
+    {
+      "name": "switched_by_entitlement",
+      "json": {
+        "at": 1730000000.5,
+        "by": "entitlement_expired",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 4,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000005",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "cloudkit"
+      },
+      "expect": {
+        "at": 1730000000.5,
+        "by": "entitlement_expired",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 4,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000005",
+        "keybox": "AQIDBAUGBwg",
+        "kind": "transport_switched",
+        "target": "cloudkit"
+      },
+      "kit": {
+        "target": "cloudkit",
+        "epoch": 4,
+        "keybox": "AQIDBAUGBwg"
+      }
+    },
+    {
+      "name": "keybox_object_reads_as_none",
+      "json": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000006",
+        "keybox": {"grant": {}},
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "expect": null,
+      "kit": {
+        "target": "relay",
+        "epoch": 3,
+        "keybox": null
+      }
+    },
+    {
+      "name": "transport_marker",
+      "json": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "expect": {
+        "at": 1730000000,
+        "by": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "transport_switched",
+        "target": "relay"
+      },
+      "kit": {
+        "target": "relay",
+        "epoch": 3,
+        "keybox": null
+      }
+    }
+  ],
+  "transport_switch_rejected": [
+    {
+      "name": "too_soon",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000007",
+        "kind": "transport_switch_rejected",
+        "reason": "too_soon",
+        "retry_after_s": 240
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000007",
+        "kind": "transport_switch_rejected",
+        "reason": "too_soon",
+        "retry_after_s": 240
+      },
+      "kit": {
+        "reason": "too_soon",
+        "retry_after_s": 240
+      }
+    },
+    {
+      "name": "not_paying",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000008",
+        "kind": "transport_switch_rejected",
+        "reason": "not_paying"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000008",
+        "kind": "transport_switch_rejected",
+        "reason": "not_paying"
+      },
+      "kit": {
+        "reason": "not_paying",
+        "retry_after_s": null
+      }
+    },
+    {
+      "name": "unavailable",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000009",
+        "kind": "transport_switch_rejected",
+        "reason": "unavailable",
+        "retry_after_s": 60
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000009",
+        "kind": "transport_switch_rejected",
+        "reason": "unavailable",
+        "retry_after_s": 60
+      },
+      "kit": {
+        "reason": "unavailable",
+        "retry_after_s": 60
+      }
+    },
+    {
+      "name": "not_supported",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-00000000000A",
+        "kind": "transport_switch_rejected",
+        "reason": "not supported yet"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-00000000000A",
+        "kind": "transport_switch_rejected",
+        "reason": "not supported yet"
+      },
+      "kit": {
+        "reason": "not supported yet",
+        "retry_after_s": null
+      }
+    }
+  ],
+  "action_effect_kinds": [
+    {
+      "action_kind": "ask_answer",
+      "slice_kinds": [
+        "owner_ask",
+        "ask_alert"
+      ]
+    },
+    {
+      "action_kind": "board_target_status",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_target_priority",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_comment_add",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_comment_reply",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "board_target_create",
+      "slice_kinds": [
+        "workbench",
+        "workbench_target",
+        "workbench_comment"
+      ]
+    },
+    {
+      "action_kind": "automation_run",
+      "slice_kinds": [
+        "workbench"
+      ]
+    },
+    {
+      "action_kind": "permission_answer",
+      "slice_kinds": [
+        "permission_request",
+        "terminal_session"
+      ]
+    },
+    {
+      "action_kind": "session_interrupt",
+      "slice_kinds": [
+        "terminal_session"
+      ]
+    },
+    {
+      "action_kind": "session_report_request",
+      "slice_kinds": [
+        "session_report"
+      ]
+    },
+    {
+      "action_kind": "session_chat_request",
+      "slice_kinds": [
+        "session_chat"
+      ]
+    },
+    {
+      "action_kind": "session_input",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_finish_request",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_input_cancel",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_start",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    },
+    {
+      "action_kind": "session_stop",
+      "slice_kinds": [
+        "terminal_session",
+        "session_timeline"
+      ]
+    }
+  ],
+  "epoch_ack": [
+    {
+      "name": "epoch_ack_with_offer",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack",
+        "next_kx": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack",
+        "next_kx": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+      },
+      "kit": {
+        "epoch": 3,
+        "next_kx": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+      }
+    },
+    {
+      "name": "epoch_ack_without_offer",
+      "json": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack"
+      },
+      "expect": {
+        "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+        "epoch": 3,
+        "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+        "id": "DDDDDDDD-0000-4000-8000-000000000004",
+        "kind": "epoch_ack"
+      },
+      "kit": {
+        "epoch": 3,
+        "next_kx": null
+      }
+    }
+  ],
+  "keybox": [
+    {
+      "name": "keybox_with_relay_kx",
+      "json": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_epoch": 3,
+          "previous_relay_kx": {
+            "device_pub": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+            "hub_pub": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+          },
+          "relay_kx": {
+            "device_pub": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+            "hub_pub": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+          }
+        }
+      },
+      "expect": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "previous_epoch": 3,
+          "previous_relay_kx": {
+            "device_pub": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+            "hub_pub": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+          },
+          "relay_kx": {
+            "device_pub": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+            "hub_pub": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+          }
+        }
+      },
+      "kit": {
+        "relay_kx": {
+          "device_pub": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2A",
+          "hub_pub": "ISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0-P0A"
+        },
+        "previous_relay_kx": {
+          "device_pub": "gYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6A",
+          "hub_pub": "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1-f4A"
+        }
+      }
+    },
+    {
+      "name": "keybox_old_shape",
+      "json": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        }
+      },
+      "expect": {
+        "grant": {
+          "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
+          "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
+          "linked": true,
+          "name": "Test Phone",
+          "scope": "private",
+          "start_sessions_allowed": true,
+          "typing_allowed": false
+        },
+        "keys": {
+          "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
+          "epoch": 4,
+          "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
+        }
+      },
+      "kit": {
+        "relay_kx": null,
+        "previous_relay_kx": null
+      }
+    }
   ]
 }

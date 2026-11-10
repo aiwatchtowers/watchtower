@@ -2743,6 +2743,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     target_bound_at   TEXT, -- when Go last re-bound target_id after launch (set_session_target / `workbench session-target`), RFC 3339 UTC; NULL when unbound or never re-bound (the binding stamp is then created_at) (00168)
     agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
+    start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -3665,7 +3666,8 @@ CREATE TABLE IF NOT EXISTS pending_transcripts (
     meta_json      TEXT,
     started_at     REAL NOT NULL,
     transcribed_at REAL,
-    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1))
+    private        INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)),
+    upload_id      TEXT -- the Go hub phone upload the recording came from (Desktop only)
 );
 
 -- An embedded chat's owner message queued but not yet sent (00157, #604;

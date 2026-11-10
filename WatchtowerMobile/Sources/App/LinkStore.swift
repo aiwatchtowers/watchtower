@@ -49,6 +49,23 @@ struct LinkRecord: Codable, Equatable, Sendable {
     var switchedAt: Date?
     /// A transport the link left whose mailbox is still to drain (rule 15).
     var leftTransport: TransportKind?
+    /// An iCloud link's upgrade to the relay (relay client Phase 3b Task 19): its step, request and refusal. Absent in
+    /// every link saved before it and in every link that never upgraded. One this build cannot read reads as absent.
+    var relayUpgrade: RelayUpgradeRecord?
+    /// This phone's request that the hub move to iCloud, or the end it came to (relay client Phase 4 Task 5). Absent
+    /// while none is open and on every CloudKit link. One this build cannot read reads as absent.
+    var transportRequest: TransportRequestRecord?
+    /// When the hub told this phone it stays on the relay for another paying phone (`hub_on_relay`, or a move to the
+    /// relay this phone cannot follow), while it has not moved since. Absent on every CloudKit link.
+    var hubOnRelayAt: Date?
+    /// A relay-only link the relay refuses (relay client Phase 5): set at the first `relayLapsed` (`.lapse`) or
+    /// `slotLost` (`.slot`) with no other route; its `since` starts the link's term. Absent on every other link and
+    /// in every link saved before it. One this build cannot read reads as absent.
+    var relayRefused: RelayRefusedRecord?
+    /// The epoch of a move to iCloud this relay-only link read and could not follow (relay client Phase 5, Task 17,
+    /// S59); nil while none. It starts no term and clears only on a marker toward the relay in a later epoch. One this
+    /// build cannot read reads as absent.
+    var macMoved: UInt32?
 
     /// A `.relay` transport needs `relayMacDeviceID` (it is the route).
     init(
@@ -68,7 +85,12 @@ struct LinkRecord: Codable, Equatable, Sendable {
         hubTransports: [String]? = nil,
         switchedBy: String? = nil,
         switchedAt: Date? = nil,
-        leftTransport: TransportKind? = nil
+        leftTransport: TransportKind? = nil,
+        relayUpgrade: RelayUpgradeRecord? = nil,
+        transportRequest: TransportRequestRecord? = nil,
+        hubOnRelayAt: Date? = nil,
+        relayRefused: RelayRefusedRecord? = nil,
+        macMoved: UInt32? = nil
     ) {
         precondition(transport != .relay || relayMacDeviceID != nil, Self.relayWithoutMac)
         self.hubID = hubID
@@ -88,6 +110,11 @@ struct LinkRecord: Codable, Equatable, Sendable {
         self.switchedBy = switchedBy
         self.switchedAt = switchedAt
         self.leftTransport = leftTransport
+        self.relayUpgrade = relayUpgrade
+        self.transportRequest = transportRequest
+        self.hubOnRelayAt = hubOnRelayAt
+        self.relayRefused = relayRefused
+        self.macMoved = macMoved
     }
 
     /// A `.relay` link without its Mac's relay id does not decode: the row is
@@ -111,6 +138,12 @@ struct LinkRecord: Codable, Equatable, Sendable {
         switchedBy = try container.decodeIfPresent(String.self, forKey: .switchedBy)
         switchedAt = try container.decodeIfPresent(Date.self, forKey: .switchedAt)
         leftTransport = try container.decodeIfPresent(TransportKind.self, forKey: .leftTransport)
+        // A newer build's step or refusal must not make the whole link unreadable.
+        relayUpgrade = try? container.decodeIfPresent(RelayUpgradeRecord.self, forKey: .relayUpgrade)
+        transportRequest = try? container.decodeIfPresent(TransportRequestRecord.self, forKey: .transportRequest)
+        hubOnRelayAt = try? container.decodeIfPresent(Date.self, forKey: .hubOnRelayAt)
+        relayRefused = try? container.decodeIfPresent(RelayRefusedRecord.self, forKey: .relayRefused)
+        macMoved = try? container.decodeIfPresent(UInt32.self, forKey: .macMoved)
         if lacksRelayMac {
             throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: Self.relayWithoutMac))
         }
@@ -139,11 +172,17 @@ struct LinkRecord: Codable, Equatable, Sendable {
         try container.encodeIfPresent(switchedBy, forKey: .switchedBy)
         try container.encodeIfPresent(switchedAt, forKey: .switchedAt)
         try container.encodeIfPresent(leftTransport, forKey: .leftTransport)
+        try container.encodeIfPresent(relayUpgrade, forKey: .relayUpgrade)
+        try container.encodeIfPresent(transportRequest, forKey: .transportRequest)
+        try container.encodeIfPresent(hubOnRelayAt, forKey: .hubOnRelayAt)
+        try container.encodeIfPresent(relayRefused, forKey: .relayRefused)
+        try container.encodeIfPresent(macMoved, forKey: .macMoved)
     }
 
     private enum CodingKeys: String, CodingKey {
         case hubID, macName, scope, ownerName, userRecordName, nonce, dataShareURL, relayShareURL, deviceID, linkedAt
-        case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport
+        case transport, relayMacDeviceID, relayAuthPub, hubTransports, switchedBy, switchedAt, leftTransport, relayUpgrade
+        case transportRequest, hubOnRelayAt, relayRefused, macMoved
     }
 
     private static let relayWithoutMac = "a relay link without its Mac's relay device id"
@@ -154,6 +193,14 @@ struct LinkRecord: Codable, Equatable, Sendable {
     mutating func setRelay(mac: String) {
         transport = .relay
         relayMacDeviceID = mac
+    }
+
+    /// Keeps the Mac's relay identity on a link that stays where it is (an iCloud link upgrading to the relay, after
+    /// its `add_slot`): the route does not change until the hub switches.
+    mutating func setRelayIdentity(mac: String, authPub: String?, transports: [String]?) {
+        relayMacDeviceID = mac
+        relayAuthPub = authPub
+        hubTransports = transports
     }
 
     /// Moves the link back to CloudKit (its scope's database), keeping the Mac's relay id so a later switch can
@@ -181,12 +228,38 @@ struct LinkRecord: Codable, Equatable, Sendable {
         scope == .shared ? .cloudKit(.shared(ownerName: ownerName)) : .cloudKit(.private)
     }
 
+    /// The hub offers CloudKit; an absent list offers it, as in `TransportFollower`'s refusal.
+    var offersCloudKit: Bool {
+        hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true
+    }
+
+    /// The hub has no iCloud to go to: by its own list on the row, or by the grant it published.
+    func isRelayOnly(grant: DeviceGrant?) -> Bool {
+        !offersCloudKit || grant?.transports?.contains(TransportKind.cloudKit.rawValue) == false
+    }
+
     /// The hub's route on the transport this link is not on, when the hub has both (relay client Phase 3 Task 12):
-    /// the relay needs the Mac's relay id, CloudKit a hub that offers it (an absent list offers it, as in
-    /// `TransportFollower`'s refusal). nil for a link with one route.
+    /// the relay needs the Mac's relay id, CloudKit a hub that offers it. nil for a link with one route.
     var otherRoute: HubRoute? {
-        guard let relayMacDeviceID, hubTransports?.contains(TransportKind.cloudKit.rawValue) ?? true else { return nil }
+        guard let relayMacDeviceID, offersCloudKit else { return nil }
         return transport == .relay ? cloudKitRoute : .hostedRelay(macDeviceID: relayMacDeviceID)
+    }
+}
+
+/// Why and since when the relay refuses a relay-only link (relay client Phase 5): the link's term runs from `since`,
+/// fixed, and ends `RelayTerm.length` later (Task 17). Each answered account read clears it (paying, the Mac in a slot)
+/// or sets its cause; no merge clears it.
+struct RelayRefusedRecord: Codable, Equatable, Sendable {
+    let since: Date
+    var cause: RelayRefusal
+    /// The first answered read at the term that showed the refusal standing; a later one at least
+    /// `RelayTerm.secondReadAfter` after it ends the link. Kept across launches; cleared with the mark.
+    var termReadAt: Date?
+
+    init(since: Date, cause: RelayRefusal, termReadAt: Date? = nil) {
+        self.since = since
+        self.cause = cause
+        self.termReadAt = termReadAt
     }
 }
 
@@ -406,11 +479,23 @@ final class LinkStore {
         }
     }
 
+    /// Hub ids whose unreadable entry was logged: one line per hub per store; a clean read of the hub re-arms it.
+    private var loggedUnreadable: Set<String> = []
+    private let loggedLock = NSLock()
+    /// Called with the hub id when its unreadable entry is logged (tests).
+    var onUnreadableLogged: ((String) -> Void)?
+
     private func promotedEntries() -> [String: PromotedEntry] {
         let entries = read([String: PromotedEntry].self, key: Keys.promoted) ?? [:]
-        let unreadable = entries.values.filter { $0.link == nil }.count
-        if unreadable > 0 {
-            Self.logger.error("unreadable promoted links skipped: \(unreadable, privacy: .public)")
+        let unreadable = Set(entries.filter { $0.value.link == nil }.keys)
+        let fresh = loggedLock.withLock { () -> [String] in
+            let new = unreadable.subtracting(loggedUnreadable)
+            loggedUnreadable = unreadable
+            return new.sorted()
+        }
+        for hubID in fresh {
+            Self.logger.error("unreadable promoted link skipped: \(hubID, privacy: .private)")
+            onUnreadableLogged?(hubID)
         }
         return entries
     }
@@ -436,6 +521,17 @@ final class LinkStore {
         guard all[link.hubID] != nil else { return }
         all[link.hubID] = link
         promoted = all
+    }
+
+    /// The owner's own removal of `hubID` (Unlink, Forget): its promoted entry this build cannot read goes too, so a
+    /// later build that could read it does not bring the removed Mac back. Never a readable entry (those go through
+    /// `removePromoted`) and never another hub's. The only deletion of an unreadable entry.
+    func removeUnreadablePromoted(_ hubID: String) {
+        let entries = promotedEntries()
+        guard let entry = entries[hubID], entry.link == nil else { return }
+        var rest = entries
+        rest[hubID] = nil
+        write(rest.isEmpty ? nil : rest, key: Keys.promoted)
     }
 
     func removePromoted(_ hubID: String) {
