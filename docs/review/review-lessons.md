@@ -2832,3 +2832,12 @@ Entry format:
 - rule-gap (candidate, dim 7/8): *a Swift test that feeds a CLI stream or envelope uses a sequence captured from the Go side's test for the same outcome (or the shared golden), never a hand-written mix of events.*
 - rule-gap (candidate, dim 9): *a `--stream` command writes its envelope as the last line on every return path, early refusals and usage errors included; a bare `return err` after the stream starts is the tell.*
 - outcome: TBD
+
+## 2026-11-10 — PR #751 ci/split-go-test (82103f968: Go Test as three `make test-cover SHARD=K/3` matrix jobs, cmd alone in shard 1 and weighted greedy split of the rest in `scripts/coverage-gate.sh`, threshold ownership per shard, new `test-coverage-gate-shards.sh`; the macOS editor bridge check started in the background before Swift Test and collected after it; 4 files +276/−29; panel: prosecutor (8) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading, ran the new shell test on bash 3.2 + BSD awk (PASS) and the real partition, 1+74+77 = 152 packages, no overlap) — verdict: approve
+
+- contested: F1 (the background bridge run overlapping the timing-bound SERIAL_CLASSES phase) was raised as major and downgraded to minor. The overlap needs the bridge run (~1 min normally, capped near 180 s, no cap on curl) to outlast the whole sharded phase. The real defect is in the collect step: a hang waits out the 10-minute step and never prints the log. Before this change the foreground step streamed its output. [6/8]
+- false-positive: F5 "the `!= *watchtower/cmd 100*` assertion can never fail". It fails if cmd's threshold is checked in the db shard, because the ✓ line contains that text. It duplicates the partition check but it is not vacuous. F8's release.yml half was also dismissed: line 48 already says "unsharded here". [7]
+- miss: no lane checked that renaming the `Go Test` check to `Go Test (K/3)` keeps required status checks working. Verified it does: main has no branch protection. **A CI job rename or matrix split checks branch protection and rulesets for required check names.** [8]
+- weak-dimension: 7. CI-only control flow (background steps, collect loops) has no harness, so its failure modes (hang, missing rc) can only be reviewed by reading.
+- rule-gap (candidate, CI): *a step that waits on a background CI run bounds its own wait below the step timeout, and prints the run's log on every exit path, timeout included.*
+- outcome: TBD

@@ -185,13 +185,24 @@ jobs:
           fi
           bash scripts/leak-check.sh "$range"
 
+  # Three parallel jobs over disjoint package slices (`make test-cover
+  # SHARD=K/3`: packages dealt by measured weight — the split lives in
+  # scripts/coverage-gate.sh). Unsharded the suite took 7-13 min on one
+  # 4-vCPU runner (2026-11-10), CPU-bound. Every threshold is per package, so
+  # each shard checks the packages it ran; internal/db (~600 CPU-s) runs a
+  # third on each shard and go-coverage checks it on the merged profiles.
   go-test:
-    name: Go Test
+    name: Go Test (${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     runs-on: ubuntu-24.04
-    # A hang must fail the job, not run to GitHub's 6 h default. Measured
-    # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
+    strategy:
+      # Every shard reports: one shard's failure must not hide another's.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    # A hang must fail the job, not run to GitHub's 6 h default; the race
+    # pass runs in go-test-race.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -211,15 +222,50 @@ jobs:
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
       # builds, so it rides this Linux job rather than paying for a macOS one.
-      # Seconds long, so it runs before the coverage gate: earlier signal, no cost.
+      # Seconds long, so it runs before the coverage gate: earlier signal, no
+      # cost. One shard runs it.
       - name: Test (shell scripts)
+        if: matrix.shard == 1
         run: make test-scripts
 
-      # Runs the full suite with -cover and enforces coverage.thresholds —
-      # this IS the test run on feature branches and PRs.
+      # Runs this shard's slice of the suite with -cover and enforces its
+      # packages' coverage.thresholds — this IS the test run on feature
+      # branches and PRs.
       - name: Test + coverage gate
         timeout-minutes: 25
-        run: make test-cover
+        run: make test-cover SHARD=${{ matrix.shard }}/3
+
+      # This shard's internal/db profile, for go-coverage.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-${{ matrix.shard }}
+          path: coverage-out/
+          if-no-files-found: error
+          retention-days: 1
+
+  # internal/db's coverage threshold over the three shards' profiles
+  # (`coverage-gate.sh --merge`: awk over the files, no Go, no build).
+  go-coverage:
+    name: Go Coverage (merged)
+    needs: go-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/coverage-gate.sh
+            coverage.thresholds
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-coverage-*
+          path: coverage-in
+          merge-multiple: true
+
+      - name: Coverage gate (merged)
+        run: ./scripts/coverage-gate.sh --merge coverage-in
 
   # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
@@ -447,6 +493,23 @@ jobs:
           path: WatchtowerDesktop/.build
           key: ${{ steps.spm-key.outputs.key }}
 
+      # The code viewer's and Branch review's editor pages (index.html,
+      # diff.html) in a headless WKWebView against the pinned Monaco build,
+      # which is gitignored: fetched (checksummed) first. It builds no package
+      # (one swiftc of the harness, ~1 min in all), so it runs in the
+      # background during Test's first, minutes-long phase of concurrent lanes
+      # and "Editor bridge check" below collects it: ~1 min off the job
+      # (2026-11-10). Its harness waits on fixed delays, so a flake under the
+      # lanes' load is the cost to watch; if it shows, move it back to run
+      # after Test. Not before Build: CodeEditorWeb is a copied resource,
+      # Monaco would land in the bundle.
+      - name: Editor bridge check (start)
+        working-directory: .
+        run: |
+          mkdir -p "$RUNNER_TEMP/editor-bridge"
+          nohup bash -c 'scripts/fetch-monaco.sh && make editor-bridge-check; echo $? > "$RUNNER_TEMP/editor-bridge/rc"' \
+            > "$RUNNER_TEMP/editor-bridge/log" 2>&1 &
+
       # Three concurrent xctest processes over round-robin slices of the test
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
       # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
@@ -467,13 +530,17 @@ jobs:
         working-directory: .
         run: make test-swift-strict-pool
 
-      # The code viewer's and Branch review's editor pages (index.html,
-      # diff.html) in a headless WKWebView against the pinned Monaco build,
-      # which is gitignored: fetched (checksummed) first.
+      # Waits for the background run started before Test and prints its log.
       - name: Editor bridge check
         timeout-minutes: 10
         working-directory: .
-        run: scripts/fetch-monaco.sh && make editor-bridge-check
+        run: |
+          d="$RUNNER_TEMP/editor-bridge"
+          # Under the step's timeout, so a hung run still prints its log.
+          for _ in $(seq 240); do [ -s "$d/rc" ] && break; sleep 2; done
+          cat "$d/log"
+          [ -s "$d/rc" ] || { echo "editor bridge check still running after 8 min" >&2; exit 1; }
+          exit "$(cat "$d/rc")"
 
   # Drops the main SPM build caches the latest main push replaced: one ~2 GB
   # entry against the repo's 10 GB cache. Its own job so actions: write (cache
