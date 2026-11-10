@@ -276,7 +276,7 @@ func TestPathStatus_DirtyKinds(t *testing.T) {
 			gitIn(t, dir, "add", "README.md")
 		},
 		"untracked": func(t *testing.T, dir string) { writeFile(t, dir, "NEW.md", "x\n") },
-		"deleted": func(t *testing.T, dir string) { require.NoError(t, os.Remove(filepath.Join(dir, "README.md"))) },
+		"deleted":   func(t *testing.T, dir string) { require.NoError(t, os.Remove(filepath.Join(dir, "README.md"))) },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
