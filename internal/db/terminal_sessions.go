@@ -659,6 +659,32 @@ func (db *DB) LowerTerminalBackground(id, workbenchID int64, sessionID string, a
 	return n > 0, nil
 }
 
+// RaiseTerminalBackground records a SubagentStart's report about the
+// background agents on workbench workbenchID's agent row id (board #1710),
+// from a hook of conversation sessionID at at: agent_background_at = at and
+// agent_background = the higher of the stored count and count. It writes
+// only over a `waiting` whose count is set (0 included: only the Stop starts
+// a count, NULL stays NULL) and whose agent_background_at is earlier than at
+// (an unreadable stamp never blocks), with SetTerminalAgentState's row
+// guards; no other column changes. false when a guard held it back.
+func (db *DB) RaiseTerminalBackground(id, workbenchID int64, sessionID string, at time.Time, count int64) (bool, error) {
+	stamp := at.UTC().Format(agentStateAtLayout)
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_background_at = ?,
+		agent_background = MAX(agent_background, ?)
+		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
+		  AND agent_state = 'waiting' AND agent_background IS NOT NULL
+		  AND (agent_background_at IS NULL OR agent_background_at < ? OR agent_background_at NOT GLOB '`+agentStateAtGlob+`')`,
+		stamp, count, id, workbenchID, sessionID, stamp)
+	if err != nil {
+		return false, fmt.Errorf("raising terminal session %d background agents: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("raising terminal session %d background agents: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // EndTerminalBackground ends the background subagent count of workbench
 // workbenchID's agent row id on the staleness probe's verdict (board #411):
 // it NULLs agent_background and agent_background_at only while the row is a
