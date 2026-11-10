@@ -176,7 +176,7 @@ Depends on: Task 1
 
 **Files:**
 - Modify (list reads add `AND delete_requested_at IS NULL`):
-  - `internal/hub/slices/sources/terminal_session.go`, `timeline.go`, `workbench.go`, `target.go`;
+  - `internal/hub/slices/sources/terminal_session.go`, `timeline.go`, `workbench.go`, `target.go`, `permission_request.go` (its JOIN: a deleting row's permission request leaves the phone);
   - `internal/hub/lane.go`;
   - `internal/db/terminal_sessions_recent.go`;
   - `internal/sessionstate/status.go`;
@@ -189,7 +189,7 @@ Depends on: Task 1
 **Interfaces — Produces:**
 - `const db.NotDeletingSQL = "delete_requested_at IS NULL"`, the one fragment every filtered read uses.
 - `TestProj17_DeletingRowsLeaveEveryList`:
-  - it walks `internal/` and `cmd/` non-test `.go` files and finds every string literal containing `FROM terminal_sessions`;
+  - it walks `internal/` and `cmd/` non-test `.go` files and finds every string literal matching `(?i)\b(FROM|JOIN)\s+terminal_sessions\b` (a JOIN reads rows too; `terminal_sessions_*` tables do not match);
   - each literal must contain `delete_requested_at` or sit in a file and function on the explicit `lookupByID` allowlist in the test, which names the spec §4 lookups (`sessionreport`, `owner_asks`, `review_agent`, `workbench_agent_analytics`, `automation_session_steps`, `session_ticket`, `terminal_agent_turns`, `terminal_watch_issue`, `terminal_session_worktrees`, `terminal_sessions.go` id reads, `sessionstart` `:345`-style reads).
 
 Steps:
@@ -199,7 +199,8 @@ Steps:
   - `TestTerminalSessionSlice_HidesDeletingRow`;
   - `TestWorkbenchStatus_IgnoresDeletingRow`;
   - `TestSessionInput_DeletingRowRefused`;
-  - `TestSessionInterrupt_DeletingRowRefused`.
+  - `TestSessionInterrupt_DeletingRowRefused`;
+  - `TestPermissionRequestSlice_HidesDeletingRow`.
 - [ ] Run `go test ./internal/db -run TestProj17_DeletingRowsLeaveEveryList`. Expected: FAIL, listing the unfiltered sites.
 - [ ] **Add the filter** at each list site. Run `go test` on each touched package (`./internal/hub/... ./internal/sessionstart ./internal/sessionstate ./internal/db`) and `go test ./cmd -run 'TestWorkbenchSession'`. Expected: PASS.
 - [ ] Commit `feat: a session being deleted leaves every list (#1716)`.
@@ -254,8 +255,11 @@ Depends on: Task 1, Task 6
 - Modify: `WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift`: an apply with no `--item`, a 10-min timeout with a process-group kill, and a slot that waits instead of refusing.
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift`:
   - `fetchForWorkbench`, `fetchAllWorkbenchSessions`, `fetchStandalone`, `fetchForTarget`, `fetchWorkLinks`, `fetchAgentStates`, `fetchAgentCwds`, the activity ordering in `WorkbenchQueries.swift`, and the reads in `Services/HubKeepAwake.swift` filter deleting rows. A deleting row must give no notice, no "needs you" badge, and keep nothing awake;
-  - the guard `testProj17_SwiftDeletingRowsLeaveEveryList` (in `Tests/Core`) scans `WatchtowerDesktop/Sources/**/*.swift` for string literals with `FROM terminal_sessions`. Each must contain `delete_requested_at` or be on its explicit by-id allowlist (`fetch(id:)`, `goStartRow`, `isFinished`, `fetchCleanupRecord`, `hasWorktree`, `fetchDeleting`, the update/delete statements);
+  - `AutomationQueries.unattachedSession` filters deleting rows: a session being deleted is never adopted into an automation run;
+  - the guard `testProj17_SwiftDeletingRowsLeaveEveryList` (in `Tests/Core`) scans `WatchtowerDesktop/Sources/**/*.swift` for string literals matching `(?i)\b(FROM|JOIN)\s+terminal_sessions\b`. Each must contain `delete_requested_at` or be on its explicit by-id allowlist (`fetch(id:)`, `goStartRow`, `isFinished`, `fetchCleanupRecord`, `hasWorktree`, `fetchDeleting`, the update/delete statements);
   - new `fetchDeleting(projectID:)`, `markDeleteRequested(id:at:)` and `clearDeleteRequested(id:)`.
+- Modify: `WatchtowerDesktop/Sources/App/QuitCoordinator.swift` (stops a running background apply's process group at quit: SIGTERM, 5 s, SIGKILL).
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/AutomationQueries.swift` (`unattachedSession`).
 - Delete: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionDeleteCleanupChoice.swift` (+ its tests).
 - Modify: `docs/inventory/workbench.md`, the only task that edits it. It covers the PROJ-17 amendment and the whole PROJ-18 amendment of spec §5: every delete cleans, the Delete-and-Clean-Up sentence goes, the ledger `source`/`kind` and command source, the scratchpad rule, caps 64/512. The "Only what the session observed and what was created after the session started" sentence stays verbatim. Also `docs/features/workbench.md` (session cleanup paragraph).
 - Test: `WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift`, `WorkbenchesViewModelPendingDeleteTests.swift`, new `WorkbenchesViewModelAutoCleanupTests.swift`.
@@ -285,6 +289,7 @@ Steps:
   - `testDeleteAnywayDeletesRow`;
   - `testDeletingRowsHiddenFromLists`;
   - `testDeletingRowGivesNoAgentStateNotice` (`fetchAgentStates`);
+  - `testDeletingRowNotAdoptedByAutomation` (`unattachedSession`);
   - `testRequeueSkipsRowWithLiveTerminal`;
   - `testQuitStopsRunningApplyAndKeepsMark`;
   - `testCleanUpAgainSuccessDeletesRow`, `testCleanUpAgainFailureKeepsNewMark`;
