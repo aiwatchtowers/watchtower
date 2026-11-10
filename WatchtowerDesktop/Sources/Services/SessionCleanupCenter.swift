@@ -24,6 +24,8 @@ protocol SessionCleanupStreaming {
 
 /// One streamed cleanup child: its stdout lines (ending at EOF), its exit
 /// once reaped, and a stop (SIGTERM to its group, idempotent).
+/// `stopWithin` is the stop with its own SIGKILL grace (the background
+/// cleanup's 5 s, board #1716); nil = `stop`.
 struct SessionCleanupStream: Sendable {
     struct Exit: Equatable, Sendable {
         let status: Int32
@@ -34,6 +36,7 @@ struct SessionCleanupStream: Sendable {
     let lines: AsyncStream<String>
     let exit: @Sendable () async -> Exit
     let stop: @Sendable () -> Void
+    var stopWithin: (@Sendable (Duration) -> Void)?
 }
 
 extension ProcessCLIRunner: SessionCleanupStreaming {
@@ -59,7 +62,8 @@ extension ProcessCLIRunner: SessionCleanupStreaming {
                 let message = CLIRunnerError.nonZeroExit(code: exit.status, stderr: stderr).localizedDescription
                 return SessionCleanupStream.Exit(status: exit.status, message: message)
             },
-            stop: { process.terminateGroup() }
+            stop: { process.terminateGroup() },
+            stopWithin: { process.terminateGroup(grace: $0) }
         )
     }
 }
@@ -176,8 +180,9 @@ enum SessionCleanupPhase: Equatable {
 
 /// Session cleanup from the Desktop (board #535, spec
 /// 2026-10-12-session-cleanup §12): runs `watchtower workbench cleanup
-/// --json` — a plan, or an apply of exactly the keys the owner saw — and
-/// keeps each scope's phase. Held by the AppState-owned
+/// --json` — a plan, an apply of exactly the keys the owner saw, or a
+/// deleted session's background apply of everything removable (board
+/// #1716) — and keeps each scope's phase. Held by the AppState-owned
 /// `WorkbenchesViewModel`, so a plan or an apply in flight survives
 /// navigating away. It never runs git, `lsof` or
 /// `lsregister` and never writes the database: Go is the only writer.
@@ -195,7 +200,8 @@ final class SessionCleanupCenter {
     /// Per scope, the streamed run's rows and stage (spec §7).
     private(set) var progresses: [SessionCleanupScope: SessionCleanupProgress] = [:]
     /// Per scope, the apply running and its workbench: one cleanup apply
-    /// per workbench at a time (spec §3.2), Delete and Clean Up included.
+    /// per workbench at a time (spec §3.2); a background cleanup holds the
+    /// workbench's slot instead (board #1716).
     private var applyRuns: [SessionCleanupScope: (serial: Int, workbenchID: Int64)] = [:]
 
     /// The Desktop's live terminals, passed as `--live-session` (Go keeps a
@@ -230,6 +236,20 @@ final class SessionCleanupCenter {
     /// stopped: a child that never exits cannot hold the run. A seam for
     /// tests.
     @ObservationIgnored var exitAfterDoneLimit: Duration = .seconds(10)
+    /// The workbenches whose slot is taken, and who waits for each, in
+    /// request order (board #1716).
+    @ObservationIgnored private var slotHeld: Set<Int64> = []
+    @ObservationIgnored private var slotWaiters: [Int64: [CheckedContinuation<Void, Never>]] = [:]
+    /// The background applies running, per session: the quit stops them.
+    @ObservationIgnored private var backgroundChildren: [Int64: SessionCleanupStream] = [:]
+    /// Set by the quit: no background apply starts after it.
+    @ObservationIgnored private(set) var backgroundStopped = false
+    /// A background apply's time limit (spec 2026-11-10 §1). A seam for tests.
+    @ObservationIgnored var backgroundTimeLimit: Duration = .seconds(600)
+    /// The SIGTERM → SIGKILL grace of a stopped background apply.
+    @ObservationIgnored var backgroundStopGrace: Duration = .seconds(5)
+    /// The background time limit's wait. A seam for tests (a fake clock).
+    @ObservationIgnored var backgroundSleep: @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     init(runner: (any SessionCleanupRunning)?, streamer: (any SessionCleanupStreaming)? = nil) {
         self.runner = runner
@@ -357,20 +377,26 @@ final class SessionCleanupCenter {
     /// a failure.
     func applyCleanup(sessionID: Int64, workbenchID: Int64, items: [String]) async -> Bool {
         guard !items.isEmpty else { return true }
-        let args = Self.cleanupArguments(
-            sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items
-        )
-        return await runApply(.session(sessionID), workbenchID: workbenchID, args: args)
+        return await runApply(.session(sessionID), workbenchID: workbenchID) { [self] in
+            Self.cleanupArguments(sessionID: sessionID, workbenchID: workbenchID, live: liveSessionIDs(), applying: items)
+        }
     }
 
     /// Refused (false, nothing launched, no phase change) while another
-    /// cleanup apply of the workbench runs: its serial bump would otherwise
-    /// supersede that apply (spec §3.2).
-    private func runApply(_ scope: SessionCleanupScope, workbenchID: Int64, args: [String]) async -> Bool {
+    /// cleanup apply of the workbench runs here: its serial bump would
+    /// otherwise supersede that apply (spec §3.2). A background cleanup
+    /// holding the workbench's slot is waited for (board #1716); the
+    /// arguments are built once the slot is this apply's, so its live
+    /// sessions are current.
+    private func runApply(
+        _ scope: SessionCleanupScope, workbenchID: Int64, args: () -> [String]
+    ) async -> Bool {
         guard !isApplying(workbenchID: workbenchID) else { return false }
         let serial = beginRun(scope, phase: .applying)
         applyRuns[scope] = (serial, workbenchID)
-        let outcome = await runCleanup(args)
+        await acquireSlot(workbenchID: workbenchID)
+        let outcome = await runCleanup(args())
+        releaseSlot(workbenchID: workbenchID)
         if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
         // A plan never supersedes an apply (it does not start while one
         // runs); only a second apply would.
@@ -412,7 +438,7 @@ final class SessionCleanupCenter {
     }
 
     /// True while any cleanup apply of the workbench runs: the screen's, of
-    /// either scope, or Delete and Clean Up's.
+    /// either scope, or a placed session's; not a background cleanup.
     func isApplying(workbenchID: Int64) -> Bool {
         applyRuns.values.contains { $0.workbenchID == workbenchID }
     }
@@ -436,8 +462,10 @@ final class SessionCleanupCenter {
         }
     }
 
-    /// Applies exactly `items` to the scope, streamed. Refused while another
-    /// cleanup apply of the workbench runs: false, nothing launched, no
+    /// Applies exactly `items` to the scope, streamed. Waits for the
+    /// workbench's slot while a background cleanup holds it (board #1716).
+    /// Refused while another
+    /// cleanup apply of the workbench runs here: false, nothing launched, no
     /// phase or progress change — callers check `isApplying(workbenchID:)`
     /// first to tell a refusal from a failed apply. With no item nothing
     /// runs and that counts as success. A plan of the
@@ -448,7 +476,6 @@ final class SessionCleanupCenter {
     func startStreamedApply(_ scope: SessionCleanupScope, workbenchID: Int64, items: [String]) -> Task<Bool, Never> {
         guard !items.isEmpty else { return Task { true } }
         guard !isApplying(workbenchID: workbenchID) else { return Task { false } }
-        let args = streamArguments(scope, workbenchID: workbenchID, applying: items)
         planRuns.removeValue(forKey: scope)?.task.cancel()
         let serial = beginStreamedRun(scope, phase: .applying, stage: .applying)
         // The apply re-checks every item; no row waits for the plan's checks.
@@ -458,9 +485,13 @@ final class SessionCleanupCenter {
         let applied = Set(items)
         let run = Task { [weak self] () -> Bool in
             guard let self else { return false }
+            // A background cleanup holding the slot is waited for (board #1716).
+            await acquireSlot(workbenchID: workbenchID)
+            let args = streamArguments(scope, workbenchID: workbenchID, applying: items)
             let outcome = await stream(scope, serial: serial, args: args, stoppable: false) {
                 $0.absorbApply($1, applied: applied)
             }
+            releaseSlot(workbenchID: workbenchID)
             if applyRuns[scope]?.serial == serial { applyRuns[scope] = nil }
             switch outcome {
             case let .success(result):
@@ -608,6 +639,148 @@ final class SessionCleanupCenter {
         }
     }
 
+    // MARK: The workbench slot and the background cleanup (board #1716)
+
+    /// Takes workbench `workbenchID`'s slot: one cleanup apply per workbench
+    /// at a time (spec 2026-10-26 §3.2), waited for in request order
+    /// (2026-11-10 §1) — never refused. Paired with `releaseSlot`.
+    func acquireSlot(workbenchID: Int64) async {
+        guard slotHeld.contains(workbenchID) else {
+            slotHeld.insert(workbenchID)
+            return
+        }
+        await withCheckedContinuation { slotWaiters[workbenchID, default: []].append($0) }
+    }
+
+    /// Hands the slot to the next waiter, else frees it.
+    func releaseSlot(workbenchID: Int64) {
+        if var waiters = slotWaiters[workbenchID], !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            slotWaiters[workbenchID] = waiters.isEmpty ? nil : waiters
+            next.resume()
+        } else {
+            slotHeld.remove(workbenchID)
+        }
+    }
+
+    /// What one background apply ended with: the apply's result (nil when it
+    /// printed none) and why the run failed as a whole (nil when it did not)
+    /// — `SessionAutoCleanupOutcome.evaluate`'s inputs.
+    struct BackgroundApply: Equatable {
+        var result: SessionCleanupPlan?
+        var runError: String?
+    }
+
+    /// The background cleanup of deleted session `sessionID` (board #1716,
+    /// spec 2026-11-10 §1): waits for the workbench's slot, then runs
+    /// `workbench cleanup --session N --workbench W --live-session … --apply
+    /// --json --stream` with no `--item` — Go re-plans and removes everything
+    /// removable now. The session's own terminal is closed, so it is never
+    /// passed as live. A run still going after `backgroundTimeLimit` gets
+    /// SIGTERM to its process group and SIGKILL `backgroundStopGrace` later;
+    /// the slot is freed once it was reaped, and the outcome is
+    /// `SessionAutoCleanupOutcome.timeoutRunError`. Leaves no phase: nothing
+    /// shows it but the deleted row's outcome.
+    func applyInBackground(sessionID: Int64, workbenchID: Int64) async -> BackgroundApply {
+        await acquireSlot(workbenchID: workbenchID)
+        defer { releaseSlot(workbenchID: workbenchID) }
+        guard !backgroundStopped else { return BackgroundApply(runError: Self.quitRunError) }
+        guard let streamer else { return BackgroundApply(runError: CLIRunnerError.binaryNotFound.localizedDescription) }
+        let environment = Self.cleanupEnvironment(await baseEnvironment())
+        // The quit may have stopped the background applies during that
+        // wait: nothing is spawned after it. From here to the child's
+        // registration nothing suspends, so the quit always sees it.
+        guard !backgroundStopped else { return BackgroundApply(runError: Self.quitRunError) }
+        var live = liveSessionIDs()
+        live.remove(sessionID)
+        let args = Self.cleanupArguments(sessionID: sessionID, workbenchID: workbenchID, live: live, applying: [], stream: true)
+        let child: SessionCleanupStream
+        do {
+            child = try streamer.streamCleanup(args: args, environment: environment)
+        } catch {
+            return BackgroundApply(runError: error.localizedDescription)
+        }
+        backgroundChildren[sessionID] = child
+        defer { backgroundChildren[sessionID] = nil }
+        let grace = backgroundStopGrace
+        let timedOut = TimedOutFlag()
+        let watchdog = Task { [sleep = backgroundSleep, limit = backgroundTimeLimit] in
+            await sleep(limit)
+            guard !Task.isCancelled else { return }
+            timedOut.set()
+            Self.stop(child, within: grace)
+        }
+        var done: SessionCleanupPlan?
+        for await line in child.lines {
+            if case let .done(plan)? = SessionCleanupEvent.decode(line: line) {
+                done = plan
+                break
+            }
+        }
+        // A child that said `done` but does not exit is stopped after
+        // `exitAfterDoneLimit`; either way its exit is awaited until it was
+        // reaped, so the slot is freed only then.
+        let lingering = done == nil ? nil : Task { [limit = exitAfterDoneLimit] in
+            try? await Task.sleep(for: limit)
+            guard !Task.isCancelled else { return }
+            Self.stop(child, within: grace)
+        }
+        let exit = await child.exit()
+        lingering?.cancel()
+        watchdog.cancel()
+        if timedOut.isSet { return BackgroundApply(result: done, runError: SessionAutoCleanupOutcome.timeoutRunError) }
+        if backgroundStopped { return BackgroundApply(runError: Self.quitRunError) }
+        // A non-zero exit — after `done` too, a child stopped for not
+        // exiting included — is a run that failed as a whole: never clean.
+        guard exit.status == 0 else { return BackgroundApply(result: done, runError: exit.message) }
+        guard let done else { return BackgroundApply(runError: Self.endedWithoutResultText) }
+        return BackgroundApply(result: done)
+    }
+
+    /// The quit (board #1716): every background apply running gets SIGTERM
+    /// to its process group and SIGKILL `backgroundStopGrace` later; returns
+    /// once each was reaped (bounded by the grace and a second), so no old
+    /// cleanup outlives the app to race the next launch's. No background
+    /// apply starts after it. The deleted rows keep `delete_requested_at`:
+    /// the next launch queues them again.
+    func stopBackgroundApplies() async {
+        backgroundStopped = true
+        let children = Array(backgroundChildren.values)
+        let grace = backgroundStopGrace
+        await withTaskGroup(of: Void.self) { group in
+            for child in children {
+                Self.stop(child, within: grace)
+                group.addTask { await Self.awaitExitOnly(of: child, within: grace + .seconds(1)) }
+            }
+        }
+    }
+
+    /// Whether a background apply runs for session `sessionID`.
+    func isApplyingInBackground(sessionID: Int64) -> Bool {
+        backgroundChildren[sessionID] != nil
+    }
+
+    nonisolated static let quitRunError = "the app quit during the cleanup"
+
+    nonisolated private static func stop(_ child: SessionCleanupStream, within grace: Duration) {
+        if let stopWithin = child.stopWithin { stopWithin(grace) } else { child.stop() }
+    }
+
+    /// Waits for `child` to exit, at most `limit`; it is never stopped here.
+    nonisolated private static func awaitExitOnly(of child: SessionCleanupStream, within limit: Duration) async {
+        await withCheckedContinuation { (waiter: CheckedContinuation<Void, Never>) in
+            let once = ResumeOnce(waiter)
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                _ = once.resume()
+            }
+            Task {
+                _ = await child.exit()
+                if once.resume() { timer.cancel() }
+            }
+        }
+    }
+
     // MARK: Running
 
     private func beginRun(_ scope: SessionCleanupScope, phase: SessionCleanupPhase) -> Int {
@@ -677,6 +850,18 @@ final class SessionCleanupCenter {
         let failed = result.items.filter { !$0.error.isEmpty }
         guard !failed.isEmpty else { return nil }
         return failed.map { "\($0.name.isEmpty ? $0.key : $0.name): \($0.error)" }.joined(separator: "; ")
+    }
+}
+
+/// Set once by a background apply's watchdog when its time limit stopped it.
+private final class TimedOutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isSet: Bool { lock.withLock { value } }
+
+    func set() {
+        lock.withLock { value = true }
     }
 }
 

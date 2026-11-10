@@ -394,29 +394,6 @@ final class SessionCleanupCenterTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 1)
     }
 
-    func testDeleteDialogOfferFollowsThePhase() throws {
-        let plan = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.plan)
-        let empty = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.emptyPlan)
-
-        XCTAssertEqual(SessionDeleteCleanupOffer.message(.planning), "Checking what this session left…")
-        XCTAssertFalse(SessionDeleteCleanupOffer.offersCleanup(.planning))
-        let line = try XCTUnwrap(SessionDeleteCleanupOffer.message(.ready(plan)))
-        XCTAssertTrue(line.hasPrefix("Also clean up: 1 worktree, 1 branch (~2.0 GB). Kept: 1 worktree — uncommitted changes."),
-                      line)
-        XCTAssertTrue(line.hasSuffix(SessionDeleteCleanupOffer.undoNote), "Undo cannot bring the worktrees back")
-        XCTAssertTrue(SessionDeleteCleanupOffer.offersCleanup(.ready(plan)))
-        XCTAssertNil(SessionDeleteCleanupOffer.message(.ready(empty)), "nothing removable: the dialog is as before")
-        XCTAssertFalse(SessionDeleteCleanupOffer.offersCleanup(.ready(empty)))
-        XCTAssertNil(SessionDeleteCleanupOffer.message(.idle))
-        let unknownOnly = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.planUnknownOnly)
-        XCTAssertFalse(SessionDeleteCleanupOffer.offersCleanup(.ready(unknownOnly)),
-                       "an item of an unknown kind is never shown, so never offered")
-        XCTAssertNil(SessionDeleteCleanupOffer.message(.ready(unknownOnly)))
-        let busy = try JSONDecoder().decode(SessionCleanupPlan.self, from: CleanupFixture.planBusy)
-        XCTAssertTrue(SessionDeleteCleanupOffer.offersCleanup(.ready(busy)), "removed once the terminal closes")
-        XCTAssertEqual(SessionDeleteCleanupOffer.message(.failed("boom")), "Could not check what this session left: boom")
-    }
-
     // MARK: Streamed runs (board #1107, spec 2026-10-26 §6/§7)
 
     func testStreamedPlanArguments() async {

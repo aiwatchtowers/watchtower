@@ -202,4 +202,10 @@ final class SessionAutoCleanupOutcomeTests: XCTestCase {
             .notFullyCleaned(mark: "Not fully cleaned: the cleanup took longer than 10 minutes.")
         )
     }
+
+    /// The clean apply's row could not be deleted (board #1716 review).
+    func testDeleteFailedMark() {
+        XCTAssertEqual(SessionAutoCleanupOutcome.deleteFailedMark("database is locked."),
+                       "Not fully cleaned: the session could not be deleted — database is locked.")
+    }
 }

@@ -37,11 +37,11 @@ extension WorkbenchesViewModel {
     }
 
     /// Cleans up finished placed session `row` after its agent exited: plans
-    /// as the Delete dialog does (`closingSession`), applies only the plan's
+    /// as for a closed terminal (`closingSession`), applies only the plan's
     /// pending removals among the row's own worktree and branch, and
     /// forgets that worktree's MCP entry once it was removed. Nothing for a
     /// row without `worktreeBranch` or a workbench, one not finished, one
-    /// live again, or one another cleanup, the Clean Up screen, a Delete dialog or a delete
+    /// live again, or one another cleanup, the Clean Up screen or a delete
     /// owns — checked again right before the apply, with no suspension
     /// between that check and the apply's start. While another cleanup apply
     /// of the workbench runs (one per workbench, spec 2026-10-26 §3.2) it
@@ -69,7 +69,7 @@ extension WorkbenchesViewModel {
         let scope = SessionCleanupScope.session(row.id)
         guard await isStillFinished(row.id), mayCleanUpPlaced(row, center: center, phase: .idle) else { return .ended }
         guard !cleanupApplyRuns(projectID: workbenchID) else { return .blockedByApply }
-        // Nil: the plan was ignored or another run (a Delete dialog's) took
+        // Nil: the plan was ignored or another run took
         // the scope over — its phase is not this run's to touch.
         guard let serial = await center.planCleanup(sessionID: row.id, workbenchID: workbenchID, closingSession: true)
         else { return .ended }
@@ -97,8 +97,8 @@ extension WorkbenchesViewModel {
         }
         cleaningUpSessions.insert(row.id)
         let ok = await center.applyCleanup(sessionID: row.id, workbenchID: workbenchID, items: items.map(\.key))
-        // Nobody else marks a row busy while it is (Delete and Clean Up and
-        // the Clean Up screen's apply refuse a busy row), so this flag is this run's.
+        // Nobody else marks a row busy while it is (the Clean Up screen's
+        // apply refuses a busy row), so this flag is this run's.
         cleaningUpSessions.remove(row.id)
         let applied = center.cleanupPhase(for: scope)
         if !ok {
@@ -115,17 +115,15 @@ extension WorkbenchesViewModel {
     }
 
     /// Waits for the cleanup applies of workbench `projectID` this view
-    /// model runs — the Clean Up screen's, a Delete and Clean Up, another
-    /// row's automatic cleanup while it applies (`except` is this row's
-    /// own) — to end. True
+    /// model runs — the Clean Up screen's, another row's automatic cleanup
+    /// while it applies (`except` is this row's own) — to end; a deleted
+    /// session's background cleanup is waited for by the apply itself (the
+    /// workbench's slot, board #1716). True
     /// once none runs; false when one still runs that no task here owns.
     private func awaitCleanupApplies(projectID: Int64, except id: Int64) async -> Bool {
         while cleanupApplyRuns(projectID: projectID) {
             var runs: [Task<Void, Never>] = []
             if let screen = sweepRuns[projectID] { runs.append(Task { _ = await screen.value }) }
-            for (session, workbench) in cleanupRunWorkbenches where workbench == projectID {
-                if let delete = cleanupRuns[session] { runs.append(Task { _ = await delete.value }) }
-            }
             // Only another row's run that applies now (its row is busy): one
             // waiting like this one is never waited for, so two never wait
             // on each other.
@@ -170,7 +168,7 @@ extension WorkbenchesViewModel {
     private func mayCleanUpPlaced(_ row: TerminalSession, center: SessionCleanupCenter, phase: SessionCleanupPhase) -> Bool {
         let id = row.id
         return terminalCenter?.liveIDs.contains(id) != true && deletingWorkbenchID != row.projectID
-            && !cleaningUpSessions.contains(id) && cleanupRuns[id] == nil && !cleanupScreenShows(sessionID: id)
+            && !cleaningUpSessions.contains(id) && !closedForCleanup.contains(id) && !cleanupScreenShows(sessionID: id)
             && !closingDeletes.contains(id) && !pendingDeletes.ids.contains(id)
             && center.cleanupPhase(for: .session(id)) == phase
     }

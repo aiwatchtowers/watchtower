@@ -1846,6 +1846,9 @@ final class AppState {
             vm.hostRestartListURL = HostRestartList.defaultURL() // the reattach leaves the restart's rows to it
         }
         vm.startHostReattach()
+        // Board #1716: deleted sessions whose cleanup a quit or crash cut
+        // short are cleaned up again, once, after the reattach.
+        Task { [weak vm] in await vm?.requeueDeletingRowsAtLaunch() }
         startHostRestart() // after the reattach: it stops what the reattach adopted
         // Old pasted Workchat files go once the reattach is done; the runs
         // live then keep theirs.

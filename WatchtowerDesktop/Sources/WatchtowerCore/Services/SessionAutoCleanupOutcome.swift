@@ -87,13 +87,25 @@ package enum SessionAutoCleanupOutcome: Equatable, Sendable {
         return "Not fully cleaned: \(counts) — \(reasons.joined(separator: ", "))."
     }
 
+    /// The mark of a row whose cleanup ended clean but whose DELETE then
+    /// failed: "Not fully cleaned: the session could not be deleted —
+    /// database is locked."
+    package static func deleteFailedMark(_ error: String) -> String {
+        "Not fully cleaned: the session could not be deleted — \(sentence(error))."
+    }
+
+    /// `text` trimmed, without trailing full stops.
+    private static func sentence(_ text: String) -> String {
+        var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        while text.hasSuffix(".") { text.removeLast() }
+        return text
+    }
+
     /// "Not fully cleaned: the cleanup could not run — watchtower exited
     /// with code 1."
     private static func runMark(_ runError: String) -> String {
         if runError == timeoutRunError { return "Not fully cleaned: \(timeoutRunError)." }
-        var text = runError.trimmingCharacters(in: .whitespacesAndNewlines)
-        while text.hasSuffix(".") { text.removeLast() }
-        return "Not fully cleaned: the cleanup could not run — \(text)."
+        return "Not fully cleaned: the cleanup could not run — \(sentence(runError))."
     }
 }
 

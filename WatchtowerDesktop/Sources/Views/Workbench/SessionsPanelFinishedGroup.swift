@@ -35,9 +35,9 @@ struct SessionsPanelSessionRow: View {
             hasCursor: hasCursor,
             opensIn: row.session.kind.isAgent ? WorkspaceView(vm.layout(projectID: projectID).pane(forSession: row.id)) : nil
         )
-        // Its terminal closed by Delete and Clean Up (board #535): no
-        // resume, no menu. A Clean Up… apply leaves it clickable.
-        .disabled(vm.closedForCleanup.contains(row.id))
+        // Deleted, its background cleanup queued or running (board #1716):
+        // no resume, no menu. A Clean Up… apply leaves it clickable.
+        .disabled(!vm.canResume(row.id))
         .panelTab(isSelected: vm.panelSelection == .session(row.id))
         .onHover { inside in
             if inside {
@@ -48,8 +48,8 @@ struct SessionsPanelSessionRow: View {
         }
     }
 
-    /// The report line, or "Cleaning up…" while Delete and Clean Up or a
-    /// Clean Up… apply runs on this row (board #535), or the spec review
+    /// The report line, or "Cleaning up…" while a Clean Up… apply runs on
+    /// this row (board #535), or the spec review
     /// author loop's round while one of its asks is in the loop (#1121).
     private var reportLine: String? {
         if showsCleaningUp { return "Cleaning up…" }
