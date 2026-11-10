@@ -308,6 +308,60 @@ final class InboxTargetButtonFactsTests: XCTestCase {
     }
 }
 
+/// A pending target proposal whose artifact went away, or whose living
+/// rewrite changed the drawn action's hash: its approval card stays in
+/// Needs approval and still approves (the same `actions approve`); the
+/// button drawn now has another context, so it is idle.
+@MainActor
+final class InboxTargetOrphanedProposalTests: XCTestCase {
+    private let suite = "InboxTargetOrphanedProposalTests.\(UUID().uuidString)"
+
+    override func tearDown() {
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        super.tearDown()
+    }
+
+    private func check(deleteOutput: Bool) async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let (outputID, proposalID, approvals) = try await pool.write { db -> (Int64, Int64, Int64) in
+            let seed = try InboxFolderFixtures.seed(db)
+            let automationID = try TestDatabase.insertAutomation(db, slug: "digest", name: "Acme digest")
+            let runID = try TestDatabase.insertAutomationRun(db, automationID: automationID)
+            let output = try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: runID)
+            let proposal = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", contextType: "automation_output", contextID: "\(output):0:0123456789abcdef")
+            if deleteOutput {
+                try db.execute(sql: "DELETE FROM automation_outputs WHERE id = ?", arguments: [output])
+            }
+            return (output, proposal, seed.approvals)
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
+        await vm.refresh()
+        vm.selectFolder(approvals)
+        XCTAssertTrue(vm.folderEntries.contains { $0.id == "approval:action:\(proposalID)" },
+                      "the open approval stays on screen")
+        // The button drawn now (another hash, or no card at all) has no proposal.
+        let now = vm.targetFacts(contextID: "\(outputID):0:fedcba9876543210")
+        XCTAssertNil(now.proposal)
+        XCTAssertFalse(now.inFlight)
+
+        let action = try XCTUnwrap(vm.feed.proposals.first { $0.id == proposalID })
+        await vm.approve(proposalID, shownArgs: action.argsJSON)
+        XCTAssertEqual(runner.invocations.first?.prefix(3).map { $0 }, ["actions", "approve", "\(proposalID)"])
+    }
+
+    func testArtifactDeletedWhilePending() async throws {
+        try await check(deleteOutput: true)
+    }
+
+    func testContentHashChangedWhilePending() async throws {
+        try await check(deleteOutput: false)
+    }
+}
+
 /// A waiting button's click opens Needs approval when it shows the card,
 /// and otherwise keeps the card on screen with a notice (review A15 #1).
 @MainActor
