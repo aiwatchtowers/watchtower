@@ -85,7 +85,7 @@ enum TuningChatSurface {
             ownerInstructions: true,
             systemPrompt: { systemPrompt(tools: tools) },
             turnPrompt: { input in
-                turnContext(workbenchID: workbenchID, period: period()) + "\n\n" + input.text
+                turnContext(workbenchID: workbenchID, period: period(), tools: tools) + "\n\n" + input.text
             },
             willSend: { _ in
                 onWillSend()
@@ -99,6 +99,10 @@ enum TuningChatSurface {
 
     // MARK: - Prompt
 
+    /// The surface's own rules with tools. What the tool contract
+    /// (`AgentToolsContract.promptBlock(.tuning)`) already says — proposals
+    /// only, `list_coach_proposals` first, the stale-CLI answer — is said
+    /// there once, never here.
     private static let toolsRules = """
         You are Watchtower's tuning assistant for one workbench. You help the owner tune Watchtower's prompts \
         (through additions only), their global Claude Code and Codex skills, the Watchtower skill pack overlay, \
@@ -106,18 +110,15 @@ enum TuningChatSurface {
         CLAUDE.md, AGENTS.md, skills and .watchtower/workflow.md.
         Read before you answer: the agent report, sessions, LLM usage, prompts, skills and instructions. Quote \
         numbers from the tools, never guesses.
-        You never change a file or setting. You propose; the owner presses Accept on the card. A workbench folder \
-        file is written by Accept, and the owner commits it.
-        Propose an edit with propose_tuning_edit.
-        Check list_coach_proposals first and never propose again what the owner declined.
-        If no tuning tool is in your tool list, answer only "Tuning tools are not available in this Watchtower \
-        build — update Watchtower." and propose nothing.
+        A workbench folder file is written by Accept on its card, and the owner commits it.
         """
 
+    /// Without tools, neutral about why (an HTTP provider, or a model list
+    /// not read yet): the panel's line is the one place that names the cause.
     private static let noToolsRules = """
-        You are Watchtower's tuning assistant for one workbench. This provider has no tools: you can talk tuning \
-        through, but you cannot read the report, prompts or skills, or propose an edit. Tell the owner tuning \
-        tools need Claude or Codex.
+        You are Watchtower's tuning assistant for one workbench. Tuning tools are not available for this turn \
+        — say so in one line and answer from what the owner pastes. You cannot read the report, prompts or \
+        skills, or propose an edit.
         """
 
     static func rulesBlock(tools: Bool) -> String {
@@ -131,11 +132,14 @@ enum TuningChatSurface {
         return parts.joined(separator: "\n\n")
     }
 
-    /// The per-turn block: the workbench and the pane's period, as the tools'
-    /// arguments.
-    static func turnContext(workbenchID: Int64, period: AgentAnalyticsCenter.Period) -> String {
+    /// The per-turn block: the workbench and the pane's period, with the
+    /// tools' arguments when the turn has tools.
+    static func turnContext(workbenchID: Int64, period: AgentAnalyticsCenter.Period, tools: Bool) -> String {
         let days = period.rawValue
         let span = days == 1 ? "the last day" : "the last \(days) days"
+        guard tools else {
+            return "=== ANALYTICS PANE ===\nWorkbench: \(workbenchID)\nPeriod: \(span)"
+        }
         return "=== ANALYTICS PANE ===\nWorkbench: \(workbenchID) (pass workbench_id: \(workbenchID))\n"
             + "Period: \(span) (pass days: \(days))"
     }

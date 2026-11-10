@@ -106,7 +106,8 @@ final class TuningChatSurfaceTests: XCTestCase {
         XCTAssertTrue(done)
         XCTAssertEqual(mock.toolModes, [nil])
         let system = spec.systemPrompt()
-        XCTAssertTrue(system.contains("This provider has no tools"))
+        XCTAssertTrue(system.contains("Tuning tools are not available for this turn — say so in one line and answer "
+            + "from what the owner pastes."))
         XCTAssertFalse(system.contains("=== TUNING TOOLS ==="))
     }
 
@@ -116,6 +117,9 @@ final class TuningChatSurfaceTests: XCTestCase {
         XCTAssertFalse(TuningChatSurface.toolsAvailable(provider: "claude"))
         let unread = try await spec(provider: "claude")
         XCTAssertEqual(unread.toolAccess, .draftOnly)
+        // The model text is neutral about the cause; only the panel names it.
+        XCTAssertFalse(unread.systemPrompt().contains("Claude or Codex"))
+        XCTAssertFalse(unread.systemPrompt().contains("pick one"))
         XCTAssertEqual(TuningChatSurface.unavailableHelp(),
                        "Tuning tools need Claude or Codex — pick one in Settings → System → AI")
 
@@ -127,7 +131,7 @@ final class TuningChatSurfaceTests: XCTestCase {
     // MARK: - Prompts
 
     func testTurnPromptCarriesPeriodAndWorkbench() async throws {
-        XCTAssertEqual(TuningChatSurface.turnContext(workbenchID: 3, period: .week),
+        XCTAssertEqual(TuningChatSurface.turnContext(workbenchID: 3, period: .week, tools: true),
                        "=== ANALYTICS PANE ===\nWorkbench: 3 (pass workbench_id: 3)\nPeriod: the last 7 days (pass days: 7)")
         var period = AgentAnalyticsCenter.Period.week
         let ai = ScriptedAIService()
@@ -136,22 +140,41 @@ final class TuningChatSurfaceTests: XCTestCase {
         period = .month
         await turn(engine, ai, "second")
         XCTAssertEqual(ai.calls.count, 2)
-        XCTAssertTrue(ai.calls[0].prompt.contains(TuningChatSurface.turnContext(workbenchID: 3, period: .week)))
+        XCTAssertTrue(ai.calls[0].prompt.contains(TuningChatSurface.turnContext(workbenchID: 3, period: .week, tools: true)))
         XCTAssertTrue(ai.calls[0].prompt.contains("first"))
         XCTAssertTrue(ai.calls[1].prompt.contains("(pass days: 30)"))
-        XCTAssertTrue(TuningChatSurface.turnContext(workbenchID: 3, period: .day).contains("(pass days: 1)"))
+        XCTAssertTrue(TuningChatSurface.turnContext(workbenchID: 3, period: .day, tools: true).contains("(pass days: 1)"))
     }
 
-    func testRulesPinStaleCLILine() {
+    func testDraftOnlyTurnContextHasNoToolHint() async throws {
+        XCTAssertEqual(TuningChatSurface.turnContext(workbenchID: 3, period: .week, tools: false),
+                       "=== ANALYTICS PANE ===\nWorkbench: 3\nPeriod: the last 7 days")
+        let ai = ScriptedAIService()
+        let engine = makeSurfaceEngine(try await spec(provider: "ollama"), dbPool: pool, ai: ai)
+        await turn(engine, ai, "hello")
+        let prompt = try XCTUnwrap(ai.calls.first?.prompt)
+        XCTAssertTrue(prompt.contains("Workbench: 3\nPeriod: the last 7 days"))
+        XCTAssertFalse(prompt.contains("pass "))
+    }
+
+    /// The tool contract's rules are said once: the surface's own rules
+    /// never repeat them.
+    func testToolsOnSaysTheContractRulesOnce() {
+        let system = TuningChatSurface.systemPrompt(tools: true)
+        let staleLine = "If no tuning tool is in your tool list, answer only \"Tuning tools are not available in this "
+            + "Watchtower build — update Watchtower.\" and propose nothing."
+        for line in [staleLine, "list_coach_proposals", "never change anything yourself", "propose_tuning_edit —"] {
+            XCTAssertEqual(system.components(separatedBy: line).count - 1, 1, line)
+        }
+        XCTAssertEqual(system.components(separatedBy: "propose_tuning_edit").count - 1,
+                       AgentToolsContract.promptBlock(surface: .tuning)
+                           .components(separatedBy: "propose_tuning_edit").count - 1,
+                       "the tool is named only by the contract")
+    }
+
+    func testRulesSayAcceptWritesTheFolderFile() {
         XCTAssertTrue(TuningChatSurface.rulesBlock(tools: true).contains(
-            "If no tuning tool is in your tool list, answer only \"Tuning tools are not available in this "
-                + "Watchtower build — update Watchtower.\" and propose nothing."))
-    }
-
-    func testRulesSayChatNeverWrites() {
-        let rules = TuningChatSurface.rulesBlock(tools: true)
-        XCTAssertTrue(rules.contains("You never change a file or setting. You propose; the owner presses Accept on "
-            + "the card. A workbench folder file is written by Accept, and the owner commits it."))
+            "A workbench folder file is written by Accept on its card, and the owner commits it."))
         for prompt in [TuningChatSurface.systemPrompt(tools: true), TuningChatSurface.systemPrompt(tools: false)] {
             XCTAssertFalse(prompt.contains("replay"))
             XCTAssertFalse(prompt.contains("captured"))
