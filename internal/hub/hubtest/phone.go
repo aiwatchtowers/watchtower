@@ -62,6 +62,11 @@ type Config struct {
 	// (the phone skips the records it cannot open, so it never deletes or
 	// answers another phone's).
 	Mailbox string
+	// Key, when set, is the phone's Ed25519 device key instead of a fresh
+	// one: a stable device id and relay_device_id across runs (the staging
+	// measurement, whose phone must stay on the relay's attestation-exempt
+	// list).
+	Key ed25519.PrivateKey
 }
 
 type sent struct {
@@ -165,6 +170,10 @@ func New(cfg Config) (*Phone, error) {
 	pub, sig, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.Key != nil {
+		sig = cfg.Key
+		pub = sig.Public().(ed25519.PublicKey)
 	}
 	kx, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
@@ -822,6 +831,11 @@ func newUUID() string {
 // and relay device id from the code, and gets K_meta and the epoch from its
 // keybox once the owner confirmed (ReadKeybox). Its link nonce is the code's.
 func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, error) {
+	return FromLinkWithKey(l, f, clock, nil)
+}
+
+// FromLinkWithKey is FromLink for a phone with device key key (nil = fresh).
+func FromLinkWithKey(l wire.LinkPayload, f Records, clock func() time.Time, key ed25519.PrivateKey) (*Phone, error) {
 	hub, err := secure.ParseID(l.HubID)
 	if err != nil {
 		return nil, fmt.Errorf("hubtest: link hub id: %w", err)
@@ -843,7 +857,7 @@ func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, er
 	if err != nil {
 		return nil, fmt.Errorf("hubtest: link nonce: %w", err)
 	}
-	p, err := New(Config{Hub: hub, HubKX: kx, HubSig: ed25519.PublicKey(sig), HubRelayID: l.RelayDeviceID, Transport: f, Clock: clock})
+	p, err := New(Config{Hub: hub, HubKX: kx, HubSig: ed25519.PublicKey(sig), HubRelayID: l.RelayDeviceID, Transport: f, Clock: clock, Key: key})
 	if err != nil {
 		return nil, err
 	}
