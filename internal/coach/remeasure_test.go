@@ -39,10 +39,15 @@ func TestRemeasureMixedBaselines(t *testing.T) {
 	// Accepted before the sessions: no Claude session in its window.
 	empty := acceptedAt(t, d, DestClaudeMDUser, "Be brief.", fl(6), t0.Add(-time.Minute))
 	codex := acceptedAt(t, d, "codex_skill_user", "Plan first.", fl(6), applyNow)
+	// A NULL baseline is re-taken as well.
+	null := acceptedAt(t, d, DestClaudeMDUser, "Read the plan.", nil, applyNow)
+	// too_little_data is retried by the judge: its baseline is re-taken too.
+	retry := acceptedAt(t, d, DestClaudeMDUser, "Name the test.", fl(6), applyNow)
+	require.NoError(t, d.SetCoachVerdict(retry, "too_little_data", nil, applyNow.Add(15*24*time.Hour)))
 
 	n, err := RemeasureMixedBaselines(d.DB, d.al)
 	require.NoError(t, err)
-	assert.Equal(t, 3, n)
+	assert.Equal(t, 5, n)
 
 	p := proposal(t, d, mixed)
 	require.NotNil(t, p.Baseline)
@@ -53,6 +58,8 @@ func TestRemeasureMixedBaselines(t *testing.T) {
 	assert.Nil(t, pe.Baseline, "nothing measurable in the window")
 	assert.Zero(t, pe.BaselineN)
 	assert.InDelta(t, 4.0, *proposal(t, d, codex).Baseline, 1e-9, "Codex rows only")
+	assert.InDelta(t, 2.0, *proposal(t, d, retry).Baseline, 1e-9, "a retryable verdict is re-measured")
+	assert.InDelta(t, 2.0, *proposal(t, d, null).Baseline, 1e-9, "baseline IS NULL matches")
 
 	done, err := d.CoachBaselinesPerAgentDone()
 	require.NoError(t, err)
@@ -107,4 +114,26 @@ func TestRemeasureMixedBaselines_WaitsForTheMove(t *testing.T) {
 	done, err := d.CoachBaselinesPerAgentDone()
 	require.NoError(t, err)
 	assert.False(t, done, "the next start runs it again")
+}
+
+func TestJudge_WaitsForTheRemeasure(t *testing.T) {
+	d := openDBs(t)
+	unmoved, err := agentlogdb.Open(filepath.Join(t.TempDir(), "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = unmoved.Close() })
+	id := acceptedAt(t, d, DestClaudeMDUser, "Keep diffs small.", fl(6), judgeDecided)
+	_, _, err = Judge(d.DB, unmoved, judgeDecided.Add(15*24*time.Hour))
+	require.ErrorIs(t, err, errBaselinesPending)
+	assert.Empty(t, proposal(t, d, id).Verdict, "nothing judged on a mixed baseline")
+
+	// Moved: Judge re-measures first (no Claude session in the window: nil
+	// baseline), then judges on it.
+	_, _, err = Judge(d.DB, d.al, judgeDecided.Add(15*24*time.Hour))
+	require.NoError(t, err)
+	p := proposal(t, d, id)
+	assert.Nil(t, p.Baseline)
+	assert.Equal(t, "too_little_data", p.Verdict)
+	done, err := d.CoachBaselinesPerAgentDone()
+	require.NoError(t, err)
+	assert.True(t, done)
 }

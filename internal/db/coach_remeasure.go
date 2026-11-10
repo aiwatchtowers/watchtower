@@ -9,11 +9,12 @@ import (
 // its destination serves (coach.RemeasureMixedBaselines, board #1517).
 const MaintCoachBaselinesPerAgent = "coach_baselines_per_agent"
 
-// ListAcceptedUnjudgedCoachProposals returns the accepted proposals with no
-// verdict yet, oldest first.
+// ListAcceptedUnjudgedCoachProposals returns the accepted proposals the judge
+// may still give a verdict: no verdict yet or too_little_data (retried until
+// the judge gives up), oldest first.
 func (db *DB) ListAcceptedUnjudgedCoachProposals() ([]CoachProposal, error) {
 	rows, err := db.Query(`SELECT ` + coachCols + ` FROM coach_proposals
-		WHERE status = 'accepted' AND verdict = '' ORDER BY id`)
+		WHERE status = 'accepted' AND verdict IN ('', 'too_little_data') ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing unjudged coach proposals: %w", err)
 	}
@@ -30,11 +31,12 @@ func (db *DB) ListAcceptedUnjudgedCoachProposals() ([]CoachProposal, error) {
 }
 
 // CASCoachBaseline sets proposal id's baseline (nil = NULL) and its n only
-// while it is still accepted with no verdict and its baseline is still old;
-// false when another writer got there first.
+// while it is still accepted with no verdict or too_little_data and its
+// baseline is still old (the baseline stands for the pair: Accept writes both
+// at once); false when another writer got there first.
 func (db *DB) CASCoachBaseline(id int64, old, value *float64, n int) (bool, error) {
 	res, err := db.Exec(`UPDATE coach_proposals SET baseline = ?, baseline_n = ?
-		WHERE id = ? AND status = 'accepted' AND verdict = '' AND baseline IS ?`,
+		WHERE id = ? AND status = 'accepted' AND verdict IN ('', 'too_little_data') AND baseline IS ?`,
 		coachBaselineArg(value), n, id, coachBaselineArg(old))
 	if err != nil {
 		return false, fmt.Errorf("updating coach proposal %d baseline: %w", id, err)

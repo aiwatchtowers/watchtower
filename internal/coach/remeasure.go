@@ -9,24 +9,26 @@ import (
 )
 
 // RemeasureMixedBaselines re-takes, once per install, the baseline of every
-// accepted proposal with no verdict on the agent its destination serves
+// accepted proposal the judge may still judge (no verdict, or a retryable
+// too_little_data) on the agent its destination serves
 // (AgentFor): before board #1517 a baseline counted every agent's sessions,
 // so a Claude text's baseline could carry Codex rows (spec D58, ask #1152).
 // The window is the Accept's own, [decided_at − 14 days, decided_at]; a
 // window with nothing measurable gives a nil baseline (too_little_data at
 // the verdict). Each row is written with a compare-and-set on its stored
-// baseline, so a verdict or a rollback written meanwhile (the daemon's judge,
-// `coach accept`) wins and the row is left alone. The db_maintenance key
+// baseline, so a final verdict or a rollback written meanwhile (the judge,
+// `coach rollback`) wins and the row is left alone. The db_maintenance key
 // MaintCoachBaselinesPerAgent is written once every row is done; until then
 // (a crash, an error, agent analytics still waiting for their move out of
-// watchtower.db) the next call runs it again. al nil (no agent analytics)
-// writes the key at once. rewritten counts the baselines that changed.
-func RemeasureMixedBaselines(main *db.DB, al *agentlogdb.DB) (rewritten int, err error) {
+// watchtower.db) the next call runs it again — at daemon start and before
+// each Judge. al nil (no agent analytics) writes the key at once. The count
+// is the baselines that changed.
+func RemeasureMixedBaselines(main *db.DB, al *agentlogdb.DB) (int, error) {
 	return remeasure(main, al, nil)
 }
 
-// remeasure is RemeasureMixedBaselines with a test hook run between the
-// measurement and the compare-and-set.
+// remeasure is RemeasureMixedBaselines with a hook run between the
+// measurement and the compare-and-set (tests only: nil in production).
 func remeasure(main *db.DB, al *agentlogdb.DB, beforeCAS func(db.CoachProposal)) (int, error) {
 	done, err := main.CoachBaselinesPerAgentDone()
 	if err != nil || done {

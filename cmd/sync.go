@@ -915,7 +915,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	al := openAgentLog(ctx, cfg, database, logger)
 	// Board #1517 (ask #1152): coach baselines taken on every agent's rows
 	// are re-taken once on their destination's agent, before the judge runs.
-	remeasureCoachBaselines(database, al, logger)
+	remeasureCoachBaselines(cfg, database, al, logger)
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
@@ -1095,16 +1095,22 @@ func openAgentLog(ctx context.Context, cfg *config.Config, database *db.DB, logg
 }
 
 // remeasureCoachBaselines runs coach.RemeasureMixedBaselines once per
-// install. A failed agentlog.db open (al nil) skips it: the next start
-// retries, where the coach's own nil case would mark it done. Counts only in
-// the log.
-func remeasureCoachBaselines(database *db.DB, al *agentlogdb.DB, logger *log.Logger) {
+// install, under coach.lock so no `coach run` judges a row while its baseline
+// changes. A failed agentlog.db open (al nil) or a busy lock skips it: every
+// Judge (under the same lock) tries it again first, where the coach's own nil
+// case would mark it done. Counts only in the log.
+func remeasureCoachBaselines(cfg *config.Config, database *db.DB, al *agentlogdb.DB, logger *log.Logger) {
 	if al == nil {
 		return
 	}
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(cfg.WorkspaceDir()))
+	if err != nil || !ok {
+		return
+	}
+	defer unlock()
 	n, err := coach.RemeasureMixedBaselines(database, al)
 	if err != nil {
-		logger.Printf("coach: re-measuring baselines per agent: %v; retried on the next start", err)
+		logger.Printf("coach: re-measuring baselines per agent: %v; retried before the next judging", err)
 	}
 	if n > 0 {
 		logger.Printf("coach: %d baselines re-measured on their destination's agent", n)

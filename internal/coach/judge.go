@@ -33,10 +33,33 @@ const (
 // baseline or no value is too_little_data; a value at least judgeImprovement
 // below the baseline is works; anything else is no_effect. A no_effect edit
 // gets one mechanical cut proposal (no model call) when a slot is free. judged
-// counts the works / no_effect verdicts, cuts the proposals written.
+// counts the works / no_effect verdicts, cuts the proposals written. Nothing
+// is judged until RemeasureMixedBaselines is done (tried again first here), so
+// no verdict compares one agent's value with a baseline of every agent's.
 func Judge(d *db.DB, al *agentlogdb.DB, now time.Time) (judged, cuts int, err error) {
+	if err := judgeReady(d, al); err != nil {
+		return 0, 0, err
+	}
 	home, _ := os.UserHomeDir() // "": the allow list is not read, no cut for it
 	return judge(d, al, home, now)
+}
+
+// errBaselinesPending skips a judge pass while the per-agent re-measure of
+// the baselines waits for agentlog.db's move out of watchtower.db.
+var errBaselinesPending = errors.New("baselines not yet re-measured per agent (agent analytics still moving); judging skipped")
+
+func judgeReady(d *db.DB, al *agentlogdb.DB) error {
+	if _, err := RemeasureMixedBaselines(d, al); err != nil {
+		return fmt.Errorf("re-measuring baselines per agent: %w", err)
+	}
+	done, err := d.CoachBaselinesPerAgentDone()
+	if err != nil {
+		return err
+	}
+	if !done {
+		return errBaselinesPending
+	}
+	return nil
 }
 
 func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cuts int, err error) {

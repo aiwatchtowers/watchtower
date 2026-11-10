@@ -653,14 +653,36 @@ func TestCoachRun_ImportsSuggestions(t *testing.T) {
 	assert.Empty(t, open, "the row moved to the coach")
 }
 
-// A failed agentlog.db open at daemon start leaves the one-time re-measure
-// for the next start instead of marking it done.
-func TestRemeasureCoachBaselines_FailedOpenRetriesNextStart(t *testing.T) {
+// A failed agentlog.db open or a busy coach.lock at daemon start leaves the
+// one-time re-measure for later instead of marking it done.
+func TestRemeasureCoachBaselines_SkipsWithoutAgentLogOrLock(t *testing.T) {
 	d := coachSetup(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
 	var logs bytes.Buffer
-	remeasureCoachBaselines(d, nil, log.New(&logs, "", 0))
+	remeasureCoachBaselines(cfg, d, nil, log.New(&logs, "", 0))
 	done, err := d.CoachBaselinesPerAgentDone()
 	require.NoError(t, err)
 	assert.False(t, done)
 	assert.Empty(t, logs.String())
+
+	// A coach pass holding coach.lock: skipped, the key stays unwritten.
+	alPath := agentlogdb.PathFor(cfg.DBPath())
+	al, err := agentlogdb.Open(alPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(alPath))
+	require.NoError(t, err)
+	unlock, ok, err := fsutil.TryLockFile(coach.LockPath(cfg.WorkspaceDir()))
+	require.NoError(t, err)
+	require.True(t, ok)
+	remeasureCoachBaselines(cfg, d, al, log.New(&logs, "", 0))
+	done, err = d.CoachBaselinesPerAgentDone()
+	require.NoError(t, err)
+	assert.False(t, done, "busy lock: left for the next Judge")
+	unlock()
+	remeasureCoachBaselines(cfg, d, al, log.New(&logs, "", 0))
+	done, err = d.CoachBaselinesPerAgentDone()
+	require.NoError(t, err)
+	assert.True(t, done)
 }
