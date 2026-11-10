@@ -334,12 +334,16 @@ func TestRunLoop_SleepCancelsRunningCycleAndStartsAFreshOne(t *testing.T) {
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
+	// Stamped before the wake is sent: the loop's settle timer starts after
+	// the cycle ends, which is after the wake, so this is never later than the
+	// timer's start (a stamp taken after the cancellation is received can be
+	// later on a loaded machine and measure a few ms short).
+	wokeAt := time.Now()
 	h.wake <- 20 * time.Minute
 	recv(t, h.probe.cancelled, "the running cycle's cancellation")
-	cancelledAt := time.Now()
 
 	restartedAt := recv(t, h.probe.started, "a fresh cycle after the wake")
-	assert.GreaterOrEqual(t, restartedAt.Sub(cancelledAt), settle, "the fresh cycle waits out the settle delay")
+	assert.GreaterOrEqual(t, restartedAt.Sub(wokeAt), settle, "the fresh cycle waits out the settle delay")
 	h.stop(t)
 
 	assert.Equal(t, 1, h.logs.count("sleep detected (slept ~20m0s), "+logSleepCancels))
