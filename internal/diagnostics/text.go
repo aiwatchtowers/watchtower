@@ -93,8 +93,12 @@ const (
 	AIProviderSettingsInvalid = "provider settings invalid"
 )
 
-// FeaturesNotMigrated ends the Features line of a legacy, unmigrated config.
-const FeaturesNotMigrated = " (not yet migrated)"
+// Features line: FeaturesNone when no toggleable feature is on;
+// FeaturesNotMigrated ends the line of a legacy, unmigrated config.
+const (
+	FeaturesNone        = "none"
+	FeaturesNotMigrated = " (not yet migrated)"
+)
 
 // Sources line.
 const (
