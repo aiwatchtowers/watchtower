@@ -26,7 +26,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
     // Foundations
     case colours, spacing, radius, strokes, typography, icons, motion
     // Components
-    case actions, selection, inputs, display, containers
+    case actions, selection, inputs, display, containers, artifacts
     // Patterns
     case settings, panels, popover
 
@@ -35,7 +35,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
     public var section: CatalogSection {
         switch self {
         case .colours, .spacing, .radius, .strokes, .typography, .icons, .motion: .foundations
-        case .actions, .selection, .inputs, .display, .containers: .components
+        case .actions, .selection, .inputs, .display, .containers, .artifacts: .components
         case .settings, .panels, .popover: .patterns
         }
     }
@@ -54,6 +54,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .inputs: "Inputs"
         case .display: "Display"
         case .containers: "Containers"
+        case .artifacts: "Inbox cards"
         case .settings: "Settings"
         case .panels: "Panels"
         case .popover: "Popover"
@@ -75,6 +76,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .inputs: "The kit's single-line field, at rest, focused and over a popover."
         case .display: "Small read-only marks: chips, badges, tags, menu labels and section titles."
         case .containers: "A soft card for a group, a selectable row for a list."
+        case .artifacts: "An automation's Inbox card drawn from its blocks, its fallbacks, and the target button."
         case .settings: "A settings block of a new window: sections on soft cards, switches trailing."
         case .panels: "Main content beside a resizable side panel, and a panel of tab rows."
         case .popover: "A popover's body over the system material, with a field and its one action."
@@ -99,6 +101,12 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .inputs: ["kit"]
         case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader"]
         case .containers: ["card", "kitRow"]
+        case .artifacts: ["ArtifactView", "ArtifactCardBody", "ArtifactRenderMode", "ArtifactEnvironment",
+                          "artifactEnvironment", "ArtifactRefHooks", "ArtifactTargetButton", "ArtifactTargetButtonState",
+                          "ArtifactTargetStuckLine", "ArtifactDocument", "ArtifactDecodeResult",
+                          "ArtifactActionsDecodeResult", "ArtifactBlock", "ArtifactListRow", "ArtifactTableColumn",
+                          "ArtifactTableCell", "ArtifactMetric", "ArtifactPersonLine", "ArtifactBadge", "ArtifactTone",
+                          "ArtifactAction", "ArtifactActionKind", "ArtifactTargetAction", "ArtifactRef", "ArtifactRefKind"]
         case .settings: ["SettingsSection", "SettingRow", "ManagedByOrganizationBadge", "managedByOrganization"]
         case .panels: ["PanelSplit", "PanelSplitWidth", "PanelResizeHandle", "panelSurface", "panelTab",
                        "panelListStyle", "workspaceListStyle", "clearPlainList"]
@@ -121,7 +129,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
 
     /// The page's samples, without its title or scroll view.
     @MainActor @ViewBuilder
-    public func content() -> some View {
+    public func content() -> some View { // swiftlint:disable:this cyclomatic_complexity
         switch self {
         case .colours: ColoursPage()
         case .spacing: SpacingPage()
@@ -135,6 +143,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .inputs: InputsPage()
         case .display: DisplayPage()
         case .containers: ContainersPage()
+        case .artifacts: ArtifactsPage()
         case .settings: SettingsPatternPage()
         case .panels: PanelsPage()
         case .popover: PopoverPage()

@@ -56,6 +56,9 @@ var (
 	// aiFlagReadFolderAsk names a spec/plan review ask whose reviewer's
 	// folder (specreview.ReadFolder) the run reads: a Discuss thread.
 	aiFlagReadFolderAsk int64
+	// aiFlagReadFolderRound names a diff review round whose folder
+	// (review_rounds.folder_root) the run reads: the branch-review reviewer.
+	aiFlagReadFolderRound int64
 	// aiFlagPurpose records this query's LLM calls under its own purpose
 	// in the usage ledger (one of queryPurposes; "" keeps the default).
 	aiFlagPurpose string
@@ -63,7 +66,7 @@ var (
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
 // whose turns the usage ledger shows apart from the plain chat.
-var queryPurposes = map[string]bool{"spec_review.discuss": true}
+var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
@@ -152,8 +155,10 @@ func init() {
 		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
 	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderAsk, "read-folder-ask", 0,
 		"run, like --read-folder, in the folder the reviewer of spec/plan review ask N read; exit 2 if it is no such ask")
+	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderRound, "read-folder-round", 0,
+		"run, like --read-folder, in the folder diff review round N was taken from; exit 2 if it is no such round")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
-		"record this query's LLM calls under this usage purpose (spec_review.discuss); exit 2 on any other value")
+		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer); exit 2 on any other value")
 }
 
 // queryContext tags ctx with the --purpose value for the LLM usage ledger.
@@ -255,7 +260,7 @@ func queryInput(args []string, stdin io.Reader) (prompt, systemPrompt string, er
 	return q.Prompt, q.SystemPrompt, nil
 }
 
-func runAIQuery(_ *cobra.Command, args []string) error {
+func runAIQuery(cmd *cobra.Command, args []string) error {
 	enc := json.NewEncoder(os.Stdout)
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
 		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
@@ -290,7 +295,7 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		dbPath = cfg.DBPath()
 	}
 
-	readFolder, err := resolveReadFolder(dbPath)
+	readFolder, err := resolveReadFolder(cmd, dbPath)
 	if err != nil {
 		return err
 	}
@@ -615,10 +620,23 @@ func refuseQuery(enc *json.Encoder, err error) error {
 // bound to a workbench (a subfolder is not). "" without the flag. Any
 // refusal is a usage error (exit 2), as is combining it with --tools: a
 // read-folder run mounts no write tool. --read-folder-ask N instead names the
-// folder by a spec/plan review ask (resolveReviewReadFolder); it excludes
-// --read-folder and --tools the same way.
-func resolveReadFolder(dbPath string) (string, error) {
-	if aiFlagReadFolderAsk != 0 {
+// folder by a spec/plan review ask (resolveReviewReadFolder), and
+// --read-folder-round N by a diff review round (resolveRoundReadFolder);
+// each excludes the other two and --tools the same way.
+func resolveReadFolder(cmd *cobra.Command, dbPath string) (string, error) {
+	// An explicit id flag is a request even at 0: refused, never ignored.
+	roundGiven := cmd.Flags().Changed("read-folder-round")
+	askGiven := cmd.Flags().Changed("read-folder-ask")
+	if roundGiven {
+		if aiFlagReadFolder != "" || askGiven {
+			return "", usageError("give one of --read-folder, --read-folder-ask or --read-folder-round")
+		}
+		if aiFlagTools != "" {
+			return "", usageError("--read-folder-round runs without --tools")
+		}
+		return resolveRoundReadFolder(dbPath, aiFlagReadFolderRound)
+	}
+	if askGiven {
 		if aiFlagReadFolder != "" {
 			return "", usageError("give --read-folder or --read-folder-ask, not both")
 		}
@@ -667,7 +685,7 @@ func resolveReadFolder(dbPath string) (string, error) {
 // folder that is now a symlink leads both to its target. Any failure is a
 // usage error (exit 2).
 func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
-	if askID < 0 {
+	if askID <= 0 {
 		return "", usageError("--read-folder-ask %d: not an ask id", askID)
 	}
 	database, err := db.Open(dbPath)
@@ -692,6 +710,45 @@ func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
 	}
 	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
 		return "", usageError("--read-folder-ask %d: not a directory", askID)
+	}
+	return resolved, nil
+}
+
+// resolveRoundReadFolder is --read-folder-round's folder: the one diff review
+// round roundID was taken from (review_rounds.folder_root — the session's
+// worktree, or the workbench's folder inside it for a workbench bound to a
+// repository subfolder; a branch-tip round's folder too), symlink-resolved and
+// checked to be a directory. Owner, ask #611: the branch-review reviewer names
+// its folder by the round, so --read-folder stays workbench folders only. Any
+// failure is a usage error (exit 2); there is no fallback to the workbench
+// folder.
+func resolveRoundReadFolder(dbPath string, roundID int64) (string, error) {
+	if roundID <= 0 {
+		return "", usageError("--read-folder-round %d: not a review round id", roundID)
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return "", usageError("--read-folder-round: opening the database: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	round, err := database.ReviewRoundByID(roundID)
+	if err != nil {
+		return "", usageError("--read-folder-round %d: %v", roundID, err)
+	}
+	if round == nil {
+		return "", usageError("--read-folder-round %d: no such review round", roundID)
+	}
+	// EvalSymlinks("") is ".", the CLI's own cwd: an empty or relative
+	// recorded folder is refused, never read relative to the process.
+	if !filepath.IsAbs(round.FolderRoot) {
+		return "", usageError("--read-folder-round %d: the round records no absolute folder", roundID)
+	}
+	resolved, err := filepath.EvalSymlinks(round.FolderRoot)
+	if err != nil {
+		return "", usageError("--read-folder-round %d: %v", roundID, err)
+	}
+	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+		return "", usageError("--read-folder-round %d: not a directory", roundID)
 	}
 	return resolved, nil
 }

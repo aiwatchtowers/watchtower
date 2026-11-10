@@ -13,6 +13,7 @@ import (
 	gosync "sync"
 	"syscall"
 
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/fsutil"
 )
 
@@ -148,6 +149,23 @@ func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 func (d *Daemon) watchAutomationWake(ctx context.Context) {
 	if d.automationWakeCh == nil {
 		d.automationWakeCh = WatchAutomationWake(ctx)
+	}
+}
+
+// wakeAutomationExecutor asks the in-process executor to poll now — the
+// daemon's approval hook wake (builtin.Fire); a no-op with no executor wired.
+func (d *Daemon) wakeAutomationExecutor() {
+	if d.automationExecutor != nil {
+		d.automationExecutor.Wake()
+	}
+}
+
+// installApprovalHook sets the database's approval hook to builtin.Fire with
+// the in-process executor wake, replacing a hook a tool registry built during
+// wiring may have set (cmd's SIGUSR2 wake, which would signal this process).
+func (d *Daemon) installApprovalHook() {
+	if d.db != nil {
+		d.db.SetApprovalHook(builtin.ApprovalHook(d.db, d.wakeAutomationExecutor, d.logger.Printf))
 	}
 }
 

@@ -14,7 +14,7 @@ struct InboxIdeaBackfillRange: Equatable {
     }
 }
 
-/// The Ideas filter's inline **Find Ideas in Past Messages…** row (R9,
+/// The Idea finder list's inline **Find Ideas in Past Messages…** row (R9,
 /// replaces `IdeaBackfillSheet`): presets, the calendar range, **Find
 /// Ideas** and **Close**; while mining, the elapsed time and **Stop**, then
 /// the outcome. Mining runs `watchtower ideas mine --from --to` through

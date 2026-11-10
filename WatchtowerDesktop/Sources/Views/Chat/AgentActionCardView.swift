@@ -51,6 +51,17 @@ struct AgentActionCardView: View {
     /// ended" and offers no Approve, so an approval nobody can run never
     /// reads as a call about to run. Unused for every other tool.
     var sessionHoldsCall = false
+    /// The Inbox target button's state of this `create_target` proposal
+    /// (Inbox builder A, the resolver of plan Task 15); nil elsewhere. When
+    /// it is `.stuck` the card draws the shared "Didn't finish" line with
+    /// **Try again** in place of its Approve/Retry row. Try again runs
+    /// `onRetry`, which the host makes `actions apply` on an approved row
+    /// and `actions apply --force` on an executing one — the same row.
+    var targetButtonState: ArtifactTargetButtonState?
+    /// False on an older proposal of an Inbox target button whose newest row
+    /// is another one: Try again is offered only on the newest row (the CLI
+    /// refuses the older one with exit 3).
+    var offersRetry = true
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
@@ -75,6 +86,8 @@ struct AgentActionCardView: View {
             var meta: [String] = []
             if let due = action.argString("due"), !due.isEmpty { meta.append("Due: \(due)") }
             if let p = action.argString("priority"), !p.isEmpty { meta.append("Priority: \(p)") }
+            // An Inbox card's target button may name a parent task (Inbox builder A).
+            if let parent = action.argString("parent_id"), !parent.isEmpty { meta.append("Under task #\(parent)") }
             if !meta.isEmpty { lines.append(meta.joined(separator: " · ")) }
             if let intent = action.argString("intent"), !intent.isEmpty { lines.append("Why: \(intent)") }
             return lines
@@ -490,6 +503,45 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private func actions(connector: ConnectorCallProposal?) -> some View {
+        switch Self.targetRow(targetButtonState, status: action.status) {
+        case .stuck:
+            ArtifactTargetStuckLine(onTryAgain: onRetry)
+                .controlSize(.small)
+                .disabled(inFlight)
+                .accessibilityIdentifier("agentAction.targetStuck")
+        case .inFlight:
+            ProgressView()
+                .controlSize(.small)
+                .accessibilityIdentifier("agentAction.targetCreating")
+        case .decision:
+            decisionRow(connector: connector)
+        }
+    }
+
+    /// What an Inbox target button's proposal draws in place of the
+    /// decision row: an approved or executing row the button calls stuck,
+    /// or whose Try again failed without moving it, offers Try again on the
+    /// same row; one in flight shows progress only (no Retry while our own
+    /// or a recent apply may still land). Every other row keeps its row.
+    enum TargetRow: Equatable {
+        case stuck, inFlight, decision
+    }
+
+    static func targetRow(_ state: ArtifactTargetButtonState?, status: String) -> TargetRow {
+        switch state {
+        case .stuck?:
+            return .stuck
+        case .failed?:
+            return status == "failed" ? .decision : .stuck
+        case .creating?:
+            return .inFlight
+        default:
+            return .decision
+        }
+    }
+
+    @ViewBuilder
+    private func decisionRow(connector: ConnectorCallProposal?) -> some View {
         HStack {
             // A claimed row is being executed by another process: there is
             // nothing the owner can decide about it until it lands. (A
@@ -498,27 +550,37 @@ struct AgentActionCardView: View {
                 if !action.isSessionApplied || sessionHoldsCall { ProgressView().controlSize(.small) }
             } else {
                 if action.isPending {
-                    if action.isSessionApplied {
+                    switch Self.pendingApproval(for: action, editsSlack: editableSlack != nil) {
+                    case .session:
                         connectorButtons(connector)
-                    } else if let slack = editableSlack {
+                    case let .slack(slack):
                         let text = slackDraft ?? slack.text
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve & send") {
                             approveSlack(slack, text: text)
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!slack.canApprove(text: text, pick: slackPick))
-                    } else if Self.canApprove(action) {
+                    case .plain:
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve", action: onApprove)
                             .buttonStyle(.borderedProminent)
+                    case .none:
+                        EmptyView()
                     }
                     Button("Reject", action: onReject)
-                } else if action.canRetry {
-                    Button("Retry", action: onRetry)
-                } else if let onDismiss, ConnectorCallProposal.awaitsDismissal(action) {
-                    Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)
-                    Button("Dismiss", action: onDismiss)
-                        .help("Take this call off the Inbox badge")
-                        .accessibilityIdentifier("agentAction.dismissOutcomeUnknown")
+                } else {
+                    switch Self.settledOffer(for: action) {
+                    case .retry:
+                        if offersRetry { Button("Retry", action: onRetry) }
+                    case .dismiss:
+                        if let onDismiss {
+                            Text(ConnectorCallProposal.dismissNote).font(.caption).foregroundStyle(.secondary)
+                            Button("Dismiss", action: onDismiss)
+                                .help("Take this call off the Inbox badge")
+                                .accessibilityIdentifier("agentAction.dismissOutcomeUnknown")
+                        }
+                    case .none:
+                        EmptyView()
+                    }
                 }
                 if inFlight { ProgressView().controlSize(.small) }
             }

@@ -66,7 +66,7 @@ Type what is wrong in the **Correction…** field at the bottom and click **Rege
 
 ### Teach it which topics matter
 
-Each topic has a thumbs-up and thumbs-down. Type under **What's wrong with this topic?** and click **Send** to add a comment. A comment can also rebuild the whole recap, and it can become a rule in Inbox → Learned, which the digests, tracks, briefings and recaps then apply.
+Each topic has a thumbs-up and thumbs-down. Type under **What's wrong with this topic?** and click **Send** to add a comment. A comment can also rebuild the whole recap, and it can become a rule in the Inbox's **Learned Rules**, which the digests, tracks, briefings and recaps then apply.
 
 ### Mark it done
 

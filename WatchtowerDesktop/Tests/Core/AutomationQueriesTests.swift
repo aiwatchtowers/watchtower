@@ -211,16 +211,16 @@ final class AutomationQueriesTests: XCTestCase {
         let before = try queue.read { db in try Row.fetchAll(db, sql: "SELECT * FROM automation_outputs ORDER BY id") }
         let later = now.addingTimeInterval(60)
         try queue.write { db in
-            try AutomationQueries.markOutputOpened(db, id: opened, now: now)
-            try AutomationQueries.markOutputDone(db, id: done, now: now)
-            try AutomationQueries.dismissOutput(db, id: dismissed, now: now)
+            try AutomationQueries.markOutputOpened(db, id: opened, contentHash: "", now: now)
+            try AutomationQueries.markOutputDone(db, id: done, contentHash: "", now: now)
+            try AutomationQueries.dismissOutput(db, id: dismissed, contentHash: "", now: now)
             // Guarded: opening twice keeps the first stamp, and a done or
             // dismissed card takes no further stamp.
-            try AutomationQueries.markOutputOpened(db, id: opened, now: later)
-            try AutomationQueries.markOutputOpened(db, id: done, now: later)
-            try AutomationQueries.dismissOutput(db, id: done, now: later)
-            try AutomationQueries.markOutputDone(db, id: dismissed, now: later)
-            try AutomationQueries.markOutputOpened(db, id: dismissed, now: later)
+            try AutomationQueries.markOutputOpened(db, id: opened, contentHash: "", now: later)
+            try AutomationQueries.markOutputOpened(db, id: done, contentHash: "", now: later)
+            try AutomationQueries.dismissOutput(db, id: done, contentHash: "", now: later)
+            try AutomationQueries.markOutputDone(db, id: dismissed, contentHash: "", now: later)
+            try AutomationQueries.markOutputOpened(db, id: dismissed, contentHash: "", now: later)
         }
         let after = try queue.read { db in try Row.fetchAll(db, sql: "SELECT * FROM automation_outputs ORDER BY id") }
         XCTAssertEqual(after.count, before.count)

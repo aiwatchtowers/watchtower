@@ -103,31 +103,24 @@ final class ReviewEnvelopeDecodingTests: XCTestCase {
         XCTAssertEqual(ReviewPhase(stored: "chapters"), .chapters)
     }
 
+    /// The assembled overview the CLI prints: the last line of the stream golden
+    /// (`cmd/testdata/review-overview-stream.jsonl`, copied into `Fixtures/`).
     func testOverviewDecodesTheGoFixture() throws {
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // Core
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // WatchtowerDesktop
-            .deletingLastPathComponent() // repo root
-            .appendingPathComponent("internal/reviewai/testdata/overview_ok.json")
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let ov = try decoder.decode(ReviewOverview.self, from: Data(contentsOf: url))
-        XCTAssertEqual(ov.summary, "Adds the greeting endpoint and its test; the docs update is missing.")
-        XCTAssertEqual(ov.coverage, [
-            .init(index: 1, item: "Add a greeting endpoint", status: .done, where: ["server/greet.go"]),
-            .init(index: 2, item: "Document the endpoint", status: .notFound, where: [])
-        ])
-        XCTAssertEqual(ov.outOfScope, ["scripts/cleanup.sh"])
-        XCTAssertEqual(ov.risk, [
-            .init(path: "server/greet.go", level: .medium, why: "new public handler"),
-            .init(path: "server/greet_test.go", level: .low, why: "test only"),
-            .init(path: "scripts/cleanup.sh", level: .high, why: "deletes files")
-        ])
-        XCTAssertEqual(ov.chapters, [
-            .init(title: "Greeting endpoint", paths: ["server/greet.go", "server/greet_test.go"], core: true, lenses: ["correctness", "tests"]),
-            .init(title: "Housekeeping", paths: ["scripts/cleanup.sh"], core: false, lenses: [])
-        ])
+        let data = try ReviewMapTests.fixture("review-overview-stream.jsonl")
+        let lines = try XCTUnwrap(String(data: data, encoding: .utf8))
+            .split(separator: "\n", omittingEmptySubsequences: true)
+        let last = try XCTUnwrap(lines.last)
+        let env = try decode(String(last))
+        let ov = try XCTUnwrap(env.overview)
+        XCTAssertEqual(ov.summary, "the summary")
+        XCTAssertEqual(ov.coverage.map(\.index), [1, 2])
+        XCTAssertFalse(ov.risk.isEmpty)
+        let first = try XCTUnwrap(ov.chapters.first)
+        XCTAssertEqual(first.key, "dir:api")
+        XCTAssertEqual(first.title, "api")
+        XCTAssertEqual(first.paths, ["api/api.go"])
+        XCTAssertTrue(first.core)
+        XCTAssertEqual(first.what, "about dir:api")
     }
 
     func testOverviewMissingArraysAreEmpty() throws {

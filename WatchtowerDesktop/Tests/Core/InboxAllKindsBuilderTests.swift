@@ -2,9 +2,10 @@ import XCTest
 import GRDB
 @testable import WatchtowerCore
 
-/// The all-kinds Inbox list: filters, the pinned day card, unread-only
-/// tracks and earlier days in All, ideas awaiting a verdict, decisions as
-/// informational cards.
+/// The root's day cards and the legacy entries' lists (inbox builder B):
+/// today's card and its placeholder, unread earlier days, ideas awaiting a
+/// verdict, decisions as informational cards, Track my threads' Stopped
+/// fold; each list shows only its own kind.
 final class InboxAllKindsBuilderTests: XCTestCase {
     private var berlin: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -61,70 +62,67 @@ final class InboxAllKindsBuilderTests: XCTestCase {
         return HomeFeedInboxRow(item: item, stamp: try date(text), who: "A", whereText: nil)
     }
 
-    private func build(_ feed: InboxFeedSnapshot, _ filter: InboxFilter = .all, dayDone: String? = nil) throws
+    private func build(_ feed: InboxFeedSnapshot, _ list: InboxLegacyList, showsStopped: Bool = false) throws
         -> [InboxSection] {
-        InboxListBuilder.sections(feed, filter: filter, dayDone: dayDone, today: today, now: try now(), calendar: berlin)
+        InboxListBuilder.sections(feed, list: list, now: try now(), calendar: berlin, showsStopped: showsStopped)
+    }
+
+    private func rootDays(_ feed: InboxFeedSnapshot) throws -> [InboxDayCard] {
+        InboxListBuilder.rootDays(feed, today: today, now: try now(), calendar: berlin)
     }
 
     // MARK: - Today's placeholder (T11b, G4)
 
-    private func placeheld(_ feed: InboxFeedSnapshot, _ filter: InboxFilter = .all) throws -> [InboxSection] {
-        InboxListBuilder.sections(feed, filter: filter, dayDone: nil, today: today, now: try now(), calendar: berlin,
-                                  placeholdsToday: true)
-    }
-
     func testTodayWithNothingStillHasItsDayCard() throws {
-        for filter in [InboxFilter.all, .day] {
-            let sections = try placeheld(InboxFeedSnapshot(), filter)
-            XCTAssertEqual(sections.map(\.title), ["Today"], "\(filter)")
-            guard case .day(let card)? = sections.first?.items.first else { return XCTFail("\(filter): no day card") }
-            XCTAssertEqual(card.date, today)
-            XCTAssertTrue(card.isEmpty)
-            XCTAssertFalse(card.isUnread, "the placeholder is never unread, so never in the badge")
+        let days = try rootDays(InboxFeedSnapshot())
+        XCTAssertEqual(days.map(\.date), [today])
+        XCTAssertTrue(days[0].isEmpty)
+        XCTAssertFalse(days[0].isUnread, "the placeholder is never unread, so never in the badge")
+        XCTAssertEqual(days[0].stamp, berlin.startOfDay(for: try now()))
+        for list in InboxLegacyList.allCases {
+            XCTAssertEqual(try build(InboxFeedSnapshot(), list), [], "\(list)")
         }
-        for filter in [InboxFilter.messages, .tracks, .ideas, .automations] {
-            XCTAssertEqual(try placeheld(InboxFeedSnapshot(), filter), [], "\(filter)")
-        }
-        XCTAssertEqual(try build(InboxFeedSnapshot()), [], "only the Inbox view model asks for the placeholder")
         var noOwner = InboxFeedSnapshot()
         noOwner.ownerKnown = false
-        XCTAssertEqual(try placeheld(noOwner, .all), [], "no owner: All stays empty and says why")
-        XCTAssertEqual(try placeheld(noOwner, .day).flatMap(\.items).map(\.id), [.day(today)])
+        XCTAssertEqual(try rootDays(noOwner), [], "no owner: the root stays empty and says why")
+        var bothOff = InboxFeedSnapshot()
+        bothOff.briefingOn = false
+        bothOff.dayPlanOn = false
+        XCTAssertEqual(try rootDays(bothOff), [], "both features off: no placeholder")
     }
 
     func testThePlaceholderIsOnlyForTodayAndOnlyWhenItHasNoCard() throws {
-        let real = try dayCard(today, read: false, stamp: "2026-10-22T05:00:00Z")
-        let withToday = try placeheld(InboxFeedSnapshot(days: [real]), .day)
-        XCTAssertEqual(withToday.flatMap(\.items), [.day(real)])
+        let real = try dayCard(today, read: true, stamp: "2026-10-22T05:00:00Z")
+        XCTAssertEqual(try rootDays(InboxFeedSnapshot(days: [real])), [real])
 
-        let past = try dayCard("2026-10-21", read: true, stamp: "2026-10-21T05:00:00Z")
-        let items = try placeheld(InboxFeedSnapshot(days: [past]), .day).flatMap(\.items)
-        XCTAssertEqual(items.map(\.id), [.day(today), .day("2026-10-21")])
-        let dates = items.compactMap { item -> InboxDayCard? in
-            guard case .day(let card) = item else { return nil }
-            return card
-        }
-        XCTAssertEqual(dates.filter(\.isEmpty).map(\.date), [today], "a past date never gets a placeholder")
+        let past = try dayCard("2026-10-21", read: false, stamp: "2026-10-21T05:00:00Z")
+        let days = try rootDays(InboxFeedSnapshot(days: [past]))
+        XCTAssertEqual(days.map(\.date), [today, "2026-10-21"])
+        XCTAssertEqual(days.filter(\.isEmpty).map(\.date), [today], "a past date never gets a placeholder")
     }
 
-    func testNeedsYourDecisionHoldsProposalsAndIdeasAwaitingAVerdict() throws {
-        let feed = InboxFeedSnapshot(proposals: [proposal(1)], ideas: [idea(2), idea(3, status: "active")])
-        let sections = try build(feed)
-        XCTAssertEqual(sections.map(\.title), ["Needs your decision"])
-        XCTAssertEqual(sections[0].items.map(\.id), [.proposal(1), .idea(2)])
+    /// The root lists earlier days only while unread; today's always.
+    func testEarlierDayCardsInTheRootOnlyWhileUnread() throws {
+        let read = InboxDayCard(date: "2026-10-20", briefing: try briefing(1, day: "2026-10-20", read: true), plan: nil,
+                                planDone: 0, planTotal: 0, stamp: try date("2026-10-20T05:00:00Z"))
+        let unread = InboxDayCard(date: "2026-10-21", briefing: try briefing(2, day: "2026-10-21", read: false), plan: nil,
+                                  planDone: 0, planTotal: 0, stamp: try date("2026-10-21T05:00:00Z"))
+        let todays = try dayCard(today, read: true, stamp: "2026-10-22T05:00:00Z")
+        let feed = InboxFeedSnapshot(days: [todays, read, unread])
+        XCTAssertEqual(try rootDays(feed).map(\.date), [today, "2026-10-21"])
     }
+
+    // MARK: - The legacy lists
 
     func testDecisionsAreInformationalAndNeverAwaitAVerdict() throws {
         let decision = idea(4, kind: "decision", status: "proposed")
         XCTAssertFalse(decision.awaitsVerdict)
-        let feed = InboxFeedSnapshot(ideas: [decision])
-        XCTAssertEqual(try build(feed), [])
-        let ideas = try build(feed, .ideas)
+        let ideas = try build(InboxFeedSnapshot(ideas: [decision]), .ideas)
         XCTAssertEqual(ideas.map(\.title), ["Earlier"])
         XCTAssertEqual(ideas[0].items.map(\.id), [.idea(4)])
     }
 
-    func testIdeasFilterListsAwaitingFirstThenTheRegistryByUpdate() throws {
+    func testIdeaFinderListsAwaitingFirstThenTheRegistryByUpdate() throws {
         let feed = InboxFeedSnapshot(ideas: [idea(1, status: "active", updated: "2026-10-18T10:00:00Z"),
                                              idea(2), idea(3, status: "active", updated: "2026-10-21T10:00:00Z")])
         let sections = try build(feed, .ideas)
@@ -133,45 +131,16 @@ final class InboxAllKindsBuilderTests: XCTestCase {
         XCTAssertEqual(sections[1].items.map(\.id), [.idea(3), .idea(1)])
     }
 
-    func testProposalsShowInAllAndAutomationsOnly() throws {
-        let feed = InboxFeedSnapshot(proposals: [proposal(1)])
-        for filter in InboxFilter.allCases {
-            let shown = try build(feed, filter).flatMap(\.items).map(\.id)
-            XCTAssertEqual(shown, filter == .all || filter == .automations ? [.proposal(1)] : [], "\(filter)")
-        }
-    }
-
-    func testTodaysDayCardIsPinnedFirstUntilDone() throws {
-        let feed = InboxFeedSnapshot(outputs: [try output(5, at: "2026-10-22T07:00:00Z")],
-                                     days: [try dayCard(today, read: true, stamp: "2026-10-22T05:00:00Z")])
-        // Stamp 07:00 Berlin, output 09:00 Berlin: pinned puts the day first, done sorts by time.
-        let pinned = try build(feed).flatMap(\.items).map(\.id)
-        XCTAssertEqual(pinned, [.day(today), .output(5)])
-        let done = try build(feed, dayDone: today).flatMap(\.items).map(\.id)
-        XCTAssertEqual(done, [.output(5), .day(today)])
-    }
-
-    func testEarlierDayCardsInAllOnlyWhileUnread() throws {
-        let read = InboxDayCard(date: "2026-10-20", briefing: try briefing(1, day: "2026-10-20", read: true), plan: nil,
-                                planDone: 0, planTotal: 0, stamp: try date("2026-10-20T05:00:00Z"))
-        let unread = InboxDayCard(date: "2026-10-21", briefing: try briefing(2, day: "2026-10-21", read: false), plan: nil,
-                                  planDone: 0, planTotal: 0, stamp: try date("2026-10-21T05:00:00Z"))
-        let feed = InboxFeedSnapshot(days: [read, unread])
-        XCTAssertEqual(try build(feed).flatMap(\.items).map(\.id), [.day("2026-10-21")])
-        XCTAssertEqual(try build(feed, .day).flatMap(\.items).map(\.id), [.day("2026-10-21"), .day("2026-10-20")])
-    }
-
-    func testAllShowsOnlyUnreadTracks() throws {
+    /// Track my threads lists every open track, read or not.
+    func testTrackMyThreadsListsEveryTrack() throws {
         let read = try (0..<300).map { try trackCard($0, unread: false) }
         let unread = try [trackCard(1000, unread: true), trackCard(1001, unread: true)]
-        let feed = InboxFeedSnapshot(tracks: read + unread)
-        XCTAssertEqual(try build(feed).flatMap(\.items).count, 2)
-        XCTAssertEqual(try build(feed, .tracks).flatMap(\.items).count, 302)
+        XCTAssertEqual(try build(InboxFeedSnapshot(tracks: read + unread), .tracks).flatMap(\.items).count, 302)
     }
 
-    /// Stopped tracks sit only in the Tracks filter's `Stopped · N` fold,
-    /// closed by default; no other filter shows them, unread or not.
-    func testTracksFilterFoldsStoppedTracks() throws {
+    /// Stopped tracks sit only in Track my threads' `Stopped · N` fold,
+    /// closed by default; no other list shows them, unread or not.
+    func testTrackMyThreadsFoldsStoppedTracks() throws {
         let stopped = try [trackCard(7, unread: true), trackCard(8, unread: false)]
         let feed = InboxFeedSnapshot(tracks: [try trackCard(1, unread: true)], stoppedTracks: stopped)
 
@@ -182,37 +151,30 @@ final class InboxAllKindsBuilderTests: XCTestCase {
         XCTAssertTrue(fold.items.isEmpty)
         XCTAssertEqual(folded.flatMap(\.items).map(\.id), [.track(1)])
 
-        let open = InboxListBuilder.sections(feed, filter: .tracks, dayDone: nil, today: today, now: try now(),
-                                             calendar: berlin, showsStopped: true)
+        let open = try build(feed, .tracks, showsStopped: true)
         XCTAssertEqual(open.last?.items.map(\.id), [.track(7), .track(8)])
         XCTAssertEqual(open.dropLast().flatMap(\.items).map(\.id), [.track(1)])
 
-        for filter in InboxFilter.allCases where filter != .tracks {
-            let sections = InboxListBuilder.sections(feed, filter: filter, dayDone: nil, today: today,
-                                                     now: try now(), calendar: berlin, showsStopped: true)
-            XCTAssertFalse(sections.contains(where: \.foldable), "\(filter)")
-            XCTAssertFalse(sections.flatMap(\.items).contains { [.track(7), .track(8)].contains($0.id) }, "\(filter)")
+        for list in InboxLegacyList.allCases where list != .tracks {
+            let sections = try build(feed, list, showsStopped: true)
+            XCTAssertFalse(sections.contains(where: \.foldable), "\(list)")
+            XCTAssertFalse(sections.flatMap(\.items).contains { [.track(7), .track(8)].contains($0.id) }, "\(list)")
         }
         // No stopped track, no fold.
         XCTAssertFalse(try build(InboxFeedSnapshot(tracks: feed.tracks), .tracks).contains(where: \.foldable))
     }
 
-    func testTrackSortsByItsLastEvent() throws {
-        let feed = InboxFeedSnapshot(outputs: [try output(5, at: "2026-10-22T07:00:00Z")],
-                                     tracks: [try trackCard(9, unread: true, at: "2026-10-22T07:30:00Z")])
-        let today = try XCTUnwrap(try build(feed).first { $0.title == "Today" })
-        XCTAssertEqual(today.items.map(\.id), [.track(9), .output(5)])
-    }
-
     func testMessagesSortByTheirOwnTime() throws {
-        let feed = InboxFeedSnapshot(outputs: [try output(5, at: "2026-10-22T06:00:00Z")],
-                                     messages: [try message(1, at: "2026-10-22T05:00:00Z"),
+        let feed = InboxFeedSnapshot(messages: [try message(1, at: "2026-10-22T05:00:00Z"),
                                                 try message(2, at: "2026-10-22T07:00:00Z")])
-        XCTAssertEqual(try build(feed).flatMap(\.items).map(\.id), [.message(2), .output(5), .message(1)])
+        XCTAssertEqual(try build(feed, .messages).flatMap(\.items).map(\.id), [.message(2), .message(1)])
     }
 
-    func testFilterShowsOnlyItsKind() throws {
-        let feed = InboxFeedSnapshot(
+    /// Each list shows only its own kind; proposals, reminders, automation
+    /// cards, days and built-in notices are in none (Needs approval and the
+    /// folders draw them).
+    func testEachListShowsOnlyItsKind() throws {
+        var feed = InboxFeedSnapshot(
             proposals: [proposal(1)],
             reminders: [Reminder(row: Row(["id": Int64(2), "remind_at": "2026-10-22T07:00:00Z", "note": "Ping"]))],
             outputs: [try output(3, at: "2026-10-22T07:00:00Z")],
@@ -220,56 +182,25 @@ final class InboxAllKindsBuilderTests: XCTestCase {
             tracks: [try trackCard(4, unread: true)], ideas: [idea(5, status: "active")],
             messages: [try message(6, at: "2026-10-22T07:00:00Z")]
         )
-        let expected: [InboxFilter: [InboxSelection]] = [
-            .day: [.day(today)], .messages: [.message(6)], .tracks: [.track(4)], .ideas: [.idea(5)],
-            .automations: [.proposal(1), .output(3), .reminder(2)]
+        feed.builtinNotices = [BuiltinUpgradeNotice(builtinID: "morning-brief", error: "config unreadable",
+                                                    updatedAt: .distantPast)]
+        let expected: [InboxLegacyList: [InboxSelection]] = [
+            .messages: [.message(6)], .tracks: [.track(4)], .ideas: [.idea(5)]
         ]
-        for (filter, ids) in expected {
-            XCTAssertEqual(Set(try build(feed, filter).flatMap(\.items).map(\.id)), Set(ids), "\(filter)")
-        }
-        XCTAssertEqual(try build(feed).flatMap(\.items).count, 6) // everything but the active idea
-
-        // A built-in's failed move (C2): Needs your decision under All and Automations only.
-        var withNotice = feed
-        withNotice.builtinNotices = [notice("morning-brief")]
-        for filter in InboxFilter.allCases {
-            let sections = try build(withNotice, filter)
-            let decision = sections.first { $0.title == "Needs your decision" }?.items.map(\.id) ?? []
-            let shown = [InboxFilter.all, .automations].contains(filter)
-            XCTAssertEqual(decision.contains(.builtinNotice("morning-brief")), shown, "\(filter)")
-            XCTAssertEqual(sections.flatMap(\.items).filter { $0.id == .builtinNotice("morning-brief") }.count,
-                           shown ? 1 : 0, "\(filter): listed once, only there")
-            if let ids = expected[filter] {
-                XCTAssertEqual(Set(sections.flatMap(\.items).map(\.id)),
-                               Set(ids + (shown ? [.builtinNotice("morning-brief")] : [])), "\(filter)")
-            }
+        for (list, ids) in expected {
+            XCTAssertEqual(try build(feed, list).flatMap(\.items).map(\.id), ids, "\(list)")
         }
     }
 
-    private func notice(_ id: String) -> BuiltinUpgradeNotice {
-        BuiltinUpgradeNotice(builtinID: id, error: "config unreadable", updatedAt: .distantPast)
+    func testListTitlesAndEmptyKeys() {
+        XCTAssertEqual(InboxLegacyList.allCases.map(\.title), ["Track my threads", "Idea finder", "Messages"])
+        XCTAssertEqual(InboxLegacyList.allCases.map(\.emptyCopyKey), ["tracks", "ideas", "inboxMessages"])
     }
 
-    func testBuiltinNoticeInNeedsYourDecision() throws {
-        var feed = InboxFeedSnapshot(proposals: [proposal(1)], ideas: [idea(5)])
-        feed.builtinNotices = [notice("morning-brief"), notice("x-y")]
-        let sections = try build(feed)
-        XCTAssertEqual(sections.first?.title, "Needs your decision")
-        XCTAssertEqual(sections.first?.items.map(\.id),
-                       [.builtinNotice("morning-brief"), .builtinNotice("x-y"), .proposal(1), .idea(5)],
-                       "the notices first, in the read's order, before the proposals")
-    }
-
-    func testFilterTitlesAndEmptyKeys() {
-        XCTAssertEqual(InboxFilter.allCases.map(\.title), ["All", "Day", "Messages", "Tracks", "Ideas", "Automations"])
-        XCTAssertEqual(InboxFilter.allCases.map(\.emptyCopyKey),
-                       ["inbox", "briefings", "inboxMessages", "tracks", "ideas", "inboxAutomations"])
-    }
-
-    func testSelectionAfterWorksAcrossKinds() throws {
-        let feed = InboxFeedSnapshot(tracks: [try trackCard(9, unread: true, at: "2026-10-22T07:30:00Z")],
-                                     messages: [try message(1, at: "2026-10-22T07:00:00Z")])
-        let sections = try build(feed)
-        XCTAssertEqual(InboxListBuilder.selection(after: .track(9), in: sections), .message(1))
+    func testSelectionAfterWorksInAList() throws {
+        let feed = InboxFeedSnapshot(messages: [try message(1, at: "2026-10-22T07:00:00Z"),
+                                                try message(2, at: "2026-10-21T07:00:00Z")])
+        let sections = try build(feed, .messages)
+        XCTAssertEqual(InboxListBuilder.selection(after: .message(1), in: sections), .message(2))
     }
 }

@@ -110,10 +110,17 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	return reportQueuedPollRun(cmd, cfg, runID, coalesced)
+}
+
+// reportQueuedPollRun wakes the executor (wakeAutomations, SIGUSR2) for a
+// run its poll takes — an owner recipe's, or a built-in's with no slot
+// (Needs approval) — and reports it. The run is queued whatever the wake
+// did; a failed wake is a note.
+func reportQueuedPollRun(cmd *cobra.Command, cfg *config.Config, runID int64, coalesced bool) error {
 	out := runJSON{RunID: runID, Coalesced: coalesced}
 	var wakeErr error
 	out.DaemonRunning, wakeErr = wakeAutomations(cfg)
-	// The run is queued whatever the wake did; a failed wake is a note.
 	note, _ := wakeNote(out.DaemonRunning, wakeErr, daemonNotRunningNote)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
@@ -283,7 +290,9 @@ const builtinDaemonNotRunningNote = "daemon not running; the run starts at its n
 // stopped after a run that would not end (AUTO-08), or while its text is not
 // confirmed; else a
 // manual run is queued and the daemon asked for a sync now — the daemon runs
-// it at the built-in's slot of that cycle, never this process.
+// it at the built-in's slot of that cycle, never this process. A built-in
+// with no slot (Needs approval) is woken instead, as an owner recipe is:
+// the executor's poll takes its run.
 func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
 	e, ok := builtinLookup(a.BuiltinID)
 	if !ok {
@@ -317,6 +326,11 @@ func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a 
 	})
 	if err != nil {
 		return err
+	}
+	if e.Slot == "" {
+		// No slot (Needs approval): the executor's poll takes the run, so
+		// wake it — never a full sync — and promise no sync.
+		return reportQueuedPollRun(cmd, cfg, runID, coalesced)
 	}
 	return reportQueuedSlotRun(cmd, cfg, runID, coalesced)
 }

@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +24,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
+	"watchtower/internal/tools"
 )
 
 // readFolderFixture is a config whose claude is a stub that answers with its
@@ -339,6 +342,7 @@ func TestAIQueryReadFolderAsk_Refusals(t *testing.T) {
 		"question ask":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "question", "", false, ""), 10)}, "not a spec or plan review"},
 		"other review":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "review", "other", false, ""), 10)}, "not a spec or plan review"},
 		"unknown ask":      {[]string{"--read-folder-ask", "999999"}, "--read-folder-ask 999999"},
+		"zero id":          {[]string{"--read-folder-ask", "0"}, "--read-folder-ask 0: not an ask id"},
 		"with read-folder": {[]string{"--read-folder-ask", review, "--read-folder", f.folder}, "not both"},
 		"with tools":       {[]string{"--read-folder-ask", review, "--tools", "chat"}, "without --tools"},
 	} {
@@ -362,4 +366,190 @@ func TestResolveReviewReadFolder_ResolvesASymlinkedCwd(t *testing.T) {
 	got, err := resolveReviewReadFolder(f.dbPath, f.addAsk(t, "review", "spec", true, link))
 	require.NoError(t, err)
 	assert.Equal(t, worktree, got)
+}
+
+// roundFixture is newReadFolderFixture plus a git repository (main + a
+// feature branch) with an "app" subfolder, a linked worktree of it on the
+// feature branch, and a session on a workbench bound to folder (the repo's
+// top or its app subfolder) whose agent works in the worktree at cwd.
+type roundFixture struct {
+	readFolderFixture
+	repo, worktree string
+}
+
+func newRoundFixture(t *testing.T) roundFixture {
+	t.Helper()
+	f := newReadFolderFixture(t)
+	repo := gitBranchRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(repo, "app"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "app", "main.go"), []byte("package app\n"), 0o644))
+	reviewGit(t, repo, "add", "app")
+	reviewGit(t, repo, "commit", "-q", "-m", "app")
+	wt := filepath.Join(t.TempDir(), "wt")
+	reviewGit(t, repo, "worktree", "add", "-q", wt, "feature")
+	wt, err := filepath.EvalSymlinks(wt)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(wt, "app"), 0o755))
+	return roundFixture{readFolderFixture: f, repo: repo, worktree: wt}
+}
+
+// startRound records a round the way `workbench review start` does: the
+// session's review place from tools.ResolveReviewSource, its folder stored
+// as review_rounds.folder_root. A workbench bound to folder is created on
+// first use; the session's agent works in cwd; branch, when set, is the
+// session's ticket branch. It returns the round's id and source.
+func (f roundFixture) startRound(t *testing.T, folder, cwd, branch string) (int64, string) {
+	t.Helper()
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	defer func() { _ = database.Close() }()
+	wb, err := database.WorkbenchByFolder(folder)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
+		_, err = database.CreateWorkbench("app", folder)
+		require.NoError(t, err)
+		wb, err = database.WorkbenchByFolder(folder)
+	}
+	require.NoError(t, err)
+	s := reviewSession(t, database, wb.ID, folder)
+	_, err = database.Exec(`UPDATE terminal_sessions SET agent_cwd = ?, agent_cwd_at = '2026-10-16T10:00:00Z' WHERE id = ?`, cwd, s)
+	require.NoError(t, err)
+	if branch != "" {
+		ticketTarget(t, database, wb.ID, s, 0, branch, true)
+	}
+	src, _, err := tools.ResolveReviewSource(context.Background(), database, wb, s)
+	require.NoError(t, err)
+	id, err := database.CreateReviewRound(db.ReviewRound{ProjectID: wb.ID, SessionID: sql.NullInt64{Int64: s, Valid: true},
+		Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder, BaseSHA: "b", TreeSHA: "t"})
+	require.NoError(t, err)
+	return id, src.Source()
+}
+
+// setRoundFolder overwrites round id's recorded folder.
+func (f readFolderFixture) setRoundFolder(t *testing.T, id int64, folder string) {
+	t.Helper()
+	database, err := db.Open(f.dbPath)
+	require.NoError(t, err)
+	defer func() { _ = database.Close() }()
+	_, err = database.Exec(`UPDATE review_rounds SET folder_root = ? WHERE id = ?`, folder, id)
+	require.NoError(t, err)
+}
+
+// TestAIQueryReadFolderRound_ReadsTheRoundsFolder (owner, ask #611):
+// --read-folder-round N runs in the folder review round N was taken from —
+// the session's worktree, the workbench's subfolder inside it, or for a
+// branch-tip round the session's folder — symlink-resolved.
+func TestAIQueryReadFolderRound_ReadsTheRoundsFolder(t *testing.T) {
+	f := newRoundFixture(t)
+	app := filepath.Join(f.repo, "app")
+	inWorktree, source := f.startRound(t, f.repo, f.worktree, "")
+	require.Equal(t, db.ReviewSourceFolder, source)
+	subfolder, _ := f.startRound(t, app, filepath.Join(f.worktree, "app"), "")
+	tip, source := f.startRound(t, f.repo, f.repo, "feature")
+	require.Equal(t, db.ReviewSourceBranch, source, "the folder is on main: the round reads the branch tip")
+	moved, _ := f.startRound(t, f.repo, f.worktree, "")
+	link := filepath.Join(t.TempDir(), "moved")
+	require.NoError(t, os.Symlink(f.worktree, link))
+	f.setRoundFolder(t, moved, link)
+
+	for name, tc := range map[string]struct {
+		round int64
+		want  string
+	}{
+		"session worktree":                 {inWorktree, f.worktree},
+		"subfolder workbench in worktree":  {subfolder, filepath.Join(f.worktree, "app")},
+		"branch-tip round":                 {tip, f.repo},
+		"recorded folder is now a symlink": {moved, f.worktree},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, "--read-folder-round", strconv.FormatInt(tc.round, 10))
+			require.Equal(t, 0, code, stderr)
+			parts := strings.Split(firstText(t, stdout), "|")
+			require.Len(t, parts, 4)
+			assert.Equal(t, tc.want, parts[0], "cwd")
+			assert.Equal(t, "ToolSearch,Read,Grep,Glob,LS", parts[3], "a read-folder run")
+		})
+	}
+
+	// --read-folder itself still takes only a workbench folder: the round's
+	// worktree is refused there.
+	code, stdout, stderr := f.run(t, "--read-folder", f.worktree)
+	assert.Equal(t, 2, code)
+	assert.Contains(t, stderr, "not a workbench folder")
+	assert.Empty(t, stdout)
+}
+
+// TestAIQueryReadFolderRound_Refusals: no provider runs (exit 2, the flag and
+// the id on stderr) for a bad id, an unknown round, a folder that is gone or
+// not a directory, an unopenable database, or the flag combined with
+// --read-folder, --read-folder-ask or --tools. Nothing falls back to the
+// workbench folder.
+func TestAIQueryReadFolderRound_Refusals(t *testing.T) {
+	f := newRoundFixture(t)
+	round := func(folder string) string {
+		id, _ := f.startRound(t, f.repo, f.worktree, "")
+		f.setRoundFolder(t, id, folder)
+		return strconv.FormatInt(id, 10)
+	}
+	ok := round(f.worktree)
+	gone := round(filepath.Join(f.worktree, "gone"))
+	file := round(filepath.Join(f.repo, "README.md"))
+	empty := round("")
+	relative := round("wt/app")
+	ask := strconv.FormatInt(f.addAsk(t, "review", "spec", false, ""), 10)
+	for name, tc := range map[string]struct {
+		args []string
+		text string
+	}{
+		"negative id":       {[]string{"--read-folder-round", "-3"}, "--read-folder-round -3: not a review round id"},
+		"zero id":           {[]string{"--read-folder-round", "0"}, "--read-folder-round 0: not a review round id"},
+		"empty folder":      {[]string{"--read-folder-round", empty}, "--read-folder-round " + empty + ": the round records no absolute folder"},
+		"relative folder":   {[]string{"--read-folder-round", relative}, "--read-folder-round " + relative + ": the round records no absolute folder"},
+		"unknown round":     {[]string{"--read-folder-round", "999999"}, "--read-folder-round 999999: no such review round"},
+		"folder gone":       {[]string{"--read-folder-round", gone}, "--read-folder-round " + gone},
+		"not a directory":   {[]string{"--read-folder-round", file}, "--read-folder-round " + file + ": not a directory"},
+		"database unusable": {[]string{"--read-folder-round", ok, "--db-path", filepath.Join(f.config, "wt.db")}, "--read-folder-round: opening the database"},
+		"with read-folder":  {[]string{"--read-folder-round", ok, "--read-folder", f.folder}, "give one of"},
+		"with ask":          {[]string{"--read-folder-round", ok, "--read-folder-ask", ask}, "give one of"},
+		"with ask zero":     {[]string{"--read-folder-round", ok, "--read-folder-ask", "0"}, "give one of"},
+		"with tools":        {[]string{"--read-folder-round", ok, "--tools", "chat"}, "--read-folder-round runs without --tools"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			code, stdout, stderr := f.run(t, tc.args...)
+			assert.Equal(t, 2, code)
+			assert.Contains(t, stderr, tc.text)
+			assert.Empty(t, stdout, "no provider ran")
+		})
+	}
+}
+
+// A round's folder on a provider with no file tools (ollama) is refused
+// before any model call, as --read-folder is.
+func TestAIQueryReadFolderRound_WithoutFileToolsIsRefused(t *testing.T) {
+	f := newRoundFixture(t)
+	id, _ := f.startRound(t, f.repo, f.worktree, "")
+	var hits atomic.Int32
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		http.Error(w, "must not be called", http.StatusTeapot)
+	}))
+	t.Cleanup(model.Close)
+	require.NoError(t, os.WriteFile(f.config, fmt.Appendf(nil, `active_workspace: test-ws
+workspaces:
+  test-ws:
+    slack_token: "xoxp-test-token"
+ai:
+  provider: ollama
+  ollama_url: %q
+  models:
+    strong: llama
+`, model.URL), 0o600))
+
+	code, stdout, _ := f.run(t, "--read-folder-round", strconv.FormatInt(id, 10))
+	assert.NotEqual(t, 0, code)
+	assert.Zero(t, hits.Load(), "no model call")
+	require.NotEmpty(t, stdout)
+	var ev aiStreamEvent
+	require.NoError(t, json.Unmarshal([]byte(stdout[0]), &ev), stdout[0])
+	assert.Equal(t, "error", ev.Type)
+	assert.Equal(t, "required_capability_missing", ev.Reason)
 }

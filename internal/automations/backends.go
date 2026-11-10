@@ -48,8 +48,8 @@ type Backends struct {
 	MCP       MCPCaller
 	Agent     AgentRunner
 	// Primitives implement the primitive calls (the built-ins' brief.compose,
-	// plan.compose, tracks.extract, ideas.consolidate, reaction.compose, and
-	// the watch recipes' track.scan), keyed by primitive name; a missing one
+	// plan.compose, tracks.extract, ideas.consolidate, reaction.compose,
+	// attention.waiting, and the watch recipes' track.scan), keyed by primitive name; a missing one
 	// throws NotAvailable.
 	Primitives map[string]PrimitiveFunc
 	// DefaultPrompt is builtin.defaultPrompt(name): the shipped default of a

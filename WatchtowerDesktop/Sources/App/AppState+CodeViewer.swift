@@ -18,6 +18,7 @@ extension AppState {
         codeQuestionCenter.navigation = codeNavigationCenter
         codeQuestionCenter.codeIndex = codeIndexCenter
         codeQuestionCenter.embeddedChats = embeddedChatCenter
+        vm.reviewer = ReviewerCenter(embeddedChats: embeddedChatCenter, dbPool: dbPool)
         codeQuestionCenter.dbPool = dbPool
         codeQuestionCenter.dictation = dictationCenter
         codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }

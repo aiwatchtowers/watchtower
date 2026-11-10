@@ -1,0 +1,25 @@
+<h2>A-8. Look step — no Inbox output, and a dry run that made no card</h2>
+<p class="subtitle">Left box: state <code>noInboxOutput</code> (the recipe has no <code>outputs: [inbox]</code>). Right box: state <code>noCard</code> (the dry run succeeded and made nothing).</p>
+
+<div class="mockup">
+  <div class="mockup-header">Automation “Threads waiting for me” · Chat | Form | Script &nbsp;&nbsp;·&nbsp;&nbsp; draft column: What it collects | <b>Look</b> | When it runs</div>
+  <div class="mockup-body">
+    <div style="display:flex; gap:16px;">
+      <div style="flex:1; border-right:1px solid #8884; padding-right:16px;">
+        <div class="label">Editor chat</div>
+        <p><b>You:</b> show it as a list, oldest first, who is waiting and for how long. A Reply button on each.</p>
+        <p><b>Assistant:</b> done — dry-ran it on your data: 3 threads.</p>
+        <p><b>You:</b> red when they have waited more than a day.</p>
+        <p><b>Assistant:</b> done, see the preview.</p>
+        <input class="mock-input" placeholder="Change something about the look…" style="width:100%">
+      </div>
+      <div style="flex:1;">
+        <div class="label">Look — noInboxOutput</div>
+        <div style="text-align:center; padding:16px 0; color:#888">This automation doesn’t make an Inbox card.<br><small>Ask the chat to put its result in the Inbox.</small></div>
+        <div class="label" style="margin-top:12px">Look — noCard</div>
+        <div style="text-align:center; padding:16px 0; color:#888">This dry run made no card — it found nothing to show.<br><small>Dry run · 1 200 tokens · just now</small><br><br><button class="mock-button">Dry run</button></div>
+        <div style="margin-top:12px; padding-top:8px; border-top:1px solid #8884;"><button class="mock-button">Save Look</button></div>
+      </div>
+    </div>
+  </div>
+</div>

@@ -60,7 +60,7 @@ since: 0.24.0
 action: nav:projects
 -->
 
-The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one strong-model call, saved per snapshot. The **Quick** / **Deep** switch in the toolbar decides when it runs:
+The AI overview is a short summary of the round: whether it covers the linked targets and lane tickets, the files outside them, and risks per chapter. It is made chapter by chapter ([Reviewing a big branch](big-branch-review.md)) and saved per snapshot. The **Quick** / **Deep** switch in the toolbar decides when it runs:
 
 - **Deep** makes it by itself when the round opens and whenever **Refresh** finds new changes.
 - **Quick** shows a saved overview at once, and otherwise offers **Make overview**. Until you press it, files are grouped by the agent's chapters or by folder.
@@ -93,7 +93,7 @@ action: nav:projects
 **Deep** walks three phases: **1 Meaning**, **2 Chapters**, **3 Wrap-up**. **Next: Chapters** and **Next: Wrap-up** sit at the foot of the phase before. Wrap-up has no verdict buttons of its own; use **Request changes** or **Approve** in the toolbar.
 
 - **Meaning** shows what the linked targets ask for and your **Design comments**: remarks on the whole change, not on a line, added with **Add design comment…**.
-- **Chapters** groups the files by folder, at most 400 changed lines each. When the AI overview has chapters, **Use them** switches to those. Under the diff, **What to look at in this chapter** lists the risks the AI overview names for its files; **Comment…** on one turns it into a design comment, and **Ask agent** sends it to the chat panel. **Chapter viewed →** (⌥⌘Return) marks the chapter's files Viewed and moves to the next chapter that is not.
+- **Chapters** groups the files by lane and package, dangerous ones first. Under the diff, **What to look at in this chapter** lists the risks the AI overview names for its files; **Comment…** on one turns it into a design comment, and **Ask agent** sends it to the chat panel. **Chapter viewed →** (⌥⌘Return) marks the chapter's files Viewed and moves to the next chapter that is not.
 - **Wrap-up** asks **Was the intent met?** per linked target. **Partly** and **Not done** add a comment for the agent.
 
 ### Lenses and house rules
@@ -176,7 +176,7 @@ A draft has **Delete**. A carried comment has **Edit** and **Resolve**; resolved
 
 ## Related
 
-- [Sessions](sessions.md), [Asks](asks.md)
+- [Reviewing a big branch](big-branch-review.md), [Sessions](sessions.md), [Asks](asks.md)
 - [Workbench](README.md)
 
 For developers: [docs/features/diff-reviewer.md](../../../features/diff-reviewer.md)

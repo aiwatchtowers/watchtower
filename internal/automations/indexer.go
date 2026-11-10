@@ -331,21 +331,49 @@ func IndexRow(slug, path string, data []byte, contentHash string, scope Scope) (
 	return a, nil
 }
 
-// IndexBuiltinRow is IndexRow for a built-in whose recipe must keep
-// `trigger: {sync: <slot>}`, its registry slot: a recipe (the owner's copy)
-// with any other trigger kind or slot is the row's parse error, so it never
-// runs (a built-in runs only at its slot; another trigger would leave its
-// runs queued with nobody to take them).
-func IndexBuiltinRow(slug, path string, data []byte, contentHash string, scope Scope, slot string) (db.Automation, error) {
+// IndexBuiltinRow is IndexRow for a built-in whose recipe must keep its
+// shipped trigger, want: `sync: <slot>` for a slot built-in, `event:
+// approval` (no where) for Needs approval. A recipe (the owner's copy) with
+// any other trigger is the row's parse error, so it never runs (a slot
+// built-in runs only at its slot, and another trigger would leave its runs
+// queued with nobody to take them; Needs approval's runs are queued only by
+// the approval trigger).
+func IndexBuiltinRow(slug, path string, data []byte, contentHash string, scope Scope, want Trigger) (db.Automation, error) {
 	r, perr := ParseRecipe(slug, data, scope)
-	if perr == nil && (r.Trigger.Kind != TriggerSync || r.Trigger.Sync != slot) {
+	if perr == nil && !sameBuiltinTrigger(r.Trigger, want) {
 		a := db.Automation{
 			Slug: slug, Scope: string(scope.Kind), ProjectID: scope.WorkbenchID, Path: path,
 			RecipeText: string(data), ContentHash: contentHash,
 		}
-		return withParseErrorDefaults(a, fmt.Sprintf("a built-in's trigger must stay \"sync: %s\"", slot)), nil
+		return withParseErrorDefaults(a, fmt.Sprintf("a built-in's trigger must stay %q", builtinTriggerText(want))), nil
 	}
 	return IndexRow(slug, path, data, contentHash, scope)
+}
+
+// sameBuiltinTrigger reports whether got is the built-in trigger want: the
+// same sync slot, or the same event type with no where.
+func sameBuiltinTrigger(got, want Trigger) bool {
+	if got.Kind != want.Kind {
+		return false
+	}
+	switch want.Kind {
+	case TriggerSync:
+		return got.Sync == want.Sync
+	case TriggerEvent:
+		return got.Event != nil && want.Event != nil && got.Event.Type == want.Event.Type && len(got.Event.Where) == 0
+	case TriggerSchedule, TriggerButton, TriggerManual:
+		return false // no built-in ships one
+	}
+	return false
+}
+
+// builtinTriggerText is want as the recipe spells it: "sync: <slot>" or
+// "event: <type>".
+func builtinTriggerText(want Trigger) string {
+	if want.Kind == TriggerEvent && want.Event != nil {
+		return "event: " + want.Event.Type
+	}
+	return "sync: " + want.Sync
 }
 
 // withParseErrorDefaults fills an unparsable recipe's row with the column

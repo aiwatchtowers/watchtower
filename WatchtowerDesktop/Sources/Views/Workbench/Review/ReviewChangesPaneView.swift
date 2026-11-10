@@ -27,6 +27,8 @@ struct ReviewChangesPaneView: View {
 
     /// The chat panel is open (per workbench, open at first).
     @AppStorage private var chatOpen: Bool
+    /// The panel's Reviewer | Author switch (per workbench; the author's Workchat at first).
+    @AppStorage private var chatSide: ReviewChatSide
     /// Each new value puts the keyboard in the panel's composer.
     @State private var chatFocus: UUID?
     /// Ask agent opened the closed panel: its composer focuses as it is made.
@@ -68,6 +70,7 @@ struct ReviewChangesPaneView: View {
         self.codeRoot = codeRoot
         self.workbenches = workbenches
         _chatOpen = AppStorage(wrappedValue: true, chat?.openKey ?? "review.chatPanel.none")
+        _chatSide = AppStorage(wrappedValue: .author, chat?.sideKey ?? "review.chatPanel.none.side")
     }
 
     var body: some View {
@@ -133,7 +136,8 @@ struct ReviewChangesPaneView: View {
                     ) {
                         review
                     } panel: {
-                        ReviewAgentChatPanel(chat: chat, composerFocus: chatFocus, focusOnOpen: chatFocusOnOpen) {
+                        ReviewAgentChatPanel(chat: chat, model: model, identity: identity, side: $chatSide,
+                                             composerFocus: chatFocus, focusOnOpen: chatFocusOnOpen) {
                             chatFocusOnOpen = false
                         }
                     }
@@ -220,7 +224,11 @@ struct ReviewChangesPaneView: View {
             HSplitView {
                 ReviewChapterListView(model: model)
                     .frame(minWidth: 200, idealWidth: 260, maxWidth: 420)
-                detail(checklist: true).frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 0) {
+                    chapterHeader
+                    detail(checklist: true)
+                }
+                .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             }
         case nil:
             HSplitView {
@@ -228,6 +236,16 @@ struct ReviewChangesPaneView: View {
                     .frame(minWidth: 200, idealWidth: 260, maxWidth: 420)
                 detail(checklist: false).frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+    }
+
+    /// The current chapter's head over its diff (board #1025): only where the
+    /// chapter list shows (a map with more than one chapter), never for Can skip.
+    @ViewBuilder private var chapterHeader: some View {
+        if case .ready(let map) = model.map, ReviewChapterList.showsList(map), let key = model.currentChapterKey,
+           let chapter = map.chapters.first(where: { $0.key == key }), !chapter.isCollapsed {
+            ReviewChapterHeader(model: model, chapter: chapter, map: map)
+            Divider()
         }
     }
 
@@ -345,10 +363,11 @@ struct ReviewChangesPaneView: View {
     }
 
     /// Ask agent: the quote goes on top of the Workchat draft, the panel
-    /// opens and the keyboard goes to its composer.
+    /// opens on the author's side and the keyboard goes to its composer.
     private func ask(_ quote: String) {
         guard let chat else { return }
         chat.ask(quote)
+        chatSide = .author
         // A panel made now would take the new request as its starting
         // value and not act on it: it focuses as it is made instead.
         if !chatOpen { chatFocusOnOpen = true }

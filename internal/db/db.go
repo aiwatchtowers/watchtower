@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -29,6 +30,11 @@ type DB struct {
 	// connector opens every pool connection of a handle from Open or
 	// OpenExisting*; nil on the test-only in-memory clones.
 	connector *pragmaConnector
+	// approvalHook holds the hook called with an approval's ref after a
+	// write changed its state (SetApprovalHook). A pointer, so a copied DB
+	// value (tests reopen a handle in place) shares it and vet's copylocks
+	// stays quiet; nil on a handle not built by Open/OpenExisting*.
+	approvalHook *atomic.Pointer[func(ref string)]
 }
 
 // pragmaConnector opens each pool connection through base — the engine
@@ -110,7 +116,7 @@ func openPoolWith(base driver.Connector) *DB {
 	c := &pragmaConnector{base: base}
 	sqlDB := sql.OpenDB(c)
 	sqlDB.SetMaxOpenConns(1)
-	return &DB{DB: sqlDB, connector: c}
+	return &DB{DB: sqlDB, connector: c, approvalHook: new(atomic.Pointer[func(ref string)])}
 }
 
 // idleCloseAfter is how long a file handle's pool connection may sit idle

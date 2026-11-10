@@ -142,6 +142,10 @@ func TestLinearWriteTools_ExternalOnMainTargetAutomation(t *testing.T) {
 			// The create alone answers an issue reaction, like create_jira_issue.
 			want = []string{"main", "target", "reaction", AutomationSurface}
 		}
+		if tool.Name == "add_linear_comment" {
+			// The comment alone answers an Inbox row's Reply (ask #445).
+			want = []string{"main", "target", AutomationSurface, InboxSurface}
+		}
 		assert.Equal(t, want, tool.Surfaces)
 		assert.Contains(t, tool.InputSchema.Required, "reason")
 		assert.Contains(t, tool.InputSchema.Properties, "account_id")

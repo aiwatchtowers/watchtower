@@ -94,15 +94,45 @@ extension TestDatabase {
         actionsJSON: String = "[]",
         pressedAction: Int? = nil,
         pressedRunID: Int64? = nil,
-        pressedAt: String? = nil
+        pressedAt: String? = nil,
+        blocksJSON: String = "",
+        outputKey: String? = nil,
+        contentHash: String = "",
+        writtenAt: String? = nil,
+        changedAt: String? = nil
     ) throws -> Int64 {
+        // Go writes `written_at` and `changed_at` on every row since the
+        // blocks migration: `created_at` unless given.
         try db.execute(sql: """
             INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, priority, created_at,
-                read_at, dismissed_at, done_at, link, actions_json, pressed_action, pressed_run_id, pressed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                read_at, dismissed_at, done_at, link, actions_json, pressed_action, pressed_run_id, pressed_at,
+                blocks_json, output_key, content_hash, written_at, changed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [automationID, runID, kind, title, body, priority, createdAt, readAt, dismissedAt,
-                             doneAt, link, actionsJSON, pressedAction, pressedRunID, pressedAt])
+                             doneAt, link, actionsJSON, pressedAction, pressedRunID, pressedAt,
+                             blocksJSON, outputKey, contentHash, writtenAt ?? createdAt, changedAt ?? createdAt])
         return db.lastInsertedRowID
+    }
+
+    /// A living rewrite of output `id` as Go's `commitRunTx` upserts it by
+    /// key: always a new `run_id`, body, blocks, hash and `written_at`; only
+    /// a changed hash also moves `changed_at` and clears the read, done,
+    /// dismissed and press state (spec "Living upsert and read state").
+    package static func rewriteLivingOutput(
+        _ db: Database, id: Int64, runID: Int64, body: String, blocksJSON: String, contentHash: String, at stamp: String
+    ) throws {
+        let changed = try String.fetchOne(db, sql: "SELECT content_hash FROM automation_outputs WHERE id = ?",
+                                          arguments: [id]) != contentHash
+        try db.execute(sql: """
+            UPDATE automation_outputs SET run_id = ?, body = ?, blocks_json = ?, content_hash = ?, written_at = ?
+            WHERE id = ?
+            """, arguments: [runID, body, blocksJSON, contentHash, stamp, id])
+        guard changed else { return }
+        try db.execute(sql: """
+            UPDATE automation_outputs SET changed_at = ?, read_at = NULL, done_at = NULL, dismissed_at = NULL,
+                pressed_action = NULL, pressed_run_id = NULL, pressed_at = NULL
+            WHERE id = ?
+            """, arguments: [stamp, id])
     }
 
     package static func insertAutomationGrant(
