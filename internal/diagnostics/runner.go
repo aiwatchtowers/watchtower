@@ -68,11 +68,13 @@ type slotResult struct {
 }
 
 // Run builds the report lines in a worker goroutine, running the stages in
-// order. It stops waiting at b.HardStop (or when ctx ends): every slot not
-// finished by then prints `unknown (timed out)` and the report gains the
-// `timed out at 8 s` reason; a part still running is abandoned and dies
-// with the process. Reasons are collected once each, in the fixed order.
-// Run fills Lines and Reasons only.
+// order. It stops waiting at b.HardStop: every slot not finished by then
+// prints `unknown (timed out)` and the report gains the `timed out at 8 s`
+// reason; a part still running is abandoned and dies with the process, and
+// whatever it returns later never reaches the returned Report. A cancelled
+// parent ctx is treated as the hard stop: the same `unknown (timed out)`
+// slots and the same reason. Reasons are collected once each, in the fixed
+// order. Run fills Lines and Reasons only.
 func Run(ctx context.Context, b Budgets, stages []Stage) Report {
 	var slots []Slot
 	for _, st := range stages {

@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -165,6 +166,44 @@ func TestReport_PartialReasonsOrderAndOnce(t *testing.T) {
 	}
 	if got := (Report{Lines: []string{"x"}}).Text(); got != "x" {
 		t.Fatalf("complete report text = %q", got)
+	}
+}
+
+func TestDiagnostics_CancelledContextIsHardStop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	r := Run(ctx, DefaultBudgets, []Stage{{Name: "local", Parts: []Slot{{Line: 0, Label: "Daemon: ", Part: func(context.Context) (string, string) { <-block; return "running", "" }}}}})
+	if got, want := r.Text(), "Daemon: "+UnknownTimedOut+"\nPartial report: "+ReasonTimedOut; got != want {
+		t.Fatalf("text = %q, want %q", got, want)
+	}
+}
+
+func TestDiagnostics_LateResultAfterHardStopIgnored(t *testing.T) {
+	block := make(chan struct{})
+	returned := make(chan struct{})
+	b := DefaultBudgets
+	b.HardStop = 50 * time.Millisecond
+	stages := []Stage{{Name: "logs", Parts: []Slot{
+		{Line: 0, Label: "Crash: ", Part: func(context.Context) (string, string) {
+			<-block
+			defer close(returned)
+			return "late", ReasonLogScan
+		}},
+		{Line: 1, Label: "Logs: ", Part: fixed("late too", "")},
+	}}}
+	r := Run(context.Background(), b, stages)
+	before := r.Text()
+	lines := slices.Clone(r.Lines)
+	close(block)
+	<-returned
+	time.Sleep(50 * time.Millisecond) // let the worker try to deliver both results
+	if r.Text() != before || !slices.Equal(r.Lines, lines) {
+		t.Fatalf("report changed after the hard stop: %q", r.Text())
+	}
+	if want := "Crash: " + UnknownTimedOut + "\nLogs: " + UnknownTimedOut + "\nPartial report: " + ReasonTimedOut; before != want {
+		t.Fatalf("text = %q, want %q", before, want)
 	}
 }
 
