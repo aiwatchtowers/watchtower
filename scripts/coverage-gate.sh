@@ -51,13 +51,18 @@ cd "$ROOT"
 # them back to back — measured 2026-10-14: ~7 min locally, 7-13 min on a CI
 # runner, against ~1 min for every other package together. It runs instead as
 # CMD_SHARDS go test processes over disjoint round-robin slices of its
-# top-level test names, next to the rest of the tree; the shards' cover
-# profiles are merged into the one percentage the gate checks.
+# top-level test names, next to the rest of the tree; the slices' cover
+# profiles are merged into the one percentage the gate checks. internal/db
+# runs the same way (DB_SHARDS): its migration replays are long and mostly
+# serial — 316 s on a CI runner of its own (2026-11-10), ~200 % CPU locally.
 CMD_PKG=watchtower/cmd
 CMD_SHARDS="${CMD_SHARDS:-4}"
+DB_SHARDS="${DB_SHARDS:-3}"
+SPLIT_PKGS="$CMD_PKG:$CMD_SHARDS watchtower/internal/db:$DB_SHARDS"
 
-# CI seconds per package (go-test log, 2026-11-10, every package on one runner).
-COVER_WEIGHTS="db 377 automations 125 transporttest 70 daemon 69 codex 35 jira 31 chat 27 confluenceedit 24 kb 24 sync 22 tools 22 ideas 17 automations/builtin 15 memory 15 hub/slices/sources 14 ai 13 hub 12 agentlogdb 12 agentlog 12 coach 11 sessioncleanup 10"
+# CI seconds per package (go-test log, 2026-11-10, every package on one
+# runner; db's an estimate for its DB_SHARDS slices).
+COVER_WEIGHTS="db 150 automations 125 transporttest 70 daemon 69 codex 35 jira 31 chat 27 confluenceedit 24 kb 24 sync 22 tools 22 ideas 17 automations/builtin 15 memory 15 hub/slices/sources 14 ai 13 hub 12 agentlogdb 12 agentlog 12 coach 11 sessioncleanup 10"
 COVER_WEIGHT_DEFAULT=3
 
 ALL_PKGS="$(go list ./...)"
@@ -100,9 +105,16 @@ if [[ -z "$MY_PKGS" ]]; then
     echo "coverage-gate: shard $SHARD has no packages" >&2
     exit 1
 fi
-RUN_CMD=0
-if echo "$MY_PKGS" | grep -qxF "$CMD_PKG"; then RUN_CMD=1; fi
-REST_PKGS="$(echo "$MY_PKGS" | grep -vxF "$CMD_PKG" || true)"
+# The split packages this run has ("pkg:slices" words), and the rest.
+MY_SPLITS=""
+REST_PKGS="$MY_PKGS"
+for spec in $SPLIT_PKGS; do
+    pkg="${spec%%:*}"
+    if echo "$MY_PKGS" | grep -qxF "$pkg"; then
+        MY_SPLITS="$MY_SPLITS $spec"
+        REST_PKGS="$(echo "$REST_PKGS" | grep -vxF "$pkg" || true)"
+    fi
+done
 
 # A threshold is this run's when its package ran here, or — in shard 1 and in
 # the unsharded run — when the tree has no such package, so that "missing from
@@ -116,20 +128,25 @@ owns_threshold() {
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-if [[ $RUN_CMD -eq 1 ]]; then
-    # Also compiles the cover-instrumented test binary once, so the shards
+slice_dir() { echo "$WORK/split-$(echo "$1" | tr '/' '_')"; }
+
+for spec in $MY_SPLITS; do
+    pkg="${spec%%:*}"
+    dir="$(slice_dir "$pkg")"
+    mkdir -p "$dir"
+    # Also compiles the cover-instrumented test binary once, so the slices
     # below reuse it from the build cache instead of each compiling it.
-    if ! go test -cover -list '.*' ./cmd > "$WORK/list" 2>&1; then
-        cat "$WORK/list"
-        echo "coverage-gate: listing $CMD_PKG tests failed — see output above" >&2
+    if ! go test -cover -list '.*' "$pkg" > "$dir/list" 2>&1; then
+        cat "$dir/list"
+        echo "coverage-gate: listing $pkg tests failed — see output above" >&2
         exit 1
     fi
-    grep -E '^(Test|Fuzz|Example)' "$WORK/list" > "$WORK/names" || true
-    if [[ ! -s "$WORK/names" ]]; then
-        echo "coverage-gate: no tests listed in $CMD_PKG" >&2
+    grep -E '^(Test|Fuzz|Example)' "$dir/list" > "$dir/names" || true
+    if [[ ! -s "$dir/names" ]]; then
+        echo "coverage-gate: no tests listed in $pkg" >&2
         exit 1
     fi
-fi
+done
 
 # -timeout 20m: with coverage on a CI runner, unsharded watchtower/cmd took
 # ~595-601 s, right at go test's default 10m per-package limit.
@@ -139,13 +156,16 @@ if [[ -n "$REST_PKGS" ]]; then
     go test $REST_PKGS -cover -timeout 20m > "$WORK/rest.log" 2>&1 &
     pids+=($!)
 fi
-if [[ $RUN_CMD -eq 1 ]]; then
-    for ((i = 0; i < CMD_SHARDS; i++)); do
-        run="^($(awk -v n="$CMD_SHARDS" -v i="$i" 'NR % n == i' "$WORK/names" | paste -sd'|' -))\$"
-        go test ./cmd -run "$run" -coverprofile "$WORK/cmd$i.cov" -timeout 20m > "$WORK/cmd$i.log" 2>&1 &
+for spec in $MY_SPLITS; do
+    pkg="${spec%%:*}"
+    n="${spec##*:}"
+    dir="$(slice_dir "$pkg")"
+    for ((i = 0; i < n; i++)); do
+        run="^($(awk -v n="$n" -v i="$i" 'NR % n == i' "$dir/names" | paste -sd'|' -))\$"
+        go test "$pkg" -run "$run" -coverprofile "$dir/$i.cov" -timeout 20m > "$dir/$i.log" 2>&1 &
         pids+=($!)
     done
-fi
+done
 
 # Capture without letting `set -e` abort before the output is printed: a
 # failing test used to kill the script right here, leaving CI with a bare
@@ -155,25 +175,28 @@ for pid in "${pids[@]}"; do
     wait "$pid" || TEST_STATUS=$?
 done
 
-# The shards' own "ok watchtower/cmd" lines are renamed so the parse below
-# sees only the merged figure: a block counts as covered when any shard ran it.
+# The slices' own "ok <pkg>" lines are renamed so the parse below sees only
+# the merged figure: a block counts as covered when any slice ran it.
 OUTPUT="$(
     if [[ -n "$REST_PKGS" ]]; then cat "$WORK/rest.log"; fi
-    if [[ $RUN_CMD -eq 1 ]]; then
-    for ((i = 0; i < CMD_SHARDS; i++)); do
-        shard="$CMD_PKG[shard $((i + 1))/$CMD_SHARDS]"
-        sed -e "s|^ok\([[:space:]]*\)$CMD_PKG\([[:space:]]\)|ok\1$shard\2|" \
-            -e "s|^FAIL\([[:space:]]*\)$CMD_PKG\([[:space:]]\)|FAIL\1$shard\2|" "$WORK/cmd$i.log"
+    for spec in $MY_SPLITS; do
+        pkg="${spec%%:*}"
+        n="${spec##*:}"
+        dir="$(slice_dir "$pkg")"
+        for ((i = 0; i < n; i++)); do
+            shard="$pkg[shard $((i + 1))/$n]"
+            sed -e "s|^ok\([[:space:]]*\)$pkg\([[:space:]]\)|ok\1$shard\2|" \
+                -e "s|^FAIL\([[:space:]]*\)$pkg\([[:space:]]\)|FAIL\1$shard\2|" "$dir/$i.log"
+        done
+        if [[ $TEST_STATUS -eq 0 ]]; then
+            tail -q -n +2 "$dir"/*.cov | awk -v pkg="$pkg" -v n="$n" '
+                { stmts[$1] = $2; if ($3 > 0) hit[$1] = 1 }
+                END {
+                    for (b in stmts) { total += stmts[b]; if (b in hit) covered += stmts[b] }
+                    printf "ok  \t%s\t(%d shards)\tcoverage: %.1f%% of statements\n", pkg, n, total ? 100 * covered / total : 0
+                }'
+        fi
     done
-    fi
-    if [[ $RUN_CMD -eq 1 && $TEST_STATUS -eq 0 ]]; then
-        tail -q -n +2 "$WORK"/cmd*.cov | awk -v pkg="$CMD_PKG" -v n="$CMD_SHARDS" '
-            { stmts[$1] = $2; if ($3 > 0) hit[$1] = 1 }
-            END {
-                for (b in stmts) { total += stmts[b]; if (b in hit) covered += stmts[b] }
-                printf "ok  \t%s\t(%d shards)\tcoverage: %.1f%% of statements\n", pkg, n, total ? 100 * covered / total : 0
-            }'
-    fi
 )"
 echo "$OUTPUT"
 if [[ $TEST_STATUS -ne 0 ]]; then

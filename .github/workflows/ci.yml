@@ -200,8 +200,8 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-    # A hang must fail the job, not run to GitHub's 6 h default. Measured
-    # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
+    # A hang must fail the job, not run to GitHub's 6 h default; the race
+    # pass runs in go-test-race.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -463,11 +463,13 @@ jobs:
       # The code viewer's and Branch review's editor pages (index.html,
       # diff.html) in a headless WKWebView against the pinned Monaco build,
       # which is gitignored: fetched (checksummed) first. It builds no package
-      # (one swiftc of the harness), so it runs in the background beside Test,
-      # whose lanes leave cores idle as they finish unevenly, and "Editor
-      # bridge check" below collects it: ~1 min off the job (2026-11-10). Not
-      # before Build: CodeEditorWeb is a copied resource, Monaco would land in
-      # the bundle.
+      # (one swiftc of the harness, ~1 min in all), so it runs in the
+      # background during Test's first, minutes-long phase of concurrent lanes
+      # and "Editor bridge check" below collects it: ~1 min off the job
+      # (2026-11-10). Its harness waits on fixed delays, so a flake under the
+      # lanes' load is the cost to watch; if it shows, move it back to run
+      # after Test. Not before Build: CodeEditorWeb is a copied resource,
+      # Monaco would land in the bundle.
       - name: Editor bridge check (start)
         working-directory: .
         run: |
@@ -501,8 +503,10 @@ jobs:
         working-directory: .
         run: |
           d="$RUNNER_TEMP/editor-bridge"
-          while [ ! -s "$d/rc" ]; do sleep 2; done
+          # Under the step's timeout, so a hung run still prints its log.
+          for _ in $(seq 240); do [ -s "$d/rc" ] && break; sleep 2; done
           cat "$d/log"
+          [ -s "$d/rc" ] || { echo "editor bridge check still running after 8 min" >&2; exit 1; }
           exit "$(cat "$d/rc")"
 
   # Drops the main SPM build caches the latest main push replaced: one ~2 GB
