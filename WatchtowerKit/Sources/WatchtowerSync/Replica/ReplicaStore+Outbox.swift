@@ -58,6 +58,14 @@ extension ReplicaStore {
     static let actionSeqNextKey = "action_seq_next"
     /// The highest epoch an `epoch_ack` was queued for (relay client Phase 3): a lower or equal one never is.
     static let epochAckKey = "epoch_ack_epoch"
+    /// The offer (`next_kx`, base64url) the queued `epoch_ack` carried (relay client Phase 5): the same epoch is due
+    /// again only with another offer. Cleared by `offerAgain`, so the same offer goes once more.
+    static let epochAckKXKey = "epoch_ack_kx"
+    /// When the relay feed first met a record in an epoch above the phone's newest (relay client Phase 5, F15).
+    static let relayWaitSinceKey = "relay_wait_since"
+    /// When the relay feed parked: it waited `SecureTransport.keyboxWaitCap` for a keybox (F26). Now reads it.
+    static let relayFeedParkedSinceKey = "relay_feed_parked_since"
+    static let resendFloorKey = "resend_floor"
     /// How long a handled hub control id is remembered (sim "Bounded state").
     static let handledControlRetention: TimeInterval = 15 * 86_400
 
@@ -87,6 +95,13 @@ extension ReplicaStore {
         CREATE TABLE IF NOT EXISTS handled_controls (
             control_id TEXT PRIMARY KEY,
             handled_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_reseal (
+            action_id TEXT PRIMARY KEY,
+            old_payload BLOB NOT NULL,
+            old_epoch INTEGER NOT NULL,
+            payload BLOB NOT NULL,
+            epoch INTEGER NOT NULL
         )
         """
 
@@ -159,12 +174,14 @@ extension ReplicaStore {
     }
 
     /// A written row: `sent` with the version of its write. Only a `queued` row moves — a row a `resend_from`
-    /// requeued meanwhile, or one an echo settled, is left as it is.
+    /// requeued meanwhile, or one an echo settled, is left as it is. `sent_at` keeps the first write's time: it is the
+    /// 24 h rule's clock, and a resend must not restart it, or a row the hub never accepts would stay "sending" for as
+    /// long as the owner keeps acting.
     func markSent(actionID: String, recordSeq: UInt64?, at date: Date) throws {
         try writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = ?
+                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = COALESCE(sent_at, ?)
                     WHERE action_id = ? AND delivery = 'queued'
                     """,
                 arguments: [recordSeq.map { Int64(clamping: $0) }, date.timeIntervalSince1970, actionID])
@@ -177,7 +194,7 @@ extension ReplicaStore {
         try writer.write { db in
             try db.execute(
                 sql: """
-                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = ?
+                    UPDATE pending_actions SET delivery = 'sent', record_seq = ?, sent_at = COALESCE(sent_at, ?)
                     WHERE action_id = ? AND delivery IN ('queued','sent')
                     """,
                 arguments: [Int64(clamping: recordSeq), date.timeIntervalSince1970, actionID])
@@ -304,16 +321,17 @@ extension ReplicaStore {
         ))
     }
 
-    /// Waiting to send (`queued`) and Not delivered (`undelivered`) counts.
-    public func outboxCounts(from db: Database) throws -> (queued: Int, undelivered: Int) {
+    /// Waiting to send (`queued`), written and not yet answered (`sent`), and Not delivered (`undelivered`) counts.
+    public func outboxCounts(from db: Database) throws -> (queued: Int, sent: Int, undelivered: Int) {
         let row = try Row.fetchOne(
             db,
             sql: """
                 SELECT COALESCE(SUM(delivery = 'queued'), 0) AS queued,
+                       COALESCE(SUM(delivery = 'sent'), 0) AS sent,
                        COALESCE(SUM(delivery = 'undelivered'), 0) AS undelivered
                 FROM pending_actions
                 """)
-        return (row?["queued"] ?? 0, row?["undelivered"] ?? 0)
+        return (row?["queued"] ?? 0, row?["sent"] ?? 0, row?["undelivered"] ?? 0)
     }
 
     /// The one delete of an overlay row (feature Dismiss, the list's Dismiss All, Retry's old row). Refuses a row
@@ -345,39 +363,179 @@ extension ReplicaStore {
     /// Queues a sealed control behind those already queued; an id already queued is a no-op.
     func enqueueControl(_ control: QueuedControl) throws {
         try writer.write { db in
-            try db.execute(
-                sql: """
-                    INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
-                ])
+            try Self.insertControl(db, control)
         }
     }
 
-    /// Whether an `epoch_ack` for `epoch` is due: above every epoch one was queued for.
-    func epochAckDue(_ epoch: UInt32) throws -> Bool {
-        try writer.read { db in try Self.ackedEpoch(db).map { epoch > $0 } ?? true }
+    // MARK: The gap the hub asked for
+
+    /// The start of the gap the hub asked for with `resend_from` and has had no answer on, or nil. Kept in
+    /// `replica_meta` (an unlink drops the replica with it), never lowered: the hub's next expected seq only grows.
+    func resendFloor() throws -> UInt64? {
+        try writer.read { db in try Self.meta(db, Self.resendFloorKey).flatMap { UInt64($0) } }
     }
 
-    /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch) and records
-    /// the epoch, in one transaction; false, nothing written, when `epoch` is not above the recorded one.
-    func queueEpochAck(_ control: QueuedControl, epoch: UInt32) throws -> Bool {
+    func raiseResendFloor(_ seq: UInt64) throws {
         try writer.write { db in
-            if let acked = try Self.ackedEpoch(db), epoch <= acked { return false }
+            let current = try Self.meta(db, Self.resendFloorKey).flatMap { UInt64($0) } ?? 0
+            try Self.setMeta(db, Self.resendFloorKey, String(max(current, seq)))
+        }
+    }
+
+    /// A final echo of `seq` means the hub's order passed it: an ask at or below it is answered.
+    func closeResendFloor(atOrBelow seq: UInt64) throws {
+        try writer.write { db in
+            guard let floor = try Self.meta(db, Self.resendFloorKey).flatMap({ UInt64($0) }), floor <= seq else { return }
+            try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [Self.resendFloorKey])
+        }
+    }
+
+    /// Queues the `skip_to` that answers the ask and closes it in one transaction: a kill leaves either the ask (the
+    /// next pass seals the skip again) or the queued control, never neither and never two.
+    func queueSkip(_ control: QueuedControl) throws {
+        try writer.write { db in
+            try Self.insertControl(db, control)
+            try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [Self.resendFloorKey])
+        }
+    }
+
+    /// Whether an `epoch_ack` for `epoch` with the offer `nextKX` is due: above every epoch one was queued for, or
+    /// that very epoch with an offer it has not carried yet (a phone offering again inside an epoch). Never below.
+    func epochAckDue(_ epoch: UInt32, nextKX: Data?) throws -> Bool {
+        try writer.read { db in try Self.epochAckDue(db, epoch, nextKX: nextKX) }
+    }
+
+    /// Queues the sealed `epoch_ack` for `epoch` in place of any unsent one (always for a lower epoch, or the same
+    /// epoch with an older offer) and records the epoch and its offer, in one transaction; false, nothing written,
+    /// when it is not due (`epochAckDue`).
+    func queueEpochAck(_ control: QueuedControl, epoch: UInt32, nextKX: Data?) throws -> Bool {
+        try writer.write { db in
+            guard try Self.epochAckDue(db, epoch, nextKX: nextKX) else { return false }
             try db.execute(
                 sql: "DELETE FROM outbound_controls WHERE kind = ?", arguments: [ControlKind.epochAck.rawValue])
-            try db.execute(
-                sql: """
-                    INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                arguments: [
-                    control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
-                ])
+            try Self.insertControl(db, control)
             try Self.setMeta(db, Self.epochAckKey, String(epoch))
+            if let nextKX {
+                try Self.setMeta(db, Self.epochAckKXKey, WireBytes.base64URL(nextKX))
+            } else {
+                try Self.deleteMeta(db, Self.epochAckKXKey)
+            }
             return true
+        }
+    }
+
+    /// Forgets which offer the last `epoch_ack` carried, so the same offer is due once more for the same epoch (a
+    /// keybox dropped this phone's stored pair: the hub has no offer of it any more).
+    func clearEpochAckOffer() throws {
+        try writer.write { db in try Self.deleteMeta(db, Self.epochAckKXKey) }
+    }
+
+    // MARK: Own rows across a merge (relay client Phase 5)
+
+    /// Every row of this phone's own sealed actions, any state: action id, envelope, wire name.
+    func ownSealedRows() throws -> [(actionID: String, envelope: Data, wireName: String)] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: "SELECT action_id, payload, wire_name FROM pending_actions WHERE wire_name IS NOT NULL")
+                .map { ($0["action_id"], $0["payload"], $0["wire_name"]) }
+        }
+    }
+
+    /// Replaces the staged reseals with `reseals` (one transaction). Writes nothing when both are empty.
+    func stageReseals(_ reseals: [StagedReseal]) throws {
+        if reseals.isEmpty, try stagedReseals().isEmpty { return }
+        try writer.write { db in
+            try db.execute(sql: "DELETE FROM pending_reseal")
+            for reseal in reseals {
+                try db.execute(
+                    sql: "INSERT INTO pending_reseal (action_id, old_payload, old_epoch, payload, epoch) VALUES (?, ?, ?, ?, ?)",
+                    arguments: [reseal.actionID, reseal.oldPayload, Int64(reseal.oldEpoch), reseal.payload, Int64(reseal.epoch)])
+            }
+        }
+    }
+
+    func stagedReseals() throws -> [StagedReseal] {
+        try writer.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM pending_reseal ORDER BY action_id").map { row in
+                StagedReseal(
+                    actionID: row["action_id"], oldPayload: row["old_payload"],
+                    oldEpoch: UInt32(truncatingIfNeeded: row["old_epoch"] as Int64), payload: row["payload"],
+                    epoch: UInt32(truncatingIfNeeded: row["epoch"] as Int64))
+            }
+        }
+    }
+
+    /// Applies `reseals` in one transaction: each row still holding its old envelope takes the new one (its `epoch`
+    /// column too, when it has one; its state stays); of those swapped, the ids in `undeliver` that are `queued` or
+    /// `sent` are listed Not delivered (`refused`, `message`): a row whose bytes changed since the stage is left
+    /// alone; the applied ones leave the stage.
+    func promoteReseals(_ reseals: [StagedReseal], undeliver: Set<String>, message: String) throws {
+        guard !reseals.isEmpty else { return }
+        try writer.write { db in
+            for reseal in reseals {
+                try db.execute(
+                    sql: """
+                        UPDATE pending_actions SET payload = ?, epoch = CASE WHEN epoch IS NULL THEN NULL ELSE ? END
+                        WHERE action_id = ? AND payload = ?
+                        """,
+                    arguments: [reseal.payload, Int64(reseal.epoch), reseal.actionID, reseal.oldPayload])
+                if undeliver.contains(reseal.actionID), db.changesCount > 0 {
+                    try db.execute(
+                        sql: """
+                            UPDATE pending_actions
+                            SET state = 'failed', delivery = 'undelivered', undelivered_reason = ?, error_message = ?
+                            WHERE action_id = ? AND delivery IN ('queued','sent')
+                            """,
+                        arguments: [UndeliveredReason.refused.rawValue, message, reseal.actionID])
+                }
+                try db.execute(sql: "DELETE FROM pending_reseal WHERE action_id = ?", arguments: [reseal.actionID])
+            }
+        }
+    }
+
+    // MARK: Waiting for a keybox (relay client Phase 5)
+
+    /// When the relay feed first met a pending epoch in the batch it is replaying; nil when it is not waiting.
+    func relayWaitSince() throws -> Date? {
+        try writer.read { db in try Self.metaDate(db, Self.relayWaitSinceKey) }
+    }
+
+    /// Records the first sighting of a pending epoch; an earlier one stays. Returns the sighting in force.
+    func startRelayWait(at date: Date) throws -> Date {
+        try writer.write { db in
+            if let since = try Self.metaDate(db, Self.relayWaitSinceKey) { return since }
+            try Self.setMeta(db, Self.relayWaitSinceKey, String(date.timeIntervalSince1970))
+            return date
+        }
+    }
+
+    /// When the relay feed parked (Now shows it); nil while it reads.
+    public func relayFeedParkedSince() throws -> Date? {
+        try writer.read { db in try relayFeedParkedSince(from: db) }
+    }
+
+    /// The same mark read inside a caller's read, so an observation of the outbox counts follows it too.
+    public func relayFeedParkedSince(from db: Database) throws -> Date? {
+        try Self.metaDate(db, Self.relayFeedParkedSinceKey)
+    }
+
+    /// Marks the feed parked; an earlier mark stays.
+    func markRelayFeedParked(at date: Date) throws {
+        try writer.write { db in
+            guard try Self.metaDate(db, Self.relayFeedParkedSinceKey) == nil else { return }
+            try Self.setMeta(db, Self.relayFeedParkedSinceKey, String(date.timeIntervalSince1970))
+        }
+    }
+
+    /// A batch was read with no pending epoch: the wait and the parked mark both end, in one transaction. Writes
+    /// nothing when neither is set (the feed calls it after every batch).
+    func endRelayWait() throws {
+        let keys = [Self.relayWaitSinceKey, Self.relayFeedParkedSinceKey]
+        let set = try writer.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM replica_meta WHERE key IN (?, ?)", arguments: StatementArguments(keys)) ?? 0
+        }
+        guard set > 0 else { return }
+        try writer.write { db in
+            for key in keys { try Self.deleteMeta(db, key) }
         }
     }
 
@@ -454,6 +612,17 @@ extension ReplicaStore {
             sql: "DELETE FROM handled_controls WHERE handled_at < ?", arguments: [date.timeIntervalSince1970])
     }
 
+    private static func insertControl(_ db: Database, _ control: QueuedControl) throws {
+        try db.execute(
+            sql: """
+                INSERT OR IGNORE INTO outbound_controls (control_id, kind, wire_name, envelope, queued_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                control.id, control.kind.rawValue, control.wireName, control.envelope, control.queuedAt.timeIntervalSince1970
+            ])
+    }
+
     private static func nextActionSeq(_ db: Database) throws -> UInt64 {
         guard let raw = try meta(db, actionSeqNextKey) else { return 1 }
         guard let seq = UInt64(raw), seq >= 1 else { throw ReplicaOutboxError.unreadableCounter(raw) }
@@ -463,6 +632,22 @@ extension ReplicaStore {
     /// nil when no ack was queued yet, or the stored value does not read (the next ack then goes out).
     private static func ackedEpoch(_ db: Database) throws -> UInt32? {
         try meta(db, epochAckKey).flatMap { UInt32($0) }
+    }
+
+    private static func epochAckDue(_ db: Database, _ epoch: UInt32, nextKX: Data?) throws -> Bool {
+        guard let acked = try ackedEpoch(db) else { return true }
+        if epoch != acked { return epoch > acked }
+        guard let nextKX else { return false }
+        return try meta(db, epochAckKXKey) != WireBytes.base64URL(nextKX)
+    }
+
+    /// nil when absent or unreadable.
+    private static func metaDate(_ db: Database, _ key: String) throws -> Date? {
+        try meta(db, key).flatMap(TimeInterval.init).map(Date.init(timeIntervalSince1970:))
+    }
+
+    private static func deleteMeta(_ db: Database, _ key: String) throws {
+        try db.execute(sql: "DELETE FROM replica_meta WHERE key = ?", arguments: [key])
     }
 
     private static func meta(_ db: Database, _ key: String) throws -> String? {
@@ -496,4 +681,14 @@ extension ReplicaStore {
             sentAt: (row["sent_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
             createdAt: Date(timeIntervalSince1970: row["created_at"]))
     }
+}
+
+/// One own row resealed for a keybox merge and not applied yet (`pending_reseal`): the envelope it held and its
+/// epoch, and the new one under the merged newest epoch.
+struct StagedReseal: Equatable, Sendable {
+    let actionID: String
+    let oldPayload: Data
+    let oldEpoch: UInt32
+    let payload: Data
+    let epoch: UInt32
 }

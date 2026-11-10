@@ -26,11 +26,23 @@ type linkCode struct {
 	usedBy   string
 }
 
+// cloudKitFields are a CloudKit code's own fields (IssueCloudKit): the
+// container, the Mac's iCloud user and the share URLs (nil when the shares
+// could not be made: only a same-Apple-ID phone can link then).
+type cloudKitFields struct {
+	container, ownerUser  string
+	dataShare, relayShare *string
+}
+
 // Issue makes a new QR code (v4, transport relay, the hub's relay identity
 // and transports; no CloudKit fields): every unused code still open is
 // retired first, so only the newest links, and link_codes keeps the newest
 // KeptCodes. It returns the payload and its URL and emits qr then waiting.
-func (c *Center) Issue() (wire.LinkPayload, string, error) {
+func (c *Center) Issue() (wire.LinkPayload, string, error) { return c.issue(nil) }
+
+// issue is Issue; ck set makes a CloudKit code (IssueCloudKit): the
+// CloudKit fields, transport cloudkit and transports ["cloudkit","relay"].
+func (c *Center) issue(ck *cloudKitFields) (wire.LinkPayload, string, error) {
 	c.mu.Lock()
 	defer c.unlock()
 	raw := make([]byte, linkNonceLength)
@@ -52,6 +64,10 @@ func (c *Center) Issue() (wire.LinkPayload, string, error) {
 		RelayDeviceID: c.host.RelayDeviceID,
 		RelayAuthPub:  c.host.RelayAuthPub,
 		Transports:    append([]string(nil), c.host.Transports...),
+	}
+	if ck != nil {
+		p.Container, p.OwnerUser, p.DataShare, p.RelayShare = ck.container, ck.ownerUser, ck.dataShare, ck.relayShare
+		p.Transport, p.Transports = wire.TransportCloudKit, []string{wire.TransportCloudKit, wire.TransportRelay}
 	}
 	url, err := p.URL()
 	if err != nil {

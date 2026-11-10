@@ -98,6 +98,16 @@ struct HubListRow: View {
                         Text(flavor)
                     }
                 }
+                if let transport = item.transportLine {
+                    Text(transport)
+                }
+                if let term = item.termLine {
+                    // The whole warning, not one line: it says why and when the link ends (S61).
+                    Text(term)
+                        .foregroundStyle(PhoneTone.secondary.color)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if let problem = item.problem {
                     Text(problem)
                 }

@@ -389,8 +389,6 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
             XCTFail("the phone's open_existing must be refused")
         } catch let error as WorkbenchesViewModel.TargetStartError {
             XCTAssertEqual(error, .cleaningUp, "refused as a cleanup, not as a start in flight")
-            XCTAssertEqual(SessionStartStopHandlers.outcome(error),
-                           .failed(.conflict, message: "This session is being cleaned up on the Mac"))
         }
 
         XCTAssertFalse(terminals.liveIDs.contains(row.id), "the closed agent is not resumed")

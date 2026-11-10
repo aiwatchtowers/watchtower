@@ -129,7 +129,10 @@ func (r *rig) publisher(sources ...Source) *Publisher {
 }
 
 func (r *rig) publisherWith(c Config, sources ...Source) *Publisher {
-	c.Store, c.Transport, c.Sealer, c.DataZone, c.Sources = r.st, r.tr, secure.NewSealer(r.kr), testZone, sources
+	c.Store, c.Sealer, c.DataZone, c.Sources = r.st, secure.NewSealer(r.kr), testZone, sources
+	if c.Transport == nil {
+		c.Transport = r.tr
+	}
 	if c.Clock == nil {
 		c.Clock = r.clock
 	}

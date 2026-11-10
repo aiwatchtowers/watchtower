@@ -194,7 +194,7 @@ final class NotificationService: Sendable {
     /// spec §10, OD-2); the owner answers in Settings → Mobile.
     func sendMobileTypingRequestNotification(deviceID: String, name: String) {
         let content = UNMutableNotificationContent()
-        content.title = MobileSettingsViewModel.allowQuestion(name: name)
+        content.title = MobileSettingsModel.allowQuestion(name: name)
         content.body = "Open Settings → Mobile to Allow it."
         content.sound = .default
         content.userInfo = ["type": "mobile_typing_request"]

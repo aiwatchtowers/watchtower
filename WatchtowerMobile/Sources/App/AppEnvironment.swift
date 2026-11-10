@@ -39,6 +39,8 @@ final class AppEnvironment {
     /// The process's one hosted relay session (R2), built on first use and only while the relay is available;
     /// `.off` on the demo and in tests.
     @ObservationIgnored let relay: SharedRelaySession
+    /// The Relay subscription, built only while the relay is available (`AppRoot.wireRelayAccount`).
+    var relayAccount: RelayAccountCenter?
     /// The selected tab and the Calendar stack.
     let navigation = AppNavigation()
     /// The ready recaps the owner has opened on this phone.
@@ -112,7 +114,9 @@ final class AppEnvironment {
     /// these sessions.
     func hubListItems(_ rows: [HubRow], unreadable: [String] = [], now: Date) -> [HubListItem] {
         HubListModel.items(
-            rows: rows, unreadable: unreadable, sessions: sessions, unopened: unopenedHubIDs, activeHubID: activeHubID, now: now
+            rows: rows, unreadable: unreadable, sessions: sessions, unopened: unopenedHubIDs,
+            showsTransport: relayAccount != nil, subscriptionEnded: relayAccount?.phase.subscriptionEnded ?? false,
+            termHold: relayAccount?.termHold ?? .none, activeHubID: activeHubID, now: now
         )
     }
 
@@ -120,6 +124,7 @@ final class AppEnvironment {
     /// scene phase the others have and its role.
     func add(_ session: HubSession) {
         sessions[session.hubID] = session
+        if case .available = relay.availability { session.deviceSettings.reportsWorkAlertsOff = true }
         unopenedHubIDs.remove(session.hubID)
         if !order.contains(session.hubID) {
             order.append(session.hubID)
@@ -141,6 +146,12 @@ final class AppEnvironment {
         if let registrar = sessions[hubID]?.alertRegistrar {
             Task { await registrar.apply(enabled: false) }
         }
+        dropSession(hubID)
+    }
+
+    /// `remove` for a hub still linked (a route move whose new session could not be built): its push subscription
+    /// stays, so the hub's alerts go on reaching the phone while it is unopened.
+    func dropSession(_ hubID: String) {
         if activeHubID == hubID {
             retained = sessions[hubID]
             activeHubID = nil
@@ -220,6 +231,9 @@ final class AppEnvironment {
     /// The scene phase, for every session: each pauses its safety poll
     /// while the app is not active and decides on the return whether to
     /// fetch (`HubSession.setActive`).
+    /// The scene is active now (`setActive(true)` was the last word): the relay term runs only then (review M2).
+    var isSceneActive: Bool { sceneActive == true }
+
     func setActive(_ active: Bool) {
         sceneActive = active
         for hubID in order {
@@ -333,6 +347,18 @@ final class AppEnvironment {
         preconditionFailure("no hub session")
     }
 
+    /// Settings → Diagnostics reads every hub's timings, in the registry's order (relay client Phase 4 Task 15).
+    func latencySources() -> [LatencyHubSource] {
+        order.compactMap { sessions[$0] }.map { session in
+            let store = session.store
+            let outbox = session.outbox
+            return LatencyHubSource(
+                samples: { try store.latencySamples(since: $0) },
+                ordered: { try await outbox.orderedActions() }
+            )
+        }
+    }
+
     var store: ReplicaStore { activeSession.store }
     var outbox: ActionOutbox { activeSession.outbox }
     var reportRequests: SessionReportRequester { activeSession.reportRequests }
@@ -350,10 +376,22 @@ final class AppEnvironment {
     }
 
     /// The phone-wide "When work stops" switch: every hub's settings follow, and each hub's push subscription is
-    /// registered or removed.
-    func setWorkAlerts(_ enabled: Bool) async {
+    /// registered or removed. While the relay is available each hub also hears it in its `device` record, sent at once
+    /// inside background work: a relay route's save only queues, and an owner who flips the switch and leaves would
+    /// strand it until the next wake.
+    func setWorkAlerts(_ enabled: Bool, startWork: BackgroundWork.Starter? = nil) async {
         for session in sessions.values { session.deviceSettings.workAlerts = enabled }
-        for session in sessions.values { await session.alertRegistrar?.apply(enabled: enabled) }
+        var endWork: (@MainActor () -> Void)?
+        if case .available = relay.availability {
+            endWork = (startWork ?? BackgroundWork.starter())("work-alerts-switch")
+        }
+        for session in sessions.values {
+            await session.alertRegistrar?.apply(enabled: enabled)
+            if await session.deviceSettings.sendWorkAlertsChange() {
+                await session.sendNow()
+            }
+        }
+        endWork?()
     }
     var workbenchReplica: WorkbenchReplicaModel { activeSession.workbenchReplica }
     var calendarReplica: CalendarReplicaModel { activeSession.calendarReplica }
@@ -710,11 +748,19 @@ final class AppEnvironment {
     /// asset stash (sealed files) take class C (D8) before the store opens, wherever the store lives.
     static func liveTransportStore(path: String) throws -> TransportStore {
         try FileProtection.protectDirectory(URL(fileURLWithPath: path).deletingLastPathComponent())
-        let store = try TransportStore(path: path)
+        let store = try TransportStore(path: path, stashFolder: transportStashFolder(forStoreFile: path))
         if let stash = store.stashDirectory {
             try FileProtection.protectDirectory(stash)
         }
         return store
+    }
+
+    /// Each route's store keeps its fetched assets in its own folder (board #1496): the CloudKit store in the folder
+    /// every store used to share (`transport-assets`, so an installed phone keeps its files), the relay store in
+    /// `relay-transport-assets`, which adopts its own rows' files out of the shared one at open.
+    nonisolated static func transportStashFolder(forStoreFile path: String) -> String {
+        URL(fileURLWithPath: path).lastPathComponent == relayTransportStoreFileName
+            ? "relay-transport-assets" : TransportStore.sharedStashFolder
     }
 
     /// Unsigned builds keep the replica in Application Support, which an

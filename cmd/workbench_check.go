@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentfiles"
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -196,30 +197,144 @@ type backgroundTasks = sessionagent.BackgroundTasks
 // except (a stopping SubagentStop's own, "" for none) never counts, whatever
 // the stamps of its async hooks say. ok is false
 // when the field was absent, null or not an array.
-func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string) (n int64, ok bool) {
+//
+// Board #1710 (ask #1195): with parents (the subagents' meta files, nil when
+// unknown) the count also follows the agent tree. An open turn no entry
+// lists whose ancestor is a listed subagent counts as that subagent's work,
+// not as a teammate; and every ancestor of a counted agent counts too — a
+// subagent that ended its turn to wait for its own background agents (its
+// turn closed, maybe no longer listed) is alive until they report, and
+// Claude Code resumes it then. except never counts through its own turn but
+// does as such an ancestor. Without parents the count is the rule above.
+func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string, parents agentParents) (n int64, ok bool) {
 	if !tasks.Present {
 		return 0, false
 	}
 	listed := make(map[string]bool, len(tasks.List))
+	listedSubagents := make(map[string]bool, len(tasks.List))
 	var teammates int64
+	var working []string
 	for _, task := range tasks.List {
 		listed[task.ID] = true
 		switch task.Type {
 		case "subagent", "workflow":
+			if task.Type == "subagent" {
+				listedSubagents[task.ID] = true
+			}
 			if (except == "" || task.ID != except) && !turns.Closed(task.ID) {
 				n++
+				working = append(working, task.ID)
 			}
 		case "teammate":
 			teammates++
 		}
 	}
-	var open int64
+	var loose []string
 	for id := range turns {
 		if (except == "" || id != except) && !listed[id] && turns.Open(id) {
+			if launchedUnder(id, listedSubagents, parents) {
+				n++
+				working = append(working, id)
+				continue
+			}
+			loose = append(loose, id)
+		}
+	}
+	waiting := waitingAncestors(working, parents)
+	var open int64
+	for _, id := range loose {
+		if !waiting[id] { // an open turn waiting on a counted agent counts once, as such
 			open++
 		}
 	}
-	return n + min(open, teammates), true
+	return n + int64(len(waiting)) + min(open, teammates), true
+}
+
+// agentParents resolves an agent id to the agent that launched it: "" for
+// one the main agent launched, a teammate, or when it is not known.
+type agentParents func(agentID string) string
+
+// maxSpawnDepth bounds an ancestor walk (Claude Code nests two deep today).
+const maxSpawnDepth = 8
+
+// subagentParents reads the parents from the meta files of the session whose
+// main transcript is transcriptPath, each at most once; nil when the path
+// names no session folder (then no agent has a known parent).
+func subagentParents(transcriptPath string) agentParents {
+	dir := agentfiles.SubagentsDir(transcriptPath)
+	if dir == "" {
+		return nil
+	}
+	seen := map[string]string{}
+	return func(id string) string {
+		if p, ok := seen[id]; ok {
+			return p
+		}
+		p := agentfiles.SubagentParent(dir, id)
+		seen[id] = p
+		return p
+	}
+}
+
+// ancestors calls visit for each agent above id, nearest first, up to
+// maxSpawnDepth and never twice (a looped chain ends the walk); a visit
+// returning false ends it too.
+func ancestors(id string, parents agentParents, visit func(string) bool) {
+	if parents == nil {
+		return
+	}
+	seen := map[string]bool{id: true}
+	for range maxSpawnDepth {
+		id = parents(id)
+		if id == "" || seen[id] || !visit(id) {
+			return
+		}
+		seen[id] = true
+	}
+}
+
+// launchedUnder says one of id's ancestors is in set.
+func launchedUnder(id string, set map[string]bool, parents agentParents) bool {
+	found := false
+	ancestors(id, parents, func(a string) bool {
+		found = set[a]
+		return !found
+	})
+	return found
+}
+
+// waitingAncestors is the set of the working agents' ancestors that are not
+// working themselves: agents waiting for their own background agents.
+func waitingAncestors(working []string, parents agentParents) map[string]bool {
+	waiting := map[string]bool{}
+	if parents == nil {
+		return waiting
+	}
+	isWorking := make(map[string]bool, len(working))
+	for _, id := range working {
+		isWorking[id] = true
+	}
+	for _, id := range working {
+		ancestors(id, parents, func(a string) bool {
+			if !isWorking[a] {
+				waiting[a] = true
+			}
+			return true
+		})
+	}
+	return waiting
+}
+
+// agentsInTurn is a SubagentStart's count (board #1710; it has no list): the
+// agents inside a turn and the agents waiting on them.
+func agentsInTurn(turns db.AgentTurns, parents agentParents) int64 {
+	var working []string
+	for id := range turns {
+		if turns.Open(id) {
+			working = append(working, id)
+		}
+	}
+	return int64(len(working) + len(waitingAncestors(working, parents)))
 }
 
 // codexBackgroundCount is a Codex Stop's count of background agents: the
@@ -508,7 +623,7 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
 	state, _ := agentStateFor("Stop", "")
-	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, cwd: hookCwd("Stop", "", in.Cwd)}
+	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, stopTranscript: in.TranscriptPath, cwd: hookCwd("Stop", "", in.Cwd)}
 	return recordAgentEvent(database, rowID, workbenchID, in, agentStateWrite{state: state, at: at, turn: turn})
 }
 

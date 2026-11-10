@@ -69,7 +69,18 @@ func (t *Transport) SetHubReaders(ctx context.Context, phones []string) error {
 	}}}); err != nil {
 		return fmt.Errorf("relay: set_hub_readers: %w", err)
 	}
+	t.mu.Lock()
+	t.readers = append([]string{}, phones...)
+	t.mu.Unlock()
 	return nil
+}
+
+// Readers is the reader list of the last set_hub_readers the relay
+// accepted (nil before one): the phones it lets this hub push to.
+func (t *Transport) Readers() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.readers)
 }
 
 // SetLinkedReaders is link.Center.SyncReaders' setter on the hosted relay:
@@ -84,6 +95,12 @@ func (t *Transport) SetLinkedReaders(ctx context.Context, linked []string) error
 	if err != nil {
 		return fmt.Errorf("relay: readers: account state: %w", err)
 	}
+	return t.SetReadersFrom(ctx, st, linked)
+}
+
+// SetReadersFrom is SetLinkedReaders over an account state the caller read
+// (the hub runtime reads it through its one account-state door).
+func (t *Transport) SetReadersFrom(ctx context.Context, st *relayv1.AccountState, linked []string) error {
 	slotted := map[string]bool{}
 	for _, p := range st.GetPhones() {
 		slotted[p.GetPhoneDeviceId()] = true

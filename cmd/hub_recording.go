@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -11,7 +13,9 @@ import (
 
 	"watchtower/internal/hub"
 	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/hostkind"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/wire"
 )
 
 // The recording verbs and the Desktop heartbeat are Desktop's alone (spec
@@ -22,7 +26,41 @@ const (
 	hubHeartbeatVerb = "report a Desktop heartbeat"
 	hubClaimVerb     = "claim a recording job"
 	hubFinishVerb    = "finish a recording job"
+	hubProgressVerb  = "report a recording job's progress"
+	hubListVerb      = "list the recording jobs"
 )
+
+// hubListAnswerJSON is `hub recording list --json` (pinned keys): Ready is
+// false when the hub has no queue to read yet (no sidecar, or a sidecar
+// before its migrations), so a reader never takes it for an empty queue.
+type hubListAnswerJSON struct {
+	Ready bool          `json:"ready"`
+	Jobs  []hubListJSON `json:"jobs"`
+}
+
+// hubListJSON is one row of `hub recording list --json` (pinned keys):
+// Desktop's read of the queue when it starts following it. Phase is "" and
+// Percent null until Desktop reported one. EventID ("" for none) and
+// StartedAt (Unix seconds, null when the phone did not say) are the
+// recording's origin, from which Desktop derives its title.
+type hubListJSON struct {
+	UploadID   string     `json:"upload_id"`
+	Status     string     `json:"status"`
+	Phase      string     `json:"phase"`
+	Percent    *int       `json:"percent"`
+	AudioPath  string     `json:"audio_path"`
+	EventID    string     `json:"event_id"`
+	StartedAt  *wire.Time `json:"started_at"`
+	ErrorClass string     `json:"error_class"` // a failed job's class ("" otherwise), never text
+}
+
+// hubProgressJSON is `hub recording progress --json` (pinned keys).
+type hubProgressJSON struct {
+	UploadID string `json:"upload_id"`
+	Status   string `json:"status"`
+	Phase    string `json:"phase"`
+	Percent  *int   `json:"percent"`
+}
 
 // hubHeartbeatJSON is `hub desktop heartbeat --json` (pinned keys).
 type hubHeartbeatJSON struct {
@@ -46,6 +84,10 @@ type hubFinishJSON struct {
 // hubNow is the verbs' clock (a test seam).
 var hubNow = time.Now
 
+// hubGOOS is the host's OS (a test seam): the Desktop heartbeat is a Mac's
+// alone, so a Linux host never gets desktop_seen_at and never records.
+var hubGOOS = runtime.GOOS
+
 func init() {
 	desktop := &cobra.Command{Use: "desktop", Short: "Desktop's reports to the hub"}
 	beat := &cobra.Command{Use: "heartbeat", Short: "Tell the hub Desktop (the transcriber) is running", Args: cobra.NoArgs, RunE: runHubDesktopHeartbeat}
@@ -61,7 +103,16 @@ func init() {
 	finish.Flags().Int64("transcript", 0, "transcript id the job produced")
 	finish.Flags().String("error", "", "error class when the job failed (only the class is stored)")
 	finish.Flags().Bool("json", false, "print JSON")
-	recording.AddCommand(claim, finish)
+	// Desktop reports progress over the control socket; the verb is for tests
+	// and for a host where no hub runs (it writes the sidecar under the lock).
+	progress := &cobra.Command{Use: "progress", Short: "Report a claimed recording job's phase", Args: cobra.NoArgs, RunE: runHubRecordingProgress}
+	progress.Flags().String("upload", "", "upload id")
+	progress.Flags().String("phase", "", "transcribing, diarizing or summarizing")
+	progress.Flags().Int("percent", 0, "percent done, 0-100 (transcribing only)")
+	progress.Flags().Bool("json", false, "print JSON")
+	list := &cobra.Command{Use: "list", Short: "List the phone recording jobs", Args: cobra.NoArgs, RunE: runHubRecordingList}
+	list.Flags().Bool("json", false, "print JSON")
+	recording.AddCommand(claim, finish, progress, list, newHubRecordingDiscardCmd())
 	hubCmd.AddCommand(desktop, recording)
 }
 
@@ -81,6 +132,16 @@ func hubPrint(cmd *cobra.Command, asJSON bool, v any, line string) error {
 func runHubDesktopHeartbeat(cmd *cobra.Command, _ []string) error {
 	if err := refuseUnderAgent(hubHeartbeatVerb); err != nil {
 		return err
+	}
+	if hubGOOS != "darwin" {
+		return errors.New("there is no Watchtower app on Linux")
+	}
+	// A Desktop runs beside a test-mode hub or a desktop host's live hub;
+	// on a headless host nothing may claim to be the app.
+	if _, mode, host, err := hub.Dir(hostProbe()); err != nil {
+		return err
+	} else if mode != hub.ModeTest && host != hostkind.Desktop {
+		return fmt.Errorf("there is no Watchtower app on this host: the Desktop heartbeat goes to a desktop host's hub (or a test-mode one, %s)", hubDirEnv)
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	a, err := hubWrite(hub.ControlRequest{Op: hub.OpDesktopHeartbeat}, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
@@ -130,7 +191,14 @@ func runHubRecordingClaim(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	path := handlers.RecordingAudioPath(handlers.RecordingsDirUnder(dir), a.UploadID)
+	path := a.AudioPath // a running hub names it
+	if path == "" {
+		recordings, err := hubRecordingsDir(dir)
+		if err != nil {
+			return err
+		}
+		path = handlers.RecordingAudioPath(recordings, a.UploadID)
+	}
 	return hubPrint(cmd, asJSON, hubClaimJSON{UploadID: a.UploadID, AudioPath: path, Status: a.Status},
 		"claimed "+a.UploadID+": "+path)
 }
@@ -172,4 +240,96 @@ func runHubRecordingFinish(cmd *cobra.Command, _ []string) error {
 		line += " (transcript " + strconv.FormatInt(*a.TranscriptID, 10) + ")"
 	}
 	return hubPrint(cmd, asJSON, hubFinishJSON{UploadID: a.UploadID, Status: a.Status, TranscriptID: a.TranscriptID}, line)
+}
+
+func runHubRecordingProgress(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent(hubProgressVerb); err != nil {
+		return err
+	}
+	upload, _ := cmd.Flags().GetString("upload")
+	phase, _ := cmd.Flags().GetString("phase")
+	asJSON, _ := cmd.Flags().GetBool("json")
+	if upload == "" || phase == "" {
+		return errors.New("usage: watchtower hub recording progress --upload <id> --phase transcribing|diarizing|summarizing [--percent N]")
+	}
+	var pct *int
+	if cmd.Flags().Changed("percent") {
+		v, _ := cmd.Flags().GetInt("percent")
+		pct = &v
+	}
+	req := hub.ControlRequest{Op: hub.OpRecordingProgress, Upload: upload, Phase: phase, Percent: pct}
+	a, err := hubWrite(req, func(_ string, st *state.Store) (hub.ControlAnswer, error) {
+		return hub.RecordingProgressAnswer(st, upload, phase, pct), nil
+	})
+	if err != nil {
+		return err
+	}
+	line := a.UploadID + ": " + a.Phase
+	if a.Percent != nil {
+		line += " " + strconv.Itoa(*a.Percent) + "%"
+	}
+	return hubPrint(cmd, asJSON, hubProgressJSON{UploadID: a.UploadID, Status: a.Status, Phase: a.Phase, Percent: a.Percent}, line)
+}
+
+// runHubRecordingList prints the queue, read only (the hub may run): ids,
+// statuses, Desktop's phases and where each job's audio lives. Refused
+// under an agent marker like the other recording verbs: the paths lead to
+// plaintext audio. No sidecar (or no queue table) yet is an empty queue.
+func runHubRecordingList(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent(hubListVerb); err != nil {
+		return err
+	}
+	asJSON, _ := cmd.Flags().GetBool("json")
+	dir, err := hubDir()
+	if err != nil {
+		return err
+	}
+	jobs, ready, err := hubRecordingJobs(cmd, dir)
+	if err != nil {
+		return err
+	}
+	recordings, err := hubRecordingsDir(dir)
+	if err != nil {
+		return err
+	}
+	rows := make([]hubListJSON, 0, len(jobs))
+	for _, j := range jobs {
+		row := hubListJSON{UploadID: j.UploadID, Status: j.Status, Phase: j.Phase, Percent: j.Percent,
+			AudioPath: handlers.RecordingAudioPath(recordings, j.UploadID), EventID: j.EventID, ErrorClass: j.ErrorClass}
+		if !j.StartedAt.IsZero() {
+			row.StartedAt = &wire.Time{Time: j.StartedAt}
+		}
+		rows = append(rows, row)
+	}
+	if asJSON {
+		return hubPrint(cmd, true, hubListAnswerJSON{Ready: ready, Jobs: rows}, "")
+	}
+	if !ready {
+		_, err := fmt.Fprintln(cmd.OutOrStdout(), "the recording queue is not ready")
+		return err
+	}
+	for _, r := range rows {
+		if _, err := fmt.Fprintln(cmd.OutOrStdout(), r.UploadID+": "+r.Status); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// hubRecordingJobs reads the queue; ready is false when there is no sidecar
+// or no queue table yet (nothing to read, which is not an empty queue).
+func hubRecordingJobs(cmd *cobra.Command, dir string) (jobs []state.RecordingJob, ready bool, err error) {
+	st, err := state.OpenReadOnly(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = st.Close() }()
+	if ready, err = st.RecordingQueueReady(); err != nil || !ready {
+		return nil, false, err
+	}
+	jobs, err = st.RecordingJobs(cmd.Context())
+	return jobs, err == nil, err
 }

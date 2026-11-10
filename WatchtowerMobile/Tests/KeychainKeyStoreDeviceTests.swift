@@ -4,9 +4,9 @@ import WatchtowerSync
 import XCTest
 @testable import WatchtowerMobile
 
-/// The phone's keys in the real Keychain (`SecItemKeychainBackend`, mobile E2E spec §2.6). An unsigned simulator
-/// build has no Keychain entitlement and skips (F24): the attributes are also asserted by the Kit's pure builder
-/// test, which always runs. The behaviour of the key store itself is covered over `InMemoryKeychainBackend`.
+/// The phone's keys in the real Keychain (`SecItemKeychainBackend`, mobile E2E spec §2.6). `make mobile-test`
+/// signs the host, so this runs; a build with `CODE_SIGNING_ALLOWED=NO` has no Keychain entitlement and skips
+/// (F24): the attributes are also asserted by the Kit's pure builder test, which always runs. The behaviour of the key store itself is covered over `InMemoryKeychainBackend`.
 final class KeychainKeyStoreDeviceTests: XCTestCase {
     /// Its own service, so the test never touches the app's items.
     private let backend = SecItemKeychainBackend(service: "com.aiwatchtowers.watchtower.e2e.device-tests")
@@ -17,7 +17,7 @@ final class KeychainKeyStoreDeviceTests: XCTestCase {
             do {
                 try backend.delete(account: account, group: nil)
             } catch {
-                // Nothing to clean when the Keychain refused every write (unsigned): not a failure of the test.
+                // Nothing to clean when the Keychain refused every write (no entitlement): not a failure of the test.
                 continue
             }
         }
@@ -30,7 +30,7 @@ final class KeychainKeyStoreDeviceTests: XCTestCase {
         do {
             first = try store.identity()
         } catch KeyStoreError.missingEntitlement {
-            throw XCTSkip("no Keychain entitlement in an unsigned build (F24)")
+            throw XCTSkip("no Keychain entitlement in this build (F24)")
         }
 
         let again = try store.identity()
@@ -73,7 +73,7 @@ final class KeychainKeyStoreDeviceTests: XCTestCase {
     }
 
     /// F20: the private group is the app's FIRST (default) keychain group and the alerts group the second; the
-    /// extension holds the alerts group only (F21). Read from the source tree: an unsigned build embeds none.
+    /// extension holds the alerts group only (F21). Read from the source tree: a test build embeds neither file.
     func testTheKeychainGroupsAreOrderedPrivateFirstAndTheExtensionHoldsOnlyAlerts() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let app = try keychainGroups(root.appendingPathComponent("WatchtowerMobile.entitlements"))

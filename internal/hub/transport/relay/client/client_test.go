@@ -95,6 +95,65 @@ func TestRegisterClientDataHashVector(t *testing.T) {
 	}
 }
 
+// TestVouchClientDataHashVector pins the vouch hash to the layout the Worker's vouchClientDataHash uses.
+func TestVouchClientDataHashVector(t *testing.T) {
+	got := client.VouchClientDataHash([]byte{1, 2}, "h", ed25519.PublicKey{3}, "https://r")
+	h := sha256.Sum256([]byte("relay/v1/vouch\x01\x02h\x03https://r"))
+	if !bytes.Equal(got, h[:]) {
+		t.Fatalf("hash = %x, want %x", got, h)
+	}
+	// The same digest is pinned in worker/test/attest.test.ts (vouchClientDataHashVector).
+	if want := "ecdda44ae74bd86e122f2edd43708cf2b8012cc194f78ed5728052e5c109956d"; fmt.Sprintf("%x", got) != want {
+		t.Fatalf("hash = %x, want the shared vector %s", got, want)
+	}
+}
+
+// TestVouchHubTakesVouchNonce: VouchHub asks for a VOUCH challenge for the phone itself, then sends
+// vouch_hub with that nonce, the hub's id and key, and no attestation; an error answer is returned.
+func TestVouchHubTakesVouchNonce(t *testing.T) {
+	hubPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq []string
+	var vouch *relayv1.VouchHub
+	s := newFakeServer(t)
+	s.challenge = func(req *relayv1.GetChallenge) []byte {
+		if req.GetPurpose() == relayv1.ChallengePurpose_CHALLENGE_PURPOSE_VOUCH {
+			seq = append(seq, "challenge:vouch:"+req.GetDeviceId())
+			return []byte("vouch-nonce")
+		}
+		return []byte("nonce")
+	}
+	s.op = func(w http.ResponseWriter, req *relayv1.Request) bool {
+		if v := req.GetVouchHub(); v != nil {
+			seq = append(seq, "vouch_hub")
+			vouch = v
+		}
+		return false
+	}
+	c := newClient(t, s)
+	if err := c.VouchHub(t.Context(), hubPub); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"challenge:vouch:" + c.DeviceID(), "vouch_hub"}; !slices.Equal(seq, want) {
+		t.Fatalf("requests = %v, want %v", seq, want)
+	}
+	if vouch.GetHubDeviceId() != client.DeviceID(hubPub) || !bytes.Equal(vouch.GetAuthPub(), hubPub) ||
+		!bytes.Equal(vouch.GetNonce(), []byte("vouch-nonce")) || vouch.GetAttestation() != nil {
+		t.Fatalf("vouch_hub = %v", vouch)
+	}
+
+	s.op = func(w http.ResponseWriter, req *relayv1.Request) bool {
+		writeResponse(w, &relayv1.Response{Result: &relayv1.Response_Error{Error: &relayv1.Error{
+			Code: relayv1.ErrorCode_ERROR_CODE_NOT_FOUND}}})
+		return true
+	}
+	if err := c.VouchHub(t.Context(), hubPub); client.Code(err) != relayv1.ErrorCode_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("err = %v, want NOT_FOUND", err)
+	}
+}
+
 // TestLoginUnsupportedVersion: a server that answers UNSUPPORTED_VERSION over HTTPS stops the client
 // with ErrUnsupportedVersion.
 func TestLoginUnsupportedVersion(t *testing.T) {

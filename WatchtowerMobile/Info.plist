@@ -28,6 +28,17 @@
 	<!-- The hosted relay's origin (RelayConfig). Empty in every committed build: the relay is off. -->
 	<key>WTRelayOrigin</key>
 	<string>$(WATCHTOWER_RELAY_ORIGIN)</string>
+	<!-- The Relay subscription's product id, and the Terms and Privacy pages its screen links to (RelayConfig). -->
+	<key>WTRelayProductID</key>
+	<string>$(WT_RELAY_PRODUCT_ID)</string>
+	<key>WTTermsURL</key>
+	<string>$(WT_TERMS_URL)</string>
+	<key>WTPrivacyURL</key>
+	<string>$(WT_PRIVACY_URL)</string>
+	<!-- The APNs environment the relay pushes to (RelayConfig): sandbox in Debug, production in Release, whose
+	     aps-environment App Store export rewrites to production. -->
+	<key>WTPushEnvironment</key>
+	<string>$(WT_PUSH_ENV)</string>
 	<!-- The link flow scans the QR code shown on the Mac. -->
 	<key>NSCameraUsageDescription</key>
 	<string>Watchtower uses the camera to scan the code shown on your Mac.</string>

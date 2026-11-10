@@ -1033,7 +1033,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         await phone.outbox.setRetryClaimedHook(nil)
         let second = try await phone.outbox.retry(id: one.id)
         gate.open()
-        let retried = try await [first.value, second].compactMap { $0 }
+        let retried = try await [first.value(within: 60, "first retry"), second].compactMap { $0 }
 
         XCTAssertEqual(retried.count, 1, "the second Retry is a no-op")
         XCTAssertNil(try pending(phone, one.id))
@@ -1080,8 +1080,8 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let phone = try await makePhone()
         try raiseEpoch(phone, to: 2)
 
-        let first = try await phone.outbox.enqueueEpochAck(epoch: 2)
-        let second = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let first = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
+        let second = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
         _ = try await phone.outbox.flush()
 
         XCTAssertTrue(first)
@@ -1095,7 +1095,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
         XCTAssertTrue(try phone.store.queuedControls().isEmpty)
 
         try raiseEpoch(phone, to: 3)
-        let third = try await phone.outbox.enqueueEpochAck(epoch: 3)
+        let third = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: nil)
         _ = try await phone.outbox.flush()
         XCTAssertTrue(third)
         let both = try await epochAcks(phone)
@@ -1105,20 +1105,20 @@ final class ActionOutboxOrderedTests: XCTestCase {
     func testEpochAckNeverGoesDown() async throws {
         let phone = try await makePhone()
         try raiseEpoch(phone, to: 3)
-        _ = try await phone.outbox.enqueueEpochAck(epoch: 3)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: nil)
         _ = try await phone.outbox.flush()
-        let lower = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let lower = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
         XCTAssertFalse(lower)
         XCTAssertTrue(try phone.store.queuedControls().isEmpty, "a lower epoch is never queued")
 
         // An unsent ack for a lower epoch is replaced by the newer one.
         await phone.inner.refuseNext(.unreachable, count: 1)
         try raiseEpoch(phone, to: 4)
-        _ = try await phone.outbox.enqueueEpochAck(epoch: 4)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 4, nextKX: nil)
         await phone.outbox.drain()
         XCTAssertEqual(try phone.store.queuedControls().map(\.kind), [.epochAck], "the ack for 4 waits, refused")
         try raiseEpoch(phone, to: 5)
-        _ = try await phone.outbox.enqueueEpochAck(epoch: 5)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 5, nextKX: nil)
         await phone.outbox.drain()
         _ = try await phone.outbox.flush()
         let acks = try await epochAcks(phone)
@@ -1128,7 +1128,7 @@ final class ActionOutboxOrderedTests: XCTestCase {
     func testNoEpochAckToALegacyHub() async throws {
         let phone = try await makePhone(ordered: false)
         try raiseEpoch(phone, to: 2)
-        let queued = try await phone.outbox.enqueueEpochAck(epoch: 2)
+        let queued = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
         _ = try await phone.outbox.flush()
         XCTAssertFalse(queued)
         XCTAssertTrue(try phone.store.queuedControls().isEmpty)
@@ -1226,6 +1226,209 @@ final class ActionOutboxOrderedTests: XCTestCase {
         let skips = try await writtenControls(phone).filter { $0.kind == .skipTo }.map(\.seq)
         XCTAssertEqual(skips, [2], "the order skips the row listed as Not delivered")
     }
+
+    // MARK: - The offer on epoch_ack and keys past retention (relay client Phase 5, Task 8)
+
+    private func ackOffers(_ phone: Phone) async throws -> [String?] {
+        try await writtenControls(phone).filter { $0.kind == .epochAck }.map(\.nextKX)
+    }
+
+    private func offer(_ byte: UInt8) -> Data {
+        Data(repeating: byte, count: 32)
+    }
+
+    func testTheSameEpochWithANewOfferIsDue() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 2)
+        let queued1 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: nil)
+        XCTAssertTrue(queued1)
+        XCTAssertTrue(try phone.store.epochAckDue(2, nextKX: offer(1)), "an offer this epoch's ack has not carried")
+
+        let queued2 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertTrue(queued2)
+        XCTAssertTrue(try phone.store.epochAckDue(2, nextKX: offer(2)))
+        let queued3 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(2))
+        XCTAssertTrue(queued3)
+        await phone.outbox.drain()
+        _ = try await phone.outbox.flush()
+
+        let acks = try await writtenControls(phone).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.map(\.epoch), [2, 2, 2])
+        XCTAssertEqual(
+            Set(acks.map(\.nextKX)), [nil, WireBytes.base64URL(offer(1)), WireBytes.base64URL(offer(2))],
+            "one ack per offer inside the same epoch")
+    }
+
+    func testTheSameEpochSameOfferIsNotDue() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 2)
+        let queued4 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertTrue(queued4)
+
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: offer(1)))
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: nil), "no offer adds nothing to the same epoch")
+        let queued5 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertFalse(queued5)
+
+        // A keybox dropped the stored pair: the same offer goes once more.
+        try await phone.outbox.offerAgain()
+        XCTAssertTrue(try phone.store.epochAckDue(2, nextKX: offer(1)))
+        let queued6 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertTrue(queued6)
+        let queued7 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertFalse(queued7, "once")
+    }
+
+    func testALowerEpochIsNeverDue() async throws {
+        let phone = try await makePhone()
+        try raiseEpoch(phone, to: 3)
+        let queued8 = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: offer(1))
+        XCTAssertTrue(queued8)
+
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: offer(2)))
+        XCTAssertFalse(try phone.store.epochAckDue(2, nextKX: nil))
+        try await phone.outbox.offerAgain()
+        let queued9 = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        XCTAssertFalse(queued9)
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+        let acked = try await epochAcks(phone)
+        XCTAssertEqual(acked, [3], "only the ack for 3")
+    }
+
+    func testAnUnsentAckIsReplacedKeepingTheNewestOffer() async throws {
+        let phone = try await makePhone()
+        await phone.inner.refuseNext(.unreachable, count: 1)
+        try raiseEpoch(phone, to: 2)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offer(1))
+        await phone.outbox.drain()
+        XCTAssertEqual(try phone.store.queuedControls().map(\.kind), [.epochAck], "the ack for 2 waits, refused")
+
+        try raiseEpoch(phone, to: 3)
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: offer(2))
+        await phone.outbox.drain()
+        _ = try await phone.outbox.flush()
+
+        let acks = try await writtenControls(phone).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.map(\.epoch), [3])
+        XCTAssertEqual(acks.map(\.nextKX), [WireBytes.base64URL(offer(2))])
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+    }
+
+    /// F8: the ack carrying the offer is lost (purged, never read). The hub keeps sealing to the old offer, and the
+    /// next raise's ack carries the same offer again, with no new record.
+    func testALostAckResendsTheOfferAtTheNextRaise() async throws {
+        let phone = try await makePhone()
+        let offered = try EphemeralLink.make(phone.keys, epochs: [2])
+        _ = try await phone.outbox.enqueueEpochAck(epoch: 2, nextKX: offered.publicKey)
+        _ = try await phone.outbox.flush()
+        // The relay's TTL purges it unread.
+        let written = try await phone.inner.changes(in: .relay, since: nil).changed.map(\.recordName)
+        try await phone.inner.delete(recordNames: written, in: .relay)
+
+        try EphemeralLink.add(phone.keys, epoch: 3)
+        let queued10 = try await phone.outbox.enqueueEpochAck(epoch: 3, nextKX: offered.publicKey)
+        XCTAssertTrue(queued10)
+        _ = try await phone.outbox.flush()
+
+        let acks = try await writtenControls(phone).filter { $0.kind == .epochAck }
+        XCTAssertEqual(acks.map(\.epoch), [3])
+        XCTAssertEqual(acks.map(\.nextKX), [WireBytes.base64URL(offered.publicKey)], "the same offer, carried again")
+        XCTAssertEqual(try phone.keys.hubLink(hubID)?.offeredKX, offered, "the offer is still held")
+    }
+
+    /// A hub that never consumes the offer (it predates the hub half, or never rotates with it) sends static
+    /// keyboxes: the phone keeps its offer, holds no pair and reads every epoch's echoes under the static keys.
+    func testAHubThatNeverConsumesStaysStatic() async throws {
+        let phone = try await makePhone()
+        let offered = try EphemeralLink.make(phone.keys, epochs: [1])
+        for epoch: UInt32 in [2, 3] {
+            let keys = KeyboxKeys(
+                epoch: epoch, dataKey: WireBytes.base64URL(Data(repeating: 1, count: 32)),
+                alertKey: WireBytes.base64URL(Data(repeating: 2, count: 32)),
+                metaKey: WireBytes.base64URL(TestE2E.metaKey.withUnsafeBytes { Data($0) }))
+            _ = try phone.keys.updateHubLink(hubID) { link in
+                try link.merging(
+                    // Real time: the store keeps epochs superseded within the last 7 days of the clock.
+                    keys, identity: TestE2E.deviceIdentity, hubID: TestE2E.hubID, deviceID: TestE2E.deviceID, now: Date()
+                ).keys
+            }
+            let queued11 = try await phone.outbox.enqueueEpochAck(epoch: epoch, nextKX: offered.publicKey)
+            XCTAssertTrue(queued11)
+            _ = try await phone.outbox.flush()
+            let id = try await insert(phone)
+            _ = try await phone.outbox.flush()
+            let hub = TestE2E.hub(epoch: epoch)
+            try await TestE2E.hubTransport(hub, inner: phone.inner).save([CloudRecordFactory.orderedRecord(
+                for: echo(id.id, seq: id.seq, status: .applied), actionSeq: id.seq, deviceID: TestE2E.deviceID, modifiedAt: base)])
+            let opened = try await phone.secure.changes(in: .relay, since: nil).changed
+            let applied = opened.first { $0.sealed?.envelopeClass == .relayToPhone && $0.recordName.hasSuffix("-\(id.seq)") }
+            XCTAssertEqual(applied?.sealed?.epoch, epoch, "the static echo of epoch \(epoch) opens")
+        }
+        let link = try XCTUnwrap(phone.keys.hubLink(hubID))
+        XCTAssertEqual(link.offeredKX, offered)
+        XCTAssertNil(link.currentKX)
+        XCTAssertTrue(link.epochs.allSatisfy { $0.relayKeys == nil })
+        let ackedOffers = try await ackOffers(phone)
+        XCTAssertEqual(ackedOffers, Array(repeating: WireBytes.base64URL(offered.publicKey), count: 2))
+    }
+
+    /// F7: a row sealed in an epoch whose keys the phone no longer holds cannot be resealed (`reseal` is nil): Not
+    /// delivered, and the order skips it.
+    func testAnOutboxRowPastItsKeyIsNotDelivered() async throws {
+        let phone = try await makePhone()
+        let old = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let stored = try XCTUnwrap(try row(phone, old.id))
+        try EphemeralLink.make(phone.keys, epochs: [3, 4])
+
+        let resealed = try await phone.secure.reseal(ownEnvelope: stored.envelope, wireName: stored.wireName, modifiedAt: base)
+        XCTAssertNil(resealed, "epoch 1's keys are gone")
+        let fresh = try await insert(phone)
+        try await phone.outbox.resendFrom(1)
+
+        XCTAssertEqual(try row(phone, old.id)?.delivery, .undelivered)
+        XCTAssertEqual(try row(phone, fresh.id)?.delivery, .sent)
+        let skips = try await writtenControls(phone).filter { $0.kind == .skipTo }.map(\.seq)
+        XCTAssertEqual(skips, [2])
+    }
+
+    // MARK: - A switch request's reason (relay client Phase 4 Task 5)
+
+    func testASwitchRequestWithoutAReasonHasNoReasonKey() async throws {
+        let phone = try await makePhone(route: .hostedRelay(macDeviceID: "mac"))
+        let id = try await phone.outbox.enqueueSwitchRequest(target: .cloudKit, id: "REQ-1")
+        _ = try await phone.outbox.flush()
+
+        XCTAssertEqual(id, "REQ-1")
+        let written = try await writtenControls(phone)
+        let control = try XCTUnwrap(written.first { $0.kind == .transportSwitch })
+        XCTAssertNil(control.reason)
+        let json = try XCTUnwrap(String(bytes: RelayCoder.makeEncoder().encode(control), encoding: .utf8))
+        XCTAssertFalse(json.contains("reason"), "absent on the wire, not null")
+    }
+
+    func testASwitchRequestCarriesItsReason() async throws {
+        let phone = try await makePhone(route: .hostedRelay(macDeviceID: "mac"))
+        _ = try await phone.outbox.enqueueSwitchRequest(target: .cloudKit, id: "REQ-2", reason: "entitlement_expired")
+        _ = try await phone.outbox.flush()
+
+        let written = try await writtenControls(phone)
+        let control = try XCTUnwrap(written.first { $0.kind == .transportSwitch })
+        XCTAssertEqual(control.reason, "entitlement_expired")
+        XCTAssertEqual(control.target, "cloudkit")
+        XCTAssertEqual(control.id, "REQ-2")
+    }
+
+    func testAQueuedSwitchRequestCanBeWithdrawn() async throws {
+        let phone = try await makePhone(route: .hostedRelay(macDeviceID: "mac"))
+        await phone.outbox.holdFlushes()
+        _ = try await phone.outbox.enqueueSwitchRequest(target: .cloudKit, id: "REQ-3")
+        XCTAssertEqual(try phone.store.queuedControls().map(\.id), ["REQ-3"])
+
+        try await phone.outbox.withdrawControl(id: "REQ-3")
+        XCTAssertTrue(try phone.store.queuedControls().isEmpty)
+    }
+
 }
 
 /// Records every call the phone's `SecureTransport` makes, then forwards it to the in-memory transport. `events`
@@ -1302,5 +1505,55 @@ actor RecordingConditionalTransport: ConditionalTransport {
         calls.append(.delete(names: items.map(\.recordName), expects: items.map(\.expect)))
         events.append("delete")
         return try await inner.delete(items)
+    }
+}
+
+// MARK: - Withdrawn at once when the relay refuses this phone (relay client Phase 5, Task 13)
+
+extension ActionOutboxOrderedTests {
+    func testSlotLostWithdrawsThenLists() async throws {
+        let phone = try await makePhone()
+        let sent = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        let stored = try XCTUnwrap(row(phone, sent.id))
+        let queued = try await insert(phone)
+
+        let listed = try await phone.outbox.withdrawUnechoed()
+
+        XCTAssertEqual(Set(listed), [sent.id, queued.id], "every unechoed row, at once: no 24 h wait")
+        let deletes = await phone.recorder.conditionalDeletes
+        XCTAssertEqual(deletes.map(\.names), [[stored.wireName]], "only the written one had a record to delete")
+        let left = try await current(phone, stored.wireName)
+        XCTAssertNil(left, "withdrawn: the hub can never apply it")
+        XCTAssertEqual(try pending(phone, sent.id)?.undeliveredReason, .refused)
+        XCTAssertEqual(try pending(phone, queued.id)?.undeliveredReason, .refused)
+    }
+
+    func testARefusedDeleteKeepsTheRowSent() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        await phone.inner.refuseNext(.permanent(code: "forbidden"), count: 1)
+
+        let listed = try await phone.outbox.withdrawUnechoed()
+
+        XCTAssertTrue(listed.isEmpty)
+        XCTAssertEqual(try row(phone, one.id)?.delivery, .sent, "left for the next event or the 24 h sweep")
+        let again = try await phone.outbox.withdrawUnechoed()
+        XCTAssertEqual(again, [one.id], "the next event withdraws it")
+    }
+
+    /// F39b: the hub read the action just before: its echo is met on the way, applied, and the row is not listed.
+    func testAnEchoMetOnWithdrawalIsAppliedNotListed() async throws {
+        let phone = try await makePhone()
+        let one = try await insert(phone)
+        _ = try await phone.outbox.flush()
+        try await hubWrites(phone, echo(one.id, seq: 1, status: .applied, message: nil))
+
+        let listed = try await phone.outbox.withdrawUnechoed()
+
+        XCTAssertTrue(listed.isEmpty, "not listed, so no Retry can run it twice")
+        XCTAssertNotEqual(try pending(phone, one.id)?.delivery, .undelivered, "the echo was taken")
+        XCTAssertNil(try pending(phone, one.id)?.undeliveredReason)
     }
 }

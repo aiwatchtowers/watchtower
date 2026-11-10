@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -424,4 +425,48 @@ func assertSecondCallIsByteIdenticalNoOp(t *testing.T, path string) {
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, string(before), string(after), "a marker-present call must write nothing")
+}
+
+func TestFeatureMigrationPending(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantPending bool
+		wantLegacy  bool
+	}{
+		{"marker set", "features:\n  migrated: true\ndigest:\n  enabled: false\n", false, false},
+		{"no marker, digest off", "digest:\n  enabled: false\n", true, true},
+		{"no marker, digest on", "digest:\n  enabled: true\n", true, false},
+		{"no marker, digest absent", "workspace: acme\n", true, false},
+	}
+	old := time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tc.body), 0o600))
+			require.NoError(t, os.Chtimes(path, old, old))
+
+			pending, legacy, err := FeatureMigrationPending(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPending, pending, "pending")
+			assert.Equal(t, tc.wantLegacy, legacy, "legacy")
+
+			got, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, tc.body, string(got), "file bytes must not change")
+			info, err := os.Stat(path)
+			require.NoError(t, err)
+			assert.True(t, info.ModTime().Equal(old), "file mtime must not change")
+		})
+	}
+
+	t.Run("missing file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		pending, legacy, err := FeatureMigrationPending(path)
+		require.NoError(t, err)
+		assert.False(t, pending)
+		assert.False(t, legacy)
+		_, statErr := os.Stat(path)
+		assert.True(t, os.IsNotExist(statErr), "a missing config must stay missing")
+	})
 }

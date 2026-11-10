@@ -127,6 +127,11 @@ final class CodeCLIProcess: @unchecked Sendable {
         stdin.write(Data((line + "\n").utf8))
     }
 
+    /// Writes `data` to the child's stdin as is (a payload, not a line).
+    func send(_ data: Data) {
+        stdin.write(data)
+    }
+
     /// EOF on stdin: a `--serve` child exits 0.
     func closeInput() {
         stdin.close()

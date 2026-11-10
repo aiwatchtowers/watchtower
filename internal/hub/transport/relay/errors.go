@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/relay/client"
@@ -11,9 +12,10 @@ import (
 )
 
 // Errors of the hosted relay that the neutral transport errors do not cover.
-// The attestation errors also match transport.ErrForbidden: until the relay
-// admits hubs by a phone's vouch (Go hub design §7, relay ask #805) a hub that
-// registers as a Mac without App Attest is simply not let in.
+// The attestation errors also match transport.ErrForbidden. A hub never
+// attests (it registers as DEVICE_KIND_HUB with an empty attestation and is
+// admitted by a phone's vouch_hub, Go hub design §7), so it sees them only
+// from an old relay or, in a test, on a phone's vouch_hub.
 var (
 	// ErrAttestationRequired: the relay wants an attestation this hub cannot
 	// give (attestation is on and the hub is not exempt). Do not retry in a
@@ -80,7 +82,41 @@ func classOf(code relayv1.ErrorCode) error {
 		return ErrAttestationFailed
 	case relayv1.ErrorCode_ERROR_CODE_SLOT_LIMIT, relayv1.ErrorCode_ERROR_CODE_SLOT_REPLACEMENT_LIMIT:
 		return ErrSlotLimit
+	case relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED:
+		return transport.ErrNotVouched
 	default:
 		return nil
 	}
+}
+
+// pushOffMessage is the relay's message for send_alert with no push provider
+// configured (ops.ts ERRORS.not_implemented, push.ts alertSender), the only
+// push-configuration signal it gives.
+const pushOffMessage = "not implemented"
+
+// mapAlertError is MapError for send_alert only: NOT_FOUND is a phone with no
+// push token (transport.ErrNoPushToken) and UNSPECIFIED "not implemented" a
+// relay with pushes off (transport.ErrPushOff). Every other answer, on this op
+// as on the others, goes through MapError.
+func mapAlertError(err error) error {
+	var pe *client.Error
+	if errors.As(err, &pe) {
+		switch code := pe.E.GetCode(); {
+		case code == relayv1.ErrorCode_ERROR_CODE_NOT_FOUND:
+			return fmt.Errorf("%w: %w", transport.ErrNoPushToken, err)
+		case code == relayv1.ErrorCode_ERROR_CODE_UNSPECIFIED && pe.E.GetMessage() == pushOffMessage:
+			return fmt.Errorf("%w: %w", transport.ErrPushOff, err)
+		}
+	}
+	return MapError(err)
+}
+
+// RetryAfter is the wait a relay error asks for (Error.retry_after_s, sent
+// with RATE_LIMITED), 0 when err carries none.
+func RetryAfter(err error) time.Duration {
+	var pe *client.Error
+	if !errors.As(err, &pe) || pe.E.RetryAfterS == nil {
+		return 0
+	}
+	return time.Duration(pe.E.GetRetryAfterS()) * time.Second
 }

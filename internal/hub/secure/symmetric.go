@@ -38,11 +38,17 @@ func signatureMessage(aad, body []byte) []byte {
 // for the Kit vectors and tests only — a repeated (key, nonce) pair breaks
 // ChaCha20-Poly1305.
 func SealSymmetric(f InnerFrame, c EnvelopeClass, key []byte, hub, sender ID, epoch uint32, seq uint64, ctx Context, signer ed25519.PrivateKey, nonce []byte) ([]byte, error) {
+	return sealSymmetric(f, c, key, hub, sender, epoch, seq, ctx, signer, nonce, 0)
+}
+
+// sealSymmetric is SealSymmetric padding the frame to at least minPadded
+// bytes (0 = its bucket): a push is always one size, whatever its text.
+func sealSymmetric(f InnerFrame, c EnvelopeClass, key []byte, hub, sender ID, epoch uint32, seq uint64, ctx Context, signer ed25519.PrivateKey, nonce []byte, minPadded int) ([]byte, error) {
 	if !symmetricClass(c) {
 		return nil, fmt.Errorf("%w: %d is not symmetric", ErrWrongClass, c)
 	}
 	signed := signer != nil
-	padded, ok := PaddedLength(f.EncodedLength(), FrameCap(signed))
+	padded, ok := PaddedLength(max(f.EncodedLength(), minPadded), FrameCap(signed))
 	if !ok {
 		return nil, ErrOversized
 	}

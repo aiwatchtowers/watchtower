@@ -1,6 +1,6 @@
 # iPhone
 
-The Watchtower iPhone app is a window onto your Mac. It shows what is waiting for you, lets you answer asks, edit the Workbench board and start sessions, and records meetings you attend away from your desk. It works through your own iCloud, not a Watchtower server.
+The Watchtower iPhone app is a window onto your Mac. It shows what is waiting for you, lets you answer asks, edit the Workbench board and start sessions, and records meetings you attend away from your desk. It works through your own iCloud.
 
 ## Why use it
 
@@ -8,13 +8,17 @@ You step away while a Workbench session waits on a question. The phone shows an 
 
 ## How it works
 
-The Mac is the **hub**. With **Sync with iPhone** on, it publishes asks, Workbench boards and sessions, calendar and recaps into your iCloud. The phone reads them and sends requests back; the Mac applies them when awake. Hubs with ordered delivery apply changes in order; see [not delivered](iphone-not-delivered.md).
+The Mac is the **hub**. With **Mobile sync** on, it publishes asks, Workbench boards and sessions, calendar and recaps into your iCloud. The phone reads them and sends requests back; the Mac applies them when awake. Hubs with ordered delivery apply changes in order; see [not delivered](iphone-not-delivered.md).
 
 Everything is sealed with keys exchanged at linking, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript, except a session's chat (below).
 
-An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps. The Mac checks for requests every 30 seconds (every 3 for five minutes after one) and writes a heartbeat every 15 minutes.
+An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps. The Mac checks for requests every 30 seconds (every 3 for ten minutes after one). The Mac writes a heartbeat every 15 minutes.
 
 A phone links up to four Macs and switches between them; each is its own hub with its own data.
+
+### What the Mac shows about each phone
+
+Settings → **Mobile** on the Mac lists each phone with how it syncs and who switched it last. A phone's row adds a line when something needs you, such as notifications not set up. **Diagnostics** shows how fast the Mac handles phone actions; the timings stay on the Mac.
 
 ### Which builds pair
 
@@ -22,7 +26,12 @@ iCloud keeps a Development and a Production environment; records saved in one ne
 
 A phone run from Xcode is Development and pairs only with a Development Mac. A mixed pair fails silently: the phone never sees the Mac.
 
-A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build is a demo.
+A Mac build without iCloud signing shows **Needs a signed build** and can't use iCloud. An unsigned phone build is a demo.
+
+### Relay
+<!-- learn: none -->
+
+Relay isn't in the current version of Watchtower for iPhone. See [iPhone: Relay](iphone-relay.md).
 
 ## Using it
 
@@ -30,7 +39,7 @@ A Mac build without iCloud signing shows **Needs a signed build** and cannot tur
 <!-- learn
 id: iphone-link
 title: Link your iPhone
-text: Turn on **Sync with iPhone** in **Settings → Mobile**, press **Use Watchtower on iPhone** and scan the code.
+text: Turn on **Mobile sync** in **Settings → Mobile**, press **Link a phone…** and scan the code.
 area: iphone
 level: basics
 kind: feature
@@ -39,13 +48,13 @@ action: hotkey:settings
 done_when: iphone.paired
 -->
 
-1. On the Mac, open Settings → **Mobile** and turn on **Sync with iPhone**.
-2. Under **Phones**, press **Use Watchtower on iPhone**. A QR code appears for 10 minutes. **New code** makes another.
+1. On the Mac, open Settings → **Mobile** and turn on **Mobile sync**. It applies at once.
+2. Under **Phones**, press **Link a phone…**. A QR code appears for 10 minutes. **New code** makes another.
 3. On the iPhone, tap **Scan the code on your Mac** (or scan with the Camera app) and point it at the code.
 4. The phone shows a four-digit code. Check it matches the code on the Mac, then click **Link** there (**Refuse** cancels).
 5. The phone shows **Linked to <Mac name>**. **Continue** asks for notification permission and opens **Now**.
 
-If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares; the phone row says **Same Apple ID** or **Shared**.
+If the phone uses the same Apple ID as the Mac, it syncs through your private iCloud. With another Apple ID, it joins the two folders the Mac shares. Failed phone recordings wait under **Recordings** (**Retry**, **Discard…**).
 
 ### Use the three tabs
 <!-- learn
@@ -110,7 +119,12 @@ A session's status shows its time in that state, like **Working · 12m**.
 
 ### Answer prompts and interrupt agents
 
-Answering a Claude Code permission prompt and interrupting a working agent from the phone have their own page: [iPhone: permission prompts and interrupts](iphone-agent-prompts.md).
+These have their own page: [iPhone: permission prompts and interrupts](iphone-agent-prompts.md).
+
+### Read your timings
+<!-- learn: none -->
+
+Settings → **Diagnostics** shows "Action → result on screen · 7 days": your action count, how long results took (p50, p90) and the "Mac's answer" part. It is measured on this iPhone and sent nowhere. "Timings need an updated Watchtower on your Mac." means no linked Mac can be timed yet. **Battery** is here too.
 
 ### Link another Mac, or unlink
 <!-- learn
@@ -129,19 +143,15 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 
 ## When it's empty or wrong
 
-- **The Mac doesn't show up on the phone.** Check that Watchtower is open on the Mac, **Sync with iPhone** is on, the Mac is awake, the build is signed and iCloud is on; then the environment pairing above.
+- **The Mac doesn't show up on the phone.** Check that Watchtower is open on the Mac, **Mobile sync** is on, the Mac is awake, the build is signed and iCloud is on; then the environment pairing above.
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone and the Mac both need an iCloud account ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** "This Mac can't share with another Apple ID right now" means the Mac's share failed. Show a new code.
 - **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
-- **"iCloud is slowing sync down"** on the Mac's Mobile tab clears on its own.
-- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
-- **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
-- **"<hub> works over Relay only".** That hub (a Linux box or a Mac without the Watchtower app) links only over Relay, which Watchtower on this iPhone doesn't offer yet. Link it from its Mac app, if it has one.
-- **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
-- **No Allow once on a prompt card.** The card says why (too long to show in full, or it edits settings). Allow it on the Mac, or tap **Deny**.
-- **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit it. Closing the window is fine; the app stays in the menu bar.
+- **"Your Mac has not allowed this phone to start sessions"** under **Start session**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line.
+- **"<hub> works over Relay only".** Relay isn't in the current version of Watchtower for iPhone. That hub (a Linux box or a Mac without the Watchtower app) links only over Relay. Link it from its Mac app, if it has one.
+- **Nothing updates.** Mobile stops when you quit Watchtower. Closing the window is fine.
 
 Not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).
 

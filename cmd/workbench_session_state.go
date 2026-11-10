@@ -403,8 +403,11 @@ func recordCodexPrompt(database *db.DB, rowID, workbenchID int64, in hookEvent, 
 // row (board #543), whatever its state: a teammate works across the main
 // agent's turns. A SubagentStop with a list then lowers the Stop's count to
 // what that list and the recorded turns still count (board #411); it never
-// raises or starts one. For agent Codex, which sends no list, the count is
-// the turns still open (codexBackgroundCount).
+// raises or starts one. A Claude Code SubagentStart raises a count the Stop
+// started to the agents in a turn and those waiting on them, never starts
+// one (recordBackgroundRaise, board #1710). For agent Codex, which sends no
+// list, a SubagentStop's count is the turns still open
+// (codexBackgroundCount) and its SubagentStart records the turn only.
 func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at time.Time, agent agentkind.Kind,
 	lock hookLockWait) error {
 	if !terminal.IsSessionID(in.SessionID) {
@@ -421,11 +424,17 @@ func recordAgentTurn(database *db.DB, rowID, workbenchID int64, in hookEvent, at
 	// A replaced unreadable value is reported, never a reason to skip the
 	// count: the turns returned are what the row now holds.
 	replaced := errors.Is(err, db.ErrAgentTurnsUnreadable)
-	if (err != nil && !replaced) || turns == nil || start {
+	listed := sessionagent.CapsOf(string(agent)).BackgroundTasks
+	if (err != nil && !replaced) || turns == nil || (start && !listed) {
 		return err
 	}
-	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID)
-	if !sessionagent.CapsOf(string(agent)).BackgroundTasks {
+	parents := subagentParents(in.TranscriptPath)
+	if start {
+		return errors.Join(err, recordBackgroundRaise(database, rowID, workbenchID, in.SessionID, at,
+			agentsInTurn(turns, parents), lock))
+	}
+	remaining, ok := backgroundAgents(in.BackgroundTasks, turns, in.AgentID, parents)
+	if !listed {
 		remaining, ok = codexBackgroundCount(turns), true
 	}
 	if !ok {
@@ -471,6 +480,9 @@ type hookTurn struct {
 	// tasks is the Stop's background_tasks: recordAgentState counts it into
 	// background against the row's agent turns (boards #411, #543).
 	tasks backgroundTasks
+	// stopTranscript is the Stop's transcript_path: its session folder's
+	// subagent meta files give the agent tree the count follows (board #1710).
+	stopTranscript string
 	// background is the Stop's count of background agents at work; invalid
 	// for none or unknown, never zero.
 	background sql.NullInt64
@@ -630,7 +642,7 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		if err != nil {
 			return err
 		}
-		if n, ok := backgroundAgents(turn.tasks, turns, ""); ok && n > 0 {
+		if n, ok := backgroundAgents(turn.tasks, turns, "", subagentParents(turn.stopTranscript)); ok && n > 0 {
 			turn.background = sql.NullInt64{Int64: n, Valid: true}
 		}
 	}
@@ -870,6 +882,33 @@ func recordBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID
 		return nil
 	}
 	return writeBackgroundReport(database, rowID, workbenchID, sessionID, at, count, lock)
+}
+
+// recordBackgroundRaise records a SubagentStart's report (board #1710, ask
+// #1195): count is the agents in a turn and those waiting on them
+// (agentsInTurn). Read first with recordBackgroundReport's row guards; it
+// writes only over a `waiting` whose count the Stop started (NULL never
+// starts here, 0 does rise again) and that was reported before at, and
+// RaiseTerminalBackground repeats every guard. It stamps the report time even
+// when the count stays, so any SubagentStop stamped before it that lands
+// after it — above all the stop of the turn this start resumes from — is
+// refused like every older report (spec §12.3): its turn end is still
+// recorded, and the next report counts from it.
+func recordBackgroundRaise(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, count int64,
+	lock hookLockWait) error {
+	row, err := hookSessionRow(database, rowID, workbenchID, sessionID)
+	if row == nil || err != nil {
+		return err
+	}
+	at = at.Truncate(time.Millisecond) // the stored precision
+	if row.AgentState.String != agentStateWaiting || !row.Background.Valid ||
+		(!row.BackgroundAt.IsZero() && !at.After(row.BackgroundAt)) {
+		return nil
+	}
+	return lock.write(database, func() error {
+		_, err := database.RaiseTerminalBackground(rowID, workbenchID, sessionID, at, count)
+		return err
+	})
 }
 
 // writeBackgroundReport stamps agent_background_at with at and, with count,
