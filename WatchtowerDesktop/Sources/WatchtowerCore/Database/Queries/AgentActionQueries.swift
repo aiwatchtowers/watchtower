@@ -117,6 +117,22 @@ package enum AgentActionQueries {
             """, arguments: [terminalSince, terminalSince, terminalSince])
     }
 
+    /// The tool of the `:brief:` reaction: a thread brief, applied at once.
+    package static let briefTool = "brief_context"
+
+    /// The thread briefs (`brief_context`) applied at or after `since` (an
+    /// RFC3339 UTC string, the column format), newest applied first: each is
+    /// an entry of the Inbox root for 24 hours (ask #609). A result, never an
+    /// approval: nothing counts them. Project rows are left out as on the
+    /// strip (STRIP-01).
+    package static func fetchExecutedBriefs(_ db: Database, since: String) throws -> [AgentAction] {
+        try AgentAction.fetchAll(db, sql: """
+            SELECT * FROM agent_actions
+            WHERE tool = ? AND status = 'applied' AND applied_at >= ? AND \(notWorkbenchRow)
+            ORDER BY applied_at DESC, id DESC
+            """, arguments: [briefTool, since])
+    }
+
     /// The newest proposal of each Inbox target button (`context_type =
     /// 'automation_output'`, `context_id = '<output>:<index>:<hash>'`) whose
     /// output is one of `outputIDs` or whose context is one of `contextIDs`,

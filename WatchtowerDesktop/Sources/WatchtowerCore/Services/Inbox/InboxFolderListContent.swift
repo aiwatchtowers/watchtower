@@ -2,10 +2,10 @@ import Foundation
 
 /// One row of a folder's list (spec "The Inbox screen" 2): an automation
 /// artifact, a legacy entry over today's panes (Morning brief, Track my
-/// threads, Idea finder, Messages), or a native approval card in Needs
-/// approval.
+/// threads, Idea finder, Messages), a native approval card in Needs
+/// approval, or a result shown for a while (a thread brief, ask #609).
 package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
-    package enum Kind: Equatable, Sendable { case artifact, legacy, approval }
+    package enum Kind: Equatable, Sendable { case artifact, legacy, approval, result }
 
     package let id: String
     package let kind: Kind

@@ -34,6 +34,7 @@ The root lists **Waiting for me** first while anyone waits on you, then, newest 
 - **Track my threads**: your [tracks](tracks.md), with **Stopped · N** at the end.
 - **Idea finder**: [ideas and decisions](ideas-and-decisions.md), those to judge under **Needs your decision**.
 - **Messages**: only before **Waiting for me** has run, and after a run of it failed, so a message never waits on a run.
+- **Thread brief**: each thread summary a reaction made, for 24 hours. It never counts.
 
 ### Needs approval
 <!-- learn
@@ -104,7 +105,7 @@ An emoji from your dictionary on a Slack message makes the built-in **Reactions*
 | :eyes: | Starts a track on the topic | Asks first |
 | :bulb: | Captures the message as an idea | Applies at once |
 | :alarm_clock: | A reminder, tomorrow 09:00 unless it names a time | Applies at once |
-| :pushpin: | Summarises the thread | Applies at once |
+| :pushpin: | Summarises the thread (**Thread brief**) | Applies at once |
 | :white_check_mark: | Turns the message into a target | Asks first |
 | :ticket: | Drafts an issue in Jira or Linear | Always asks |
 

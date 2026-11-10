@@ -403,6 +403,10 @@ package final class ActionStripViewModel {
         case let .legacyDay(card):
             selection = .day(card.date)
             return .day(card.date)
+        case let .brief(action):
+            // Its agent-action card; a brief has no read mark to write.
+            selection = .proposal(action.id)
+            return nil
         case .legacyTracks, .legacyIdeas, .legacyMessages, .approval, .builtinNotice:
             selection = nil
             return nil
@@ -521,6 +525,7 @@ package final class ActionStripViewModel {
     ///   merged idea the idea it was merged into.
     /// - A day opens its Morning brief entry in the root; a day past the
     ///   loaded pages reads older pages until it is there.
+    /// - A thread brief applied in the last 24 hours opens its root entry.
     /// - An automation card opens the folder that lists it; a proposal, a
     ///   reminder, a notice or one of Needs approval's cards opens Needs
     ///   approval.
@@ -593,13 +598,25 @@ package final class ActionStripViewModel {
             show(folder, "artifact:\(id)")
             if entrySelection != nil { await select(item) }
         case let .proposal(id):
-            // Its card in Needs approval's stack: selected, so the stack scrolls to it.
-            show((tree.approvals ?? tree.root).id, "approval:action:\(id)")
+            openProposal(id, show: show)
         case let .reminder(id):
             show((tree.approvals ?? tree.root).id, "approval:reminder:\(id)")
         case .builtinNotice(let builtinID):
             show((tree.approvals ?? tree.root).id, "notice:\(builtinID)")
         }
+    }
+
+    /// A proposal's card through `openCard`'s `show`: a thread brief applied
+    /// in the last 24 hours is a root entry of its own (ask #609); any other
+    /// proposal is selected in Needs approval's stack, so the stack scrolls to it.
+    private func openProposal(_ id: Int64, show: (Int64, String?) -> Void) {
+        let tree = folderMenu.tree
+        guard feed.briefs.contains(where: { $0.id == id }) else {
+            show((tree.approvals ?? tree.root).id, "approval:action:\(id)")
+            return
+        }
+        show(tree.root.id, "brief:\(id)")
+        if entrySelection != nil { selection = .proposal(id) }
     }
 
     /// The listed idea a merged one ended up in (merges can chain), or nil.
@@ -628,7 +645,7 @@ package final class ActionStripViewModel {
     private func feedHolds(_ item: InboxSelection) -> Bool {
         switch item {
         case let .output(id): feed.outputs.contains { $0.id == id }
-        case let .proposal(id): feed.proposals.contains { $0.id == id }
+        case let .proposal(id): (feed.proposals + feed.briefs).contains { $0.id == id }
         case let .reminder(id): feed.reminders.contains { $0.id == id }
         case let .builtinNotice(id): feed.builtinNotices.contains { $0.builtinID == id }
         case let .day(date):

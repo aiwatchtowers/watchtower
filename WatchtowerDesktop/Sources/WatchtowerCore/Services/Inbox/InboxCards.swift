@@ -75,6 +75,9 @@ package struct InboxTrackCard: Equatable, Sendable {
 /// Everything the Inbox list can show, as one read left it.
 package struct InboxFeedSnapshot: Equatable, Sendable {
     package var proposals: [AgentAction] = []
+    /// Thread briefs (`brief_context`) applied in the last 24 hours, newest
+    /// first: one root entry each (ask #609), never counted.
+    package var briefs: [AgentAction] = []
     package var reminders: [Reminder] = []
     package var outputs: [AutomationOutputCard] = []
     /// `users` id → best name for the `person` blocks of `outputs`

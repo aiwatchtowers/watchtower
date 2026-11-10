@@ -4,9 +4,11 @@ import Foundation
 /// into folders"): an automation's artifact, a legacy entry over today's
 /// panes (ask #445: a Morning brief per date, Track my threads, Idea finder,
 /// and Messages while it stands in for Waiting for me), an open approval or
-/// a built-in upgrade notice (Needs approval).
+/// a built-in upgrade notice (Needs approval), or a thread brief the
+/// `:brief:` reaction made (the root, 24 hours, ask #609).
 package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
     case artifact(AutomationOutputCard)
+    case brief(AgentAction)
     case legacyDay(InboxDayCard)
     case legacyTracks
     case legacyIdeas
@@ -17,6 +19,7 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
     package var id: String {
         switch self {
         case let .artifact(card): "artifact:\(card.id)"
+        case let .brief(action): "brief:\(action.id)"
         case let .legacyDay(card): "day:\(card.date)"
         case .legacyTracks: "tracks"
         case .legacyIdeas: "ideas"
@@ -33,7 +36,7 @@ package enum InboxFolderEntry: Identifiable, Equatable, Sendable {
         case .legacyTracks: .tracks
         case .legacyIdeas: .ideas
         case .legacyMessages: .messages
-        case .artifact, .legacyDay, .approval, .builtinNotice: nil
+        case .artifact, .brief, .legacyDay, .approval, .builtinNotice: nil
         }
     }
 
@@ -91,7 +94,8 @@ package enum InboxFolderEntries {
     ///   approval — native cards above the recipe's cards (spec "mixed").
     /// - The root: Waiting for me pinned first while it has rows that wait
     ///   on the owner; then, newest first, its artifacts and the legacy
-    ///   entries by their own time (ask #445); the Messages entry only while
+    ///   entries by their own time (ask #445), and each thread brief applied
+    ///   in the last 24 hours by its applied time (ask #609); the Messages entry only while
     ///   it stands in for Waiting for me (`WaitingForMeState`). On a tree
     ///   without Needs approval (an older database) the root also holds the
     ///   approvals.
@@ -165,6 +169,7 @@ package enum InboxFolderEntries {
         if inputs.folders.waitingForMe.messagesStandIn, let at = feed.messages.map(\.stamp).max() {
             out.append((at, .legacyMessages))
         }
+        out += feed.briefs.map { (AutomationDates.parse($0.appliedAt) ?? .distantPast, .brief($0)) }
         return out
     }
 
@@ -237,6 +242,12 @@ package enum InboxFolderEntries {
             return InboxFolderListRow(
                 id: entry.id, kind: .legacy, title: "Idea finder", summary: judge > 0 ? "\(judge) to judge" : "",
                 detail: ideasUpdatedAt(feed).map { updated($0, now: now) } ?? "", unread: judge > 0)
+        case let .brief(action):
+            // A result, not something waiting: never unread, never counted.
+            let applied = AutomationDates.parse(action.appliedAt)
+            return InboxFolderListRow(
+                id: entry.id, kind: .result, title: action.reason.isEmpty ? "Thread brief" : action.reason,
+                detail: applied.map { "Thread brief · \(ago($0, now: now))" } ?? "Thread brief")
         case .legacyMessages:
             return InboxFolderListRow(
                 id: entry.id, kind: .legacy, title: "Messages", summary: "\(feed.messages.count) waiting",

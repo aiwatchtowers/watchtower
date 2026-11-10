@@ -486,6 +486,7 @@ struct ActionStripActionsView: View {
             pane(.output(card), menu: artifactMenuState(card))
                 .task(id: card.automationID) { await artifactMenu?.prepare(card) }
         case let .legacyDay(card)?: pane(.day(card))
+        case let .brief(action)?: pane(.proposal(action))
         case let .approval(item)?: pane(Self.listItem(item))
         case let .builtinNotice(notice)?: pane(.builtinNotice(notice))
         case .legacyTracks?, .legacyIdeas?, .legacyMessages?, nil: pane(nil)
@@ -656,7 +657,7 @@ struct ActionStripActionsView: View {
             filled(Self.listItem(item))
         case let .builtinNotice(notice):
             filled(.builtinNotice(notice))
-        case .artifact, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages:
+        case .artifact, .brief, .legacyDay, .legacyTracks, .legacyIdeas, .legacyMessages:
             EmptyView()
         }
     }

@@ -19,6 +19,9 @@ package enum InboxFeedQueries {
         let now = AutomationDates.parse(nowUTC) ?? Date()
         let terminalSince = AutomationDates.format(now.addingTimeInterval(-terminalTailHours * 3600))
         snapshot.proposals = try emptyIfTableMissing { try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince) }
+        snapshot.briefs = try emptyIfTableMissing {
+            try AgentActionQueries.fetchExecutedBriefs(db, since: terminalSince)
+        }
         snapshot.reminders = try emptyIfTableMissing { try ReminderQueries.fetchDue(db, nowUTC: nowUTC) }
         snapshot.outputs = try emptyIfTableMissing { try AutomationQueries.fetchInboxOutputs(db, includeRead: true) }
         if !snapshot.outputs.isEmpty {
