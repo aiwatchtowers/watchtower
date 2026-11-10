@@ -17,6 +17,8 @@ Either the tool is not installed where Watchtower looks, or it is installed but 
 
 ## Fix
 
+During setup, use the **AI agent** section on the first screen: pick **Claude Code** or **Codex CLI**, copy the install command from its panel (**Other ways to install** if you cannot pipe a script into the shell), and sign in right there. If the update it offers does not change anything, the tool is probably installed twice: press **Choose the executable…** and pick the copy you use. After setup, use the steps below.
+
 1. Open **Settings → System → AI** and check the **Preferred provider** (and the **Reserve provider**, if you use one).
 2. Press **Check connection**. It looks at the installed tool and its sign-in without sending an AI prompt.
 3. **Not installed**: install the tool, or type its full path into **Claude CLI path** / **Codex CLI path** (empty means **Auto-detect**). In Terminal, `which claude` (or `which codex`) prints the path.
