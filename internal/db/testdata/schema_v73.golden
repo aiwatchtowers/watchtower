@@ -3211,7 +3211,7 @@ CREATE TABLE terminal_session_worktrees (
 session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
 root TEXT NOT NULL,
 branch TEXT NOT NULL DEFAULT '',
-first_at TEXT NOT NULL, last_at TEXT,
+first_at TEXT NOT NULL, last_at TEXT, source TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), kind TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')),
 PRIMARY KEY (session_id, root, branch)
 )
 
@@ -3242,7 +3242,7 @@ chat_question TEXT,
 chat_question_at TEXT,
 agent_turns TEXT,
 agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
-CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT,
+CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, delete_requested_at TEXT,
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 )
@@ -6471,6 +6471,8 @@ GROUP BY up.ancestor
 2	branch	TEXT	notnull=1	dflt=''	pk=3
 3	first_at	TEXT	notnull=1	dflt=NULL	pk=0
 4	last_at	TEXT	notnull=0	dflt=NULL	pk=0
+5	source	TEXT	notnull=1	dflt='cwd'	pk=0
+6	kind	TEXT	notnull=1	dflt='worktree'	pk=0
 
 ## terminal_sessions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6509,6 +6511,7 @@ GROUP BY up.ancestor
 33	agent_watch_issue	TEXT	notnull=0	dflt=NULL	pk=0
 34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
 35	start_notice	TEXT	notnull=0	dflt=NULL	pk=0
+36	delete_requested_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1
