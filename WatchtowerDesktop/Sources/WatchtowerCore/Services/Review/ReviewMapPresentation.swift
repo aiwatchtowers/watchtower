@@ -210,6 +210,7 @@ package enum ReviewMapPresentation {
 
     /// The card while a run goes, after it settles, or nil when there is nothing to
     /// say yet (no run asked for, or the summary's failure, which has its own card).
+    /// With no summary and chapters not reached it offers Describe N remaining.
     /// `keys` are the describable chapters (Can skip excluded); `waiting` is the
     /// model's `waitingText`.
     package static func progress(
@@ -237,9 +238,14 @@ package enum ReviewMapPresentation {
             let line = done == total ? allDescribed(total) + "." : "\(done) of \(total) chapters are described."
             return Progress(title: "Writing the summary", body: line)
         }
-        guard summaryIn(summary) else { return nil }
         let failed = all.filter { if case .failed = $0 { true } else { false } }.count
         let notReached = all.filter { $0 == .notStarted }.count
+        if summary == .notStarted, notReached > 0 {
+            // No summary yet, chapters left (a run stopped short): the way on.
+            return Progress(title: "Chapters left to describe — \(done) of \(total) done",
+                            body: "The summary is made after them.", remaining: notReached, running: false)
+        }
+        guard summaryIn(summary) else { return nil }
         return Progress(title: "Summary ready", body: notCoveredLine(failed: failed, notReached: notReached),
                         remaining: notReached, running: false)
     }

@@ -18,7 +18,7 @@ struct ReviewOverviewView<Extra: View>: View {
     var body: some View {
         switch model.overview {
         case .idle:
-            if model.summaryOnlyAfterFailure {
+            if model.runCardInsteadOfOverview {
                 // A first run whose summary failed: its chapters stay, the summary's Retry and its run (frame 2c).
                 ReviewRunCard(model: model, framed: false)
             }

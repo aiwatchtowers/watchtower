@@ -1493,12 +1493,14 @@ final class ReviewChangesModel {
         }
     }
 
-    /// No overview yet, the summary failed or is being redone after a
-    /// failure (frame 2c): Meaning shows the run card in its place.
-    var summaryOnlyAfterFailure: Bool {
+    /// No overview yet after a run that did not finish it: the summary
+    /// failed or is being redone (frame 2c), or chapters are left to
+    /// describe (Describe N remaining) — Meaning shows the run card in its place.
+    var runCardInsteadOfOverview: Bool {
         guard overview == .idle else { return false }
         switch summaryState {
         case .failed, .running, .waiting, .queued: return true
+        case .notStarted: return describableKeys.contains { chapterStates[$0] == .notStarted }
         default: return false
         }
     }

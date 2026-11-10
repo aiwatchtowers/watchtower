@@ -338,18 +338,53 @@ final class ReviewChangesModelBigBranchTests: XCTestCase {
         XCTAssertEqual(h.model.chapterStates, ["dir:cmd": .ok, "dir:pkg": .cached], "the chapters stay")
         XCTAssertEqual(h.model.chapterDescription("dir:pkg"), "Locks.")
         XCTAssertEqual(h.model.overview, .idle, "not the whole run's failure")
-        XCTAssertTrue(h.model.summaryOnlyAfterFailure)
+        XCTAssertTrue(h.model.runCardInsteadOfOverview)
         h.model.retrySummary()
         let second = try await process(h, 1)
         XCTAssertEqual(second.args.last, "--summary", "Retry redoes only the summary")
-        XCTAssertTrue(h.model.summaryOnlyAfterFailure, "the card stays while the summary is redone")
+        XCTAssertTrue(h.model.runCardInsteadOfOverview, "the card stays while the summary is redone")
         second.send(#"{"event":"summary","state":"ok"}"#)
         second.send(Self.overviewEnvelope)
         second.finish()
         await h.settle()
         XCTAssertEqual(h.model.summaryState, .ok)
-        XCTAssertFalse(h.model.summaryOnlyAfterFailure)
+        XCTAssertFalse(h.model.runCardInsteadOfOverview)
         guard case .ready = h.model.overview else { return XCTFail("the summary Retry lands the overview") }
+    }
+
+    /// No summary yet; the summary Retry meets a map Go rebuilt with a new
+    /// chapter and is refused (`missing_parts`): the card stays and offers
+    /// Describe 1 remaining for the new chapter instead of vanishing.
+    func testARefusedSummaryRetryKeepsARecoveryCard() async throws {
+        let h = try harness()
+        await openDeep(h)
+        let first = try await process(h, 0)
+        first.send(chapterLine("dir:cmd", "ok"))
+        first.send(chapterLine("dir:pkg", "ok"))
+        first.send(#"{"event":"summary","state":"failed","error":{"class":"provider","text":"The AI provider failed on the summary."}}"#)
+        first.send(#"{"ok":false,"error":"The AI provider failed on the summary.","error_class":"provider"}"#)
+        first.finish()
+        await h.settle()
+        h.model.retrySummary()
+        let second = try await process(h, 1)
+        second.send(#"{"event":"map","map":{"chapters":[{"key":"dir:cmd","title":"cmd","level":"normal","paths":["cmd/x.go"]},"#
+            + #"{"key":"dir:pkg","title":"pkg","level":"normal","paths":["pkg/y.go"]},"#
+            + #"{"key":"dir:web","title":"web","level":"normal","paths":["pkg/y.go"]}],"files":[]}}"#)
+        second.send(#"{"ok":false,"error":"Some chapters have no description yet; run the overview to describe them first.","#
+            + #""error_class":"missing_parts"}"#)
+        second.finish()
+        await h.settle()
+        XCTAssertEqual(h.model.summaryState, .notStarted, "no summary Retry Go would refuse again")
+        XCTAssertEqual(h.model.chapterStates["dir:web"], .notStarted)
+        XCTAssertTrue(h.model.runCardInsteadOfOverview, "Meaning keeps the card")
+        let progress = ReviewMapPresentation.progress(keys: h.model.describableKeys, states: h.model.chapterStates,
+                                                      summary: h.model.summaryState, waiting: nil)
+        XCTAssertEqual(progress?.remaining, 1, "Describe 1 remaining is offered")
+        h.model.describeRemaining()
+        let third = try await process(h, 2)
+        XCTAssertEqual(third.args.last, "--chapter=dir:web")
+        third.finish()
+        await h.settle()
     }
 
     /// A chapter Retry whose key Go no longer has: Go sends the map it just
