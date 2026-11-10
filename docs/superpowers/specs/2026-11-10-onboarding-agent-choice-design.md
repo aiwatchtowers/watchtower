@@ -31,7 +31,7 @@ Each tile shows one status, computed per agent:
 | Status | How it is known | Tile line | Tone |
 |---|---|---|---|
 | `checking` | the check is running | Checking… (spinner) | neutral |
-| `notInstalled` | no executable at `claude_path`/`codex_path` or in the usual places (`Constants.findInPath`, which includes `~/.local/bin`). Known locally, **no request** | Not installed | neutral |
+| `notInstalled` | Go's own lookup (`claude.FindBinary(claude_path)` / `codex.FindBinary(codex_path)`, asked through the read-only `watchtower ai which --json`) finds no executable. Known locally, **no request**. The same located executable is the one the test (`--cli-path`), the help probe and the sign-in/update terminal run, so Swift and Go never pick different copies | Not installed | neutral |
 | `ready` | `ai test --json --provider <agent>` answered | Ready · signed in | success |
 | `signedOut` | the test failed with `error_code: auth` | Installed · not signed in | warning |
 | `failed(msg)` | any other failed test; `msg` is `OnboardingAgentChoice.failureMessage(agent, code, error)` (below) | Check failed | error |
@@ -79,7 +79,7 @@ When the picked agent is signed out, the panel runs its sign-in in an embedded t
 - Exit 0 means the terminal closes and the agents are checked again: the tile turns Ready and Continue unlocks. A non-zero exit or Stop closes it, and the note becomes "Sign-in stopped before it finished (exit code N)." in `Tone.warning`, with **Sign in again**. A stopped sign-in never reopens by itself (`signInOpened`).
 - Under it as a fallback: "Or run it in your own Terminal:" and the command with a copy button.
 - Picking the other tile stops a running sign-in.
-- **A CLI too old for the login command.** `claude auth login` arrived in Claude Code 2.1. Before the terminal opens, a local probe with no request and no network runs `claude auth --help` (or `codex login --help`). The decision comes from the **help text, not the exit code** (owner, ask #1163): an old CLI may print its general help and exit 0. Claude counts as supporting login only if the command list has a `login` row; Codex only if the text has `Usage: codex login` (`Agent.loginSupported(help:)`, tested on the real 2.1 output and on a general help). A CLI without it is `outdated`. The title becomes "Update Claude Code to sign in" and the note "This Claude Code is too old to sign in from here. It updates first; sign-in starts right after.".
+- **A CLI too old for the login command.** `claude auth login` arrived in Claude Code 2.1. Before the terminal opens, a local probe with no request and no network runs `claude auth --help` (or `codex login --help`). A probe that times out (5 s) counts as outdated: the update runs, and if nothing changes the panel stops in the stuck state below, so a hung CLI never goes straight to a login that can't work. The decision comes from the **help text, not the exit code** (owner, ask #1163): an old CLI may print its general help and exit 0. Claude counts as supporting login only if the command list has a `login` row; Codex only if the text has `Usage: codex login` (`Agent.loginSupported(help:)`, tested on the real 2.1 output and on a general help). A CLI without it is `outdated`. The title becomes "Update Claude Code to sign in" and the note "This Claude Code is too old to sign in from here. It updates first; sign-in starts right after.".
 - **The update fits how the CLI was installed** (owner, ask #1163). The resolved executable, with symlinks followed, gives the `InstallKind`:
 
   | Path contains | Kind | Claude Code | Codex CLI |
@@ -200,6 +200,8 @@ Onboarding writing only at Continue is the owner's decision (ask #1157). Every w
 - Installers via `curl` (no Node.js), npm dropped from the panel, **Other ways to install** link for Macs that forbid it: agent decided.
 - Signed out → the sign-in terminal opens right in the step: owner, ask #1157 (note). Auto-open once, `claude auth login`/`codex login`, recheck on exit 0: agent decided.
 - Ollama failing its check brings the tiles back; only the owner's pick plus Continue replaces `ai.provider`, Check again keeps Ollama: agent decided (shown to the owner in this review).
+- One binary for every path: Go's lookup through `ai which`, the terminal runs that path (plan review, ask #1176): agent decided.
+- A help probe timeout counts as outdated (plan review, ask #1176): agent decided.
 - An outdated CLI updates in the same terminal before signing in: agent decided. Detected from the help text and updated the way it was installed, no update loop: owner, ask #1163.
 - Failed line chosen by `error_code`: agent decided.
 - Goal cards stay cards in the no-agent case (no chips): agent decided.
