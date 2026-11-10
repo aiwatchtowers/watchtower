@@ -313,7 +313,7 @@ func userFileOf(e Env, dest, skill string) (userFile, error) {
 	case DestCodexAgentsMDUser:
 		return under(agentsMDKind, e.codexHome(), "AGENTS.md", true)
 	case DestCodexRulesAllow:
-		return under(codexRulesKind, e.codexHome(), filepath.Join("rules", "default.rules"), false)
+		return under(codexRulesKind, e.codexHome(), codexRulesRel, false)
 	}
 	return userFile{}, errNotSupported
 }

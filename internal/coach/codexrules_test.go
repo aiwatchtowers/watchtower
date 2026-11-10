@@ -68,6 +68,8 @@ func TestValidateAfter_CodexRulesOnlyGrow(t *testing.T) {
 		"repeated":      {before + ruleCat + "\n" + ruleCat + "\n", "the Codex rules already have every rule"},
 		"nothing added": {before + "\n", "the Codex rules already have every rule"},
 		"comment added": {before + "# note\n", `rule "# note" is not a safe read, search, build or test command`},
+		"indented":      {before + "  " + ruleCat + "\n", `rule "  prefix_rule(pattern=[\"cat\"], decision=\"allow\")" is not a safe read, search, build or test command`},
+		"crlf":          {before + ruleCat + "\r\n", `rule "prefix_rule(pattern=[\"cat\"], decision=\"allow\")\r" is not a safe read, search, build or test command`},
 	} {
 		err := ValidateAfter(cur, tc.after)
 		require.Error(t, err, name)
@@ -200,4 +202,14 @@ func TestCodexRules_SymlinkedCodexHomeWorks(t *testing.T) {
 	id := propose(t, d, rulesProposal(ruleMake+"\n", ruleCat))
 	require.NoError(t, a.Accept(id, ""))
 	assert.Equal(t, ruleMake+"\n"+ruleCat+"\n", readFile(t, filepath.Join(target, "rules", "default.rules")))
+}
+
+func TestWriteCut_CodexRulesMissingIsNotCut(t *testing.T) {
+	d := openDBs(t)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	p := rulesProposal("", ruleCat)
+	p.ID, p.Title, p.Metric = 1, "t", "corrections"
+	wrote, err := writeCut(d.DB, d.al, t.TempDir(), p, applyNow)
+	require.NoError(t, err, "a missing rules file is not an error for the judge")
+	assert.False(t, wrote)
 }

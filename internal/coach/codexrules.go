@@ -55,8 +55,11 @@ func CodexRuleLine(pattern []string) string {
 // codexSafeAllowPatterns.
 func CodexSafeAllowRule(line string) bool { return codexSafeAllowLines[line] }
 
+// codexRulesRel is the rules file below the Codex home.
+var codexRulesRel = filepath.Join("rules", "default.rules")
+
 // codexRulesPath is <codexHome>/rules/default.rules.
-func codexRulesPath(e Env) string { return filepath.Join(e.codexHome(), "rules", "default.rules") }
+func codexRulesPath(e Env) string { return filepath.Join(e.codexHome(), codexRulesRel) }
 
 var codexRulesKind = textFile{label: "default.rules", tmp: ".default.rules.coach-*",
 	notRegular: fmt.Errorf("default.rules %w", errUnsafeFile), tooBig: fmt.Errorf("default.rules %w", errUnsafeFile),
@@ -72,27 +75,33 @@ func appendCodexRules(text, add string) string {
 }
 
 // validateCodexRules checks a new text of the rules file: it is the old text
-// plus whole lines, each a safe rule the file does not have yet.
+// plus whole lines, each exactly a safe rule (no indent: an indented
+// statement is invalid Starlark) the file does not have yet; blank lines are
+// allowed.
 func validateCodexRules(before, after string) error {
 	added, ok := strings.CutPrefix(after, before)
 	if !ok || (before != "" && !strings.HasSuffix(before, "\n") && added != "" && !strings.HasPrefix(added, "\n")) {
 		return errors.New("the Codex rules may only grow")
 	}
-	have := countLines(nonEmptyLines(before))
-	lines := nonEmptyLines(added)
-	for _, l := range lines {
+	var lines []string
+	for _, l := range strings.Split(added, "\n") {
+		if l == "" {
+			continue
+		}
 		if !CodexSafeAllowRule(l) {
 			return fmt.Errorf("rule %q is not a safe read, search, build or test command", l)
 		}
+		lines = append(lines, l)
 	}
+	if len(lines) == 0 {
+		return errors.New("the Codex rules already have every rule")
+	}
+	have := countLines(nonEmptyLines(before))
 	for _, l := range lines {
 		if have[l] > 0 {
 			return errors.New("the Codex rules already have every rule")
 		}
 		have[l]++
-	}
-	if len(lines) == 0 {
-		return errors.New("the Codex rules already have every rule")
 	}
 	return nil
 }
