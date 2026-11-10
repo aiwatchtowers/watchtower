@@ -528,7 +528,7 @@ enum DesignShotCatalog {
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
                 CleanupShotFixtures.screen(frame)
             }
-        } + CatalogPage.allCases.map { page in
+        } + ReportProblemShotFixtures.shots + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
                 // A fixed moment, so the Typography page's live counter is the same every run.
                 AnyView(CatalogPageBody(page: page)
