@@ -314,7 +314,7 @@ func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 		in = 0
 		p.res.CodexUsageMismatch++
 	}
-	usd, known := Cost(p.model, "", in, u.Output, u.Cached, u.CacheWrite, 0)
+	usd, known := CostFor(AgentCodex, p.model, "", in, u.Output, u.Cached, u.CacheWrite, 0)
 	// The key keeps its pre-cache-write figures, so no stored row changes key.
 	key := fmt.Sprintf("api_call:codex:%s/%d.%d.%d.%d.%d/%d.%d.%d.%d.%d", p.lineage.id, u.Input, u.Cached, u.Output, u.Reasoning, u.Total,
 		t.Input, t.Cached, t.Output, t.Reasoning, t.Total)

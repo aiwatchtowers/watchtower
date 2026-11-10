@@ -78,3 +78,38 @@ func TestResolveAliases(t *testing.T) {
 	assert.Equal(t, "claude-opus-5-5", Resolve("claude-opus-5-5"))
 	assert.Empty(t, Resolve(""))
 }
+
+func TestCodexCost_Formula(t *testing.T) {
+	// A row with a published write rate, and one priced at the input rate (D36).
+	for _, m := range []string{"gpt-5.6-sol", "gpt-5.4"} {
+		p := codexPrices[m]
+		write := p.cacheWrite
+		if write == 0 {
+			write = p.input
+		}
+		usd, known := CodexCost(m, 1e6, 1e6, 1e6, 1e6)
+		assert.True(t, known, m)
+		assert.InDelta(t, p.input+p.output+p.cached+write, usd, 1e-9, m)
+	}
+	usd, _ := CodexCost("gpt-5.4", 0, 0, 0, 1e6)
+	assert.InDelta(t, 2.50, usd, 1e-9, "no published write rate: the input rate")
+	usd, _ = CodexCost("gpt-5.6-sol", 0, 0, 0, 1e6)
+	assert.InDelta(t, 5, usd, 1e-9, "the published 30-minute write rate")
+}
+
+func TestCodexCost_UnknownModel(t *testing.T) {
+	usd, known := CodexCost("gpt-test", 1e6, 1e6, 0, 0)
+	assert.False(t, known)
+	assert.Zero(t, usd)
+	_, known = CodexCost("claude-opus-5-5", 1, 1, 0, 0)
+	assert.False(t, known, "the Anthropic table is not the Codex one")
+}
+
+func TestModelTiers_NoCodexModels(t *testing.T) {
+	tiers := ModelTiers()
+	for m := range codexPrices {
+		assert.NotContains(t, tiers, m)
+	}
+	_, known := Cost("gpt-5.6-sol", "", 1, 1, 0, 0, 0)
+	assert.False(t, known, "the LLM ledger's Cost never prices a Codex model")
+}

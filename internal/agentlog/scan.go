@@ -162,7 +162,7 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	if err := markMissingFiles(al, dirs, present, o.Now(), res); err != nil {
 		return nil, err
 	}
-	if res.Repriced, err = al.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
+	if res.Repriced, err = al.RepriceAgentLogEvents(PriceVersion, CostFor); err != nil {
 		return nil, fmt.Errorf("repricing: %w", err)
 	}
 	if err := recordImportProgress(al, id, res, o.Now()); err != nil {

@@ -477,19 +477,22 @@ func (d *DB) AgentLaneBaseline(sessionUUID, agentID string) (bool, map[string]in
 }
 
 // RepriceAgentLogEvents recomputes cost for api_call rows priced with an
-// older table version, from their stored tokens.
-func (d *DB) RepriceAgentLogEvents(version int, price func(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {
+// older table version, from their stored tokens, by the agent of the row's
+// session (an event whose session row is missing is priced as Claude).
+func (d *DB) RepriceAgentLogEvents(version int, price func(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {
 	type row struct {
 		id                     int64
-		model, speed           string
+		agent, model, speed    string
 		in, out, cr, cw5, cw1h int64
 	}
 	var todo []row
-	err := d.agentLogRows(`SELECT id, name, speed, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
-		cache_write_1h_tokens FROM agent_log_events WHERE kind = 'api_call' AND price_version < ?`, []any{version},
+	err := d.agentLogRows(`SELECT e.id, COALESCE(s.agent, 'claude'), e.name, e.speed, e.input_tokens, e.output_tokens,
+		e.cache_read_tokens, e.cache_write_5m_tokens, e.cache_write_1h_tokens
+		FROM agent_log_events e LEFT JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
+		WHERE e.kind = 'api_call' AND e.price_version < ?`, []any{version},
 		func(rs *sql.Rows) error {
 			var r row
-			if err := rs.Scan(&r.id, &r.model, &r.speed, &r.in, &r.out, &r.cr, &r.cw5, &r.cw1h); err != nil {
+			if err := rs.Scan(&r.id, &r.agent, &r.model, &r.speed, &r.in, &r.out, &r.cr, &r.cw5, &r.cw1h); err != nil {
 				return err
 			}
 			todo = append(todo, r)
@@ -506,7 +509,7 @@ func (d *DB) RepriceAgentLogEvents(version int, price func(model, speed string, 
 		n := min(len(todo), agentLogRepriceSlice)
 		err = d.withTx(func(tx *sql.Tx) error {
 			for _, r := range todo[:n] {
-				usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
+				usd, known := price(r.agent, r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
 				if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
 					usd, !known, version, r.id); err != nil {
 					return err

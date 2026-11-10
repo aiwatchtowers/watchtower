@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/pricing"
 )
 
 // testWorkbenchID stands for a workbench id; agentlog.db has no projects table.
@@ -278,7 +280,7 @@ func TestRepriceAgentLogEvents_SlicesAndPartialFailure(t *testing.T) {
 	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
 		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: evs})
 	require.NoError(t, err)
-	price := func(string, string, int64, int64, int64, int64, int64) (float64, bool) { return 1, true }
+	price := func(string, string, string, int64, int64, int64, int64, int64) (float64, bool) { return 1, true }
 	_, err = d.Exec(`CREATE TRIGGER test_fail_reprice BEFORE UPDATE OF price_version ON agent_log_events
 		WHEN NEW.key = 'md:r' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`)
 	require.NoError(t, err)
@@ -404,4 +406,47 @@ func TestUpsertAgentSubagent_WritesOnlyOnChange(t *testing.T) {
 	wrote, err = d.UpsertAgentSubagent(a)
 	require.NoError(t, err)
 	assert.False(t, wrote)
+}
+
+// Spec 2026-11-03 §4.7: a reprice prices each row by its session's agent; a
+// Claude row gets exactly its value before, a Codex row the Codex formula.
+func TestRepriceAgentLogEvents_PerAgent(t *testing.T) {
+	d := openTestDB(t)
+	pid := testWorkbenchID
+	claude := apiCall("s-claude", "m1:r1", 50)
+	claude.CacheReadTokens, claude.CacheWrite5mTokens, claude.PriceVersion = 30, 7, 1
+	claude.CostUSD, _ = pricing.Cost(claude.Name, "", claude.InputTokens, claude.OutputTokens, 30, 7, 0)
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s-claude", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{claude}})
+	require.NoError(t, err)
+	cs := agentSession("s-codex", "2026-10-01T10:00:00Z", pid)
+	cs.Agent = "codex"
+	codex := AgentLogEvent{SessionUUID: "s-codex", Key: "api_call:codex:l/1", Kind: "api_call", TS: "2026-10-01T10:00:00Z",
+		Name: "gpt-5.6-sol", InputTokens: 300, OutputTokens: 20, CacheReadTokens: 600, CacheWrite5mTokens: 100,
+		CostEstimated: true, PriceVersion: 1, SrcPath: "/x/r.jsonl"}
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{cs}, Events: []AgentLogEvent{codex}})
+	require.NoError(t, err)
+
+	price := func(agent, model, speed string, in, out, cr, cw5, cw1 int64) (float64, bool) {
+		if agent == "codex" {
+			return pricing.CodexCost(model, in, out, cr, cw5+cw1)
+		}
+		return pricing.Cost(model, speed, in, out, cr, cw5, cw1)
+	}
+	n, err := d.RepriceAgentLogEvents(2, price)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	read := func(key string) (usd float64, est bool) {
+		require.NoError(t, d.QueryRow(`SELECT cost_usd, cost_estimated FROM agent_log_events WHERE key = ?`, key).Scan(&usd, &est))
+		return
+	}
+	usd, est := read("m1:r1")
+	assert.Equal(t, claude.CostUSD, usd, "a Claude row keeps exactly its value")
+	assert.False(t, est)
+	want, _ := pricing.CodexCost("gpt-5.6-sol", 300, 20, 600, 100)
+	usd, est = read("api_call:codex:l/1")
+	assert.InDelta(t, want, usd, 1e-12)
+	assert.Positive(t, usd)
+	assert.False(t, est, "a table model is priced, not estimated")
 }

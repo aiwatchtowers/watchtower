@@ -13,6 +13,16 @@ func Cost(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, b
 	return pricing.Cost(model, speed, in, out, cacheRead, cw5m, cw1h)
 }
 
+// CostFor prices one API call of agent: a Codex call by the OpenAI table
+// (pricing.CodexCost; both cache-write columns are its cache write), anything
+// else by the Anthropic one (pricing.Cost).
+func CostFor(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool) {
+	if agent == AgentCodex {
+		return pricing.CodexCost(model, in, out, cacheRead, cw5m+cw1h)
+	}
+	return pricing.Cost(model, speed, in, out, cacheRead, cw5m, cw1h)
+}
+
 // ModelTiers lists the priced models by output price, highest first (see
 // pricing.ModelTiers).
 func ModelTiers() []string { return pricing.ModelTiers() }

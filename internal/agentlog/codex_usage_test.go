@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/pricing"
 )
 
 // cxTokensCW is cxTokens with a cache-write figure (spec 2026-11-03 §4.7).
@@ -118,7 +119,7 @@ func downgradeCodexRows(t *testing.T, f *fixture) {
 
 func codexWriteRollout(t *testing.T, f *fixture, n int) string {
 	var b strings.Builder
-	b.WriteString(cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "claude-opus-5-5"))
+	b.WriteString(cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "gpt-5.6-sol"))
 	for i := range n {
 		b.WriteString(cxTokensCW(t, fmt.Sprintf("%02d.000", 10+i), 1000, 600, 100, int64(i+1), 0, int64(2000*(i+1))))
 	}
@@ -237,4 +238,17 @@ func checkIdent(fset *token.FileSet, n ast.Node, bad *[]string) bool {
 		*bad = append(*bad, fset.Position(id.Pos()).String())
 	}
 	return true
+}
+
+func TestParseCodex_PricedModel(t *testing.T) {
+	pr := parseCodex(t, cxMeta(t, "00.000", cxParent, "/work")+cxModel(t, "00.500", "gpt-5.6-sol")+
+		cxTokensCW(t, "01.000", 1000, 600, 100, 50, 10, 1050), ParseOptions{Path: "/r.jsonl", SessionUUID: cxParent})
+	calls := apiCalls(pr)
+	require.Len(t, calls, 1)
+	want, known := pricing.CodexCost("gpt-5.6-sol", 300, 50, 600, 100)
+	require.True(t, known)
+	assert.Positive(t, calls[0].CostUSD)
+	assert.InDelta(t, want, calls[0].CostUSD, 1e-12)
+	assert.False(t, calls[0].CostEstimated)
+	assert.Equal(t, PriceVersion, calls[0].PriceVersion)
 }
