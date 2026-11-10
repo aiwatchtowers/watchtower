@@ -614,7 +614,7 @@ No row is marked or removed with its source (spec D62); Accept, Decline and Roll
 - Test: `cmd/coach_test.go`
 
 **Interfaces:**
-- `coachProposalJSON` gains (keys only added, pinned): `origin string`, `skill string` (`""` for other destinations), `conversation_id *int64` (null). `budget` uses `coach.BudgetOf(p.Destination, p.BeforeText)` (covers the new destinations from Task 2.4).
+- `coachProposalJSON` gains (keys only added, pinned): `origin string`, `skill string` (`""` for other destinations), `conversation_id *int64` (null), and from Task 2.14 `written_branch string` and `measure_from *string`. `budget` uses `coach.BudgetOf(p.Destination, p.BeforeText)` (covers the new destinations from Task 2.4).
 - `codedCoachErr`: `coach.ErrRefused` → `refused` (Task 2.13 adds `dirty` and `not_git`).
 - `coachEnv.applier()` sets `CodexHome: os.Getenv("CODEX_HOME")`.
 - `printCoachProposals`: the `where:` line appends ` <skill>` in brackets when `Skill != ""`; a chat proposal shows `  from: chat <conversation id or "deleted">`.
@@ -709,7 +709,7 @@ No row is marked or removed with its source (spec D62); Accept, Decline and Roll
   - `TestRollback_RepoAfterOwnerCommit`: accept, commit the file in the test repository, Rollback → working tree has `before_text`, no git write by Rollback.
   - `TestRollback_RepoChangedSince` → `ErrChangedSince` with a diff.
   - `TestCOACH01_RepoFilesOnlyInTheWorkbenchFolder` (new guard): for each `repo_*` destination the path `readCurrent`/`writeDestination` touch equals `filepath.Join(folder, RepoRelPath(…))`; the weekly `Validate` still drops a model reply naming a `repo_*` destination (the existing "repository file is dropped" case extended); the Home guard `TestCOACH01_HomeDestinationsStayUnderHome` is unchanged.
-  - `TestCOACH01_NoGitWrites` (new guard): a go/ast scan of `internal/coach` finds no `exec.Command`/`exec.CommandContext` and no call into `internal/workbenchgit` other than `PathStatus`; `workbenchgit.PathStatus`'s runner is called only with `status` (its own test, Task 2.12).
+  - `TestCOACH01_NoGitWrites` (new guard): a go/ast scan of `internal/coach` finds no `exec.Command`/`exec.CommandContext` and no call into `internal/workbenchgit` at all (Accept gets the dirty state and the branch through `Applier` seams the CLI fills); a second scan over every caller of `workbenchgit` in the tuning paths (`cmd/coach.go`, the daemon's commit check) allows only `PathStatus`, `CurrentBranch` and `FileAtHead`; and each of the three helpers' runner is called only with its read-only verb — `status`, `rev-parse`, `show` (their own tests, Tasks 2.12 and 2.14). Any other verb or helper fails the guard; it is extended with each new read-only helper, never relaxed.
   - `TestCoachAccept_RepoCodes` (cmd): dirty → `code "dirty"`; not git → `code "not_git"`; success JSON keys exactly `ok, id, status, pack_copies_updated, pack_copies_drifted, written_path` (Task 2.7's pinned list gains one key).
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/coach -run 'Repo|TestCOACH01'`; `go test ./cmd -run 'TestCoachAccept_'`.
 - [ ] **Step 3: Implement** as above.
@@ -1397,16 +1397,16 @@ Recon facts the tasks rely on:
 
 ### Task 5.1: Swift readers of the new coach columns
 
-**Depends on:** Task 1.1 (migration 00184 + regenerated `Tests/Support/TestDatabase+Schema.swift`); Task 2.11 (the `coach proposals --json` keys `origin`, `skill`, `conversation_id`)
+**Depends on:** Task 1.1 (migration 00184 + regenerated `Tests/Support/TestDatabase+Schema.swift`); Task 2.11 (the `coach proposals --json` keys `origin`, `skill`, `conversation_id`), Task 2.14 (`written_branch`, `measure_from`)
 **Files:**
-- Modify: `Sources/WatchtowerCore/Models/Coach.swift` (`CoachProposal` gains `origin`, `conversationID`; `CoachFailure` unchanged)
-- Modify: `Sources/WatchtowerCore/Models/CoachProposal+Row.swift` (reads `origin`, `skill`, `conversation_id`)
+- Modify: `Sources/WatchtowerCore/Models/Coach.swift` (`CoachProposal` gains `origin`, `conversationID`, `writtenBranch`, `measureFrom`; `CoachFailure` unchanged)
+- Modify: `Sources/WatchtowerCore/Models/CoachProposal+Row.swift` (reads `origin`, `skill`, `conversation_id`, `written_branch`, `measure_from`)
 - Modify: `Sources/WatchtowerCore/Models/CoachPresentation.swift` (`forChat(_:conversationID:)`)
 - Modify: `Sources/Services/CoachCenter.swift` (`refreshProposals()`)
 - Test: `Tests/Core/CoachDecodingTests.swift`, `Tests/Core/HomeQueriesCoachTests.swift`, `Tests/CoachCenterTests.swift`
 
 **Interfaces:**
-- Produces: `CoachProposal.origin: String` (default `"weekly"` when the key is absent), `CoachProposal.conversationID: Int64?`;
+- Produces: `CoachProposal.origin: String` (default `"weekly"` when the key is absent), `CoachProposal.conversationID: Int64?`, `CoachProposal.writtenBranch: String` (`""` when absent), `CoachProposal.measureFrom: String?`;
   `static func CoachProposal.forChat(_ all: [CoachProposal], conversationID: Int64) -> [CoachProposal]` (origin `chat`, that conversation, oldest first by id);
   `CoachCenter.refreshProposals()` (internal; `request(.proposals)`).
 
