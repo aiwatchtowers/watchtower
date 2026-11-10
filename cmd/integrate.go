@@ -162,11 +162,12 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 
 // installPackSkills installs the pack into dir rendered with the owner's
 // overlay lines; when they cannot be read (no workspace yet, a database
-// error) only missing skills are installed and an existing copy is kept as
-// it is, so it never loses the owner's lines.
+// error: a warning on stderr) only missing skills are installed and an
+// existing copy is kept as it is, so it never loses the owner's lines.
 func installPackSkills(dir string) ([]devpack.SkillStatus, error) {
 	ov, err := installOverlays()
 	if err != nil {
+		warnOverlaysUnread(err)
 		return devpack.InstallMissing(dir)
 	}
 	return devpack.Install(dir, ov)
@@ -192,7 +193,12 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	ov, _ := installOverlays() // unreadable: status against the plain pack
+	ov, ovErr := installOverlays()
+	if ovErr != nil {
+		// Status against the plain pack: a copy carrying the owner's lines
+		// may read as updated or drifted.
+		fmt.Fprintf(os.Stderr, "warning: your pack skill additions could not be read (%v); skills are checked against the plain pack\n", ovErr)
+	}
 	results, err := devpack.Status(dir, ov)
 	fmt.Printf("Skills (%s):\n", dir)
 	printSkillStatuses(results)

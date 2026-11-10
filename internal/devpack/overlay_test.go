@@ -204,8 +204,15 @@ func TestInstallWorkbench_OverlaysUnreadKeepsCopies(t *testing.T) {
 
 	unread := workbenchOpts(folder, f)
 	unread.OverlaysUnread = true
-	if _, err := InstallWorkbench(context.Background(), unread); err != nil {
+	kept, err := InstallWorkbench(context.Background(), unread)
+	if err != nil {
 		t.Fatalf("resync: %v", err)
+	}
+	if kept.Skill.State != StateUnchanged || kept.Flow.State != StateUnchanged {
+		t.Fatalf("kept copies must not read as updated: %+v %+v", kept.Skill, kept.Flow)
+	}
+	if st, err := StatusWorkbench(context.Background(), unread); err != nil || st.Skill.State != StateUnchanged {
+		t.Fatalf("unread status must not ask for a Repair: %+v %v", st.Skill, err)
 	}
 	unread.PresetNone = true // not even a preset removal writes
 	if _, err := SyncMethodology(unread); err != nil {
@@ -236,6 +243,9 @@ func TestInstallMissing_InstallsAbsentKeepsExisting(t *testing.T) {
 	if readTestFile(t, filepath.Join(dir, name, "SKILL.md")) != rendered {
 		t.Fatal("an existing copy must keep its overlay lines")
 	}
+	if got[0].State != StateUnchanged {
+		t.Fatalf("a kept copy must not read as updated: %+v", got[0])
+	}
 	if len(skills) > 1 && got[1].State != StateInstalled {
 		t.Fatalf("a missing skill must be installed: %+v", got[1])
 	}
@@ -251,5 +261,41 @@ func TestInstallWorkbench_OverlaysUnreadInstallsAFreshFolder(t *testing.T) {
 	}
 	if rep.Skill.State != StateInstalled || rep.Flow.State != StateInstalled {
 		t.Fatalf("a fresh folder must get both skills: %+v %+v", rep.Skill, rep.Flow)
+	}
+}
+
+func TestRerenderSkill_RepairsAMissingSidecar(t *testing.T) {
+	dir := t.TempDir()
+	name := Skills()[0].Name
+	lines := []string{"Be brief."}
+	if _, err := Install(dir, Overlays{name: lines}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, name, shippedDigestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := RerenderSkill(dir, name, lines); err != nil || st != StateUnchanged {
+		t.Fatalf("rerender: %v %v", st, err)
+	}
+	if st, err := RerenderSkill(dir, name, append(lines, "Cite ids.")); err != nil || st != StateUpdated {
+		t.Fatalf("the next overlay change must update, not drift: %v %v", st, err)
+	}
+}
+
+func TestSyncMethodology_RendersTheFlowOverlay(t *testing.T) {
+	folder := fakeRepo(t)
+	o := workbenchOpts(folder, newFakeClaude())
+	o.PresetNone = true
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	o.PresetNone = false
+	o.Overlays = Overlays{FlowSkillName: {"Plan first."}}
+	rep, err := SyncMethodology(o)
+	if err != nil {
+		t.Fatalf("methodology: %v", err)
+	}
+	if rep.Claude.State != StateInstalled || readTestFile(t, rep.Claude.Path) != Render(flowSkill(), []string{"Plan first."}).Content {
+		t.Fatalf("the preset must be installed rendered: %+v", rep.Claude)
 	}
 }

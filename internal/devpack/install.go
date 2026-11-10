@@ -72,7 +72,7 @@ func InstallMissing(skillsDir string) ([]SkillStatus, error) {
 		if err != nil {
 			return out, err
 		}
-		out = append(out, st)
+		out = append(out, keptState(st))
 	}
 	return out, nil
 }

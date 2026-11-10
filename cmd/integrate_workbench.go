@@ -88,12 +88,19 @@ var installOverlays = func() (devpack.Overlays, error) {
 	return devpack.Overlays(all), nil
 }
 
+// warnOverlaysUnread tells the owner on stderr that the pack additions were
+// not applied, so a kept copy is not mistaken for a current one.
+func warnOverlaysUnread(err error) {
+	fmt.Fprintf(os.Stderr, "warning: your pack skill additions could not be read (%v); existing skill copies were kept as they are\n", err)
+}
+
 // withInstallOverlays fills o's overlays; when they cannot be read the
 // install keeps every existing pack skill copy as it is (OverlaysUnread)
 // rather than write it without the owner's lines.
 func withInstallOverlays(o *devpack.WorkbenchInstallOptions) {
 	ov, err := installOverlays()
 	if err != nil {
+		warnOverlaysUnread(err)
 		o.OverlaysUnread = true
 		return
 	}

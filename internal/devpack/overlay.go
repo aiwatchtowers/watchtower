@@ -74,11 +74,19 @@ func PackSkill(name string) (Skill, bool) {
 // the shipped skill rendered with lines, under the DEV-04 rules: a copy that
 // is ours (StateUpdated) is rewritten with its sidecar; StateUnchanged writes
 // nothing; a missing, owner-edited (StateDrifted) or foreign copy is left as
-// it is and its state returned. It never creates a copy.
+// it is and its state returned. It never creates a copy. The caller checks
+// that skillsDir stays inside its folder (skillDirsInside): a symlinked
+// skills directory is not guarded here.
 func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
 	s, ok := PackSkill(name)
 	if !ok {
 		return "", fmt.Errorf("%s is not a Watchtower pack skill", name)
+	}
+	if name == WorkbenchSkillName {
+		// A sidecar-less shipped core is ours, as for a resync.
+		if err := adoptShippedSingleFile(skillsDir); err != nil {
+			return "", err
+		}
 	}
 	s = Render(s, lines)
 	dir := filepath.Join(skillsDir, name)
@@ -97,8 +105,14 @@ func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
 		if err := writeShippedDigest(dir, s.SHA256); err != nil {
 			return "", err
 		}
-	case StateUnchanged, StateDrifted, StateForeign, StateMissing, StateRemoved:
-		// Nothing to write: current already, or not ours to touch (DEV-04).
+	case StateUnchanged:
+		// Current already; repair the sidecar as installSkill does, so the
+		// next overlay change does not read this copy as drift.
+		if err := writeShippedDigest(dir, s.SHA256); err != nil {
+			return "", err
+		}
+	case StateDrifted, StateForeign, StateMissing, StateRemoved:
+		// Not ours to touch (DEV-04).
 	}
 	return state, nil
 }
@@ -112,3 +126,14 @@ func (ov Overlays) overlaid(s Skill) Skill {
 // the options' overlays.
 func (o WorkbenchInstallOptions) coreSkill() Skill { return o.Overlays.overlaid(workbenchSkill()) }
 func (o WorkbenchInstallOptions) flowSkill() Skill { return o.Overlays.overlaid(flowSkill()) }
+
+// keptState is how a copy reads when the overlays could not be read and it
+// was not written: one that matches our sidecar (possibly rendered with the
+// owner's lines) is reported current, not "updated" — nothing was updated,
+// and no Repair is due for it.
+func keptState(st SkillStatus) SkillStatus {
+	if st.State == StateUpdated {
+		st.State = StateUnchanged
+	}
+	return st
+}

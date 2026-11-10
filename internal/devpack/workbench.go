@@ -439,6 +439,8 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	var err error
 	if ps.Skill, err = statusSkill(o.skillsDir(), o.coreSkill()); err != nil {
 		errs = append(errs, err)
+	} else if o.OverlaysUnread {
+		ps.Skill = keptState(ps.Skill)
 	}
 	if ps.LegacySkill, err = statusLegacySkill(o.skillsDir()); err != nil {
 		errs = append(errs, err)

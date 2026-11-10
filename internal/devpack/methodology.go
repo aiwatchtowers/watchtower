@@ -102,6 +102,7 @@ func keepSkillPair(skillsDir string, o WorkbenchInstallOptions) (core, flow Skil
 	if err != nil {
 		return SkillStatus{}, SkillStatus{}, false, []error{err}
 	}
+	core = keptState(core)
 	if core.State == StateDrifted {
 		if singleFile, err = carriesMethodology(core.Path); err != nil {
 			errs = append(errs, err)
@@ -113,7 +114,7 @@ func keepSkillPair(skillsDir string, o WorkbenchInstallOptions) (core, flow Skil
 	if err != nil {
 		errs = append(errs, err)
 	}
-	return core, flow, singleFile, errs
+	return core, keptState(flow), singleFile, errs
 }
 
 // syncFlowSkill applies spec §4.3 to the preset beside core: preset none

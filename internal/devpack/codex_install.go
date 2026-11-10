@@ -225,6 +225,9 @@ func StatusCodex(ctx context.Context, o WorkbenchInstallOptions, resolve func() 
 	if err != nil {
 		return CodexStatus{}, err
 	}
+	if o.OverlaysUnread {
+		sk = keptState(sk)
+	}
 	st.SkillState = sk.State
 	st.GroupPrompt = skillKnowsGroupPrompt(sk.Path)
 	// An outdated copy (StateUpdated: a previously shipped version) is set
