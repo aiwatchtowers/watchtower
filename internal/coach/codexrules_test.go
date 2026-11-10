@@ -75,6 +75,8 @@ func TestValidateAfter_CodexRulesOnlyGrow(t *testing.T) {
 		require.Error(t, err, name)
 		assert.Equal(t, tc.want, err.Error(), name)
 	}
+	big := CurrentText{Destination: DestCodexRulesAllow, Text: "#" + strings.Repeat("x", claudeMDMaxBytes-len(ruleCat)) + "\n"}
+	require.EqualError(t, ValidateAfter(big, big.Text+ruleCat+"\n"), "the Codex rules file would be over its size limit")
 	// A line glued to an unterminated last line is not a new line.
 	unterminated := CurrentText{Destination: DestCodexRulesAllow, Text: ruleMake}
 	require.EqualError(t, ValidateAfter(unterminated, ruleMake+ruleCat), "the Codex rules may only grow")

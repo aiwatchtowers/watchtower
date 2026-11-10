@@ -79,6 +79,10 @@ func appendCodexRules(text, add string) string {
 // statement is invalid Starlark) the file does not have yet; blank lines are
 // allowed.
 func validateCodexRules(before, after string) error {
+	if len(after) > claudeMDMaxBytes {
+		// The reader refuses a bigger file, which would block the undo and Rollback.
+		return errors.New("the Codex rules file would be over its size limit")
+	}
 	added, ok := strings.CutPrefix(after, before)
 	if !ok || (before != "" && !strings.HasSuffix(before, "\n") && added != "" && !strings.HasPrefix(added, "\n")) {
 		return errors.New("the Codex rules may only grow")
