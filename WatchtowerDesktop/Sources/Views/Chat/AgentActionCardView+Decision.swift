@@ -42,11 +42,16 @@ extension AgentActionCardView {
     /// workspace pick, the automation editor of a `save_automation`, a
     /// session call no session holds — Approve stays on the native card
     /// behind **Edit…** / **Open Draft**.
-    static func rowButtons(for action: AgentAction, sessionHolds: Bool) -> [InboxRowActionsContent.ActionButton] {
+    /// `offersRetry` false (a target button's row with a newer row of the
+    /// same button, `ActionStripViewModel.isSupersededButtonRow`): no Retry,
+    /// as the native card's `offersRetry` (Go refuses it with exit 3).
+    static func rowButtons(
+        for action: AgentAction, sessionHolds: Bool, offersRetry: Bool = true
+    ) -> [InboxRowActionsContent.ActionButton] {
         if action.isExecuting { return [] }
         guard action.isPending else {
             switch settledOffer(for: action) {
-            case .retry: return [.retry]
+            case .retry: return offersRetry ? [.retry] : []
             case .dismiss: return [.dismiss]
             case .none: return []
             }

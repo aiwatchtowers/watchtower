@@ -587,8 +587,13 @@ package final class ActionStripViewModel {
             let folder = folderMenu.snapshot.cards.first { $0.value.contains { $0.id == id } }?.key ?? tree.root.id
             show(folder, "artifact:\(id)")
             if entrySelection != nil { await select(item) }
-        case .proposal, .reminder, .builtinNotice:
-            show((tree.approvals ?? tree.root).id, nil)
+        case let .proposal(id):
+            // Its card in Needs approval's stack: selected, so the stack scrolls to it.
+            show((tree.approvals ?? tree.root).id, "approval:action:\(id)")
+        case let .reminder(id):
+            show((tree.approvals ?? tree.root).id, "approval:reminder:\(id)")
+        case .builtinNotice(let builtinID):
+            show((tree.approvals ?? tree.root).id, "notice:\(builtinID)")
         }
     }
 
@@ -709,13 +714,10 @@ package final class ActionStripViewModel {
         if snoozed { await reminderChanged(id) }
     }
 
-    /// `watchtower inbox approvals changed --ref reminder:<id>`: queues one
-    /// run of Needs approval (AUTO-09: it only queues). Its failure is not
-    /// shown: the render-time check already hides the closed reminder, and
-    /// the daemon's sweep redraws (spec "Desktop reminder writes").
+    /// `watchtower inbox approvals changed --ref reminder:<id>` through the
+    /// one helper Home shares (`ReminderApprovalHook`): logged, never shown.
     private func reminderChanged(_ id: Int64) async {
-        guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else { return }
-        _ = try? await runner.run(args: ["inbox", "approvals", "changed", "--ref", "reminder:\(id)"])
+        await ReminderApprovalHook.changed(id, runner: cliRunner ?? ProcessCLIRunner.makeDefault())
     }
 
     /// Shows `item` in the reading pane. Opening an unread card writes its
@@ -903,8 +905,12 @@ package final class ActionStripViewModel {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty, replyDrafts[itemID] != nil,
               let item = feed.messages.first(where: { $0.item.id == itemID })?.item,
-              let tool = InboxReplyPolicy.tool(for: item),
-              let args = InboxReplyPolicy.args(for: item, text: body, host: host) else { return }
+              let tool = InboxReplyPolicy.tool(for: item) else { return }
+        guard let args = InboxReplyPolicy.args(for: item, text: body, host: host) else {
+            // The args could not be encoded (not expected): say so on the draft, never a silent no-op.
+            replyDrafts[itemID]?.error = Self.replyNotBuilt
+            return
+        }
         let runner = cliRunner
         let sent = replyDrafts[itemID]?.text
         await pendingWrites.run(CardKey.card(.message(itemID))) {
@@ -928,6 +934,9 @@ package final class ActionStripViewModel {
             if let failure { replyDrafts[itemID]?.error = failure }
         }
     }
+
+    /// The draft's error when its reply's args could not be built.
+    nonisolated static let replyNotBuilt = "Couldn't prepare this reply. Try again, or reply in Slack."
 
     /// The failure an exit-0 `actions propose --json` answer carries: an
     /// envelope `error`, `ok` false, or an answer without the proposal's
@@ -1208,15 +1217,11 @@ package final class ActionStripViewModel {
         adoptFeedError()
     }
 
-    /// A waiting button's click: its approval card in Needs approval.
-    /// When no list shows the card (the strip leaves the row out), the shown
-    /// card stays and a short notice says why; the button keeps its waiting
-    /// state.
+    /// A waiting button's click: Needs approval, its approval card selected
+    /// and scrolled to. When the read has no such row, the shown card stays
+    /// and a short notice says why; the button keeps its waiting state.
     package func openProposal(_ id: Int64) async {
-        if isListed(.proposal(id)) {
-            await select(.proposal(id))
-        } else if actionRows.contains(where: { $0.id == id }) {
-            // A proposal is shown in Needs approval (inbox builder B).
+        if actionRows.contains(where: { $0.id == id }) {
             await open(folder: nil, select: .card(.proposal(id)))
         } else {
             lastError = Self.proposalNotListed(id)
@@ -1228,10 +1233,11 @@ package final class ActionStripViewModel {
         "The approval for this task (#\(id)) isn't in the Inbox list yet."
     }
 
-    /// A CLI refusal's own text (stderr without cobra's "Error: "), else the error's.
+    /// A CLI refusal's own text (stderr's last line, `InboxFoldersCLI.lastLine`,
+    /// without cobra's "Error: "), else the error's.
     nonisolated static func pressRefusal(_ error: Error) -> String {
         if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
-            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = InboxFoldersCLI.lastLine(stderr)
             return text.isEmpty ? "watchtower exited with code \(code)" : replyRefusal(text)
         }
         return error.localizedDescription

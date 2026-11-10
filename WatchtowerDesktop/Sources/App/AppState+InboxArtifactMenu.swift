@@ -28,7 +28,7 @@ extension AppState {
             guard let self else { return Self.inboxMenuNotReady }
             return await routeSavedAutomation(automationID, to: destination, reread: reread)
         }
-        vm.inboxFolderTree = { [weak self] in self?.actionStripViewModel?.folderMenu.tree }
+        vm.inboxFolderTree = { [weak self] in self?.actionStripViewModel?.folderMenu.readTree }
     }
 
     /// The Automations tab's template panels: an install re-reads the list

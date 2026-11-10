@@ -623,9 +623,10 @@ struct ActionStripActionsView: View {
             onNote: { Task { await vm.pressApprovalsNote(turnOn: onTurnOnApprovals, runHistory: onRunHistory) } },
             onMenu: { command in Task { await artifactMenu?.performApprovals(command) } },
             emptyState: emptyState,
+            scrollTarget: vm.entrySelection,
             cards: {
                 ForEach(entries) { entry in
-                    approvalCard(entry)
+                    approvalCard(entry).id(entry.id)
                 }
             }
         )

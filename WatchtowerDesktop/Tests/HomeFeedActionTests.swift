@@ -582,6 +582,19 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertEqual(status, "done")
     }
 
+    /// Home's reminder Done and Hide run the same `inbox approvals changed`
+    /// as the Inbox (`ReminderApprovalHook`), so Needs approval redraws now.
+    func testReminderDoneAndHideQueueNeedsApproval() async throws {
+        let pool = try makePool()
+        let id = try insertReminder(pool)
+        let runner = FakeCLIRunner()
+        let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
+        try await performer.perform(.hide, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
+        try await performer.perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
+        let expected = ReminderApprovalHook.arguments(id)
+        XCTAssertEqual(runner.invocations, [expected, expected])
+    }
+
     func testTargetDoneAndHide() async throws {
         let pool = try makePool()
         let (done, hidden) = try await pool.write { db in

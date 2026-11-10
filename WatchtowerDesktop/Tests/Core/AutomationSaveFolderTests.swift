@@ -136,6 +136,16 @@ final class AutomationSaveFolderTests: XCTestCase {
         }
     }
 
+    /// Before the menu's first read the line shows nothing: resolved against
+    /// the root-only placeholder, an existing folder would read "New folder".
+    func testNoFolderLineBeforeTheMenusFirstRead() throws {
+        let unread = InboxFolderMenuModel(dbPool: pool) { nil }
+        XCTAssertNil(unread.readTree)
+        vm.inboxFolderTree = { unread.readTree }
+        XCTAssertNil(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "release"), draftContextID: nil))
+        XCTAssertNotNil(folderMenu.readTree, "a read menu has its tree")
+    }
+
     func testChangedRowShowsExistingFolderLine() throws {
         // A fresh draft from the New flow, as `AutomationsView.continueNew` opens it.
         let flowRoute = InboxNewArtifactRoute(folderID: release, title: "Release")
@@ -324,9 +334,8 @@ final class AutomationSaveFolderTests: XCTestCase {
         XCTAssertEqual(AutomationFolderSuggestion(title: "Release", parentSlug: "acme").route(in: tree).placementText,
                        "New folder: Release, in Acme", "a title is reused only in its own parent")
         vm.inboxFolderTree = { nil }
-        XCTAssertEqual(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "Release"),
-                                          draftContextID: nil)?.placementText,
-                       "New folder: Release, in Inbox", "before the menu is read: the root alone")
+        XCTAssertNil(vm.editorPlacement(suggestion: AutomationFolderSuggestion(title: "Release"), draftContextID: nil),
+                     "before the menu is read: no line (the root alone would call Release a new folder)")
     }
 
     func testPlacementIsNotAHashedItem() {

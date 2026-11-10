@@ -171,7 +171,9 @@ package struct InboxFoldersCLI {
     }
 
     /// The last non-empty line of `text`, trimmed; "" when there is none.
-    private static func lastLine(_ text: String) -> String {
+    /// The CLI's refusal is its stderr's last line (earlier lines are
+    /// warnings); the Inbox's other refusals (`pressRefusal`) read it too.
+    package static func lastLine(_ text: String) -> String {
         text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .last { !$0.isEmpty } ?? ""

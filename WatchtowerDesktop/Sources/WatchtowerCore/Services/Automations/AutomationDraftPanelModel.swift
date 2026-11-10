@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 
 /// One entry of the editor's draft cache: `draft_automation` on the
 /// `automation_editor` surface appends `{recipe_text, result, error?, at, folder?}` to
@@ -137,8 +138,19 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
         result = try c.decodeIfPresent(Result.self, forKey: .result)
         error = try c.decodeIfPresent(String.self, forKey: .error)
         atText = try c.decodeIfPresent(String.self, forKey: .atText)
-        folder = try? c.decodeIfPresent(AutomationFolderSuggestion.self, forKey: .folder)
+        // Go twin: `DraftCacheEntry.UnmarshalJSON` (internal/automations/
+        // authoring/draftcache.go) drops a folder suggestion that does not
+        // decode and keeps the rest of the entry; so does this. Logged (no
+        // content) so a key drift between the two never erases it silently.
+        do {
+            folder = try c.decodeIfPresent(AutomationFolderSuggestion.self, forKey: .folder)
+        } catch {
+            folder = nil
+            Self.log.error("draft cache: folder suggestion does not decode; dropped")
+        }
     }
+
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "automation-drafts")
 
     /// The newest cache entry: none (no entry yet), a decoded entry, or one
     /// that does not decode — never an older entry in its place.

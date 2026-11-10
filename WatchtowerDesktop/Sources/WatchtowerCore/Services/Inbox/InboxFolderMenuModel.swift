@@ -169,6 +169,14 @@ package final class InboxFolderMenuModel {
 
     package var tree: InboxFolderTree { snapshot.tree }
 
+    /// A read landed (`apply`): until then `tree` is only the root-only
+    /// placeholder.
+    package private(set) var hasRead = false
+
+    /// The tree once a read landed; nil before (the editor's folder line
+    /// shows nothing rather than call an existing folder "New folder").
+    package var readTree: InboxFolderTree? { hasRead ? tree : nil }
+
     /// No edit, drag or write: the CLI is missing, a write runs, or no tree
     /// has been read yet (revision 0: nothing to compare-and-set against —
     /// before the first read, or a database without the folder tables).
@@ -213,6 +221,7 @@ package final class InboxFolderMenuModel {
     /// goes with it.
     package func apply(_ read: InboxFolderMenuSnapshot) {
         snapshot = read
+        hasRead = true
         let tree = read.tree
         if let selected = selection, tree.folder(selected) == nil { selection = nil }
         collapsed = collapsed.filter { tree.folder($0) != nil }

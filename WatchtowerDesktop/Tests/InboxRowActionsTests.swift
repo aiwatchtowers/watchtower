@@ -153,6 +153,30 @@ final class InboxRowActionsTests: XCTestCase {
         XCTAssertEqual(failed, [.retry])
     }
 
+    /// A target button's failed row with a newer row of the same button: no
+    /// Retry on its recipe row, and a Retry press does nothing — the native
+    /// card's `offersRetry` gate (Go refuses it with exit 3).
+    func testSupersededButtonRowOffersNoRetry() async throws {
+        let (older, newer) = try await pool.write { db -> (Int64, Int64) in
+            let context = "5:0:0123456789abcdef"
+            let older = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", contextType: "automation_output", contextID: context, status: "failed",
+                error: "archived", createdAt: "2026-11-06T09:00:00Z", decidedAt: "2026-11-06T09:01:00Z")
+            let newer = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", contextType: "automation_output", contextID: context, status: "pending",
+                createdAt: "2026-11-06T09:05:00Z")
+            return (older, newer)
+        }
+        let runner = FakeCLIRunner(stdout: Self.okEnvelope)
+        let vm = await strip(runner)
+        let content = try XCTUnwrap(hooks(vm).content(InboxRef(kind: .action, id: older), .inbox))
+        guard case let .action(_, buttons) = content.kind else { return XCTFail("\(content.kind)") }
+        XCTAssertEqual(buttons, [], "no Retry on the superseded row")
+        await handler(vm).press(.retry, on: InboxRef(kind: .action, id: older))
+        XCTAssertEqual(runner.invocations, [], "nothing run")
+        XCTAssertNotNil(hooks(vm).content(InboxRef(kind: .action, id: newer), .inbox))
+    }
+
     /// The row carries the proposal's own words under its line, whatever the
     /// look's row title says, without the tool's name the row or card shows.
     func testActionRowShowsTheProposalsOwnSummary() async throws {

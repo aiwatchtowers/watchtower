@@ -96,7 +96,7 @@ package final class AutomationsViewModel {
     @ObservationIgnored package var routeSavedAutomation: @MainActor (
         _ automationID: Int64, _ destination: InboxFoldersCLI.RouteDestination, _ reread: Bool
     ) async -> String? = { _, _, _ in nil }
-    /// The Inbox menu's tree as last read (nil before the Inbox is built):
+    /// The Inbox menu's tree as last read (nil before its first read):
     /// the editor resolves its chat's folder suggestion against it.
     @ObservationIgnored package var inboxFolderTree: @MainActor () -> InboxFolderTree? = { nil }
     /// The folder each new draft started from **+ New Artifact…** goes to on
@@ -577,7 +577,8 @@ package final class AutomationsViewModel {
 
     /// The folder the editor's save puts the cards in (its Changed row's
     /// last line): the chat's newest suggestion, resolved against the Inbox
-    /// menu (a root-only tree before it is read), else the folder a new
+    /// menu (nothing before the menu's first read: a root-only tree would
+    /// call an existing folder "New folder"), else the folder a new
     /// draft's **+ New Artifact…** started from; nil for none. For a saved
     /// automation (`automationID`) a suggestion an earlier save carried out
     /// (`suggestionKey` spent) counts no more — the owner may have moved it
@@ -590,7 +591,7 @@ package final class AutomationsViewModel {
         suggestionKey: String? = nil
     ) -> InboxNewArtifactRoute? {
         guard let suggestion else { return draftContextID.flatMap { newDraftRoutes[$0] } }
-        let tree = inboxFolderTree() ?? .rootOnly
+        guard let tree = inboxFolderTree() else { return nil }
         guard let automationID else { return suggestion.route(in: tree) }
         if let suggestionKey, spentSuggestions[spentKey(automationID)] == suggestionKey { return nil }
         // Go keeps the needs-approval built-in in Needs approval: no move to promise.

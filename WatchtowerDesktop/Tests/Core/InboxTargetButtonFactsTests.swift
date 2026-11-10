@@ -168,6 +168,15 @@ final class InboxTargetButtonFactsTests: XCTestCase {
         XCTAssertNil(vm.targetFacts(contextID: fx.context).pressError)
     }
 
+    /// A refusal after a warning line shows the refusal alone (the CLI's
+    /// last stderr line, as the folder menu reads it).
+    func testPressRefusalIsTheLastStderrLine() {
+        let error = CLIRunnerError.nonZeroExit(code: 1, stderr: "warning: config key renamed\nError: busy\n")
+        XCTAssertEqual(ActionStripViewModel.pressRefusal(error), "busy")
+        XCTAssertEqual(ActionStripViewModel.pressRefusal(CLIRunnerError.nonZeroExit(code: 2, stderr: "\n")),
+                       "watchtower exited with code 2")
+    }
+
     /// After a rejected proposal the button is pressable; a failed press
     /// keeps its reason while the rejected row is still the newest.
     func testProposeErrorSurvivesTheReadWhenNoNewRow() async throws {
@@ -341,6 +350,7 @@ final class InboxTargetOpenProposalTests: XCTestCase {
         await vm.openProposal(proposalID)
         // A proposal is drawn in Needs approval's stack (inbox builder B).
         XCTAssertEqual(vm.folderMenu.selectedFolderID, approvals)
+        XCTAssertEqual(vm.entrySelection, "approval:action:\(proposalID)", "its card is selected for the scroll")
         XCTAssertNil(vm.lastError)
     }
 
@@ -360,6 +370,7 @@ final class InboxTargetOpenProposalTests: XCTestCase {
         await vm.openProposal(proposalID)
         // A proposal is drawn in Needs approval's stack (inbox builder B).
         XCTAssertEqual(vm.folderMenu.selectedFolderID, approvals)
+        XCTAssertEqual(vm.entrySelection, "approval:action:\(proposalID)", "its card is selected for the scroll")
         XCTAssertNil(vm.lastError)
     }
 }
