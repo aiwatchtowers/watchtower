@@ -2,6 +2,7 @@ package coach
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -330,4 +331,141 @@ func TestJudge_RepoFileOnItsWorkbenchAndAgent(t *testing.T) {
 	assert.Equal(t, "works", p.Verdict)
 	require.NotNil(t, p.VerdictValue)
 	assert.InDelta(t, 20.0, *p.VerdictValue, 1e-9, "workbench a's Codex rows only")
+}
+
+// Open chat proposals hold no weekly slot: a cut of an ineffective weekly
+// edit is still written while maxOpen of them are open (its verdict is
+// stored once, so a skipped cut would never come back).
+func TestJudge_CutWrittenWhileThreeChatProposalsOpen(t *testing.T) {
+	d, _, id := judgeFixture(t, 5, fl(5))
+	for i := range maxOpen {
+		propose(t, d, db.CoachProposal{Destination: DestChat, Origin: "chat", Fingerprint: fmt.Sprintf("c%d", i),
+			BeforeText: "", AfterText: fmt.Sprintf("x%d", i)})
+	}
+	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	assert.Equal(t, 1, j)
+	assert.Equal(t, 1, c)
+	open, err := d.ListCoachProposals("open")
+	require.NoError(t, err)
+	require.Len(t, open, maxOpen+1)
+	var cut db.CoachProposal
+	for _, o := range open {
+		if o.RevertsID == id {
+			cut = o
+		}
+	}
+	require.NotZero(t, cut.ID, "the cut of the weekly edit")
+	assert.Equal(t, "weekly", cut.Origin)
+}
+
+// The Codex rules may only grow (like the Claude allow list): the verdict is
+// stored, no cut is filed.
+func TestJudge_NoCutForCodexRulesAllow(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.agentSessions(t, "codex", wb, ids, 5, 1)
+	rule := CodexRuleLine([]string{"ls"})
+	// The rules file is there and holds the added line: still no cut.
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".codex", codexRulesRel), rule+"\n")
+	id := propose(t, d, db.CoachProposal{Destination: DestCodexRulesAllow, BeforeText: "", AfterText: rule + "\n"})
+	require.NoError(t, d.MarkCoachAccepted(id, rule+"\n", fl(5), 3, judgeDecided))
+	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, j)
+	assert.Zero(t, c)
+	assert.Equal(t, "no_effect", proposal(t, d, id).Verdict)
+	n, err := d.CountOpenCoachProposals()
+	require.NoError(t, err)
+	assert.Zero(t, n)
+}
+
+func TestIsRepoDestination(t *testing.T) {
+	for _, dest := range repoDestinationsForTest {
+		assert.True(t, isRepoDestination(dest), dest)
+	}
+	for _, dest := range []string{DestClaudeMDUser, DestCodexAgentsMDUser, DestProcedure, DestPackOverlay} {
+		assert.False(t, isRepoDestination(dest), dest)
+	}
+}
+
+// A workbench repository file is the owner's to commit: never a judge's cut
+// (spec §4.3a, D67).
+func TestJudge_NoCutForRepoFile(t *testing.T) {
+	for _, dest := range repoDestinationsForTest {
+		d := openDBs(t)
+		wb, ids := d.workbench(t, "a", 1)
+		d.agentSessions(t, "claude", wb, ids, 5, 1)
+		d.agentSessions(t, "codex", wb, ids, 5, 1)
+		id := acceptedFor(t, d, dest, wb, 5)
+		j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+		assert.Equal(t, 1, j, dest)
+		assert.Zero(t, c, dest)
+		assert.Equal(t, "no_effect", proposal(t, d, id).Verdict, dest)
+		n, err := d.CountOpenCoachProposals()
+		require.NoError(t, err)
+		assert.Zero(t, n, dest)
+	}
+}
+
+var repoDestinationsForTest = []string{"repo_claude_md", "repo_agents_md", "repo_claude_skill",
+	"repo_codex_skill", "repo_workflow"}
+
+// A Codex skill found in both folders cannot be read: no cut, no error.
+func TestJudge_NoCutForCodexSkillInTwoFolders(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.agentSessions(t, "codex", wb, ids, 5, 1)
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".agents", "skills", "a", "SKILL.md"), "Before.\nAfter.\n")
+	writeFile(t, filepath.Join(home, ".codex", "skills", "a", "SKILL.md"), "Before.\nAfter.\n")
+	id := propose(t, d, db.CoachProposal{Destination: DestCodexSkillUser, Skill: "a",
+		BeforeText: "Before.\n", AfterText: "Before.\nAfter.\n"})
+	require.NoError(t, d.MarkCoachAccepted(id, "Before.\nAfter.\n", fl(5), 3, judgeDecided))
+	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, j)
+	assert.Zero(t, c)
+	assert.Equal(t, "no_effect", proposal(t, d, id).Verdict)
+}
+
+// A cut of an accepted chat edit is an ordinary weekly cut carrying today's
+// text: origin weekly, no conversation, the original's skill and destination
+// (spec D64).
+func TestJudge_CutOfChatEditIsWeekly(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.agentSessions(t, "claude", wb, ids, 5, 1)
+	home := t.TempDir()
+	skill := filepath.Join(home, ".claude", "skills", "review", "SKILL.md")
+	writeFile(t, skill, "Read the diff.\nKeep it short.\nCheck tests.\n")
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, created_at, updated_at)
+		VALUES ('', 'analytics_tuning', 0, 0)`)
+	require.NoError(t, err)
+	conv, err := res.LastInsertId()
+	require.NoError(t, err)
+	id := propose(t, d, db.CoachProposal{Destination: DestClaudeSkillUser, Skill: "review", Origin: "chat",
+		ConversationID: &conv, BeforeText: "Read the diff.\n", AfterText: "Read the diff.\nKeep it short.\n"})
+	require.NoError(t, d.MarkCoachAccepted(id, "Read the diff.\nKeep it short.\n", fl(5), 3, judgeDecided))
+	orig := proposal(t, d, id)
+
+	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, j)
+	require.Equal(t, 1, c)
+	open, err := d.ListCoachProposals("open")
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	cut := open[0]
+	assert.Equal(t, "weekly", cut.Origin)
+	assert.Nil(t, cut.ConversationID)
+	assert.Equal(t, DestClaudeSkillUser, cut.Destination)
+	assert.Equal(t, "review", cut.Skill)
+	assert.Equal(t, id, cut.RevertsID)
+	assert.Equal(t, "Read the diff.\nKeep it short.\nCheck tests.\n", cut.BeforeText, "today's text")
+	assert.Equal(t, "Read the diff.\nCheck tests.\n", cut.AfterText)
+	assert.Equal(t, cutTitle(orig.Title), cut.Title)
+	assert.Equal(t, cutWhy(orig), cut.Why)
 }

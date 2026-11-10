@@ -128,17 +128,21 @@ func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (
 // written when no slot is free, another open proposal edits the same text, the
 // added part is no longer in the text, or the destination cannot be read.
 func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now time.Time) (bool, error) {
-	// No cut for the allow list: an Accept may only grow it, so a cut could
-	// never be accepted and would hold a slot. The owner removes such a rule
-	// with Rollback of the original proposal; its no_effect verdict stands.
-	if p.Destination == DestSettingsAllow {
+	// No cut for the allow lists (Claude's and the Codex rules): an Accept may
+	// only grow them, so a cut could never be accepted and would hold a slot.
+	// The owner removes such a rule with Rollback of the original proposal;
+	// its no_effect verdict stands. No cut for a workbench repository file
+	// either: it is the owner's change to commit (spec §4.3a, D67).
+	if p.Destination == DestSettingsAllow || p.Destination == DestCodexRulesAllow || isRepoDestination(p.Destination) {
 		return false, nil
 	}
 	open, err := d.ListCoachProposals("open")
 	if err != nil {
 		return false, err
 	}
-	if len(open) >= maxOpen {
+	// Only weekly proposals hold a slot: open chat proposals must not stop
+	// a cut, whose verdict is stored once and never comes back.
+	if weeklyOpen(open) >= maxOpen {
 		return false, nil
 	}
 	key := keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill)
@@ -153,7 +157,7 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 		if errors.Is(err, errNotSupported) || errors.Is(err, errClaudeMDNotRegular) ||
 			errors.Is(err, errClaudeMDTooBig) || errors.Is(err, errUnsafeFile) ||
 			errors.Is(err, errSkillNotFound) || errors.Is(err, errBadSkillName) || errors.Is(err, errPackSkill) ||
-			errors.Is(err, errCodexRulesMissing) {
+			errors.Is(err, errCodexRulesMissing) || errors.Is(err, errCodexSkillTwice) {
 			return false, nil
 		}
 		return false, err
@@ -180,6 +184,12 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 		BeforeText: cur.Text, AfterText: after, Evidence: p.Evidence, Sources: p.Sources, RevertsID: p.ID,
 	}, now)
 	return id != 0, err
+}
+
+// isRepoDestination reports a workbench repository file destination (the
+// five repo_* names of spec §4.3a, which share the prefix).
+func isRepoDestination(dest string) bool {
+	return strings.HasPrefix(dest, "repo_")
 }
 
 // withoutEdit is cur with p's edit undone: for an owner text the added part
