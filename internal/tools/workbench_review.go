@@ -37,6 +37,8 @@ type reviewView struct {
 	Status    string              `json:"status"`
 	Outcome   string              `json:"outcome,omitempty"`
 	Folder    string              `json:"folder"`
+	Source    string              `json:"source"`
+	Branch    string              `json:"branch,omitempty"`
 	TreeSHA   string              `json:"tree_sha"`
 	BaseLabel string              `json:"base_label"`
 	Comments  []reviewCommentView `json:"comments"`
@@ -82,8 +84,8 @@ func NewGetReview() *Tool {
 				}
 				r.Status = "delivered"
 			}
-			v := reviewView{RoundID: r.ID, Status: r.Status, Outcome: r.Outcome, Folder: r.FolderRoot, TreeSHA: r.TreeSHA, BaseLabel: r.BaseLabel,
-				Comments: []reviewCommentView{}, Reverts: []reviewRevertView{}}
+			v := reviewView{RoundID: r.ID, Status: r.Status, Outcome: r.Outcome, Folder: r.FolderRoot, Source: r.Source, Branch: r.Branch,
+				TreeSHA: r.TreeSHA, BaseLabel: r.BaseLabel, Comments: []reviewCommentView{}, Reverts: []reviewRevertView{}}
 			for _, c := range cs {
 				if c.Status != "sent" {
 					continue
@@ -111,6 +113,9 @@ func reviewText(v reviewView) string {
 		b.WriteString("Outcome: approved — no changes requested\n")
 	}
 	fmt.Fprintf(&b, "Review round #%d — %d comment(s), folder %s\n", v.RoundID, len(v.Comments), v.Folder)
+	if v.Source == db.ReviewSourceBranch {
+		fmt.Fprintf(&b, "Reviewed: branch %s at its last commit, not the folder's work tree\n", v.Branch)
+	}
 	for _, c := range v.Comments {
 		where := "design"
 		if c.Path != "" {

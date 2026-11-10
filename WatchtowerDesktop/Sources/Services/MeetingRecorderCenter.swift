@@ -528,9 +528,12 @@ final class MeetingRecorderCenter {
     /// between the two invalidates the parked engine instead of serving it.
     private let engineKey: () -> String
     /// Injectable clock (the MeetingReminderCenter convention) for the
-    /// warm-policy poll and for the timestamp that names an ingested phone
-    /// recording (`ingestPhoneRecording`).
+    /// warm-policy poll and for the timestamp that names a new recording
+    /// (`startRecording`, `ingestPhoneRecording`).
     let clock: () -> Date
+    /// Stems a capture start or a phone ingest picked that no file or pending
+    /// row backs yet (`RecordingNameClaims`).
+    let recordingNameClaims = RecordingNameClaims()
     /// Reads the meeting window the warm policy decides against. The default
     /// stub sees no meetings (the Center is constructed before the DB pool
     /// exists); AppState hands in the real GRDB-backed provider via
@@ -951,7 +954,11 @@ final class MeetingRecorderCenter {
         let recorder = recorderFactory()
         self.recorder = recorder
         let store = pendingStore
-        let url = Self.uniqueRecordingURL(in: recordingsDirectory) { Self.isReserved($0, in: store) }
+        // Claimed until this start resolves: by then the recorder has created
+        // the file and the pending row is written (or the start failed);
+        // until then the claim alone keeps a phone ingest off the name.
+        let url = recordingNameClaims.claim(in: recordingsDirectory, date: clock()) { Self.isReserved($0, in: store) }
+        defer { recordingNameClaims.release(url) }
 
         do {
             try FileManager.default.createDirectory(at: recordingsDirectory, withIntermediateDirectories: true)
@@ -2043,10 +2050,10 @@ final class MeetingRecorderCenter {
     /// single-engine invariant). `eventID` links the transcript and scopes
     /// voice matching to the event's attendees.
     ///
-    /// The name is reserved on the main actor, the same actor `startRecording`
-    /// picks and reserves its `.caf` name on without suspending, so ingests and
-    /// a Desktop capture of the same second never share a stem (the exclusive
-    /// create also guards writers off this actor); only the copy runs off it.
+    /// The name is picked through `recordingNameClaims` — the claims
+    /// `startRecording` picks its `.caf` name through and holds until its
+    /// start resolves — and reserved by an exclusive row insert, so ingests
+    /// and a Desktop capture of the same second never share a stem (#1298).
     /// Returns the ingested audio URL — the key `onJobPhase`/`onJobFinished`
     /// report under — without awaiting the job. Throws when the source is not
     /// an audio recording (`PhoneIngestError.notAudio`) or cannot be read
@@ -2064,7 +2071,8 @@ final class MeetingRecorderCenter {
         guard let store = pendingStore else { throw PhoneIngestError.databaseUnavailable }
         let isPrivate = config.privateByDefault // no per-recording choice on the phone
         let audioURL = try await Self.reservePhoneRecording(eventID: eventID, title: title, isPrivate: isPrivate,
-                                                            in: recordingsDirectory, store: store, date: clock())
+                                                            in: recordingsDirectory, store: store,
+                                                            claims: recordingNameClaims, date: clock())
         try await Task.detached {
             try await Self.copyPhoneRecording(from: sourceURL, to: audioURL, store: store)
         }.value

@@ -14,8 +14,16 @@ import (
 )
 
 func llmCall(id, at, surface, purpose, process, model string) llmusage.Call {
-	return llmusage.Call{CallID: id, At: at, Surface: surface, Purpose: purpose,
-		Process: process, Model: model, Input: 10, Output: 5, OK: true}
+	return llmusage.Call{
+		CallID:  id,
+		At:      at,
+		Surface: surface,
+		Purpose: purpose,
+		Process: process,
+		Model:   model,
+		OK:      true,
+		Tokens:  llmusage.Tokens{Input: 10, Output: 5},
+	}
 }
 
 func writeSpoolLines(t *testing.T, path string, calls ...llmusage.Call) {
@@ -147,7 +155,7 @@ func TestImportLLMSpool_ConcurrentAppend(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < total; i++ {
-			llmusage.Record(context.Background(), llmusage.Call{Model: "haiku", Input: 1, OK: true})
+			llmusage.Record(context.Background(), llmusage.Call{Model: "haiku", OK: true, Tokens: llmusage.Tokens{Input: 1}})
 		}
 	}()
 	done := make(chan struct{})

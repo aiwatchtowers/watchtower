@@ -117,6 +117,9 @@ struct OwnerAskDrawerHost<Workspace: View>: View {
 struct OwnerAskDrawer: View {
     let vm: WorkbenchesViewModel
     let ask: OwnerAsk
+    /// Its embedded chats run a spec review's Discuss threads, so a reply
+    /// outlives the drawer; nil (a host without the app state): no threads.
+    @Environment(AppState.self) private var appState: AppState?
     @State private var scrollTarget: DocumentScrollTarget?
     @State private var showingDiff = false
     @State private var topHeight: CGFloat = 0
@@ -253,7 +256,8 @@ struct OwnerAskDrawer: View {
     }
 
     private var hasTopSections: Bool {
-        asks.answerNotices[ask.id] != nil || !ask.summary.isEmpty || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
+        asks.answerNotices[ask.id] != nil || !OwnerAskPresentation.summaryParts(for: ask).isEmpty
+            || !ask.payload.focus.isEmpty || !ask.changes.isEmpty
             || ask.previousAskID != nil || !ask.payload.questions.isEmpty
     }
 
@@ -270,6 +274,7 @@ struct OwnerAskDrawer: View {
             // the screen sends carries their answers (and the margin
             // comments made under Read the spec).
             SpecReviewView(model: specReview, onReadSpec: { showClassic = true }, askContext: { topSections })
+                .environment(\.specReviewThreads, specReview.threads)
         } else {
             if let specReview, case let .classic(strip?) = mode {
                 SpecReviewStatusView(
@@ -295,7 +300,8 @@ struct OwnerAskDrawer: View {
         showClassic = false
         specReviewLoadedFor = nil
         guard specReviewApplies, let cli = vm.cli else { return }
-        let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks)
+        let model = SpecReviewModel(ask: ask, dbPool: vm.dbPool, cli: cli, asks: asks, chats: appState?.embeddedChatCenter,
+                                    threadCenter: appState?.specReviewThreadCenter)
         await model.load()
         guard !Task.isCancelled else { return }
         specReview = model

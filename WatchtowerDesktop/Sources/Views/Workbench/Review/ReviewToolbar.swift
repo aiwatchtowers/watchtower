@@ -159,9 +159,9 @@ struct ReviewToolbar: View {
     }
 }
 
-/// The round's notices under the toolbar: the break hint, a lost snapshot,
-/// a truncated diff, how Send delivered, the last error. They show in the
-/// empty state too, so a failed refresh is never hidden.
+/// The round's notices under the toolbar: the break hint, a removed
+/// worktree, a lost snapshot, a truncated diff, how Send delivered, the last
+/// error. They show in the empty state too, so a failed refresh is never hidden.
 struct ReviewBanners: View {
     let model: ReviewChangesModel
 
@@ -170,6 +170,9 @@ struct ReviewBanners: View {
             ReviewBanner(text: "You have reviewed for an hour — a short break helps you catch more.") {
                 model.breakHintDismissed = true
             }
+        }
+        if model.placeMissing {
+            ReviewBanner(text: ReviewChangesModel.placeMissingMessage)
         }
         if model.previousTreeLost, let round = model.round {
             ReviewBanner(text: "Round \(round.prevRoundId)'s snapshot is gone — showing all changes")

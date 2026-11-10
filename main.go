@@ -5,11 +5,15 @@ import (
 
 	"watchtower/cmd"
 	"watchtower/internal/policy"
+	"watchtower/internal/powerstate"
 )
 
 func main() {
 	// The organization policy comes from this Mac's managed preferences; only
 	// the shipped binary reads them, never a test binary.
 	policy.UseSystemReader()
+	// Whether the Mac is fully awake or in a Power Nap dark wake comes from
+	// IOKit; a test binary never installs the reader and reads "awake".
+	powerstate.UseSystemReader()
 	os.Exit(cmd.Execute())
 }

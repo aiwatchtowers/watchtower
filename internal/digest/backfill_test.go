@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/llmusage"
 )
 
 // backfillRange is a two-day chunk well below every forward window the tests
@@ -79,7 +80,7 @@ func TestRunBackfillWindow_DigestsChunk(t *testing.T) {
 	assert.True(t, res.Complete)
 	assert.Equal(t, 2, res.Digests)
 	require.NotNil(t, usage)
-	assert.Positive(t, usage.InputTokens, "the call's own usage is returned")
+	assert.Positive(t, usage.InputTokens(), "the call's own usage is returned")
 
 	for _, ch := range []string{"1:C1", "1:C2"} {
 		ds := channelDigests(t, database, ch)
@@ -136,7 +137,7 @@ func (g *apiTokenGenerator) Generate(context.Context, string, string, string) (s
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
-	return validDigestJSON(), &Usage{Model: "m", InputTokens: 100, OutputTokens: 50, TotalAPITokens: 150}, "s", nil
+	return validDigestJSON(), &Usage{Model: "m", Tokens: llmusage.Tokens{Input: 100, Output: 50, CacheRead: 50}}, "s", nil
 }
 
 // TestRunBackfillWindow_UsageIsThisCallsOwn pins that the returned usage is the
@@ -162,9 +163,9 @@ func TestRunBackfillWindow_UsageIsThisCallsOwn(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, res.Digests, "two passes, two AI calls")
 	require.Equal(t, 2, gen.calls)
-	assert.Equal(t, 200, usage.InputTokens)
-	assert.Equal(t, 100, usage.OutputTokens)
-	assert.Equal(t, 300, usage.TotalAPITokens)
+	assert.Equal(t, 200, usage.InputTokens())
+	assert.Equal(t, 100, usage.OutputTokens())
+	assert.Equal(t, 300, usage.TotalAPITokens())
 }
 
 // TestRunBackfillWindow_FailedChannelNotReofferedInTheSameCall pins that a

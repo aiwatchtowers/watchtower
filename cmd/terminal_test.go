@@ -277,12 +277,20 @@ func codexFixture(t *testing.T, name string) []byte {
 }
 
 func TestTerminalTitle_CodexRowUsesRollout(t *testing.T) {
-	for name, storePath := range map[string]bool{"stored path": true, "glob": false} {
+	// zstd_header.jsonl is paginated.jsonl as a zstd frame (S7).
+	for name, tc := range map[string]struct {
+		fixture   string
+		storePath bool
+	}{
+		"stored path": {"paginated.jsonl", true},
+		"glob":        {"paginated.jsonl", false},
+		"compressed":  {"zstd_header.jsonl", true},
+	} {
 		t.Run(name, func(t *testing.T) {
 			defer setupWatchTestEnv(t)()
 			gen := &chatTitleMockGen{reply: "Example title"}
 			stubTerminalTitleGenerator(t, gen)
-			id := seedCodexTerminalSession(t, codexFixture(t, "paginated.jsonl"), storePath)
+			id := seedCodexTerminalSession(t, codexFixture(t, tc.fixture), tc.storePath)
 
 			out, err := runTerminalTitleCmd(t, id)
 			require.NoError(t, err)
@@ -295,7 +303,7 @@ func TestTerminalTitle_CodexRowUsesRollout(t *testing.T) {
 
 func TestTerminalTitle_CodexUnsupportedLeavesTitle(t *testing.T) {
 	for name, rollout := range map[string][]byte{
-		"zstd":           codexFixture(t, "zstd_header.jsonl"),
+		"corrupt zstd":   []byte("\x28\xb5\x2f\xfdnot a frame\n"),
 		"unknown format": []byte("example 1\n"),
 		"empty":          {},
 		"meta only":      codexFixture(t, "meta_only.jsonl"),
@@ -354,7 +362,7 @@ func TestChat04_TerminalTitleArgvCarriesNoContent(t *testing.T) {
 		reply    string
 	}{
 		{"claude", `{"type":"result","result":"A title","is_error":false}`},
-		{"codex", `{"type":"item.completed","item":{"type":"agent_message","text":"A title"}}`},
+		{"codex", `{"type":"item.completed","item":{"type":"agent_message","text":"A title"}}` + "\n" + `{"type":"turn.completed"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {

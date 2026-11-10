@@ -1,5 +1,10 @@
 import Foundation
 
+/// One event of an embedded chat's turn. `WatchtowerAIService` runs
+/// `ai query --events v2` and yields `.text` (append), `.toolStart`/`.toolEnd`
+/// (a tool call as a step), `.usage`, `.routing`, `.failure` and `.done`;
+/// `.turnComplete`, `.reset`, `.sessionID` and `.error` are the v1 shapes a
+/// test double may still yield, and every consumer still folds them.
 package enum StreamEvent {
     case text(String)         // streaming delta (append)
     case turnComplete(String) // full turn text (replace — only last turn shown)
@@ -11,6 +16,9 @@ package enum StreamEvent {
                               // `error` line, which exits 0)
     case failure(ChatSessionError)
     case routing(provider: String, model: String, metadata: ChatRoutingMetadata?)
+    case toolStart(ChatToolStart)
+    case toolEnd(ChatToolEnd)
+    case usage(ChatUsage)
     case done
 
     /// The pre-`.error` fold: an error line as visible `[Error] …` text. Kept
@@ -41,7 +49,10 @@ package protocol AIServiceProtocol: Sendable {
     /// runs it; a test double that does not model it falls back to the run
     /// without a folder. `ownerInstructions` is the bare `--owner-instructions`
     /// flag (the CLI adds the owner's chat instructions to the system prompt;
-    /// it carries no content).
+    /// it carries no content). `purpose` is `--purpose`, the usage ledger's
+    /// tag for the run's calls (nil = none). `readFolderAskID` is
+    /// `--read-folder-ask N`: the CLI reads the folder review ask N's reviewer
+    /// read (never with `readFolder`).
     func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -51,7 +62,9 @@ package protocol AIServiceProtocol: Sendable {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        ownerInstructions: Bool
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -75,11 +88,13 @@ extension AIServiceProtocol {
             provider: provider,
             toolMode: toolMode,
             readFolder: readFolder,
-            ownerInstructions: false
+            ownerInstructions: false,
+            purpose: nil,
+            readFolderAskID: nil
         )
     }
 
-    /// A double that models neither flag runs without both.
+    /// A double that models none of the three flags runs without them.
     package func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -89,7 +104,9 @@ extension AIServiceProtocol {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?,
-        ownerInstructions: Bool
+        ownerInstructions: Bool,
+        purpose: String?,
+        readFolderAskID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,

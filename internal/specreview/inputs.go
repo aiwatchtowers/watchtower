@@ -67,6 +67,17 @@ type inputs struct {
 	// block.
 	answered     []db.OwnerAsk
 	answeredRead bool
+	// refAt is when each conversation entry was said, each ask answered
+	// and each comment written, by ref; a ref with no known time is absent.
+	refAt map[string]time.Time
+}
+
+// stamp records when ref's source was written (an RFC 3339 time from the
+// database); a time that does not parse is left out.
+func (in *inputs) stamp(ref, at string) {
+	if t, err := time.Parse(time.RFC3339, at); err == nil {
+		in.refAt[ref] = t
+	}
 }
 
 // answeredAsks is the workbench's answered and delivered asks (no
@@ -125,7 +136,7 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 		Doc: ask.DocSnapshot, Folder: folder,
 		Conversation: map[string]string{}, Asks: map[string]string{}, Comments: map[string]string{},
 		OwnerWords: map[string][]string{},
-	}}
+	}, refAt: map[string]time.Time{}}
 	t := DocType(ask.DocType)
 
 	var root *os.Root
@@ -144,7 +155,10 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	design := len(mockups) > 0 || screenWord.MatchString(ask.DocSnapshot) ||
 		(target != nil && screenWord.MatchString(target.Text+"\n"+target.Intent))
 
-	in.add("review", reviewHeader(ask, t, design))
+	if err := in.setLoopRound(d.DB, ask); err != nil {
+		return Sources{}, "", nil, err
+	}
+	in.add("review", reviewHeader(ask, t, design, in.src.LoopRound))
 	in.add("document", ask.DocSnapshot)
 	in.conversation(ctx, d, ask)
 	if err := in.asks(d.DB, ask); err != nil {
@@ -162,6 +176,9 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	if err := in.previous(d.DB, ask); err != nil {
 		return Sources{}, "", nil, err
 	}
+	if err := in.closed(d.DB, ask); err != nil {
+		return Sources{}, "", nil, err
+	}
 	in.mockups(root, mockups)
 	if design {
 		in.styleGuide(root)
@@ -173,9 +190,15 @@ func BuildInputs(ctx context.Context, d Deps, ask *db.OwnerAsk, folder string) (
 	return in.src, dataLine + "\n\n" + strings.Join(in.blocks, "\n"), in.notes, nil
 }
 
-func reviewHeader(ask *db.OwnerAsk, t DocType, design bool) string {
+// reviewHeader renders the review block. loopRound is Sources.LoopRound: a
+// loop round under the open-ended rules gets a "loop_round: N" line, so the
+// prompt's round-2 and round-3 rules can be applied; any other review has none.
+func reviewHeader(ask *db.OwnerAsk, t DocType, design bool, loopRound int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "doc_type: %s\npath: %s\ntitle: %s\n", t, ask.DocPath, ask.Title)
+	if loopRound > 0 {
+		fmt.Fprintf(&b, "loop_round: %d\n", loopRound)
+	}
 	if s := strings.TrimSpace(ask.Summary); s != "" {
 		fmt.Fprintf(&b, "summary: %s\n", s)
 	}
@@ -272,6 +295,9 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 	}
 	for i := first; i < len(items); i++ {
 		in.src.Conversation[refs[i]] = texts[i]
+		if at := byRef[refs[i]].At; !at.IsZero() {
+			in.refAt[refs[i]] = at
+		}
 		if e := byRef[refs[i]]; e.Kind == sessionfeed.KindOwner {
 			in.src.OwnerWords[refs[i]] = []string{texts[i]}
 		} else if e.Kind == sessionfeed.KindAskAnswer {
@@ -333,6 +359,7 @@ func (in *inputs) asks(d *db.DB, ask *db.OwnerAsk) error {
 		ref := "ask:" + strconv.FormatInt(a.ID, 10)
 		in.src.Asks[ref] = text
 		in.src.OwnerWords[ref] = ownerAnswerWords(answer)
+		in.stamp(ref, a.AnsweredAt)
 		fmt.Fprintf(&b, "[%s] %s %q answered %s\n%s", ref, a.Kind, oneLineText(a.Title), a.AnsweredAt, indentLines(text, blockIndent))
 	}
 	if b.Len() > 0 {
@@ -439,6 +466,7 @@ func (in *inputs) comments(d *db.DB, ask *db.OwnerAsk) error {
 	for _, c := range list {
 		ref := "comment:" + strconv.FormatInt(c.ID, 10)
 		in.src.Comments[ref] = c.Body
+		in.stamp(ref, c.CreatedAt)
 		if c.Author == "owner" {
 			in.src.OwnerWords[ref] = []string{c.Body}
 		}
@@ -493,7 +521,9 @@ func firstPath(s string) string {
 
 // previous renders a re-round's previous document, the previous findings
 // (an author loop's round 2+: the open items with the author's replies) and
-// the owner's comments on it (PrevComments, what resolved[] may quote).
+// the owner's comments on it (PrevComments, what resolved[] may quote). It
+// sets the drift guards' baseline: PrevDoc, and NewRefs, the sources written
+// after the previous ask was filed.
 func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	if !ask.PreviousAskID.Valid {
 		return nil
@@ -504,24 +534,49 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 		return nil
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reading the previous ask #%d: %w", ask.PreviousAskID.Int64, err)
 	}
 	doc := prev.DocSnapshot
+	// The drift guards compare the whole previous document: only the
+	// prompt's copy is trimmed, so a long document's tail is not "changed".
+	in.src.PrevDoc = prev.DocSnapshot
 	if utf8.RuneCountInString(doc) > maxPrevDocRunes {
 		doc = string([]rune(doc)[:maxPrevDocRunes])
 		in.note("the previous round's document was trimmed to %d characters", maxPrevDocRunes)
 	}
 	in.add("previous_round ask:"+strconv.FormatInt(prev.ID, 10), doc)
-	loop, err := loopRound(d, ask.ID)
+	if since, err := time.Parse(time.RFC3339, prev.CreatedAt); err == nil {
+		in.src.NewRefs = map[string]bool{}
+		for ref, at := range in.refAt {
+			if at.After(since) {
+				in.src.NewRefs[ref] = true
+			}
+		}
+	} else {
+		in.note("the previous round's ask #%d has no readable filing time: no source counts as new", prev.ID)
+	}
+	seed, seedNotes, err := SeedOf(d, ask)
 	if err != nil {
 		return err
 	}
-	if loop != nil {
+	in.notes = append(in.notes, seedNotes...)
+	loop, err := loopRound(d, ask.ID)
+	if err != nil {
+		return fmt.Errorf("reading the loop round of ask #%d: %w", ask.ID, err)
+	}
+	switch {
+	case seed != nil:
+		// Round 1 of a loop after the owner's Request changes: the owner's
+		// items are what this round's verdicts settle.
+		in.openItems(prev.ID, seed, nil, true)
+	case loop != nil:
 		if err := in.previousOpenItems(d, prev.ID, loop.Replies); err != nil {
 			return err
 		}
-	} else if err := in.previousFindings(d, prev.ID); err != nil {
-		return err
+	default:
+		if err := in.previousFindings(d, prev.ID); err != nil {
+			return err
+		}
 	}
 	if prev.Status != "answered" && prev.Status != "delivered" {
 		return nil
@@ -542,6 +597,43 @@ func (in *inputs) previous(d *db.DB, ask *db.OwnerAsk) error {
 	}
 	if b.Len() > 0 {
 		in.add("previous_comments", b.String())
+	}
+	return nil
+}
+
+// closed fills the chain's closed list and known keys and renders the list,
+// one line per item, as what is already decided.
+func (in *inputs) closed(d *db.DB, ask *db.OwnerAsk) error {
+	st, notes, err := readChain(d, ask.ID)
+	if err != nil {
+		return err
+	}
+	in.notes = append(in.notes, notes...)
+	in.src.Closed, in.src.KnownKeys = st.closed, st.known
+	var b strings.Builder
+	for _, it := range st.closed {
+		line := fmt.Sprintf("[%s] %s: %s", oneLineText(it.Key), it.Kind, oneLineText(it.WhereQuote))
+		b.WriteString(strings.TrimRight(line, " ") + "\n")
+	}
+	if b.Len() > 0 {
+		in.add("closed_items", b.String())
+	}
+	return nil
+}
+
+// setLoopRound sets LoopRound: the round of the ask's review row when that row
+// is in an author loop under LoopRulesOpen, else 0 (a loop under the legacy
+// rules keeps the Parse it started with: no drift guards).
+func (in *inputs) setLoopRound(d *db.DB, ask *db.OwnerAsk) error {
+	row, err := d.GetSpecReview(ask.ID)
+	if errors.Is(err, db.ErrSpecReviewNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading the review of ask #%d: %w", ask.ID, err)
+	}
+	if row.Loop == "author" && row.LoopRules >= LoopRulesOpen {
+		in.src.LoopRound = row.Round
 	}
 	return nil
 }
@@ -584,6 +676,17 @@ func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) 
 	if err != nil {
 		in.note("the author's replies left out: %v", err)
 	}
+	in.openItems(prevID, open, replies, false)
+	return nil
+}
+
+// openItems renders the open items a round's verdicts settle, with the
+// author's reply to each (a missing reply is fixed), one line each, and
+// makes their keys the ones a verdict may name (PrevOpenKeys). With owner,
+// the items are the owner's (SeedOf) and each line also says what the owner
+// asked for.
+func (in *inputs) openItems(prevID int64, open []AuthorItem, replies []Reply, owner bool) {
+	in.src.PrevOpenKeys = map[string]bool{}
 	replyOf := map[string]Reply{}
 	for _, rp := range replies {
 		replyOf[rp.Key] = rp
@@ -591,7 +694,11 @@ func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) 
 	var b strings.Builder
 	for _, it := range open {
 		in.src.PrevOpenKeys[it.Key] = true
-		fmt.Fprintf(&b, "[%s] %s: %s — author: ", oneLineText(it.Key), it.Kind, oneLineText(it.Text))
+		fmt.Fprintf(&b, "[%s] %s: %s — ", oneLineText(it.Key), it.Kind, oneLineText(it.Text))
+		if owner && strings.TrimSpace(it.Note) != "" {
+			b.WriteString("owner asked: " + oneLineText(it.Note) + " — ")
+		}
+		b.WriteString("author: ")
 		rp, ok := replyOf[it.Key]
 		switch {
 		case ok && rp.Reply == ReplyDisagree:
@@ -606,7 +713,6 @@ func (in *inputs) previousOpenItems(d *db.DB, prevID int64, repliesJSON string) 
 	if b.Len() > 0 {
 		in.add("previous_open_items ask:"+strconv.FormatInt(prevID, 10), b.String())
 	}
-	return nil
 }
 
 // previousFindings renders the previous round's stored reviewer result, when

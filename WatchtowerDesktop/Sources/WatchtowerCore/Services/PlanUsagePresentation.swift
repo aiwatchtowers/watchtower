@@ -8,7 +8,7 @@ package enum PlanUsagePresentation {
 
     package static func isStale(_ s: PlanUsageStatus, now: Date) -> Bool {
         guard s.state == "ok", let fetched = s.fetchedAt else { return true }
-        return now.timeIntervalSince(fetched) > staleAfter
+        return now.timeIntervalSince(fetched) > staleAfter || fetched > now.addingTimeInterval(60)
     }
 
     package static func tone(_ l: PlanUsageLimit) -> PlanUsageTone {
@@ -107,24 +107,6 @@ package enum PlanUsagePresentation {
     /// Start of the chart's x range: the reset minus the window length.
     package static func windowStart(key: String, resetsAt: Date) -> Date? {
         windowLength(key: key).map { resetsAt.addingTimeInterval(-$0) }
-    }
-
-    /// End point of the dashed projection line from the last sample: the hit
-    /// moment at 100 % for `will_hit`, else the reset at the extrapolated
-    /// percent (clamped to 0...100). Nil when there is nothing to draw:
-    /// `collecting` has no trustworthy rate yet and `hit` is already at the cap.
-    package static func projectedEnd(_ l: PlanUsageLimit, last: PlanUsageSample) -> (at: Date, percent: Double)? {
-        guard let reset = l.resetsAt, reset > last.takenAt else { return nil }
-        switch l.projection.state {
-        case "will_hit":
-            if let hit = l.projection.hitAt, hit > last.takenAt { return (hit, 100) }
-            return nil
-        case "safe":
-            let hours = reset.timeIntervalSince(last.takenAt) / 3600
-            return (reset, min(100, max(0, last.percent + l.projection.ratePerHour * hours)))
-        default:
-            return nil
-        }
     }
 
     /// "42 %" for a limit or breakdown row.

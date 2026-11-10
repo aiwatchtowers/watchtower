@@ -55,21 +55,27 @@ func TryLockFile(path string) (unlock func(), ok bool, err error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("opening lock file: %w", err)
 	}
+	err = flockNB(int(f.Fd()), syscall.LOCK_EX)
+	if err == nil {
+		return func() {
+			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			_ = f.Close()
+		}, true, nil
+	}
+	_ = f.Close()
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil, false, nil
+	}
+	return nil, false, fmt.Errorf("locking %s: %w", path, err)
+}
+
+// flockNB takes flock(how) on fd without waiting, retrying an interrupted
+// call; it returns syscall.EWOULDBLOCK while another holder conflicts.
+func flockNB(fd, how int) error {
 	for {
-		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			return func() {
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-				_ = f.Close()
-			}, true, nil
+		err := syscall.Flock(fd, how|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EINTR) {
+			return err
 		}
-		if errors.Is(err, syscall.EINTR) {
-			continue
-		}
-		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, false, nil
-		}
-		return nil, false, fmt.Errorf("locking %s: %w", path, err)
 	}
 }

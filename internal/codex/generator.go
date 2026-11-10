@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -99,14 +100,14 @@ func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, us
 }
 
 // run starts codex with args in dir and parses its JSONL reply. promptFile
-// (the 0600 model_instructions_file, "" for none) is removed at codex's first
-// output, or when run returns: codex refuses a pipe there (see Client.Query).
+// (the 0600 model_instructions_file, "" for none) is held while codex runs
+// and removed when run returns, not earlier: codex re-reads it for every
+// model request (see Client.Query).
 // prompt is the call's prompt text, for the ledger's estimate when codex
 // reports no usage; every run is recorded (recordCodexCall), failures too.
 func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationProfile, codexBin, model string, args []string, stdin, dir, promptFile, prompt string) (_ string, _ *digest.Usage, err error) {
 	defer func() { err = providers.ContextFailure("codex", ctx, providers.ProcessFailure("codex", err)) }()
-	removePrompt := fsutil.RemoveOnce(promptFile)
-	defer removePrompt()
+	defer holdPromptFile(promptFile)()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
@@ -132,7 +133,7 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
 	start := time.Now()
-	output, err := outputRemovingPrompt(cmd, removePrompt)
+	output, err := cmd.Output()
 	// The usage events codex printed count on every path, failures too.
 	ran, reported := cmd.Process != nil, jsonlUsage(output)
 	if err != nil {
@@ -141,7 +142,7 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
-	result, usage, parseErr := parseJSONLOutputForModel(output, model)
+	result, usage, parseErr := parseJSONLOutputForModel(output, model, stderrBuf.String())
 	if parseErr != nil {
 		recordCodexCall(ctx, model, start, reported, ran, prompt, "", false)
 		return "", nil, parseErr
@@ -153,21 +154,100 @@ func (g *CodexGenerator) run(ctx context.Context, profile providers.InvocationPr
 	}
 	recordCodexCall(ctx, model, start, reported, ran, prompt, result, true)
 
-	digestUsage := &digest.Usage{
-		Model:        model,
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-	}
-
-	return result, digestUsage, nil
+	return result, &digest.Usage{Model: model, Tokens: usage.tokens()}, nil
 }
 
-// execArgs is the common read-only prefix. Batch and image calls add the
-// explicit no-tools profile in noToolsArgs. shell_tool=false is the gate
-// for UnifiedExec too (codex 0.166 core/src/tools/spec_plan.rs add_shell_tools);
-// unified_exec=false alone is insufficient on that version. Interactive clients retain their
-// own MCP/read-folder runtime through Client.execArgs and mount.
+// disabledFeatures are the codex feature flags every codex run Watchtower
+// launches itself turns off: batch and image calls, the chat session, `ai
+// query` (Discuss and embedded chats, code questions), the spec reviewer and
+// the automation agent() child. They are the local tools and the default-on
+// extras that would run the owner's own code or reach outside the run
+// (hooks, skills, subagents, plugins, memories, screen and voice features, a
+// background daemon) — the codex counterpart of claude's
+// `--setting-sources project,local` (or "" for a read run). A read-folder run
+// turns shell_tool back on (Client.execArgs): codex reads files through it.
+// Workbench terminal sessions are the owner's own codex and get none of
+// these (devpack.CodexLaunchArgs). shell_tool=false is the gate for
+// UnifiedExec too (codex 0.166 core/src/tools/spec_plan.rs add_shell_tools);
+// unified_exec=false alone is insufficient on that version; shell_snapshot*
+// are separate gates of the login-shell helper (core/src/shell_snapshot.rs).
+// codex_hooks is the legacy alias of hooks. A run with tools keeps
+// toolRunFeatures. Pinned against
+// testdata/codex_features.txt (TestDisabledFeatures_MatchSnapshot); refresh
+// after a codex upgrade with scripts/check-codex-features.sh. Each is set
+// as a scalar `=false`, which both the old bool-map and the current
+// bool-or-object feature schemas accept.
+var disabledFeatures = []string{
+	"shell_tool",
+	"unified_exec",
+	"view_image",
+	"computer_use",
+	"browser_use",
+	"browser_use_external",
+	"apps",
+	"plugins",
+	"shell_snapshot",
+	"shell_snapshot_v2",
+	"multi_agent",
+	"multi_agent_v2",
+	"image_generation",
+	"skill_search",
+	"skill_mcp_dependency_install",
+	"hooks",
+	"codex_hooks",
+	"in_app_browser",
+	"tool_suggest",
+	"code_mode",
+	"code_mode_host",
+	"goals",
+	"memories",
+	"external_agent_memory_import",
+	"chronicle",
+	"realtime_conversation",
+	"remote_plugin",
+	"plugin_sharing",
+	"recommended_plugins",
+	"daemon_auto_start",
+}
+
+// toolRunFeatures are the disabledFeatures a run with tools (every Client
+// run) leaves as codex configures them: code_mode_host carries every tool
+// call — with it off, codex 0.159.2 answers each MCP or shell call
+// "unavailable" (TestCodexLive_*). Only tool-less batch and image calls turn
+// them off.
+var toolRunFeatures = []string{"code_mode_host"}
+
+// execArgs is the common read-only prefix with every disabledFeatures flag
+// off — the batch and image calls' prefix, to which noToolsArgs adds web
+// search off and the owner's MCP servers off.
 func execArgs(model string) []string {
+	return append(execPrefix(model), featuresOff(nil)...)
+}
+
+// featuresOff is `-c features.<name>=false` for each disabledFeatures name
+// not in keep.
+func featuresOff(keep []string) []string {
+	var args []string
+	for _, f := range disabledFeatures {
+		if !slices.Contains(keep, f) {
+			args = append(args, "-c", "features."+f+"=false")
+		}
+	}
+	return args
+}
+
+// hideSkillListArg keeps the owner's skill list (the skills of CODEX_HOME,
+// ~/.agents and the repository's .agents, with their descriptions and local
+// paths) out of the model's context on every codex run Watchtower launches
+// itself — the codex counterpart of the skills claude's --setting-sources
+// leaves out (TestDisabledFeatures_LiveSkillListHidden). Why not
+// skip_host_skill_discovery, and the `$name` limit: see
+// testdata/codex_features.txt.
+const hideSkillListArg = "skills.include_instructions=false"
+
+// execPrefix is `codex exec` with the flags every run shares: JSON events,
+// no session file, no approvals, the read-only sandbox, no skill list.
+func execPrefix(model string) []string {
 	return []string{
 		"exec",
 		"--model", model,
@@ -176,14 +256,7 @@ func execArgs(model string) []string {
 		"--skip-git-repo-check",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",
-		"-c", "features.shell_tool=false",
-		"-c", "features.unified_exec=false",
-		"-c", "features.view_image=false",
-		"-c", "features.computer_use=false",
-		"-c", "features.browser_use=false",
-		"-c", "features.browser_use_external=false",
-		"-c", "features.apps=false",
-		"-c", "features.plugins=false",
+		"-c", hideSkillListArg,
 	}
 }
 
@@ -206,14 +279,14 @@ func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, std
 	return append(append(safe, instr...), "-"), stdin, promptFile, nil
 }
 
-// buildImageArgs is buildArgs for an image call. Beyond execArgs it turns
-// off web search, every MCP server of the owner's codex config (fail closed
-// when the config cannot be read) and the default-on features that reach
-// outside the call (multi_agent, image_generation, skill_search, hooks), and
-// adds `--image=<path>` (one value: --image splits on commas, so a comma in
-// the path is refused) ahead of the instructions override and the "-".
-// Residual risk: a codex feature that becomes default-on later is not on
-// this list.
+// buildImageArgs is buildArgs for an image call. Beyond execArgs (whose
+// disabledFeatures cover the default-on features that reach outside the
+// call) it turns off web search and every MCP server of the owner's codex
+// config (fail closed when the config cannot be read), and adds
+// `--image=<path>` (one value: --image splits on commas, so a comma in the
+// path is refused) ahead of the instructions override and the "-".
+// Residual risk: a codex feature that becomes default-on later is off only
+// once scripts/check-codex-features.sh has flagged it and it was added.
 func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath, workDir string) (args []string, stdin, promptFile string, err error) {
 	if strings.Contains(imagePath, ",") {
 		return nil, "", "", errors.New("the image path contains a comma")
@@ -241,23 +314,23 @@ func noToolsArgs(profile providers.InvocationProfile, model, workDir string) ([]
 		return nil, providers.CapabilityError("codex", profile, fmt.Errorf("cannot isolate codex MCP config: %w", err))
 	}
 	override, _, _ := mcpOverride("", nil, nil, nil, owner, nil)
-	args := append(execArgs(model), "-c", `web_search="disabled"`, "-c", override)
-	for _, feature := range []string{"shell_snapshot", "shell_snapshot_v2", "multi_agent", "image_generation", "skill_search", "hooks", "codex_hooks", "in_app_browser", "skill_mcp_dependency_install", "tool_suggest", "code_mode", "code_mode_host", "goals"} {
-		args = append(args, "-c", "features."+feature+"=false")
-	}
-	return args, nil
+	return append(execArgs(model), "-c", `web_search="disabled"`, "-c", override), nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
 // content and accumulated usage.
 func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
-	return parseJSONLOutputForModel(output, "")
+	return parseJSONLOutputForModel(output, "", "")
 }
 
-func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage, error) {
+// stderr is codex's, for the error of a run cut off before turn.completed.
+func parseJSONLOutputForModel(output []byte, model, stderr string) (string, *CodexUsage, error) {
 	var terminalFailure error
 	var lastContent string
+	completed := false
 	totalUsage := &CodexUsage{}
+	undecodable := 0
+	defer func() { logUndecodable(undecodable) }()
 
 	// The whole output is already in memory, so split it instead of using a
 	// bufio.Scanner: a command_execution / mcp_tool_call item can exceed any
@@ -271,6 +344,7 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 
 		var event CodexEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			undecodable++
 			continue
 		}
 
@@ -280,6 +354,7 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 
 		if event.Type == "turn.completed" || event.Type == "turn.started" {
 			terminalFailure = nil
+			completed = event.Type == "turn.completed"
 		}
 		if event.Usage != nil {
 			totalUsage.add(event.Usage)
@@ -293,8 +368,13 @@ func parseJSONLOutputForModel(output []byte, model string) (string, *CodexUsage,
 	if terminalFailure != nil {
 		return "", nil, terminalFailure
 	}
+	// A run that exited cleanly is a success only after turn.completed, as
+	// in the streaming Query: a cut-off run never returns its preamble.
+	if !completed {
+		return "", nil, incompleteRunError(model, output, stderr)
+	}
 	if lastContent == "" {
-		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, fmt.Errorf("no agent_message found in codex output"))
+		return "", nil, providers.WithFailure("codex", providers.InvalidOutput, errNoAgentMessage)
 	}
 
 	return lastContent, totalUsage, nil
@@ -326,8 +406,7 @@ func recordCodexCall(ctx context.Context, model string, start time.Time, u *Code
 	c := llmusage.Call{Provider: "codex", Model: model, DurationMS: time.Since(start).Milliseconds(), OK: ok && ran}
 	switch {
 	case u != nil:
-		cached := int64(min(u.CachedInputTokens, u.InputTokens))
-		c.Input, c.CacheRead, c.Output = int64(u.InputTokens)-cached, cached, int64(u.OutputTokens)
+		c.Tokens = u.tokens()
 	case ran:
 		c.Input, c.Output, c.Estimated = llmusage.EstimateTokens(prompt), llmusage.EstimateTokens(output), true
 	}

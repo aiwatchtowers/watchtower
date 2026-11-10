@@ -1821,3 +1821,18 @@ final class AppStateTests: XCTestCase {
         await appState.stopSidebarCounts()?.value
     }
 }
+
+extension AppStateTests {
+    /// A tray-only launch has no window: the launch itself reads the provider
+    /// catalog (`loadModelCatalogAtLaunch`, called by `initialize()`), so the
+    /// capability rows and AGENT-04's tool access never wait for a window.
+    func testLaunchReadsTheModelCatalogWithoutAWindow() async throws {
+        let appState = AppState.isolated()
+        let read = expectation(description: "the launch read the catalog")
+        appState.modelCatalogLaunchOverride = { read.fulfill() }
+        appState.loadModelCatalogAtLaunch()
+        await fulfillment(of: [read], timeout: 5)
+        XCTAssertTrue(appState.aiModelCatalog === AIModelCatalog.shared, "one catalog for every surface")
+    }
+
+}

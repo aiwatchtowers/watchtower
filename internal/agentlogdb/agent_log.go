@@ -224,12 +224,26 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				return err
 			}
 		}
+		owners, err := batchOwners(b.Sessions)
+		if err != nil {
+			return err
+		}
 		for _, r := range b.ToolResults {
 			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
 				lines_added = ?, lines_removed = ?, result_bytes = ?,
 				duration_ms = CAST(ROUND((julianday(?) - julianday(ts)) * 86400000) AS INTEGER)
-				WHERE key = ?`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS, "tool:"+r.ToolUseID); err != nil {
+				WHERE key = ? AND (? IS NULL OR session_uuid IN (SELECT value FROM json_each(?)))`,
+				r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS,
+				"tool:"+r.ToolUseID, owners, owners); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
+			}
+			// A result only a replayed copy carries (the owner's transcript
+			// ends before it) still fills a pending row, but never times it.
+			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
+				lines_added = ?, lines_removed = ?, result_bytes = ?
+				WHERE key = ? AND outcome IN ('', 'pending')`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes,
+				"tool:"+r.ToolUseID); err != nil {
+				return fmt.Errorf("filling a replayed tool result: %w", err)
 			}
 			if r.SpawnedAgentID != "" {
 				if _, err := tx.Exec(`UPDATE agent_log_events SET spawned_agent_id = ?, background = ? WHERE key = ?`,
@@ -275,6 +289,34 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 
 var errCASLost = errors.New("agent log offset moved by another writer")
 
+// batchOwners is the JSON array of the batch's session uuids that limits a
+// tool result's full pairing to a row one of those sessions owns: a fork's
+// replay of a call another session owns must not recompute that row's
+// duration from the copy's times (it may only fill a row still pending). No
+// sessions: nil, which the query reads as no limit.
+func batchOwners(sessions []AgentLogSession) (any, error) {
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	uuids := make([]string, len(sessions))
+	for i, s := range sessions {
+		uuids[i] = s.SessionUUID
+	}
+	b, err := json.Marshal(uuids)
+	if err != nil {
+		return nil, fmt.Errorf("encoding batch owners: %w", err)
+	}
+	return string(b), nil
+}
+
+// excludedOwns is true in the events upsert when the incoming row's session
+// takes a replayed key over: it started earlier (tie: the smaller uuid).
+const excludedOwns = `(SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
+		                           < (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
+		                      OR ((SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
+		                           = (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
+		                          AND excluded.session_uuid < agent_log_events.session_uuid)`
+
 func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 	_, err := tx.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, project_id, folder_path, home_cwd,
 		terminal_session_id, source_path, git_branch, model, started_at, ended_at, reported_cost_usd)
@@ -317,7 +359,9 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 			return nil
 		}
 	}
-	// Ownership: the earliest session (tie → smaller uuid) keeps a replayed key.
+	// Ownership: the earliest session (tie → smaller uuid) keeps a replayed
+	// key, with its own time and source line, so a copy re-stamped when it was
+	// written never times the owner's call.
 	_, err := tx.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, uuid, parent_uuid, prompt_id, agent_id,
 		is_sidechain, name, target, trigger, outcome, error_class, skill, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_5m_tokens, cache_write_1h_tokens, speed, service_tier, cost_usd, price_version, cost_estimated,
@@ -325,12 +369,10 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		result_bytes, thinking_tokens, pre_tokens, post_tokens)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(key) DO UPDATE SET
-		  session_uuid = CASE WHEN (SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
-		                           < (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
-		                      OR ((SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
-		                           = (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
-		                          AND excluded.session_uuid < agent_log_events.session_uuid)
-		                 THEN excluded.session_uuid ELSE agent_log_events.session_uuid END,
+		  session_uuid = CASE WHEN `+excludedOwns+` THEN excluded.session_uuid ELSE agent_log_events.session_uuid END,
+		  ts = CASE WHEN `+excludedOwns+` THEN excluded.ts ELSE agent_log_events.ts END,
+		  src_path = CASE WHEN `+excludedOwns+` THEN excluded.src_path ELSE agent_log_events.src_path END,
+		  src_offset = CASE WHEN `+excludedOwns+` THEN excluded.src_offset ELSE agent_log_events.src_offset END,
 		  input_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.input_tokens ELSE agent_log_events.input_tokens END,
 		  cache_read_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_read_tokens ELSE agent_log_events.cache_read_tokens END,
 		  cache_write_5m_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_write_5m_tokens ELSE agent_log_events.cache_write_5m_tokens END,
@@ -387,6 +429,20 @@ func (d *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
 		return "", false, nil
 	}
 	return folder, err == nil, err
+}
+
+// CodexResumeState is what a codex rollout read that starts past offset 0
+// needs from the stored session: its model and its home working directory
+// ("" for both when the session is not stored).
+func (d *DB) CodexResumeState(sessionUUID string) (model, homeCWD string, err error) {
+	err = d.QueryRow(`SELECT model, home_cwd FROM agent_log_sessions WHERE session_uuid = ?`, sessionUUID).Scan(&model, &homeCWD)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("reading codex session %s: %w", sessionUUID, err)
+	}
+	return model, homeCWD, nil
 }
 
 // AgentLaneBaseline reports whether a lane (a session's agent id, "" for the

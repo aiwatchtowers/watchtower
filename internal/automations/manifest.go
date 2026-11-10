@@ -12,6 +12,7 @@ import (
 	"strings"
 	"unicode"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
@@ -70,7 +71,7 @@ var capabilitySpecs = map[string]capabilitySpec{
 	"llm":         {verbs: []string{"light", "strong"}},
 	"agent":       {verbs: []string{"run"}},
 	"ask":         {verbs: []string{"owner"}, workbenchOnly: true},
-	"session":     {verbs: []string{"start"}, scope: scopeOptional, scopeValues: []string{"claude", "codex"}, workbenchOnly: true},
+	"session":     {verbs: []string{"start"}, scope: scopeOptional, scopeValues: agentkind.Names(), workbenchOnly: true},
 	// inbox:reply lets the recipe's Inbox cards carry Reply actions; a
 	// press queues a new run of the recipe (spec B3). It needs
 	// outputs: [inbox] (ParseManifest).

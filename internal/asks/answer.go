@@ -51,10 +51,13 @@ type CheckAnswer struct {
 	State string `json:"state"`
 }
 
-// Comment is a review comment anchored on the doc snapshot.
+// Comment is a review comment anchored on the doc snapshot. ItemKey is the
+// spec review mark key a findings comment came from; a margin comment leaves
+// it empty, and it is written only when set.
 type Comment struct {
 	Body    string `json:"body"`
 	Heading string `json:"heading"`
+	ItemKey string `json:"item_key,omitempty"`
 	Prefix  string `json:"prefix"`
 	Quote   string `json:"quote"`
 	Suffix  string `json:"suffix"`

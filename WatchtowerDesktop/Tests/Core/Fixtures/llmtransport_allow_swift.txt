@@ -1,0 +1,37 @@
+# LLMTRANSPORT-01 Swift baseline (docs/inventory/llm-transport.md).
+# "<file> | <func> | <what> | <count> | <reason>"; <func> is the innermost
+# enclosing func/init/computed var, "-" at file scope. Every provider/agent
+# name check in WatchtowerDesktop/Sources and WatchtowerKit/Sources is listed;
+# the list only shrinks. A new entry needs the owner's approval. "permanent:"
+# entries stay (decoders, display names, config migration, path conventions);
+# every other entry names the task that removes it.
+
+WatchtowerDesktop/Sources/Services/ConfigService.swift | applyWorkbenchSection | .claude | 1 | permanent: config writer omits the default workbench.default_agent value
+WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "claude" | 1 | permanent: config migration: the legacy model regexes
+WatchtowerDesktop/Sources/Services/ConfigService.swift | migratedModel | "codex" | 1 | permanent: config migration: the legacy model regexes
+WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .claude | 1 | permanent: display name of the asking agent
+WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift | agentNoteName | .codex | 1 | permanent: display name of the asking agent
+WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "claude" | 1 | permanent: display-name table for a provider id
+WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "codex" | 1 | permanent: display-name table for a provider id
+WatchtowerDesktop/Sources/Views/Onboarding/OnboardingGoalsStepView.swift | cliName | "ollama" | 1 | permanent: display-name table for a provider id
+WatchtowerDesktop/Sources/Views/Settings/ImportExternalConnectionsView.swift | serverRow | "codex" | 1 | permanent: path convention of the import source (~/.codex vs ~/.claude.json), not a transport
+WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | pathField | "codex" | 2 | permanent: the CLI path setting of a provider id (ai.claude_path / ai.codex_path)
+WatchtowerDesktop/Sources/Views/Settings/ProviderSettings.swift | selection | "codex" | 1 | permanent: the CLI path setting of a provider id (ai.claude_path / ai.codex_path)
+WatchtowerDesktop/Sources/Views/Settings/QuickConnectionsDetail.swift | var body | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
+WatchtowerDesktop/Sources/Views/Settings/SystemSettings+Workbench.swift | var workbenchSection | .codex | 1 | permanent: the codex agent's CLI path setting (ai.codex_path), shown for that agent
+WatchtowerDesktop/Sources/Views/Workbench/CodeNav/HandToSessionSheet.swift | label | .codex | 1 | permanent: display-name suffix of the session's agent
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AIModelCatalog.swift | fallbackDisplayName | "claude" | 1 | permanent: presentation fallback before the catalog is read, pinned to the catalog by ProviderCatalogRegistryTests (A7b)
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AIModelCatalog.swift | fallbackDisplayName | "codex" | 1 | permanent: presentation fallback before the catalog is read, pinned to the catalog by ProviderCatalogRegistryTests (A7b)
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AIModelCatalog.swift | fallbackDisplayName | "ollama" | 1 | permanent: presentation fallback before the catalog is read, pinned to the catalog by ProviderCatalogRegistryTests (A7b)
+WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentKind.swift | var displayName | .claude | 1 | permanent: the agent kinds' own display-name table
+WatchtowerDesktop/Sources/WatchtowerCore/Models/AgentKind.swift | var displayName | .codex | 1 | permanent: the agent kinds' own display-name table
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AgentChoicePresentation.swift | deleteSessionMessage | .claude | 1 | permanent: per-agent display copy (not-found and delete wording)
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AgentChoicePresentation.swift | deleteSessionMessage | .codex | 1 | permanent: per-agent display copy (not-found and delete wording)
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AgentChoicePresentation.swift | notInstalledHint | .claude | 1 | permanent: per-agent display copy (not-found and delete wording)
+WatchtowerDesktop/Sources/WatchtowerCore/Services/AgentChoicePresentation.swift | notInstalledHint | .codex | 1 | permanent: per-agent display copy (not-found and delete wording)
+WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/AutomationCardPresentation.swift | runtimeLine | "claude" | 1 | permanent: display copy of a session permission per agent
+WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/AutomationCardPresentation.swift | runtimeLine | "codex" | 1 | permanent: display copy of a session permission per agent
+WatchtowerDesktop/Sources/WatchtowerCore/Services/Chat/ChatErrorPresentation.swift | signInHint | "claude" | 1 | permanent: display copy: the login command of the provider
+WatchtowerDesktop/Sources/WatchtowerCore/Services/Chat/ChatErrorPresentation.swift | signInHint | "codex" | 1 | permanent: display copy: the login command of the provider
+WatchtowerDesktop/Sources/WatchtowerCore/Services/QuickConnectionsProviderNotice.swift | codexImportNotice | "codex" | 1 | permanent: the import source name (an owner's codex MCP config file), not a transport
+WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionSwitcherPresentation.swift | var agentTag | .codex | 1 | permanent: display-name suffix of the session's agent

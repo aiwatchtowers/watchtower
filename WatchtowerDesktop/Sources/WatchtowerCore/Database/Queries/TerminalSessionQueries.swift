@@ -27,8 +27,9 @@ package enum TerminalSessionQueries {
         package var title: String
         package var targetID: Int64?
         package var folderPath: String
-        /// The agent's own session id. Required (non-empty) for `.claude`;
-        /// nil for a shell, and for a new codex row (Codex mints its id).
+        /// The agent's own session id. Required (non-empty) when the app
+        /// chooses it (`AgentSessionCaps.appSessionID`); nil for a shell, and
+        /// for a new row of an agent that mints its own (Codex).
         package var claudeSessionID: String?
         /// Set when Watchtower created the session's worktree (00114).
         package var worktreeBranch: String?
@@ -59,10 +60,11 @@ package enum TerminalSessionQueries {
         }
     }
 
-    /// Throws `missingSessionID` for a `.claude` row without a session id
+    /// Throws `missingSessionID` for a row of an agent whose id the app
+    /// chooses (`AgentSessionCaps.appSessionID`: Claude Code) without one
     /// (the schema's CHECK would reject a NULL one; an empty one too, here).
     package static func create(_ db: Database, _ new: NewSession) throws -> TerminalSession {
-        if new.kind == .claude, new.claudeSessionID?.isEmpty ?? true {
+        if new.kind.agent?.session.caps.appSessionID == true, new.claudeSessionID?.isEmpty ?? true {
             throw TerminalSessionQueryError.missingSessionID
         }
         try db.execute(
@@ -137,6 +139,40 @@ package enum TerminalSessionQueries {
         ) ?? false
     }
 
+    /// What workbench `projectID`'s sessions work on (board #987), by
+    /// session id: the targets their agents linked (`terminal_session_targets`,
+    /// PROJ-14), the worktrees their agents worked in (`terminal_session_worktrees`,
+    /// migration 00111) with each one's last sighting (`last_at`, 00174, else
+    /// `first_at`) and the run start they are judged against (`agent_turns`'
+    /// `since`, as `fetchAgentCwds` reads it). A session
+    /// with neither a link nor a worktree is left out. Read-only: Go writes
+    /// all three.
+    package static func fetchWorkLinks(_ db: Database, projectID: Int64) throws -> [Int64: SessionWorkLinks] {
+        var links: [Int64: SessionWorkLinks] = [:]
+        let targets = try Row.fetchAll(db, sql: """
+            SELECT l.session_id, l.target_id FROM terminal_session_targets l
+            JOIN terminal_sessions s ON s.id = l.session_id
+            WHERE s.project_id = ? ORDER BY l.session_id, l.target_id
+            """, arguments: [projectID])
+        for row in targets {
+            links[row["session_id"], default: SessionWorkLinks()].linkedTargetIDs.append(row["target_id"])
+        }
+        let worktrees = try Row.fetchAll(db, sql: """
+            SELECT w.session_id, w.root, COALESCE(w.last_at, w.first_at) AS seen_at,
+                   CASE WHEN json_valid(s.agent_turns) AND json_type(s.agent_turns, '$.since') = 'text'
+                        THEN json_extract(s.agent_turns, '$.since') END AS run_start
+            FROM terminal_session_worktrees w
+            JOIN terminal_sessions s ON s.id = w.session_id
+            WHERE s.project_id = ? ORDER BY w.session_id, seen_at, w.root
+            """, arguments: [projectID])
+        for row in worktrees {
+            let id: Int64 = row["session_id"]
+            links[id, default: SessionWorkLinks()].worktrees.append(SessionLanes.Record(root: row["root"], seenAt: row["seen_at"]))
+            links[id]?.runStart = row["run_start"]
+        }
+        return links
+    }
+
     package static func fetchForTarget(_ db: Database, targetID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
@@ -157,14 +193,15 @@ package enum TerminalSessionQueries {
     package static func fetchAgentStates(_ db: Database, liveIDs: [Int64]) throws -> [SessionAgentStateRow] {
         let marks = liveIDs.isEmpty ? "NULL" : databaseQuestionMarks(count: liveIDs.count)
         let cwdAt = try hasAgentCwd(db) ? "s.agent_cwd_at" : "NULL"
+        let watchIssue = try hasColumn(db, "agent_watch_issue") ? "s.agent_watch_issue" : "NULL"
         let open = OwnerAskQueries.notInSpecLoop("a")
         return try SessionAgentStateRow.fetchAll(
             db,
             sql: """
-                SELECT s.id, s.project_id, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
+                SELECT s.id, s.project_id, s.kind, s.title, s.agent_state, s.agent_state_at, p.name AS workbench_name,
                        s.finished_at, s.finish_summary, s.agent_failed_at, s.agent_error,
                        s.agent_background, s.agent_background_at, s.chat_question, s.chat_question_at,
-                       \(cwdAt) AS agent_cwd_at,
+                       \(cwdAt) AS agent_cwd_at, \(watchIssue) AS agent_watch_issue,
                        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open)) AS open_asks,
                        (SELECT MIN(a.id) FROM owner_asks a WHERE a.session_id = s.id AND a.status = 'open' AND \(open))
                            AS oldest_open_ask_id,
@@ -201,7 +238,8 @@ package enum TerminalSessionQueries {
             db,
             sql: """
                 SELECT id, agent_cwd, agent_cwd_at,
-                       CASE WHEN json_valid(agent_turns) THEN json_extract(agent_turns, '$.since') END AS run_start
+                       CASE WHEN json_valid(agent_turns) AND json_type(agent_turns, '$.since') = 'text'
+                            THEN json_extract(agent_turns, '$.since') END AS run_start
                 FROM terminal_sessions
                 WHERE project_id = ? AND agent_cwd IS NOT NULL
                 """,
@@ -213,7 +251,13 @@ package enum TerminalSessionQueries {
     /// Whether the database has migration 00110's cwd columns (GRDB caches
     /// the probe per connection).
     private static func hasAgentCwd(_ db: Database) throws -> Bool {
-        try db.columns(in: "terminal_sessions").contains { $0.name == "agent_cwd_at" }
+        try hasColumn(db, "agent_cwd_at")
+    }
+
+    /// Whether `terminal_sessions` has `column` (a database the daemon has
+    /// not migrated yet may lack it; GRDB caches the probe per connection).
+    private static func hasColumn(_ db: Database, _ column: String) throws -> Bool {
+        try db.columns(in: "terminal_sessions").contains { $0.name == column }
     }
 
     /// Session `id`'s stored cleanup outcome (board #535, migration 00111):

@@ -295,7 +295,7 @@ func TestBuildSystemPrompt_ProjectBlock(t *testing.T) {
 		got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
 		require.NoError(t, err)
 		assert.NotContains(t, got, "Attached to the first message", provider)
-		assert.Contains(t, got, "Not available in this session (images and PDFs need the Claude provider): arch.png", provider)
+		assert.Contains(t, got, "Not available in this session (project images and PDFs need a provider that reads both): arch.png", provider)
 	}
 }
 
@@ -431,7 +431,10 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 
 	for _, want := range []string{
 		"publish private pages, slide decks and documents to the owner's claude.ai account",
-		"is published to claude.ai instead of an in-app html or document artifact, unless the owner asks to keep it in the app",
+		"Pages, decks and documents stay in-app html or document artifacts by default",
+		"Publish to claude.ai only when the owner explicitly asks for it",
+		"Publish to claude.ai only when the owner explicitly asks for it (names claude.ai or a Claude Doc): pages and decks with the Artifact tool, documents with Claude Docs",
+		"A change to a page or doc already published in this chat goes to the same link.",
 		"Artifact tool",
 		"Claude Docs",
 		"Write the page's source file with the Write tool at an absolute path inside " + testPublishDir + " only",
@@ -453,6 +456,9 @@ func TestPrompt_ClaudeAISectionPinsRules(t *testing.T) {
 	} {
 		assert.Contains(t, got, want)
 	}
+	// The old default (publish instead of an in-app artifact) is gone.
+	assert.NotContains(t, got, "instead of an in-app html or document artifact")
+	assert.NotContains(t, got, "unless the owner asks to keep it in the app")
 }
 
 // With the owner's connectors switch off the session loads no connector

@@ -97,6 +97,10 @@ final class ConfigService {
     private var diskGmailEnabled = true
     /// `privacy.purge_revoked_data` as last read from or written to disk.
     private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The providers' capability rows: the fallback pair is their
+    /// `reserve_peer` (LLMTRANSPORT-01), never a Swift copy of the rule.
+    @ObservationIgnored private let catalog: AIModelCatalog
+
     /// The editable fields as the last `reload()` or `save()` left them.
     @ObservationIgnored private var loadedFields: [String: String] = [:]
 
@@ -108,8 +112,10 @@ final class ConfigService {
     init(
         configPath: String,
         routingRead: (() async throws -> ChatRoutingStatus)? = nil,
-        connection: ProviderConnection? = nil
+        connection: ProviderConnection? = nil,
+        catalog: AIModelCatalog = .shared
     ) {
+        self.catalog = catalog
         providerConnection = connection ?? ProviderConnection()
         routingApplication = ProviderRoutingApplication(read: routingRead ?? {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
@@ -320,13 +326,26 @@ final class ConfigService {
     /// retains validation semantics for callers editing only ai.provider.
     func selectPreferredProvider(_ provider: String) {
         selectAIProvider(provider)
-        if provider == "ollama" {
+        // Before the catalog is read nothing is known about the pair, and Go
+        // refuses to load a file whose enabled fallback is not a pair: the
+        // reserve is turned off until the owner picks it again.
+        guard catalog.isLoaded else {
+            aiFallbackEnabled = false
+            if aiFallbackProvider == provider { aiFallbackProvider = nil }
+            return
+        }
+        if let peer = catalog.reservePeer(of: provider) {
+            if aiFallbackProvider != nil { aiFallbackProvider = peer }
+        } else {
             aiFallbackEnabled = false
             aiFallbackProvider = nil
-        } else if aiFallbackProvider != nil {
-            aiFallbackProvider = provider == "claude" ? "codex" : "claude"
         }
     }
+
+    /// The reserve the preferred provider pairs with (the catalog's
+    /// `reserve_peer`); nil when it pairs with nothing or the catalog is not
+    /// read yet — Settings then hides the reserve.
+    var reservePeer: String? { catalog.reservePeer(of: aiProvider ?? "claude") }
 
     var connectionConfigPath: String { configPath }
     func refreshProviderHealth() async {
@@ -338,7 +357,7 @@ final class ConfigService {
     }
 
     func reserveModel(_ tier: String) -> String? {
-        let id = aiFallbackProvider ?? ((aiProvider ?? "claude") == "codex" ? "claude" : "codex")
+        guard let id = aiFallbackProvider ?? reservePeer else { return nil }
         return (providerBuckets[id]?["models"] as? [String: Any])?[tier] as? String
     }
 
@@ -401,17 +420,34 @@ final class ConfigService {
         }
     }
 
+    /// The provider and the reserve pair against the catalog's rows. With no
+    /// catalog read yet the pair cannot be confirmed, so an enabled fallback
+    /// is refused (Go refuses to load a file whose fallback is not a pair).
     private func validateAISelection(_ selected: String, ai: [String: Any]) throws {
-        guard ["claude", "codex", "ollama"].contains(selected) else {
+        let fallback = ai["fallback"] as? [String: Any] ?? [:]
+        let reserve = fallback["provider"] as? String ?? ""
+        let enabled = fallback["enabled"] as? Bool == true
+        guard catalog.isLoaded else {
+            if !reserve.isEmpty && reserve == selected {
+                throw ConfigUnreadableError(reason: "Reserve must be a different provider")
+            }
+            // Only an edit to the pair is refused: a save of other settings
+            // keeps the file's fallback as Go last loaded it.
+            let pairEdited = aiFallbackEnabled != loadedFallbackEnabled || aiFallbackProvider != loadedFallbackProvider
+                || editableFields["_aiProvider"] != loadedFields["_aiProvider"]
+            if enabled && pairEdited {
+                throw ConfigUnreadableError(reason: "Provider details are still loading; turn the reserve on again once they load")
+            }
+            return
+        }
+        guard catalog.provider(selected) != nil else {
             throw ConfigUnreadableError(reason: "Unknown AI provider")
         }
-        guard let fallback = ai["fallback"] as? [String: Any] else { return }
-        let reserve = fallback["provider"] as? String ?? ""
-        if !reserve.isEmpty && (!["claude", "codex"].contains(reserve) || reserve == selected) {
-            throw ConfigUnreadableError(reason: "Reserve must be a different Claude or Codex provider")
+        if !reserve.isEmpty && (catalog.reservePeer(of: reserve) == nil || reserve == selected) {
+            throw ConfigUnreadableError(reason: "Reserve must be a different provider that has a reserve pair")
         }
-        if fallback["enabled"] as? Bool == true && (reserve.isEmpty || selected == "ollama") {
-            throw ConfigUnreadableError(reason: "Enabled fallback requires different Claude and Codex providers")
+        if enabled && (reserve.isEmpty || catalog.reservePeer(of: selected) != reserve) {
+            throw ConfigUnreadableError(reason: "Enabled fallback requires the preferred provider's reserve pair")
         }
     }
 

@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // fakeGen is a stub digest.Generator whose reply func drives success/error
@@ -32,7 +33,7 @@ func (g *fakeGen) Generate(_ context.Context, _, user, _ string) (string, *diges
 	if err != nil {
 		return "", nil, "", err
 	}
-	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}, "sess", nil
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: 10, Output: 5, CacheRead: 5}}, "sess", nil
 }
 
 func testCfg() *config.Config {

@@ -1,9 +1,28 @@
 /// Shared provider-fallback presentation copy for runtime and approved catalog
 /// scenes. This model performs no selection, settings writes or model calls.
+/// The pair it names is the catalog's (`AIModelCatalog.fallbackPair`, the Go
+/// table's `reserve_peer`), never a Swift copy of the rule (LLMTRANSPORT-01).
 package struct ProviderFallbackPreview {
-    package enum Provider: String, CaseIterable {
-        case claude = "Claude", codex = "Codex"
-        package var other: Self { self == .claude ? .codex : .claude }
+    /// One side of the fallback pair: its provider id and display name.
+    package struct Provider: Equatable, Sendable {
+        package let id: String
+        package let name: String
+        package init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    /// The preferred provider and the reserve it pairs with.
+    package struct Pair: Equatable, Sendable {
+        package let preferred: Provider
+        package let reserve: Provider
+        package init(preferred: Provider, reserve: Provider) {
+            self.preferred = preferred
+            self.reserve = reserve
+        }
+        /// The same pair seen from the reserve's side.
+        package var reversed: Self { .init(preferred: reserve, reserve: preferred) }
     }
 
     package enum State: String, CaseIterable {
@@ -21,6 +40,7 @@ package struct ProviderFallbackPreview {
     }
 
     package let preferred: Provider
+    package let reserve: Provider
     package let state: State
     package let nextCheck: String?
     package var chatTitle: String
@@ -28,7 +48,7 @@ package struct ProviderFallbackPreview {
     package var observedProvider: String?
     package var observedModel: String?
     package init(
-        preferred: Provider,
+        pair: Pair,
         state: State,
         nextCheck: String? = nil,
         chatTitle: String = "",
@@ -36,13 +56,21 @@ package struct ProviderFallbackPreview {
         observedProvider: String? = nil,
         observedModel: String? = nil
     ) {
-        self.preferred = preferred
+        preferred = pair.preferred
+        reserve = pair.reserve
         self.state = state
         self.nextCheck = nextCheck
         self.chatTitle = chatTitle; self.modelDescription = modelDescription
         self.observedProvider = observedProvider; self.observedModel = observedModel
     }
-    package var reserve: Provider { preferred.other }
+
+    /// The copy of a state that names no provider (stopped, applying, the
+    /// connection label): no pair is needed to say it.
+    package init(state: State) {
+        let unnamed = Provider(id: "", name: "")
+        self.init(pair: .init(preferred: unnamed, reserve: unnamed), state: state)
+    }
+
     package var isChat: Bool { [.recovered, .stopped, .pinned, .unsupported].contains(state) }
     package var pageTitle: String { isChat ? "AI Chat" : "AI providers" }
     package var pageSubtitle: String {
@@ -62,7 +90,7 @@ package struct ProviderFallbackPreview {
         "Only " + provider + (model.map { " · " + ($0.isEmpty ? "Auto" : $0) } ?? "")
     }
     package var chatPolicyValue: String {
-        state == .pinned ? "Only \(preferred.rawValue) · explicit model" : Self.chatPolicyAutomatic
+        state == .pinned ? "Only \(preferred.name) · explicit model" : Self.chatPolicyAutomatic
     }
     package var connectionLabel: String {
         switch state {
@@ -78,13 +106,13 @@ package struct ProviderFallbackPreview {
         ![.empty, .checking, .notInstalled, .notVerified, .connectionNetworkError, .connectionError].contains(state)
     }
     package var actualProvider: String {
-        observedProvider ?? ([.fallback, .recovered].contains(state) ? reserve.rawValue : preferred.rawValue)
+        observedProvider ?? ([.fallback, .recovered].contains(state) ? reserve.name : preferred.name)
     }
     package var actualLabel: String { "Current provider: \(actualProvider)" + (observedModel.map { " · " + $0 } ?? "") }
 
     private var checkDetail: String { nextCheck.map { " Next recovery check: " + $0 + "." } ?? "" }
     package var copy: Copy {
-        let p = preferred.rawValue, r = reserve.rawValue
+        let p = preferred.name, r = reserve.name
         switch state {
         case .empty:
             return Copy(
@@ -172,8 +200,8 @@ package struct ProviderFallbackPreview {
             )
         case .recovered:
             return Copy(
-                title: "\(p) is available again",
-                detail: "Background tasks have returned to \(p). This chat stays with \(r) until you switch.",
+                title: "\(p) can be tried",
+                detail: "No local quota block is currently recorded for \(p). This chat stays with \(r) until you switch.",
                 action: "Use \(p)",
                 emphasis: .success
             )

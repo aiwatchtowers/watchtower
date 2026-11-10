@@ -19,7 +19,15 @@ package enum ReviewIdentityPresentation {
         package var uncommitted: String?
         package var place: String
         package var onDefaultBranch: Bool
+        /// The round reads the task branch's commits, not the folder (board #1012).
+        package var branchTip = false
     }
+
+    /// The branch line's note on a round that reads a branch's commits.
+    package static let branchTipNote = "branch tip, read-only"
+
+    /// The base's help when the reviewed commit shares no history with any base branch.
+    package static let noCommonBaseHelp = "No history in common with the base branch — every file reads as added"
 
     /// The first linked target and how many more follow it.
     package struct ForLine: Equatable, Sendable {
@@ -34,6 +42,8 @@ package enum ReviewIdentityPresentation {
     }
 
     /// `stale` (the last status read failed) adds the place-label note to `baseHelp`.
+    /// A round that reads the task branch's tip names that branch and its base
+    /// whatever the folder is on: the folder's edits are not in it.
     package static func branchLine(
         place: SessionPlace,
         status: WorkbenchGitStatus?,
@@ -41,12 +51,19 @@ package enum ReviewIdentityPresentation {
         files: [ReviewDiffFile],
         stale: Bool
     ) -> BranchLine {
-        let branch = branchName(status)
         let rawBase = round.map { $0.baseLabel.hasPrefix("origin/") ? String($0.baseLabel.dropFirst("origin/".count)) : $0.baseLabel }
         let base = (rawBase?.isEmpty ?? true) ? nil : rawBase
-        let onDefault = onDefaultBranch(branch: branch, base: base, status: status, round: round)
         var help = (round?.baseSha.isEmpty ?? true) ? "empty tree" : (round?.baseSha ?? "empty tree")
+        if round?.baseLabel == ReviewRoundInfo.noCommonBaseLabel { help = noCommonBaseHelp }
         if stale { help += "\n" + SessionPlacePresentation.staleNote }
+        if let round, round.isBranchTip {
+            return BranchLine(
+                branch: round.branch, base: base, baseHelp: help, size: sizeText(files), uncommitted: nil,
+                place: placeText(place), onDefaultBranch: false, branchTip: true
+            )
+        }
+        let branch = branchName(status)
+        let onDefault = onDefaultBranch(branch: branch, base: base, status: status, round: round)
         var uncommitted: String?
         if let status, status.dirty, status.changes > 0 { uncommitted = "\(status.changes) uncommitted" }
         return BranchLine(
@@ -79,8 +96,10 @@ package enum ReviewIdentityPresentation {
     }
 
     /// The empty state's line under "Nothing to review": the default branch
-    /// has only uncommitted edits to review; any other branch, commits past its base too.
+    /// has only uncommitted edits to review; any other branch, commits past its base too;
+    /// a branch tip, its commits only.
     package static func emptyDescription(_ line: BranchLine) -> String {
+        if line.branchTip { return "No commits on \(line.branch) past \(line.base ?? "the base")." }
         if line.onDefaultBranch { return "No uncommitted edits in the main folder." }
         return "No commits past \(line.base ?? "the base") and no uncommitted edits."
     }

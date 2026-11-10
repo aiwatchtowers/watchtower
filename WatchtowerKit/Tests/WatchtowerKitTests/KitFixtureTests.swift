@@ -57,7 +57,7 @@ final class KitFixtureTests: XCTestCase {
                 "state_unknown", "cannot_type", "claude_not_found", "codex_not_found",
                 "expired", "cancelled", "outcome_unknown",
                 "unsupported_in_poc", "wrong_hub", "write_failed", "not_pending", "not_working",
-                "answer_on_mac"
+                "answer_on_mac", "not_supported"
             ]
         )
     }

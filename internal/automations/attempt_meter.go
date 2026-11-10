@@ -88,11 +88,16 @@ func ModelAttemptUsage(a providerrouting.Attempt, o providerrouting.Outcome) Mod
 	}
 	var u ModelUsage
 	for _, c := range o.Calls {
-		in := c.Input + c.CacheRead + c.CacheWrite5m + c.CacheWrite1h
+		// The budget debits fresh input plus output, as the unrouted path
+		// does; cache reads and writes stay in the leaf ledger only
+		// (docs/features/automations.md#budgets).
+		in := c.Input
 		// Non-estimated leaf facts include authoritative reported zeros and
-		// children that never started. Only unknown/estimated zeros need input
-		// and partial-output estimation here.
-		if in+c.Output == 0 && c.Estimated {
+		// children that never started. Only a leaf that reported nothing at
+		// all, cache included, and is estimated gets input and partial-output
+		// estimation here.
+		reported := c.AllInput() + c.Output
+		if reported == 0 && c.Estimated {
 			estimate := modelUsage(nil, a.InputBytes, len(o.Result.Text))
 			in, c.Output, c.Estimated = estimate.InputTokens, estimate.OutputTokens, true
 		}

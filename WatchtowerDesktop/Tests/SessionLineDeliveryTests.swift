@@ -163,6 +163,23 @@ final class SessionLineDeliveryTests: XCTestCase {
         XCTAssertEqual(settled, .noSession)
     }
 
+    /// A thread's question to the author (spec 2026-11-08 §3) follows the
+    /// same rule through the real delivery: held for a session not live
+    /// before the reattach, `.noSession` (which closes it `gone`) after.
+    func testSpecReviewQuestionHeldForAGoneSessionUntilHostRunsSettle() async throws {
+        let (_, s, _) = try await seed()
+        let vm = makeVM()
+        let notLive = s.id + 100
+
+        let early = await vm.lineDelivery.deliverSpecReviewQuestion("line", questionID: 5, sessionID: notLive)
+        XCTAssertEqual(early, .held)
+        XCTAssertTrue(vm.lineDelivery.heldKeys(sessionID: notLive).isEmpty, "the thread center owns the retry")
+
+        center.markHostRunsSettled()
+        let settled = await vm.lineDelivery.deliverSpecReviewQuestion("line", questionID: 5, sessionID: notLive)
+        XCTAssertEqual(settled, .noSession)
+    }
+
     /// One queue per session: an ask's answer written while another line is
     /// in its pause waits, then goes on its own — each line pasted and
     /// submitted in turn, never two in one prompt.

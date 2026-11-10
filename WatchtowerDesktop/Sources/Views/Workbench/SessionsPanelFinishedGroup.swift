@@ -25,6 +25,7 @@ struct SessionsPanelSessionRow: View {
             reportLine: row.showsStateLabel ? reportLine : nil,
             reportProgress: row.showsStateLabel && !showsSpecReviewLine
                 ? vm.reportProgress(sessionID: row.id, projectID: projectID) : nil,
+            reportMergedProgress: vm.reportMergedProgress(sessionID: row.id, projectID: projectID),
             closedAsks: closedAsks > 0
                 ? OwnerAskClosedButton(vm: vm, projectID: projectID, sessionID: row.id, count: closedAsks)
                 : nil,

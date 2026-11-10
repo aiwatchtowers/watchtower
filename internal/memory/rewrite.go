@@ -481,9 +481,7 @@ func addUsage(acc, u *digest.Usage) {
 	if u == nil {
 		return
 	}
-	acc.InputTokens += u.InputTokens
-	acc.OutputTokens += u.OutputTokens
-	acc.TotalAPITokens += u.TotalAPITokens
+	acc.Add(u.Tokens)
 	if u.Model != "" {
 		acc.Model = u.Model
 	}

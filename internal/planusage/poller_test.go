@@ -207,6 +207,9 @@ type failingStore struct {
 }
 
 func (f failingStore) UpsertPlanUsageStatus(db.PlanUsageStatus) error { return f.err }
+func (f failingStore) UpsertPlanUsageStatusContext(context.Context, db.PlanUsageStatus) error {
+	return f.err
+}
 
 // A status-write failure in the no-credentials branch must not hide behind
 // ErrNoCredentials, which Run does not log.

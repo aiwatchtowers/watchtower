@@ -263,6 +263,9 @@ final class CodeQuestionCenter {
             return false
         }
         sessions[workbenchID]?.isStarting = true
+        // Inside the starting gate: the popover takes no other input while
+        // the launch's catalog read finishes, and its checks below hold.
+        await readCatalogIfUnread()
         let created: Int64
         do {
             created = try await CodeQuestionSurface.createConversation(
@@ -582,6 +585,7 @@ final class CodeQuestionCenter {
         let question = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return .failed("Type a question first.") }
         guard let dbPool else { return .failed("Couldn't start the question: the database is not open.") }
+        await readCatalogIfUnread()
         let (origin, context) = openFileContext(root)
         let choice = defaultChoice()
         let conversationID: Int64
@@ -605,6 +609,15 @@ final class CodeQuestionCenter {
             return .failed("Couldn't send the question.")
         }
         return .started(conversationID: conversationID)
+    }
+
+    /// A question's turn reads the provider's capability row (folder access,
+    /// the prompt): with no row yet, wait for a read in flight (the launch
+    /// read), so the turn is not built on `.none` while it runs. Starts no
+    /// read; a failed one is named on the turn (`postTurn`).
+    private func readCatalogIfUnread() async {
+        guard !AIModelCatalog.shared.isLoaded else { return }
+        await AIModelCatalog.shared.readInFlight()
     }
 
     /// Where Open Quickly's question is about: the Files pane's active file

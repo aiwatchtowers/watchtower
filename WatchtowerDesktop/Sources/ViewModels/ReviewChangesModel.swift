@@ -119,6 +119,13 @@ final class ReviewChangesModel {
     private(set) var approvedAt: Date?
     /// The round's session was deleted: Approve is off (Go refuses it too).
     private(set) var sessionGone = false
+    /// The session's worktree was removed; the open round stayed where it was (board #1012).
+    private(set) var placeMissing = false
+    /// The round and base (`id:base`) the drafts and carried comments were
+    /// last placed on. A row records only its tree, so old-side comments are
+    /// re-placed until a placement on the round's base succeeds; a failed one
+    /// is retried by the next Refresh.
+    @ObservationIgnored private var commentsPlacedOn: String?
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
 
@@ -158,9 +165,10 @@ final class ReviewChangesModel {
     private(set) var overview: OverviewState = .idle
     /// The overview's load; awaited by tests, replaced when another one starts.
     @ObservationIgnored private(set) var overviewTask: Task<Void, Never>?
-    /// The tree the overview shown or loading was asked for; a refresh that
-    /// may regenerate asks again when the round's tree differs (after an Undo).
-    private var overviewTreeSHA: String?
+    /// The diff (base and tree, `ReviewRoundInfo.diffKey`) the overview shown
+    /// or loading was asked for; a refresh that may regenerate asks again when
+    /// the round's differs (after an Undo, or a move that changed only the base).
+    private var overviewDiffKey: String?
     /// The model call running (Make overview, Retry or Deep's own): a refresh
     /// or an Undo never cancels it; one landing for an earlier tree is
     /// followed up (board #585).
@@ -233,6 +241,8 @@ final class ReviewChangesModel {
     /// The session states in which the agent may still edit the folder.
     static let agentWorkingKinds: Set<SessionSwitcherPresentation.State.Kind> = [.working, .background]
     static let agentWorkingMessage = "The agent is working in this session — undo when it stops."
+    /// A round on the task branch's tip reads commits, not a folder (board #1012).
+    static let branchTipUndoMessage = "Undo is not available on a branch review: it reads the branch's commits, not a folder."
 
     /// The pane's reading of `isAgentWorking`: the session's dot state
     /// (a session that is not live does not work, whatever its last hook said).
@@ -244,15 +254,18 @@ final class ReviewChangesModel {
     struct LoadedSides: Equatable {
         let path: String
         let treeSHA: String
+        /// The round's `diffKey` (base and tree) they were read for: the old
+        /// side is the base's, so a base-only change makes them stale too.
+        let diffKey: String
         let view: View
         let old: ReviewFileSide
         let new: ReviewFileSide
     }
 
-    /// The sides of the selected file on the round's current tree and view;
-    /// nil while they load (another file, tree or view picked since).
+    /// The sides of the selected file on the round's current diff and view;
+    /// nil while they load (another file, tree, base or view picked since).
     var currentSides: LoadedSides? {
-        guard let sides, sides.path == selectedPath, sides.treeSHA == round?.treeSha, sides.view == view else { return nil }
+        guard let sides, sides.path == selectedPath, sides.diffKey == round?.diffKey, sides.view == view else { return nil }
         return sides
     }
 
@@ -275,6 +288,8 @@ final class ReviewChangesModel {
         return sessionGone ? "The session is gone" : nil
     }
 
+    /// The notice when the session's worktree was removed under an open round (board #1012).
+    static let placeMissingMessage = "The session's worktree was removed — this round stays where it was opened"
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
     /// Go refused Approve on a round that is still open, with no blocker the
@@ -334,7 +349,11 @@ final class ReviewChangesModel {
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: false))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
+            // The comments' rows record only their tree: unless this model placed
+            // them on the round's base, its old-side comments are re-placed.
+            let baseChanged = commentsPlacedOn != Self.placement(info)
             round = info
+            placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
             view = info.prevRoundId > 0 && !previousTreeLost ? .sinceLastRound : .all
             let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
@@ -363,7 +382,18 @@ final class ReviewChangesModel {
             var marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             if rows.isEmpty, marks.isEmpty, info.prevRoundId > 0 {
                 try await carryOver(from: info.prevRoundId, into: info)
+                commentsPlacedOn = Self.placement(info)
                 marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
+            } else {
+                // Go moved the open round to the session's new place (board #1012): its comments follow as on a
+                // Refresh. A failure leaves the rows as they were and the round still opens.
+                let stale = Self.stale(rows, round: info, baseChanged: baseChanged)
+                do {
+                    try await replace(stale, round: info)
+                    commentsPlacedOn = Self.placement(info)
+                } catch {
+                    lastError = Self.replaceFailedMessage(count: stale.count, error)
+                }
             }
             try reloadComments()
             viewed = marks
@@ -414,9 +444,14 @@ final class ReviewChangesModel {
         do {
             let start = try Self.checked(await cli.reviewStart(projectID: projectID, sessionID: sessionID, refresh: true))
             guard let info = start.round else { throw Failure(message: "The review round is missing from the answer.") }
-            let treeChanged = round?.treeSha != info.treeSha
+            let diffChanged = round?.diffKey != info.diffKey
+            let baseChanged = commentsPlacedOn != Self.placement(info)
             round = info
+            placeMissing = start.placeMissing ?? false
             previousTreeLost = start.previousTreeLost ?? info.prevTreeLost
+            // No previous round, or its tree is lost (pruned, or of another
+            // place, board #1012): the Since view is gone, as in open().
+            if view == .sinceLastRound, info.prevRoundId == 0 || previousTreeLost { view = .all }
             let ctx = try Self.checked(await cli.reviewContext(projectID: projectID, sessionID: sessionID))
             context = ctx.items ?? []
             lenses = ctx.lenses ?? []
@@ -429,23 +464,12 @@ final class ReviewChangesModel {
             // anyway. A model call still running is left to finish
             // (`startOverview`), and followed up when it lands.
             // An empty diff drops whatever overview is shown, Undo or not.
-            if !hasChanges || (regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown) { startOverview() }
+            if !hasChanges || (regenerateOverview ? overviewDiffKey != info.diffKey : diffChanged && !overviewShown) { startOverview() }
             let roundID = info.id
             sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
-            let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
-            if !stale.isEmpty {
-                let plan = try await plan(stale, round: info)
-                try await write { db in
-                    for c in stale {
-                        if let place = plan.moved[c.id] {
-                            try ReviewQueries.replace(db, id: c.id, placement: place, treeSHA: info.treeSha)
-                        } else if plan.lost.contains(c.id) {
-                            try ReviewQueries.markOutdated(db, id: c.id)
-                        }
-                    }
-                }
-            }
+            try await replace(Self.stale(rows, round: info, baseChanged: baseChanged), round: info)
+            commentsPlacedOn = Self.placement(info)
             try reloadComments()
             try reloadReverts()
             await reloadSides()
@@ -786,7 +810,7 @@ final class ReviewChangesModel {
         // Deep makes its overview by itself: switching to it asks for one
         // unless the current tree's is shown (a running model call finishes
         // and is followed up).
-        if m == .deep, load == .ready, !(overviewShown && overviewTreeSHA == round?.treeSha) { startOverview() }
+        if m == .deep, load == .ready, !(overviewShown && overviewDiffKey == round?.diffKey) { startOverview() }
     }
 
     func setPhase(_ p: ReviewPhase) async throws {
@@ -926,8 +950,8 @@ final class ReviewChangesModel {
         }
         if let generation, generationID == generation { generationID = nil }
         guard !Task.isCancelled, round?.id == info.id else { return }
-        guard round?.treeSha == info.treeSha else {
-            // A model call that ran past a tree change is followed up for the
+        guard round?.diffKey == info.diffKey else {
+            // A model call that ran past a tree (or base) change is followed up for the
             // new tree: Deep makes its overview; Quick reads its cache and
             // else shows a made one as being for an earlier version.
             guard generate else { return }
@@ -1038,12 +1062,16 @@ final class ReviewChangesModel {
     // MARK: - Undo
 
     var canUndo: Bool {
-        round?.status == "open" && !sending && !undoing && !isAgentWorking()
+        round?.status == "open" && round?.isBranchTip == false && !sending && !undoing && !isAgentWorking()
     }
 
     /// Undoes one hunk of the shown diff in the work tree (Go checks the blob
     /// and `apply --check -R`); refused here while the agent works.
     func undo(hunkID: String) async {
+        guard round?.isBranchTip != true else {
+            lastError = Self.branchTipUndoMessage
+            return
+        }
         guard !isAgentWorking() else {
             lastError = Self.agentWorkingMessage
             return
@@ -1075,11 +1103,31 @@ final class ReviewChangesModel {
         return sourceReplies[source] ?? ""
     }
 
-    /// Takes a comment the agent resolved back into the open round.
+    /// Takes a comment the agent resolved back into the open round, placed
+    /// on the round's current diff: a resolved comment is never re-placed
+    /// while resolved, so it may carry anchors from before a move.
     func reopen(_ id: Int64) async throws {
         try await run {
             let info = try openRound()
             try await writeInOpenRound { try ReviewQueries.reopen($0, commentID: id, openRoundID: info.id) }
+            let rows = try await db.read { try ReviewQueries.comments($0, roundID: info.id) }
+            let reopened = rows.filter {
+                ($0.id == id || $0.carriedFrom == id) && ($0.status == .draft || $0.status == .carried) && $0.path != nil
+            }
+            do {
+                try await replace(reopened, round: info)
+            } catch {
+                // The reopen is committed: a row left on its pre-move lines is
+                // re-placed by the next Refresh, which re-checks every comment.
+                // The banner says so; a failed reload must not replace it.
+                commentsPlacedOn = nil
+                do {
+                    try reloadComments()
+                } catch let reloadError {
+                    Self.log.error("review comments reload failed: \(reloadError.localizedDescription, privacy: .public)")
+                }
+                throw Failure(message: Self.replaceFailedMessage(count: reopened.count, error, afterReopen: true))
+            }
             try reloadComments()
         }
     }
@@ -1248,7 +1296,7 @@ final class ReviewChangesModel {
             // still running is cancelled, and its result is dropped on landing.
             overviewTask?.cancel()
             generationID = nil
-            overviewTreeSHA = round?.treeSha
+            overviewDiffKey = round?.diffKey
             overview = .idle
             lastReadyOverview = nil
             appliedAIChapters = []
@@ -1257,7 +1305,7 @@ final class ReviewChangesModel {
         }
         guard generationID == nil else { return }
         overviewTask?.cancel()
-        overviewTreeSHA = round?.treeSha
+        overviewDiffKey = round?.diffKey
         let make = generate || mode == .deep
         let generation = make ? UUID() : nil
         generationID = generation
@@ -1329,8 +1377,8 @@ final class ReviewChangesModel {
         let oldPath = files.first { $0.path == path }?.oldPath
         do {
             let loaded = try await fetchSides(path: path, oldPath: oldPath, round: info, since: since)
-            guard selectedPath == path, since == (view == .sinceLastRound), round?.treeSha == info.treeSha else { return }
-            sides = LoadedSides(path: path, treeSHA: info.treeSha, view: view, old: loaded.old, new: loaded.new)
+            guard selectedPath == path, since == (view == .sinceLastRound), round?.diffKey == info.diffKey else { return }
+            sides = LoadedSides(path: path, treeSHA: info.treeSha, diffKey: info.diffKey, view: view, old: loaded.old, new: loaded.new)
         } catch {
             guard selectedPath == path else { return }
             sides = nil
@@ -1363,7 +1411,54 @@ final class ReviewChangesModel {
         }
     }
 
-    /// Where each line comment lands on the round's current tree.
+    /// The round's drafts and carried comments placed on another diff: made
+    /// on another tree, or on the old side when the base may have changed
+    /// (a row records only its tree).
+    private static func stale(_ rows: [ReviewComment], round info: ReviewRoundInfo, baseChanged: Bool) -> [ReviewComment] {
+        rows.filter {
+            ($0.status == .draft || $0.status == .carried) && $0.path != nil
+                && ($0.treeSHA != info.treeSha || (baseChanged && $0.side == "old"))
+        }
+    }
+
+    /// The number of lines in text (a final newline ends the last line; an
+    /// empty text has none).
+    private static func lineCount(_ text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        let parts = text.split(separator: "\n", omittingEmptySubsequences: false).count
+        return text.hasSuffix("\n") ? parts - 1 : parts
+    }
+
+    /// The `commentsPlacedOn` key of a round.
+    private static func placement(_ info: ReviewRoundInfo) -> String { "\(info.id):\(info.baseSha)" }
+
+    /// The banner when `open()` could not re-place a moved round's comments,
+    /// or (`afterReopen`) when `reopen(_:)` committed but could not re-place
+    /// the reopened ones.
+    static func replaceFailedMessage(count: Int, _ error: Error, afterReopen: Bool = false) -> String {
+        let what = "re-place \(count) \(count == 1 ? "comment" : "comments") on the new tree: \(message(error))"
+        return afterReopen ? "Reopened, but could not \(what)" : "Could not \(what)"
+    }
+
+    /// Re-places stale comments onto the round's current diff: moved, or
+    /// outdated when their lines are lost.
+    private func replace(_ stale: [ReviewComment], round info: ReviewRoundInfo) async throws {
+        guard !stale.isEmpty else { return }
+        let plan = try await plan(stale, round: info)
+        try await write { db in
+            for c in stale {
+                if let place = plan.moved[c.id] {
+                    try ReviewQueries.replace(db, id: c.id, placement: place, treeSHA: info.treeSha)
+                } else if plan.lost.contains(c.id) {
+                    try ReviewQueries.markOutdated(db, id: c.id)
+                }
+            }
+        }
+    }
+
+    /// Where each line comment lands on the round's current tree. A comment
+    /// on blank lines has no quote to look for: it is outdated when its side
+    /// of the file is gone or no longer reaches its lines, else left where it is.
     private func plan(_ list: [ReviewComment], round info: ReviewRoundInfo) async throws -> ReviewCommentAnchor.Plan {
         var loaded: [String: Sides] = [:]
         for path in Set(list.compactMap(\.path)).sorted() {
@@ -1372,11 +1467,18 @@ final class ReviewChangesModel {
         }
         var result = ReviewCommentAnchor.Plan()
         for side in ["old", "new"] {
-            let part = ReviewCommentAnchor.plan(list.filter { $0.side == side }) { path in
+            let text = { (path: String) -> String? in
                 guard let both = loaded[path] else { return nil }
                 let s = side == "old" ? both.old : both.new
                 return s.exists && !s.binary && !s.tooLarge ? s.text : nil
             }
+            let onSide = list.filter { $0.side == side }
+            // A design comment (no path) is left to ReviewCommentAnchor.plan, which leaves it alone.
+            let blank = onSide.filter { $0.path != nil && $0.quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            for c in blank where !(c.path.flatMap(text).map { Self.lineCount($0) >= c.endLine } ?? false) {
+                result.lost.insert(c.id)
+            }
+            let part = ReviewCommentAnchor.plan(onSide.filter { !blank.contains($0) }, textFor: text)
             result.moved.merge(part.moved) { first, _ in first }
             result.lost.formUnion(part.lost)
         }

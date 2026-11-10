@@ -101,29 +101,58 @@ func tomlBasicString(s string) (string, error) {
 // probeCodexVersion runs `bin --version`; tests replace it.
 var probeCodexVersion = codexVersion
 
-// instructionsSupport caches instructionsFileSupported per binary path, so
-// the version probe runs once per process.
-var instructionsSupport sync.Map // string → bool
+// instructionsSupport caches instructionsFileSupported per binary path
+// (string → *probeEntry): a read version for good, a failed probe for
+// instructionsProbeRetry.
+var instructionsSupport sync.Map
+
+// instructionsProbeRetry is how long a failed version probe stands before
+// the next run probes again; tests shorten it.
+var instructionsProbeRetry = time.Minute
+
+// probeEntry is one binary's cached version probe. mu serialises its
+// probes: concurrent first calls wait for one probe (one log line), and a
+// probe never runs once a version was read, so a late failure cannot
+// replace a success. probed is false until the first probe; failedAt is
+// zero for a version that was read (kept for the process lifetime).
+type probeEntry struct {
+	mu       sync.Mutex
+	probed   bool
+	ok       bool
+	failedAt time.Time
+}
 
 // instructionsFileSupported reports whether the codex at bin takes
 // `-c model_instructions_file` (version ≥ minInstructionsFileVersion). An
-// unknown version counts as too old; the fallback is logged once per binary.
+// unknown version counts as too old. A version that was read is cached for
+// the process; a failed probe (the binary would not run, timed out or
+// printed no version) only for instructionsProbeRetry, so one slow probe at
+// daemon start does not keep every system prompt on stdin until a restart.
+// The fallback is logged once per probe.
 func instructionsFileSupported(bin string) bool {
-	if v, ok := instructionsSupport.Load(bin); ok {
-		return v.(bool)
+	v, cached := instructionsSupport.Load(bin)
+	if !cached {
+		v, _ = instructionsSupport.LoadOrStore(bin, &probeEntry{})
 	}
-	v, err := probeCodexVersion(bin)
-	ok := err == nil && !versionLess(v, minInstructionsFileVersion)
-	if actual, loaded := instructionsSupport.LoadOrStore(bin, ok); loaded {
-		return actual.(bool)
+	e := v.(*probeEntry)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.probed && (e.failedAt.IsZero() || time.Since(e.failedAt) < instructionsProbeRetry) {
+		return e.ok
 	}
-	if !ok {
-		reason := fmt.Sprintf("version %d.%d.%d", v[0], v[1], v[2])
-		if err != nil {
-			reason = err.Error()
-		}
-		log.Printf("codex: %s (%s) predates model_instructions_file %d.%d.%d; the system prompt rides on stdin instead",
-			bin, reason, minInstructionsFileVersion[0], minInstructionsFileVersion[1], minInstructionsFileVersion[2])
+	ver, err := probeCodexVersion(bin)
+	ok := err == nil && !versionLess(ver, minInstructionsFileVersion)
+	e.probed, e.ok, e.failedAt = true, ok, time.Time{}
+	if err != nil {
+		e.failedAt = time.Now()
+	}
+	switch {
+	case err != nil:
+		log.Printf("codex: could not read the version of %s (%v); the system prompt rides on stdin until the next probe in %s",
+			bin, err, instructionsProbeRetry)
+	case !ok:
+		log.Printf("codex: %s (version %d.%d.%d) predates model_instructions_file %d.%d.%d; the system prompt rides on stdin instead",
+			bin, ver[0], ver[1], ver[2], minInstructionsFileVersion[0], minInstructionsFileVersion[1], minInstructionsFileVersion[2])
 	}
 	return ok
 }
@@ -179,4 +208,16 @@ func parseCodexVersion(out string) ([3]int, error) {
 // versionLess reports a < b.
 func versionLess(a, b [3]int) bool {
 	return slices.Compare(a[:], b[:]) < 0
+}
+
+// holdPromptFile holds codex's model_instructions_file for the whole run
+// (fsutil.HoldTempFile: codex re-reads it for every model request, and the
+// hold keeps the stale-temp sweep off it) and logs, without the file's
+// name, when the hold could not shield it. Defer the returned release.
+func holdPromptFile(path string) (release func()) {
+	release, err := fsutil.HoldTempFile(path)
+	if err != nil {
+		log.Printf("codex: system prompt file not shielded from the stale-temp sweep: %v", err)
+	}
+	return release
 }

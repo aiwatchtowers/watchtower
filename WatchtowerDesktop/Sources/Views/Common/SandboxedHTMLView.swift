@@ -82,6 +82,17 @@ struct SandboxedHTMLView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
+        let webView = Self.makeWebView(coordinator: context.coordinator, frame: .zero)
+        context.coordinator.focusOnLoad = focusOnLoad
+        context.coordinator.show(content, token: reloadToken)
+        return webView
+    }
+
+    /// A web view with this view's whole configuration, driven by
+    /// `coordinator` (its `show` loads the content once the rules are in).
+    /// Also the offscreen view `ArtifactPrinter` prints from: the same
+    /// barrier, nothing enabled for printing.
+    static func makeWebView(coordinator: Coordinator, frame: NSRect) -> WKWebView {
         let config = WKWebViewConfiguration()
         if let failure = Self.lockDown(config.preferences) {
             htmlPreviewLog.error("WebRTC stays on in the preferences (\(failure, privacy: .public)); the page script removes it")
@@ -93,13 +104,11 @@ struct SandboxedHTMLView: NSViewRepresentable {
         config.userContentController.addUserScript(
             WKUserScript(source: Self.removeWebRTC, injectionTime: .atDocumentStart, forMainFrameOnly: false)
         )
-        config.setURLSchemeHandler(context.coordinator.files, forURLScheme: HTMLPreviewPolicy.scheme)
-        let webView = WKWebView(frame: .zero, configuration: config)
-        webView.navigationDelegate = context.coordinator
-        webView.uiDelegate = context.coordinator
-        context.coordinator.webView = webView
-        context.coordinator.focusOnLoad = focusOnLoad
-        context.coordinator.show(content, token: reloadToken)
+        config.setURLSchemeHandler(coordinator.files, forURLScheme: HTMLPreviewPolicy.scheme)
+        let webView = WKWebView(frame: frame, configuration: config)
+        webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
+        coordinator.webView = webView
         return webView
     }
 
@@ -118,6 +127,13 @@ struct SandboxedHTMLView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         weak var webView: WKWebView?
         var focusOnLoad = false
+        /// Called when the content load finished (never for a message page
+        /// or for a navigation of the page's own).
+        var onLoaded: (@MainActor (WKWebView) -> Void)?
+        /// Called by `showMessage`, the one place it is called from: every
+        /// time the view shows a message instead of the content, with that
+        /// message (the printer's failure path).
+        var onFailed: (@MainActor (String) -> Void)?
         /// Serves a file preview's folder under `HTMLPreviewPolicy.scheme`.
         let files = SandboxedHTMLSchemeHandler()
         /// Where the rule list comes from (a test swaps in a failing one).
@@ -127,6 +143,11 @@ struct SandboxedHTMLView: NSViewRepresentable {
         /// The preview URL of the file shown; nil for an in-memory page.
         private var page: URL?
         private var focused = false
+        /// The view shows `showMessage`'s text, not the content.
+        private var showingMessage = false
+        /// The navigation that loads the content; only its finish or
+        /// failure is reported (a page's own navigations are not).
+        private var contentNavigation: WKNavigation?
         private var load: Task<Void, Never>?
         /// The rule list in force. A different one is added before this one
         /// goes, so the view is never without a block.
@@ -149,13 +170,20 @@ struct SandboxedHTMLView: NSViewRepresentable {
                     self.showMessage("The preview could not be prepared: \(error.localizedDescription)")
                     return
                 }
-                guard !Task.isCancelled, let webView = self.webView else { return }
+                // A cancelled load has a successor (`show` again) or an owner
+                // that is going away (`cancel`); either one reports itself.
+                guard !Task.isCancelled else { return }
+                guard let webView = self.webView else {
+                    htmlPreviewLog.error("HTML preview has no web view to load into")
+                    return self.showMessage("The preview could not be prepared: its view is gone.")
+                }
                 self.install(rules, on: webView.configuration.userContentController)
+                self.showingMessage = false
                 switch content {
                 case let .page(html):
                     self.page = nil
                     self.files.serve(nil)
-                    webView.loadHTMLString(html, baseURL: nil)
+                    self.contentNavigation = webView.loadHTMLString(html, baseURL: nil)
                 case let .file(url, folder):
                     let token = self.files.serve(folder)
                     self.page = HTMLPreviewPolicy.pageURL(file: url, folder: folder, token: token)
@@ -163,17 +191,21 @@ struct SandboxedHTMLView: NSViewRepresentable {
                         return self.showMessage("The preview could not be prepared: the file is not in its folder.")
                     }
                     self.files.setPage(page)
-                    webView.load(URLRequest(url: page))
+                    self.contentNavigation = webView.load(URLRequest(url: page))
                 }
             }
         }
 
-        /// A fixed message in place of the page; never the content.
+        /// A fixed message in place of the page; never the content. Reports
+        /// `text` through `onFailed`.
         private func showMessage(_ text: String) {
+            showingMessage = true
+            contentNavigation = nil
             page = nil
             files.serve(nil)
             let escaped = text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
             webView?.loadHTMLString("<p style=\"font:13px -apple-system\">\(escaped)</p>", baseURL: nil)
+            onFailed?(text)
         }
 
         private func install(_ rules: WKContentRuleList, on controller: WKUserContentController) {
@@ -197,9 +229,40 @@ struct SandboxedHTMLView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            if !showingMessage, let navigation, navigation === contentNavigation { onLoaded?(webView) }
             guard focusOnLoad, !focused, let window = webView.window else { return }
             focused = true
             window.makeFirstResponder(webView)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            contentFailed(navigation, error)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            contentFailed(navigation, error)
+        }
+
+        /// WebKit's "frame load interrupted by policy change" (WebKitErrorDomain
+        /// 102): a navigation the policy delegate cancelled.
+        private static let webKitErrorDomain = "WebKitErrorDomain"
+        private static let frameLoadInterrupted = 102
+
+        /// Reports a failure of the content load only; a navigation of the
+        /// page's own (cancelled by the policy above) is no failure.
+        private func contentFailed(_ navigation: WKNavigation?, _ error: Error) {
+            guard !showingMessage, let navigation, navigation === contentNavigation else { return }
+            let error = error as NSError
+            if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled { return }
+            if error.domain == Self.webKitErrorDomain, error.code == Self.frameLoadInterrupted { return }
+            htmlPreviewLog.error("HTML preview content did not load: \(error.localizedDescription, privacy: .public)")
+            showMessage("The page could not be loaded: \(error.localizedDescription)")
+        }
+
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            htmlPreviewLog.error("HTML preview web content process ended")
+            guard !showingMessage else { return }
+            showMessage("The page stopped: its web content process ended.")
         }
 
         // MARK: WKUIDelegate — nothing leaves the view

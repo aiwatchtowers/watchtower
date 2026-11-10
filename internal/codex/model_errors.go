@@ -38,6 +38,11 @@ const (
 	refusalNoAccess    = "does not exist or you do not have access to it"
 )
 
+// streamDisconnected is how codex words a model stream it lost ("stream
+// disconnected before completion: …"), lowercased: the network to the
+// provider failed, not the request.
+const streamDisconnected = "stream disconnected"
+
 // turnError is the error for a failed codex turn with message msg. A JSON
 // envelope ({"type":"error","status":429,"error":{"type":…,"message":…}})
 // is unwrapped to its message (older envelopes omit the redundant outer

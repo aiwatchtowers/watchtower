@@ -540,6 +540,11 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 const (
 	readStateRefreshInterval = time.Hour
 	rosterRefreshInterval    = 24 * time.Hour
+	// readStateDigestWindow bounds the read-cursor pass to channels whose
+	// unread channel digest ended within it; an older unread digest no longer
+	// triggers a cursor refresh of its own (#881). The pass goes away with
+	// digests.
+	readStateDigestWindow = 7 * 24 * time.Hour
 )
 
 // clock returns the orchestrator's notion of now (time.Now unless a test
@@ -562,10 +567,12 @@ func (o *Orchestrator) refreshDue(last time.Time, every time.Duration) bool {
 // last_read for most channel types.
 //
 // Two modes:
-//   - Normal: only fetches for channels with unread digests (minimal API calls).
-//   - First run: if no digests exist yet, fetches for all member channels that lack
-//     a last_read cursor. This ensures AutoMarkReadFromSlack works immediately after
-//     the first digest generation (without waiting for a second sync cycle).
+//   - Normal: only fetches for channels with an unread channel digest from the
+//     last readStateDigestWindow (minimal API calls).
+//   - First run: if this account has no unread channel digest of any age,
+//     fetches for all member channels that lack a last_read cursor. This ensures
+//     AutoMarkReadFromSlack works immediately after the first digest generation
+//     (without waiting for a second sync cycle).
 //
 // A per-channel failure is logged and skipped, but a pass that could not
 // list its channels, updated none of them or was cut off by a cancelled ctx
@@ -579,14 +586,27 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 	// raw channel id can collide across two workspaces (the exact scenario
 	// namespacing exists to prevent), and this orchestrator only holds a
 	// token for its own account.
-	channelIDs, err := o.db.UnreadDigestChannelIDs()
+	channelIDs, err := o.db.UnreadDigestChannelIDs(o.clock().Add(-readStateDigestWindow))
 	if err != nil {
 		return fmt.Errorf("listing unread digest channels: %w", err)
 	}
 	channelIDs = o.filterOwnAccountIDs(channelIDs)
 
-	// First-run path: no digests yet, pre-fetch last_read for channels without it.
 	if len(channelIDs) == 0 {
+		// Nothing unread within the window. If older unread digests remain,
+		// skip: the first-run path stays gated on "no unread channel digest
+		// of any age", as before the window, so an install with only an old
+		// unread tail does not start re-fetching its cursor-less channels
+		// every hour.
+		older, err := o.db.UnreadDigestChannelIDs(time.Time{})
+		if err != nil {
+			return fmt.Errorf("listing older unread digest channels: %w", err)
+		}
+		if n := len(o.filterOwnAccountIDs(older)); n > 0 {
+			o.logger.Printf("channel read state: no unread digest within the window, skipping (older channels left out: %d)", n)
+			return nil
+		}
+		// First-run path: no digests yet, pre-fetch last_read for channels without it.
 		channelIDs, err = o.db.ChannelIDsWithoutLastRead()
 		if err != nil {
 			return fmt.Errorf("listing channels without last_read: %w", err)

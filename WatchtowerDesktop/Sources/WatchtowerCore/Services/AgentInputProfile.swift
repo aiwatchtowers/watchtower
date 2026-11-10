@@ -36,10 +36,6 @@ package struct AgentInputProfile: Sendable, Equatable {
         submit: [0x0D], newline: [0x0A], pasteSettle: .milliseconds(150), submitSettle: .milliseconds(500)
     )
 
-    package static func `for`(_ kind: AgentKind) -> Self {
-        switch kind {
-        case .claude: claude
-        case .codex: codex
-        }
-    }
+    /// The profile of `kind`'s session adapter.
+    package static func `for`(_ kind: AgentKind) -> Self { kind.session.inputProfile }
 }

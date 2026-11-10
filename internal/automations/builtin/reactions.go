@@ -125,7 +125,7 @@ func ReactionPrimitives(p ReactionDispatcher, s *ReactionSlot) map[string]automa
 			}
 			out := p.DispatchWith(ctx, d, call.Prompt)
 			s.store(call.Trigger.RunID, out)
-			usage := automations.PrimitiveUsage{InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens}
+			usage := automations.PrimitiveUsage{InputTokens: out.Usage.InputTokens(), OutputTokens: out.Usage.OutputTokens()}
 			if out.Step != reactioncmd.StepFinalize || out.Status != reactionDispatched {
 				return automations.PrimitiveResult{Usage: usage}, fmt.Errorf("the reaction was not dispatched (%s): %s",
 					outcomeKind(out), out.Detail)

@@ -16,13 +16,14 @@
 
 **Status:** Enforced
 
-**Observable:** (Claude Code transcripts and Codex rollouts alike.) The feed is built on demand from the transcript files and kept nowhere. The ledger (`terminal_session_agent_sessions`) holds agent session ids and times only. The reader opens transcripts for reading only. The guard test checks that after a build the transcript's size and mtime are unchanged and no sibling file appeared.
+**Observable:** (Claude Code transcripts and Codex rollouts alike.) The feed is built on demand from the transcript files and kept nowhere. The ledger (`terminal_session_agent_sessions`) holds agent session ids and times only. The reader opens transcripts for reading only. A zstd-compressed Codex rollout is decompressed in memory only (`internal/rollout`, capped at 256 MiB of decompressed text): nothing is written next to it or anywhere else. The guard tests check that after a build the transcript's size and mtime are unchanged and no sibling file appeared, for a plain and a compressed rollout.
 
 **Why locked:** Transcripts hold the owner's prompts, code and secrets (AGENTLOG-01, AGENTLOG-05 apply the same rule to analytics); a copy in the shared database would travel with backups and sync.
 
 **Test guards:**
 - `internal/sessionfeed/feed_test.go::TestFeed01_ReaderLeavesTranscriptUntouched`
 - `internal/sessionfeed/codex_test.go::TestFeed01_CodexReaderLeavesTranscriptUntouched`
+- `internal/sessionfeed/compressed_test.go::TestFeed01_CompressedRolloutReadLeavesFileUntouched`
 - `internal/db/terminal_session_agent_sessions_test.go::TestTerminalAgentSessions_RecordsEachID`
 - `internal/db/terminal_session_agent_sessions_test.go::TestMigration00127_Backfill`
 
@@ -32,7 +33,7 @@
 
 **Status:** Enforced
 
-**Observable:** The feed holds owner messages, agent `text`, ask answers, Watchtower-typed lines, the start brief, subagent markers and separators, plus Claude Code notices (`<task-notification>`, `<teammate-message …>` user records) as `event` entries; a notice never appears as an owner entry. No tool call, tool result, meta record, thinking block, system reminder or hook output appears as an entry. Streamed duplicates of one assistant message collapse to one entry.
+**Observable:** The feed holds owner messages, agent `text`, ask answers, Watchtower-typed lines, the start brief, subagent markers and separators, plus Claude Code notices (`<task-notification>`, `<teammate-message …>` user records) as `event` entries; a notice never appears as an owner entry. No tool call, tool result, meta record, thinking block, system reminder or hook output appears as an entry. Streamed duplicates of one assistant message collapse to one entry. A Codex session holds the same dialog whether its rollout is plain or zstd-compressed; a compressed rollout that does not decode yields no entries and is counted under `unknown_records["<zstd>"]` (`"<zstd-too-large>"` past the 256 MiB cap). Codex subagents join the feed's `subagents` list (from the rollout's live agents, the set a drill-in opens, bounded to the live window), not the dialog. Codex writes no queued shape: an owner line typed while a turn runs is an ordinary `user_message` and reads as a plain owner entry.
 
 **Why locked:** Noise and duplicates are the failure the feature exists to remove.
 
@@ -42,6 +43,8 @@
 - `internal/sessionfeed/parse_test.go::TestParse_StripsSystemReminder`
 - `internal/sessionfeed/parse_test.go::TestParse_NoticesAreEvents`
 - `internal/sessionfeed/codex_test.go::TestParseCodex_OwnerAgentBriefAskAnswer` (Codex: dialog only)
+- `internal/sessionfeed/compressed_test.go::TestParseCodex_CompressedRolloutGivesEntries` (Codex: the same dialog from a compressed rollout)
+- `internal/sessionfeed/compressed_test.go::TestParseCodex_QueuedOwnerLine` (Codex: no queued shape)
 
 **Locked since:** 2026-10-16
 
@@ -99,3 +102,5 @@
 - 2026-10-21 (board #846; the owner's decisions ask #481, spec approval ask #482): FEED-03 gains `activity`. Spec `docs/superpowers/specs/2026-10-21-workchat-polish-design.md`.
 
 - 2026-11-02 (board #1481, asks #932/#933): FEED-03 additive `live`/`live_ok`/`live_error` envelope, keeping existing activity/entry semantics. Current/last actions and bounded agent lifecycle never become tool entries, database text or mobile activity. Guards added: `internal/sessionfeed/live_test.go::TestLiveCompletedActionSurvivesPollingAndNewTurnResets`, `TestLiveClaudeBackgroundSurvivesLaunchResultAndMainEnd`, `TestLiveCodexLifecycleAndSafeDrillIn`, `TestLiveUnavailableInputsNeverReportZeroAgents`; Desktop `WorkchatLivePresentationTests` and `SessionFeedStoreTests.testLiveEnvelopeFailureKeepsSnapshotButNeverMasqueradesAsFresh`.
+
+- 2026-11-05 (LLM transport independence, Task G6; decision ask #507, N1 signed off in ask #514): FEED-01 amended — a zstd-compressed Codex rollout is decompressed in memory only, guard `TestFeed01_CompressedRolloutReadLeavesFileUntouched` added. FEED-02 amended — Codex dialog is the same from a compressed rollout (`TestParseCodex_CompressedRolloutGivesEntries`), Codex subagents join `subagents`, and Codex records no queued owner line (`TestParseCodex_QueuedOwnerLine`).

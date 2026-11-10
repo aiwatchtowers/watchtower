@@ -1,0 +1,6 @@
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Three "}}],"synthetic":true}
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"words "}}],"synthetic":true}
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"exactly."}}],"synthetic":true}
+data: {"object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"synthetic":true}
+data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":5,"total_tokens":55},"synthetic":true}
+data: [DONE]

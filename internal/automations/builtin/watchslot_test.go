@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/customtracks"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // scanGenerator is the custom-track scan's model: it records each prompt and
@@ -43,7 +44,7 @@ func (g *scanGenerator) Generate(_ context.Context, _, user, _ string) (string, 
 	if out == "" {
 		out = `{"events":[]}`
 	}
-	return out, &digest.Usage{InputTokens: g.in, OutputTokens: g.outTokens}, "", nil
+	return out, &digest.Usage{Tokens: llmusage.Tokens{Input: int64(g.in), Output: int64(g.outTokens)}}, "", nil
 }
 
 func (g *scanGenerator) all() []string {

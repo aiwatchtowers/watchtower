@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
+	"time"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
@@ -13,23 +15,106 @@ import (
 // Summary is one agent session's row line (`session-report --summary`).
 // FinishedAt is "" when the session is not finished.
 type Summary struct {
-	SessionID  int64  `json:"session_id"`
-	TargetID   *int64 `json:"target_id"`
-	Done       int    `json:"done"`
-	Total      int    `json:"total"`
-	PRLine     string `json:"pr_line"`
-	FinishedAt string `json:"finished_at"`
+	SessionID int64  `json:"session_id"`
+	TargetID  *int64 `json:"target_id"`
+	Done      int    `json:"done"`
+	Total     int    `json:"total"`
+	Merged    int    `json:"merged"` // not done, branch merged into its base (Progress.Merged)
+	// MergedStale: the merge refresh before these lines could not check a
+	// verdict Merged reads — a git call failed, the base did not resolve,
+	// the budget ran out or the cache could not be read — so Merged counts
+	// the last verdicts known (board #986, ask #525). Always false from
+	// Summaries, which refreshes nothing, and in a folder outside a git
+	// repository, where git has no verdict to give.
+	MergedStale bool   `json:"merged_stale"`
+	PRLine      string `json:"pr_line"`
+	FinishedAt  string `json:"finished_at"`
 }
 
 // Summaries is the row line of every agent session (Claude Code or Codex;
 // never a shell) of workbench workbenchID, in session id order, from the DB and
 // the PR cache only.
 func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, error) {
-	b, err := loadBoard(d, workbenchID)
+	sessions, err := agentSessions(ctx, d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
 	states, err := d.PRStates(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	return summarize(sessions, states, nil), nil
+}
+
+// RefreshedSummaries is Summaries after a refresh of the merge verdicts
+// every agent session's counts read (board #986): git only — opts.Network
+// is ignored, gh never runs — within opts.Budget (0 = SummaryRefreshBudget),
+// each cache write waiting at most summaryWriteWait for the write lock (d's
+// busy_timeout during the writes, restored after). A verdict read but
+// not saved still counts in the rows. The board and the cache are each read
+// once. The result's note says what could not be refreshed.
+func RefreshedSummaries(ctx context.Context, d *db.DB, workbenchID int64, opts RefreshOptions) ([]Summary, RefreshResult, error) {
+	sessions, err := agentSessions(ctx, d, workbenchID)
+	if err != nil {
+		return nil, RefreshResult{}, err
+	}
+	var refs []string
+	for _, as := range sessions {
+		refs = append(refs, as.sc.mergeRefs()...)
+	}
+	opts.Network = false
+	if opts.Budget <= 0 {
+		opts.Budget = SummaryRefreshBudget
+	}
+	// The short write wait is the handle's busy_timeout while the refresh
+	// writes; the caller's own wait comes back after. Without a readable one
+	// the writes keep the handle's wait.
+	var prevMS int64
+	if err := d.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&prevMS); err == nil {
+		opts.writeWait = summaryWriteWait
+		defer func() { _ = d.SetBusyTimeout(time.Duration(prevMS) * time.Millisecond) }()
+	}
+	res, states, unchecked := refresh(ctx, d, workbenchID, refs, opts)
+	if states == nil {
+		if states, err = d.PRStates(workbenchID); err != nil {
+			return nil, res, err
+		}
+		// Nothing was checked.
+		unchecked = map[string]bool{}
+		for _, ref := range refs {
+			unchecked[ref] = true
+		}
+	}
+	return summarize(sessions, states, unchecked), res, nil
+}
+
+// summarize is each session's row line from the PR cache states; a
+// session whose Merged reads a ref in unchecked has MergedStale.
+func summarize(sessions []agentSession, states map[string]db.PRState, unchecked map[string]bool) []Summary {
+	out := []Summary{}
+	for _, as := range sessions {
+		s := as.row
+		p := as.sc.counts(states)
+		s.Done, s.Total, s.Merged = p.Done, p.Total, p.Merged
+		if len(unchecked) > 0 {
+			s.MergedStale = slices.ContainsFunc(as.sc.countedMergeRefs(), func(ref string) bool { return unchecked[ref] })
+		}
+		s.PRLine = as.sc.prLine(as.sc.prs(states))
+		out = append(out, s)
+	}
+	return out
+}
+
+// agentSession is one agent session's row fields (no counts yet) and scope.
+type agentSession struct {
+	row Summary
+	sc  scope
+}
+
+// agentSessions is every agent session of workbench workbenchID with its
+// scope, in session id order.
+func agentSessions(ctx context.Context, d *db.DB, workbenchID int64) ([]agentSession, error) {
+	b, err := loadBoard(d, workbenchID)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +132,7 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 	}
 	defer rows.Close()
-	out := []Summary{}
+	var out []agentSession
 	for rows.Next() {
 		var s Summary
 		var target sql.NullInt64
@@ -55,11 +140,8 @@ func Summaries(ctx context.Context, d *db.DB, workbenchID int64) ([]Summary, err
 		if err := rows.Scan(&s.SessionID, &target, &finishedAt); err != nil {
 			return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)
 		}
-		sc := newScope(b, s.SessionID, target, links[s.SessionID], owners)
-		p := sc.counts()
-		s.TargetID, s.Done, s.Total, s.FinishedAt = nullableInt(target), p.Done, p.Total, finishedAt.String
-		s.PRLine = sc.prLine(sc.prs(states))
-		out = append(out, s)
+		s.TargetID, s.FinishedAt = nullableInt(target), finishedAt.String
+		out = append(out, agentSession{row: s, sc: newScope(b, s.SessionID, target, links[s.SessionID], owners)})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing workbench %d sessions: %w", workbenchID, err)

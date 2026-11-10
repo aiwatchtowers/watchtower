@@ -105,7 +105,7 @@ Kinds and their attributes:
 - email — the body as plain text; attributes to="a@x.com, b@y.com", cc="…", subject="…".
 - slack — the message in Slack formatting; attribute channel="<channel id exactly as a tool returned it>" plus thread_ts="<ts>" to reply in a thread, or permalink="<Slack permalink>".
 - event — the description; attributes start="2026-09-30T10:00:00+03:00" and end="…" (ISO 8601 with offset), attendees="a@x.com, b@y.com", location="…"; the title attribute is the event title.
-- html — one complete, self-contained HTML page (a slide deck, a visual report): all CSS and JavaScript inline, images as data: URLs, no external links or CDN scripts — the app shows it with every network load blocked. For a deck, make the arrow keys page through the slides.
+- html — one complete, self-contained HTML page (a slide deck, a visual report): all CSS and JavaScript inline, images as data: URLs, no external links or CDN scripts — the app shows it with every network load blocked. For a deck, make the arrow keys page through the slides, and add print CSS (@media print) that shows every slide, one per page, so Print and Save as PDF give the whole deck.
 
 Examples:
 
@@ -217,6 +217,7 @@ Execution
 - Linear (features/linear.md)
 
 Insights
+- Plans and subscription limits (features/plans.md)
 - Digests (features/digests.md)
 - People (features/people.md)
 - Statistics (features/statistics.md)
@@ -234,6 +235,7 @@ Workbench
 - Switching branches (features/workbench/branches.md)
 - Worktrees and cleanup (features/workbench/worktrees-and-cleanup.md)
 - Reviewing a spec or plan (features/workbench/spec-review.md)
+- Discussing a spec review (features/workbench/spec-review-discuss.md)
 - Branch review (features/workbench/diff-review.md)
 - Methodology (features/workbench/methodology.md)
 - Your instructions (features/workbench/instructions.md)

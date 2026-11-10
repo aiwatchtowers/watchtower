@@ -2,11 +2,17 @@ package chat
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log"
+	"os"
+	"strings"
 	"sync"
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
-	"watchtower/internal/logredact"
+	"watchtower/internal/fsutil"
 )
 
 // Querier is the one-shot streaming call a stateless provider offers;
@@ -49,17 +55,93 @@ func NewTurnBackend(q Querier, d *db.DB, conversationID int64, opts ...TurnOptio
 
 func (b *turnBackend) Start(ctx context.Context) (string, error) { return "", ctx.Err() }
 
+// imageQuerier is a querier that takes image files for its next query only
+// (codex.Client: --image).
+type imageQuerier interface{ SetImages(paths []string) }
+
+// turnImagePattern names a turn's image files in the system temp
+// directory (fsutil.StaleTempPatterns sweeps one a killed turn left).
+const turnImagePattern = "wt-chat-image-*"
+
+// writeTurnImages writes each image's checked bytes to its own 0600 temp
+// file, held from the stale-temp sweep while the turn runs (CHAT-04: the
+// provider gets a path, never the content on argv, and never the owner's
+// own path, which could change after the check). release removes them.
+// Errors carry the errno only, never a path (FILES-01).
+func writeTurnImages(images []TurnImage) (paths []string, release func(), err error) {
+	if strings.Contains(os.TempDir(), ",") {
+		return nil, nil, errors.New("the temp folder's path (TMPDIR) has a comma, which codex cannot take for an image; set TMPDIR to a path without one")
+	}
+	var holds []func()
+	release = func() {
+		for _, h := range holds {
+			h() // removes the file, held or not
+		}
+	}
+	for _, img := range images {
+		p, werr := fsutil.WritePrivateTemp(turnImagePattern+imageExt(img.MediaType), string(img.Data))
+		if werr != nil {
+			release()
+			return nil, nil, fmt.Errorf("writing a turn image: %w", errnoOnly(werr))
+		}
+		hold, herr := fsutil.HoldTempFile(p)
+		holds = append(holds, hold)
+		if herr != nil {
+			// As for codex's prompt file: the sweep only takes files older
+			// than a turn runs, so the turn goes on. HoldTempFile's error
+			// never names the file (TestHoldTempFile_UnshieldedStillRemoved),
+			// so it is logged whole: errnoOnly would drop its "opening" or
+			// "locking" step.
+			log.Printf("chat: a turn image not shielded from the stale-temp sweep: %v", herr)
+		}
+		paths = append(paths, p)
+	}
+	return paths, release, nil
+}
+
+// errnoOnly is err's errno when it is a path error, else a generic error:
+// a temp file's error names its path in its text.
+func errnoOnly(err error) error {
+	if pe, ok := errors.AsType[*fs.PathError](err); ok {
+		return pe.Err
+	}
+	return errors.New("temp file error")
+}
+
+// imageExt is the file extension of an image media type.
+func imageExt(mediaType string) string {
+	switch mediaType {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	}
+	return ".png"
+}
+
 func (b *turnBackend) Turn(ctx context.Context, c Command, emit func(Event)) error {
-	replay, err := ReplayFromDB(b.d, b.conversationID, c.TurnID)
+	replay, err := ReplayFromDB(b.d, b.conversationID, c.TurnID, c.Attachments)
 	if err != nil {
 		return err
 	}
-	// Text-like attachments are inlined ahead of the replay + user text; an
-	// image/PDF is an *AttachmentError, returned before the provider is
-	// called (the session maps it to attachment_unsupported).
-	text, err := InlineTextAttachments(c.Text, c.Attachments)
+	// Text-like attachments are inlined ahead of the replay + user text;
+	// images go by file to a querier that takes them (codex --image); any
+	// other image or PDF is an *AttachmentError, returned before the
+	// provider is called (the session maps it to attachment_unsupported).
+	iq, takesImages := b.q.(imageQuerier)
+	text, images, err := TurnAttachments(c.Text, c.Attachments, AttachmentCaps{Images: takesImages})
 	if err != nil {
 		return err
+	}
+	if len(images) > 0 {
+		paths, release, err := writeTurnImages(images)
+		if err != nil {
+			return err
+		}
+		defer release()
+		iq.SetImages(paths)
 	}
 
 	turnCtx, cancel := context.WithCancel(ctx)
@@ -97,10 +179,7 @@ func (b *turnBackend) Turn(ctx context.Context, c Command, emit func(Event)) err
 	case qerr != nil && ctx.Err() != nil:
 		return ctx.Err()
 	case qerr != nil:
-		code, retry := ClassifyClaudeError(logredact.Full(qerr))
-		event := errorEvent(c.TurnID, code, logredact.Full(qerr), retry)
-		event.Cause = qerr
-		emit(event)
+		emit(failureEvent(c.TurnID, qerr))
 	default:
 		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusComplete})
 	}
@@ -120,8 +199,9 @@ func (b *turnBackend) Cancel() error {
 func (b *turnBackend) Close() error { return b.Cancel() }
 
 // ChunkEvents maps one ai.StreamChunk from a one-call-per-turn provider onto
-// v2 events: text → text_delta, a tool start/end → tool_start/tool_end, and a
-// bare boundary → nothing (protocol v2 never wipes text).
+// v2 events: text → text_delta, a tool start/end → tool_start/tool_end, the
+// turn's usage → usage, and a bare boundary → nothing (protocol v2 never wipes
+// text).
 func ChunkEvents(turnID string, c ai.StreamChunk) []Event {
 	switch {
 	case c.Routing != nil:
@@ -140,6 +220,8 @@ func ChunkEvents(turnID string, c ai.StreamChunk) []Event {
 			summary = truncateRunes(collapseSpace(c.Tool.Result), SummaryMaxRunes)
 		}
 		return []Event{{Type: EventToolEnd, TurnID: turnID, ID: c.Tool.ID, OK: &ok, Summary: summary, Sources: sources}}
+	case c.Usage != nil:
+		return []Event{usageEvent(turnID, c.Usage.Model, c.Usage.Tokens)}
 	case c.Text != "":
 		return []Event{{Type: EventTextDelta, TurnID: turnID, Text: c.Text}}
 	}

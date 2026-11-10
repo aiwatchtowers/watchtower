@@ -29,8 +29,8 @@ extension WorkbenchesViewModel {
         Self.reportLine(sessionReports?.summaries[projectID], sessionID: sessionID)
     }
 
-    /// A session row's spec review author loop line, "Spec review: round 2
-    /// of 3" (#1121); nil when no open ask of the session is in the loop.
+    /// A session row's spec review author loop line, "Spec review: round 2"
+    /// (#1121); nil when no open ask of the session is in the loop.
     func specReviewLine(sessionID: Int64) -> String? {
         specReviewLoop?.progress[sessionID].map(SpecReviewLoopCenter.progressLine(round:))
     }
@@ -54,6 +54,18 @@ extension WorkbenchesViewModel {
     static func reportProgress(_ snapshot: SummarySnapshot?, sessionID: Int64) -> Double? {
         guard let summary = snapshot?.value?[sessionID], summary.total > 0 else { return nil }
         return min(max(Double(summary.done) / Double(summary.total), 0), 1)
+    }
+
+    /// The mini bar's merged share, drawn after the done share (board #986):
+    /// tasks not done whose branch is merged into their parent's; 0 when
+    /// none is, or the summary has no line for the session.
+    func reportMergedProgress(sessionID: Int64, projectID: Int64) -> Double {
+        Self.reportMergedProgress(sessionReports?.summaries[projectID], sessionID: sessionID)
+    }
+
+    static func reportMergedProgress(_ snapshot: SummarySnapshot?, sessionID: Int64) -> Double {
+        guard let summary = snapshot?.value?[sessionID] else { return 0 }
+        return SessionReportPresentation.mergedFraction(merged: summary.merged, total: summary.total)
     }
 
     /// A workbench's session rows came on screen (the panel): their list

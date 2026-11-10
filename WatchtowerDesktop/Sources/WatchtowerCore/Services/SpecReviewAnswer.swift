@@ -3,7 +3,8 @@ import Foundation
 /// Marks to the review answer. Only `comment` marks are sent: "Fine as is"
 /// and "Viewed" never reach the author. Every comment carries a heading and
 /// quote located in the RENDERED snapshot, the text a closed ask re-locates
-/// its comments on (`internal/asks/answer.go` is unchanged).
+/// its comments on, and the key of the finding it is about (`item_key`,
+/// spec 2026-11-08 §1), so the next author loop seeds that finding.
 ///
 /// The one builder of every answer to a review ask (F5): the Desktop's
 /// answer path (`OwnerAsksViewModel.answer(_:with:)`, which the drawer's
@@ -25,6 +26,7 @@ package enum SpecReviewAnswer {
     package static func build(
         result: SpecReviewResult?,
         marks: [String: SpecReviewMark],
+        threadFindings: [SpecReviewProposedFinding] = [],
         loop: [SpecReviewLedgerEntry]? = nil,
         base: OwnerAskAnswer = OwnerAskAnswer(),
         verdict: OwnerAskAnswer.Verdict? = nil,
@@ -42,11 +44,14 @@ package enum SpecReviewAnswer {
             // without a loop.
             let inLedger = Set(loop.map(\.item.key))
             answer.comments += comments(
-                result: result, marks: marks.filter { !inLedger.contains($0.key) }, snapshot: snapshot, rendered: rendered
+                result: result, marks: marks.filter { !inLedger.contains($0.key) }, threadFindings: threadFindings,
+                snapshot: snapshot, rendered: rendered
             )
             return answer
         }
-        answer.comments += comments(result: result, marks: marks, snapshot: snapshot, rendered: rendered)
+        answer.comments += comments(
+            result: result, marks: marks, threadFindings: threadFindings, snapshot: snapshot, rendered: rendered
+        )
         return answer
     }
 
@@ -71,7 +76,8 @@ package enum SpecReviewAnswer {
             let anchor = entry.item.anchor.flatMap { $0.quote.isEmpty ? nil : ($0.heading, $0.quote) }
                 ?? result.flatMap { r in chapter.flatMap { chapterAnchor(result: r, key: $0, snapshot: snapshot) } }
                 ?? firstHeadingAnchor(snapshot)
-            return comment(heading: anchor.0, quote: anchor.1, body: loopBody(entry, owner: mark.body), in: rendered)
+            return comment(heading: anchor.0, quote: anchor.1, body: loopBody(entry, owner: mark.body),
+                           itemKey: entry.item.key, in: rendered)
         }
     }
 
@@ -99,21 +105,25 @@ package enum SpecReviewAnswer {
         return owner.isEmpty ? head : "\(head)\n\n\(owner)"
     }
 
-    /// The comments the marks give, in findings order, then the comments of
-    /// findings the re-run no longer has. No result (the reviewer queued,
-    /// running or failed) makes every comment mark such an orphan: it goes
-    /// out as "From the previous run" with its finding text (`about`). The
-    /// snapshot is rendered (or `rendered` called) only when there is a
-    /// comment to place.
+    /// The comments the marks give, in findings order, then those on the
+    /// findings the owner added from a Discuss thread (sent like a
+    /// reviewer's: its `where`, else its chapter, else the first heading),
+    /// then the comments of findings the re-run no longer has. No result
+    /// (the reviewer queued, running or failed) makes every other comment
+    /// mark such an orphan: it goes out as "From the previous run" with its
+    /// finding text (`about`). The snapshot is rendered (or `rendered`
+    /// called) only when there is a comment to place.
     package static func comments(
         result: SpecReviewResult?,
         marks: [String: SpecReviewMark],
+        threadFindings: [SpecReviewProposedFinding] = [],
         snapshot: String,
         rendered render: (() -> RenderedDocument)? = nil
     ) -> [OwnerAskAnswer.Comment] {
         let marked = result?.findings.filter { marks[$0.key]?.state == .comment } ?? []
-        let orphans = orphanMarks(result: result, marks: marks)
-        guard !marked.isEmpty || !orphans.isEmpty else { return [] }
+        let threadMarked = threadFindings.filter { marks[$0.key]?.state == .comment }
+        let orphans = orphanMarks(result: result, marks: marks, threadFindings: threadFindings)
+        guard !marked.isEmpty || !threadMarked.isEmpty || !orphans.isEmpty else { return [] }
         let rendered = render?() ?? DocumentRendering.render(snapshot)
         var comments: [OwnerAskAnswer.Comment] = []
         for finding in marked {
@@ -122,27 +132,39 @@ package enum SpecReviewAnswer {
                 ?? result.flatMap { chapterAnchor(result: $0, key: finding.chapter, snapshot: snapshot) }
                 ?? firstHeadingAnchor(snapshot)
             comments.append(comment(
-                heading: anchor.0, quote: anchor.1, body: join(finding.text, mark.body), in: rendered
+                heading: anchor.0, quote: anchor.1, body: join(finding.text, mark.body), itemKey: finding.key, in: rendered
+            ))
+        }
+        for finding in threadMarked {
+            guard let mark = marks[finding.key] else { continue }
+            let anchor = finding.anchor.flatMap { $0.quote.isEmpty ? nil : ($0.heading, $0.quote) }
+                ?? result.flatMap { chapterAnchor(result: $0, key: finding.chapter, snapshot: snapshot) }
+                ?? firstHeadingAnchor(snapshot)
+            let text = finding.title.isEmpty ? finding.text : "\(finding.title): \(finding.text)"
+            comments.append(comment(
+                heading: anchor.0, quote: anchor.1, body: join(text, mark.body), itemKey: finding.key, in: rendered
             ))
         }
         let anchor = firstHeadingAnchor(snapshot)
         for mark in orphans {
             let about = mark.about.isEmpty ? mark.body : join(mark.about, mark.body)
             comments.append(comment(
-                heading: anchor.0, quote: anchor.1, body: "From the previous run: \(about)", in: rendered
+                heading: anchor.0, quote: anchor.1, body: "From the previous run: \(about)", itemKey: mark.key, in: rendered
             ))
         }
         return comments
     }
 
-    /// Comment marks whose key the result no longer has (the reviewer ran
-    /// again, or has no result now), in key order. `viewed` marks of
-    /// dropped chapters are not orphans: nothing is lost by forgetting them.
+    /// Comment marks whose key neither the result nor the thread findings
+    /// have (the reviewer ran again, or has no result now), in key order.
+    /// `viewed` marks of dropped chapters are not orphans: nothing is lost
+    /// by forgetting them.
     package static func orphanMarks(
         result: SpecReviewResult?,
-        marks: [String: SpecReviewMark]
+        marks: [String: SpecReviewMark],
+        threadFindings: [SpecReviewProposedFinding] = []
     ) -> [SpecReviewMark] {
-        let known = Set(result?.findings.map(\.key) ?? [])
+        let known = Set((result?.findings.map(\.key) ?? []) + threadFindings.map(\.key))
         return marks.values
             .filter { $0.state == .comment && !known.contains($0.key) }
             .sorted { $0.key < $1.key }
@@ -158,7 +180,7 @@ package enum SpecReviewAnswer {
     /// text around it and the rendered heading before it. A quote not found
     /// keeps the reviewer's heading and quote, with no context.
     private static func comment(
-        heading: String, quote: String, body: String, in rendered: RenderedDocument
+        heading: String, quote: String, body: String, itemKey: String, in rendered: RenderedDocument
     ) -> OwnerAskAnswer.Comment {
         var anchor = CommentAnchor(quote: quote, prefix: "", suffix: "", heading: heading)
         if let hit = OwnerAskReviewText.range(ofQuote: quote, in: rendered),
@@ -169,7 +191,7 @@ package enum SpecReviewAnswer {
                 heading: made.heading.isEmpty ? plainTitle(heading) : made.heading
             )
         }
-        return OwnerAskAnswer.Comment(anchor: anchor, body: body)
+        return OwnerAskAnswer.Comment(anchor: anchor, body: body, itemKey: itemKey)
     }
 
     /// The chapter heading (no `#`s) with the chapter's first body line as the

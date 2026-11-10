@@ -16,6 +16,10 @@ struct TerminalSessionRow: View {
     var reportLine: String?
     /// The line's mini progress bar (`WorkbenchesViewModel.reportProgress`).
     var reportProgress: Double?
+    /// The bar's merged share after the done share
+    /// (`WorkbenchesViewModel.reportMergedProgress`, board #986); 0 = the
+    /// plain bar.
+    var reportMergedProgress: Double = 0
     var closedAsks: OwnerAskClosedButton?
     /// Deletes the row at once with Undo; set only when its agent is not
     /// working (`SessionDeletePolicy.isQuick`, board #480). VoiceOver offers
@@ -111,7 +115,11 @@ struct TerminalSessionRow: View {
                     SessionStateLabel(state: row.state, caption: caption)
                     if let reportLine {
                         HStack(spacing: 4) {
-                            if let reportProgress {
+                            if let reportProgress, reportMergedProgress > 0 {
+                                SessionProgressMiniBar(done: reportProgress, merged: reportMergedProgress)
+                                    .frame(width: 32)
+                                    .accessibilityLabel("Progress")
+                            } else if let reportProgress {
                                 ProgressView(value: reportProgress)
                                     .progressViewStyle(.linear)
                                     .controlSize(.mini)
@@ -180,9 +188,10 @@ struct SessionLiveDot: View {
 }
 
 /// A session's state glyph and caption ("? Waiting for you · ask #12"),
-/// where a site has room for more than the dot: the panel row, the header
-/// switcher button and its popover rows. One accessibility element reading
-/// the caption.
+/// where a site has room for more than the dot: the panel row, the session
+/// strip, the header switcher button and its popover rows. One accessibility
+/// element reading the caption; a session the Mac cannot watch ("Working ·
+/// not watched", U6) names the reason in its tooltip.
 struct SessionStateLabel: View {
     let state: SessionSwitcherPresentation.State
     /// The row's caption (with a not started session's age), else the
@@ -211,6 +220,7 @@ struct SessionStateLabel: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(text)
+        .help(SessionStatePresentation.watchIssueHelp(for: state) ?? "")
     }
 }
 
@@ -257,5 +267,29 @@ private struct SessionTargetMenuItems: View {
                 Text(title)
             }
         }
+    }
+}
+
+/// A session row's mini bar with a merged share (board #986): the done share
+/// in the accent colour, then the merged share lighter, on the track.
+private struct SessionProgressMiniBar: View {
+    /// 0...1.
+    let done: Double
+    /// 0...1; done + merged is capped at the bar's end.
+    let merged: Double
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Fill.card)
+                Capsule().fill(Fill.on)
+                    .frame(width: geo.size.width * min(1, max(0, done + merged)))
+                Capsule().fill(Color.accentColor)
+                    .frame(width: geo.size.width * min(1, max(0, done)))
+            }
+        }
+        .frame(height: 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityValue(SessionReportPresentation.miniBarValue(done: done, merged: merged))
     }
 }

@@ -1012,3 +1012,10 @@ func TestSuggestManual_BrokenJSON(t *testing.T) {
 	_, err := tuner.SuggestManual(context.Background(), DigestChannel, "improve")
 	assert.Error(t, err)
 }
+
+// review.spec v4 (2026-11-08-spec-review-discuss-design §1, §4): the open
+// loop's closed list, rising floor and owner items, and the summary screen.
+// A reworded-but-unbumped template keeps the old prompt in existing DBs.
+func TestSpecReviewPrompt_VersionV4(t *testing.T) {
+	assert.Equal(t, 4, DefaultVersions[SpecReview])
+}

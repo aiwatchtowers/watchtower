@@ -197,7 +197,7 @@ struct WorkchatView: View {
                 }
                 dialog(model, hasOwnLines: !lines.isEmpty)
                 ForEach(chat.sentLines) { line in
-                    ChatBubble(role: .owner, text: line.text, caption: env.sessionInputs.lineDeliveries[line.id]?.caption(for: session.agent))
+                    ChatBubble(role: .owner, text: line.text, caption: env.sessionInputs.lineDeliveries[line.id]?.caption(for: session))
                 }
                 ForEach(lines) { PendingLineView(row: $0, onCancel: cancelLine, onDismiss: dismissLine) }
                 ForEach(actions.stopRows + actions.interruptRows) { StopRowView(row: $0, onDismiss: dismissStop) }

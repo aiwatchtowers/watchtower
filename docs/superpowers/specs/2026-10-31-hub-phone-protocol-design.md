@@ -317,7 +317,7 @@ Age window: 7 days after `created_at`, 24 h for the session-request kinds (marke
 | `board_comment_add` | target id | `{workbench_id, body ≤ 4000}` | — | NI | as above | yes |
 | `board_comment_reply` | root comment id | `{workbench_id, body ≤ 4000}` | — | NI | as above | yes |
 | `board_target_create` | — | `{workbench_id, parent_id?, text ≤ 200, intent ≤ 4000, priority}` | — | NI, R | as above | yes |
-| `session_start` | target id, or none (an untargeted session: `brief` required, `mode` `new`) | `{workbench_id, mode: new\|open_existing, plan_first, bring_forward, brief?}` | start (`brief` only with typing; untargeted needs typing) | NI, R, 24 h | `device_not_allowed`, `not_found`, `not_on_board`, `conflict`, `claude_not_found`, `codex_not_found` | not yet |
+| `session_start` | target id, or none (an untargeted session: `brief` required, `mode` `new`) | `{workbench_id, mode: new\|open_existing, plan_first, bring_forward, brief?}` | start (`brief` only with typing; untargeted needs typing) | NI, R, 24 h | `device_not_allowed`, `not_found`, `not_on_board`, `conflict`, `claude_not_found`, `codex_not_found`, `not_supported` (Go hub: an agent kind this version does not know, 2026-11-08) | not yet |
 | `session_input` | session id | `{text}` 1–4000 after `SessionInputText.normalize` | typing | NI, R, 24 h | `device_not_allowed`, `not_found`, `session_not_running`, `cannot_type`; held: `agent_busy`, `needs_approval`, `prompt_has_text`, `state_unknown`; applied `{delivery: submitted\|typed, while_busy?}` | not yet |
 | `session_input_cancel` | original action id | `{}` | sender only | | `device_not_allowed`; original echoed `cancelled` | not yet |
 | `session_finish_request` | session id | `{}` | typing | NI, 24 h | as `session_input` | not yet |

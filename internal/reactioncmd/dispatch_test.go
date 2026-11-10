@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 	"watchtower/internal/prompts"
 )
 
@@ -322,7 +323,7 @@ func TestReactionCmd_DispatchWithCarriesComposeUsage(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			database := seededPipelineDB(t, 1)
-			gen := &usageGenerator{out: reply, usage: digest.Usage{InputTokens: 120, OutputTokens: 30}}
+			gen := &usageGenerator{out: reply, usage: digest.Usage{Tokens: llmusage.Tokens{Input: 120, Output: 30}}}
 			p := newTestPipeline(t, database, gen, checkReaction())
 			var got []Outcome
 			p.SetDispatcher(func(ctx context.Context, d Dispatch) Outcome {
@@ -334,8 +335,8 @@ func TestReactionCmd_DispatchWithCarriesComposeUsage(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got, 1)
 			assert.Equal(t, name, got[0].Status)
-			assert.Equal(t, 120, got[0].Usage.InputTokens)
-			assert.Equal(t, 30, got[0].Usage.OutputTokens)
+			assert.Equal(t, 120, got[0].Usage.InputTokens())
+			assert.Equal(t, 30, got[0].Usage.OutputTokens())
 		})
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/llmusage"
 )
 
 // gmailPipelineConfig is pipelineTestConfig with the Gmail memory source ON.
@@ -60,7 +61,7 @@ func TestGmailExtract_ThreadBecomesOneEpisode(t *testing.T) {
 	seedGmailMessage(t, d, "m2", "thr-1", "b@example.com", "Bob", "Re: Budget review", "Yes, done.", iso2)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		usage: digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 100, Output: 20, CacheRead: 50}},
 		reply: func(string) (string, error) {
 			return emailEpisodeJSON("Budget cut agreed",
 				[2]string{"mail:m1", fmt.Sprintf("%d", u1)},
@@ -115,7 +116,7 @@ func TestGmailExtract_ExtraEpisodeForOneThreadKeepsTheOthers(t *testing.T) {
 	ep := func(title, ref string, ts int64) string {
 		return strings.TrimSuffix(strings.TrimPrefix(emailEpisodeJSON(title, [2]string{ref, fmt.Sprintf("%d", ts)}), "["), "]")
 	}
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(string) (string, error) {
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: func(string) (string, error) {
 		return "[" + ep("Budget question", "mail:m1", u1) + ", " + ep("Budget answer", "mail:m2", u2) + ", " +
 			ep("Offsite date", "mail:m3", u3) + "]", nil
 	}}
@@ -153,7 +154,7 @@ func TestGmailExtract_ShapeDegenerateFreezesWatermark(t *testing.T) {
 	seedGmailMessage(t, d, "m2", "thr-2", "b@example.com", "Bob", "Beta thread", "yo", iso2)
 
 	gen := &fakeGen{
-		usage: digest.Usage{InputTokens: 100, OutputTokens: 20, TotalAPITokens: 150, Model: "haiku"},
+		usage: digest.Usage{Model: "haiku", Tokens: llmusage.Tokens{Input: 100, Output: 20, CacheRead: 50}},
 		reply: func(user string) (string, error) {
 			if strings.Contains(user, "Beta thread") {
 				return `[{"title": "degenerate", "story": "s", "outcome": null, "participants": [], "refs": [], "entity_hints": []}]`, nil
@@ -210,7 +211,7 @@ func TestGmailExtract_MultiAccount_WatermarksAdvanceIndependently(t *testing.T) 
 	seedGmailMessageForAccount(t, d, acctA, "a1", "thr-a", "a@example.com", "Ann", "Account A thread", "hi", isoA)
 	seedGmailMessageForAccount(t, d, acctB, "b1", "thr-b", "b@example.com", "Bob", "Account B thread", "yo", isoB)
 
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: gmailReplyFor("thread")}
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: gmailReplyFor("thread")}
 	p := NewPipeline(d, v, gen, gmailPipelineConfig(), t.Logf)
 
 	stats, err := p.Run(context.Background())
@@ -241,7 +242,7 @@ func TestGmailExtract_MultiAccount_OneAccountFailureDoesNotBlockOther(t *testing
 	seedGmailMessageForAccount(t, d, acctA, "a1", "thr-a", "a@example.com", "Ann", "Account A thread", "hi", isoA)
 	seedGmailMessageForAccount(t, d, acctB, "b1", "thr-b", "b@example.com", "Bob", "Account B thread", "yo", isoB)
 
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(user string) (string, error) {
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: func(user string) (string, error) {
 		if strings.Contains(user, "Account B thread") {
 			return "", fmt.Errorf("simulated account B failure")
 		}
@@ -279,7 +280,7 @@ func TestGmailExtract_MultiAccount_DisabledAccountSkipped(t *testing.T) {
 	_, err := d.Exec(`UPDATE google_accounts SET gmail_enabled = 0 WHERE id = ?`, acctDisabled)
 	require.NoError(t, err)
 
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(user string) (string, error) {
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: func(user string) (string, error) {
 		if strings.Contains(user, "Disabled thread") {
 			return "", fmt.Errorf("gmail-disabled account must never reach the generator")
 		}
@@ -349,7 +350,7 @@ func TestMemory_GmailThreadIdempotent_ReplyArrives(t *testing.T) {
 	seedGmailMessage(t, d, "m1", "thr-1", "a@example.com", "Ann", "Budget", "Q?", iso1)
 	seedGmailMessage(t, d, "m2", "thr-1", "b@example.com", "Bob", "Re: Budget", "A.", iso2)
 
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: gmailReplyFor("Budget thread")}
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: gmailReplyFor("Budget thread")}
 	p := NewPipeline(d, v, gen, gmailPipelineConfig(), t.Logf)
 	_, err := p.Run(context.Background())
 	require.NoError(t, err)
@@ -393,7 +394,7 @@ func TestMemory_GmailThreadIdempotent_ChunkCapStraddle(t *testing.T) {
 
 	cfg := gmailPipelineConfig()
 	cfg.MaxChunkMessages = 1 // run 1 loads only m1; run 2 loads m2 (same thread)
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: gmailReplyFor("Budget thread")}
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: gmailReplyFor("Budget thread")}
 	p := NewPipeline(d, v, gen, cfg, t.Logf)
 
 	_, err := p.Run(context.Background())
@@ -434,7 +435,7 @@ func TestMemory_GmailPoisonThreadTruncated(t *testing.T) {
 	cfg.MaxWindowMessages = 2 // cap each thread to its newest 2 messages
 
 	var seenPrompt string
-	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(user string) (string, error) {
+	gen := &fakeGen{usage: digest.Usage{Tokens: llmusage.Tokens{CacheRead: 1}}, reply: func(user string) (string, error) {
 		seenPrompt = user
 		return gmailReplyFor("Big thread")(user)
 	}}

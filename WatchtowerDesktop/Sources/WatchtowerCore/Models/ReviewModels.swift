@@ -22,10 +22,29 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     /// '' | `ReviewOutcome.changes` | `ReviewOutcome.approved` (00155). `review start` answers only open
     /// rounds ('' there); the model sets its copy after a Send or Approve.
     package var outcome: String
+    /// `session` reviews the folder's work tree; `pr` the task branch's committed
+    /// tip, read-only (board #1012). Absent in older output: `session`.
+    package let source: String
+    /// The branch a `pr` round reviews; "" otherwise.
+    package let branch: String
+
+    /// `review_rounds.source` of a round on the task branch's tip (Go `db.ReviewSourceBranch`).
+    package static let branchTipSource = "pr"
+    /// The base label when the base branches share no history with the
+    /// reviewed commit: the base is the empty tree (Go `reviewdiff.NoCommonBase`).
+    package static let noCommonBaseLabel = "no common base"
+
+    /// The round reads a branch's commits, not a folder: no uncommitted edits, no Undo.
+    package var isBranchTip: Bool { source == Self.branchTipSource }
+
+    /// The diff the round shows — its base and its tree. A move or a Refresh
+    /// can change either, so whatever is derived from the diff (the overview,
+    /// comment anchors) is stale when this differs.
+    package var diffKey: String { baseSha + ".." + treeSha }
 
     private enum CodingKeys: String, CodingKey {
         case id, status, mode, folderRoot, baseSha, baseLabel, treeSha, prevRoundId, prevTreeSha, prevTreeLost
-        case phase, chapterKey, activeSeconds, outcome
+        case phase, chapterKey, activeSeconds, outcome, source, branch
     }
 
     package init(from decoder: Decoder) throws {
@@ -44,6 +63,8 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
         chapterKey = try c.decodeIfPresent(String.self, forKey: .chapterKey) ?? ""
         activeSeconds = try c.decodeIfPresent(Int.self, forKey: .activeSeconds) ?? 0
         outcome = try c.decodeIfPresent(String.self, forKey: .outcome) ?? ""
+        source = try c.decodeIfPresent(String.self, forKey: .source) ?? "session"
+        branch = try c.decodeIfPresent(String.self, forKey: .branch) ?? ""
     }
 }
 
@@ -236,6 +257,9 @@ package struct ReviewEnvelope: Decodable, Sendable {
     /// Present as `[]` for `lessons propose`, absent for every other command.
     package let lessons: [ReviewLesson]?
     package let written: String?
+    /// `review start`: the session's worktree was removed; the open round stays
+    /// on the folder it was opened on (board #1012).
+    package let placeMissing: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     /// The hunk an undo reverted.
     package struct RevertInfo: Decodable, Equatable, Sendable {

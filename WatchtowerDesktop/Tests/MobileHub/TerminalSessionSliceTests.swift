@@ -107,14 +107,17 @@ final class TerminalSessionSliceTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(db, projectID: project, sessionID: session, status: "answered", answer: "Yes")
             return (session, target)
         }
-        let summary = SessionReportSummary(sessionID: session, targetID: target, done: 1, total: 2, prLine: "PR #175 open")
+        let summary = SessionReportSummary(
+            sessionID: session, targetID: target, done: 1, total: 2, merged: 1, mergedStale: true, prLine: "PR #175 open"
+        )
         let payload = try XCTUnwrap(try payloads(slice(live: [session]) { _, id in id == session ? summary : nil })[session])
 
         assertWireShape(
             payload, matches: try SliceJSON.kitFixture("workbench/terminal_session.json"),
             optionalKeys: ["title_clipped", "target_id", "state_at", "state_caption_clipped", "oldest_ask_id",
                            "finish_summary_clipped", "agent_error_clipped", "report_target_id", "report_done",
-                           "report_total", "report_pr_line", "report_pr_line_clipped"]
+                           "report_total", "report_merged", "report_merged_stale", "report_pr_line",
+                           "report_pr_line_clipped", "watch_issue", "watch_help"]
         )
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
         XCTAssertEqual(payload["agent"] as? String, "claude_code")
@@ -122,6 +125,28 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(payload["open_asks"] as? Int, 1)
         XCTAssertEqual(payload["closed_asks"] as? Int, 1)
         XCTAssertEqual(payload["live"] as? Bool, true)
+        XCTAssertEqual(payload["report_merged"] as? Int, 1)
+        XCTAssertEqual(payload["report_merged_stale"] as? Bool, true)
+    }
+
+    /// Board #1008: the merged share goes out with the summary — 0 when
+    /// nothing is merged — and the stale flag only when it is set; without a
+    /// summary neither key is published.
+    func testTheMergedShareFollowsTheSummary() throws {
+        let session = try dbPool.write { db in
+            try SliceSeed.insertSession(db, projectID: try TestDatabase.insertWorkbench(db))
+        }
+        let checked = SessionReportSummary(sessionID: session, done: 3, total: 32, merged: 25)
+        let merged = try XCTUnwrap(try payloads(slice { _, _ in checked })[session])
+        XCTAssertEqual(merged["report_merged"] as? Int, 25)
+        XCTAssertNil(merged["report_merged_stale"], "a checked share carries no stale flag")
+
+        let none = SessionReportSummary(sessionID: session, done: 3, total: 32)
+        XCTAssertEqual(try payloads(slice { _, _ in none })[session]?["report_merged"] as? Int, 0)
+
+        let noSummary = try XCTUnwrap(try payloads(slice())[session])
+        XCTAssertNil(noSummary["report_merged"])
+        XCTAssertNil(noSummary["report_merged_stale"])
     }
 
     // MARK: - Presentation parity
@@ -165,7 +190,13 @@ final class TerminalSessionSliceTests: XCTestCase {
             Case(name: "failed with an empty error", live: true, seed: { db, id, _ in
                 try self.setState(db, id, state: "waiting", failedError: "")
             }, expected: .failed, wire: "failed"),
-            Case(name: "not started", live: false, seed: { _, _, _ in }, expected: .notStarted, wire: "not_started")
+            Case(name: "not started", live: false, seed: { _, _, _ in }, expected: .notStarted, wire: "not_started"),
+            // G5 (U6): a working codex row the Mac cannot watch.
+            Case(name: "working, not watched", live: true, seed: { db, id, _ in
+                try self.setState(db, id, state: "working")
+                try db.execute(sql: "UPDATE terminal_sessions SET kind = 'codex', agent_watch_issue = 'compressed' WHERE id = ?",
+                               arguments: [id])
+            }, expected: .working, wire: "working")
         ]
         let seeded = try dbPool.write { db -> [(Case, Int64)] in
             let project = try TestDatabase.insertWorkbench(db)
@@ -204,6 +235,9 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(byName["agents working"]?["state_caption"] as? String, "2 agents working")
         XCTAssertEqual(byName["agents working"]?["state_tone"] as? String, "green")
         XCTAssertEqual(byName["agents working"]?["state_glyph"] as? String, "person.2.fill")
+        XCTAssertEqual(byName["working, not watched"]?["state_caption"] as? String, "Working · not watched")
+        XCTAssertEqual(byName["working, not watched"]?["watch_issue"] as? String, "compressed")
+        XCTAssertNil(byName["working"]?["watch_issue"], "a watched session carries no watch_issue")
     }
 
     /// #411: a count lowered to zero shows Agents working for the policy's
@@ -338,6 +372,50 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(TerminalSessionSlice.wireAgent(.codex), "codex_cli")
     }
 
+    /// Each session carries what the hub takes from the phone for its agent
+    /// (U5): the Kit fixture `phone_caps.json`'s row, the table Go's
+    /// `TestSessionPublishesItsPhoneCaps` and the Kit are pinned to as well.
+    func testSessionPublishesItsPhoneCaps() throws {
+        let ids = try dbPool.write { db -> [String: Int64] in
+            let project = try TestDatabase.insertWorkbench(db)
+            return ["claude": try SliceSeed.insertSession(db, projectID: project),
+                    "codex": try SliceSeed.insertSession(db, projectID: project, kind: "codex")]
+        }
+        let published = try payloads(slice(live: []))
+        let rows = try XCTUnwrap(try SliceJSON.kitFixture("workbench/phone_caps.json")["agents"] as? [String: Any])
+        XCTAssertEqual(Set(rows.keys), Set(ids.keys))
+        for (kind, id) in ids {
+            let phone = try XCTUnwrap(published[id]?["phone"] as? NSDictionary, kind)
+            XCTAssertEqual(phone, rows[kind] as? NSDictionary, kind)
+        }
+    }
+
+    /// A not-watched session carries the Mac's tooltip text for its issue
+    /// (U6), so the phone shows it as given: the Kit fixture
+    /// `watch_help.json`, the table Go's `TestWatchHelpMatchesKitFixture`
+    /// is pinned to as well; a watched session carries none.
+    func testWatchHelpMatchesTheKitFixture() throws {
+        let issues = try XCTUnwrap(try SliceJSON.kitFixture("workbench/watch_help.json")["issues"] as? [String: String])
+        let (ids, watched) = try dbPool.write { db -> ([String: Int64], Int64) in
+            let project = try TestDatabase.insertWorkbench(db)
+            var ids: [String: Int64] = [:]
+            for issue in issues.keys {
+                let id = try SliceSeed.insertSession(db, projectID: project, kind: "codex")
+                try self.setState(db, id, state: "working")
+                try db.execute(sql: "UPDATE terminal_sessions SET agent_watch_issue = ? WHERE id = ?", arguments: [issue, id])
+                ids[issue] = id
+            }
+            let watched = try SliceSeed.insertSession(db, projectID: project, kind: "codex")
+            try self.setState(db, watched, state: "working")
+            return (ids, watched)
+        }
+        let published = try payloads(slice(live: Set(ids.values).union([watched])))
+        for (issue, id) in ids {
+            XCTAssertEqual(published[id]?["watch_help"] as? String, issues[issue], issue)
+        }
+        XCTAssertNil(published[watched]?["watch_help"])
+    }
+
     /// Codex rows count like Claude rows: published (a codex row with no
     /// session id yet included), counted, in the report window, and a live
     /// one puts its workbench on the 60 s summary cadence. Shells stay out.
@@ -442,7 +520,8 @@ final class TerminalSessionSliceTests: XCTestCase {
             let project = try TestDatabase.insertWorkbench(db)
             return (project, try SliceSeed.insertSession(db, projectID: project))
         }
-        let json = #"[{"session_id":\#(session),"target_id":415,"done":1,"total":2,"pr_line":"PR #175 open","finished_at":""}]"#
+        let json = #"[{"session_id":\#(session),"target_id":415,"done":1,"total":2,"merged":1,"merged_stale":true,"#
+            + #""pr_line":"PR #175 open","finished_at":""}]"#
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let failing = OSAllocatedUnfairLock(initialState: false)
         let cliFetch = SessionReportSummaryRunner.cliFetch(runner)
@@ -468,6 +547,8 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(mapped["report_done"] as? Int, 1)
         XCTAssertEqual(mapped["report_total"] as? Int, 2)
         XCTAssertEqual(mapped["report_pr_line"] as? String, "PR #175 open")
+        XCTAssertEqual(mapped["report_merged"] as? Int, 1)
+        XCTAssertEqual(mapped["report_merged_stale"] as? Bool, true)
 
         failing.withLock { $0 = true }
         clock.advance(by: .seconds(60))
