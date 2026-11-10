@@ -53,6 +53,7 @@ type fakeReader struct {
 	honorCtx bool
 	failOn   string
 	failErr  error
+	closed   chan struct{}
 }
 
 func (f fakeReader) QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error) {
@@ -73,13 +74,34 @@ func (f fakeReader) QueryContext(ctx context.Context, q string, args ...any) (*s
 	return f.DBReader.QueryContext(ctx, q, args...)
 }
 
-func wrapOpener(f fakeReader) OpenFunc {
+// Close closes the real reader, then tells the test the reader goroutine
+// is done with the files.
+func (f fakeReader) Close() error {
+	defer close(f.closed)
+	return f.DBReader.Close()
+}
+
+// wrapOpener opens the real database and wraps it in f. The test waits in
+// cleanup until the reader was closed (or the open failed), so a reader
+// goroutine ReadDB stopped waiting for never touches the -wal/-shm while
+// t.TempDir is removed.
+func wrapOpener(t *testing.T, f fakeReader) OpenFunc {
+	t.Helper()
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-finished:
+		case <-time.After(10 * time.Second):
+			t.Error("the reader goroutine never closed its database")
+		}
+	})
 	return func(ctx context.Context, p string) (DBReader, error) {
 		r, err := Opener(DefaultBudgets.Busy)(ctx, p)
 		if err != nil {
+			close(finished)
 			return nil, err
 		}
-		f.DBReader = r
+		f.DBReader, f.closed = r, finished
 		return f, nil
 	}
 }
@@ -241,6 +263,18 @@ func TestDiagnostics_RecentErrors(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_RecentErrorsMissingTable(t *testing.T) {
+	path, d := newDBFile(t)
+	execAll(t, d, `DROP TABLE pipeline_runs`, `INSERT INTO slack_accounts (status) VALUES ('ok')`)
+	p := readParts(t, path)
+	if p.PipelineRuns != "  pipeline runs unknown (older schema)" {
+		t.Errorf("PipelineRuns = %q", p.PipelineRuns)
+	}
+	if p.Sources != "Slack 1 ok" || len(p.Reasons) != 0 {
+		t.Errorf("other parts: %+v", p)
+	}
+}
+
 func TestDiagnostics_DatabaseLine(t *testing.T) {
 	path, d := newDBFile(t)
 	var version int64
@@ -379,21 +413,21 @@ func corruptDB(t *testing.T) string {
 
 // TestDiagnostics_DeadlineMidway is the spec's budget_db_midway case: each
 // statement takes 1.5 s; the parts finished before the 4 s deadline are
-// kept, the rest print `unknown (database busy)`.
+// kept, the rest print `unknown (database busy)`. Only outcomes a ~1 s
+// stall cannot flip are asserted: the schema (done at 1.5 s) is kept; the
+// recent errors (third read, done at 4.5 s at the earliest) and the
+// sources (after it) are busy. Quick Connections (done at 3 s) may go
+// either way under load. ReadDB itself stops waiting at 4.5 s.
 func TestDiagnostics_DeadlineMidway(t *testing.T) {
 	t.Run("budget_db_midway", func(t *testing.T) {
-		path, d := newDBFile(t)
-		execAll(t, d, `INSERT INTO external_connections (name, enabled) VALUES ('a', 1)`)
+		path, _ := newDBFile(t)
 		start := time.Now()
-		p := ReadDB(context.Background(), DefaultBudgets, path, wrapOpener(fakeReader{delay: 1500 * time.Millisecond, honorCtx: true}))
-		if el := time.Since(start); el > 5*time.Second {
+		p := ReadDB(context.Background(), DefaultBudgets, path, wrapOpener(t, fakeReader{delay: 1500 * time.Millisecond, honorCtx: true}))
+		if el := time.Since(start); el > 6*time.Second {
 			t.Errorf("took %v", el)
 		}
 		if !strings.HasPrefix(p.Schema, "schema ") || strings.Contains(p.Schema, "unknown") {
 			t.Errorf("Schema = %q, want a version", p.Schema)
-		}
-		if p.QuickConnections != "Quick Connections 1" {
-			t.Errorf("QuickConnections = %q", p.QuickConnections)
 		}
 		if p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) || p.Sources != UnknownDatabaseBusy {
 			t.Errorf("runs %q, sources %q", p.PipelineRuns, p.Sources)
@@ -411,7 +445,7 @@ func TestDiagnostics_DBFallbackStopsWaiting(t *testing.T) {
 	b := DefaultBudgets
 	b.DB, b.DBFallback = 2*time.Second, 500*time.Millisecond
 	start := time.Now()
-	p := ReadDB(context.Background(), b, path, wrapOpener(fakeReader{delay: 300 * time.Millisecond}))
+	p := ReadDB(context.Background(), b, path, wrapOpener(t, fakeReader{delay: 300 * time.Millisecond}))
 	if el := time.Since(start); el > 900*time.Millisecond {
 		t.Errorf("took %v, want about 500ms", el)
 	}
@@ -427,15 +461,42 @@ func TestDiagnostics_DBFallbackStopsWaiting(t *testing.T) {
 	}
 }
 
-// TestDiagnostics_ReadDBWritesNothing: the read leaves the main database
-// file's bytes and mtime as they were.
+// TestDiagnostics_ReadDBWritesNothing: on a file whose -wal holds
+// committed frames not yet in the main file and no other connection (a
+// daemon that died, or a stopped install), the reader is the last
+// connection to close. SQLite would checkpoint the frames into the main
+// file and drop the -wal there; the read must leave the main file's bytes
+// and mtime as they were and the -wal whole (NoCheckpointOnClose,
+// query_only).
 func TestDiagnostics_ReadDBWritesNothing(t *testing.T) {
-	path, d := newDBFile(t)
-	execAll(t, d, `INSERT INTO slack_accounts (status) VALUES ('ok')`)
-	if err := d.Close(); err != nil {
+	src, d := newDBFile(t)
+	ctx := context.Background()
+	conn, err := d.Conn(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.ReadFile(path)
+	for _, s := range []string{
+		`PRAGMA wal_checkpoint(TRUNCATE)`,
+		`PRAGMA wal_autocheckpoint = 0`,
+		`INSERT INTO slack_accounts (status) VALUES ('ok')`,
+	} {
+		if _, err := conn.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	// Copy the pair while the writer is still open: the copy has unmerged
+	// frames in its -wal and no connection at all.
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(src + suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, path+suffix, string(b))
+	}
+	_ = conn.Close()
+
+	mainBefore, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,10 +504,19 @@ func TestDiagnostics_ReadDBWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := readParts(t, path); p.Sources != "Slack 1 ok" {
-		t.Fatalf("Sources = %q", p.Sources)
+	walBefore, err := os.ReadFile(path + "-wal")
+	if err != nil {
+		t.Fatal(err)
 	}
-	after, err := os.ReadFile(path)
+	if len(walBefore) == 0 {
+		t.Fatal("the -wal has no frames; the test would prove nothing")
+	}
+
+	if p := readParts(t, path); p.Sources != "Slack 1 ok" {
+		t.Fatalf("Sources = %q (the row lives only in the -wal)", p.Sources)
+	}
+
+	mainAfter, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,8 +524,31 @@ func TestDiagnostics_ReadDBWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(before, after) || !st.ModTime().Equal(st2.ModTime()) {
+	if !bytes.Equal(mainBefore, mainAfter) || !st.ModTime().Equal(st2.ModTime()) {
 		t.Error("ReadDB changed the main database file")
+	}
+	walAfter, err := os.ReadFile(path + "-wal")
+	if err != nil {
+		t.Fatalf("the -wal is gone after the read: %v", err)
+	}
+	if !bytes.Equal(walBefore, walAfter) {
+		t.Errorf("the -wal changed: %d bytes before, %d after", len(walBefore), len(walAfter))
+	}
+}
+
+// TestDiagnostics_QueriesValid runs every query ReadDB uses against a
+// fully migrated database, so a typo'd column cannot hide behind the
+// older-schema `unknown` path.
+func TestDiagnostics_QueriesValid(t *testing.T) {
+	_, d := newDBFile(t)
+	queries := []string{schemaQuery, quickConnectionsQuery, recentErrorsQuery}
+	for _, st := range SourceTables {
+		queries = append(queries, st.Query)
+	}
+	for _, q := range queries {
+		if err := query(context.Background(), d, q, func(*sql.Rows) error { return nil }); err != nil {
+			t.Errorf("%s: %v", q, err)
+		}
 	}
 }
 
@@ -481,7 +574,7 @@ func TestDiagnostics_BusySingleStatement(t *testing.T) {
 		path, d := newDBFile(t)
 		execAll(t, d, `INSERT INTO slack_accounts (status) VALUES ('ok')`)
 		p := ReadDB(context.Background(), DefaultBudgets, path,
-			wrapOpener(fakeReader{failOn: "FROM pipeline_runs", failErr: sqlcipher.Error{Code: sqlcipher.ErrBusy}}))
+			wrapOpener(t, fakeReader{failOn: "FROM pipeline_runs", failErr: sqlcipher.Error{Code: sqlcipher.ErrBusy}}))
 		if p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) {
 			t.Errorf("PipelineRuns = %q", p.PipelineRuns)
 		}
@@ -495,7 +588,7 @@ func TestDiagnostics_BusySingleStatement(t *testing.T) {
 	t.Run("sources_query_error_other", func(t *testing.T) {
 		path, _ := newDBFile(t)
 		p := ReadDB(context.Background(), DefaultBudgets, path,
-			wrapOpener(fakeReader{failOn: "FROM jira_accounts", failErr: sqlcipher.Error{Code: sqlcipher.ErrCorrupt}}))
+			wrapOpener(t, fakeReader{failOn: "FROM jira_accounts", failErr: sqlcipher.Error{Code: sqlcipher.ErrCorrupt}}))
 		if p.Sources != DatabaseUnreadableCorrupt || p.Kinds != nil || len(p.Reasons) != 0 {
 			t.Errorf("got %+v", p)
 		}

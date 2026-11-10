@@ -318,7 +318,10 @@ func readRecentErrors(ctx context.Context, d DBReader) (string, bool) {
 		return nil
 	})
 	if err != nil {
-		unknown, busy, _ := queryErr(ctx, err)
+		unknown, busy, missing := queryErr(ctx, err)
+		if missing {
+			unknown = UnknownOlderSchema
+		}
 		return PipelineRunsUnknown(unknown), busy
 	}
 	return strings.Join(rows, "\n"), false

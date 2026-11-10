@@ -283,6 +283,10 @@ const (
 	StateSep      = ", "
 )
 
+// UnknownOlderSchema is the reason of a Recent errors row when the
+// database predates pipeline_runs: `  pipeline runs unknown (older schema)`.
+const UnknownOlderSchema = "unknown (older schema)"
+
 // kindCount is `<kind> <n>`.
 func kindCount(kind string, n int) string { return fmt.Sprintf(kindCountFmt, kind, n) }
 
