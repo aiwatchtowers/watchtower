@@ -738,6 +738,11 @@ func resolveRoundReadFolder(dbPath string, roundID int64) (string, error) {
 	if round == nil {
 		return "", usageError("--read-folder-round %d: no such review round", roundID)
 	}
+	// EvalSymlinks("") is ".", the CLI's own cwd: an empty or relative
+	// recorded folder is refused, never read relative to the process.
+	if !filepath.IsAbs(round.FolderRoot) {
+		return "", usageError("--read-folder-round %d: the round records no absolute folder", roundID)
+	}
 	resolved, err := filepath.EvalSymlinks(round.FolderRoot)
 	if err != nil {
 		return "", usageError("--read-folder-round %d: %v", roundID, err)

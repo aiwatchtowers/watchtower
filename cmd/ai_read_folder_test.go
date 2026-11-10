@@ -493,6 +493,8 @@ func TestAIQueryReadFolderRound_Refusals(t *testing.T) {
 	ok := round(f.worktree)
 	gone := round(filepath.Join(f.worktree, "gone"))
 	file := round(filepath.Join(f.repo, "README.md"))
+	empty := round("")
+	relative := round("wt/app")
 	ask := strconv.FormatInt(f.addAsk(t, "review", "spec", false, ""), 10)
 	for name, tc := range map[string]struct {
 		args []string
@@ -500,6 +502,8 @@ func TestAIQueryReadFolderRound_Refusals(t *testing.T) {
 	}{
 		"negative id":       {[]string{"--read-folder-round", "-3"}, "--read-folder-round -3: not a review round id"},
 		"zero id":           {[]string{"--read-folder-round", "0"}, "--read-folder-round 0: not a review round id"},
+		"empty folder":      {[]string{"--read-folder-round", empty}, "--read-folder-round " + empty + ": the round records no absolute folder"},
+		"relative folder":   {[]string{"--read-folder-round", relative}, "--read-folder-round " + relative + ": the round records no absolute folder"},
 		"unknown round":     {[]string{"--read-folder-round", "999999"}, "--read-folder-round 999999: no such review round"},
 		"folder gone":       {[]string{"--read-folder-round", gone}, "--read-folder-round " + gone},
 		"not a directory":   {[]string{"--read-folder-round", file}, "--read-folder-round " + file + ": not a directory"},
