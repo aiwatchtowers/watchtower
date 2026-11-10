@@ -25,7 +25,7 @@
 - **One binary, one lookup.** The executable every path uses — the test, the help probe, the sign-in and the update terminal — is the one Go's own lookup returns (`claude.FindBinary(cfg.ClaudePath)` / `codex.FindBinary(cfg.CodexPath)`), asked through `watchtower ai which`. Swift never searches PATH for an agent itself. The terminal runs that path (shell-quoted), not a bare `claude`/`codex`.
 - The sign-in terminal runs `OnboardingAgentChoice.terminalCommand` via the login shell, in its own process group, killed (SIGTERM to the group) on Stop, tile switch, leaving the step, Cancel and app quit.
 - Inner loop only per task: `make test-swift FILTER=<Class>`, `swiftlint` on touched files; the full gate (`make test-swift`, `make lint-all`) once before the PR.
-- Branch: umbrella `feature/onboarding-agent-choice` off `main` (starting from the spec commits on `wt/session-10-5`); task PRs go into it, one PR into `main` at the end.
+- Branch: umbrella `feature/onboarding-agent-choice` off `main` (starting from the spec commits on `wt/session-10-5`); task PRs go into it, one PR into `main` at the end. (The owner's standing rule for multi-task plans, 2026-11-10: task PRs into one umbrella branch, never `main`; the umbrella PR stays a draft until done. The hand check below gates only the umbrella PR into `main`.)
 
 ## Review Focus
 
@@ -254,11 +254,23 @@
 
 - [ ] `make test-swift` and `make lint-all` green; `go test ./docs/guide/...` green.
 - [ ] **Hand checks by the owner, in a separate macOS user account** (spec Acceptance H items 4, 5, 6, and the four scenes without a live shot). A throwaway `HOME` isolates nothing that matters here. The onboarding progress lives in `UserDefaults` for `com.watchtower.desktop`, which `cfprefsd` keeps per macOS user. Claude keeps its sign-in in the user's Keychain (one `Claude Code-credentials` item, whatever `CLAUDE_CONFIG_DIR` says). A real sign-in in the owner's account could therefore replace the owner's own Claude login. So the controller files one `ask_owner` of kind `check` with the steps below, to run in a test user (System Settings → Users & Groups → Add User; delete it afterwards). Its preferences, Keychain, Application Support and config are all fresh. The controller copies the built app and the stub script to `/Users/Shared/wt-check/` first.
-  1. **Signed out** (`signed-out`, `signed-out-stopped`): in the test user, install Claude Code with the step's own command and open `/Users/Shared/wt-check/Watchtower.app`. The tile reads Installed · not signed in, and the terminal opens with `'<path>' auth login`. Stop it; see "Sign-in stopped before it finished." and **Sign in again**; sign in for real (the test user's own Keychain); the tile turns Ready.
-  2. **Continue held** (`continuing`): press Continue; the spinner shows while `config set` writes (compare with the mockup).
-  3. **Quit**: on a fresh run with the sign-in terminal open, quit the app; `pgrep -f "auth login"` in Terminal is empty.
-  4. **Outdated and failed update** (`signed-out-outdated`, `signed-out-update-failed`): `/Users/Shared/wt-check/stub/claude` handles three cases. `auth --help` prints a general help with no `login` row. `update` sleeps 3 s and exits 1. Anything else prints the line `Not logged in · Please run /login` (the exact diagnostic Go's `providers` classifier reads as `auth`) and exits 1. In the test user, before launching: `/Users/Shared/wt-check/Watchtower.app/Contents/Resources/watchtower config set claude_path /Users/Shared/wt-check/stub/claude`. Then open the app: the update terminal runs, then "Update stopped before it finished (exit code 1)." with **Update again**. Compare both with their mockups.
-  5. Delete the test user (System Settings → Users & Groups).
+  **Run A — a fresh test user, nothing installed yet:**
+  1. **Install while open (H4)**: open `/Users/Shared/wt-check/Watchtower.app`; both tiles read Not installed (`none`). Copy the Claude install command into Terminal, run it, and switch back to the app **without clicking anything**; the Claude tile changes by itself to Installed · not signed in.
+  2. **Signed out (H5, `signed-out`, `signed-out-stopped`)**: the sign-in terminal opens by itself with `'<path>' auth login`. Stop it; see "Sign-in stopped before it finished." and **Sign in again**.
+  3. **Quit**: press Sign in again so the terminal runs, quit the app (⌘Q), then in Terminal `pgrep -f "auth login"` prints nothing.
+  4. **Sign in and Continue (`continuing`)**: open the app again (still on Goals: nothing was continued). Let the terminal open, sign in for real (the test user's own Keychain); the tile turns Ready. Press Continue; the spinner shows while `config set` writes.
+  5. **Codex install kind (H6)**: in Terminal, `curl -fsSL https://chatgpt.com/codex/install.sh | sh`, then `realpath ~/.local/bin/codex` starts with `$HOME/.codex/packages/standalone/` (the rule `testInstallKindFromTheResolvedPath` pins).
+
+  **Reset between runs**, as the test user, with the app quit: `defaults delete com.watchtower.desktop; rm -rf ~/Library/Application\ Support/Watchtower ~/.config/watchtower`. Onboarding then starts again at Goals.
+
+  **Run B — outdated CLI and a failed update (`signed-out-outdated`, `signed-out-update-failed`):**
+  6. `/Users/Shared/wt-check/stub/claude` handles three cases:
+     - `auth --help` prints a general help with no `login` row and exits 0;
+     - `update` sleeps 3 s and exits 1;
+     - anything else writes the line `Not logged in · Please run /login` to **stderr**, nothing to stdout, and **exits 0**.
+
+     Go reads that line as `auth` only on a clean exit (`providers.CleanExitFailure` → `diagnosticCategory`, `internal/providers/failure.go`); a non-zero exit is classified without reading the text. Before launching: `/Users/Shared/wt-check/Watchtower.app/Contents/Resources/watchtower config set claude_path /Users/Shared/wt-check/stub/claude`. Open the app: the tile reads Installed · not signed in, the update terminal runs, then "Update stopped before it finished (exit code 1)." with **Update again**. Compare both with their mockups.
+  7. Delete the test user (System Settings → Users & Groups).
   The controller does not wait on this ask to merge the task PRs into the umbrella branch; the umbrella PR into `main` waits for the check.
 
 - [ ] Umbrella PR `feature/onboarding-agent-choice` → `main` with `/local-review` (debate-review on the final PR).
