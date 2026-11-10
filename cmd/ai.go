@@ -260,7 +260,7 @@ func queryInput(args []string, stdin io.Reader) (prompt, systemPrompt string, er
 	return q.Prompt, q.SystemPrompt, nil
 }
 
-func runAIQuery(_ *cobra.Command, args []string) error {
+func runAIQuery(cmd *cobra.Command, args []string) error {
 	enc := json.NewEncoder(os.Stdout)
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
 		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
@@ -295,7 +295,7 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 		dbPath = cfg.DBPath()
 	}
 
-	readFolder, err := resolveReadFolder(dbPath)
+	readFolder, err := resolveReadFolder(cmd, dbPath)
 	if err != nil {
 		return err
 	}
@@ -623,9 +623,12 @@ func refuseQuery(enc *json.Encoder, err error) error {
 // folder by a spec/plan review ask (resolveReviewReadFolder), and
 // --read-folder-round N by a diff review round (resolveRoundReadFolder);
 // each excludes the other two and --tools the same way.
-func resolveReadFolder(dbPath string) (string, error) {
-	if aiFlagReadFolderRound != 0 {
-		if aiFlagReadFolder != "" || aiFlagReadFolderAsk != 0 {
+func resolveReadFolder(cmd *cobra.Command, dbPath string) (string, error) {
+	// An explicit id flag is a request even at 0: refused, never ignored.
+	roundGiven := cmd.Flags().Changed("read-folder-round")
+	askGiven := cmd.Flags().Changed("read-folder-ask")
+	if roundGiven {
+		if aiFlagReadFolder != "" || askGiven {
 			return "", usageError("give one of --read-folder, --read-folder-ask or --read-folder-round")
 		}
 		if aiFlagTools != "" {
@@ -633,7 +636,7 @@ func resolveReadFolder(dbPath string) (string, error) {
 		}
 		return resolveRoundReadFolder(dbPath, aiFlagReadFolderRound)
 	}
-	if aiFlagReadFolderAsk != 0 {
+	if askGiven {
 		if aiFlagReadFolder != "" {
 			return "", usageError("give --read-folder or --read-folder-ask, not both")
 		}
@@ -682,7 +685,7 @@ func resolveReadFolder(dbPath string) (string, error) {
 // folder that is now a symlink leads both to its target. Any failure is a
 // usage error (exit 2).
 func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
-	if askID < 0 {
+	if askID <= 0 {
 		return "", usageError("--read-folder-ask %d: not an ask id", askID)
 	}
 	database, err := db.Open(dbPath)
@@ -720,7 +723,7 @@ func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
 // failure is a usage error (exit 2); there is no fallback to the workbench
 // folder.
 func resolveRoundReadFolder(dbPath string, roundID int64) (string, error) {
-	if roundID < 0 {
+	if roundID <= 0 {
 		return "", usageError("--read-folder-round %d: not a review round id", roundID)
 	}
 	database, err := db.Open(dbPath)

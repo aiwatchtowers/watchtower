@@ -342,6 +342,7 @@ func TestAIQueryReadFolderAsk_Refusals(t *testing.T) {
 		"question ask":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "question", "", false, ""), 10)}, "not a spec or plan review"},
 		"other review":     {[]string{"--read-folder-ask", strconv.FormatInt(f.addAsk(t, "review", "other", false, ""), 10)}, "not a spec or plan review"},
 		"unknown ask":      {[]string{"--read-folder-ask", "999999"}, "--read-folder-ask 999999"},
+		"zero id":          {[]string{"--read-folder-ask", "0"}, "--read-folder-ask 0: not an ask id"},
 		"with read-folder": {[]string{"--read-folder-ask", review, "--read-folder", f.folder}, "not both"},
 		"with tools":       {[]string{"--read-folder-ask", review, "--tools", "chat"}, "without --tools"},
 	} {
@@ -498,12 +499,14 @@ func TestAIQueryReadFolderRound_Refusals(t *testing.T) {
 		text string
 	}{
 		"negative id":       {[]string{"--read-folder-round", "-3"}, "--read-folder-round -3: not a review round id"},
+		"zero id":           {[]string{"--read-folder-round", "0"}, "--read-folder-round 0: not a review round id"},
 		"unknown round":     {[]string{"--read-folder-round", "999999"}, "--read-folder-round 999999: no such review round"},
 		"folder gone":       {[]string{"--read-folder-round", gone}, "--read-folder-round " + gone},
 		"not a directory":   {[]string{"--read-folder-round", file}, "--read-folder-round " + file + ": not a directory"},
 		"database unusable": {[]string{"--read-folder-round", ok, "--db-path", filepath.Join(f.config, "wt.db")}, "--read-folder-round: opening the database"},
 		"with read-folder":  {[]string{"--read-folder-round", ok, "--read-folder", f.folder}, "give one of"},
 		"with ask":          {[]string{"--read-folder-round", ok, "--read-folder-ask", ask}, "give one of"},
+		"with ask zero":     {[]string{"--read-folder-round", ok, "--read-folder-ask", "0"}, "give one of"},
 		"with tools":        {[]string{"--read-folder-round", ok, "--tools", "chat"}, "--read-folder-round runs without --tools"},
 	} {
 		t.Run(name, func(t *testing.T) {
