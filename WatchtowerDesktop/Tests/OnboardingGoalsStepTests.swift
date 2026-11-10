@@ -66,6 +66,7 @@ final class OnboardingGoalsStepTests: XCTestCase {
             configuredProvider: { nil },
             actions: OnboardingGoalsActions(initWorkspace: {}, setLanguage: { _ in }, applyFeatures: { _ in (nil, false) })
         )
+        let pick: @MainActor (Choice.Agent) -> String? = { _ in fakes.picked }
         return OnboardingSignInCoordinator(
             model: model,
             environment: { [:] },
@@ -74,8 +75,9 @@ final class OnboardingGoalsStepTests: XCTestCase {
                 fakes.sessions.append(session)
                 return session
             },
-            configPath: configPath
-        ) { _ in fakes.picked }
+            configPath: configPath,
+            pickExecutable: pick
+        )
     }
 
     private static let claudeSignedOut = OnboardingAgentCheckResult(statuses: [.claude: .signedOut, .codex: .notInstalled])
