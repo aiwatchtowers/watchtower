@@ -53,7 +53,7 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 - **Run launch:** the Desktop never spawns the run itself. Run and Retry call `prompts replay <id> [--retry] --detach --json` with the ordinary short timeout; that CLI verb checks the state and the agent marker and starts the real run through `LaunchReplay` (`Setsid`, its own session and process group, so a Desktop quit does not stop it; Task 3.13), then returns `{"ok":true,"id":N,"started":true}`. The Desktop polls the row every 2 s and reads the outcome from the row, not from any child's exit (Task 5.8).
 - **Chats panel and the settings path** (owner, ask #1123, spec D48): tuning conversations are shown only in the tuning panel, never in the Chats panel; the no-tools line reads "Tuning tools need Claude or Codex — pick one in Settings → System → AI". The `…-conversation-removed-in-chats` mockup and `ChatsRemovedShot` are gone; no task shows the removed line outside the tuning panel.
 
-## Owner decisions found in recon (all answered: asks #1123, #1125, #1132)
+## Owner decisions found in recon (all answered: asks #1123, #1125, #1132, #1144)
 
 Choices found in recon that the spec did not settle; the owner chose each one as listed.
 
@@ -69,6 +69,8 @@ Choices found in recon that the spec did not settle; the owner chose each one as
 | Note on Claude-only analytics blocks | main's caption "Not measured for Codex sessions."; no "Claude Code only" note — **decided** (D51) | 5.10, 5.13 | ask #1132 |
 | Tuning chat on ollama | no tools (draft-only), as the spec says — **decided** (D52) | 3.1, 5.7, 5.8 | ask #1132 |
 | Usage line of the tuning chat | own purpose `tuning.chat` — **decided** (D53) | 3.1, 5.2, 5.7 | ask #1132 |
+| The daemon gets the login shell's `CODEX_HOME` (spec D55) | yes — **decided** | 4.6 | ask #1144 |
+| Help on the agent filter: "Codex sessions count when they were started from a Watchtower workbench terminal" (spec D57) | yes — **decided** | 5.10 | ask #1144 |
 | **Propose this addition** text: title "Add to <prompt>: <line>", why "Tried on N past calls in A/B #id.", metric `corrections` | yes — **decided** | 3.13 | ask #1125 (owner chose this) |
 
 Settled by the plan without an owner choice (they follow the code or the spec): the IMAP item key `<uidvalidity>:<uid>` (no mailbox column exists); pack re-renders at Accept/Rollback (all of the owner's workbench folders at once), `integrate` and `workbenchSetupOptions` (the spec's "daemon drift check" does not exist; no folder is left unrendered after an overlay change); a Codex interrupt stays main's `owner_turn` with trigger `interrupt` (ask #1132, D49).
