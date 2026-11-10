@@ -588,6 +588,66 @@ final class WorkbenchesViewModelAutoCleanupTests: XCTestCase {
         await vm.autoCleanupIdle()
     }
 
+    /// Start fresh never runs a Not fully cleaned row, nor one whose
+    /// cleanup runs again: Resume is its way back.
+    func testStartFreshRefusesADeletedRow() async throws {
+        let (vm, _, streamer) = makeVM([.success(AutoCleanupFixture.processRunning)])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+
+        await vm.startFresh(row)
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "a marked row does not start fresh")
+        XCTAssertNotNil(vm.notFullyCleaned[row.id])
+        let requested = try await deleteRequestedAt(row.id)
+        XCTAssertNotNil(requested)
+
+        streamer.holdsCalls = true
+        vm.cleanUpAgain(row.id)
+        await waitUntilHeld(streamer, 1)
+        await vm.startFresh(row)
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "nor while its cleanup runs")
+        streamer.release()
+        await vm.autoCleanupIdle()
+    }
+
+    /// The Clean Up screen's session-scope apply refuses a row a Delete
+    /// Anyway is changing, and one whose background cleanup runs.
+    func testScreenApplyRefusesADeletedRowInTransition() async throws {
+        let (vm, _, streamer) = makeVM([
+            .success(AutoCleanupFixture.processRunning), .success(CleanupFixture.plan),
+            .success(AutoCleanupFixture.processRunning)
+        ])
+        let p = try await workbench()
+        let row = try await markedRow(vm, p)
+        await vm.showInCleanUp(row.id)?.value
+        vm.cleanupScreens[p]?.ticks = ["worktree:/tmp/example/.claude/worktrees/x"]
+        let gate = WriteGate()
+        let store = try XCTUnwrap(pool)
+        vm.commitSessionDeletes = { ids in
+            await gate.wait()
+            try await store.write { db in for id in ids { try TerminalSessionQueries.delete(db, id: id) } }
+        }
+
+        streamer.holdsCalls = true
+        vm.cleanUpAgain(row.id)
+        await waitUntilHeld(streamer, 1)
+        var applied = await vm.applyCleanupScreen(projectID: p)
+        XCTAssertFalse(applied, "refused while its background cleanup runs")
+        XCTAssertEqual(applies(streamer).count, 2, "only the two background applies")
+        streamer.holdsCalls = false
+        streamer.release()
+        await vm.autoCleanupIdle()
+        XCTAssertNotNil(vm.notFullyCleaned[row.id])
+
+        let deleting = Task { await vm.deleteAnyway(row.id) }
+        await waitUntil("Delete Anyway holds the row") { vm.autoCleanupBusy.contains(row.id) }
+        applied = await vm.applyCleanupScreen(projectID: p)
+        XCTAssertFalse(applied, "refused while Delete Anyway runs")
+        XCTAssertEqual(applies(streamer).count, 2)
+        gate.open()
+        await deleting.value
+    }
+
     // MARK: - Queue edges (review #800)
 
     func testTwoWorkbenchesCleanUpInParallel() async throws {

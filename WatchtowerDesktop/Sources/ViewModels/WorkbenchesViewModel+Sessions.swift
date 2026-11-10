@@ -620,6 +620,9 @@ extension WorkbenchesViewModel {
     /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
         guard !cleaningUpSessions.contains(session.id), !preparingSessions.contains(session.id) else { return }
+        // A deleted row (board #1716) — queued, in a Resume or Delete Anyway,
+        // or Not fully cleaned — never starts fresh: Resume is its way back.
+        guard canResume(session.id), notFullyCleaned[session.id] == nil else { return }
         let ticket = beginSwitch(projectID: session.projectID)
         guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)

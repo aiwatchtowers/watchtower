@@ -310,6 +310,9 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertNotEqual(fresh.id, row.id)
         XCTAssertFalse(terminals.liveIDs.contains(row.id), "the deleting row is not resumed")
 
+        await vm.startFresh(row)
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "Start fresh does not run the deleting row")
+
         await vm.showSession(id: row.id)
         XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.", "⌘N finds no such session")
         XCTAssertFalse(terminals.liveIDs.contains(row.id))

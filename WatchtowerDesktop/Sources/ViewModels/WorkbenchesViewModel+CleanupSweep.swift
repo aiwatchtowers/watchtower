@@ -198,7 +198,10 @@ extension WorkbenchesViewModel {
         guard !keys.isEmpty else { return false }
         var title = ""
         if case let .session(sessionID) = state.scope {
-            guard !cleaningUpSessions.contains(sessionID) else { return false }
+            // Nor on a deleted row whose background cleanup is queued or runs,
+            // or one a Resume or Delete Anyway is changing (board #1716).
+            guard !cleaningUpSessions.contains(sessionID), !closedForCleanup.contains(sessionID),
+                  !autoCleanupBusy.contains(sessionID) else { return false }
             cleaningUpSessions.insert(sessionID)
             title = sessions.first { $0.id == sessionID }?.title ?? "the session"
         }
