@@ -69,7 +69,8 @@ var guardedSingleFiles = []string{
 
 // chatTableReader is a reviewed Go reader of the chat tables: its source
 // filters `code_question`, `spec_review_thread` and `analytics_tuning`
-// conversations out, and test, threadTest and tuningTest (funcs in testFile) prove it behaviourally.
+// conversations out, and test, threadTest and tuningTest (funcs in testFile)
+// prove it behaviourally.
 type chatTableReader struct {
 	testFile, test, threadTest, tuningTest string
 }
