@@ -112,7 +112,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case npm
         case unknown
 
-        package static func of(_ agent: Agent, resolvedPath path: String, home: String) -> InstallKind {
+        package static func of(_ agent: Agent, resolvedPath path: String, home: String) -> Self {
             if path.contains("/node_modules/") { return .npm }
             if path.contains("/Caskroom/") || path.contains("/Cellar/") { return .homebrew }
             let nativeRoots = switch agent {
