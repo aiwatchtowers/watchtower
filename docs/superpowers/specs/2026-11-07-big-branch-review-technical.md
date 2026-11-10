@@ -356,8 +356,8 @@ the model and never waits (§3.7).
 
 ## 6. The reviewer (phase 3)
 
-- An embedded chat surface `ReviewerSurface` (`ChatSurfaceSpec`), `readFolder` = the folder
-  the round was snapshotted from (the session's worktree when it has one — see the open
+- An embedded chat surface `ReviewerSurface` (`ChatSurfaceSpec`), reading the folder
+  the round was snapshotted from (`--read-folder-round`, amendment below) (the session's worktree when it has one — see the open
   question on `--read-folder` below), `toolAccess` `.draftOnly` (no Watchtower tools;
   `--read-folder` refuses tools).
 - One thread per branch: a table `review_reviewer_threads(project_id, branch, conversation_id,
@@ -370,6 +370,12 @@ the model and never waits (§3.7).
   that subfolder inside the worktree — the round's `folder_root`; anything else refused as
   today). The capability
   contract of spec 2026-10-02 §9.1 is amended in the same PR.
+- **Amendment (owner decision, ask #611):** the widening above is replaced by a dedicated
+  flag. `--read-folder` stays workbench folders only; the reviewer runs
+  `ai query --read-folder-round <round id>`, and the CLI reads that round's recorded
+  `folder_root` (symlinks resolved, a directory; an unknown round or a gone folder is
+  exit 2, never a fallback), modelled on `--read-folder-ask`. The Desktop passes the open
+  round's id, not a path.
 - **Send to author** on an answer makes a design comment in the open round of the Branch
   review the owner is looking at (that session's round; the owner's own write; the round's
   existing delivery path). With no open round it is disabled with "Start a round to send". Nothing reaches the author's session otherwise.

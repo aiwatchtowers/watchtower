@@ -110,7 +110,9 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
    timed-out turn shows an error line with Retry, like the other embedded chats. To read a
    session that works in its own worktree, `ai query --read-folder` is widened from the
    workbench folder to that workbench's registered session worktrees (ask #560; amends the
-   read-folder capability rule of spec 2026-10-02 §9.1).
+   read-folder capability rule of spec 2026-10-02 §9.1). Replaced in ask #611: the
+   reviewer names the round instead (`ai query --read-folder-round`), and `--read-folder`
+   stays workbench folders only.
 
 ## Contracts and storage that change
 
@@ -119,7 +121,7 @@ with a 5-minute budget; when it runs out, everything is lost and Retry starts fr
   per chapter); `review start` and Refresh store the commit the round was taken at
   (`review_rounds.head_sha`). Both are database rows; no file, ref or index is written.
   Nothing else in REVIEW-01..05 changes.
-- **Read-folder capability rule** (spec 2026-10-02 §9.1): widened as in item 8 (ask #560).
+- **Read-folder capability rule** (spec 2026-10-02 §9.1): widened as in item 8 (ask #560). Amended by the owner in ask #611: `--read-folder` stays workbench folders only and the reviewer names its folder by the round (`ai query --read-folder-round`).
 - **Migration 00179:** `review_overview_parts`, `review_rounds.head_sha`; phase 3 adds the
   reviewer's thread table.
 - **Chapters move to Go entirely.** Swift's `ReviewChapters.mechanical` is removed — no
@@ -219,7 +221,8 @@ error states. REVIEW-01 changes only as listed above; REVIEW-02..05 unchanged.
   branch map in every turn — ask #558 and conversation.
 - The reviewer is phase 3, after the overview — ask #559.
 - The reviewer may read the session's own worktree: `--read-folder` is widened to the
-  workbench's registered session worktrees — ask #560.
+  workbench's registered session worktrees — ask #560; replaced by the round-named
+  `--read-folder-round` — ask #611.
 - The goal check covers the session's ticket and every lane's ticket; the agent's finish
   check stays on its own ticket — agent's call, see the technical spec §3.1.
 - No size thresholds: one path that packs chapters into call-sized batches, so a small PR is
