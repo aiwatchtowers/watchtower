@@ -138,6 +138,9 @@ final class WorkbenchesViewModel {
     @ObservationIgnored weak var coach: CoachCenter?
     /// The Analytics pane's period per workbench (7 days until picked).
     var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The Analytics pane's agent filter per workbench (All until picked;
+    /// an older CLI's refusal of `--agent` removes the entry).
+    var analyticsAgent: [Int64: AgentAnalyticsCenter.Agent] = [:]
     /// The session (its uuid) whose detail the Analytics pane shows per
     /// workbench; none = the overview.
     var analyticsSession: [Int64: String] = [:]

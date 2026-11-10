@@ -246,6 +246,12 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
     package let enabled: Bool
     package let since: String
     package let until: String
+    /// The agent filter applied (`all`, `claude`, `codex`), the agents with
+    /// sessions in the filtered period, and `["claude","codex"]` when both
+    /// have sessions in the unfiltered period; absent from an older CLI.
+    package let agent: String?
+    package let agents: [String]?
+    package let agentFilter: [String]?
     package let totals: AgentReportTotals
     package let time: AgentTimeSplit
     package let subagents: AgentSubagents
@@ -266,7 +272,8 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case enabled, since, until, totals, time, subagents, commands, models, hints, tasks, sessions
-        case context, skills, trouble
+        case context, skills, trouble, agent, agents
+        case agentFilter = "agent_filter"
         case tasksMore = "tasks_more"
         case workbenchID = "workbench_id", oldFormatSessions = "old_format_sessions"
         case importState = "import"
@@ -278,6 +285,7 @@ extension AgentReportOverview {
     /// from the clock on every run.
     package func sameReport(as other: Self) -> Bool {
         workbenchID == other.workbenchID && enabled == other.enabled && totals == other.totals
+            && agent == other.agent && agents == other.agents && agentFilter == other.agentFilter
             && time == other.time && subagents == other.subagents && commands == other.commands
             && models == other.models && hints == other.hints && tasks == other.tasks
             && tasksMore == other.tasksMore
@@ -311,9 +319,11 @@ package struct AgentContextReport: Decodable, Equatable, Sendable {
     package let repeatedReads: [AgentRepeatRow]?
     package let compactions: AgentCompactionStats?
     package let disk: AgentDiskSizes?
+    /// The agents whose sessions the block measured; absent from an older CLI.
+    package let agents: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case lead, sessions, baseline, growth, compactions, disk
+        case lead, sessions, baseline, growth, compactions, disk, agents
         case factsSessions = "facts_sessions", subagentBaseline = "subagent_baseline"
         case topSources = "top_sources", repeatedReads = "repeated_reads"
     }
@@ -389,9 +399,11 @@ package struct AgentSkillsReport: Decodable, Equatable, Sendable {
     package let listingTokens: Int64?
     package let rows: [AgentSkillRow]?
     package let neverUsed: [AgentUnusedSkill]?
+    /// The agents whose sessions the block measured; absent from an older CLI.
+    package let agents: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case lead, listed, used, rows
+        case lead, listed, used, rows, agents
         case factsSessions = "facts_sessions", listingTokens = "listing_tokens"
         case neverUsed = "never_used"
     }
@@ -433,9 +445,11 @@ package struct AgentTroubleReport: Decodable, Equatable, Sendable {
     package let unfinishedSubagents: Int?
     package let rateLimited: Int?
     package let factsSessions: Int?
+    /// Every agent of the period's sessions; absent from an older CLI.
+    package let agents: [String]?
 
     enum CodingKeys: String, CodingKey {
-        case lead, classes, denials, interrupts, rejections
+        case lead, classes, denials, interrupts, rejections, agents
         case interruptSessions = "interrupt_sessions", unfinishedSubagents = "unfinished_subagents"
         case rateLimited = "rate_limited", factsSessions = "facts_sessions"
     }

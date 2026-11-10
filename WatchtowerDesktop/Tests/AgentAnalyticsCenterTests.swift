@@ -223,6 +223,95 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         XCTAssertEqual(runner.invocations[1].suffix(2), ["--days", "1"], "the rerun reads the latest period")
     }
 
+    // MARK: - Agent filter (#1517)
+
+    func testAgentFilterAddsFlag() async {
+        let runner = ScriptedAgentsRunner(Self.byFlags())
+        let center = makeCenter(runner)
+
+        center.show(workbench: 3, period: .week, agent: .codex)
+        await waitUntil { runner.invocations.count == 1 }
+        XCTAssertEqual(runner.invocations[0].suffix(4), ["--days", "7", "--agent", "codex"])
+
+        center.show(workbench: 3, period: .week, agent: .all)
+        await waitUntil { runner.invocations.count == 2 }
+        XCTAssertFalse(runner.invocations[1].contains("--agent"), "All sends no flag")
+
+        center.show(workbench: 3, period: .week, agent: .claude)
+        await waitUntil { runner.invocations.count == 3 }
+        XCTAssertEqual(runner.invocations[2].suffix(2), ["--agent", "claude"], "changing only the agent reruns")
+    }
+
+    func testOlderCLIRefusingAgentResetsToAll() async {
+        let runner = ScriptedAgentsRunner(Self.byFlags())
+        let center = makeCenter(runner)
+        var refused: [Int64] = []
+        center.onAgentRefused = { refused.append($0) }
+        center.show(workbench: 3, period: .week)
+        await waitUntil { center.overviews[3]?.value != nil }
+
+        runner.answer { args in
+            if args.contains("--agent") {
+                throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: unknown flag: --agent\nUsage: …")
+            }
+            return Self.fixture("agent-report-overview")
+        }
+        center.show(workbench: 3, period: .week, agent: .codex)
+        await waitUntil { center.overviews[3]?.error != nil }
+
+        XCTAssertEqual(refused, [3], "the workbench's filter goes back to All")
+        XCTAssertNotNil(center.overviews[3]?.value, "the last report stays, with the error line")
+        XCTAssertEqual(center.overviews[3]?.error, "watchtower exited with error: Error: unknown flag: --agent")
+
+        center.retry(workbench: 3)
+        await waitUntil { center.overviews[3]?.error == nil }
+        XCTAssertFalse(runner.invocations.last?.contains("--agent") ?? true, "Retry asks for All")
+        center.show(workbench: 3, period: .week, agent: .all)
+        await settle()
+        XCTAssertEqual(runner.invocations.count, 3, "the reset filter is already the one asked for")
+    }
+
+    func testOtherFailureKeepsTheFilter() async {
+        let runner = ScriptedAgentsRunner { _ in throw ScriptedFailure(errorDescription: "database is locked") }
+        let center = makeCenter(runner)
+        var refused: [Int64] = []
+        center.onAgentRefused = { refused.append($0) }
+        center.show(workbench: 3, period: .week, agent: .codex)
+        await waitUntil { center.overviews[3]?.error != nil }
+        XCTAssertTrue(refused.isEmpty)
+    }
+
+    func testStaleFilterAnswerDropped() async {
+        let runner = ScriptedAgentsRunner { args in
+            Self.overview(["agent": args.contains("codex") ? "codex" : "claude"])
+        }
+        runner.hold()
+        let center = makeCenter(runner)
+        var assigned: [String?] = []
+        func track() {
+            withObservationTracking { _ = center.overviews } onChange: {
+                Task { @MainActor in
+                    assigned.append(center.overviews[3]?.value?.agent)
+                    track()
+                }
+            }
+        }
+        track()
+
+        center.show(workbench: 3, period: .week, agent: .claude)
+        await waitUntil { runner.invocations.count == 1 }
+        center.show(workbench: 3, period: .week, agent: .codex)
+        runner.release(0)
+        await waitUntil { runner.invocations.count == 2 }
+        await settle()
+        XCTAssertNil(center.overviews[3]?.value, "the Claude answer is dropped")
+        runner.release(1)
+        await waitUntil { center.overviews[3]?.value != nil }
+        await settle()
+        XCTAssertEqual(center.overviews[3]?.value?.agent, "codex")
+        XCTAssertEqual(assigned, ["codex"], "only the Codex overview is ever shown")
+    }
+
     func testHideStopsTheTicks() async {
         let runner = ScriptedAgentsRunner(Self.byFlags())
         let center = makeCenter(runner, interval: .milliseconds(20))

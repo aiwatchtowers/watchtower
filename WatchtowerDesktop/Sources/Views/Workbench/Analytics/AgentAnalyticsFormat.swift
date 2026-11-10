@@ -33,6 +33,24 @@ enum AgentAnalyticsFormat {
         session.agentKind?.displayName ?? session.agent
     }
 
+    /// The agent filter's segments (#1517, spec §4.7).
+    static let agentTitles: [AgentAnalyticsCenter.Agent: String] = [.all: "All", .claude: "Claude Code", .codex: "Codex"]
+
+    /// The agent filter's tooltip: a Codex session started elsewhere has no
+    /// terminal row and is never read (D57, ask #1144).
+    static let agentHelp = "Codex sessions count when they were started from a Watchtower workbench terminal"
+
+    /// The picker shows when both agents have sessions in the unfiltered
+    /// period, or a filter other than All is chosen (so it can be undone).
+    static func showsAgentPicker(_ overview: AgentReportOverview, filter: AgentAnalyticsCenter.Agent) -> Bool {
+        overview.agentFilter != nil || filter != .all
+    }
+
+    /// The filter the report was built with; an older CLI sends none (All).
+    static func agent(of overview: AgentReportOverview) -> AgentAnalyticsCenter.Agent {
+        overview.agent.flatMap(AgentAnalyticsCenter.Agent.init(rawValue:)) ?? .all
+    }
+
     static func percent(_ part: Double, of whole: Double) -> String {
         guard whole > 0 else { return "0%" }
         return "\(Int((part / whole * 100).rounded()))%"

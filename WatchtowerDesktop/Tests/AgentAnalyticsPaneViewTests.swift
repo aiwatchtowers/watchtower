@@ -16,6 +16,7 @@ private final class AnalyticsActionLog {
     var files: [String] = []
     var askOpens = 0
     var discussed: [String] = []
+    var retries = 0
     var asksWaiting = true
 
     var actions: AgentAnalyticsActions {
@@ -26,6 +27,7 @@ private final class AnalyticsActionLog {
             openFile: { self.files.append($0) },
             openAsks: { self.askOpens += 1 },
             discuss: { self.discussed.append($0) },
+            retry: { self.retries += 1 },
             asksWaiting: asksWaiting
         )
     }
@@ -641,6 +643,42 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             XCTAssertFalse(pixel.red == pixel.green && pixel.green == pixel.blue && abs(pixel.red - background) < 20,
                            "\(name.rawValue): \(pixel) looks like the background")
         }
+    }
+
+    // MARK: - Agent filter (#1517)
+
+    /// D51: main's caption stays the only note on the Claude-only blocks.
+    func testCodexCaptionStaysMains() throws {
+        let caption = AgentAnalyticsCodexShare.notMeasuredLine
+        let mixed = try texts(AgentAnalyticsOverviewView(
+            state: .overview(try CodexAnalyticsShotFixtures.overview(), staleError: nil),
+            period: .constant(.week), agent: .constant(.all), actions: AnalyticsActionLog().actions))
+        XCTAssertTrue(mixed.contains(caption), "\(mixed)")
+        XCTAssertFalse(mixed.contains { $0.contains("Claude Code only") }, "\(mixed)")
+
+        // Filter Codex: the report holds Codex sessions only, the caption
+        // replaces the blocks' state.
+        let codex = try CodexAnalyticsShotFixtures.overview(codexOnly: true)
+        let only = try texts(AgentAnalyticsOverviewView(
+            state: .overview(codex, staleError: nil),
+            period: .constant(.week), agent: .constant(.codex), actions: AnalyticsActionLog().actions))
+        XCTAssertEqual(only.filter { $0 == caption }.count, 2, "\(only)")
+        XCTAssertFalse(only.contains { $0.hasPrefix("At session start") }, "\(only)")
+        XCTAssertFalse(only.contains { $0.contains("Claude Code only") }, "\(only)")
+    }
+
+    /// An older CLI's refusal of `--agent` lands on the report's error line,
+    /// which offers Retry.
+    func testErrorLineOffersRetry() throws {
+        let log = AnalyticsActionLog()
+        let stale = AgentAnalyticsOverviewView(
+            state: .overview(try Self.overview(), staleError: "Error: unknown flag: --agent"),
+            period: .constant(.week), actions: log.actions)
+        try stale.inspect().find(button: "Retry").tap()
+        let failed = AgentAnalyticsOverviewView(
+            state: .failed("Error: unknown flag: --agent"), period: .constant(.week), actions: log.actions)
+        try failed.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(log.retries, 2)
     }
 
     // MARK: - Coach sections (#1120)

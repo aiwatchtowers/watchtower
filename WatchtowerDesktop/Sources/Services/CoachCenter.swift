@@ -3,7 +3,8 @@ import Observation
 import WatchtowerCore
 
 /// The agent coach (#1120), run through `watchtower coach …`: a workbench's
-/// metrics (`status --workbench N --days D`) while its Analytics pane is
+/// metrics (`status --workbench N --days D [--agent A]`, the pane's agent
+/// filter) while its Analytics pane is
 /// shown, the proposals (`proposals --status all`), and the owner's verbs
 /// Accept / Decline / Roll back / Run now.
 ///
@@ -37,7 +38,7 @@ final class CoachCenter {
 
     @ObservationIgnored private let runner: any CLIRunnerProtocol
     @ObservationIgnored private let interval: Duration
-    @ObservationIgnored private var shown: [Int64: AgentAnalyticsCenter.Period] = [:]
+    @ObservationIgnored private var shown: [Int64: AgentAnalyticsCenter.Query] = [:]
     @ObservationIgnored private var inFlight: [RunKey: (token: Int, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private var runsStarted = 0
     @ObservationIgnored private var queued: Set<RunKey> = []
@@ -52,9 +53,10 @@ final class CoachCenter {
 
     var isPolling: Bool { loop != nil }
 
-    func show(workbench: Int64, period: AgentAnalyticsCenter.Period) {
-        let changed = shown[workbench] != period
-        shown[workbench] = period
+    func show(workbench: Int64, period: AgentAnalyticsCenter.Period, agent: AgentAnalyticsCenter.Agent = .all) {
+        let query = AgentAnalyticsCenter.Query(period: period, agent: agent)
+        let changed = shown[workbench] != query
+        shown[workbench] = query
         if changed {
             request(.status(workbench: workbench))
             if shown.count == 1 { request(.proposals) }
@@ -207,15 +209,17 @@ final class CoachCenter {
     private func perform(_ key: RunKey) async {
         switch key {
         case let .status(workbench):
-            guard let period = shown[workbench] else { return }
-            let args = ["coach", "status", "--workbench", String(workbench), "--days", String(period.rawValue), "--json"]
+            guard let query = shown[workbench] else { return }
+            var args = ["coach", "status", "--workbench", String(workbench), "--days", String(query.period.rawValue)]
+            if query.agent != .all { args += ["--agent", query.agent.rawValue] }
+            args.append("--json")
             do {
                 let value = try JSONDecoder().decode(CoachStatus.self, from: try await runner.run(args: args))
-                // A reply for a period the pane has since left is dropped.
-                guard !Task.isCancelled, shown[workbench] == period else { return }
+                // A reply for a period or filter the pane has since left is dropped.
+                guard !Task.isCancelled, shown[workbench] == query else { return }
                 status[workbench] = SessionReportCenter.Snapshot(value: value)
             } catch {
-                guard !Task.isCancelled, !(error is CancellationError), shown[workbench] == period else { return }
+                guard !Task.isCancelled, !(error is CancellationError), shown[workbench] == query else { return }
                 status[workbench, default: SessionReportCenter.Snapshot()].error = Self.message(error)
             }
         case .proposals:

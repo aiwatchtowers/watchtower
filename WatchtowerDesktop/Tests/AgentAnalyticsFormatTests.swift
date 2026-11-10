@@ -1,9 +1,46 @@
 import SwiftUI
+import ViewInspector
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// The Statistics stack's pure helpers (board #1120, Plan 2, Task 7).
 final class AgentAnalyticsFormatTests: XCTestCase {
+    private static func overview(agentFilter: [String]?) throws -> AgentReportOverview {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .appendingPathComponent("Core/Fixtures/agent-report-overview.json")
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        json["agent_filter"] = agentFilter
+        return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    /// D57, ask #1144: the picker's tooltip (no shot shows a tooltip).
+    @MainActor
+    func testAgentHelp() throws {
+        XCTAssertEqual(AgentAnalyticsFormat.agentHelp,
+                       "Codex sessions count when they were started from a Watchtower workbench terminal")
+        XCTAssertEqual(AgentAnalyticsFormat.agentTitles, [.all: "All", .claude: "Claude Code", .codex: "Codex"])
+        XCTAssertEqual(AgentAnalyticsCenter.Agent.allCases.map(\.rawValue), ["all", "claude", "codex"])
+
+        let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
+                                            openAsks: {}, discuss: { _ in }, asksWaiting: false)
+        let view = AgentAnalyticsOverviewView(
+            state: .overview(try Self.overview(agentFilter: ["claude", "codex"]), staleError: nil),
+            period: .constant(.week), agent: .constant(.all), actions: actions
+        )
+        let picker = try view.inspect().find(KitSegmentedPicker<AgentAnalyticsCenter.Agent>.self)
+        XCTAssertEqual(try picker.help().string(), AgentAnalyticsFormat.agentHelp)
+    }
+
+    func testPickerShownOnlyWithBothAgents() throws {
+        let both = try Self.overview(agentFilter: ["claude", "codex"])
+        let one = try Self.overview(agentFilter: nil)
+        XCTAssertTrue(AgentAnalyticsFormat.showsAgentPicker(both, filter: .all))
+        XCTAssertFalse(AgentAnalyticsFormat.showsAgentPicker(one, filter: .all))
+        XCTAssertTrue(AgentAnalyticsFormat.showsAgentPicker(one, filter: .codex), "a chosen filter keeps its picker")
+    }
+
     func testShareUnderOnePercent() {
         XCTAssertEqual(AgentAnalyticsFormat.share(1, of: 1000), "<1%")
         XCTAssertEqual(AgentAnalyticsFormat.share(0, of: 10), "0%")
