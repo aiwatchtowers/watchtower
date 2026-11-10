@@ -64,7 +64,7 @@ func TestImportSuggestions_CarriesNewestIntoFreeSlots(t *testing.T) {
 		Title: "Run the linter first", Why: "You said this in 5 sessions", Metric: "owner_loop",
 		BeforeText: "Keep commits small.", AfterText: "Keep commits small.\nRun the linter first",
 		Evidence: []db.CoachEvidence{{Kind: "suggestion", Ref: "sg:" + strconv.FormatInt(newest, 10)}},
-		Sources:  5, Status: "open", CreatedAt: carried.CreatedAt}, carried)
+		Sources:  5, Status: "open", CreatedAt: carried.CreatedAt, Origin: "weekly"}, carried)
 	assert.Equal(t, DestProcedure, next.Destination)
 	assert.Equal(t, wb, next.WorkbenchID)
 	assert.Equal(t, "", next.BeforeText)
