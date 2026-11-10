@@ -346,8 +346,9 @@ final class OwnerAsksViewModel {
             // A row it cannot read is left out of the stack and named here.
             loadErrors[projectID] = snapshot.open.problem
             onLoaded?(projectID)
-            // A list on screen follows every change the fingerprint saw (#1713).
-            if let key = drawerClosedLists[projectID] {
+            // A list on screen — or behind the ask opened from it, which the
+            // back row returns to — follows every change the fingerprint saw (#1713).
+            if let key = drawerClosedLists[projectID] ?? closedListOrigins[projectID] {
                 await loadClosed(projectID: key.projectID, sessionID: key.sessionID, automations: key.automations)
             }
         } catch {

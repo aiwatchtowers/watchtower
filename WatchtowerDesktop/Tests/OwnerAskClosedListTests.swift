@@ -260,6 +260,18 @@ final class OwnerAskClosedListTests: XCTestCase {
         XCTAssertEqual(vm.asks.closedListCursors[key(s)], s.closed[0], "the cursor sits on the row opened")
     }
 
+    func testTheListBehindAnOpenedAskStaysFresh() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        await vm.showClosedList(projectID: s.project, sessionID: s.session)
+        await vm.openClosedAsk(s.closed[1], from: key(s))
+        try await pool.write { try $0.execute(sql: "DELETE FROM owner_asks WHERE id = ?", arguments: [s.closed[0]]) }
+        let reloaded = await vm.asks.refreshIfChanged(projectID: s.project)
+        XCTAssertTrue(reloaded)
+        XCTAssertTrue(vm.asks.backToClosedList(projectID: s.project))
+        XCTAssertEqual(vm.asks.closedLists[key(s)]?.map(\.id), [s.closed[1]], "the poll re-read it while the ask was open")
+    }
+
     func testEscInOpenedAskGoesBackToList() async throws {
         let s = try await seed()
         let vm = await page(s)
