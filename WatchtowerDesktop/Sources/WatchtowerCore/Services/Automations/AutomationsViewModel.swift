@@ -603,13 +603,15 @@ package final class AutomationsViewModel {
     }
 
     /// The chat entry a save press spends: the newest entry whenever it
-    /// names a folder and the press saves — also when its line was hidden
-    /// because the automation already sits there, so the owner's later
-    /// Move to Folder is never undone by a save with no new draft.
-    nonisolated package static func suggestionSpentBySave(
+    /// names a folder, the press saves and the Inbox menu has been read —
+    /// also when its line was hidden because the automation already sits
+    /// there, so the owner's later Move to Folder is never undone by a save
+    /// with no new draft. Before the menu's first read the line is hidden
+    /// and the save moves nothing (`editorPlacement`), so nothing is spent.
+    package func suggestionSpentBySave(
         saves: Bool, suggestion: AutomationFolderSuggestion?, suggestionKey: String?
     ) -> String? {
-        guard saves, suggestion != nil else { return nil }
+        guard saves, suggestion != nil, inboxFolderTree() != nil else { return nil }
         return suggestionKey
     }
 

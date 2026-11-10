@@ -146,6 +146,30 @@ final class AutomationSaveFolderTests: XCTestCase {
         XCTAssertNotNil(folderMenu.readTree, "a read menu has its tree")
     }
 
+    /// A save before the menu's first read moves nothing (no line), so it
+    /// spends nothing either: once the menu is read, the chat's suggestion
+    /// still shows and a later save still carries it out.
+    func testSaveBeforeTheMenusFirstReadKeepsTheSuggestion() async throws {
+        let unread = InboxFolderMenuModel(dbPool: pool) { nil }
+        let suggestion = AutomationFolderSuggestion(title: "Release")
+        let entry = "2026-10-14T12:00:00Z:c1"
+        vm.inboxFolderTree = { unread.readTree }
+        let shown = vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                       suggestionKey: entry)
+        XCTAssertNil(shown, "no line before the read")
+        let spending = vm.suggestionSpentBySave(saves: true, suggestion: suggestion, suggestionKey: entry)
+        XCTAssertNil(spending, "nothing to spend: the save moves nothing")
+        await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: editorCenter(),
+                                 route: shown, spending: spending)
+        XCTAssertTrue(routeCalls.isEmpty)
+
+        let menu = folderMenu
+        vm.inboxFolderTree = { menu?.readTree }
+        XCTAssertEqual(vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
+                                          suggestionKey: entry),
+                       InboxNewArtifactRoute(folderID: release, title: "Release"), "the suggestion is not spent")
+    }
+
     func testChangedRowShowsExistingFolderLine() throws {
         // A fresh draft from the New flow, as `AutomationsView.continueNew` opens it.
         let flowRoute = InboxNewArtifactRoute(folderID: release, title: "Release")
@@ -215,8 +239,7 @@ final class AutomationSaveFolderTests: XCTestCase {
         let shown = vm.editorPlacement(suggestion: suggestion, draftContextID: nil, automationID: automation,
                                        suggestionKey: entry)
         XCTAssertNil(shown, "already there: no line")
-        let spending = AutomationsViewModel.suggestionSpentBySave(saves: true, suggestion: suggestion,
-                                                                  suggestionKey: entry)
+        let spending = vm.suggestionSpentBySave(saves: true, suggestion: suggestion, suggestionKey: entry)
         XCTAssertEqual(spending, entry)
         await vm.routeEditorSave(key: automation, landed: automation, draftContextID: nil, editor: editorCenter(),
                                  route: shown, spending: spending)
@@ -287,11 +310,10 @@ final class AutomationSaveFolderTests: XCTestCase {
     /// Only a press that saves spends, and only an entry that names a folder.
     func testOnlyASavingPressWithAFolderSpends() {
         let suggestion = AutomationFolderSuggestion(title: "Release")
-        XCTAssertNil(AutomationsViewModel.suggestionSpentBySave(saves: false, suggestion: suggestion,
-                                                                suggestionKey: "k"))
-        XCTAssertNil(AutomationsViewModel.suggestionSpentBySave(saves: true, suggestion: nil, suggestionKey: "k"))
-        XCTAssertNil(AutomationsViewModel.suggestionSpentBySave(saves: true, suggestion: suggestion,
-                                                                suggestionKey: nil))
+        XCTAssertNil(vm.suggestionSpentBySave(saves: false, suggestion: suggestion, suggestionKey: "k"))
+        XCTAssertNil(vm.suggestionSpentBySave(saves: true, suggestion: nil, suggestionKey: "k"))
+        XCTAssertNil(vm.suggestionSpentBySave(saves: true, suggestion: suggestion, suggestionKey: nil))
+        XCTAssertEqual(vm.suggestionSpentBySave(saves: true, suggestion: suggestion, suggestionKey: "k"), "k")
     }
 
     func testNoLineWhenAlreadyInThatFolder() {

@@ -527,7 +527,7 @@ struct AutomationEditorPanel: View {
         let vm = vm
         let route = action.saves ? placement : nil
         let entry = chat?.draft.entry
-        let suggestionKey = AutomationsViewModel.suggestionSpentBySave(
+        let suggestionKey = vm.suggestionSpentBySave(
             saves: action.saves, suggestion: entry?.folder, suggestionKey: entry?.suggestionKey
         )
         if let newDraftContextID { vm.setPressRoute(route, forDraft: newDraftContextID) }
