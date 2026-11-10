@@ -99,7 +99,7 @@ enum TuningChatSurface {
 
     // MARK: - Prompt
 
-    static let toolsRules = """
+    private static let toolsRules = """
         You are Watchtower's tuning assistant for one workbench. You help the owner tune Watchtower's prompts \
         (through additions only), their global Claude Code and Codex skills, the Watchtower skill pack overlay, \
         ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, the Claude and Codex allow rules, and this workbench folder's \
@@ -114,7 +114,7 @@ enum TuningChatSurface {
         build — update Watchtower." and propose nothing.
         """
 
-    static let noToolsRules = """
+    private static let noToolsRules = """
         You are Watchtower's tuning assistant for one workbench. This provider has no tools: you can talk tuning \
         through, but you cannot read the report, prompts or skills, or propose an edit. Tell the owner tuning \
         tools need Claude or Codex.

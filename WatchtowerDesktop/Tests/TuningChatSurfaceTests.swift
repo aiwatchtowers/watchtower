@@ -196,8 +196,12 @@ final class TuningChatSurfaceTests: XCTestCase {
             XCTAssertEqual(row?.contextType, "analytics_tuning")
             XCTAssertEqual(row?.contextID, "3")
         }
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE chat_conversations SET updated_at = 2000 WHERE id = ?", arguments: [first])
+            try db.execute(sql: "UPDATE chat_conversations SET updated_at = 1000 WHERE id = ?", arguments: [second])
+        }
         let latest = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, workbenchID: 3)
-        XCTAssertTrue([first, second].contains(latest), "an existing conversation is reused")
+        XCTAssertEqual(latest, first, "the most recently updated conversation is reused")
     }
 
     func testNoKnowledgePrefixInTuning() {
