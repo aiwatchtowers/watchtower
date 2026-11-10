@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/agentreport"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -49,6 +50,7 @@ var (
 	coachFlagForce     bool
 	coachFlagDryRun    bool
 	coachFlagDays      int
+	coachFlagAgent     string
 )
 
 // coachGeneratorFactory is the seam tests override. The prompt carries the
@@ -73,6 +75,7 @@ func init() {
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error { return coachRun(c, runCoachStatus) }}
 	statusCmd.Flags().Int64Var(&coachFlagWorkbench, "workbench", 0, "workbench id (default: every workbench with analytics on)")
 	statusCmd.Flags().IntVar(&coachFlagDays, "days", coachDefaultDays, "length of the period in days (1 to 90)")
+	statusCmd.Flags().StringVar(&coachFlagAgent, "agent", agentreport.AgentAll, "whose sessions the agent metrics count: all, claude or codex")
 	proposalsCmd := &cobra.Command{Use: "proposals", Short: "List the coach's proposals",
 		Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error { return coachRun(c, runCoachProposals) }}
 	proposalsCmd.Flags().StringVar(&coachFlagStatus, "status", "open", "open, accepted, declined or all")
@@ -249,14 +252,17 @@ func runCoachStatus(_ *cobra.Command, e *coachEnv) (any, error) {
 	if coachFlagDays < 1 || coachFlagDays > coachMaxDays {
 		return nil, fmt.Errorf("--days must be between 1 and %d, not %d", coachMaxDays, coachFlagDays)
 	}
+	if coachFlagAgent == "" || !agentreport.ValidAgent(coachFlagAgent) {
+		return nil, fmt.Errorf("--agent must be all, claude or codex, not %q", coachFlagAgent)
+	}
 	period := time.Duration(coachFlagDays) * 24 * time.Hour
 	now := time.Now().UTC()
 	since := now.Add(-period)
-	cur, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since, now)
+	cur, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since, now, coachFlagAgent)
 	if err != nil {
 		return nil, err
 	}
-	prev, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since.Add(-period), since)
+	prev, err := coach.Measure(e.db, e.al, coachFlagWorkbench, since.Add(-period), since, coachFlagAgent)
 	if err != nil {
 		return nil, err
 	}
