@@ -124,32 +124,24 @@ func readPointer(path string) ([]byte, error) {
 // above an alias). A "commondir" file that cannot be read or names nothing
 // is an error.
 func CommonDir(gitDir string) (string, error) {
-	common, err := readPathFile(gitDir, "commondir")
+	p := filepath.Join(gitDir, "commondir")
+	b, err := readPointer(p)
 	if errors.Is(err, os.ErrNotExist) {
 		return gitDir, nil
 	}
-	return common, err
-}
-
-// readPathFile reads the one-line path file dir/name. A relative path is
-// joined to dir's real path and cleaned. A missing file is returned as an
-// error wrapping os.ErrNotExist.
-func readPathFile(dir, name string) (string, error) {
-	p := filepath.Join(dir, name)
-	b, err := readPointer(p)
 	if err != nil {
 		return "", err
 	}
-	target := strings.TrimSpace(string(b))
-	if target == "" {
+	common := strings.TrimSpace(string(b))
+	if common == "" {
 		return "", fmt.Errorf("%s names no path", p)
 	}
-	if !filepath.IsAbs(target) {
-		resolved, err := filepath.EvalSymlinks(dir)
+	if !filepath.IsAbs(common) {
+		resolved, err := filepath.EvalSymlinks(gitDir)
 		if err != nil {
-			return "", fmt.Errorf("resolving %s: %w", dir, err)
+			return "", fmt.Errorf("resolving %s: %w", gitDir, err)
 		}
-		target = filepath.Join(resolved, target)
+		common = filepath.Join(resolved, common)
 	}
-	return filepath.Clean(target), nil
+	return filepath.Clean(common), nil
 }
