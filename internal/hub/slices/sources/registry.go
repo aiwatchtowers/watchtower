@@ -41,7 +41,10 @@ type Config struct {
 	DefaultAgent func() agentkind.Kind
 	Live         func() Liveness
 	Away         platform.Away
-	Hidden       func() map[int64]bool
+	// View (nil = none) is the Desktop's view: the sessions in its Undo
+	// batch, which are neither published nor alerted, and the background
+	// counts it shows over (TerminalSessionOptions.View).
+	View         func() (hidden map[int64]bool, displayOver map[int64]ShownOver)
 	Active       func() bool
 	OnChatChange func()
 	// OnReportChange and OnGitChange (nil = none) are the report runner's
@@ -77,7 +80,14 @@ type Set struct {
 	// Sessions is the terminal_session source: the handlers' SessionWindows
 	// (what the phone may ask a chat or a report of).
 	Sessions *TerminalSessionSource
+	// Staged is the meeting_transcript source's staged-asset reset (nil
+	// unless the mode publishes transcripts).
+	Staged StagedAssets
 }
+
+// StagedAssets forgets what a source staged after the runtime removed its
+// files (an iCloud account change): its next Items stages anew.
+type StagedAssets interface{ ForgetStaged() }
 
 // WorkbenchOnlyKinds is what All publishes under MobileSync =
 // workbench_only, in AllKinds order; the hub adds its own heartbeat and
@@ -150,7 +160,8 @@ func All(c Config) (*Set, error) {
 			}
 			return report.Summary(workbenchID, sessionID)
 		},
-		Now: now,
+		Now:  now,
+		View: c.View,
 	})
 	report, err := SessionReport(c.DB, SessionReportOptions{Sessions: sessions, Store: c.Store, Sealer: c.Sealer, Active: c.Active, Now: now, OnChange: c.OnReportChange, Fetch: c.ReportFetch, MinimumGap: c.RunnerGap})
 	if err != nil {
@@ -174,7 +185,7 @@ func All(c Config) (*Set, error) {
 		timeline,
 		OwnerAsk(c.DB, now),
 		PermissionRequest(c.DB, c.Live, now),
-		WorkAlert(WorkAlertConfig{DB: c.DB, Store: c.Store, Away: c.Away, Live: c.Live, Hidden: c.Hidden, Now: now}),
+		WorkAlert(WorkAlertConfig{DB: c.DB, Store: c.Store, Away: c.Away, Live: c.Live, View: c.View, Now: now}),
 		chat,
 		report.Source(),
 	}
@@ -193,6 +204,9 @@ func All(c Config) (*Set, error) {
 			return nil, fmt.Errorf("hub slices: %w", err)
 		}
 		set.Sources = append(set.Sources, CalendarEvent(c.DB, cal), transcripts, jobs)
+		if st, ok := transcripts.(StagedAssets); ok {
+			set.Staged = st
+		}
 	}
 	return set, nil
 }

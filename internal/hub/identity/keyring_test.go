@@ -134,6 +134,10 @@ func unhex(t *testing.T, s string) []byte {
 	return b
 }
 
+// TestKeyring_OpensSwiftSealedKeys opens the Swift-sealed sidecar keys.
+// testdata/swift-keyring.json is frozen: the retired Swift hub's HubKeyring
+// wrote it (go hub plan 3 Task 24 deleted that code), so it must never be
+// regenerated.
 func TestKeyring_OpensSwiftSealedKeys(t *testing.T) {
 	raw, err := os.ReadFile("testdata/swift-keyring.json")
 	if err != nil {
@@ -294,17 +298,17 @@ func TestKeyring_RotatesAt90DaysOrSeqCap(t *testing.T) {
 	data1, _ := k.DataKey(1)
 
 	c.advance(RotationAge - time.Second)
-	if rotated, err := k.RotateIfDue(); err != nil || rotated {
+	if rotated, err := k.RotateIfDue(nil); err != nil || rotated {
 		t.Fatalf("RotateIfDue before 90 days = %v, %v", rotated, err)
 	}
 	c.advance(time.Second)
-	if rotated, err := k.RotateIfDue(); err != nil || !rotated {
+	if rotated, err := k.RotateIfDue(nil); err != nil || !rotated {
 		t.Fatalf("RotateIfDue at 90 days = %v, %v", rotated, err)
 	}
 	if cur, _ := k.CurrentEpoch(); cur != 2 {
 		t.Fatalf("epoch %d, want 2", cur)
 	}
-	if rotated, _ := k.RotateIfDue(); rotated {
+	if rotated, _ := k.RotateIfDue(nil); rotated {
 		t.Fatal("rotated twice")
 	}
 	epochs, _ := st.Epochs()
@@ -327,13 +331,13 @@ func TestKeyring_RotatesAt90DaysOrSeqCap(t *testing.T) {
 	if err := st.SetMeta(state.MetaSeqCeiling, strconv.FormatUint(first+RotationSeqCap-1, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if rotated, _ := k.RotateIfDue(); rotated {
+	if rotated, _ := k.RotateIfDue(nil); rotated {
 		t.Fatal("rotated below the seq cap")
 	}
 	if err := st.SetMeta(state.MetaSeqCeiling, strconv.FormatUint(first+RotationSeqCap, 10)); err != nil {
 		t.Fatal(err)
 	}
-	if rotated, err := k.RotateIfDue(); err != nil || !rotated {
+	if rotated, err := k.RotateIfDue(nil); err != nil || !rotated {
 		t.Fatalf("RotateIfDue at the seq cap = %v, %v", rotated, err)
 	}
 	epochs, _ = st.Epochs()
@@ -394,7 +398,7 @@ func TestKeyring_PreviousEpochAcceptedFor7Days(t *testing.T) {
 	if ok, err := k.AcceptsRelayEpoch(1, unknown); err != nil || ok {
 		t.Fatalf("unknown device accepted: %v %v", ok, err)
 	}
-	if kk, _ := k.KeyboxKeys(); kk.PreviousEpoch != nil || kk.Epoch != 1 {
+	if kk, _ := k.KeyboxKeysFor(secure.ID{}); kk.PreviousEpoch != nil || kk.Epoch != 1 {
 		t.Fatalf("keybox keys before a rotation = %+v", kk)
 	}
 	if err := k.Rotate(ReasonManual); err != nil {
@@ -408,7 +412,7 @@ func TestKeyring_PreviousEpochAcceptedFor7Days(t *testing.T) {
 	if ok, _ := k.AcceptsRelayEpoch(3, dev); ok {
 		t.Fatal("a future epoch was accepted")
 	}
-	kk, err := k.KeyboxKeys()
+	kk, err := k.KeyboxKeysFor(secure.ID{})
 	if err != nil || kk.Epoch != 2 || kk.PreviousEpoch == nil || *kk.PreviousEpoch != 1 {
 		t.Fatalf("keybox keys = %+v, %v", kk, err)
 	}
@@ -430,7 +434,7 @@ func TestKeyring_PreviousEpochAcceptedFor7Days(t *testing.T) {
 	if ok, _ := k.AcceptsRelayEpoch(1, dev); ok {
 		t.Fatal("previous epoch accepted after 7 days")
 	}
-	if kk, _ := k.KeyboxKeys(); kk.PreviousEpoch != nil || kk.PreviousDataKey != nil {
+	if kk, _ := k.KeyboxKeysFor(secure.ID{}); kk.PreviousEpoch != nil || kk.PreviousDataKey != nil {
 		t.Fatal("keybox still carries the previous epoch after 7 days")
 	}
 	if ok, _ := k.AcceptsRelayEpoch(2, dev); !ok {
@@ -580,7 +584,7 @@ func TestIdentityNeverLogged(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.advance(RotationAge)
-	if _, err := k.RotateIfDue(); err != nil {
+	if _, err := k.RotateIfDue(nil); err != nil {
 		t.Fatal(err)
 	}
 	relay, _ := k.RelayKey(secure.HubToPhone, dev, 3)

@@ -1,255 +1,377 @@
 import AppKit
 import SwiftUI
-import WatchtowerSync
+import WatchtowerCore
 
-/// Settings → Mobile tab: builds the model over `AppState` once, on first
-/// appearance.
+/// Settings → Mobile tab: builds the model over the app once, on first
+/// appearance, and reads again when `HubCenter` says the hub changed or the
+/// hand-over to the Go hub moved on.
 struct MobileSettingsTab: View {
     @Environment(AppState.self) private var appState
-    @State private var model: MobileSettingsViewModel?
+    @State private var model: MobileSettingsModel?
+    /// Diagnostics, kept between openings: a second one shows the last read under the spinner.
+    @State private var diagnostics: MobileDiagnosticsModel?
+    @State private var showsDiagnostics = false
 
     var body: some View {
         Group {
             if let model {
-                MobileSettingsView(model: model)
+                MobileSettingsView(model: model, openDiagnostics: openDiagnostics)
             } else {
                 Color.clear
             }
         }
         .onAppear {
-            if model == nil { model = MobileSettingsViewModel(host: appState) }
+            if model == nil { model = appState.makeMobileSettingsModel() }
         }
+        .onChange(of: appState.hubCenter?.linksChanged) { Task { await model?.load() } }
+        .onChange(of: appState.hubCenter?.statusEvents) { Task { await model?.load() } }
+        .onChange(of: appState.hubAdoption?.state) { Task { await model?.load() } }
+        .sheet(isPresented: $showsDiagnostics) {
+            if let diagnostics {
+                MobileDiagnosticsView(model: diagnostics)
+                    .frame(minWidth: 560, idealWidth: 640, minHeight: 360, idealHeight: 440)
+                    .task { await diagnostics.load() }
+            }
+        }
+    }
+
+    private func openDiagnostics() {
+        if diagnostics == nil { diagnostics = MobileDiagnosticsModel(cli: ProcessCLIRunner.makeDefault()) }
+        showsDiagnostics = true
+    }
+
+    /// The hand-over's state when it takes the tab's place (checking, in
+    /// progress, failed); nil shows the hub's own rows. The model's
+    /// `.adoption` state follows the same rule (`HubAdoptionState.isShown`).
+    static func handOver(_ state: HubAdoptionState?) -> HubAdoptionState? {
+        guard let state, state.isShown else { return nil }
+        return state
     }
 }
 
-/// Settings → Mobile (mobile POC spec §2.3, §8 I-1, §9, §10): the opt-in
-/// toggle, the hub status, Use Watchtower on iPhone (the QR sheet) and the
-/// linked phones.
+/// Settings → Mobile over `watchtower hub …` (go hub plan 3 Task 23,
+/// mockups §1–§9): every line comes from `MobileSettingsModel`.
 struct MobileSettingsView: View {
-    let model: MobileSettingsViewModel
-    /// Whether the Settings window is on screen; the polling runs only then.
+    typealias Copy = MobileSettingsModel
+    let model: MobileSettingsModel
+    var openDiagnostics: () -> Void = {}
+    /// Whether the Settings window is on screen; the reads repeat only then.
     @State private var windowVisible = true
 
     var body: some View {
-        Form {
-            toggleSection
-            if model.isOn {
-                hubSection
-                phonesSection
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.large) {
+                content
+                if let notice = model.notice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .padding(.horizontal, Spacing.large)
+            .padding(.vertical, Spacing.medium)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-        .padding(.top, 4)
         .background(WindowVisibilityReader(isVisible: $windowVisible))
         .task(id: windowVisible) { await model.windowVisibility(windowVisible) }
-        .onDisappear { Task { await model.disappeared() } }
-        .sheet(item: Binding(
-            get: { model.linkSheet },
-            set: { if $0 == nil { Task { await model.linkSheetDismissed() } } }
-        )) { sheet in
-            MobileLinkSheet(model: sheet) { Task { await model.linkSheetDismissed() } }
+        .onDisappear { model.disappeared() }
+        .sheet(item: Binding(get: { model.pairing }, set: { if $0 == nil { model.pairingDismissed() } })) { sheet in
+            MobilePairingSheet(model: sheet) { model.pairingDismissed() }
+                .task { await sheet.start() }
         }
-        .confirmationDialog(
-            MobileSettingsViewModel.allowQuestion(name: model.pendingAllow?.name ?? "this phone"),
-            isPresented: Binding(
-                get: { model.pendingAllow != nil },
-                set: { if !$0 { model.pendingAllow = nil } }
-            )
-        ) {
-            Button("Allow") { model.confirmAllow() }
-            Button("Cancel", role: .cancel) { model.pendingAllow = nil }
-        } message: {
-            Text(MobileSettingsViewModel.allowMessage(model.pendingAllow))
-        }
-        .confirmationDialog(
-            MobileSettingsViewModel.startSessionsQuestion(name: model.pendingStartSessionsAllow?.name ?? "this phone"),
-            isPresented: Binding(
-                get: { model.pendingStartSessionsAllow != nil },
-                set: { if !$0 { model.pendingStartSessionsAllow = nil } }
-            )
-        ) {
-            Button("Allow") { model.confirmStartSessionsAllow() }
-            Button("Cancel", role: .cancel) { model.pendingStartSessionsAllow = nil }
-        } message: {
-            Text("The phone can then start a session on a board target, and the agent reads that target's text. "
-                + "Revoke turns it off again.")
-        }
-        .confirmationDialog(
-            MobileSettingsViewModel.permissionsQuestion(name: model.pendingPermissionsAllow?.name ?? "this phone"),
-            isPresented: Binding(
-                get: { model.pendingPermissionsAllow != nil },
-                set: { if !$0 { model.pendingPermissionsAllow = nil } }
-            )
-        ) {
-            Button("Allow") { model.confirmPermissionsAllow() }
-            Button("Cancel", role: .cancel) { model.pendingPermissionsAllow = nil }
-        } message: {
-            Text("The phone can then allow or deny a Claude Code permission prompt, one call at a time. "
-                + "Revoke turns it off again.")
-        }
+        .modifier(MobileSettingsDialogs(model: model))
     }
 
-    private var toggleSection: some View {
-        Section {
-            Toggle("Sync with iPhone", isOn: Binding(
-                get: { model.isOn },
-                set: { enabled in Task { await model.setEnabled(enabled) } }
-            ))
-            .disabled(model.toggleDisabled)
-            .managedByOrganization(model.lockedByPolicy)
-            if !model.entitlementPresent {
-                Text(MobileSettingsViewModel.needsSignedBuild)
-                    .foregroundStyle(.secondary)
+    @ViewBuilder
+    private var content: some View {
+        switch model.state {
+        case .loading:
+            SettingsSection(title: Copy.sectionTitle) {
+                HStack(spacing: Spacing.regular) {
+                    ProgressView().controlSize(.small)
+                    Text(Copy.loadingText).foregroundStyle(.secondary)
+                }
             }
-            if let problem = model.hubOffLine {
-                Text(problem)
-                    .foregroundStyle(.orange)
+        case .error(let message):
+            SettingsSection(title: Copy.sectionTitle) {
+                SettingRow(title: message) {
+                    Button(Copy.retryTitle) { Task { await model.load() } }.buttonStyle(.kitSecondary)
+                }
             }
-            if model.showsCorpNotice {
-                Text(MobileSettingsViewModel.corpNotice)
-                    .foregroundStyle(.secondary)
-            }
-            if model.isOn {
-                Toggle("Keep this Mac awake for the iPhone", isOn: Binding(
-                    get: { model.keepAwake },
-                    set: { model.setKeepAwake($0) }
-                ))
-                Text("While a session runs and your iPhone has been in touch in the last 24 hours, this Mac does not "
-                    + "go to sleep on its own. A closed lid on battery still sleeps it.")
-                    .foregroundStyle(.secondary)
-            }
-        } footer: {
-            Text("This Mac becomes the hub the iPhone app syncs with, through your own iCloud.")
-        }
-    }
-
-    private var hubSection: some View {
-        Section("Hub") {
-            if let error = model.hubInitError {
-                Text("Mobile couldn't start: \(error)")
-                    .foregroundStyle(.red)
-            }
-            if let message = model.accountMessage {
-                Text(message)
-                    .foregroundStyle(.orange)
-            }
-            if let line = model.statusLine {
-                Text(line)
-            }
-            if model.hub?.status == .running {
-                Text(lastPublishText)
-                    .foregroundStyle(.secondary)
-                Text("Backlog: \(model.relayBacklog)")
-                    .foregroundStyle(.secondary)
-            }
-            if model.showsSlowingLine {
-                Text(MobileSettingsViewModel.slowingLine)
-                    .foregroundStyle(.orange)
-            }
-        }
-    }
-
-    private var lastPublishText: String {
-        guard let at = model.lastPublishAt else { return "Last publish: not yet" }
-        return "Last publish: \(at.formatted(date: .omitted, time: .standard))"
-    }
-
-    private var phonesSection: some View {
-        Section("Phones") {
-            if model.canShowCode {
-                Button("Use Watchtower on iPhone") { model.showCode() }
-            }
-            if model.devices.isEmpty {
-                Text("No phones linked yet.")
-                    .foregroundStyle(.secondary)
-            }
-            ForEach(model.devices, id: \.deviceID) { device in
-                MobilePhoneRow(
-                    device: device,
-                    onAllow: { model.requestAllow(device) },
-                    onRevoke: { model.revoke(device) },
-                    onAllowStartSessions: { model.requestStartSessionsAllow(device) },
-                    onRevokeStartSessions: { model.revokeStartSessions(device) },
-                    onAllowPermissions: { model.requestPermissionsAllow(device) },
-                    onRevokePermissions: { model.revokePermissions(device) },
-                    onRemove: { model.requestRemove(device) }
-                )
-            }
-            if let notice = model.notice {
-                Text(notice)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .confirmationDialog(
-            MobileSettingsViewModel.removeQuestion(name: model.removeSubject?.name ?? "this phone"),
-            isPresented: Binding(
-                get: { model.pendingRemove != nil },
-                set: { if !$0 { model.pendingRemove = nil } }
+        case .adoption(let adoption):
+            MobileHandOverView(
+                state: adoption,
+                onRetry: { Task { await model.retryAdoption() } },
+                onSetUpAgain: { Task { await model.setUpMobileAgain() } }
             )
-        ) {
-            Button("Remove", role: .destructive) { Task { await model.confirmRemove() } }
-            Button("Cancel", role: .cancel) { model.pendingRemove = nil }
-        } message: {
-            Text(MobileSettingsViewModel.removeConsequence(model.removeSubject?.scope ?? .shared))
+        case .off(let reason):
+            MobileOffSection(model: model, copy: Copy.offCopy(reason))
+            MobileRecordingsSection(model: model)
+        case .noPhones:
+            MobileHubSection(model: model, openDiagnostics: openDiagnostics)
+            MobilePhonesSection(model: model, rows: [])
+            MobileRecordingsSection(model: model)
+        case .phones(let rows):
+            MobileHubSection(model: model, openDiagnostics: openDiagnostics)
+            MobilePhonesSection(model: model, rows: rows)
+            MobileRecordingsSection(model: model)
         }
     }
 }
 
-/// One linked phone: name, Apple ID scope and link date, then one line per
-/// grant (typing, starting sessions, answering permission prompts) with its
-/// own Allow… / Revoke, and Remove. Starting sessions can be allowed only
-/// while typing is (#565).
-private struct MobilePhoneRow: View {
-    let device: HubSyncState.LinkedDevice
-    let onAllow: () -> Void
-    let onRevoke: () -> Void
-    let onAllowStartSessions: () -> Void
-    let onRevokeStartSessions: () -> Void
-    let onAllowPermissions: () -> Void
-    let onRevokePermissions: () -> Void
-    let onRemove: () -> Void
+/// The hub is off: the reason, the owner's switch unless a policy decides.
+private struct MobileOffSection: View {
+    let model: MobileSettingsModel
+    let copy: MobileSettingsModel.OffCopy
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text(device.name)
-                    HStack(spacing: Spacing.small) {
-                        Text(MobileSettingsViewModel.scopeLabel(device.scope))
-                        Text("·")
-                        Text("Linked \(device.linkedAt.formatted(date: .abbreviated, time: .shortened))")
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        SettingsSection(title: MobileSettingsModel.sectionTitle) {
+            SettingRow(title: copy.title, caption: copy.detail) {
+                if copy.managed {
+                    ManagedByOrganizationBadge()
+                } else if copy.showsToggle {
+                    MobileSyncToggle(model: model)
                 }
-                Spacer()
-                Button("Remove…", role: .destructive, action: onRemove)
             }
-            // One column of labels, one of buttons, so the buttons line up
-            // whatever the label lengths.
-            Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.small) {
-                grantRow(
-                    MobileSettingsViewModel.typingLabel(device), requested: device.typingRequested,
-                    allowed: device.typingAllowed, onAllow: onAllow, onRevoke: onRevoke
-                )
-                grantRow(
-                    MobileSettingsViewModel.startSessionsLabel(device), requested: false,
-                    // Allow… waits for typing; a Revoke always works.
-                    allowed: device.startSessionsGranted, enabled: device.typingAllowed || device.startSessionsGranted,
-                    onAllow: onAllowStartSessions, onRevoke: onRevokeStartSessions
-                )
-                grantRow(
-                    MobileSettingsViewModel.permissionsLabel(device), requested: device.permissionsRequested,
-                    allowed: device.permissionsAllowed, onAllow: onAllowPermissions, onRevoke: onRevokePermissions
-                )
+            if let line = model.offDeleteLine {
+                Text(line).font(.caption).foregroundStyle(Tone.warning)
             }
+            MobileCloudLines(model: model)
+            MobileCorpNotice(model: model)
         }
-        .padding(.vertical, Spacing.tight)
+    }
+}
+
+/// A status line in its tone: secondary, warning or error.
+private struct MobileHubLineText: View {
+    let line: MobileSettingsModel.HubLine
+
+    var body: some View {
+        Text(line.text)
+            .font(.caption)
+            .foregroundStyle(color)
     }
 
-    /// A grant's state (a pending request in the accent colour) and its
-    /// Allow… or Revoke, right-aligned in the button column.
+    private var color: Color {
+        switch line.tone {
+        case .neutral: .secondary
+        case .warning: Tone.warning
+        case .error: Tone.error
+        }
+    }
+}
+
+/// Today's iCloud lines: the build cannot use iCloud, the account's
+/// sentence, CloudKit slowing sync down.
+private struct MobileCloudLines: View {
+    let model: MobileSettingsModel
+
+    var body: some View {
+        if model.showsNeedsSignedBuild {
+            Text(MobileSettingsModel.needsSignedBuild).font(.caption).foregroundStyle(.secondary)
+        }
+        if let line = model.accountLine {
+            Text(line).font(.caption).foregroundStyle(Tone.warning)
+        }
+        if model.showsSlowingLine {
+            Text(MobileSettingsModel.slowingLine).font(.caption).foregroundStyle(Tone.warning)
+        }
+    }
+}
+
+/// The owner's Mobile sync switch, busy while `hub enable|disable` runs.
+private struct MobileSyncToggle: View {
+    let model: MobileSettingsModel
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            if model.busy.contains(.toggle) { ProgressView().controlSize(.small) }
+            Toggle(MobileSettingsModel.toggleTitle, isOn: Binding(
+                get: { model.isOn },
+                set: { on in Task { await model.setEnabled(on) } }
+            ))
+            .labelsHidden()
+            .disabled(model.busy.contains(.toggle))
+        }
+    }
+}
+
+private struct MobileCorpNotice: View {
+    let model: MobileSettingsModel
+
+    var body: some View {
+        if model.showsCorpNotice {
+            Text(MobileSettingsModel.corpNotice).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// The running hub: the switch, the Mac name, recordings, the transport.
+private struct MobileHubSection: View {
+    typealias Copy = MobileSettingsModel
+    let model: MobileSettingsModel
+    let openDiagnostics: () -> Void
+
+    var body: some View {
+        SettingsSection(title: Copy.sectionTitle) {
+            SettingRow(title: Copy.toggleTitle, caption: Copy.toggleOnCaption) {
+                MobileSyncToggle(model: model)
+            }
+            if let line = model.hubLine {
+                MobileHubLineText(line: line)
+            }
+            MobileCorpNotice(model: model)
+            SettingRow(title: Copy.macNameTitle, caption: Copy.macNameCaption) {
+                HStack(spacing: Spacing.regular) {
+                    if model.busy.contains(.name) { ProgressView().controlSize(.small) }
+                    Button(model.macName) { model.renaming = model.macName }
+                        .buttonStyle(.kitSecondary)
+                        .disabled(model.busy.contains(.name))
+                }
+            }
+            recordingsRow
+            if let transport = model.hubTransport {
+                SettingRow(title: Copy.transportTitle, caption: model.hubSwitchedLine) {
+                    Chip(text: Copy.transportLabel(transport), color: MobileTransportTone.color(transport))
+                }
+            }
+            MobileRelayRow(model: model)
+            MobileCloudLines(model: model)
+            SettingRow(title: Copy.keepAwakeTitle, caption: Copy.keepAwakeCaption) {
+                Toggle(Copy.keepAwakeTitle, isOn: Binding(get: { model.keepAwake }, set: { model.setKeepAwake($0) }))
+                    .labelsHidden()
+            }
+            MobileDiagnosticsEntryRow(open: openDiagnostics)
+        }
+    }
+
+    private var recordingsRow: some View {
+        let busy = model.busy.contains(.recordings)
+        return VStack(alignment: .leading, spacing: Spacing.tight) {
+            SettingRow(
+                title: Copy.recordingsTitle,
+                caption: busy ? (model.recordingsOn ? Copy.turningOff : Copy.turningOn) : Copy.recordingsCaption
+            ) {
+                HStack(spacing: Spacing.regular) {
+                    if busy { ProgressView().controlSize(.small) }
+                    Toggle(Copy.recordingsTitle, isOn: Binding(
+                        get: { model.recordingsOn },
+                        set: { on in Task { await model.setRecordings(on) } }
+                    ))
+                    .labelsHidden()
+                    .disabled(busy || (!model.recordingsAvailable && !model.recordingsOn))
+                }
+            }
+            if let error = model.recordingsError {
+                Text(error).font(.caption).foregroundStyle(Tone.error)
+            }
+        }
+    }
+}
+
+/// A transport's pill colour.
+enum MobileTransportTone {
+    static func color(_ transport: String) -> Color {
+        switch MobileSettingsModel.TransportKind(transport) {
+        case .iCloud: Tone.status(MobileSettingsModel.iCloudStatusColor)
+        case .relay: Tone.success
+        case .pending: Tone.warning
+        }
+    }
+}
+
+/// The linked phones, or "No phones linked", and Link a phone….
+private struct MobilePhonesSection: View {
+    typealias Copy = MobileSettingsModel
+    let model: MobileSettingsModel
+    let rows: [MobileSettingsModel.PhoneRow]
+
+    var body: some View {
+        SettingsSection(title: Copy.phonesTitle) {
+            if rows.isEmpty {
+                SettingRow(title: Copy.emptyText, caption: Copy.emptyDetail) { EmptyView() }
+            }
+            ForEach(rows) { row in
+                MobilePhoneRow(model: model, row: row)
+            }
+        }
+        Button(Copy.linkTitle) { model.linkPhone() }
+            .buttonStyle(.kitPrimary)
+            .disabled(!model.canLink)
+    }
+}
+
+/// One linked phone: name, link date, transport and who switched it, one
+/// line per grant with its own Allow… / Revoke, and Remove… on hover.
+private struct MobilePhoneRow: View {
+    typealias Copy = MobileSettingsModel
+    let model: MobileSettingsModel
+    let row: MobileSettingsModel.PhoneRow
+    @State private var hovered = false
+
+    var body: some View {
+        let busy = model.busy.contains(.phone(row.id))
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            // Wide: name, pill and action on one line; narrow (mockup §2): the
+            // pill and the action move below the lines.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    lines
+                    Spacer(minLength: Spacing.medium)
+                    trailing(busy: busy)
+                }
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    lines
+                    HStack(spacing: Spacing.regular) { trailing(busy: busy) }
+                }
+            }
+            // Below the name line, so a long one wraps without moving the pill (mockup §21).
+            if !row.indicatorLines.isEmpty {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    MobileIndicatorLines(lines: row.indicatorLines)
+                }
+            }
+            Grid(alignment: .leading, horizontalSpacing: Spacing.medium, verticalSpacing: Spacing.small) {
+                grantRow(Copy.typingLabel(row), requested: row.typingRequested, allowed: row.typing,
+                         onAllow: { model.requestAllow(row) }, onRevoke: { Task { await model.allow(row.id, Copy.typingGrant, false) } })
+                grantRow(Copy.startSessionsLabel(row), requested: false, allowed: row.startSessionsGranted,
+                         enabled: row.typing || row.startSessionsGranted,
+                         onAllow: { model.requestStartSessionsAllow(row) },
+                         onRevoke: { Task { await model.allow(row.id, Copy.startSessionsGrant, false) } })
+                grantRow(Copy.permissionsLabel(row), requested: row.permissionsRequested, allowed: row.permissions,
+                         onAllow: { model.requestPermissionsAllow(row) },
+                         onRevoke: { Task { await model.allow(row.id, Copy.permissionsGrant, false) } })
+            }
+            .disabled(busy)
+        }
+        .kitRow(isSelected: false)
+        .onHover { hovered = $0 }
+    }
+
+    private var lines: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(row.name)
+            Text(row.detailLine)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// The spinner while a write runs, the transport pill, and Remove… on
+    /// hover (disabled while that phone's write is in flight).
+    @ViewBuilder
+    private func trailing(busy: Bool) -> some View {
+        if busy { ProgressView().controlSize(.small) }
+        Chip(text: row.transportLabel, color: MobileTransportTone.color(row.transport))
+        if hovered || model.pendingRemove?.id == row.id {
+            Button(Copy.removeTitle) { model.requestRemove(row) }
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(Tone.error)
+                .disabled(busy)
+        }
+    }
+
     private func grantRow(
         _ label: String,
         requested: Bool,
@@ -260,19 +382,131 @@ private struct MobilePhoneRow: View {
     ) -> some View {
         GridRow(alignment: .firstTextBaseline) {
             Text(label)
+                .font(.caption)
                 .foregroundStyle(requested && !allowed ? Color.accentColor : Color.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Group {
                 if allowed {
-                    Button("Revoke", action: onRevoke)
+                    Button(Copy.revokeTitle, action: onRevoke)
                 } else {
-                    Button("Allow…", action: onAllow)
+                    Button(Copy.allowTitle, action: onAllow)
                 }
             }
+            .buttonStyle(.kitQuiet)
             .gridColumnAlignment(.trailing)
             .disabled(!enabled)
         }
         .controlSize(.small)
+    }
+}
+
+/// The recordings the update kept (Show in Finder, removal date) and the
+/// failed phone recordings (Retry, Discard…); absent when there are none.
+private struct MobileRecordingsSection: View {
+    typealias Copy = MobileSettingsModel
+    let model: MobileSettingsModel
+
+    var body: some View {
+        if model.keptRecordings != nil || !model.failedRecordings.isEmpty {
+            SettingsSection(title: Copy.recordingsSectionTitle) {
+                if let kept = model.keptRecordings {
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+                        VStack(alignment: .leading, spacing: Spacing.tight) {
+                            Text(Copy.keptLine(kept)).foregroundStyle(Tone.warning)
+                            Text(Copy.keptRemovalLine(kept)).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: Spacing.medium)
+                        Button(Copy.showInFinderTitle) { model.showKeptRecordingsInFinder() }.buttonStyle(.kitSecondary)
+                    }
+                }
+                ForEach(model.failedRecordings) { recording in
+                    failedRow(recording)
+                }
+            }
+        }
+    }
+
+    private func failedRow(_ recording: MobileSettingsModel.FailedRecording) -> some View {
+        let busy = model.busy.contains(.recording(recording.id))
+        return HStack(alignment: .firstTextBaseline, spacing: Spacing.medium) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(recording.line)
+                Text(Copy.failedRecordingCaption).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: Spacing.medium)
+            if busy { ProgressView().controlSize(.small) }
+            if recording.retryable {
+                Button(Copy.retryTitle) { Task { await model.retryRecording(recording.id) } }.buttonStyle(.kitSecondary)
+            }
+            Button(Copy.discardTitle) { model.requestDiscard(recording) }
+                .buttonStyle(.kitQuiet)
+                .foregroundStyle(Tone.error)
+        }
+        .disabled(busy)
+    }
+}
+
+/// The confirmations (Allow… for each grant, Remove…, Discard…) and the rename field.
+private struct MobileSettingsDialogs: ViewModifier {
+    typealias Copy = MobileSettingsModel
+    let model: MobileSettingsModel
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                Copy.allowQuestion(name: model.pendingAllow?.name ?? Copy.thisPhone),
+                isPresented: Binding(get: { model.pendingAllow != nil }, set: { if !$0 { model.pendingAllow = nil } })
+            ) {
+                Button(Copy.allowConfirmTitle) { Task { await model.confirmAllow() } }
+                Button(Copy.cancelTitle, role: .cancel) { model.pendingAllow = nil }
+            } message: {
+                Text(Copy.allowMessage(model.pendingAllow))
+            }
+            .confirmationDialog(
+                Copy.startSessionsQuestion(name: model.pendingStartSessionsAllow?.name ?? Copy.thisPhone),
+                isPresented: Binding(
+                    get: { model.pendingStartSessionsAllow != nil }, set: { if !$0 { model.pendingStartSessionsAllow = nil } }
+                )
+            ) {
+                Button(Copy.allowConfirmTitle) { Task { await model.confirmStartSessionsAllow() } }
+                Button(Copy.cancelTitle, role: .cancel) { model.pendingStartSessionsAllow = nil }
+            } message: {
+                Text(Copy.startSessionsMessage)
+            }
+            .confirmationDialog(
+                Copy.permissionsQuestion(name: model.pendingPermissionsAllow?.name ?? Copy.thisPhone),
+                isPresented: Binding(
+                    get: { model.pendingPermissionsAllow != nil }, set: { if !$0 { model.pendingPermissionsAllow = nil } }
+                )
+            ) {
+                Button(Copy.allowConfirmTitle) { Task { await model.confirmPermissionsAllow() } }
+                Button(Copy.cancelTitle, role: .cancel) { model.pendingPermissionsAllow = nil }
+            } message: {
+                Text(Copy.permissionsMessage)
+            }
+            .confirmationDialog(
+                Copy.removeQuestion(name: model.removeSubject?.name ?? Copy.thisPhone),
+                isPresented: Binding(get: { model.pendingRemove != nil }, set: { if !$0 { model.pendingRemove = nil } })
+            ) {
+                Button(Copy.removeConfirmTitle, role: .destructive) { Task { await model.confirmRemove() } }
+                Button(Copy.cancelTitle, role: .cancel) { model.pendingRemove = nil }
+            } message: {
+                Text(model.removeConsequence)
+            }
+            .confirmationDialog(
+                Copy.discardQuestion,
+                isPresented: Binding(get: { model.pendingDiscard != nil }, set: { if !$0 { model.pendingDiscard = nil } })
+            ) {
+                Button(Copy.discardConfirmTitle, role: .destructive) { Task { await model.confirmDiscard() } }
+                Button(Copy.cancelTitle, role: .cancel) { model.pendingDiscard = nil }
+            } message: {
+                Text(Copy.discardMessage)
+            }
+            .alert(Copy.renameTitle, isPresented: Binding(get: { model.renaming != nil }, set: { if !$0 { model.renaming = nil } })) {
+                TextField(Copy.renamePrompt, text: Binding(get: { model.renameText }, set: { model.renameText = $0 }))
+                Button(Copy.saveTitle) { Task { await model.saveRename() } }
+                Button(Copy.cancelTitle, role: .cancel) { model.renaming = nil }
+            }
     }
 }
 
@@ -330,5 +564,34 @@ private final class WindowVisibilityView: NSView {
             }
         }
         onChange?(window.occlusionState.contains(.visible))
+    }
+}
+
+// MARK: - Relay indicators (go hub plan 4 Task 8, mockups §18–§21)
+
+/// The hub's Relay row: the connection, the push-off line and the storage
+/// line, each shown on its own; absent while the hub has no relay.
+private struct MobileRelayRow: View {
+    let model: MobileSettingsModel
+
+    var body: some View {
+        if !model.relayLines.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                SettingRow(title: MobileSettingsModel.relayRowTitle) { EmptyView() }
+                MobileIndicatorLines(lines: model.relayLines)
+            }
+        }
+    }
+}
+
+/// Indicator lines in their tones; each wraps.
+private struct MobileIndicatorLines: View {
+    let lines: [MobileSettingsModel.HubLine]
+
+    var body: some View {
+        ForEach(lines, id: \.self) { line in
+            MobileHubLineText(line: line)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

@@ -2832,3 +2832,12 @@ Entry format:
 - rule-gap (candidate, dim 7/8): *a Swift test that feeds a CLI stream or envelope uses a sequence captured from the Go side's test for the same outcome (or the shared golden), never a hand-written mix of events.*
 - rule-gap (candidate, dim 9): *a `--stream` command writes its envelope as the last line on every return path, early refusals and usage errors included; a bare `return err` after the stream starts is the tell.*
 - outcome: TBD
+
+## 2026-11-10 — fix/1710-background-agent-count (9c47d6637: background count follows the `parentAgentId` agent tree, waiting ancestors counted, guarded `RaiseTerminalBackground` on SubagentStart; 12 files +774/−20; panel: prosecutor (8) + codex (0); pr-review-toolkit specialists unavailable; judge verified by reading and ran the targeted Go tests green) — verdict: approve
+
+- contested (F1, raised major → held minor): a waiting ancestor that is itself an open turn no entry lists is counted twice, once by `waitingAncestors` and once through the teammate cap `min(open, teammates)`. The prosecutor's example (a teammate as parent) is unlikely. The reachable shape is an idle listed teammate plus a resumed parent that is briefly missing from the list (Appendix D, 12.81 s). That shape occurs only on a SubagentStop, and `LowerTerminalBackground` clamps to `min(stored, count)`, so the overcount almost never lands. **When two counting terms can see the same id, check each id against both sets, and check whether the writer's clamp hides the overlap before setting severity.** [6]
+- false-positive: F2 (a Stopped banner announced again after a raise from 0). No Desktop code changed. The banner is withdrawn while agents work again and posted again when they stop, which describes what really happened. F8 (inventory lists supporting tests that are not named `Test<Module>NN_`): the existing PROJ-11 block already lists `TestBackgroundAgentsCountTable` the same way. [6/7]
+- miss: none late. Codex found nothing, so the prosecutor was the only lane that tried counting edge cases.
+- weak-dimension: 7. No test covers Codex SubagentStart over a counted `waiting`, and the DB raise test has no case for an unreadable stamp. Both are cheap and both pin a guard the docs promise.
+- rule-gap (candidate, dim 6): *a count built as a sum of disjoint-by-intent terms gets one table case per pair of terms that could claim the same id.*
+- outcome: TBD

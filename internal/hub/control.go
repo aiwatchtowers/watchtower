@@ -17,7 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"watchtower/internal/hub/actions/handlers"
+	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
 	"watchtower/internal/policy"
@@ -33,8 +36,9 @@ import (
 // SocketName is the control socket's file name in the hub dir.
 const SocketName = "hub.sock"
 
-// maxRequestBytes caps one request line.
-const maxRequestBytes = 64 << 10
+// maxRequestBytes caps one request line: a desktop_view of MaxViewIDs ids
+// and MaxViewIDs shown-over counts fits.
+const maxRequestBytes = 2 << 20
 
 // The control ops.
 const (
@@ -51,39 +55,87 @@ const (
 	OpDesktopHeartbeat = "desktop_heartbeat"
 	OpRecordingClaim   = "recording_claim"
 	OpRecordingFinish  = "recording_finish"
+	// OpRecordings sets the owner's recording switch (On; protocol §9).
+	OpRecordings = "recordings"
+	// Desktop's inputs (plan 3 Task 5): its view of the sessions (Hidden,
+	// DisplayOver), a claimed recording's phase and percent, and a stream of
+	// the hub's events for Desktop (the connection stays open and gets one
+	// line per event: EventStatus, EventRecordingQueued, EventPair,
+	// EventSwitched, EventTypingRequest, EventBringForward,
+	// EventDevicesChanged).
+	OpDesktopView, OpRecordingProgress, OpDesktopWatch = "desktop_view", "recording_progress", "desktop_watch"
+	// OpConfirmDeleted records that Desktop deleted its own Keychain items
+	// after the key hand-over (plan 3 Task 16): identity adopted ->
+	// confirmed, written by the running hub, the sidecar's one writer.
+	OpConfirmDeleted = "confirm_deleted"
+)
+
+// The desktop_watch events.
+const (
+	// EventStatus is a new hub status: State and Reason.
+	EventStatus = "status"
+	// EventRecordingQueued is a phone recording queued for the transcriber:
+	// UploadID only.
+	EventRecordingQueued = "recording_queued"
+	// EventPair is a pairing step: Pair is its kind (qr, waiting, sas,
+	// linked, refused) and DeviceID the phone; never a URL or a code.
+	EventPair = "pair"
+	// EventSwitched is an accepted transport switch (the switcher, Task 18).
+	EventSwitched = "switched"
+	// EventTypingRequest is a linked phone newly asking to type into
+	// sessions (PROJ-16, OD-2): DeviceID and its display Name; Desktop asks
+	// the owner with a macOS notice while the app is in the background.
+	EventTypingRequest = "typing_request"
+	// EventBringForward is a phone start with "Bring the window forward"
+	// (mobile POC spec §6.5): WorkbenchID and SessionID are what Desktop
+	// brings forward.
+	EventBringForward = "bring_forward"
+	// EventDevicesChanged is a change of the linked phones or their grants
+	// (a link, an unlink from either side): no fields; Desktop reads the
+	// status again.
+	EventDevicesChanged = "devices_changed"
 )
 
 // The error classes a ControlAnswer carries.
 const (
-	ErrClassBadRequest   = "bad_request"
-	ErrClassHubOff       = "hub_off"
-	ErrClassPolicyOff    = "policy_off"
-	ErrClassNoDevice     = "no_device"
-	ErrClassUnknownGrant = "unknown_grant"
-	ErrClassNoCode       = "no_code"
-	ErrClassNoRequest    = "no_request"
-	ErrClassCodeChanged  = "code_changed"
-	ErrClassNoIdentity   = "no_identity"
-	ErrClassNoJob        = "no_job"
-	ErrClassJobState     = "job_state"
-	ErrClassFailed       = "failed"
+	ErrClassBadRequest    = "bad_request"
+	ErrClassHubOff        = "hub_off"
+	ErrClassPolicyOff     = "policy_off"
+	ErrClassNoDevice      = "no_device"
+	ErrClassUnknownGrant  = "unknown_grant"
+	ErrClassNoCode        = "no_code"
+	ErrClassNoRequest     = "no_request"
+	ErrClassCodeChanged   = "code_changed"
+	ErrClassNoIdentity    = "no_identity"
+	ErrClassNoJob         = "no_job"
+	ErrClassJobState      = "job_state"
+	ErrClassNoTranscriber = "no_transcriber"
+	ErrClassFailed        = "failed"
+	ErrClassTooManyIDs    = "too_many_ids"
+	ErrClassNotAdopted    = adopt.ClassNotAdopted
 )
 
 // ControlRequest is one request on the control socket. Device names a phone
 // (unlink, allow, confirm), Grant a link.Grant (allow) with On, Name the
 // hub's display name (name), Confirm the owner's answer (confirm); Upload a
 // recording job (recording_claim, recording_finish) with TranscriptID or
-// ErrorClass (a class, never text) for its finish.
+// ErrorClass (a class, never text) for its finish, or Phase and Percent for
+// its progress (recording_progress); Hidden (session ids) and DisplayOver
+// (shown-over counts) a desktop_view, each at most MaxViewIDs.
 type ControlRequest struct {
-	Op           string `json:"op"`
-	Device       string `json:"device,omitempty"`
-	Grant        string `json:"grant,omitempty"`
-	Name         string `json:"name,omitempty"`
-	On           bool   `json:"on,omitempty"`
-	Confirm      bool   `json:"confirm,omitempty"`
-	Upload       string `json:"upload,omitempty"`
-	TranscriptID *int64 `json:"transcript_id,omitempty"`
-	ErrorClass   string `json:"error_class,omitempty"`
+	Op           string          `json:"op"`
+	Device       string          `json:"device,omitempty"`
+	Grant        string          `json:"grant,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	On           bool            `json:"on,omitempty"`
+	Confirm      bool            `json:"confirm,omitempty"`
+	Upload       string          `json:"upload,omitempty"`
+	TranscriptID *int64          `json:"transcript_id,omitempty"`
+	ErrorClass   string          `json:"error_class,omitempty"`
+	Hidden       []int64         `json:"hidden,omitempty"`
+	DisplayOver  []ShownOverWire `json:"display_over,omitempty"`
+	Phase        string          `json:"phase,omitempty"`
+	Percent      *int            `json:"percent,omitempty"`
 }
 
 // ControlAnswer is one line from the hub: the answer to a request (Op set,
@@ -104,11 +156,36 @@ type ControlAnswer struct {
 	Code      string     `json:"code,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 	// At is when a desktop heartbeat was written; UploadID, Status and
-	// TranscriptID a recording job after a claim or finish.
+	// TranscriptID a recording job after a claim or finish; AudioPath the
+	// claimed job's audio file (claim only: Desktop never derives it).
 	At           *time.Time `json:"at,omitempty"`
 	UploadID     string     `json:"upload_id,omitempty"`
 	Status       string     `json:"status,omitempty"`
 	TranscriptID *int64     `json:"transcript_id,omitempty"`
+	AudioPath    string     `json:"audio_path,omitempty"`
+	// EventID and StartedAt are the claimed job's origin (claim only): the
+	// calendar event it was recorded for and its start (Unix seconds).
+	EventID   string     `json:"event_id,omitempty"`
+	StartedAt *wire.Time `json:"started_at,omitempty"`
+	// Recordings is the switch after a recordings request: "on" | "off".
+	Recordings string `json:"recordings,omitempty"`
+	// Phase and Percent are a job's progress after a recording_progress;
+	// State a status event's state (Reason its reason); Pair a pair event's
+	// kind.
+	Phase   string `json:"phase,omitempty"`
+	Percent *int   `json:"percent,omitempty"`
+	State   string `json:"state,omitempty"`
+	// ViewNeeded on a desktop heartbeat's answer: the hub holds no current
+	// desktop_view (never sent, or dropped while the heartbeat was stale).
+	ViewNeeded bool `json:"view_needed,omitempty"`
+	// PhoneContactAt (desktop_heartbeat, a running hub only): when a phone
+	// was last in touch — the Desktop's keep-awake input (Task 23).
+	PhoneContactAt *time.Time `json:"phone_contact_at,omitempty"`
+	Pair           string     `json:"pair,omitempty"`
+	// WorkbenchID and SessionID: a bring_forward event's workbench and the
+	// session the phone started there.
+	WorkbenchID int64 `json:"workbench_id,omitempty"`
+	SessionID   int64 `json:"session_id,omitempty"`
 }
 
 // serveControl listens on <dir>/hub.sock until the returned stop is called
@@ -229,18 +306,36 @@ func (s *supervisor) broadcast(ev link.PairEvent) {
 	}
 	s.pairMu.Lock()
 	defer s.pairMu.Unlock()
-	for p := range s.pairs {
-		if ev.Kind == link.EventSAS {
+	if ev.Kind == link.EventSAS {
+		for p := range s.pairs {
 			p.mu.Lock()
 			p.codes[strings.ToUpper(ev.DeviceID)] = ev.Code
 			p.mu.Unlock()
 		}
+	}
+	sendAll(s.pairs, a, "pairing")
+	// Desktop's watch hears of the step, never its URL or code.
+	sendAll(s.watches, ControlAnswer{Event: EventPair, OK: true, Pair: ev.Kind, DeviceID: ev.DeviceID}, "desktop watch")
+}
+
+// notifyDesktop hands an event to every desktop_watch stream without
+// waiting on any of them.
+func (s *supervisor) notifyDesktop(a ControlAnswer) {
+	s.pairMu.Lock()
+	defer s.pairMu.Unlock()
+	sendAll(s.watches, a, "desktop watch")
+}
+
+// sendAll queues a on every stream of set (pairMu held); a stream whose
+// queue is full is dropped, the others get every event.
+func sendAll(set map[*pairListener]bool, a ControlAnswer, what string) {
+	for p := range set {
 		select {
 		case p.queue <- a:
 		default:
 			// serveConn closes the queue once its reader ends.
-			log.Printf("hub: control socket: a pairing stream fell behind and was dropped")
-			delete(s.pairs, p)
+			log.Printf("hub: control socket: a %s stream fell behind and was dropped", what)
+			delete(set, p)
 			p.w.drop()
 		}
 	}
@@ -288,17 +383,34 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 	defer func() { _ = c.Close() }()
 	w := &answerWriter{c: c, enc: json.NewEncoder(c), timeout: s.o.writeTimeout}
 	var (
-		pl      *pairListener
+		pl, wl  *pairListener // this connection's pairing and desktop_watch streams
 		pumping sync.WaitGroup
 	)
+	// stream is a new stream of this connection (the caller registers it);
+	// its own goroutine writes its queue.
+	stream := func() *pairListener {
+		p := &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{}}
+		pumping.Add(1)
+		go func() {
+			defer pumping.Done()
+			for a := range p.queue {
+				p.w.write(a)
+			}
+		}()
+		return p
+	}
 	defer func() {
+		s.pairMu.Lock()
 		if pl != nil {
-			s.pairMu.Lock()
 			delete(s.pairs, pl)
 			close(pl.queue)
-			s.pairMu.Unlock()
-			pumping.Wait()
 		}
+		if wl != nil {
+			delete(s.watches, wl)
+			close(wl.queue)
+		}
+		s.pairMu.Unlock()
+		pumping.Wait()
 	}()
 	sc := bufio.NewScanner(c)
 	sc.Buffer(make([]byte, 0, 4096), maxRequestBytes)
@@ -311,18 +423,24 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 			w.write(ControlAnswer{Error: ErrClassBadRequest})
 			continue
 		}
-		if r.Op == OpPair && pl == nil {
-			pl = &pairListener{w: w, queue: make(chan ControlAnswer, s.o.pairQueue), codes: map[string]string{}}
-			pumping.Add(1)
-			go func(p *pairListener) {
-				defer pumping.Done()
-				for a := range p.queue {
-					p.w.write(a)
-				}
-			}(pl)
+		switch {
+		case r.Op == OpPair && pl == nil:
+			pl = stream()
 			s.pairMu.Lock()
 			s.pairs[pl] = true
 			s.pairMu.Unlock()
+		case r.Op == OpDesktopWatch && wl == nil:
+			// The answer, with the status at this moment, is the stream's
+			// first line: queued and registered under statusMu and pairMu,
+			// so no event precedes it and no status change is missed.
+			wl = stream()
+			s.statusMu.Lock()
+			s.pairMu.Lock()
+			wl.queue <- s.watchAnswerLocked()
+			s.watches[wl] = true
+			s.pairMu.Unlock()
+			s.statusMu.Unlock()
+			continue
 		}
 		a := s.handle(r, pl)
 		a.Op = r.Op
@@ -338,7 +456,8 @@ func (s *supervisor) serveConn(ctx context.Context, c net.Conn) {
 // opClass is a request's op for a log line (an unknown op is not echoed).
 func opClass(op string) string {
 	for _, known := range []string{OpUnlink, OpAllow, OpName, OpEnable, OpDisable, OpPair, OpConfirm,
-		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish} {
+		OpDesktopHeartbeat, OpRecordingClaim, OpRecordingFinish, OpRecordings,
+		OpDesktopView, OpRecordingProgress, OpDesktopWatch, OpConfirmDeleted, OpRecordingDiscard} {
 		if op == known {
 			return known
 		}
@@ -355,7 +474,7 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return s.setEnabled(false)
 	case OpName:
 		name := strings.TrimSpace(r.Name)
-		if name == "" || len([]rune(name)) > wire.MaxMacNameLength {
+		if name == "" || wire.ClipMacName(name) != name {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
 		if err := s.st.SetMeta(state.MetaDisplayName, name); err != nil {
@@ -369,15 +488,126 @@ func (s *supervisor) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		return s.withHub(func(h *hubRuntime) ControlAnswer { return h.handle(r, pl) })
 	case OpDesktopHeartbeat:
 		now := s.o.Clock()
+		wasFresh, _, err := s.st.DesktopHost(now)
+		wasFresh = err == nil && wasFresh
 		if err := s.st.Heartbeat(now); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
+		s.recordingsChanged() // the first beat turns the default switch on
 		s.poke()
-		return ControlAnswer{OK: true, At: &now}
+		return ControlAnswer{OK: true, At: &now, ViewNeeded: s.desktopBeat(now, wasFresh), PhoneContactAt: s.phoneContactAt()}
 	case OpRecordingClaim, OpRecordingFinish:
 		return s.recordingJob(r)
+	case OpRecordings:
+		return s.setRecordings(r.On)
+	case OpRecordingProgress:
+		return s.recordingProgress(r)
+	case OpRecordingDiscard:
+		return s.recordingDiscard(r)
+	case OpDesktopView:
+		if len(r.Hidden) > MaxViewIDs || len(r.DisplayOver) > MaxViewIDs {
+			return ControlAnswer{Error: ErrClassTooManyIDs}
+		}
+		v := desktopViewOf(r, s.o.Clock())
+		ok := ControlAnswer{OK: true}
+		return s.withHubOr(func(h *hubRuntime) ControlAnswer { h.SetDesktopView(v); return ok },
+			func() ControlAnswer { s.storeDesktopView(v, nil); return ok })
+	case OpConfirmDeleted:
+		if err := adopt.ConfirmDeletedStore(s.st); errors.Is(err, adopt.ErrNotAdopted) {
+			return ControlAnswer{Error: ErrClassNotAdopted}
+		} else if err != nil {
+			return ControlAnswer{Error: ErrClassFailed}
+		}
+		return ControlAnswer{OK: true}
+	case OpDesktopWatch:
+		// A second watch on one connection: its stream is already there
+		// (serveConn answers the first one itself, ahead of any event).
+		return s.watchAnswer()
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}
+}
+
+// watchAnswer answers desktop_watch with the current status (State, Reason),
+// so a late subscriber starts from a snapshot.
+func (s *supervisor) watchAnswer() ControlAnswer {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	return s.watchAnswerLocked()
+}
+
+// watchAnswerLocked is watchAnswer with statusMu held.
+func (s *supervisor) watchAnswerLocked() ControlAnswer {
+	return ControlAnswer{Op: OpDesktopWatch, OK: true, State: s.status.State, Reason: s.status.Reason}
+}
+
+// recordingProgress stores Desktop's phase of a claimed job and republishes
+// the recording_job slice on the running hub.
+func (s *supervisor) recordingProgress(r ControlRequest) ControlAnswer {
+	if r.Upload == "" {
+		return ControlAnswer{Error: ErrClassBadRequest}
+	}
+	a := RecordingProgressAnswer(s.st, r.Upload, r.Phase, r.Percent)
+	if a.OK {
+		s.hubMu.RLock()
+		if s.hub != nil {
+			s.hub.publishSoon(recordingJobKind)
+		}
+		s.hubMu.RUnlock()
+	}
+	return a
+}
+
+// recordingJobKind is the slice a job's progress changes.
+const recordingJobKind slices.Kind = "recording_job"
+
+// RecordingProgressAnswer stores a progress on st and answers it in the
+// control socket's shape (the CLI's lock-free path answers through it too).
+func RecordingProgressAnswer(st *state.Store, upload, phase string, percent *int) ControlAnswer {
+	err := st.RecordingProgress(upload, phase, percent)
+	var job state.RecordingJob
+	if err == nil {
+		job, err = st.RecordingJob(upload)
+	}
+	switch {
+	case errors.Is(err, state.ErrBadProgress):
+		return ControlAnswer{Error: ErrClassBadRequest}
+	case errors.Is(err, state.ErrNoRecordingJob):
+		return ControlAnswer{Error: ErrClassNoJob}
+	case errors.Is(err, state.ErrJobState):
+		return ControlAnswer{Error: ErrClassJobState}
+	case err != nil:
+		return ControlAnswer{Error: ErrClassFailed}
+	}
+	return ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, Phase: job.Phase, Percent: job.Percent}
+}
+
+// setRecordings stores the recording switch for the owner.
+func (s *supervisor) setRecordings(on bool) ControlAnswer {
+	err := s.st.SetRecordings(on)
+	switch {
+	case errors.Is(err, state.ErrNoTranscriber):
+		return ControlAnswer{Error: ErrClassNoTranscriber}
+	case err != nil:
+		return ControlAnswer{Error: ErrClassFailed}
+	}
+	s.recordingsChanged()
+	v := state.RecordingsOff
+	if on {
+		v = state.RecordingsOn
+	}
+	return ControlAnswer{OK: true, Recordings: v}
+}
+
+// recordingsChanged tells a running hub the switch may have changed: the
+// heartbeat is republished within slices.MaxDebounceWait, and a pass fails
+// the held uploads when it went off.
+func (s *supervisor) recordingsChanged() {
+	s.hubMu.RLock()
+	defer s.hubMu.RUnlock()
+	if s.hub != nil {
+		s.hub.publishSoon(slices.KindHeartbeat)
+		s.hub.kick(s.hub.passKick)
+	}
 }
 
 // recordingJob claims or finishes a recording job for Desktop.
@@ -406,7 +636,17 @@ func (s *supervisor) recordingJob(r ControlRequest) ControlAnswer {
 		return ControlAnswer{Error: ErrClassFailed}
 	}
 	s.poke()
-	return ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+	a := ControlAnswer{OK: true, UploadID: job.UploadID, Status: job.Status, TranscriptID: job.TranscriptID}
+	if r.Op == OpRecordingClaim {
+		if s.o.RecordingsDir != "" {
+			a.AudioPath = handlers.RecordingAudioPath(s.o.RecordingsDir, job.UploadID)
+		}
+		a.EventID = job.EventID
+		if !job.StartedAt.IsZero() {
+			a.StartedAt = &wire.Time{Time: job.StartedAt}
+		}
+	}
+	return a
 }
 
 // offlineLink is unlink or allow while the lock holder runs no hub
@@ -434,12 +674,16 @@ func (s *supervisor) offlineLink(r ControlRequest) ControlAnswer {
 }
 
 // setEnabled flips hub_meta.enabled; turning it on is refused while the
-// policy is off (the setting is not written).
+// policy is off (the setting is not written). The write holds offlineMu, so
+// it never lands in the middle of the off's unlinking (unlinkForOff).
 func (s *supervisor) setEnabled(on bool) ControlAnswer {
 	if on && s.o.mobileSync() == policy.MobileOff {
 		return ControlAnswer{Error: ErrClassPolicyOff}
 	}
-	if err := s.st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on))); err != nil {
+	s.offlineMu.Lock()
+	err := s.st.SetMeta(state.MetaEnabled, strconv.Itoa(boolInt(on)))
+	s.offlineMu.Unlock()
+	if err != nil {
 		return ControlAnswer{Error: ErrClassFailed}
 	}
 	s.poke()
@@ -482,7 +726,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if r.Device == "" {
 			return ControlAnswer{Error: ErrClassBadRequest}
 		}
-		if err := h.center.Unlink(r.Device); err != nil {
+		if err := h.removePhone(r.Device); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
@@ -500,6 +744,9 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if _, _, err := h.center.Issue(); err != nil {
 			return ControlAnswer{Error: ErrClassFailed}
 		}
+		// The phone's hello may come at once: a pass now rather than at the
+		// idle cadence's next tick (the Swift hub's wakeRelay, #66.7).
+		h.kick(h.passKick)
 		return ControlAnswer{OK: true}
 	case OpConfirm:
 		if pl == nil || r.Device == "" {
@@ -512,6 +759,7 @@ func (h *hubRuntime) handle(r ControlRequest, pl *pairListener) ControlAnswer {
 		if err := h.center.Confirm(r.Device, code, r.Confirm); err != nil {
 			return ControlAnswer{Error: LinkErrClass(err)}
 		}
+		h.afterConfirm(r.Device)
 		return ControlAnswer{OK: true, DeviceID: strings.ToUpper(r.Device)}
 	}
 	return ControlAnswer{Error: ErrClassBadRequest}

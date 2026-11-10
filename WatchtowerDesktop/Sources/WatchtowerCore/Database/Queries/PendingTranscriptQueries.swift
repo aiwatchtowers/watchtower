@@ -50,15 +50,30 @@ package enum PendingTranscriptQueries {
     }
 
     /// Reserves `recording` (a phone recording's name): false when a row
-    /// already holds it, so the caller tries the next name.
+    /// already holds it, so the caller tries the next name. `uploadID` is the
+    /// Go hub upload a phone recording came from (nil for any other).
     package static func reserve(
-        _ db: Database, recording: String, eventID: String?, title: String?, isPrivate: Bool, at: Date
+        _ db: Database,
+        recording: String,
+        eventID: String?,
+        title: String?,
+        isPrivate: Bool,
+        uploadID: String? = nil,
+        at: Date
     ) throws -> Bool {
         try db.execute(sql: """
-            INSERT INTO pending_transcripts (recording, event_id, title, private, started_at) VALUES (?, ?, ?, ?, ?)
+            INSERT INTO pending_transcripts (recording, event_id, title, private, started_at, upload_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording) DO NOTHING
-            """, arguments: [recording, eventID, title, isPrivate, at.timeIntervalSince1970])
+            """, arguments: [recording, eventID, title, isPrivate, at.timeIntervalSince1970, uploadID])
         return db.changesCount > 0
+    }
+
+    /// The recording reserved for a Go hub upload (the newest when several).
+    package static func recording(_ db: Database, forUpload uploadID: String) throws -> String? {
+        try String.fetchOne(db, sql: """
+            SELECT recording FROM pending_transcripts WHERE upload_id = ? ORDER BY started_at DESC LIMIT 1
+            """, arguments: [uploadID])
     }
 
     /// Transcription succeeded: a failed save retries from this text.
@@ -112,6 +127,12 @@ package enum PendingTranscriptQueries {
 
     /// The audio paths saved transcripts point at: a `rec_*` file there was
     /// saved, not lost.
+    /// The saved transcript of the recording at `audioPath` (the newest), nil when none.
+    package static func savedTranscriptID(_ db: Database, audioPath: String) throws -> Int64? {
+        try Int64.fetchOne(db, sql: "SELECT id FROM meeting_transcripts WHERE audio_path = ? ORDER BY id DESC LIMIT 1",
+                           arguments: [audioPath])
+    }
+
     package static func savedAudioPaths(_ db: Database) throws -> Set<String> {
         Set(try String.fetchAll(db, sql: "SELECT audio_path FROM meeting_transcripts WHERE audio_path IS NOT NULL"))
     }

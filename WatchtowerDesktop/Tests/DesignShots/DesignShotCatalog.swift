@@ -522,8 +522,61 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "usage-progress-run", size: NSSize(width: 860, height: 420)) {
                 LLMUsageShotFixtures.progress()
+            },
+            // The one-time v1-host restart (go hub phase 3 Task 19): the notice waiting, busy,
+            // failed with Retry and narrow; the other workspaces' wait lines, wide and narrow.
+            DesignShot(name: "hostRestartNotice", size: NSSize(width: 760, height: 64)) {
+                HostRestartShotFixtures.notice(.waitingForContinue)
+            },
+            DesignShot(name: "hostRestartBusy", size: NSSize(width: 760, height: 72)) {
+                HostRestartShotFixtures.notice(.stopping(done: 2, total: 5))
+            },
+            DesignShot(name: "hostRestartError", size: NSSize(width: 760, height: 72)) {
+                HostRestartShotFixtures.notice(.failed(HostRestartStep.hostDidNotStart))
+            },
+            DesignShot(name: "hostRestartNotice-narrow", size: NSSize(width: 360, height: 96)) {
+                HostRestartShotFixtures.notice(.waitingForContinue)
+            },
+            DesignShot(name: "hostRestartListUnreadable", size: NSSize(width: 760, height: 88)) {
+                HostRestartShotFixtures.notice(.listUnreadable)
+            },
+            DesignShot(name: "workspaceSwitcherWaitLine", size: NSSize(width: 420, height: 150)) {
+                HostRestartShotFixtures.waitLines()
+            },
+            DesignShot(name: "workspaceSwitcherWaitLine-narrow", size: NSSize(width: 220, height: 190)) {
+                HostRestartShotFixtures.waitLines()
+            },
+            DesignShot(name: "mobileAdoptionLoading", size: NSSize(width: 640, height: 130)) {
+                HubAdoptionShotFixtures.screen(.checking)
+            },
+            DesignShot(name: "mobileAdoptionLoading-narrow", size: NSSize(width: 320, height: 130)) {
+                HubAdoptionShotFixtures.screen(.checking)
+            },
+            DesignShot(name: "mobileHandOverInProgress", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.inProgress(step: "rename"))
+            },
+            DesignShot(name: "mobileHandOverInProgress-narrow", size: NSSize(width: 320, height: 150)) {
+                HubAdoptionShotFixtures.screen(.inProgress(step: "rename"))
+            },
+            DesignShot(name: "mobileAdoptionFailed", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
+            },
+            DesignShot(name: "mobileAdoptionFailed-noKeys", size: NSSize(width: 640, height: 150)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "no_keys"))
+            },
+            DesignShot(name: "mobileAdoptionFailed-narrow", size: NSSize(width: 320, height: 200)) {
+                HubAdoptionShotFixtures.screen(.failed(reason: "swift_schema"))
             }
-        ] + ProviderFallbackShotFixtures.shots + ProviderFallbackShotFixtures.runtimeShots + CleanupShotFixtures.Frame.allCases.map { frame in
+        ] + ProviderFallbackShotFixtures.shots + MobileSettingsShotFixtures.Frame.allCases.map { frame in
+            // Settings → Mobile over `watchtower hub …` (go hub phase 3 Task 23), mockup §1–§9.
+            DesignShot(name: frame.name, size: frame.size) { MobileSettingsShotFixtures.screen(frame) }
+        } + MobileSettingsShotFixtures.Pairing.allCases.map { shot in
+            // The pairing sheet over `hub pair --json --stream`, mockup §11–§13.
+            DesignShot(name: shot.rawValue, size: NSSize(width: 380, height: 400)) { MobileSettingsShotFixtures.pairing(shot) }
+        } + MobileDiagnosticsShotFixtures.Frame.allCases.map { frame in
+            // Settings → Mobile → Diagnostics (go hub phase 4 Task 9), mockup §22–§23.
+            DesignShot(name: frame.name, size: frame.size) { MobileDiagnosticsShotFixtures.screen(frame) }
+        } + CleanupShotFixtures.Frame.allCases.map { frame in
             // The Clean Up screen (#1107), mockup frames A–G.
             DesignShot(name: "workbench-cleanup-\(frame.rawValue)", size: NSSize(width: 1040, height: frame.height)) {
                 CleanupShotFixtures.screen(frame)
@@ -536,7 +589,7 @@ enum DesignShotCatalog {
                     .shotFrame()
                     .detailBackground())
             }
-        } + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+        } + ProviderFallbackShotFixtures.runtimeShots + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
     }
 }
 

@@ -85,9 +85,9 @@ final class CloudKitPushWakeTests: XCTestCase {
         XCTAssertEqual(source.hubID, "hub-acme")
     }
 
-    func testRoutesMapToPushOrigins() {
+    func testThePushOriginOfARelayRoute() {
         XCTAssertEqual(HubRoute.cloudKit(.private).pushOrigin, .private)
         XCTAssertEqual(HubRoute.cloudKit(.shared(ownerName: "_owner-acme")).pushOrigin, .shared)
-        XCTAssertNil(hosted.pushOrigin)
+        XCTAssertEqual(hosted.pushOrigin, .hostedRelay)
     }
 }
