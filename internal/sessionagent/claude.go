@@ -197,6 +197,8 @@ func (t claudeTranscript) ImportFile() (string, bool) {
 	return path, err == nil
 }
 
+func (claudeTranscript) ChildImportFile(string, []string) (string, bool) { return "", false }
+
 func (claudeTranscript) Open(path string) (io.ReadCloser, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {

@@ -77,6 +77,11 @@ type AgentSubagent struct {
 	SessionUUID, AgentID, AgentType string
 	Depth                           int // 0 = unknown (no meta file or no spawnDepth)
 	Finished                        *bool
+	// SpawnLink: the row is a spawn link read from the parent's transcript
+	// (a Codex collab_agent_spawn_end), not meta; an existing row keeps the
+	// smaller depth, so a forked child replaying its parent's spawn events
+	// never pushes an earlier link deeper.
+	SpawnLink bool
 }
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
@@ -270,11 +275,16 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				return fmt.Errorf("upserting skill listing: %w", err)
 			}
 		}
-		for _, a := range b.Subagents {
-			if _, err := tx.Exec(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished) VALUES (?, ?, ?, ?, ?)
-				ON CONFLICT(session_uuid, agent_id) DO UPDATE SET agent_type = excluded.agent_type,
-				depth = excluded.depth, finished = excluded.finished`,
-				a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished); err != nil {
+		const subagentInsert = `INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished)
+				SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM agent_log_sessions WHERE session_uuid = ?)
+				ON CONFLICT(session_uuid, agent_id) DO UPDATE SET `
+		for _, a := range b.Subagents { // a link whose session row does not exist is skipped (UpsertAgentSubagent's rule)
+			set := `agent_type = excluded.agent_type, depth = excluded.depth, finished = excluded.finished`
+			if a.SpawnLink {
+				set = `depth = MIN(agent_log_subagents.depth, excluded.depth)`
+			}
+			if _, err := tx.Exec(subagentInsert+set,
+				a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished, a.SessionUUID); err != nil {
 				return fmt.Errorf("upserting subagent: %w", err)
 			}
 		}
@@ -386,6 +396,7 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		  trigger = CASE WHEN excluded.trigger <> '' THEN excluded.trigger ELSE agent_log_events.trigger END,
 		  target = CASE WHEN excluded.target <> '' THEN excluded.target ELSE agent_log_events.target END,
 		  background = MAX(agent_log_events.background, excluded.background),
+		  spawned_agent_id = CASE WHEN excluded.spawned_agent_id <> '' THEN excluded.spawned_agent_id ELSE agent_log_events.spawned_agent_id END,
 		  outcome = CASE WHEN agent_log_events.outcome IN ('', 'pending') THEN excluded.outcome ELSE agent_log_events.outcome END`,
 		e.SessionUUID, e.Key, e.Kind, e.TS, e.UUID, e.ParentUUID, e.PromptID, e.AgentID, e.IsSidechain,
 		e.Name, e.Target, e.Trigger, e.Outcome, e.ErrorClass, e.Skill, e.InputTokens, e.OutputTokens, e.CacheReadTokens,
@@ -443,6 +454,41 @@ func (d *DB) CodexResumeState(sessionUUID string) (model, homeCWD string, err er
 		return "", "", fmt.Errorf("reading codex session %s: %w", sessionUUID, err)
 	}
 	return model, homeCWD, nil
+}
+
+// CodexSubagents lists the Codex sub-agent links stored under a root
+// session, by depth, then id.
+func (d *DB) CodexSubagents(sessionUUID string) ([]AgentSubagent, error) {
+	var out []AgentSubagent
+	err := d.agentLogRows(`SELECT agent_id, depth FROM agent_log_subagents WHERE session_uuid = ? ORDER BY depth, agent_id`,
+		[]any{sessionUUID}, func(rs *sql.Rows) error {
+			a := AgentSubagent{SessionUUID: sessionUUID}
+			if err := rs.Scan(&a.AgentID, &a.Depth); err != nil {
+				return err
+			}
+			out = append(out, a)
+			return nil
+		})
+	if err != nil {
+		return nil, fmt.Errorf("codex subagents of %s: %w", sessionUUID, err)
+	}
+	return out, nil
+}
+
+// CodexLaneModel is the model of a lane's (a session's agent id) latest
+// stored api_call, "" when it has none: the seed of a Codex sub-agent read
+// that does not start at offset 0 (its session row is the root's).
+func (d *DB) CodexLaneModel(sessionUUID, agentID string) (string, error) {
+	var model string
+	err := d.QueryRow(`SELECT name FROM agent_log_events WHERE session_uuid = ? AND agent_id = ? AND +kind = 'api_call'
+		ORDER BY ts DESC, id DESC LIMIT 1`, sessionUUID, agentID).Scan(&model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("codex lane model: %w", err)
+	}
+	return model, nil
 }
 
 // AgentLaneBaseline reports whether a lane (a session's agent id, "" for the

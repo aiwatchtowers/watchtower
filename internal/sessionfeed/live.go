@@ -2,6 +2,7 @@ package sessionfeed
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -496,23 +497,33 @@ func codexChildPath(parentPath, parentID, childID string) (string, bool) {
 		if !ok {
 			continue
 		}
-		var meta struct {
-			Type    string `json:"type"`
-			Payload struct {
-				ID     string          `json:"id"`
-				Source json.RawMessage `json:"source"`
-				Parent string          `json:"parent_thread_id"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal(first, &meta) != nil || meta.Type != "session_meta" || meta.Payload.ID != childID {
-			continue
-		}
-		if meta.Payload.Parent == parentID || sourceParent(meta.Payload.Source) == parentID {
+		if id, parent, ok := CodexChildMeta(first); ok && id == childID && parent == parentID {
 			return path, true
 		}
 	}
 	return "", false
 }
+
+// CodexChildMeta reads a rollout's first line: the thread id of its
+// session_meta and its parent thread (parent_thread_id, else the parent its
+// source names), ok false when the line is not a session_meta. The one check
+// both readers of Codex sub-agents use (the feed and the analytics importer
+// through sessionagent's ChildImportFile).
+func CodexChildMeta(firstLine []byte) (id, parent string, ok bool) {
+	var meta struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ID     string          `json:"id"`
+			Source json.RawMessage `json:"source"`
+			Parent string          `json:"parent_thread_id"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(firstLine, &meta) != nil || meta.Type != "session_meta" || meta.Payload.ID == "" {
+		return "", "", false
+	}
+	return meta.Payload.ID, cmp.Or(meta.Payload.Parent, sourceParent(meta.Payload.Source)), true
+}
+
 func sourceParent(raw json.RawMessage) string {
 	var obj map[string]json.RawMessage
 	if json.Unmarshal(raw, &obj) != nil {

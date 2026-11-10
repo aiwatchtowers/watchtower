@@ -1,12 +1,14 @@
 package sessionagent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -239,7 +241,13 @@ func (t codexTranscript) OwnerText(capChars int) (string, error) {
 // the rollout ran in the workbench is the importer's decision (its
 // session_meta cwd).
 func (t codexTranscript) ImportFile() (string, bool) {
-	var roots []string // each root as given and resolved, so a symlinked CODEX_HOME still matches
+	return locateCodexRollout(t.roots(), t.row)
+}
+
+// roots are home's sessions and archived_sessions folders, each as given and
+// resolved, so a symlinked CODEX_HOME still matches.
+func (t codexTranscript) roots() []string {
+	var roots []string
 	if t.row.Home != "" {
 		for _, dir := range []string{"sessions", "archived_sessions"} {
 			raw := filepath.Join(t.row.Home, dir)
@@ -249,7 +257,52 @@ func (t codexTranscript) ImportFile() (string, bool) {
 			}
 		}
 	}
-	return locateCodexRollout(roots, t.row)
+	return roots
+}
+
+// childMetaBytes bounds the read of a candidate child's first line.
+const childMetaBytes = 64 << 10
+
+// ChildImportFile globs rollout-*-<childID>.jsonl under the dated sessions
+// folders and the flat archived_sessions folder, keeps the matches with no
+// symlink below their root, and returns the first whose first line
+// (sessionfeed.CodexChildMeta, at most 64 KB of text, a compressed file
+// decoded in memory) is childID's session_meta naming one of parents.
+func (t codexTranscript) ChildImportFile(childID string, parents []string) (string, bool) {
+	if !codexIDRe.MatchString(childID) {
+		return "", false
+	}
+	suffix := "-" + childID + ".jsonl"
+	for _, root := range t.roots() {
+		pattern := filepath.Join(root, "*", "*", "*", "rollout-*"+suffix)
+		if filepath.Base(root) == "archived_sessions" {
+			pattern = filepath.Join(root, "rollout-*"+suffix)
+		}
+		matches, _ := filepath.Glob(pattern)
+		sort.Strings(matches)
+		for _, m := range matches {
+			if noSymlinkBelow(root, m) && childMetaMatches(m, childID, parents) {
+				return m, true
+			}
+		}
+	}
+	return "", false
+}
+
+func childMetaMatches(path, childID string, parents []string) bool {
+	rc, _, err := rollout.Open(path)
+	if err != nil {
+		return false
+	}
+	defer rc.Close()
+	buf := make([]byte, childMetaBytes)
+	n, _ := io.ReadFull(rc, buf)
+	first, _, ok := bytes.Cut(buf[:n], []byte{'\n'})
+	if !ok {
+		return false
+	}
+	id, parent, ok := sessionfeed.CodexChildMeta(first)
+	return ok && id == childID && parent != "" && slices.Contains(parents, parent)
 }
 
 // Open opens the rollout (rollout.Open: a zstd file is decompressed in

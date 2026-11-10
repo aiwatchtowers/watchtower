@@ -44,7 +44,9 @@ type codexPayload struct {
 	Output    json.RawMessage `json:"output"`
 	Message   json.RawMessage `json:"message"`
 	Reason    string          `json:"reason"`
-	Git       *struct {
+	// NewThreadID is a collab_agent_spawn_end's spawned sub-agent thread.
+	NewThreadID string `json:"new_thread_id"`
+	Git         *struct {
 		Branch string `json:"branch"`
 	} `json:"git"`
 	Item *struct {
@@ -141,6 +143,7 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 		}
 	}
 	p.res.CodexLineage = p.lineage.id
+	p.res.CodexModel, p.res.CodexCWD = p.model, p.cwd
 	return p.res, nil
 }
 
@@ -149,10 +152,18 @@ type codexParser struct {
 	res       *ParseResult
 	lineage   codexLineage
 	model     string
-	cwd       string          // the session's own working directory (its session_meta)
-	seen      map[string]bool // event keys added in this read
-	fromStart bool            // read from offset 0: the first line's time may start the session
+	cwd       string                      // the session's own working directory (its session_meta)
+	seen      map[string]bool             // event keys added in this read
+	fromStart bool                        // read from offset 0: the first line's time may start the session
+	scratch   *agentlogdb.AgentLogSession // a sub-agent's session fields: never stored (the root's row is the only one)
+	linked    map[string]bool             // spawn links added in this read
 }
+
+// child reports a sub-agent rollout read under its root's session.
+func (p *codexParser) child() bool { return p.o.AgentID != "" }
+
+// self is the rollout's own thread id: the sub-agent's, else the session's.
+func (p *codexParser) self() string { return cmp.Or(p.o.AgentID, p.o.SessionUUID) }
 
 func (p *codexParser) handle(raw []byte, off int64) {
 	var l codexRolloutLine
@@ -173,7 +184,7 @@ func (p *codexParser) handle(raw []byte, off int64) {
 	s := p.session(l.Timestamp)
 	switch l.Type {
 	case "session_meta":
-		if pl.ID == p.o.SessionUUID { // a fork replays its parent's session_meta: never ours
+		if pl.ID == p.self() { // a fork replays its parent's session_meta: never ours
 			s.HomeCWD = pl.CWD
 			if pl.CWD != "" {
 				p.cwd = pl.CWD
@@ -202,12 +213,19 @@ func (p *codexParser) handle(raw []byte, off int64) {
 // a fork's replayed parent lines never move its start back.
 func (p *codexParser) session(ts string) *agentlogdb.AgentLogSession {
 	s := p.res.Sessions[p.o.SessionUUID]
+	if p.child() {
+		s = p.scratch
+	}
 	if s == nil {
 		s = &agentlogdb.AgentLogSession{SessionUUID: p.o.SessionUUID, Agent: AgentCodex, SourcePath: p.o.Path, Model: p.model}
 		if p.fromStart {
 			s.StartedAt = ts
 		}
-		p.res.Sessions[p.o.SessionUUID] = s
+		if p.child() {
+			p.scratch = s
+		} else {
+			p.res.Sessions[p.o.SessionUUID] = s
+		}
 	}
 	if ts > s.EndedAt {
 		s.EndedAt = ts
@@ -222,6 +240,9 @@ func (p *codexParser) add(l codexRolloutLine, off int64, e agentlogdb.AgentLogEv
 	}
 	p.seen[e.Key] = true
 	e.SessionUUID, e.TS, e.SrcPath, e.SrcOffset = p.o.SessionUUID, l.Timestamp, p.o.Path, off
+	if p.child() {
+		e.AgentID, e.IsSidechain = p.o.AgentID, true
+	}
 	p.res.Events = append(p.res.Events, e)
 }
 
@@ -229,6 +250,13 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 	switch pl.Type {
 	case "token_count":
 		p.tokens(l, pl, off)
+	case "collab_agent_spawn_end":
+		p.spawn(l, pl, off)
+	}
+	if p.child() {
+		return // a sub-agent's user messages and aborts are its parent agent's, not the owner's
+	}
+	switch pl.Type {
 	case "turn_aborted": // the owner stopped the turn (Esc), like Claude's interrupt line
 		if pl.Reason == "interrupted" {
 			p.add(l, off, agentlogdb.AgentLogEvent{Key: "owner_turn:codex:abort:" + l.Timestamp, Kind: "owner_turn", Trigger: "interrupt"})
@@ -257,6 +285,47 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 		}
 		p.add(l, off, agentlogdb.AgentLogEvent{Key: key, Kind: "owner_turn", Trigger: codexTrigger(text)})
 	}
+}
+
+// maxCodexSubagentDepth bounds the stored spawn links (sessionfeed's
+// maxSubagentDepth): a deeper link is not stored, so never read.
+const maxCodexSubagentDepth = 8
+
+// codexThreadIDRe is a codex thread id (a UUID).
+var codexThreadIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// spawn links the sub-agent a collab_agent_spawn_end names under the root
+// session, one level below the reading rollout, and sets it on the spawn
+// tool row of the same call id: in this read's rows when the call is among
+// them, else by a key-only row whose upsert fills only spawned_agent_id
+// (the call was stored by an earlier slice). A link to the reading rollout
+// itself or to the root (a fork's replay) is not one.
+func (p *codexParser) spawn(l codexRolloutLine, pl codexPayload, off int64) {
+	id := pl.NewThreadID
+	if !codexThreadIDRe.MatchString(id) || id == p.self() || id == p.o.SessionUUID {
+		return
+	}
+	if depth := p.o.Depth + 1; depth <= maxCodexSubagentDepth && !p.linked[id] {
+		if p.linked == nil {
+			p.linked = map[string]bool{}
+		}
+		p.linked[id] = true
+		p.res.Subagents = append(p.res.Subagents, agentlogdb.AgentSubagent{SessionUUID: p.o.SessionUUID, AgentID: id, Depth: depth, SpawnLink: true})
+	}
+	if pl.CallID == "" {
+		return
+	}
+	key := "tool:codex:" + pl.CallID
+	for i := range p.res.Events {
+		if p.res.Events[i].Key == key {
+			p.res.Events[i].SpawnedAgentID = id
+			return
+		}
+	}
+	if p.seen[key] {
+		return
+	}
+	p.add(l, off, agentlogdb.AgentLogEvent{Key: key, Kind: "tool", Name: "spawn_agent", Outcome: "pending", SpawnedAgentID: id})
 }
 
 // codexLineage is the id of the last session_meta before a rollout's first

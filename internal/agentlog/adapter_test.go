@@ -22,9 +22,12 @@ import (
 // rollout the importer reads must come through it.
 type fakeCodexAdapter struct {
 	sessionagent.Adapter
-	path  string
-	rows  []sessionagent.Row
-	opens []string
+	path     string
+	rows     []sessionagent.Row
+	opens    []string
+	children []string // ChildImportFile ids asked
+	// child, when set, answers ChildImportFile (default: none found).
+	child func(id string, parents []string) (string, bool)
 }
 
 func (a *fakeCodexAdapter) Transcript(row sessionagent.Row) sessionagent.Transcript {
@@ -37,6 +40,14 @@ type fakeTranscript struct{ a *fakeCodexAdapter }
 func (fakeTranscript) OwnerText(int) (string, error) { return "", nil }
 
 func (t fakeTranscript) ImportFile() (string, bool) { return t.a.path, true }
+
+func (t fakeTranscript) ChildImportFile(id string, parents []string) (string, bool) {
+	t.a.children = append(t.a.children, id)
+	if t.a.child == nil {
+		return "", false
+	}
+	return t.a.child(id, parents)
+}
 
 func (t fakeTranscript) Open(path string) (io.ReadCloser, bool, error) {
 	t.a.opens = append(t.a.opens, path)

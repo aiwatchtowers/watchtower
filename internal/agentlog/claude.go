@@ -136,6 +136,10 @@ type ParseOptions struct {
 	// (codexLineage, read from its head by codexHead): the session_meta lines
 	// it comes from sit before the read's offset (ParseCodex only).
 	CodexLineage string
+	// Depth is a Codex sub-agent rollout's depth below its root (1 = a
+	// child of the root; 0 = the root). ParseCodex reads a rollout with
+	// AgentID set as that sub-agent of SessionUUID (ParseCodex only).
+	Depth int
 }
 
 type ParseResult struct {
@@ -158,6 +162,12 @@ type ParseResult struct {
 	// input came out negative (input − cached − cache write < 0): stored as
 	// 0 and counted, never floored silently (ParseCodex only).
 	CodexUsageMismatch int
+	// CodexModel and CodexCWD are the model and working directory at the end
+	// of the parse (seed for the next slice; ParseCodex only).
+	CodexModel, CodexCWD string
+	// Subagents are the Codex sub-agent links of this parse's spawn events
+	// (collab_agent_spawn_end), stored with the slice (ParseCodex only).
+	Subagents []agentlogdb.AgentSubagent
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any
