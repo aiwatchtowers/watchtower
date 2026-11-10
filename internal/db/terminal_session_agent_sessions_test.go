@@ -152,3 +152,63 @@ func TestAgentSessionIDOwners_HistoryAndCurrent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
+
+func tombstones(t *testing.T, d *DB) []string {
+	t.Helper()
+	rows, err := d.Query(`SELECT agent_session_id FROM agent_session_tombstones ORDER BY 1`)
+	require.NoError(t, err)
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var id string
+		require.NoError(t, rows.Scan(&id))
+		out = append(out, id)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// Deleting a terminal session tombstones every agent session id it had,
+// its history and its current id, also through a workbench delete's
+// cascade (auto cleanup spec 2026-11-10 §2b: a uuid of a deleted row stays
+// shared).
+func TestAgentSessionTombstones_DeleteAndCascade(t *testing.T) {
+	d := openTestDB(t)
+	wb := newTestWorkbench(t, d)
+	sid := newTestSession(t, d, wb) // current "uuid"
+	_, err := d.SetTerminalClaudeSessionID(sid, wb, "u-2")
+	require.NoError(t, err)
+	// A current id missing from the history is tombstoned too.
+	_, err = d.Exec(`DELETE FROM terminal_session_agent_sessions WHERE agent_session_id = 'u-2'`)
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, sid)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"u-2", "uuid"}, tombstones(t, d))
+
+	other := newTestWorkbench(t, d)
+	cs := newTestSession(t, d, other)
+	_, err = d.SetTerminalClaudeSessionID(cs, other, "c-1")
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'shell', 'S', '/tmp/acme')`, other)
+	require.NoError(t, err) // a shell row has no id and tombstones nothing
+	require.NoError(t, d.DeleteWorkbench(other))
+	assert.Equal(t, []string{"c-1", "u-2", "uuid"}, tombstones(t, d))
+}
+
+func TestAgentSessionIDOwners_TombstoneIsADeletedOwner(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	wb := newTestWorkbench(t, d)
+	a := newTestSession(t, d, wb)
+	b := newTestSession(t, d, wb)
+	_, err := d.SetTerminalClaudeSessionID(a, wb, "shared")
+	require.NoError(t, err)
+	_, err = d.SetTerminalClaudeSessionID(b, wb, "shared")
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, b)
+	require.NoError(t, err)
+
+	owners, err := d.AgentSessionIDOwners(ctx, []string{"shared"})
+	require.NoError(t, err)
+	assert.Equal(t, map[string][]int64{"shared": {0, a}}, owners)
+}

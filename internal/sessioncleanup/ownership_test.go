@@ -335,3 +335,51 @@ func TestScratchLaneMatch(t *testing.T) {
 		}
 	}
 }
+
+// Row A starts uuid U, row B resumes U and makes a lane, B is deleted first
+// (its ledger cascades away): U is tombstoned, so A's plan still sees U as
+// shared and adopts nothing of B's (worktree or branch). Real database.
+func TestProj18_ScratchpadUUIDOfDeletedRowAdoptsNothing(t *testing.T) {
+	f := newFixture(t)
+	useScratchBases(t, f.base)
+	d := db.OpenTestDB(t)
+	wb, err := d.CreateWorkbench("acme", f.repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	insert := func(created string) int64 {
+		t.Helper()
+		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at)
+			VALUES (?, 'claude', 'T', ?, ?, ?)`, wb, f.repo, testUUID, created)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		if _, err := d.Exec(`UPDATE terminal_session_agent_sessions SET first_seen_at = ? WHERE terminal_session_id = ?`, created, id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	a := insert(start)
+	root := f.scratchWorktree("lane", "feat/lane")
+	plan := func() Plan {
+		t.Helper()
+		deps := Deps{Git: SystemGit{}, DB: DBStore{DB: d}, Procs: f.procs, WorktreeBirth: stampBirth}
+		res, err := PlanResult(context.Background(), deps, Request{SessionID: a})
+		if err != nil {
+			t.Fatalf("PlanResult: %v", err)
+		}
+		return res.Plan
+	}
+	// Control: A alone owns U and adopts its lane.
+	p := plan()
+	wantItem(t, p, "worktree:"+root, ActionRemove, "")
+	wantItem(t, p, "branch:feat/lane", ActionRemove, "")
+
+	b := insert(start)
+	if _, err := d.Exec(`DELETE FROM terminal_sessions WHERE id = ?`, b); err != nil {
+		t.Fatal(err)
+	}
+	wantNoLane(t, plan(), root, "feat/lane")
+}

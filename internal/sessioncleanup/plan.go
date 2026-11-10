@@ -267,7 +267,9 @@ func (b *builder) loadObserved(ctx context.Context) error {
 
 // ownRepoRows drops the command rows whose root is no worktree (main or
 // linked) of the planned repository: a branch an agent named in another
-// repository names nothing here. cwd rows are kept as they were.
+// repository names nothing here. cwd rows are kept as they were. v1 limit:
+// a worktree row whose worktree the agent already removed is dropped too, so
+// its branch is not named (fail closed; the Clean Up screen removes it).
 func (b *builder) ownRepoRows(rows []db.SessionWorktree) []db.SessionWorktree {
 	roots := map[string]bool{}
 	for _, w := range b.repo.worktrees {
@@ -285,7 +287,7 @@ func (b *builder) ownRepoRows(rows []db.SessionWorktree) []db.SessionWorktree {
 // loadScratch adopts the session's Claude scratchpad lanes (auto cleanup
 // spec 2026-11-10 §2b), claude rows only. An agent session id of this row
 // counts only when this row is its only owner (history or current id of any
-// terminal session), and a lane — a linked worktree strictly inside
+// terminal session, and no deleted row's tombstone), and a lane — a linked worktree strictly inside
 // `<base>/claude-<uid>/<slug>/<uuid>/` — only when it was born at or after
 // the moment this row acquired the uuid (second precision, so +1 s, as
 // bornReason): the order rows were deleted in, or a history gap, can leave

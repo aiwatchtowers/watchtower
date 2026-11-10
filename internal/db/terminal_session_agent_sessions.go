@@ -74,17 +74,19 @@ func (db *DB) AgentSessionIDs(ctx context.Context, rowID int64) ([]AgentSessionI
 
 // AgentSessionIDOwners maps each of uuids to every terminal session row
 // whose history or current claude_session_id holds it, ascending; a uuid
-// no row holds is absent. One query for all of them. More than one owner
-// means the conversation was resumed in another tab (auto cleanup spec
-// 2026-11-10 §2b: such a uuid adopts nothing).
+// no row holds is absent. A uuid a deleted row had (agent_session_tombstones,
+// 00187) also lists owner 0, "a deleted row". One query for all of them.
+// More than one owner means the conversation was resumed in another tab, or
+// by a row since deleted (auto cleanup spec 2026-11-10 §2b: such a uuid
+// adopts nothing).
 func (db *DB) AgentSessionIDOwners(ctx context.Context, uuids []string) (map[string][]int64, error) {
 	out := map[string][]int64{}
 	if len(uuids) == 0 {
 		return out, nil
 	}
 	in := strings.TrimSuffix(strings.Repeat("?,", len(uuids)), ",")
-	args := make([]any, 0, 2*len(uuids))
-	for range 2 {
+	args := make([]any, 0, 3*len(uuids))
+	for range 3 {
 		for _, u := range uuids {
 			args = append(args, u)
 		}
@@ -92,6 +94,7 @@ func (db *DB) AgentSessionIDOwners(ctx context.Context, uuids []string) (map[str
 	rows, err := db.QueryContext(ctx, `SELECT agent_session_id, terminal_session_id FROM terminal_session_agent_sessions
 		WHERE agent_session_id IN (`+in+`)
 		UNION SELECT claude_session_id, id FROM terminal_sessions WHERE claude_session_id IN (`+in+`)
+		UNION SELECT agent_session_id, 0 FROM agent_session_tombstones WHERE agent_session_id IN (`+in+`)
 		ORDER BY 1, 2`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading the owners of %d agent session ids: %w", len(uuids), err)

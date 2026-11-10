@@ -2943,6 +2943,14 @@ CREATE TABLE IF NOT EXISTS terminal_session_agent_sessions (
     PRIMARY KEY (terminal_session_id, agent_session_id)
 );
 
+-- Every agent session id a deleted terminal session had (00187), written by a
+-- BEFORE DELETE trigger on terminal_sessions; no foreign key, it outlives the
+-- row. A tombstoned uuid counts as shared for the cleanup's scratchpad rule.
+CREATE TABLE IF NOT EXISTS agent_session_tombstones (
+    agent_session_id TEXT PRIMARY KEY,
+    deleted_at       TEXT NOT NULL -- UTC ISO-8601 seconds
+);
+
 -- Go-only cache of a workbench's PR/branch state for session reports (00101).
 CREATE TABLE IF NOT EXISTS workbench_pr_states (
     project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
