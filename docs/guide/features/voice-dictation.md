@@ -4,7 +4,7 @@ Dictation turns speech into text in the places where you would otherwise type: a
 
 ## Why use it
 
-You are mid-thought and typing would slow you down. Press a key, say it, and a cleaned-up idea lands in the Inbox's **Ideas** filter. Or dictate your question to the assistant instead of typing it.
+You are mid-thought and typing would slow you down. Press a key, say it, and a cleaned-up idea lands in the Inbox's **Idea finder**. Or dictate your question to the assistant instead of typing it.
 
 ## How it works
 
@@ -70,13 +70,15 @@ A meeting recording takes priority. While one is capturing or processing, the mi
 
 ### Quick Capture
 <!-- learn
-id: dictation-quick-capture
+id: dictation-quick-capture-finder
 title: Capture an idea by voice
-text: Press **⌃⌥D** in any app, say the idea and press **Save**: it lands in the Inbox's **Ideas** filter.
+text: Press **⌃⌥D** in any app, say the idea and press **Save**: it lands in the Inbox's **Idea finder**.
 area: meetings
 level: next
 kind: shortcut
-since: 0.24.0
+since: next
+replaces: [dictation-quick-capture]
+changed: Ideas moved from the Inbox's Ideas filter to its Idea finder entry.
 action: hotkey:quick-capture
 requires: feature:ideas
 -->
@@ -84,7 +86,7 @@ requires: feature:ideas
 Press **⌃⌥D** in any app, or choose **New Voice Idea** in the menu bar icon's menu. A small window opens and listens at once.
 
 1. Speak.
-2. Click **Stop**, review the cleaned text, then click **Save**. It becomes an active idea in the Inbox's **Ideas** filter. **Discard** or closing the window drops it.
+2. Click **Stop**, review the cleaned text, then click **Save**. It becomes an active idea in the Inbox's **Idea finder**. **Discard** or closing the window drops it.
 3. After "Saved ✓" the window closes by itself after 2 seconds, or click **Open Ideas**.
 
 If cleanup fails, **Save as idea** keeps what was transcribed as it is.

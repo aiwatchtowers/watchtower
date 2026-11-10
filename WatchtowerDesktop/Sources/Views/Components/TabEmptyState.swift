@@ -19,15 +19,17 @@ struct EmptyStateContext {
     static let neutral = Self()
 }
 
-/// `FeatureEmptyState` for one sidebar tab (or one Inbox filter): its copy
+/// `FeatureEmptyState` for one sidebar tab (or one Inbox list): its copy
 /// (`EmptyStateCopyTable`), its feature's readiness and Turn on state from the
 /// context, the tab's own action, and what the tab keeps inside (`extra`).
 struct TabEmptyState<Extra: View>: View {
     /// The `EmptyStateCopyTable` key: a `SidebarDestination.rawValue` or an
-    /// `InboxFilter.emptyCopyKey`.
+    /// `InboxLegacyList.emptyCopyKey`.
     let copyKey: String
     /// Replaces the row's icon; nil keeps it.
     let icon: String?
+    /// An Inbox owner folder's title for its `{folder}` (`inboxFolder`).
+    var folderTitle = ""
     let context: EmptyStateContext
     let onTabAction: () -> Void
     let extra: Extra
@@ -51,12 +53,14 @@ struct TabEmptyState<Extra: View>: View {
     init(
         copyKey: String,
         icon: String? = nil,
+        folderTitle: String = "",
         context: EmptyStateContext,
         onTabAction: @escaping () -> Void = {},
         @ViewBuilder extra: () -> Extra
     ) {
         self.copyKey = copyKey
         self.icon = icon
+        self.folderTitle = folderTitle
         self.context = context
         self.onTabAction = onTabAction
         self.extra = extra()
@@ -93,7 +97,7 @@ struct TabEmptyState<Extra: View>: View {
 
     private var shownCopy: EmptyStateCopy? {
         guard let copy = EmptyStateCopyTable.copy(
-            for: copyKey, briefingHour: context.briefingHour
+            for: copyKey, briefingHour: context.briefingHour, folderTitle: folderTitle
         ) else { return nil }
         guard let icon else { return copy }
         return EmptyStateCopy(icon: icon, title: copy.title, landsHere: copy.landsHere, feature: copy.feature,

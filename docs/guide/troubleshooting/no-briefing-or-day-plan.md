@@ -33,7 +33,7 @@ On a new install the first briefing and the first day plan do not wait for the h
 
 ## How to check
 
-Today's **Your day** card is first under **Today** in the Inbox. Tomorrow, before the new one, the card says when it comes (your hour).
+Today's **Morning brief** is in the Inbox's root. Tomorrow, before the new one, the card says when it comes (your hour).
 
 ## If it did not help
 

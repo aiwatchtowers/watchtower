@@ -126,6 +126,14 @@ package enum ReviewQueries {
             """, arguments: [roundID])
     }
 
+    /// Throws `roundNotOpen` unless the round is open, so the caller's write
+    /// transaction rolls back instead of writing into a sent round.
+    package static func requireOpenRound(_ db: Database, roundID: Int64) throws {
+        guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [roundID]) == true else {
+            throw ReviewQueryError.roundNotOpen
+        }
+    }
+
     /// Ticks (or re-marks) a checklist item; nil unticks. A round that is not open
     /// is read-only: it throws `roundNotOpen`, so the caller's write transaction rolls back.
     package static func setCheck(
@@ -136,9 +144,7 @@ package enum ReviewQueries {
         itemKey: String,
         state: ReviewCheck.State?
     ) throws {
-        guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [roundID]) == true else {
-            throw ReviewQueryError.roundNotOpen
-        }
+        try requireOpenRound(db, roundID: roundID)
         if let state {
             try db.execute(sql: """
                 INSERT INTO review_checks (round_id, chapter_key, lens, item_key, state) VALUES (?, ?, ?, ?, ?)
@@ -211,9 +217,7 @@ package enum ReviewQueries {
     /// not open throws `roundNotOpen` (the caller's transaction rolls back);
     /// a comment of neither that round nor the round it follows changes nothing.
     package static func reopen(_ db: Database, commentID: Int64, openRoundID: Int64) throws {
-        guard try Bool.fetchOne(db, sql: "SELECT status = 'open' FROM review_rounds WHERE id = ?", arguments: [openRoundID]) == true else {
-            throw ReviewQueryError.roundNotOpen
-        }
+        try requireOpenRound(db, roundID: openRoundID)
         guard let c = try ReviewComment.fetchOne(db, sql: "SELECT * FROM review_comments WHERE id = ?", arguments: [commentID]),
               c.status == .resolved,
               try Bool.fetchOne(db, sql: """

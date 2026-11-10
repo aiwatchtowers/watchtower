@@ -108,6 +108,7 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 		"next-step":            true,
 		"knowledge-connectors": true,
 		"claude-plan-limits":   true,
+		"approval-cards":       true, // no AI, no cost (Inbox builder B)
 	}
 	for id, want := range wantEnabled {
 		feat, ok := ByID(id)

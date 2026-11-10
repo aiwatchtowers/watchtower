@@ -21,9 +21,11 @@ func ContentHash(data []byte) string {
 // D5 as amended by D26, ask #294): the hex sha256 of the canonical JSON
 //
 //	{"permissions":[sorted normalised],"outputs":[sorted],"scope":"<scope>","script":"<js>",
-//	 "trigger":<trigger>,"missed":"<policy>","budget":{"tokens":N,"minutes":M},"concurrency":N}
+//	 "trigger":<trigger>,"missed":"<policy>","budget":{"tokens":N,"minutes":M},"concurrency":N
+//	 [,"artifacts":"living"]}
 //
-// with the keys in that order, no whitespace and no HTML escaping; the
+// with the keys in that order (artifacts written only when living, so a feed
+// recipe hashes as it did before the key existed), no whitespace and no HTML escaping; the
 // trigger is the trigger_spec shape (a where map's keys sorted) without the
 // button's cosmetic label (its confirm flag stays). Owner confirmations and
 // auto grants bind to it, so a schedule, missed-policy, budget or concurrency
@@ -52,6 +54,10 @@ func approvalCanonical(r *Recipe) []byte {
 	writeCanonical(&buf, canonicalBudget{Tokens: r.Budget.Tokens, Minutes: r.Budget.Minutes})
 	buf.WriteString(`,"concurrency":`)
 	writeCanonical(&buf, r.Concurrency)
+	if r.Artifacts == ArtifactsLiving {
+		buf.WriteString(`,"artifacts":`)
+		writeCanonical(&buf, string(r.Artifacts))
+	}
 	buf.WriteByte('}')
 	return buf.Bytes()
 }
@@ -67,8 +73,8 @@ type ApprovalField struct {
 
 // ApprovalFields lists the fields ApprovalHash binds, in the order the
 // confirmation sheet's Changed block shows them (spec §12.2, D26): trigger,
-// missed, budget_tokens, budget_minutes, concurrency, outputs, permissions,
-// scope, script. Two recipes with equal fields have equal approval hashes.
+// missed, budget_tokens, budget_minutes, concurrency, artifacts ("feed" or
+// "living"), outputs, permissions, scope, script. Two recipes with equal fields have equal approval hashes.
 func ApprovalFields(r *Recipe) []ApprovalField {
 	return []ApprovalField{
 		{"trigger", canonicalText(canonicalTrigger(r.Trigger))},
@@ -76,11 +82,21 @@ func ApprovalFields(r *Recipe) []ApprovalField {
 		{"budget_tokens", strconv.Itoa(r.Budget.Tokens)},
 		{"budget_minutes", strconv.Itoa(r.Budget.Minutes)},
 		{"concurrency", strconv.Itoa(r.Concurrency)},
+		{"artifacts", string(artifactsOf(r))},
 		{"outputs", canonicalText(sortedCopy(r.Outputs))},
 		{"permissions", canonicalText(normalizedPermissions(r.Permissions))},
 		{"scope", r.Scope.String()},
 		{"script", r.Script},
 	}
+}
+
+// artifactsOf is r's lifecycle, feed for a hand-built Recipe that leaves it
+// empty (the hash treats empty and feed alike).
+func artifactsOf(r *Recipe) ArtifactLifecycle {
+	if r.Artifacts == ArtifactsLiving {
+		return ArtifactsLiving
+	}
+	return ArtifactsFeed
 }
 
 // canonicalText is v's canonical JSON as a string.

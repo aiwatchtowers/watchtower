@@ -108,6 +108,42 @@ final class WorkbenchCLIReviewTests: XCTestCase {
         XCTAssertNil(runner.lastTimeout)
     }
 
+    /// Ending the iteration of a streamed overview terminates the child's
+    /// whole process group (its own children too) and reaps it.
+    func testStoppingTheOverviewStreamKillsTheProcessGroup() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wt-stream-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let script = dir.appendingPathComponent("watchtower")
+        let pids = dir.appendingPathComponent("pids")
+        try """
+        #!/bin/sh
+        sleep 30 &
+        echo "$$ $!" > "\(pids.path)"
+        echo '{"event":"waiting","by":"agent"}'
+        wait
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        let cli = WorkbenchCLI(runner: ProcessCLIRunner(binaryPath: script.path))
+
+        var first: ReviewStreamEvent?
+        for try await event in cli.reviewOverviewStream(projectID: 1, roundID: 7) {
+            first = event
+            break
+        }
+        guard case .waiting(let by) = first else { return XCTFail("first event \(String(describing: first))") }
+        XCTAssertEqual(by, "agent")
+        let ids = try String(contentsOf: pids, encoding: .utf8).split(separator: " ")
+            .compactMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        XCTAssertEqual(ids.count, 2)
+        defer { ids.forEach { _ = kill($0, SIGKILL) } }
+        func alive(_ pid: pid_t) -> Bool { kill(pid, 0) == 0 }
+        for _ in 0..<300 where ids.contains(where: alive) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(ids.contains(where: alive), "the leader and its child are gone")
+    }
+
     /// `spec-review question` prints one id: anything else says so, not
     /// "not UTF-8".
     func testSpecReviewQuestionNeedsAnID() async throws {

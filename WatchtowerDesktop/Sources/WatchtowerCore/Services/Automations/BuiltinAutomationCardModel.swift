@@ -189,18 +189,23 @@ package final class BuiltinAutomationCardModel {
     /// **Turn On** / **Turn Off** (and **Save and Turn On**): the built-in's
     /// feature ids through `write` (the app's feature manager and daemon
     /// restart), then a reload. One card write at a time: a press while
-    /// another runs is ignored. With no `show` yet it is read first.
-    package func setEnabled(_ on: Bool, _ write: ([String], Bool) async -> String?) async {
-        guard !isWorking else { return }
+    /// another runs is ignored (`.busy`). With no `show` yet it is read first.
+    /// The result carries the reason `actionError` also keeps.
+    @discardableResult
+    package func setEnabled(_ on: Bool, _ write: ([String], Bool) async -> String?) async -> AutomationCallResult {
+        guard !isWorking else { return .busy }
         isWorking = true
         defer { isWorking = false }
         if detail == nil { await load() }
         guard let ids = detail?.featureIDs, !ids.isEmpty else {
-            actionError = loadError ?? Self.unknownFeatures
-            return
+            let reason = loadError ?? Self.unknownFeatures
+            actionError = reason
+            return .failed(reason)
         }
-        actionError = await write(ids, on)
+        let reason = await write(ids, on)
+        actionError = reason
         await load()
+        return reason.map(AutomationCallResult.failed) ?? .done
     }
 
     nonisolated package static let unknownFeatures = "Its features are not known, so it was not turned on or off."
@@ -244,9 +249,11 @@ package final class BuiltinAutomationCardModel {
     }
 
     /// Queues a manual run; it runs at the built-in's slot in the next sync
-    /// cycle (the CLI wakes the daemon).
-    package func runNow() async {
-        guard !isWorking else { return }
+    /// cycle (the CLI wakes the daemon). `.busy` while another card write
+    /// runs (nothing sent); `.failed` with the text `loadError` also keeps.
+    @discardableResult
+    package func runNow() async -> AutomationCallResult {
+        guard !isWorking else { return .busy }
         isWorking = true
         defer { isWorking = false }
         queuedRunID = nil
@@ -254,10 +261,12 @@ package final class BuiltinAutomationCardModel {
             queuedRunID = try await cli.run(automation.id).runID
             if let runNowError, loadError == runNowError { loadError = nil }
             runNowError = nil
+            return .done
         } catch {
             let message = AutomationsViewModel.message(for: error)
             loadError = message
             runNowError = message
+            return .failed(message)
         }
     }
 }

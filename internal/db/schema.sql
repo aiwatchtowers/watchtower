@@ -447,6 +447,10 @@ CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
     WHERE notified_at = '' AND due_date != '';
 CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
+-- One task per create_target action id (00181, AGENT-05); 'action:0' is a
+-- registry-less Execute and stays out. A rebuild of targets recreates it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_action_source ON targets(source_id)
+    WHERE source_type = 'chat' AND source_id LIKE 'action:%' AND source_id != 'action:0';
 -- Triggers targets_project_status_rollup_{ai,au,ad} (00085, PROJ-05): when a
 -- project target (project_id set) is inserted, deleted, or changes status /
 -- parent_id / project_id, its parent's status is re-derived from its direct
@@ -2108,6 +2112,10 @@ CREATE TABLE IF NOT EXISTS agent_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
+-- One open proposal per Inbox button (context '<output>:<index>:<action
+-- hash>', 00181, AGENT-05). A rebuild of agent_actions recreates it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_actions_open_context ON agent_actions(context_type, context_id)
+    WHERE context_type = 'automation_output' AND status IN ('pending','approved','executing');
 
 -- Owner's standing trust per (tool, chat surface) (migration 00112): no row
 -- = ask; an execute on one surface (e.g. reaction) never covers another.
@@ -3136,11 +3144,59 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     done_at       TEXT,                                      -- Desktop-written: the owner marked the card Done (00149 backfilled it from read_at)
     pressed_action INTEGER,                                  -- CLI-written by `automations reply`: the index of the pressed Reply action
     pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- CLI-written: the reply run the press queued
-    pressed_at    TEXT                                       -- CLI-written: when; a card is pressed at most once
+    pressed_at    TEXT,                                      -- CLI-written: when; a card is pressed at most once
+    blocks_json   TEXT NOT NULL DEFAULT '',                  -- the card's canonical block document; '' = none (markdown body) (00182)
+    output_key    TEXT,                                      -- a living artifact's key, upserted per (automation_id, output_key); NULL = feed (00182)
+    content_hash  TEXT NOT NULL DEFAULT '',                  -- SHA-256 over {title, body, blocks, priority, link, actions}; '' on rows from before 00182
+    written_at    TEXT,                                      -- the last run that wrote this row (backfilled to created_at)
+    changed_at    TEXT,                                      -- the last write that changed content_hash (backfilled to created_at); the Inbox order
+    folder_id     INTEGER REFERENCES inbox_folders(id) ON DELETE SET NULL -- CLI/daemon-written: the recipe's explicit Inbox folder; NULL = follow the route (00183)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outputs(automation_id, output_key) WHERE output_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
+
+-- The Inbox menu's folders (00183). The folder tables hold the menu's
+-- arrangement only, never an item (STRIP-02). Only Go writes them: the CLI
+-- (each write one BEGIN IMMEDIATE transaction that compares and bumps
+-- inbox_folder_state.revision), the built-in indexer's route seed and a
+-- run's commit (folder_id); the Desktop never.
+CREATE TABLE IF NOT EXISTS inbox_folders (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind       TEXT NOT NULL CHECK (kind IN ('root','approvals','owner')), -- one root ('inbox'), one approvals ('needs-approval'), owner folders
+    parent_id  INTEGER REFERENCES inbox_folders(id),                       -- NULL only for the root
+    slug       TEXT NOT NULL UNIQUE,                                       -- derived once from the title; recipes name a folder by slug
+    title      TEXT NOT NULL,
+    icon       TEXT NOT NULL DEFAULT '',                                   -- an SF Symbol from the allowlist; '' = the kind's default (folder; Needs approval draws its fixed symbol by kind)
+    position   INTEGER NOT NULL DEFAULT 0,                                 -- dense 0..n-1 per sibling list
+    hidden     INTEGER NOT NULL DEFAULT 0 CHECK (hidden IN (0,1)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    CHECK ((kind = 'root') = (parent_id IS NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(kind) WHERE kind IN ('root','approvals');
+CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
+
+-- The folder tree's revision (one row, starts at 1): every folder or route write compares and bumps it.
+CREATE TABLE IF NOT EXISTS inbox_folder_state (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL
+);
+
+-- The folder an automation's artifacts go to; no row = the root. Placement, not part of the recipe.
+CREATE TABLE IF NOT EXISTS inbox_folder_routes (
+    automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
+    folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
+);
+
+-- An Inbox artifact's effective folder: explicit folder ?? route ?? root.
+CREATE VIEW IF NOT EXISTS inbox_artifact_folders AS
+SELECT o.id AS output_id,
+       COALESCE(o.folder_id, r.folder_id, (SELECT id FROM inbox_folders WHERE kind = 'root')) AS folder_id
+FROM automation_outputs o LEFT JOIN inbox_folder_routes r ON r.automation_id = o.automation_id
+WHERE o.kind = 'inbox';
 
 -- Claude plan usage: one row per poll per limit (percent of the 5h/7d windows), pruned after 8 days.
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
@@ -3257,7 +3313,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   sent_at        TEXT,
   delivered_at   TEXT,
   outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), -- how the owner closed a sent round (00155)
-  branch         TEXT NOT NULL DEFAULT '' -- the branch a source='pr' round reviews; '' for a folder round (00173)
+  branch         TEXT NOT NULL DEFAULT '', -- the branch a source='pr' round reviews; '' for a folder round (00173)
+  head_sha       TEXT NOT NULL DEFAULT '' -- the commit the snapshot was taken at (rev-parse HEAD / the branch tip read); '' = a round made before 00179, no lane attribution
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
@@ -3331,6 +3388,18 @@ CREATE TABLE IF NOT EXISTS review_overviews (
   PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
 );
 
+-- One cached AI description per overview chapter (00179, board #1025):
+-- part_hash = sha256 of the chapter key, its files' (path, old blob, new blob),
+-- the agent's notes on them and the prompt id + version. Pruned after 30 days on write.
+CREATE TABLE IF NOT EXISTS review_overview_parts (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  part_hash  TEXT NOT NULL,
+  json       TEXT NOT NULL,
+  model      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, part_hash)
+);
+
 CREATE TABLE IF NOT EXISTS review_reverts (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
@@ -3352,6 +3421,22 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   decided_at         TEXT
 );
+
+-- The independent reviewer's thread per branch of a workbench (00180, Desktop writer).
+-- branch = the round's branch, else the folder's checked-out branch; a detached HEAD
+-- keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
+-- 'review_reviewer', deleted with its thread row.
+CREATE TABLE IF NOT EXISTS review_reviewer_threads (
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  branch          TEXT NOT NULL CHECK (branch != ''),
+  conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, branch)
+);
+CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
+BEGIN
+  DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
+END;
 
 -- Permission prompts a Claude Code PermissionRequest hook waits on, answered from the phone
 -- or the Mac (00130). summary is what the owner approves (clipped to 2000 chars); no tool_input.

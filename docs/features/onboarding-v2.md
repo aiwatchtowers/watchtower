@@ -140,7 +140,9 @@ for good with its × (`sidebar_connect_row_dismissed`).
 **C1, the one Inbox (2026-10-22, board #861):** the Briefings, Day Plan,
 Tracks and Ideas destinations are gone; the root items are Home, Targets,
 Workbench, Automations and Calendar, and FOCUS is Catch-Up and Inbox. Their
-output is the Inbox's Day, Tracks and Ideas filters, and the Inbox has no
+output is the Inbox's Day, Tracks and Ideas filters (since Inbox builder B the
+Morning brief, Track my threads and Idea finder root entries, see
+[inbox-folders.md](inbox-folders.md)), and the Inbox has no
 feature or source gate, so it always shows. A persisted `sidebar.hiddenItems` entry naming a
 removed destination is ignored. The goal → feature mapping
 (`OnboardingFeaturePlan`) is unchanged (plan ruling R11): a goal still turns

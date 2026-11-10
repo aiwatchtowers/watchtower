@@ -199,7 +199,7 @@ func TestAllTablesExist(t *testing.T) {
 		"terminal_sessions", "target_status_history", "owner_asks", "workbench_board_columns",
 		"terminal_session_targets", "workbench_pr_states", "owner_presence",
 		"review_rounds", "review_comments", "review_viewed", "review_checks",
-		"review_notes", "review_overviews", "review_reverts", "review_lessons", "permission_requests", "owner_instructions", "instruction_suggestions", "instruction_chat_lines",
+		"review_notes", "review_overviews", "review_overview_parts", "review_reverts", "review_lessons", "review_reviewer_threads", "permission_requests", "owner_instructions", "instruction_suggestions", "instruction_chat_lines",
 		"terminal_session_worktrees", "terminal_session_agent_sessions",
 		"automations", "automation_runs", "automation_run_steps", "automation_run_replay", "automation_state", "automation_outputs",
 		"plan_usage_samples", "plan_usage_status", "codex_plan_usage_samples", "codex_plan_usage_status",
@@ -208,6 +208,7 @@ func TestAllTablesExist(t *testing.T) {
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels", "builtin_migrations",
 		"db_maintenance", "account_purges", "spec_reviews", "spec_review_marks", "spec_review_questions", "spec_review_thread_findings", "learn_seen", "coach_proposals", "prompt_additions", "llm_calls",
+		"inbox_folders", "inbox_folder_state", "inbox_folder_routes",
 	}
 
 	for _, table := range expectedTables {

@@ -24,6 +24,7 @@ final class EmbeddedChatWiringTests: XCTestCase {
     func testSavesKnowledgeByContext() {
         XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: SpecReviewThreadKey.contextType))
         XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: CodeQuestionList.contextType))
+        XCTAssertFalse(EmbeddedChatEngineFactory.savesKnowledge(contextType: ReviewerSurface.contextType))
         XCTAssertTrue(EmbeddedChatEngineFactory.savesKnowledge(contextType: "target"))
     }
 

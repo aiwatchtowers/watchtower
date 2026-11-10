@@ -40,10 +40,11 @@ final class InboxReplyPressTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
         await vm.refresh()
 
-        await vm.pressReply(outputID: id, action: 1)
+        await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
         XCTAssertEqual(runner.invocations,
-                       [["automations", "reply", "--output", String(id), "--action", "1", "--json"]])
+                       [["automations", "reply", "--output", String(id), "--action", "1",
+                         "--content-hash", "h1", "--json"]])
         XCTAssertEqual(try dump(pool), before)
         XCTAssertNil(vm.lastError)
         XCTAssertFalse(vm.isWriting(output: id))
@@ -59,11 +60,11 @@ final class InboxReplyPressTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
         await vm.refresh()
 
-        let first = Task { await vm.pressReply(outputID: id, action: 1) }
+        let first = Task { await vm.pressReply(outputID: id, action: 1, contentHash: "h1") }
         await waitUntil { runner.invocations.count == 1 }
         XCTAssertTrue(vm.isWriting(output: id))
 
-        await vm.pressReply(outputID: id, action: 1)
+        await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
         XCTAssertEqual(runner.invocations.count, 1)
 
         first.cancel()
@@ -80,9 +81,27 @@ final class InboxReplyPressTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
         await vm.refresh()
 
-        await vm.pressReply(outputID: id, action: 1)
+        await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
         XCTAssertTrue(vm.lastError?.contains("Sent — run #7") == true, vm.lastError ?? "nil")
+        XCTAssertEqual(vm.outputRows.map(\.id), [id])
+    }
+
+    /// The CLI refuses a press on a card rewritten since it was drawn
+    /// (`ErrOutputChanged`): the banner says so and the card is read again.
+    func testChangedCardRefusalSaysLookAgain() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try await seed(pool)
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
+            code: 1, stderr: "Error: This card changed — look again\n"))
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
+        await vm.refresh()
+
+        await vm.pressReply(outputID: id, action: 1, contentHash: "stale")
+
+        XCTAssertEqual(runner.invocations.first?.suffix(3), ["--content-hash", "stale", "--json"])
+        XCTAssertEqual(vm.lastError, "This card changed — look again")
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
     }
 
@@ -95,7 +114,7 @@ final class InboxReplyPressTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
         await vm.refresh()
 
-        await vm.pressReply(outputID: id, action: 1)
+        await vm.pressReply(outputID: id, action: 1, contentHash: "h1")
 
         XCTAssertEqual(vm.lastError, "Sent — run #7")
     }

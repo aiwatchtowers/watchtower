@@ -30,7 +30,7 @@ func TestTierForSource(t *testing.T) {
 		// An automation's llm() with tier: strong.
 		"automation.llm.strong",
 		// The diff reviewer's overview: strong by absence from the light switch.
-		"workbench.review_overview", "workbench.review_lessons",
+		prompts.ReviewOverview, prompts.ReviewChapters, prompts.ReviewSummary, "workbench.review_lessons",
 		// The spec reviewer (spec 2026-10-25-spec-review-design §3).
 		"workbench.spec_review",
 		// The agent coach's weekly proposals (spec 2026-10-26-agent-coach-design §6).

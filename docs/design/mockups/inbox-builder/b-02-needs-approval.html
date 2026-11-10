@@ -1,0 +1,89 @@
+<h2>B2. Needs approval</h2>
+<p class="subtitle">Sample data only. The recipe draws the look; the Desktop always adds the actions and falls back to the native card whenever the recipe's card is missing, behind, off or failed.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Needs approval · 4</div>
+  <div class="mockup-body" style="line-height:1.6">
+    <div class="label">Native card (new action, the run has not drawn it yet)</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px; margin-bottom:10px">
+      <b>Send a Slack message</b> · to #acme-release · proposed by ⚙ Release notes · run #4<br>
+      <small>“Release 2.0 is tagged; checklist in the thread.”</small><br>
+      <button class="mock-button">Approve</button> <button class="mock-button">Reject</button> <button class="mock-button">Edit…</button>
+    </div>
+    <div class="label">Recipe card (current: written after the action's last change)</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px; margin-bottom:10px">
+      <b>Create a Jira issue</b><br>
+      <small>ACME · “Checklist link broken on the release page” · from your :ticket: reaction</small>
+      <span style="float:right"><button class="mock-button">Approve</button> <button class="mock-button">Reject</button> <button class="mock-button">Edit…</button></span>
+    </div>
+    <div class="label">Failed after approval</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px; margin-bottom:10px">
+      <b>Create a Linear issue</b> · <span style="color:#d33">failed: the team was archived</span>
+      <span style="float:right"><button class="mock-button">Retry</button></span>
+    </div>
+    <div class="label">Due reminder</div>
+    <div style="border:1px solid #8886; border-radius:8px; padding:8px">
+      <b>Reminder · 14:00</b> · “Answer colleague A about the budget” · <u>Slack message ↗</u>
+      <span style="float:right"><button class="mock-button">Done</button> <button class="mock-button">Snooze 1h</button></span>
+    </div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Recipe cards only</div>
+    <div class="mockup-body" style="line-height:1.6"><small>Every approval is current, so the recipe draws them all; the Desktop still adds the actions.</small><br>
+      <b>Create a Jira issue</b> · ACME · “Checklist link broken” <span style="float:right"><button class="mock-button">Approve</button> <button class="mock-button">Reject</button> <button class="mock-button">Edit…</button></span><br>
+      <b>Reminder · 14:00</b> · “Answer colleague A” <span style="float:right"><button class="mock-button">Done</button> <button class="mock-button">Snooze 1h</button></span><br>
+      <small>Shot: <code>inbox-b-approvals-recipe</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Built-in upgrade notice</div>
+    <div class="mockup-body"><small>Today's notice card, first in the folder.</small><br>
+      <b>Morning brief could not be upgraded</b> · your customised prompt was kept<br>
+      <button class="mock-button">Retry</button><br>…approvals below…<br>
+      <small>Shot: <code>inbox-b-approvals-notice</code>.</small></div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Recipe off</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — Needs approval is off. <u>Turn On</u></small><br>…native cards…<br><small>Turn On enables the <code>approval-cards</code> feature. Shot: <code>inbox-b-approvals-off</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Built-in stopped (feature on)</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — Needs approval was stopped after a run that would not end. <u>Turn On</u></small><br>…native cards…<br><small>This Turn On resumes the stopped built-in (<code>features enable</code> of an enabled feature), not the feature switch. Shot: <code>inbox-b-approvals-stopped</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Last run failed</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — the last run failed. <u>Run History</u></small><br>…native cards…<br><small>Shot: <code>inbox-b-approvals-run-failed</code>.</small></div>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:16px">
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Off note: Turn On failed</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — Needs approval is off. <u>Turn On</u></small><br>
+      <small style="color:#d33">Feature changes are being applied in Settings — try again</small><br>…native cards…<br><small>The reason the Turn On returned (a <code>features enable</code> error or Settings busy). The note stays. Shot: <code>inbox-b-approvals-off-turn-on-failed</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Stopped note: Turn On failed</div>
+    <div class="mockup-body"><small>Showing approvals in the standard card — Needs approval was stopped after a run that would not end. <u>Turn On</u></small><br>
+      <small style="color:#d33">watchtower exited with error: database is locked</small><br>…native cards…<br><small>The reason the resume returned. The note stays. Shot: <code>inbox-b-approvals-stopped-turn-on-failed</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Turned on, not restarted</div>
+    <div class="mockup-body"><div style="background:#d932; padding:4px 6px; border-radius:6px"><small>⚠ The background sync did not restart: the daemon did not stop in time</small> <button class="mock-button">Retry</button> <u>Open Logs</u> <u>Dismiss</u></div>
+      …native cards, no note…<br><small>The app-wide daemon banner above every tab keeps the failure after the note leaves, until a start or restart succeeds. Shot: <code>inbox-b-approvals-restart-failed</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Automations tab: Turn On, not restarted</div>
+    <div class="mockup-body"><div style="background:#d932; padding:4px 6px; border-radius:6px"><small>⚠ The background sync did not restart: the daemon did not stop in time</small> <button class="mock-button">Retry</button> <u>Open Logs</u> <u>Dismiss</u></div>
+      <b>Morning brief</b> · Built in · On<br><small>The same banner after a built-in card's Turn On in the Automations tab (owner's decision, ask #503). Retry restarts the daemon; a successful restart clears it. Shot: <code>inbox-b-builtin-restart-failed</code>.</small></div>
+  </div>
+  <div class="mockup" style="flex:1; min-width:260px">
+    <div class="mockup-header">Empty</div>
+    <div class="mockup-body" style="text-align:center"><b>Nothing waits for your approval</b></div>
+  </div>
+</div>
