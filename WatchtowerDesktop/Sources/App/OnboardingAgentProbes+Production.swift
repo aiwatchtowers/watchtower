@@ -67,7 +67,7 @@ extension OnboardingAgentProbes {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attr, 0)
 
         let argv = ([executable] + args).map { strdup($0) } + [nil]
@@ -106,7 +106,8 @@ extension OnboardingAgentProbes {
             if Date() >= deadline { return abandon(pid) }
             usleep(10_000)
         }
-        _ = killpg(pid, SIGKILL)  // stragglers of the group
+        // No killpg here: the child is reaped, its pid may be recycled. A
+        // straggler holding the pipe would have blocked EOF until the deadline.
         return String(decoding: data, as: UTF8.self)
     }
 

@@ -107,6 +107,15 @@ final class OnboardingAgentProbesTests: XCTestCase {
         // The grandchild sleeps too: the group, not just the child, must die.
         let slow = try script("agent", "sleep 30 &\necho $! > \"\(pidFile)\"\nsleep 30")
         let started = Date()
+        // Teardown reaps the group even when the code under test regressed.
+        let pgidFile = pidFile
+        addTeardownBlock {
+            if let raw = try? String(contentsOfFile: pgidFile, encoding: .utf8),
+               let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                _ = kill(pid, SIGKILL)
+                _ = killpg(pid, SIGKILL)
+            }
+        }
 
         let text = await probes(helpTimeout: 1).help(.claude, slow)
 
@@ -118,6 +127,31 @@ final class OnboardingAgentProbesTests: XCTestCase {
             if kill(pid, 0) != 0 { gone = true } else { try await Task.sleep(for: .milliseconds(100)) }
         }
         XCTAssertTrue(gone, "the grandchild is gone with its group")
+    }
+
+    /// Parallel probes must not inherit each other's pipe write ends: the fast
+    /// one sees EOF at its own child's exit, not when the hung one dies.
+    func testConcurrentProbesDoNotShareDescriptors() async throws {
+        let pidFile = dir.appendingPathComponent("slowpid").path
+        let slow = try script("slow", "echo $$ > \"\(pidFile)\"\nsleep 30")
+        let fast = try script("fast", "echo fast-text")
+        addTeardownBlock {
+            if let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
+               let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                _ = killpg(pid, SIGKILL)
+            }
+        }
+        let probes = probes(helpTimeout: 4)
+        let started = Date()
+
+        async let slowText = probes.help(.claude, slow)
+        try await Task.sleep(for: .milliseconds(100))
+        let fastText = await probes.help(.codex, fast)
+        let fastElapsed = Date().timeIntervalSince(started)
+        _ = await slowText
+
+        XCTAssertEqual(fastText?.contains("fast-text"), true)
+        XCTAssertLessThan(fastElapsed, 2, "the fast probe does not wait for the hung one")
     }
 
     func testAllowedFollowsThePolicy() {
