@@ -350,12 +350,16 @@ test-swift-strict-pool:
 
 # Shell-level tests for build-app.sh and the app-swap/app-install scripts. They
 # extract marked blocks or run the scripts in a temp tree against stubbed
-# binaries — no real build, no codesign.
+# binaries — no real build, no codesign. The self-hosted runner setup needs
+# sudo, so it gets only a syntax check.
 test-scripts:
 	@rc=0; for t in scripts/tests/test-*.sh; do \
 	  echo "==> $$t"; \
 	  bash "$$t" || rc=1; \
-	done; exit $$rc
+	done; \
+	echo "==> bash -n scripts/ci-runner/setup-mac-runner.sh"; \
+	bash -n scripts/ci-runner/setup-mac-runner.sh || rc=1; \
+	exit $$rc
 
 # Copies the hosted relay's Go client + proto into internal/hub/transport/relay,
 # pinned to REF (default: the commit in that dir's VERSION). Refuses a dirty or
