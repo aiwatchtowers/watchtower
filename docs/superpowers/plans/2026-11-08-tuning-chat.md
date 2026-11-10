@@ -132,7 +132,9 @@ CREATE TABLE coach_proposals_new (
     -- … 00162 columns …
     origin            TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat')),
     skill             TEXT NOT NULL DEFAULT '',
-    conversation_id   INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL
+    conversation_id   INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,
+    written_branch    TEXT NOT NULL DEFAULT '',   -- repo_*: the branch Accept wrote on (spec §4.3a, D68)
+    measure_from      TEXT                        -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
 );
 INSERT INTO coach_proposals_new (<all 00162 columns>) SELECT <all 00162 columns> FROM coach_proposals;
 DROP TABLE coach_proposals;
@@ -269,7 +271,7 @@ Nothing is captured (spec D61).
 Spec: `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` §4.2 (ValidateChatProposal, keyOf, writeCut, `TakesAdditions`), §4.3, §4.3a, §4.4 (labels), §4.8 first rows, §4.9 (struct, JSON keys, Swift model), §5 (ValidateChatProposal, file destinations, workbench repository files, pack overlay, proposal-tool edge cases).
 Read before starting: `docs/features/agent-coach.md`, `docs/inventory/coach.md` (COACH-01), `internal/coach/*.go`, `internal/db/coach.go`, `internal/devpack/install.go`, `internal/workbenchgit/` (2.12, 2.13), `internal/workbenchmethod/file.go` (`FileRel`).
 
-Assumed from Task 1.1 (migration `00184_tuning_chat.sql`): `coach_proposals` gains `origin TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat'))`, `skill TEXT NOT NULL DEFAULT ''`, `conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL`, and the `destination` CHECK lists the ten new values (five global, five `repo_*`); `skill_pack_overlays` shaped like `prompt_additions`. No source lists, no blanking, no `source_removed_at` (spec D62).
+Assumed from Task 1.1 (migration `00184_tuning_chat.sql`): `coach_proposals` gains `origin TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat'))`, `skill TEXT NOT NULL DEFAULT ''`, `conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL`, `written_branch TEXT NOT NULL DEFAULT ''`, `measure_from TEXT` (D68), and the `destination` CHECK lists the ten new values (five global, five `repo_*`); `skill_pack_overlays` shaped like `prompt_additions`. No source lists, no blanking, no `source_removed_at` (spec D62).
 
 Inner loop per task: `go test ./internal/<pkg>` (+ `-run`), `make lint-diff`; Swift: `make test-swift FILTER=…` and `make lint-swift`. Never `-count=1` by reflex.
 
@@ -715,6 +717,31 @@ No row is marked or removed with its source (spec D62); Accept, Decline and Roll
 - [ ] **Step 5: Commit** — `git commit -m "feat(coach): workbench repository files as chat destinations, never a git write (#1517)"`.
 
 ---
+
+
+### Task 2.14: Workbench repository edits — the branch and the commit-based verdict window (spec §4.3a, D68)
+
+**Depends on:** Task 1.1 (`written_branch`, `measure_from`), Task 2.12, Task 2.13
+**Files:**
+- Modify: `internal/workbenchgit/status.go` (`CurrentBranch(ctx, o) (name string, detachedSHA string, err error)`, `FileAtHead(ctx, o, rel) (text string, ok bool, err error)` — `git rev-parse --abbrev-ref HEAD` / `git show HEAD:<rel>`, read-only, same `rel` guard as `PathStatus`)
+- Modify: `internal/coach/repofile.go` (Accept records the branch through a `Branch` seam on `Applier` — `internal/coach` itself never runs git, `TestCOACH01_NoGitWrites`), `internal/db/coach.go` (`MarkCoachAccepted` writes `written_branch`; `SetCoachMeasureFrom(id, at) (bool, error)` — `UPDATE … SET measure_from = ? WHERE id = ? AND status = 'accepted' AND measure_from IS NULL`; `ListRepoProposalsAwaitingCommit() ([]CoachProposal, error)`)
+- Modify: `internal/coach/judge.go` (the verdict window starts at `measure_from` for `repo_*`, at `accepted_at` for every other destination; a `repo_*` row with `measure_from` NULL 30 days after `accepted_at` → `too_little_data`)
+- Modify: `internal/daemon` coach phase (`phaseCoach`'s daily part: for each awaiting row, `workbenchgit.FileAtHead` in the workbench folder; equal to `after_text` → `SetCoachMeasureFrom(now)`; folder gone / not git / read error → skip the row that day, logged with ids only)
+- Modify: `cmd/coach.go` (`coachDecisionJSON` gains `written_branch`; `coach proposals --json` gains `written_branch`, `measure_from`)
+- Test: `internal/workbenchgit/status_test.go`, `internal/coach/judge_test.go`, `internal/coach/repofile_test.go`, `internal/daemon/coach_test.go` (or the phase's test file), `cmd/coach_test.go`
+
+- [ ] **Step 1: Write the failing tests**
+  - `TestCurrentBranch` (a branch → its name; a detached HEAD → `""` and the short sha); `TestFileAtHead` (committed text; a path absent at HEAD → `ok == false`; an escaping `rel` → error, no git run); both only read (recording runner).
+  - `TestAccept_RepoRecordsBranch`: Accept on branch `feature/x` → `written_branch == "feature/x"`; detached → `"detached:<sha>"`.
+  - `TestRepoMeasureFrom_SetOnceAtCommit`: before the commit the phase leaves `measure_from` NULL; after committing `after_text` it sets it; a second pass changes nothing; a committed changed text never sets it.
+  - `TestJudge_RepoWindowStartsAtMeasureFrom`: sessions between Accept and `measure_from` are not in the verdict window; a non-`repo_*` proposal's window still starts at `accepted_at` (unchanged verdicts for v1 destinations).
+  - `TestJudge_RepoNotCommittedIn30Days`: `measure_from` NULL, `accepted_at` 31 days ago → `too_little_data`.
+  - `TestRepoMeasureFrom_RolledBackSkipped`, `TestRepoMeasureFrom_FolderGoneSkipped`.
+  - `TestCOACH01_NoGitWrites` still green (the git reads live in `workbenchgit` and the daemon, never in `internal/coach`).
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/workbenchgit -run 'CurrentBranch|FileAtHead'`; `go test ./internal/coach -run 'Repo|Judge_Repo|TestCOACH01'`; `go test ./internal/daemon -run RepoMeasureFrom`; `go test ./cmd -run TestCoach`.
+- [ ] **Step 3: Implement** as above; the phase's reads happen outside any write transaction, each `SetCoachMeasureFrom` is its own short write.
+- [ ] **Step 4: Run, expect PASS** + `make lint-diff`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(coach): repository edits name their branch and are measured from the commit (#1517)"`
 
 ### Phase 2 coverage
 | Spec item | Task |
@@ -1662,10 +1689,10 @@ How the real views replace the fixture views:
 
 ### Task 5.14: Workbench repository files on the Desktop — labels and card lines (owner, ask #1165)
 
-**Depends on:** Task 5.1, Task 5.4, Task 5.11 (`TuningAcceptedLine`), Task 2.13 (CLI codes `dirty`/`not_git`, `written_path`)
+**Depends on:** Task 5.1, Task 5.4, Task 5.11 (`TuningAcceptedLine`), Task 2.13 (CLI codes `dirty`/`not_git`, `written_path`), Task 2.14 (`written_branch`, `measure_from`)
 **Files:**
 - Modify: `Sources/WatchtowerCore/Models/CoachPresentation.swift` (`destinationLabel` for the five `repo_*`; `repoRelativePath` for the diff caption)
-- Modify: `Sources/WatchtowerCore/Services/Tuning/TuningChatTexts.swift` (`acceptedRepoFile(path:)`, `rolledBackRepoFile(path:)`)
+- Modify: `Sources/WatchtowerCore/Services/Tuning/TuningChatTexts.swift` (`repoCardCaption(path:branch:)`, `acceptedRepoFile(path:branch:)`, `committedRepoFile`, `awaitingCommit`, `notCommitted`, `rolledBackRepoFile(path:)`)
 - Modify: `Sources/Services/CoachCenter.swift` (codes `dirty`/`not_git` → card lines; `written_path` kept per proposal for the folded line and the rollback line)
 - Modify: `Sources/Views/Workbench/Analytics/TuningPanelView.swift` (`TuningAcceptedLine` reads the repository text), `Sources/Views/Workbench/Analytics/CoachSectionsView.swift` (the rollback line on a repository row)
 - Modify: `Tests/DesignShots/DesignShotFixtures+TuningChat.swift` (the `accepted-repo` variant reads the Core strings)
@@ -1675,9 +1702,9 @@ How the real views replace the fixture views:
 - Produces: labels `repo_claude_md` → `"Workbench CLAUDE.md"`, `repo_agents_md` → `"Workbench AGENTS.md"`, `repo_claude_skill` → `"Workbench Claude skill · <name>"`, `repo_codex_skill` → `"Workbench Codex skill · <name>"`, `repo_workflow` → `"Workbench workflow.md"` (no "· all workbenches" suffix); `CoachProposal.repoRelativePath: String?` (`CLAUDE.md`, `AGENTS.md`, `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.watchtower/workflow.md`; the twin of Go's `coach.RepoRelPath`, pinned by a shared table test); `TuningChatTexts.acceptedRepoFile(path:)` = `"Accepted · wrote <path> — commit it yourself · measuring for 14 days"`, `rolledBackRepoFile(path:)` = `"Rolled back · restored <path> — commit it yourself"`; `CoachCenter` card lines for code `dirty` = `"<path> has uncommitted changes — commit or discard them, then press Accept again."` and `not_git` = `"This workbench folder is not a git repository: Watchtower changes files here only where you can review and commit the change."` (the Go texts of Task 2.13, compared by a test that reads them from the CLI failure fixture).
 - [ ] **Step 1: Write the failing tests**
   - `CoachPresentationTests.testRepoLabelsAndPaths`: each label and relative path above; a `repo_claude_skill` without a skill → `"Workbench Claude skill"`.
-  - `TuningChatTextsTests.testRepoFileLines`: `acceptedRepoFile(path: "CLAUDE.md") == "Accepted · wrote CLAUDE.md — commit it yourself · measuring for 14 days"`; `rolledBackRepoFile(path: ".claude/skills/review-pr/SKILL.md")` exact.
+  - `TuningChatTextsTests.testRepoFileLines`: `repoCardCaption(path: "CLAUDE.md", branch: "main") == "CLAUDE.md · on branch main"` and a detached `"detached:abc1234"` → `"CLAUDE.md · on a detached HEAD (abc1234)"`; `acceptedRepoFile(path: "CLAUDE.md", branch: "main") == "Accepted · wrote CLAUDE.md on main — commit it yourself"`; `committedRepoFile == "Accepted · committed · measuring for 14 days"`; `awaitingCommit == "Accepted · waiting for your commit"`; `notCommitted == "Not committed in 30 days — not measured"`; `rolledBackRepoFile(path: ".claude/skills/review-pr/SKILL.md")` exact.
   - `CoachCenterTests.testRepoAcceptCodes`: runner fails with `{"ok":false,"error":"…","code":"dirty"}` → `cardErrors[id]` is the dirty line with the proposal's path; `not_git` → the not-git line; a success with `"written_path":"CLAUDE.md"` → the folded line uses it.
-  - `TuningPanelViewTests.testAcceptedRepoFileLine`: an accepted `repo_claude_md` chat proposal → the folded line reads `acceptedRepoFile(path: "CLAUDE.md")` with **Show in Accepted edits**.
+  - `TuningPanelViewTests.testAcceptedRepoFileLine`: an accepted `repo_claude_md` chat proposal → the folded line reads `acceptedRepoFile(path: "CLAUDE.md", branch: "main")` with **Show in Accepted edits**; with `measure_from` set it reads `committedRepoFile`; the Accepted edits row of a repo proposal with no `measure_from` reads `awaitingCommit`, and after the 30-day verdict `notCommitted`.
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER='CoachPresentationTests|TuningChatTextsTests|CoachCenterTests|TuningPanelViewTests'`.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
