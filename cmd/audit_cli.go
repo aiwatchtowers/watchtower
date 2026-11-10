@@ -21,6 +21,7 @@ import (
 var cliContentCommands = map[string]bool{
 	"ask":                              true,
 	"automations outputs":              true,
+	"automations preview":              true, // Prints the dry run's cards (synced content); refused under agent markers anyway.
 	"automations steps":                true,
 	"briefing":                         true,
 	"briefing generate":                true,

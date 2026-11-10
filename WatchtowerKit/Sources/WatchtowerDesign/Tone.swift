@@ -29,6 +29,19 @@ public enum Tone {
         }
     }
 
+    /// An Inbox card block's tone (`ArtifactTone`): the only way a card's
+    /// script picks a colour.
+    public static func artifact(_ tone: ArtifactTone) -> Color {
+        switch tone {
+        case .neutral: .secondary
+        case .info: status("blue")
+        case .success: success
+        case .warning: warning
+        case .danger: error
+        case .accent: .accentColor
+        }
+    }
+
     /// A warning mark: a read that failed, a source to check.
     public static let warning: Color = .orange
     /// An all-clear check, a ready mark ("Prep ready").

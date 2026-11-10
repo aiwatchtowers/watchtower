@@ -1,6 +1,6 @@
 # A tab is empty
 
-A tab, or one of the Inbox's filters, shows "No briefings yet", "No tracks yet" or a similar title plus a status line, and stays that way. This page tells you which switch and source it waits for, and what to do when the status line does not clear.
+A tab, or a list in the Inbox, shows "No briefings yet", "No tracks yet" or a similar title plus a status line, and stays that way. This page tells you which switch and source it waits for, and what to do when the status line does not clear.
 
 ## What you see
 
@@ -8,22 +8,22 @@ An icon, a title, one sentence on what will land there, a **status line** and at
 
 ## Why
 
-A tab shows what a background job wrote. It stays empty until its feature is on, its source is connected, and the job has run once. These are the tabs and Inbox filters whose status line follows a feature:
+A tab shows what a background job wrote. It stays empty until its feature is on, its source is connected, and the job has run once. These are the tabs and Inbox lists whose status line follows a feature:
 
-| Tab or filter | Feature (**Settings → Features**, or its **Built in** card) | Needs |
+| Tab or Inbox list | Feature (**Settings → Features**, or its **Built in** card) | Needs |
 |---|---|---|
 | Catch Up, Digests | Slack Digests | Slack |
-| Inbox → Tracks, People | Tracks (Track my threads), People Cards, plus Slack Digests | Slack |
-| Inbox → Ideas | Ideas & Decisions | Slack |
-| Inbox → Day | Daily Briefing (the plan follows Day Plan) | Any source, and Watchtower knows who you are |
-| Inbox → All, Messages | Attention detection | Any source, and Watchtower knows who you are |
+| Inbox → Track my threads; People | Tracks (Track my threads), People Cards, plus Slack Digests | Slack |
+| Inbox → Idea finder | Ideas & Decisions | Slack |
+| Inbox → Morning brief | Daily Briefing (the plan follows Day Plan) | Any source, and Watchtower knows who you are |
+| Inbox root, Messages | Attention detection | Any source, and Watchtower knows who you are |
 | Memory | Memory (off by default) | Any source |
 | Calendar | none | A calendar |
 | Workload, Project map, Releases | none | Jira |
 | Blockers | none | Jira or Linear |
 | Statistics | none | Slack (the tab also shows with only mail connected, but stays empty) |
 
-Targets, Workbench, Automations and the Inbox's **Automations** filter have no status line: they stay empty until you add something.
+Targets, Workbench, Automations, Needs approval and your own Inbox folders have no status line: they stay empty until you add something.
 
 ## Fix
 

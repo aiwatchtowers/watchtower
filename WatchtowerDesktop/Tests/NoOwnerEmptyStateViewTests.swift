@@ -6,11 +6,12 @@ import WatchtowerCore
 import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
-/// OWNER-02 on the Desktop: with no owner identity, the Inbox's Day filter
-/// (the Briefings and Day Plan screens until C1) shows `NoOwnerEmptyState`,
-/// and the day card offers no Generate, Regenerate or Reset. The guards keep
-/// their names; since C1 Task 11 they drive the Inbox pieces that replaced
-/// those screens: `ActionStripActionsView` on the Day filter and the day
+/// OWNER-02 on the Desktop: with no owner identity, the Inbox's day card
+/// (the Briefings and Day Plan screens until C1, the Day filter until
+/// inbox builder B) shows `NoOwnerEmptyState`, and offers no Generate,
+/// Regenerate or Reset. The guards keep their names; since C1 Task 11 they
+/// drive the Inbox pieces that replaced those screens:
+/// `ActionStripActionsView` on the root and the day
 /// card's `InboxDayPlanBlock`. `ActionStripView` reads
 /// `@Environment(AppState.self)`, which ViewInspector cannot populate (see
 /// `TrayMenuViewTests`), so these drive the environment-free pieces.
@@ -32,7 +33,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         XCTAssertTrue(opened)
     }
 
-    // MARK: - Briefings (the Inbox's Day filter)
+    // MARK: - Briefings (the Inbox's day card)
 
     func testOwner02BriefingsUnknownOwnerShowsEmptyStateAndNoGenerate() throws {
         let view = try makeDayFilterEmpty(ownerKnown: false)
@@ -67,14 +68,14 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     }
 
     /// The empty state replaces the plan body only when there is no plan to
-    /// show: an existing plan stays readable. On the Inbox: with no owner the
-    /// empty Day filter says why; a day with a plan is a card, listed and
-    /// readable, and the filter is not empty.
+    /// show: an existing plan stays readable. On the Inbox: with no owner
+    /// today's empty card says why; a day with a plan is a Morning brief
+    /// entry in the root, listed and readable.
     func testOwner02DayPlanShowsEmptyStateOnlyWithoutOwnerAndPlan() async throws {
         XCTAssertNoThrow(try makeDayFilterEmpty(ownerKnown: false).inspect().find(text: Self.message))
         try await insertTodaysPlan()
         let listed = try await makeDayFilter(ownerKnown: false)
-        XCTAssertFalse(listed.vm.sections.isEmpty, "the planned day is listed")
+        XCTAssertFalse(Self.days(listed.vm).isEmpty, "the planned day is listed")
         XCTAssertThrowsError(try listed.inspect().find(text: Self.message))
         let readable = try await makeDayPlanBlock(owner: .unknown, hasPlan: true)
         XCTAssertNoThrow(try readable.inspect().find(text: "Standup"), "the plan stays readable")
@@ -92,7 +93,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        // After a read, as the owner sees it: no owner, so All lists no day card.
+        // After a read, as the owner sees it: no owner, so the root lists no day card.
         await vm.refresh()
         var opened = false
         let unknown = makeInboxEmpty(vm, ownerKnown: false) { opened = true }
@@ -106,45 +107,42 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try known.inspect().find(text: Self.message))
     }
 
-    /// With an owner and nothing made yet, All lists today's day card; with
-    /// none, All stays empty and says why (OWNER-02).
-    func testInboxAllShowsTodaysCardOnlyWithAnOwner() async throws {
+    /// With an owner and nothing made yet, the root lists today's day card;
+    /// with none, the root stays empty and says why (OWNER-02).
+    func testInboxRootShowsTodaysCardOnlyWithAnOwner() async throws {
         let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         let vm = ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults)
 
         await vm.refresh()
-        XCTAssertEqual(vm.filter, .all)
-        XCTAssertTrue(vm.sections.isEmpty, "no owner: no placeholder on All")
+        XCTAssertTrue(Self.days(vm).isEmpty, "no owner: no placeholder in the root")
         XCTAssertNoThrow(try makeInboxEmpty(vm, ownerKnown: false) {}.inspect().find(text: Self.message))
 
         try await testPool().write { db in
             _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
         }
         await vm.refresh()
-        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(AppState.inboxToday())])
+        XCTAssertEqual(Self.days(vm), [AppState.inboxToday()])
         XCTAssertThrowsError(try makeInboxEmpty(vm, ownerKnown: true) {}.inspect().find(text: Self.message))
     }
 
     /// Today's placeholder obeys Settings → Features: with the briefing and
-    /// day-plan features both off no filter lists it; with one off it is
-    /// listed and offers to make only the other half.
+    /// day-plan features both off the root does not list it; with one off it
+    /// is listed and offers to make only the other half.
     func testTodaysPlaceholderObeysTheFeatureSwitches() async throws {
         try await testPool().write { db in
             _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
         }
-        let vm = try dayFilterVM()
-        let today = InboxSelection.day(AppState.inboxToday())
+        let vm = try inboxVM()
+        let today = AppState.inboxToday()
         vm.disabledFeatures = ["briefing", "day-plan"]
         await vm.refresh()
-        XCTAssertTrue(vm.sections.isEmpty, "both off: no placeholder on Day")
-        vm.filter = .all
-        XCTAssertTrue(vm.sections.isEmpty, "both off: no placeholder on All")
+        XCTAssertTrue(Self.days(vm).isEmpty, "both off: no placeholder in the root")
 
         vm.disabledFeatures = ["briefing"]
         await vm.refresh()
-        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [today])
+        XCTAssertEqual(Self.days(vm), [today])
         XCTAssertFalse(vm.feed.briefingOn)
         XCTAssertTrue(vm.feed.dayPlanOn)
 
@@ -178,8 +176,8 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         )
     }
 
-    /// A test database per test; the Day filter's view model keeps its
-    /// filter in its own defaults suite.
+    /// A test database per test; the Inbox's view model keeps its
+    /// remembered folder in its own defaults suite.
     private var dbPath = ""
     private var pool: DatabasePool?
     private var suites: [String] = []
@@ -206,16 +204,22 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         }
     }
 
-    private func dayFilterVM() throws -> ActionStripViewModel {
+    private func inboxVM() throws -> ActionStripViewModel {
         let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
         suites.append(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        let vm = ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults)
-        vm.filter = .day
-        return vm
+        return ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults)
     }
 
-    /// The Day filter with nothing made yet: it lists today's placeholder
+    /// The dates of the root's Morning brief entries, in list order.
+    private static func days(_ vm: ActionStripViewModel) -> [String] {
+        vm.folderEntries.compactMap { entry in
+            if case let .legacyDay(card) = entry { return card.date }
+            return nil
+        }
+    }
+
+    /// Today's card with nothing made yet: the root lists today's placeholder
     /// card (T11b), whose pane says why with no owner and offers Make
     /// today's brief and plan with one.
     private func makeDayFilterEmpty(ownerKnown: Bool) throws -> InboxDayNothingReady {
@@ -230,9 +234,9 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         )
     }
 
-    /// The Day filter after a read of what the database holds.
+    /// The Inbox after a read of what the database holds.
     private func makeDayFilter(ownerKnown: Bool) async throws -> ActionStripActionsView {
-        let vm = try dayFilterVM()
+        let vm = try inboxVM()
         await vm.refresh()
         return makeInboxEmpty(vm, ownerKnown: ownerKnown) {}
     }

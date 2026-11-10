@@ -198,6 +198,17 @@ func TestSaveAutomation_AlwaysAskAndPinsHash(t *testing.T) {
 	assertNewRecipePin(t, f, f.pinned(t, id), text)
 }
 
+// TestSaveAutomation_PinsLivingArtifacts: the card shows artifacts: living,
+// a hashed field (AUTO-06, D26).
+func TestSaveAutomation_PinsLivingArtifacts(t *testing.T) {
+	f := newSaveFixture(t)
+	text := recipeText([]string{"llm:light"}, "outputs: [inbox]\nartifacts: living\n", `return 1`)
+	p := f.pinned(t, f.propose(t, "foo", text))
+	if p.Artifacts != "living" || p.ApprovalHash != parsedHash(t, "foo", text) {
+		t.Errorf("pinned artifacts=%q approval_hash=%q; want living and the parsed hash", p.Artifacts, p.ApprovalHash)
+	}
+}
+
 // assertNewRecipePin checks the card a brand-new "foo" recipe pins.
 func assertNewRecipePin(t *testing.T, f *saveFixture, p savePinned, text string) {
 	t.Helper()
@@ -216,9 +227,10 @@ func assertNewRecipePin(t *testing.T, f *saveFixture, p savePinned, text string)
 	if !json.Valid(p.TriggerSpec) || len(p.Outputs) != 0 || p.Outputs == nil {
 		t.Errorf("trigger_spec=%s outputs=%v; want valid JSON and []", p.TriggerSpec, p.Outputs)
 	}
-	// The card lists every hashed field (D26), missed and concurrency included.
-	if p.Missed != "run_once" || p.Concurrency != automations.DefaultConcurrency {
-		t.Errorf("pinned missed=%q concurrency=%d; want the defaults", p.Missed, p.Concurrency)
+	// The card lists every hashed field (D26), missed, concurrency and
+	// artifacts included.
+	if p.Missed != "run_once" || p.Concurrency != automations.DefaultConcurrency || p.Artifacts != "feed" {
+		t.Errorf("pinned missed=%q concurrency=%d artifacts=%q; want the defaults", p.Missed, p.Concurrency, p.Artifacts)
 	}
 }
 

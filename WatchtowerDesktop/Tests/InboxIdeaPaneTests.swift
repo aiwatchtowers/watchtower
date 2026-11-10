@@ -460,22 +460,13 @@ final class InboxIdeaPaneTests: XCTestCase {
         XCTAssertEqual(InboxIdeaBackfillRange.initial(ideas), InboxIdeaBackfillRange(from: from, to: to))
     }
 
-    func testTheIdeasFilterHeaderOffersNewIdeaAndFindIdeas() throws {
+    /// The Idea finder list's header offers New Idea; Find Ideas in Past
+    /// Messages… lives in the Idea finder entry's ⋯ (InboxLegacyEntryMenuTests).
+    func testTheIdeaFinderHeaderOffersNewIdea() throws {
         var row: InboxIdeasRow?
         let header = InboxIdeasHeader(isMining: false, row: Binding(get: { row }, set: { row = $0 }))
         try header.inspect().find(viewWithAccessibilityLabel: "New Idea").button().tap()
         XCTAssertEqual(row, .newIdea)
-
-        var found = 0
-        let onIdeas = InboxFilterBar(filter: .constant(.ideas), showsCheatSheetButton: true, onOpenAux: { _ in },
-                                     onFindIdeas: { found += 1 }, ideasHeader: { header })
-        try onIdeas.inspect().find(button: "Find Ideas in Past Messages…").tap()
-        XCTAssertEqual(found, 1)
-        XCTAssertNoThrow(try onIdeas.inspect().find(viewWithAccessibilityLabel: "New Idea"))
-
-        let onAll = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true, onOpenAux: { _ in },
-                                   onFindIdeas: { found += 1 }, ideasHeader: { header })
-        XCTAssertThrowsError(try onAll.inspect().find(button: "Find Ideas in Past Messages…"))
-        XCTAssertThrowsError(try onAll.inspect().find(viewWithAccessibilityLabel: "New Idea"))
+        XCTAssertThrowsError(try header.inspect().find(text: "Mining…"), "nothing mines")
     }
 }

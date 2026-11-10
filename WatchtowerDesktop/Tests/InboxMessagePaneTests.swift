@@ -119,6 +119,7 @@ final class InboxMessagePaneTests: XCTestCase {
         let runner = FakeCLIRunner()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
         await vm.refresh()
+        vm.openLegacy(.messages)
         vm.selection = .message(Int(id))
         let sut = InboxSplitView(
             vm: vm, proposalCard: card,

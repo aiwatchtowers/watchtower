@@ -270,7 +270,8 @@ func (f *exFixture) dump(t *testing.T) string {
 	for _, q := range []string{
 		`SELECT automation_id || '|' || state_json || '|' || IFNULL(run_id, '') || '|' || updated_at FROM automation_state ORDER BY automation_id`,
 		`SELECT id || '|' || automation_id || '|' || run_id || '|' || kind || '|' || title || '|' || body || '|' ||
-			priority || '|' || created_at FROM automation_outputs ORDER BY id`,
+			priority || '|' || created_at || '|' || IFNULL(output_key, '') || '|' || content_hash || '|' || blocks_json || '|' || IFNULL(folder_id, '')
+			FROM automation_outputs ORDER BY id`,
 	} {
 		rows, err := f.d.Query(q)
 		if err != nil {
@@ -302,6 +303,20 @@ func (f *exFixture) commitPrior(t *testing.T, a db.Automation) {
 	err := f.d.FinishAutomationRun(id, db.RunFinish{Status: db.RunSucceeded, Now: exStart.Add(-time.Hour)},
 		&db.RunCommit{StateJSON: []byte(`{"k":1}`), Outputs: []db.AutomationOutput{{Kind: "inbox", Title: "prior", Body: "b"}}})
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// commitLivingPrior commits a succeeded earlier run of a that wrote the
+// living card key with content hash hash.
+func (f *exFixture) commitLivingPrior(t *testing.T, a db.Automation, key, hash string) {
+	t.Helper()
+	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerCatchUp, Now: exStart.Add(-time.Hour)})
+	if ok, err := f.d.ClaimAutomationRun(id, a.ApprovalHash, a.RecipeText, 50000, 5, exStart.Add(-time.Hour)); err != nil || !ok {
+		t.Fatalf("claim prior = (%v, %v)", ok, err)
+	}
+	if err := f.d.FinishAutomationRun(id, db.RunFinish{Status: db.RunSucceeded, Now: exStart.Add(-time.Hour)},
+		&db.RunCommit{Outputs: []db.AutomationOutput{{Kind: "inbox", Title: "old", Body: "b", OutputKey: key, ContentHash: hash}}}); err != nil {
 		t.Fatal(err)
 	}
 }

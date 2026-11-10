@@ -362,8 +362,56 @@ func runFeaturesDisable(cmd *cobra.Command, args []string) error {
 		}
 		disabled = dependents
 	}
+	// The key is written: the disable stands. A failed row update is a
+	// warning — the daemon's next built-in sync turns the rows off.
+	if err := turnOffBuiltinsOfDisabled(cfg); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %q is disabled, but its built-in automations stay on until the daemon's next built-in sync: %v\n", id, err)
+	}
 
 	return printDisableResult(out, id, disabled, featuresDisableFlagJSON, false)
+}
+
+// turnOffBuiltinsOfDisabled turns off at once the row of every built-in
+// whose features the config now has all off (builtin.Entry.Enabled over the
+// reloaded config), so nothing queues a run of it before the daemon's next
+// built-in sync (the approval trigger's Fire reads the row). With no
+// workspace or no database file yet there is no row to turn off; any other
+// workspace error is returned (the caller prints it as a warning). cfg is the config loaded
+// before the writes: its workspace names the database.
+func turnOffBuiltinsOfDisabled(cfg *config.Config) error {
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		if errors.Is(err, config.ErrNoWorkspace) {
+			return nil // a fresh install: no workspace, so no row to turn off
+		}
+		return err
+	}
+	if _, err := os.Stat(cfg.DBPath()); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("opening database: %w", err)
+	}
+	after, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	for _, e := range builtin.All() {
+		if e.Enabled(after) {
+			continue
+		}
+		if err := database.SetBuiltinEnabled(e.ID, false, time.Now()); err != nil && !errors.Is(err, db.ErrAutomationNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // printDisableResult renders `disable`'s outcome — see disableResultJSON for

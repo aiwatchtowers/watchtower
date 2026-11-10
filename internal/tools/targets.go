@@ -3,7 +3,9 @@ package tools
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -21,6 +23,38 @@ type createTargetArgs struct {
 	Due      string `json:"due,omitempty" jsonschema:"owner-local time (YYYY-MM-DD or YYYY-MM-DDTHH:MM); converted to UTC on save; a reminder is a task with a due"`
 	Priority string `json:"priority,omitempty" jsonschema:"high | medium | low (default medium)"`
 	Reason   string `json:"reason" jsonschema:"one sentence: why you propose this, shown to the owner"`
+	// ParentID is accepted only on the inbox surface (an Inbox card's target
+	// button, ValidateBinding); elsewhere create_target makes top-level
+	// tasks only (TGT-BRIEF-01).
+	ParentID int64 `json:"parent_id,omitempty" jsonschema:"only for an Inbox card's button: the personal task the new one goes under"`
+}
+
+// parentOnlyOnInboxMsg is the refusal of a parent_id off the inbox surface.
+const parentOnlyOnInboxMsg = "parent_id is only for an Inbox card's button"
+
+// openPersonalParent returns parent task id when it exists, is a personal
+// task (no workbench board) and is not done or dismissed — checked at
+// propose and again at apply, since the parent may close in between; the
+// insert re-checks it inside its write transaction.
+func openPersonalParent(d *db.DB, id int64) (*db.Target, error) {
+	if id < 0 {
+		return nil, &ValidationError{Msg: "parent_id must be a target id"}
+	}
+	p, err := d.OpenPersonalParent(id)
+	if err != nil {
+		return nil, parentError(err)
+	}
+	return p, nil
+}
+
+// parentError is a *db.ParentUnavailableError as the owner and the model read
+// it ("parent_id: task #N is closed"); any other error unchanged.
+func parentError(err error) error {
+	var pu *db.ParentUnavailableError
+	if errors.As(err, &pu) {
+		return &ValidationError{Msg: "parent_id: " + pu.Error(), Err: err}
+	}
+	return err
 }
 
 var dueDateRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$`)
@@ -71,8 +105,10 @@ func ownerLocalDueToUTC(due string) (string, error) {
 
 // NewCreateTarget builds the create_target write tool: a new top-level task
 // (a reminder is a task with a due date) in the `watchtower remind` shape.
-// Main chat only — the target chat's mandate forbids creating work outside
-// the target's vertical line (TGT-BRIEF-01).
+// Never on the target chat — its mandate forbids creating work outside the
+// target's vertical line (TGT-BRIEF-01). On the inbox surface (an Inbox
+// card's target button, never trusted) it may take a parent_id and creates
+// the task under that personal task.
 func NewCreateTarget() *Tool {
 	schema, err := jsonschema.For[createTargetArgs](nil)
 	if err != nil {
@@ -86,8 +122,10 @@ func NewCreateTarget() *Tool {
 		InputSchema: schema,
 		Access:      AccessWrite,
 		// "reaction": the seeded :white_check_mark: reaction command proposes it.
-		Surfaces: []string{"main", "reaction", AutomationSurface},
-		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
+		// "inbox": an Inbox card's target button; never a trust place, so
+		// its proposal always waits for the owner's Approve.
+		Surfaces: []string{"main", "reaction", AutomationSurface, InboxSurface},
+		Validate: func(_ context.Context, d *db.DB, raw json.RawMessage) error {
 			var a createTargetArgs
 			if err := decodeStrict(raw, &a); err != nil {
 				return err
@@ -102,6 +140,21 @@ func NewCreateTarget() *Tool {
 				return &ValidationError{Msg: "priority must be high, medium or low"}
 			case !validDue(a.Due):
 				return &ValidationError{Msg: "due must be YYYY-MM-DD or YYYY-MM-DDTHH:MM"}
+			}
+			if a.ParentID != 0 {
+				_, err := openPersonalParent(d, a.ParentID)
+				return err
+			}
+			return nil
+		},
+		// Runs before Validate, so off the inbox a parent_id is refused
+		// before any lookup of the parent (no existence leak). Args that
+		// do not decode are left to Validate's message.
+		ValidateBinding: func(b Binding, raw json.RawMessage) error {
+			var a createTargetArgs
+			decoded := json.Unmarshal(raw, &a) == nil
+			if decoded && a.ParentID != 0 && b.Surface != InboxSurface {
+				return &ValidationError{Msg: parentOnlyOnInboxMsg}
 			}
 			return nil
 		},
@@ -119,7 +172,7 @@ func NewCreateTarget() *Tool {
 				return nil, fmt.Errorf("converting due date: %w", err)
 			}
 			today := time.Now().UTC().Format("2006-01-02")
-			id, err := d.CreateTarget(db.Target{
+			t := db.Target{
 				Text:        strings.TrimSpace(a.Text),
 				Intent:      strings.TrimSpace(a.Intent),
 				Level:       "day",
@@ -134,11 +187,52 @@ func NewCreateTarget() *Tool {
 				// (TargetsViewModel.createChild): one source_type, several id
 				// spaces, so each id says which one it belongs to.
 				SourceID: "action:" + strconv.FormatInt(call.ActionID, 10),
-			})
+			}
+			if call.ActionID > 0 {
+				// A reclaim after an apply that crashed past its insert
+				// returns that task first — before the parent checks, which
+				// would fail it if the parent went away since.
+				existing, err := d.TargetForAction(call.ActionID)
+				if err != nil {
+					return nil, err
+				}
+				if existing != 0 {
+					return map[string]any{"target_id": existing}, nil
+				}
+			}
+			if a.ParentID != 0 {
+				// Only an inbox row carries one (ValidateBinding); the parent
+				// may have closed since the propose.
+				p, err := openPersonalParent(d, a.ParentID)
+				if err != nil {
+					return nil, err
+				}
+				t.ParentID = sql.NullInt64{Int64: a.ParentID, Valid: true}
+				t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd = p.Level, p.CustomLabel, p.PeriodStart, p.PeriodEnd
+			}
+			id, err := createTargetOnce(d, t, call.ActionID)
 			if err != nil {
+				var pu *db.ParentUnavailableError
+				if errors.As(err, &pu) {
+					// The parent closed between the check above and the insert.
+					return nil, parentError(err)
+				}
 				return nil, fmt.Errorf("creating target: %w", err)
 			}
 			return map[string]any{"target_id": id}, nil
 		},
 	}
+}
+
+// createTargetOnce is create_target's insert. A registry row (actionID > 0)
+// creates at most one task per action id — idx_targets_action_source with
+// insert-or-return, so a reclaimed or overlapping apply returns the task the
+// first one made (AGENT-05). A registry-less Execute (actionID 0, source
+// 'action:0', outside the index) is a plain insert.
+func createTargetOnce(d *db.DB, t db.Target, actionID int64) (int64, error) {
+	if actionID <= 0 {
+		return d.CreateTarget(t)
+	}
+	id, _, err := d.CreateTargetForAction(t, actionID)
+	return id, err
 }

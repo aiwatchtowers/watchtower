@@ -16,9 +16,10 @@ import (
 	"watchtower/internal/tools"
 )
 
-// outputRecipe is writeRecipe with OUTPUTS (the outputs list) replaced too.
+// outputRecipe is writeRecipe with OUTPUTS (the outputs list) and EXTRA
+// (more frontmatter lines, "" for none) replaced too.
 const outputRecipe = "---\nname: New mail summary\ntrigger:\n  manual: true\npermissions:\nPERMS" +
-	"outputs: [OUTPUTS]\n---\nOutputs for the P2 output tests.\n\n```js\nSCRIPT\n```\n"
+	"outputs: [OUTPUTS]\nEXTRA---\nOutputs for the P2 output tests.\n\n```js\nSCRIPT\n```\n"
 
 // slackArgs is what the fake send_slack_message write tool takes.
 type slackArgs struct {
@@ -83,7 +84,7 @@ func (w *writeFixture) seedOutput(t *testing.T, slug string, perms []string, out
 	for _, p := range perms {
 		lines.WriteString("  - " + p + "\n")
 	}
-	text := strings.NewReplacer("PERMS", lines.String(), "OUTPUTS", outputs, "SCRIPT", script).Replace(outputRecipe)
+	text := strings.NewReplacer("PERMS", lines.String(), "OUTPUTS", outputs, "EXTRA", "", "SCRIPT", script).Replace(outputRecipe)
 	return w.seedText(t, slug, text, false)
 }
 
@@ -359,6 +360,13 @@ func TestRegisterOutputKind_UnknownKindStillRefused(t *testing.T) {
 // enables it.
 func (w *writeFixture) seedWorkbenchOutput(t *testing.T, slug string, perms []string, outputs, script string) db.Automation {
 	t.Helper()
+	return w.seedWorkbenchOutputWith(t, slug, perms, outputs, "", script)
+}
+
+// seedWorkbenchOutputWith is seedWorkbenchOutput with extra frontmatter
+// lines (each ending in a newline).
+func (w *writeFixture) seedWorkbenchOutputWith(t *testing.T, slug string, perms []string, outputs, extra, script string) db.Automation {
+	t.Helper()
 	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -371,7 +379,7 @@ func (w *writeFixture) seedWorkbenchOutput(t *testing.T, slug string, perms []st
 	for _, p := range perms {
 		lines.WriteString("  - " + p + "\n")
 	}
-	text := strings.NewReplacer("PERMS", lines.String(), "OUTPUTS", outputs, "SCRIPT", script).Replace(outputRecipe)
+	text := strings.NewReplacer("PERMS", lines.String(), "OUTPUTS", outputs, "EXTRA", extra, "SCRIPT", script).Replace(outputRecipe)
 	dir := automations.WorkbenchDir(folder)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

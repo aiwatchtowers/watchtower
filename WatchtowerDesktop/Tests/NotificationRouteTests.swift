@@ -321,38 +321,42 @@ final class NotificationRouteTests: XCTestCase {
     func testTrackAndBriefingPushesOpenInboxCards() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        // Track 7 exists: a route selects only a listed card.
+        // Track 7 exists: a route selects only a listed card. An owner, so
+        // the root lists today's day card (OWNER-02).
         try await pool.write { db in
             let track = try TestDatabase.insertTrack(db, text: "Launch")
             try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
         }
-        let savedFilter = UserDefaults.standard.object(forKey: "inbox.filter")
-        defer { UserDefaults.standard.set(savedFilter, forKey: "inbox.filter") }
+        let savedFolder = UserDefaults.standard.object(forKey: ActionStripViewModel.folderKey)
+        defer { UserDefaults.standard.set(savedFolder, forKey: ActionStripViewModel.folderKey) }
         let today = AppState.inboxToday()
         let forwardedUpdate = try XCTUnwrap(
             NotificationForwarding.encode(actionID: UNNotificationDefaultActionIdentifier,
                                           userInfo: ["type": "track_update", "trackId": 7])
                 .flatMap(NotificationForwarding.decode)
         ).userInfo
-        let cases: [([AnyHashable: Any], InboxFilter, InboxSelection?)] = [
-            (["type": "track"], .tracks, nil),
-            (["type": "track_update", "trackId": 7], .tracks, .track(7)),
-            (forwardedUpdate, .tracks, .track(7)),
-            (["type": "briefing"], .day, .day(today))
+        // The legacy list open, the root's entry selected, the card open.
+        let cases: [([AnyHashable: Any], InboxLegacyList?, String, InboxSelection?)] = [
+            (["type": "track"], .tracks, "tracks", nil),
+            (["type": "track_update", "trackId": 7], .tracks, "tracks", .track(7)),
+            (forwardedUpdate, .tracks, "tracks", .track(7)),
+            (["type": "briefing"], nil, "day:\(today)", .day(today))
         ]
-        for (userInfo, filter, selection) in cases {
-            UserDefaults.standard.removeObject(forKey: "inbox.filter")
+        for (userInfo, list, entry, selection) in cases {
+            UserDefaults.standard.removeObject(forKey: ActionStripViewModel.folderKey)
             let appState = AppState.isolated()
             appState.initActionStrip(dbPool: pool)
             await NotificationDelegate.route(
                 actionID: UNNotificationDefaultActionIdentifier, userInfo: userInfo, appState: appState, forwarded: true)
             let vm = try XCTUnwrap(appState.actionStripViewModel)
             let deadline = Date().addingTimeInterval(5)
-            while Date() < deadline, vm.filter != filter || vm.selection != selection {
+            while Date() < deadline, vm.entrySelection != entry || vm.selection != selection {
                 try await Task.sleep(for: .milliseconds(10))
             }
             XCTAssertEqual(appState.selectedDestination, .inbox, "\(userInfo)")
-            XCTAssertEqual(vm.filter, filter, "\(userInfo)")
+            XCTAssertEqual(vm.legacyList, list, "\(userInfo)")
+            XCTAssertEqual(vm.entrySelection, entry, "\(userInfo)")
             XCTAssertEqual(vm.selection, selection, "\(userInfo)")
         }
     }
