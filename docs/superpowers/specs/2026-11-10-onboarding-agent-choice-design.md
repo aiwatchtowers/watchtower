@@ -30,11 +30,11 @@ Each tile shows one status, computed per agent:
 
 | Status | How it is known | Tile line | Tone |
 |---|---|---|---|
-| `checking` | the check is running | Checking… (spinner) | neutral |
+| `checking` | the check is running — also every recheck (after a sign-in exits 0, Check again, reactivation, Choose the executable…): the tiles show it instead of the last result, the sign-in note reads "Checking Claude Code again…", Check again / Sign in again / Choose the executable… wait, and the Continue hint is hidden | Checking… (spinner) | neutral |
 | `notInstalled` | Go's own lookup (`claude.FindBinary(claude_path)` / `codex.FindBinary(codex_path)`, asked through the read-only `watchtower ai which --json`) finds no executable. Known locally, **no request**. The same located executable is the one the test (`--cli-path`), the help probe and the sign-in/update terminal run, so Swift and Go never pick different copies | Not installed | neutral |
 | `ready` | `ai test --json --provider <agent>` answered | Ready · signed in | success |
 | `signedOut` | the test failed with `error_code: auth` | Installed · not signed in | warning |
-| `failed(msg)` | any other failed test; `msg` is `OnboardingAgentChoice.failureMessage(agent, code, error)` (below) | Check failed | error |
+| `failed(msg)` | any other failed test; `msg` is `OnboardingAgentChoice.failureMessage(agent, code, error)` (below). Also a lookup `ai which` could not answer (launch failure, non-zero exit, no JSON — e.g. an unreadable config): `lookupFailureMessage`, never Not installed. `ai which` reports a configured `claude_path`/`codex_path` that exists but is not executable as not found (FindBinary would run it, never PATH) | Check failed | error |
 | `forbidden` | `AllowedAIProviders` leaves it out: the Swift read (`ManagedPolicy.providerAllowed`, no test runs) **or** the test's own `error_code: policy` (Go's `providers.Allowed`), so a disagreement between the two readers still reads as the policy | Turned off by your organization | neutral, tile disabled |
 
 **Failed line.** `ai test --json` reports a bare category (`Provider request failed (…).`), so the line is chosen by `error_code`:
@@ -87,7 +87,8 @@ When the picked agent is signed out, the panel runs its sign-in in an embedded t
   | `~/.claude/local/` (Claude Code's old local install; checked first) | native | `claude update` | — |
   | `~/.codex/packages/standalone/` (Codex's `install.sh` links `~/.local/bin/codex` to `…/standalone/current/bin/codex`, checked against the script on 2026-11-10; a plain file in `~/.local/bin` is unknown) | native | — | the install script |
   | `/node_modules/` (any other) | npm | `npm install -g @anthropic-ai/claude-code@latest` | `npm install -g @openai/codex@latest` |
-  | `/Caskroom/` or `/Cellar/` | Homebrew | `brew upgrade --cask claude-code` | `brew upgrade --cask codex` |
+  | `/Caskroom/` | Homebrew cask | `brew upgrade --cask claude-code` | `brew upgrade --cask codex` |
+  | `/Cellar/` | Homebrew formula | — (no formula exists; stuck path) | — (no formula exists; stuck path) |
   | `~/.local/share/claude/` (Claude) | native | `claude update` | — |
   | anything else | unknown | — | — |
 

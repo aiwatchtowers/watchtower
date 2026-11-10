@@ -2,7 +2,7 @@
 
 Target #1521. **Spec:** [onboarding-agent-choice-design](../../../superpowers/specs/2026-11-10-onboarding-agent-choice-design.md).
 
-19 scenes rendered from the step's own views (`OnboardingGoalCards`, `AssistantLanguageRow`, `OnboardingAgentSection`, `OnboardingGoalsFooter`) through `OnboardingAgentShotFixtures` in `DesignShotCatalog`; copy from `OnboardingAgentChoice`. Reproduce: `make desktop-shots DESKTOP_SHOTS=docs/design/mockups/onboarding-agent` (or `swift test --filter DesignShotsTests/testOnboardingAgentShotsRender` with `DESKTOP_SHOTS_DIR`).
+20 scenes rendered from the step's own views (`OnboardingGoalCards`, `AssistantLanguageRow`, `OnboardingAgentSection`, `OnboardingGoalsFooter`) through `OnboardingAgentShotFixtures` in `DesignShotCatalog`; copy from `OnboardingAgentChoice`. Reproduce: `make desktop-shots DESKTOP_SHOTS=docs/design/mockups/onboarding-agent` (or `swift test --filter DesignShotsTests/testOnboardingAgentShotsRender` with `DESKTOP_SHOTS_DIR`).
 
 | Scene | What it shows | Light | Dark |
 |---|---|---|---|
@@ -15,6 +15,7 @@ Target #1521. **Spec:** [onboarding-agent-choice-design](../../../superpowers/sp
 | `signed-out-update-failed` | The update failed: "Update stopped…", Update again | [light](onboarding-agent-signed-out-update-failed-light.png) | [dark](onboarding-agent-signed-out-update-failed-dark.png) |
 | `signed-out-update-stuck` | The update didn't fix it (another copy on PATH): no loop, path named | [light](onboarding-agent-signed-out-update-stuck-light.png) | [dark](onboarding-agent-signed-out-update-stuck-dark.png) |
 | `signed-out-stopped` | Sign-in stopped: warning note, Sign in again | [light](onboarding-agent-signed-out-stopped-light.png) | [dark](onboarding-agent-signed-out-stopped-dark.png) |
+| `rechecking` | The sign-in exited 0 and the recheck runs: tiles Checking…, "Checking Claude Code again…", Sign in again / Check again disabled, no Continue hint | [light](onboarding-agent-rechecking-light.png) | [dark](onboarding-agent-rechecking-dark.png) |
 | `none` | No agent on the Mac, Claude's install steps | [light](onboarding-agent-none-light.png) | [dark](onboarding-agent-none-dark.png) |
 | `none-codex` | No agent, owner picked Codex | [light](onboarding-agent-none-codex-light.png) | [dark](onboarding-agent-none-codex-dark.png) |
 | `failed` | Claude's check failed (Failed line + Check again) | [light](onboarding-agent-failed-light.png) | [dark](onboarding-agent-failed-dark.png) |

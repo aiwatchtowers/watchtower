@@ -100,7 +100,9 @@ package struct CodexSessionAgent: SessionAgent {
             nativeRoots: [".codex/packages/standalone/"],
             updates: [
                 .native: .literal("curl -fsSL https://chatgpt.com/codex/install.sh | sh"),
-                .homebrew: .literal("brew upgrade --cask codex"),
+                // Homebrew ships it as a cask only (`brew info --formula codex`
+                // finds none, 2026-11-10): a Cellar copy has no update here.
+                .homebrewCask: .literal("brew upgrade --cask codex"),
                 .npm: .literal("npm install -g @openai/codex@latest")
             ]
         )

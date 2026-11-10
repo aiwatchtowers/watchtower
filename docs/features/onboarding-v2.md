@@ -195,7 +195,10 @@ Continue sets `workbench.default_agent` and then `ai.provider` when the pick
 differs from the configured one. A signed-out agent opens the sign-in
 terminal once on its own (`OnboardingSignInCoordinator`, SwiftTerm, in the
 login-shell environment, not a Workbench session): it closes on success,
-when the owner leaves the step, picks the other tile or quits; a CLI too old
+when the owner leaves the step, picks the other tile or quits (leaving or a
+tile switch leaves it idle with "Press Sign in again to open the sign-in
+here."; every recheck shows Checking… with the buttons that would start
+another run disabled); a CLI too old
 for its login command is updated first, by the way it was installed, and
 never in a loop. With no agent the setup panel shows the curl installers
 and **Other ways to install**; a provider set elsewhere (Ollama / Local)

@@ -39,7 +39,11 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     package enum InstallKind: Equatable, Sendable {
         /// The vendor's installer (`claude.ai/install.sh`, `codex/install.sh`).
         case native
-        case homebrew
+        /// A Homebrew cask (`/Caskroom/`): `brew upgrade --cask <name>`.
+        case homebrewCask
+        /// A Homebrew formula (`/Cellar/`): `brew upgrade <name>`, only for
+        /// an agent Homebrew ships as a formula.
+        case homebrewFormula
         case npm
         case unknown
 
@@ -48,7 +52,8 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             // npm's folder under one and still updates itself.
             if agent.session.setup.nativeRoots.contains(where: { path.hasPrefix(home + "/" + $0) }) { return .native }
             if path.contains("/node_modules/") { return .npm }
-            if path.contains("/Caskroom/") || path.contains("/Cellar/") { return .homebrew }
+            if path.contains("/Caskroom/") { return .homebrewCask }
+            if path.contains("/Cellar/") { return .homebrewFormula }
             return .unknown
         }
     }
@@ -104,6 +109,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         /// The line above that terminal; `signInNoteWarns` when it ended badly.
         package var signInNote: String?
         package var signInNoteWarns = false
+        /// A check is in flight: the panel's buttons that start one more
+        /// (Check again, Sign in again, Choose the executable…) wait for it.
+        package var busy = false
         package static let docsLink = "Other ways to install"
         package static let checkAgain = "Check again"
         package static let manualPath = "Choose the executable…"
@@ -118,6 +126,11 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     package var statuses: [Agent: Status]
     package private(set) var signIn: SignIn = .idle
+    /// A per-agent check runs (the first one, or a recheck after a sign-in,
+    /// Check again, reactivation, Choose the executable…): the tiles show
+    /// Checking… instead of the last result, so nothing invites a second
+    /// sign-in while the first one's result is on its way.
+    package private(set) var checkInFlight = false
     /// Agents whose sign-in already started once: the terminal opens by
     /// itself only the first time, never again after a Stop.
     package private(set) var signInOpened: Set<Agent> = []
@@ -149,6 +162,10 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package func status(_ agent: Agent) -> Status { statuses[agent] ?? .checking }
+
+    /// A check started; `checkFinished` lands its result.
+    package mutating func checkStarted() { checkInFlight = true }
+    package mutating func checkFinished() { checkInFlight = false }
 
     // MARK: Selection
 
@@ -233,6 +250,14 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     package mutating func signInStopped() { signIn = .ended(nil) }
 
+    /// The owner left the step with the terminal running (its process is
+    /// gone): no longer running, and not the owner's Stop either — on return
+    /// the panel reads as an already-opened sign-in waiting for a press.
+    package mutating func signInLeft() {
+        guard signIn == .running else { return }
+        signIn = .idle
+    }
+
     /// After a check: a running sign-in whose agent is no longer signed out
     /// (signed in elsewhere, gone, or another agent picked) is over — the
     /// caller closes its terminal.
@@ -251,7 +276,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package var isChecking: Bool {
-        Agent.allCases.contains { status($0) == .checking }
+        checkInFlight || Agent.allCases.contains { status($0) == .checking }
     }
 
     /// Neither CLI is on this Mac (the policy may leave one out).
@@ -279,7 +304,8 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package func tile(_ agent: Agent) -> Tile {
-        let state = status(agent)
+        // A recheck shows as checking: the last result may be about to change.
+        let state = checkInFlight && status(agent) != .forbidden ? .checking : status(agent)
         let (text, tone): (String, Tone) = switch state {
         case .checking: ("Checking…", .neutral)
         case .ready: ("Ready · signed in", .success)
@@ -300,6 +326,18 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package var setup: Setup? {
+        guard var panel = basePanel else { return nil }
+        guard checkInFlight else { return panel }
+        panel.busy = true
+        if panel.runsSignIn, signIn != .running {
+            // The last result's line ("Your browser opens…") would be stale.
+            panel.signInNote = Self.rechecking(panel.agent)
+            panel.signInNoteWarns = false
+        }
+        return panel
+    }
+
+    private var basePanel: Setup? {
         guard showsTiles, let agent = selected else { return nil }
         switch status(agent) {
         case .checking, .ready, .forbidden:
@@ -374,6 +412,10 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             return "This \(agent.productName) is too old to sign in from here. It updates first; sign-in starts right after."
         }
         switch signIn {
+        case .idle where selected.map(signInOpened.contains) == true:
+            // Opened before (the owner switched tiles or left the step and
+            // came back): nothing opens by itself any more.
+            return Self.pressToSignIn
         case .idle, .running:
             return "Your browser opens to sign in. When it’s done, this closes and Watchtower checks again."
         case .ended(let code):
@@ -388,6 +430,13 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package static let signInAgain = "Sign in again"
+    /// The note of an already-opened, idle sign-in (M4).
+    package static let pressToSignIn = "Press Sign in again to open the sign-in here."
+
+    /// The sign-in panel's note while a check runs.
+    package static func rechecking(_ agent: Agent) -> String {
+        "Checking \(agent.productName) again…"
+    }
     package static let updateAgain = "Update again"
 
     /// The button that reruns the terminal after it ended.
@@ -432,6 +481,15 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             let tail = error.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
             return "\(agent.productName) didn’t answer\(tail). Run it once in Terminal to see what it says, then check again."
         }
+    }
+
+    /// The Failed line when Watchtower's own lookup (`ai which`) could not
+    /// answer — never "Not installed", which would send the owner to
+    /// install a CLI that may be there.
+    package static func lookupFailureMessage(_ agent: Agent, error: String?) -> String {
+        let tail = error.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+        return "Watchtower couldn’t look for \(agent.productName)\(tail). "
+            + "Check that Watchtower’s config file is readable, then check again."
     }
 
     /// The failure line of that provider's test (the caption wraps it).

@@ -227,6 +227,88 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertEqual(signedOut.signIn, .idle)
     }
 
+    /// I1: a recheck shows nothing stale — the tiles read Checking…, the
+    /// sign-in note says it checks, and nothing invites a second login.
+    func testRecheckShowsCheckingAndBlocksASecondSignIn() throws {
+        var signedOut = choice(.signedOut, .notInstalled)
+        signedOut.signInStarted()
+        signedOut.signInEnded(exitCode: 0)
+        signedOut.checkStarted()
+        XCTAssertEqual(signedOut.tile(.claude).status, "Checking…")
+        XCTAssertTrue(signedOut.tile(.claude).busy)
+        XCTAssertTrue(signedOut.tile(.codex).busy)
+        let panel = try XCTUnwrap(signedOut.setup)
+        XCTAssertTrue(panel.busy)
+        XCTAssertEqual(panel.signInNote, "Checking Claude Code again…")
+        XCTAssertFalse(panel.signInNoteWarns)
+        XCTAssertNil(signedOut.continueHint)
+        signedOut.checkFinished()
+        XCTAssertEqual(signedOut.tile(.claude).status, "Installed · not signed in")
+        XCTAssertEqual(signedOut.setup?.busy, false)
+        XCTAssertEqual(signedOut.continueHint, "Continue unlocks once Claude Code is ready")
+    }
+
+    func testRecheckKeepsForbiddenAndOtherPanelsBusy() throws {
+        var missing = choice(.notInstalled, .forbidden)
+        missing.checkStarted()
+        XCTAssertEqual(missing.tile(.codex).status, "Turned off by your organization")
+        XCTAssertFalse(missing.tile(.codex).busy)
+        XCTAssertEqual(missing.setup?.busy, true)
+        // A running terminal keeps its own line (Stop stays usable).
+        var running = choice(.signedOut, .notInstalled)
+        running.signInStarted()
+        running.checkStarted()
+        XCTAssertEqual(
+            running.setup?.signInNote,
+            "Your browser opens to sign in. When it’s done, this closes and Watchtower checks again."
+        )
+    }
+
+    /// M4: an opened sign-in that is idle again (tile switched away and
+    /// back) says the owner presses to open it — nothing opens by itself.
+    func testOpenedIdleSignInAsksForAPress() throws {
+        var signedOut = choice(.signedOut, .ready)
+        signedOut.pick(.claude)
+        signedOut.signInStarted()
+        signedOut.pick(.codex)
+        signedOut.pick(.claude)
+        XCTAssertEqual(signedOut.signIn, .idle)
+        XCTAssertNil(signedOut.signInToOpen)
+        let panel = try XCTUnwrap(signedOut.setup)
+        XCTAssertEqual(panel.signInNote, "Press Sign in again to open the sign-in here.")
+        XCTAssertFalse(panel.signInNoteWarns)
+        XCTAssertEqual(Choice.pressToSignIn, "Press Sign in again to open the sign-in here.")
+    }
+
+    /// M5: leaving the step with the terminal running is not a Stop: idle,
+    /// opened, M4's line on return.
+    func testLeavingTheStepEndsTheRunWithoutAWarning() throws {
+        var signedOut = choice(.signedOut, .notInstalled)
+        signedOut.signInStarted()
+        signedOut.signInLeft()
+        XCTAssertEqual(signedOut.signIn, .idle)
+        XCTAssertNil(signedOut.signInToOpen)
+        XCTAssertEqual(signedOut.setup?.signInNote, Choice.pressToSignIn)
+        XCTAssertEqual(signedOut.setup?.signInNoteWarns, false)
+        // An ended run stays ended.
+        signedOut.signInStarted()
+        signedOut.signInStopped()
+        signedOut.signInLeft()
+        XCTAssertEqual(signedOut.signIn, .ended(nil))
+    }
+
+    func testLookupFailureMessage() {
+        XCTAssertEqual(
+            Choice.lookupFailureMessage(.claude, error: "loading config: permission denied"),
+            "Watchtower couldn’t look for Claude Code (loading config: permission denied). "
+                + "Check that Watchtower’s config file is readable, then check again."
+        )
+        XCTAssertEqual(
+            Choice.lookupFailureMessage(.codex, error: nil),
+            "Watchtower couldn’t look for Codex CLI. Check that Watchtower’s config file is readable, then check again."
+        )
+    }
+
     func testFailureMessages() {
         XCTAssertEqual(
             Choice.failureMessage(.claude, code: "timeout", error: "x"),
@@ -326,12 +408,14 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         let home = "/Users/owner"
         typealias Kind = Choice.InstallKind
         XCTAssertEqual(Kind.of(.claude, resolvedPath: "/Users/owner/.local/share/claude/versions/2.1.322", home: home), .native)
-        XCTAssertEqual(Kind.of(.claude, resolvedPath: "/opt/homebrew/Caskroom/claude-code/2.1.3/claude", home: home), .homebrew)
+        XCTAssertEqual(Kind.of(.claude, resolvedPath: "/opt/homebrew/Caskroom/claude-code/2.1.3/claude", home: home), .homebrewCask)
+        XCTAssertEqual(Kind.of(.claude, resolvedPath: "/opt/homebrew/Cellar/claude-code/2.1.3/bin/claude", home: home), .homebrewFormula)
         XCTAssertEqual(
             Kind.of(.claude, resolvedPath: "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js", home: home), .npm
         )
         XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js", home: home), .npm)
-        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/Caskroom/codex/0.166.0/codex", home: home), .homebrew)
+        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/Caskroom/codex/0.166.0/codex", home: home), .homebrewCask)
+        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/usr/local/Cellar/codex/0.30.0/bin/codex", home: home), .homebrewFormula)
         XCTAssertEqual(
             Kind.of(.codex, resolvedPath: "/Users/owner/.codex/packages/standalone/releases/0.166.0/bin/codex", home: home), .native
         )
@@ -347,10 +431,13 @@ final class OnboardingAgentChoiceTests: XCTestCase {
 
     func testUpdateCommandPerInstallKind() {
         XCTAssertEqual(Choice.Agent.claude.updateCommand(.native), "claude update")
-        XCTAssertEqual(Choice.Agent.claude.updateCommand(.homebrew), "brew upgrade --cask claude-code")
+        XCTAssertEqual(Choice.Agent.claude.updateCommand(.homebrewCask), "brew upgrade --cask claude-code")
+        // Homebrew ships neither agent as a formula: a Cellar copy gets no command (stuck path).
+        XCTAssertNil(Choice.Agent.claude.updateCommand(.homebrewFormula))
         XCTAssertEqual(Choice.Agent.claude.updateCommand(.npm), "npm install -g @anthropic-ai/claude-code@latest")
         XCTAssertEqual(Choice.Agent.codex.updateCommand(.native), "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
-        XCTAssertEqual(Choice.Agent.codex.updateCommand(.homebrew), "brew upgrade --cask codex")
+        XCTAssertEqual(Choice.Agent.codex.updateCommand(.homebrewCask), "brew upgrade --cask codex")
+        XCTAssertNil(Choice.Agent.codex.updateCommand(.homebrewFormula))
         XCTAssertEqual(Choice.Agent.codex.updateCommand(.npm), "npm install -g @openai/codex@latest")
         XCTAssertNil(Choice.Agent.claude.updateCommand(.unknown))
     }
@@ -363,7 +450,7 @@ final class OnboardingAgentChoiceTests: XCTestCase {
     }
 
     func testOutdatedCLIUpdatesThenSignsIn() throws {
-        var old = outdatedClaude(.homebrew)
+        var old = outdatedClaude(.homebrewCask)
         XCTAssertEqual(old.terminalCommand, "brew upgrade --cask claude-code")
         let setup = try XCTUnwrap(old.setup)
         XCTAssertEqual(setup.title, "Update Claude Code to sign in")
@@ -391,7 +478,7 @@ final class OnboardingAgentChoiceTests: XCTestCase {
     }
 
     func testUpdateThatChangedNothingNeverLoops() throws {
-        var old = outdatedClaude(.homebrew)
+        var old = outdatedClaude(.homebrewCask)
         old.signInStarted()
         old.signInEnded(exitCode: 0)
         // Another copy is first on PATH: the probe still finds no login.

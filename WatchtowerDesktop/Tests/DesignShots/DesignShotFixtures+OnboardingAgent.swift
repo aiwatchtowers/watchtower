@@ -60,6 +60,10 @@ enum OnboardingAgentShotFixtures {
         stuck.applyLoginProbe(outdated: [.claude])
         var signInStopped = signingIn
         signInStopped.signInStopped()
+        // The sign-in exited 0; the recheck has not answered yet (I1).
+        var rechecking = signingIn
+        rechecking.signInEnded(exitCode: 0)
+        rechecking.checkStarted()
         return [
             Scene(name: "checking", choice: OnboardingAgentChoice()),
             Scene(name: "both-ready", choice: bothReady),
@@ -67,6 +71,7 @@ enum OnboardingAgentShotFixtures {
             Scene(name: "only-codex", choice: choice(.notInstalled, .ready)),
             Scene(name: "signed-out", choice: signingIn),
             Scene(name: "signed-out-stopped", choice: signInStopped),
+            Scene(name: "rechecking", choice: rechecking),
             Scene(name: "signed-out-outdated", choice: updating),
             Scene(name: "signed-out-update-failed", choice: updateFailed),
             Scene(name: "signed-out-update-stuck", choice: stuck),

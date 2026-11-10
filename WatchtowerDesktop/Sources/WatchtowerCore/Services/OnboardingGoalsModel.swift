@@ -62,8 +62,8 @@ package final class OnboardingGoalsModel {
     /// The Customize features screen is showing in place of the goals.
     package var isCustomizingFeatures = false
     package private(set) var agentChoice = OnboardingAgentChoice()
-    /// A per-agent check is in flight.
-    package private(set) var isCheckingAgents = false
+    /// A per-agent check is in flight (the choice shows it).
+    package var isCheckingAgents: Bool { agentChoice.checkInFlight }
     package private(set) var isContinuing = false
     package private(set) var continueError: String?
     package private(set) var savedGoals: Set<OnboardingGoal>
@@ -149,7 +149,7 @@ package final class OnboardingGoalsModel {
         cliCheckStarted = true
         cliCheckGeneration += 1
         let generation = cliCheckGeneration
-        isCheckingAgents = true
+        agentChoice.checkStarted()
         let task = Task { [checkAgents] in
             let result = await checkAgents()
             guard generation == cliCheckGeneration else { return }
@@ -160,7 +160,7 @@ package final class OnboardingGoalsModel {
             agentChoice.applyLoginProbe(outdated: result.outdated)
             agentChoice.applyDefault(configured: configuredProvider())
             agentChoice.settleSignIn()
-            isCheckingAgents = false
+            agentChoice.checkFinished()
             cliCheckTask = nil
         }
         cliCheckTask = task
@@ -190,6 +190,9 @@ package final class OnboardingGoalsModel {
 
     package func signInStopped() { agentChoice.signInStopped() }
 
+    /// The step went away with the terminal running (its process ended).
+    package func signInLeft() { agentChoice.signInLeft() }
+
     /// "Run setup again": the step starts over as if just shown — the CLI is
     /// checked again, the configured language adopted again, no error or
     /// Customize screen left from the last run. The goals and selection stay.
@@ -197,7 +200,6 @@ package final class OnboardingGoalsModel {
         cliCheckGeneration += 1
         cliCheckTask = nil
         cliCheckStarted = false
-        isCheckingAgents = false
         agentChoice = OnboardingAgentChoice()
         continueError = nil
         languagePrepared = false

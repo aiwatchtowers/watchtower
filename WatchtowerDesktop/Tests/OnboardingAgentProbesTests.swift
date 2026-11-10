@@ -66,8 +66,8 @@ final class OnboardingAgentProbesTests: XCTestCase {
         let first = await probes.locate(.codex)
         let second = await probes.locate(.codex)
 
-        XCTAssertNil(first)
-        XCTAssertEqual(second, "/x/codex")
+        XCTAssertEqual(first, .notFound)
+        XCTAssertEqual(second, .found("/x/codex"))
     }
 
     func testLocateAsksForTheAgentJSON() async throws {
@@ -76,7 +76,7 @@ final class OnboardingAgentProbesTests: XCTestCase {
 
         let path = await probes(watchtower: stub).locate(.claude)
 
-        XCTAssertEqual(path, "/x/claude")
+        XCTAssertEqual(path, .found("/x/claude"))
         XCTAssertEqual(try String(contentsOfFile: argvFile, encoding: .utf8), "ai which --provider claude --json\n")
     }
 

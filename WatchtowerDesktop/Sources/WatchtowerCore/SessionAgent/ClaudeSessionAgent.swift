@@ -79,7 +79,9 @@ package struct ClaudeSessionAgent: SessionAgent {
             nativeRoots: [".claude/local/", ".local/share/claude/"],
             updates: [
                 .native: .runExecutable(["update"]),
-                .homebrew: .literal("brew upgrade --cask claude-code"),
+                // Homebrew ships it as a cask only (`brew info --formula claude-code`
+                // finds none, 2026-11-10): a Cellar copy has no update here.
+                .homebrewCask: .literal("brew upgrade --cask claude-code"),
                 .npm: .literal("npm install -g @anthropic-ai/claude-code@latest")
             ]
         )
