@@ -17,7 +17,6 @@ import (
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/gitdir"
 	"watchtower/internal/instructions"
 	"watchtower/internal/llmusage"
 	"watchtower/internal/logredact"
@@ -26,7 +25,6 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/specreview"
-	"watchtower/internal/workbenchgit"
 
 	"github.com/spf13/cobra"
 )
@@ -58,6 +56,9 @@ var (
 	// aiFlagReadFolderAsk names a spec/plan review ask whose reviewer's
 	// folder (specreview.ReadFolder) the run reads: a Discuss thread.
 	aiFlagReadFolderAsk int64
+	// aiFlagReadFolderRound names a diff review round whose folder
+	// (review_rounds.folder_root) the run reads: the branch-review reviewer.
+	aiFlagReadFolderRound int64
 	// aiFlagPurpose records this query's LLM calls under its own purpose
 	// in the usage ledger (one of queryPurposes; "" keeps the default).
 	aiFlagPurpose string
@@ -151,9 +152,11 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagContextID, "context-id", "", "chat context id")
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
-		"run in this workbench folder, or its folder in a session worktree a session of it recorded, with the provider's own read-only file tools (claude, codex); exit 2 for any other folder")
+		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
 	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderAsk, "read-folder-ask", 0,
 		"run, like --read-folder, in the folder the reviewer of spec/plan review ask N read; exit 2 if it is no such ask")
+	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderRound, "read-folder-round", 0,
+		"run, like --read-folder, in the folder diff review round N was taken from; exit 2 if it is no such round")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
 		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer); exit 2 on any other value")
 }
@@ -613,15 +616,23 @@ func refuseQuery(enc *json.Encoder, err error) error {
 }
 
 // resolveReadFolder resolves --read-folder to the folder of a workbench in
-// the database at dbPath, or to one of its registered session worktrees
-// (owner, ask #560): absolute, symlinks resolved, an existing directory
-// bound to a workbench or its folder in a recorded session worktree
-// (checkSessionWorktree; any other subfolder is not). "" without the flag. Any
+// the database at dbPath: absolute, symlinks resolved, an existing directory
+// bound to a workbench (a subfolder is not). "" without the flag. Any
 // refusal is a usage error (exit 2), as is combining it with --tools: a
 // read-folder run mounts no write tool. --read-folder-ask N instead names the
-// folder by a spec/plan review ask (resolveReviewReadFolder); it excludes
-// --read-folder and --tools the same way.
+// folder by a spec/plan review ask (resolveReviewReadFolder), and
+// --read-folder-round N by a diff review round (resolveRoundReadFolder);
+// each excludes the other two and --tools the same way.
 func resolveReadFolder(dbPath string) (string, error) {
+	if aiFlagReadFolderRound != 0 {
+		if aiFlagReadFolder != "" || aiFlagReadFolderAsk != 0 {
+			return "", usageError("give one of --read-folder, --read-folder-ask or --read-folder-round")
+		}
+		if aiFlagTools != "" {
+			return "", usageError("--read-folder-round runs without --tools")
+		}
+		return resolveRoundReadFolder(dbPath, aiFlagReadFolderRound)
+	}
 	if aiFlagReadFolderAsk != 0 {
 		if aiFlagReadFolder != "" {
 			return "", usageError("give --read-folder or --read-folder-ask, not both")
@@ -654,169 +665,13 @@ func resolveReadFolder(dbPath string) (string, error) {
 	}
 	defer func() { _ = database.Close() }()
 	wb, err := database.WorkbenchByFolder(resolved)
-	if err == nil {
-		return wb.FolderPath, nil
-	}
-	if !errors.Is(err, db.ErrWorkbenchNotFound) {
+	if err != nil {
+		if errors.Is(err, db.ErrWorkbenchNotFound) {
+			return "", usageError("--read-folder %s: not a workbench folder", aiFlagReadFolder)
+		}
 		return "", usageError("--read-folder %s: %v", aiFlagReadFolder, err)
 	}
-	if err := checkSessionWorktree(database, resolved); err != nil {
-		return "", usageError("--read-folder %s: not a workbench folder or one of its session worktrees: %v", aiFlagReadFolder, err)
-	}
-	return resolved, nil
-}
-
-// checkSessionWorktree is nil when dir (absolute, symlinks resolved) is the
-// workbench's folder in a worktree root a session of that workbench
-// recorded in terminal_session_worktrees — the root itself, or for a
-// workbench bound to a repository subfolder that subfolder inside it
-// (worktreeFolder, as review rounds record it; never the top then) —
-// compared the way the file system does (workbenchgit.SamePath:
-// case-insensitive on APFS), and the root is a linked work tree of that
-// workbench folder's own repository (linkedWorktreeOf). Otherwise the error
-// names why: not recorded, the worktree's top, not a linked worktree,
-// another repository, or unreadable. A root a session recorded in another
-// repository — its agent cd'd there — is not the workbench's. Owner, ask
-// #560; spec 2026-10-02 §9.1 amendment.
-func checkSessionWorktree(database *db.DB, dir string) error {
-	workbenches, err := database.ListWorkbenches()
-	if err != nil {
-		return err
-	}
-	ctx := context.Background()
-	refusal := errors.New("not recorded by any workbench session")
-	for _, wb := range workbenches {
-		roots, err := database.WorkbenchSessionWorktrees(ctx, wb.ID)
-		if err != nil {
-			return err
-		}
-		if len(roots) == 0 {
-			continue
-		}
-		rel := workbenchSubpath(wb.FolderPath)
-		for root := range roots {
-			switch {
-			case sameRecordedRoot(worktreeFolder(root, rel), dir):
-				if refusal = linkedWorktreeOf(root, wb.FolderPath); refusal == nil {
-					return nil
-				}
-			case sameRecordedRoot(root, dir): // a subfolder workbench's worktree top
-				if refusal = linkedWorktreeOf(root, wb.FolderPath); refusal == nil {
-					refusal = errors.New("the worktree's top, not the workbench folder inside it")
-				}
-			}
-		}
-	}
-	return refusal
-}
-
-// workbenchSubpath is folder's path below its repository's top level ("" for
-// a workbench bound to the top, or outside any repository).
-func workbenchSubpath(folder string) string {
-	resolved, err := filepath.EvalSymlinks(folder)
-	if err != nil {
-		return ""
-	}
-	top, _, found, err := gitdir.FindWorkTree(resolved)
-	if err != nil || !found || workbenchgit.SamePath(top, resolved) {
-		return ""
-	}
-	return strings.TrimPrefix(resolved[len(top):], string(filepath.Separator))
-}
-
-// worktreeFolder is the workbench's folder in the worktree at root, the way
-// review rounds record it (workbenchgit.ResolveFolder's mapped root): root
-// joined with rel when that directory exists there, else root.
-func worktreeFolder(root, rel string) string {
-	if rel == "" {
-		return root
-	}
-	if fi, err := os.Stat(filepath.Join(root, rel)); err == nil && fi.IsDir() {
-		return filepath.Join(root, rel)
-	}
-	return root
-}
-
-// sameRecordedRoot reports whether the ledger's root names dir: the same
-// string, or — a case difference — the same directory on disk
-// (workbenchgit.SamePath) while root itself is still its own real path. A
-// recorded root since replaced by a symlink to a folder spelled in another
-// case (a case-sensitive volume) is not dir.
-func sameRecordedRoot(root, dir string) bool {
-	if root == dir {
-		return true
-	}
-	resolved, err := filepath.EvalSymlinks(root)
-	return err == nil && resolved == root && workbenchgit.SamePath(root, dir)
-}
-
-// linkedWorktreeOf is nil when root (a real path) is a linked work tree
-// (`git worktree add`) of the repository holding folder, checked from files
-// the way `git worktree list` trusts them: root/.git is a regular file (not
-// a directory — a main checkout is never a session worktree here, the
-// workbench folder itself is accepted on its own — and not a symlink); the
-// admin dir its "gitdir:" names sits in its common dir's "worktrees" (not
-// forged elsewhere, not the repository's git dir itself); the admin dir's
-// own "gitdir" back-pointer resolves to root/.git (a pointer at another
-// work tree's admin dir fails it); and the common dir is folder's.
-// Anything missing or malformed is refused (fail closed). An agent that can
-// write into the repository's git dir can still register any folder as a
-// worktree, as `git worktree add` does; that is the residual the ledger
-// already carries.
-func linkedWorktreeOf(root, folder string) error {
-	dotGit := filepath.Join(root, ".git")
-	info, err := os.Lstat(dotGit)
-	if err != nil {
-		return fmt.Errorf("unreadable: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("not a linked worktree: its .git is not a gitdir file")
-	}
-	admin, _, err := gitdir.GitDirAt(root)
-	if err != nil {
-		return fmt.Errorf("unreadable: %w", err)
-	}
-	if admin, err = filepath.EvalSymlinks(admin); err != nil {
-		return fmt.Errorf("unreadable: %w", err)
-	}
-	common, err := realCommonDir(admin)
-	if err != nil {
-		return fmt.Errorf("unreadable: %w", err)
-	}
-	if !workbenchgit.SamePath(filepath.Dir(admin), filepath.Join(common, "worktrees")) {
-		return errors.New("not a linked worktree: its git dir is not in its repository's worktrees")
-	}
-	back, err := gitdir.WorktreeBackPointer(admin)
-	if err != nil {
-		return fmt.Errorf("unreadable: %w", err)
-	}
-	if back, err = filepath.EvalSymlinks(back); err != nil || !workbenchgit.SamePath(back, dotGit) {
-		return errors.New("not a linked worktree: git links its git dir to another folder")
-	}
-	_, folderGit, found, err := gitdir.FindWorkTree(folder)
-	if err != nil {
-		return fmt.Errorf("unreadable workbench folder: %w", err)
-	}
-	if !found {
-		return errors.New("a worktree of another repository: the workbench folder is in none")
-	}
-	folderCommon, err := realCommonDir(folderGit)
-	if err != nil {
-		return fmt.Errorf("unreadable workbench folder: %w", err)
-	}
-	if !workbenchgit.SamePath(common, folderCommon) {
-		return errors.New("a worktree of another repository")
-	}
-	return nil
-}
-
-// realCommonDir is gitDir's common git dir with symlinks resolved.
-func realCommonDir(gitDir string) (string, error) {
-	common, err := gitdir.CommonDir(gitDir)
-	if err != nil {
-		return "", err
-	}
-	return filepath.EvalSymlinks(common)
+	return wb.FolderPath, nil
 }
 
 // resolveReviewReadFolder is --read-folder-ask's folder: the one the reviewer
@@ -852,6 +707,40 @@ func resolveReviewReadFolder(dbPath string, askID int64) (string, error) {
 	}
 	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
 		return "", usageError("--read-folder-ask %d: not a directory", askID)
+	}
+	return resolved, nil
+}
+
+// resolveRoundReadFolder is --read-folder-round's folder: the one diff review
+// round roundID was taken from (review_rounds.folder_root — the session's
+// worktree, or the workbench's folder inside it for a workbench bound to a
+// repository subfolder; a branch-tip round's folder too), symlink-resolved and
+// checked to be a directory. Owner, ask #611: the branch-review reviewer names
+// its folder by the round, so --read-folder stays workbench folders only. Any
+// failure is a usage error (exit 2); there is no fallback to the workbench
+// folder.
+func resolveRoundReadFolder(dbPath string, roundID int64) (string, error) {
+	if roundID < 0 {
+		return "", usageError("--read-folder-round %d: not a review round id", roundID)
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return "", usageError("--read-folder-round: opening the database: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	round, err := database.ReviewRoundByID(roundID)
+	if err != nil {
+		return "", usageError("--read-folder-round %d: %v", roundID, err)
+	}
+	if round == nil {
+		return "", usageError("--read-folder-round %d: no such review round", roundID)
+	}
+	resolved, err := filepath.EvalSymlinks(round.FolderRoot)
+	if err != nil {
+		return "", usageError("--read-folder-round %d: %v", roundID, err)
+	}
+	if info, err := os.Stat(resolved); err != nil || !info.IsDir() {
+		return "", usageError("--read-folder-round %d: not a directory", roundID)
 	}
 	return resolved, nil
 }

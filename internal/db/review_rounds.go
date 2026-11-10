@@ -95,6 +95,16 @@ func (db *DB) GetReviewRound(projectID, id int64) (*ReviewRound, error) {
 	return r, nil
 }
 
+// ReviewRoundByID reads round id of any workbench, nil when there is none
+// (`ai query --read-folder-round`).
+func (db *DB) ReviewRoundByID(id int64) (*ReviewRound, error) {
+	r, err := db.oneReviewRound(`SELECT `+reviewRoundCols+` FROM review_rounds WHERE id = ?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("review round %d: %w", id, err)
+	}
+	return r, nil
+}
+
 // CreateReviewRound inserts an open round; a second open round of the same
 // session fails on review_rounds_one_open.
 func (db *DB) CreateReviewRound(r ReviewRound) (int64, error) {

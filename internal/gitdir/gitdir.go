@@ -1,9 +1,8 @@
 // Package gitdir finds the git work tree holding a directory by reading
 // files only — a walk up for a ".git" entry, a linked work tree's "gitdir:"
-// pointer, the HEAD file and a linked work tree's "commondir" and "gitdir"
-// back-pointer — and never runs git. The workbench's info/exclude upkeep
-// (internal/devpack), the session-state hook's worktree ledger and
-// `ai query --read-folder` (cmd) share it.
+// pointer, the HEAD file and a linked work tree's "commondir" — and never
+// runs git. The workbench's info/exclude upkeep (internal/devpack) and the
+// session-state hook's worktree ledger (cmd) share it.
 package gitdir
 
 import (
@@ -130,14 +129,6 @@ func CommonDir(gitDir string) (string, error) {
 		return gitDir, nil
 	}
 	return common, err
-}
-
-// WorktreeBackPointer is the ".git" path a linked work tree's admin dir
-// records in its "gitdir" file — git's link back to the work tree. A
-// relative path is taken from adminDir's real path; a missing, unreadable
-// or empty file is an error.
-func WorktreeBackPointer(adminDir string) (string, error) {
-	return readPathFile(adminDir, "gitdir")
 }
 
 // readPathFile reads the one-line path file dir/name. A relative path is
