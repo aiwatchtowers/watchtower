@@ -229,7 +229,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         let runner = ScriptedAgentsRunner(Self.byFlags())
         let center = makeCenter(runner)
 
-        center.show(workbench: 3, period: .week, agent: .codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
         await waitUntil { runner.invocations.count == 1 }
         XCTAssertEqual(runner.invocations[0].suffix(4), ["--days", "7", "--agent", "codex"])
 
@@ -237,7 +237,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         await waitUntil { runner.invocations.count == 2 }
         XCTAssertFalse(runner.invocations[1].contains("--agent"), "All sends no flag")
 
-        center.show(workbench: 3, period: .week, agent: .claude)
+        center.show(workbench: 3, period: .week, agent: .kind(.claude))
         await waitUntil { runner.invocations.count == 3 }
         XCTAssertEqual(runner.invocations[2].suffix(2), ["--agent", "claude"], "changing only the agent reruns")
     }
@@ -256,7 +256,7 @@ final class AgentAnalyticsCenterTests: XCTestCase {
             }
             return Self.fixture("agent-report-overview")
         }
-        center.show(workbench: 3, period: .week, agent: .codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
         await waitUntil { center.overviews[3]?.error != nil }
 
         XCTAssertEqual(refused, [3], "the workbench's filter goes back to All")
@@ -276,8 +276,15 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         let center = makeCenter(runner)
         var refused: [Int64] = []
         center.onAgentRefused = { refused.append($0) }
-        center.show(workbench: 3, period: .week, agent: .codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
         await waitUntil { center.overviews[3]?.error != nil }
+        XCTAssertTrue(refused.isEmpty)
+
+        // Another usage error that merely mentions the flag elsewhere does not reset it.
+        runner.answer { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: --workbench 3 not found (--agent codex)") }
+        center.retry(workbench: 3)
+        await waitUntil { runner.invocations.count == 2 }
+        await settle()
         XCTAssertTrue(refused.isEmpty)
     }
 
@@ -298,9 +305,9 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         }
         track()
 
-        center.show(workbench: 3, period: .week, agent: .claude)
+        center.show(workbench: 3, period: .week, agent: .kind(.claude))
         await waitUntil { runner.invocations.count == 1 }
-        center.show(workbench: 3, period: .week, agent: .codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
         runner.release(0)
         await waitUntil { runner.invocations.count == 2 }
         await settle()

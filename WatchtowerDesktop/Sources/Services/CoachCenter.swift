@@ -211,7 +211,7 @@ final class CoachCenter {
         case let .status(workbench):
             guard let query = shown[workbench] else { return }
             var args = ["coach", "status", "--workbench", String(workbench), "--days", String(query.period.rawValue)]
-            if query.agent != .all { args += ["--agent", query.agent.rawValue] }
+            if let flag = query.agent.flag { args += ["--agent", flag] }
             args.append("--json")
             do {
                 let value = try JSONDecoder().decode(CoachStatus.self, from: try await runner.run(args: args))

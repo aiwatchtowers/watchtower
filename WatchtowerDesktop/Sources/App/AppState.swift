@@ -1862,7 +1862,7 @@ final class AppState {
     }
 
     /// Agent analytics (#298): the previous center stopped, a new one built.
-    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+    func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
         let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         let coach = CoachCenter(runner: cliRunner ?? UnresolvedCLIRunner())
         analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }; coach.isTabOnScreen = analytics.isTabOnScreen

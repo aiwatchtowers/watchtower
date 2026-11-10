@@ -33,6 +33,16 @@ private final class AnalyticsActionLog {
     }
 }
 
+/// An older CLI: refuses `--agent` with cobra's usage error.
+private final class RefusingAgentRunner: CLIRunnerProtocol, @unchecked Sendable {
+    func run(args: [String]) async throws -> Data {
+        throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: unknown flag: --agent")
+    }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data { try await run(args: args) }
+    func run(args: [String], stdin: Data) async throws -> Data { try await run(args: args) }
+}
+
 /// Answers the coach's reads from the fixtures.
 private final class CoachFixtureRunner: CLIRunnerProtocol, @unchecked Sendable {
     func run(args: [String]) async throws -> Data {
@@ -647,24 +657,55 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
 
     // MARK: - Agent filter (#1517)
 
-    /// D51: main's caption stays the only note on the Claude-only blocks.
-    func testCodexCaptionStaysMains() throws {
-        let caption = AgentAnalyticsCodexShare.notMeasuredLine
-        let mixed = try texts(AgentAnalyticsOverviewView(
-            state: .overview(try CodexAnalyticsShotFixtures.overview(), staleError: nil),
-            period: .constant(.week), agent: .constant(.all), actions: AnalyticsActionLog().actions))
-        XCTAssertTrue(mixed.contains(caption), "\(mixed)")
-        XCTAssertFalse(mixed.contains { $0.contains("Claude Code only") }, "\(mixed)")
+    /// The header reads the filter off the report: a Codex report under the
+    /// Codex filter is current and keeps its picker; under All it is the old
+    /// answer ("Updating…").
+    func testCodexFilterHeader() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        json["agent"] = "codex"
+        json["agent_filter"] = nil
+        let codex = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(AgentAnalyticsFormat.agent(of: codex), .kind(.codex))
 
-        // Filter Codex: the report holds Codex sessions only, the caption
-        // replaces the blocks' state.
-        let codex = try CodexAnalyticsShotFixtures.overview(codexOnly: true)
-        let only = try texts(AgentAnalyticsOverviewView(
-            state: .overview(codex, staleError: nil),
-            period: .constant(.week), agent: .constant(.codex), actions: AnalyticsActionLog().actions))
-        XCTAssertEqual(only.filter { $0 == caption }.count, 2, "\(only)")
-        XCTAssertFalse(only.contains { $0.hasPrefix("At session start") }, "\(only)")
-        XCTAssertFalse(only.contains { $0.contains("Claude Code only") }, "\(only)")
+        func view(_ agent: AgentAnalyticsCenter.Agent) -> AgentAnalyticsOverviewView {
+            AgentAnalyticsOverviewView(state: .overview(codex, staleError: nil), period: .constant(.week),
+                                       agent: .constant(agent), actions: AnalyticsActionLog().actions)
+        }
+        // ViewInspector matches a generic view by its name only, so the
+        // agent picker is found by its tooltip, not its type.
+        func picker(_ view: AgentAnalyticsOverviewView) throws -> InspectableView<ViewType.ClassifiedView> {
+            try view.inspect().find { (try? $0.help().string()) == AgentAnalyticsFormat.agentHelp }
+        }
+        let current = view(.kind(.codex))
+        XCTAssertThrowsError(try current.inspect().find(text: "Updating…"))
+        XCTAssertNoThrow(try picker(current), "a chosen filter keeps its picker")
+        let stale = view(.all)
+        XCTAssertNoThrow(try stale.inspect().find(text: "Updating…"))
+        XCTAssertThrowsError(try picker(stale), "All with one agent in the period: no picker")
+
+        json["agent"] = "gemini"
+        let unknown = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(AgentAnalyticsFormat.agent(of: unknown), .all, "a kind this build does not know reads as All")
+    }
+
+    /// AppState wires the center's refusal to the view model: the
+    /// workbench's filter entry goes, so the pane shows All.
+    func testAgentRefusalResetsTheViewModelFilter() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "AgentRefusal-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let appState = AppState()
+        appState.replaceAgentAnalytics(cliRunner: RefusingAgentRunner(), workbenches: vm)
+        let center = try XCTUnwrap(vm.agentAnalytics)
+        defer { center.stop(); vm.coach?.stop() }
+
+        vm.analyticsAgent[3] = .kind(.codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
+        let deadline = Date().addingTimeInterval(5)
+        while vm.analyticsAgent[3] != nil, Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertNil(vm.analyticsAgent[3])
+        XCTAssertNotNil(center.overviews[3]?.error)
     }
 
     /// An older CLI's refusal of `--agent` lands on the report's error line,

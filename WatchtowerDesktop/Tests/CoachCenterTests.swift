@@ -107,7 +107,7 @@ final class CoachCenterTests: XCTestCase {
     func testStatusFollowsAgentFilter() async {
         let runner = ScriptedCoachRunner(Self.standard())
         let center = makeCenter(runner)
-        center.show(workbench: 3, period: .week, agent: .codex)
+        center.show(workbench: 3, period: .week, agent: .kind(.codex))
         await waitUntil { center.status[3]?.value != nil }
         XCTAssertTrue(runner.invocations.contains(
             ["coach", "status", "--workbench", "3", "--days", "7", "--agent", "codex", "--json"]), "\(runner.invocations)")

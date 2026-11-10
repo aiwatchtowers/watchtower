@@ -31,9 +31,20 @@ final class AgentAnalyticsCenter {
         case month = 30
     }
 
-    /// The agent filter; the raw value is the CLI's `--agent` (#1517).
-    enum Agent: String, CaseIterable {
-        case all, claude, codex
+    /// The agent filter (#1517): every session, or one agent kind's. The
+    /// kinds come from `AgentKind`, so a new harness needs no entry here.
+    enum Agent: Hashable {
+        case all
+        case kind(AgentKind)
+
+        /// All, then every agent kind in the registry's order.
+        static var allCases: [Self] { [.all] + AgentKind.allCases.map(Self.kind) }
+
+        /// The CLI's `--agent` value; nil for All (no flag).
+        var flag: String? {
+            if case let .kind(kind) = self { return kind.rawValue }
+            return nil
+        }
     }
 
     /// What the pane asks for: the report's period and agent filter.
@@ -207,7 +218,7 @@ final class AgentAnalyticsCenter {
         var args = [
             "agents", "report", "--workbench", String(workbench), "--json", "--days", String(query.period.rawValue)
         ]
-        if query.agent != .all { args += ["--agent", query.agent.rawValue] }
+        if let flag = query.agent.flag { args += ["--agent", flag] }
         do {
             let overview = try await decode(AgentReportOverview.self, args: args, key: key)
             // A run `stop()` cancelled applies nothing, whatever the runner
@@ -242,10 +253,11 @@ final class AgentAnalyticsCenter {
     }
 
     /// A CLI older than the agent filter fails `--agent` with cobra's usage
-    /// error ("unknown flag: --agent"), a newer one with "--agent must be …".
+    /// error ("unknown flag: --agent"), a newer one that does not know the
+    /// kind with Go's "--agent must be …".
     private static func refusesAgentFlag(_ error: Error) -> Bool {
         guard case let CLIRunnerError.nonZeroExit(_, stderr) = error else { return false }
-        return stderr.contains("--agent")
+        return stderr.contains("unknown flag: --agent") || stderr.contains("--agent must be")
     }
 
     private func runDetail(workbench: Int64, uuid: String, key: RunKey) async {

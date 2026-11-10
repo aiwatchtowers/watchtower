@@ -20,8 +20,10 @@ final class AgentAnalyticsFormatTests: XCTestCase {
     func testAgentHelp() throws {
         XCTAssertEqual(AgentAnalyticsFormat.agentHelp,
                        "Codex sessions count when they were started from a Watchtower workbench terminal")
-        XCTAssertEqual(AgentAnalyticsFormat.agentTitles, [.all: "All", .claude: "Claude Code", .codex: "Codex"])
-        XCTAssertEqual(AgentAnalyticsCenter.Agent.allCases.map(\.rawValue), ["all", "claude", "codex"])
+        // The segments follow the agent kind registry: All, then each kind's product name.
+        XCTAssertEqual(AgentAnalyticsCenter.Agent.allCases.map(AgentAnalyticsFormat.agentTitle),
+                       ["All"] + AgentKind.allCases.map(\.displayName))
+        XCTAssertEqual(AgentAnalyticsCenter.Agent.allCases.map(\.flag), [nil] + AgentKind.allCases.map(\.rawValue))
 
         let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in }, openFile: { _ in },
                                             openAsks: {}, discuss: { _ in }, asksWaiting: false)
@@ -29,8 +31,13 @@ final class AgentAnalyticsFormatTests: XCTestCase {
             state: .overview(try Self.overview(agentFilter: ["claude", "codex"]), staleError: nil),
             period: .constant(.week), agent: .constant(.all), actions: actions
         )
+        // ViewInspector matches a generic view by its name only: take the
+        // first segmented picker (the agent one comes before the period one)
+        // and check it is the agent picker by its segments.
         let picker = try view.inspect().find(KitSegmentedPicker<AgentAnalyticsCenter.Agent>.self)
         XCTAssertEqual(try picker.help().string(), AgentAnalyticsFormat.agentHelp)
+        XCTAssertNoThrow(try picker.find(text: "Claude Code"))
+        XCTAssertThrowsError(try picker.find(text: "7 days"))
     }
 
     func testPickerShownOnlyWithBothAgents() throws {
@@ -38,7 +45,7 @@ final class AgentAnalyticsFormatTests: XCTestCase {
         let one = try Self.overview(agentFilter: nil)
         XCTAssertTrue(AgentAnalyticsFormat.showsAgentPicker(both, filter: .all))
         XCTAssertFalse(AgentAnalyticsFormat.showsAgentPicker(one, filter: .all))
-        XCTAssertTrue(AgentAnalyticsFormat.showsAgentPicker(one, filter: .codex), "a chosen filter keeps its picker")
+        XCTAssertTrue(AgentAnalyticsFormat.showsAgentPicker(one, filter: .kind(.codex)), "a chosen filter keeps its picker")
     }
 
     func testShareUnderOnePercent() {

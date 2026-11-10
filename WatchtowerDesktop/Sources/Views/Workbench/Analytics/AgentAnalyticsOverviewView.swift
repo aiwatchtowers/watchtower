@@ -90,7 +90,7 @@ struct AgentAnalyticsOverviewView: View {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Label(staleError, systemImage: "exclamationmark.triangle")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(Tone.warning)
                         .help("The last refresh failed; these numbers are from an earlier run.")
                     Button("Retry", action: actions.retry).buttonStyle(.kitSecondary).controlSize(.small)
                 }
@@ -179,7 +179,7 @@ struct AgentAnalyticsOverviewView: View {
             Spacer(minLength: Spacing.regular)
             if AgentAnalyticsFormat.showsAgentPicker(overview, filter: agent.wrappedValue) {
                 KitSegmentedPicker(title: "Agent", selection: agent, segments: AgentAnalyticsCenter.Agent.allCases.map {
-                    KitSegment(value: $0, title: AgentAnalyticsFormat.agentTitles[$0] ?? $0.rawValue)
+                    KitSegment(value: $0, title: AgentAnalyticsFormat.agentTitle($0))
                 })
                 .help(AgentAnalyticsFormat.agentHelp)
             }

@@ -33,8 +33,12 @@ enum AgentAnalyticsFormat {
         session.agentKind?.displayName ?? session.agent
     }
 
-    /// The agent filter's segments (#1517, spec §4.7).
-    static let agentTitles: [AgentAnalyticsCenter.Agent: String] = [.all: "All", .claude: "Claude Code", .codex: "Codex"]
+    /// An agent filter segment's title (#1517, spec §4.7): "All", else the
+    /// kind's product name.
+    static func agentTitle(_ agent: AgentAnalyticsCenter.Agent) -> String {
+        if case let .kind(kind) = agent { return kind.displayName }
+        return "All"
+    }
 
     /// The agent filter's tooltip: a Codex session started elsewhere has no
     /// terminal row and is never read (D57, ask #1144).
@@ -48,7 +52,7 @@ enum AgentAnalyticsFormat {
 
     /// The filter the report was built with; an older CLI sends none (All).
     static func agent(of overview: AgentReportOverview) -> AgentAnalyticsCenter.Agent {
-        overview.agent.flatMap(AgentAnalyticsCenter.Agent.init(rawValue:)) ?? .all
+        overview.agent.flatMap(AgentKind.init(rawValue:)).map(AgentAnalyticsCenter.Agent.kind) ?? .all
     }
 
     static func percent(_ part: Double, of whole: Double) -> String {
