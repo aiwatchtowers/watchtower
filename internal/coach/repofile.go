@@ -236,14 +236,18 @@ func (a *Applier) writeRepoFile(p db.CoachProposal, cur CurrentText, after strin
 // restoreRepoFile is Rollback of a repository file: no git check (the file is
 // expected to show Accept's own change, committed or not). A CLAUDE.md or
 // AGENTS.md Accept created (an empty before-text) is deleted again (owner,
-// ask #1169); any other file gets its before-text back. Either only while
-// the file is still cur, the text Rollback read and showed.
+// ask #1169), only while it still holds Accept's text — a changed one is
+// ErrChangedSince even under force and never deleted; any other file gets its
+// before-text back while it is still cur, the text Rollback read and showed.
 func (a *Applier) restoreRepoFile(p db.CoachProposal, cur CurrentText) error {
 	u, err := a.repoFile(p)
 	if err != nil {
 		return err
 	}
 	if u.create && p.BeforeText == "" {
+		if cur.Text != p.AfterText {
+			return ErrChangedSince
+		}
 		err = u.removeIfStill(cur.Text)
 	} else {
 		err = u.replaceText(cur.Text, p.BeforeText)

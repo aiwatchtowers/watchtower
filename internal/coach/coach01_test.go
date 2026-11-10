@@ -320,7 +320,7 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 			assert.NotEqual(t, "watchtower/internal/workbenchgit", path, f.name)
 			assert.NotEqual(t, "os/exec", path, f.name)
 		}
-		for sel := range selectors(f.file, map[string]string{"os": "os", "syscall": "syscall"}) {
+		for sel := range selectors(f.file, importNames(f.file, map[string]string{"os": "os", "syscall": "syscall"})) {
 			assert.NotContains(t, []string{"os.StartProcess", "syscall.Exec", "syscall.ForkExec", "syscall.StartProcess"},
 				sel, f.name)
 		}
@@ -372,18 +372,34 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 			}
 		}
 	}
-	runsGit := func(fd *ast.FuncDecl) bool {
-		found := false
+	// runsGit is every function of the package that reaches a git call
+	// (.git/.run), at any depth: a fixpoint over the call graph by name.
+	callees := map[string][]string{}
+	for name, fd := range decls {
 		ast.Inspect(fd, func(n ast.Node) bool {
 			if c, ok := n.(*ast.CallExpr); ok {
-				if s, ok := c.Fun.(*ast.SelectorExpr); ok && (s.Sel.Name == "git" || s.Sel.Name == "run") {
-					found = true
+				switch fn := c.Fun.(type) {
+				case *ast.Ident:
+					callees[name] = append(callees[name], fn.Name)
+				case *ast.SelectorExpr:
+					callees[name] = append(callees[name], fn.Sel.Name)
 				}
 			}
 			return true
 		})
-		return found
 	}
+	reaches := map[string]bool{"git": true, "run": true}
+	for changed := true; changed; {
+		changed = false
+		for name, cs := range callees {
+			for _, c := range cs {
+				if reaches[c] && !reaches[name] {
+					reaches[name], changed = true, true
+				}
+			}
+		}
+	}
+	runsGit := func(name string) bool { return reaches[name] }
 	verbs := 0
 	for name := range helpers {
 		fd, ok := decls[name]
@@ -411,7 +427,7 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 				verbs++
 				return true
 			}
-			if other, ok := decls[callee]; ok && !helpers[callee] && runsGit(other) {
+			if _, ok := decls[callee]; ok && !helpers[callee] && runsGit(callee) {
 				t.Errorf("%s calls %s, which runs git: add it to the scan only if it is read-only", name, callee)
 			}
 			return true

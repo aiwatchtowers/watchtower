@@ -510,3 +510,73 @@ func TestBudgetOf_RepoFiles(t *testing.T) {
 		assert.Equal(t, skillBudget(10), BudgetOf(dest, strings.Repeat("x", 10)), dest)
 	}
 }
+
+// A created CLAUDE.md the owner has changed since is never deleted, not even
+// by a forced Rollback (spec §4.3a, ask #1169).
+func TestRollback_RepoCreatedFileForcedKeepsOwnerText(t *testing.T) {
+	d := openDBs(t)
+	folder := repoFolderWith(t, map[string]string{})
+	wb := repoWorkbench(t, d, folder)
+	a, _ := repoApplier(t, d)
+	path := filepath.Join(folder, "CLAUDE.md")
+	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "", "Run tests.\n"))
+	require.NoError(t, a.acceptErr(id, ""))
+	writeFile(t, path, "Run tests.\nMine.\n")
+	_, err := a.Rollback(id, true)
+	require.ErrorIs(t, err, ErrChangedSince)
+	assert.Equal(t, "Run tests.\nMine.\n", readFile(t, path))
+	assert.Equal(t, "accepted", proposal(t, d, id).Status)
+}
+
+// A failed git state read refuses, at Accept and at propose: never clean.
+func TestAccept_RepoStateErrorRefuses(t *testing.T) {
+	d := openDBs(t)
+	folder := fullRepo(t)
+	wb := repoWorkbench(t, d, folder)
+	failing := func(string, string) (RepoFileState, error) {
+		return RepoFileState{Git: true}, errors.New("fatal: simulated status failure")
+	}
+	a := newApplier(t, d)
+	a.RepoState = failing
+	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
+	err := a.acceptErr(id, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading the git state of CLAUDE.md")
+	assert.Equal(t, "Run tests.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")))
+	assert.Equal(t, "open", proposal(t, d, id).Status)
+
+	e := ChatEdit{Destination: DestRepoClaudeMD, WorkbenchID: wb, Kind: "add", Replace: "Run lint.",
+		Title: "t", Why: "w", Metric: "corrections"}
+	_, err = ValidateChatProposal(context.Background(), d.DB, e, Env{Home: t.TempDir(), RepoState: failing})
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrRefused), "a failed read is an error, not a refusal")
+}
+
+// Through Accept: the status compare-and-set finds no open row after the
+// write (as when the workbench goes in between) and the write is undone.
+func TestAccept_RepoStatusCASFailsThroughAccept_Undone(t *testing.T) {
+	d := openDBs(t)
+	for _, c := range []struct{ name, before string }{{"existing", "Run tests.\n"}, {"created", ""}} {
+		files := map[string]string{}
+		if c.before != "" {
+			files["CLAUDE.md"] = c.before
+		}
+		folder := repoFolderWith(t, files)
+		path := filepath.Join(folder, "CLAUDE.md")
+		wb := repoWorkbench(t, d, folder)
+		a, _ := repoApplier(t, d)
+		id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", c.before, "Run lint ("+c.name+").\n"))
+		_, err := d.Exec(`CREATE TRIGGER coach_lost_row BEFORE UPDATE OF status ON coach_proposals
+			WHEN NEW.status = 'accepted' BEGIN SELECT RAISE(IGNORE); END`)
+		require.NoError(t, err)
+		require.ErrorIs(t, a.acceptErr(id, ""), db.ErrCoachStateChanged, c.name)
+		_, err = d.Exec(`DROP TRIGGER coach_lost_row`)
+		require.NoError(t, err)
+		if c.before == "" {
+			assert.NoFileExists(t, path, c.name)
+		} else {
+			assert.Equal(t, c.before, readFile(t, path), c.name)
+		}
+		assert.Empty(t, git(t, folder, "status", "--porcelain=v1"), c.name)
+	}
+}
