@@ -3,6 +3,8 @@ package coach
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,6 +28,7 @@ func chatEnv(t *testing.T, d dbs) (Env, *Applier) {
 	writeFile(t, ClaudeSkillPath(env, "twice"), "x\ny\nx\n")
 	writeFile(t, ClaudeSkillPath(env, "marked"), "---\nname: marked\n"+devpack.MarkerKey+": 1\n---\nBody.\n")
 	writeFile(t, codexRulesPath(env), "")
+	writeFile(t, claudeSettingsPath(env.Home), `{"permissions":{"allow":["Bash(ls:*)"]}}`)
 	return env, a
 }
 
@@ -106,6 +109,8 @@ func TestValidateChatProposal_Refusals(t *testing.T) {
 			"find matches no text"},
 		{"crlf line", with(func(e *ChatEdit) { e.Skill, e.Find, e.Kind = "crlf", "a", "replace" }),
 			"find must cover whole lines"},
+		{"allow find absent", with(func(e *ChatEdit) { e.Destination, e.Skill, e.Find = DestSettingsAllow, "", "Bash(cat:*)" }),
+			"find matches no text"},
 		{"allow with find", with(func(e *ChatEdit) { e.Destination, e.Skill, e.Find = DestSettingsAllow, "", "Bash(ls:*)" }),
 			"the allow rules may only grow: leave find empty"},
 		{"changes nothing", with(func(e *ChatEdit) { e.Find, e.Replace, e.Kind = "Run tests.\n", "Run tests.\n", "replace" }),
@@ -304,4 +309,84 @@ func TestReadText_ReadsTheDestination(t *testing.T) {
 	assert.Equal(t, skillBudget(len(cur.Text)), cur.Budget)
 	_, err = ReadText(d.DB, env, DestClaudeSkillUser, 0, "", "gone")
 	require.ErrorIs(t, err, errSkillNotFound)
+}
+
+func TestValidateChatProposal_UnreadableTexts(t *testing.T) {
+	d := openDBs(t)
+	env, _ := chatEnv(t, d)
+	target := ClaudeSkillPath(env, "real")
+	writeFile(t, target, "Body.\n")
+	require.NoError(t, os.MkdirAll(filepath.Dir(ClaudeSkillPath(env, "link")), 0o700))
+	require.NoError(t, os.Symlink(target, ClaudeSkillPath(env, "link")))
+	writeFile(t, filepath.Join(env.Home, ".agents", "skills", "two", "SKILL.md"), "Body.\n")
+	writeFile(t, filepath.Join(env.CodexHome, "skills", "two", "SKILL.md"), "Body.\n")
+
+	link := chatEdit()
+	link.Skill = "link"
+	two := chatEdit()
+	two.Destination, two.Skill = DestCodexSkillUser, "two"
+	rules := ChatEdit{Destination: DestCodexRulesAllow, Kind: "add", Replace: CodexRuleLine([]string{"cat"}),
+		Title: "t", Why: "w", Metric: "corrections"}
+
+	for name, c := range map[string]struct {
+		edit ChatEdit
+		want string
+	}{
+		"symlinked skill": {link, "SKILL.md is a symlink, not a regular file, too large or not text"},
+		"skill twice": {two, "Codex sees this skill in two folders (~/.agents/skills and " +
+			filepath.Join(env.CodexHome, "skills") + ") — remove one copy first."},
+	} {
+		_, err := ValidateChatProposal(context.Background(), d.DB, c.edit, env)
+		require.ErrorIs(t, err, ErrRefused, name)
+		assert.Equal(t, c.want, err.Error(), name)
+	}
+
+	require.NoError(t, os.Remove(codexRulesPath(env)))
+	_, err := ValidateChatProposal(context.Background(), d.DB, rules, env)
+	require.ErrorIs(t, err, ErrRefused)
+	assert.Equal(t, errCodexRulesMissing.Error(), err.Error())
+
+	// A failure the owner cannot act on comes back as is, not as a refusal.
+	require.NoError(t, d.Close())
+	_, err = ValidateChatProposal(context.Background(), d.DB, ChatEdit{Destination: DestChat, Kind: "add",
+		Replace: "Answer briefly.", Title: "t", Why: "w", Metric: "corrections"}, env)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrRefused)
+}
+
+func TestValidateChatProposal_EveryDestinationKindPasses(t *testing.T) {
+	d := openDBs(t)
+	env, _ := chatEnv(t, d)
+	base := ChatEdit{Kind: "add", Title: "t", Why: "w", Metric: "corrections"}
+	for _, c := range []struct {
+		dest, prompt, skill, replace, after string
+	}{
+		{DestPromptAdd, prompts.SpecReview, "", "Do not flag naming choices.", "Do not flag naming choices."},
+		{DestPackOverlay, "", devpack.WorkbenchSkillName, "Ask before a long run.", "Ask before a long run."},
+		{DestSettingsAllow, "", "", "Bash(cat:*)", "Bash(ls:*)\nBash(cat:*)"},
+		{DestCodexRulesAllow, "", "", CodexRuleLine([]string{"cat"}), CodexRuleLine([]string{"cat"}) + "\n"},
+	} {
+		e := base
+		e.Destination, e.PromptID, e.Skill, e.Replace = c.dest, c.prompt, c.skill, c.replace
+		p, err := ValidateChatProposal(context.Background(), d.DB, e, env)
+		require.NoError(t, err, c.dest)
+		assert.Equal(t, c.after, p.AfterText, c.dest)
+		assert.Equal(t, c.prompt, p.PromptID, c.dest)
+		assert.Equal(t, c.skill, p.Skill, c.dest)
+		assert.Contains(t, p.Fingerprint, c.dest+"|0|"+c.prompt+c.skill+"|", c.dest)
+	}
+}
+
+func TestValidateChatProposal_EvidenceCapped(t *testing.T) {
+	d := openDBs(t)
+	env, _ := chatEnv(t, d)
+	e := chatEdit()
+	e.Evidence = nil
+	for i := range maxEvidence + 3 {
+		e.Evidence = append(e.Evidence, fmt.Sprintf("s%d", i+1))
+	}
+	p, err := ValidateChatProposal(context.Background(), d.DB, e, env)
+	require.NoError(t, err)
+	assert.Len(t, p.Evidence, maxEvidence)
+	assert.Equal(t, maxEvidence+3, p.Sources)
 }

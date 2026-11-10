@@ -201,19 +201,18 @@ func readRefusal(err error, skill string) error {
 // destinations).
 func applyChatEdit(cur CurrentText, find, replace string) (string, error) {
 	if find != "" {
-		if cur.Destination == DestSettingsAllow || cur.Destination == DestCodexRulesAllow {
-			return "", refuse("the allow rules may only grow: leave find empty")
-		}
-		switch n := strings.Count(cur.Text, find); n {
-		case 0:
+		i := strings.Index(cur.Text, find)
+		if i < 0 {
 			return "", refuse("find matches no text")
-		case 1:
-		default:
+		}
+		if n := strings.Count(cur.Text, find); n > 1 {
 			return "", refuse("find matches %d times; it must match once", n)
 		}
-		i := strings.Index(cur.Text, find)
 		if !wholeLines(cur.Text, i, i+len(find)) {
 			return "", refuse("find must cover whole lines")
+		}
+		if cur.Destination == DestSettingsAllow || cur.Destination == DestCodexRulesAllow {
+			return "", refuse("the allow rules may only grow: leave find empty")
 		}
 	}
 	after, ok := applyEdit(cur, find, replace)
