@@ -200,3 +200,40 @@ func (f *StatusFields) header(h string) error {
 	}
 	return nil
 }
+
+// PathState is what `git status --porcelain=v1 -z -- <rel>` says about one path.
+type PathState struct {
+	Git   bool // the folder is a git work tree and git is available
+	Dirty bool // the path has any status entry: modified, staged, untracked, conflicted
+}
+
+// PathStatus runs only `git status`; it never writes. rel is relative to
+// o.Folder and must stay inside it (no "..", not absolute) — else an error.
+// No git, or a folder that is not a work tree, is {Git: false} with no
+// error; a failed git call is an error (callers refuse, never read it as
+// clean).
+func PathStatus(ctx context.Context, o Options, rel string) (PathState, error) {
+	if err := checkRel(rel); err != nil {
+		return PathState{}, err
+	}
+	r, _, _, _, err := probe(ctx, o)
+	if r == nil {
+		return PathState{}, nil
+	}
+	if err != nil {
+		return PathState{Git: true}, err
+	}
+	out, err := r.git(ctx, "status", "--porcelain=v1", "-z", "--", rel)
+	if err != nil {
+		return PathState{Git: true}, err
+	}
+	return PathState{Git: true, Dirty: len(bytes.TrimRight(out, "\x00")) > 0}, nil
+}
+
+// checkRel refuses a path that is empty, absolute or leaves the folder.
+func checkRel(rel string) error {
+	if rel == "" || !filepath.IsLocal(rel) {
+		return fmt.Errorf("path %q must be relative and stay inside the folder", rel)
+	}
+	return nil
+}
