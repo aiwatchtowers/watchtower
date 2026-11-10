@@ -54,6 +54,9 @@ type Result struct {
 	// because their own session_meta cwd is not the workbench's (AGENTLOG-04).
 	CodexRolloutsMissing  int `json:"codex_rollouts_missing"`
 	CodexOutsideWorkbench int `json:"codex_outside_workbench"`
+	// CodexUsageMismatch counts the codex token lines stored this scan whose
+	// fresh input came out negative (stored as 0).
+	CodexUsageMismatch int `json:"codex_usage_mismatch"`
 }
 
 // fail records one file's read or store failure.
@@ -424,7 +427,7 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 // file (a Claude transcript) or the session (a codex rollout, FILES-01).
 func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
 	f := agentlogdb.AgentLogFile{Path: tf.Path, Agent: cmp.Or(tf.Agent, AgentClaude), Size: tf.Size, MTime: tf.MTime,
-		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
+		ReadOffset: start + pr.Consumed, ParserVersion: parserVersionFor(tf.Agent)}
 	if pr.More {
 		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
 		f.Size, f.MTime = f.ReadOffset, ""
@@ -494,6 +497,7 @@ func (res *Result) addSlice(pr *ParseResult, applied bool) {
 	res.LongLines += pr.LongLines
 	if applied {
 		res.EventsWritten += len(pr.Events)
+		res.CodexUsageMismatch += pr.CodexUsageMismatch
 	}
 }
 
@@ -505,10 +509,11 @@ func resumePoint(stored *agentlogdb.AgentLogFile, tf TranscriptFile) (start, exp
 	if stored == nil {
 		return 0, -1, false
 	}
-	if stored.MissingAt == "" && stored.Size == tf.Size && stored.MTime == tf.MTime && stored.ParserVersion == ParserVersion {
+	current := stored.ParserVersion == parserVersionFor(tf.Agent)
+	if stored.MissingAt == "" && stored.Size == tf.Size && stored.MTime == tf.MTime && current {
 		return 0, stored.ReadOffset, true
 	}
-	if tf.Size >= stored.ReadOffset && stored.ParserVersion == ParserVersion {
+	if tf.Size >= stored.ReadOffset && current {
 		start = stored.ReadOffset
 	}
 	return start, stored.ReadOffset, false
@@ -614,7 +619,7 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 		res.FilesSkipped++
 		return nil
 	}
-	if stored != nil && stored.ParserVersion == ParserVersion && start < stored.ReadOffset {
+	if stored != nil && stored.ParserVersion == parserVersionFor(tf.Agent) && start < stored.ReadOffset {
 		start = stored.ReadOffset // resumePoint compares the compressed size with a text offset
 	}
 	tr := st.transcripts[tf.Path]

@@ -62,11 +62,12 @@ type codexPayload struct {
 }
 
 type codexUsage struct {
-	Input     int64 `json:"input_tokens"`
-	Cached    int64 `json:"cached_input_tokens"`
-	Output    int64 `json:"output_tokens"`
-	Reasoning int64 `json:"reasoning_output_tokens"`
-	Total     int64 `json:"total_tokens"`
+	Input      int64 `json:"input_tokens"`
+	Cached     int64 `json:"cached_input_tokens"`
+	CacheWrite int64 `json:"cache_write_input_tokens"`
+	Output     int64 `json:"output_tokens"`
+	Reasoning  int64 `json:"reasoning_output_tokens"`
+	Total      int64 `json:"total_tokens"`
 }
 
 // codexKnownTypes are the rollout line types the importer reads or
@@ -306,13 +307,20 @@ func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 		return
 	}
 	u, t := pl.Info.Last, pl.Info.Total
-	in := max(u.Input-u.Cached, 0) // OpenAI's input_tokens include the cached part
-	usd, known := Cost(p.model, "", in, u.Output, u.Cached, 0, 0)
+	// OpenAI's input_tokens include the cached and the cache-write parts;
+	// output_tokens include the reasoning, stored apart, never added twice.
+	in := u.Input - u.Cached - u.CacheWrite
+	if in < 0 {
+		in = 0
+		p.res.CodexUsageMismatch++
+	}
+	usd, known := Cost(p.model, "", in, u.Output, u.Cached, u.CacheWrite, 0)
+	// The key keeps its pre-cache-write figures, so no stored row changes key.
 	key := fmt.Sprintf("api_call:codex:%s/%d.%d.%d.%d.%d/%d.%d.%d.%d.%d", p.lineage.id, u.Input, u.Cached, u.Output, u.Reasoning, u.Total,
 		t.Input, t.Cached, t.Output, t.Reasoning, t.Total)
 	p.add(l, off, agentlogdb.AgentLogEvent{Key: key,
 		Kind: "api_call", Name: p.model, InputTokens: in, OutputTokens: u.Output, CacheReadTokens: u.Cached,
-		ThinkingTokens: u.Reasoning, CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion})
+		CacheWrite5mTokens: u.CacheWrite, ThinkingTokens: u.Reasoning, CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion})
 }
 
 func (p *codexParser) responseItem(l codexRolloutLine, pl codexPayload, off int64) {

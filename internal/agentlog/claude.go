@@ -14,9 +14,25 @@ import (
 	"watchtower/internal/agentlogdb"
 )
 
-// ParserVersion is stamped on agent_log_files; bump it when parsing changes
-// so present files are reparsed from 0 (idempotent keys, AGENTLOG-03).
-const ParserVersion = 4
+// ParserVersion is stamped on a Claude transcript's agent_log_files row;
+// bump it when parsing changes so present files are reparsed from 0
+// (idempotent keys, AGENTLOG-03). CodexParserVersion is a Codex rollout's
+// (spec 2026-11-03 §4.7, D56): 5 corrects the stored fresh-input and
+// cache-write split once without rereading Claude transcripts.
+const (
+	ParserVersion      = 4
+	CodexParserVersion = 5
+)
+
+// parserVersionFor is the parser version a file row of agent must carry to
+// count as read by this build. Every comparison with or stamp of a stored
+// file's version goes through it (TestParserVersionComparedOnlyThroughHelper).
+func parserVersionFor(agent string) int {
+	if agent == AgentCodex {
+		return CodexParserVersion
+	}
+	return ParserVersion
+}
 
 const maxLineBytes = 8 << 20
 
@@ -138,6 +154,10 @@ type ParseResult struct {
 	Skills       []string // every skill name known at the end of the parse (seed for the next slice)
 	PriorLoaded  bool     // PriorSkills was called: Skills includes the listings before the start
 	CodexLineage string   // the rollout's lineage at the end of the parse (seed for the next slice; ParseCodex only)
+	// CodexUsageMismatch counts the token lines of this parse whose fresh
+	// input came out negative (input − cached − cache write < 0): stored as
+	// 0 and counted, never floored silently (ParseCodex only).
+	CodexUsageMismatch int
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any
