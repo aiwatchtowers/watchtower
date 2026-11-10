@@ -52,7 +52,8 @@ struct OwnerAskClosedListPane: View {
         VStack(spacing: 0) {
             header(total: list?.count, shown: ids.count, searching: searching)
             Divider()
-            if let list, Model.showsSearch(total: list.count) { searchRow }
+            // A kept query keeps its field, so it can always be cleared.
+            if let list, Model.showsSearch(total: list.count) || searching { searchRow }
             banners(hasList: list != nil)
             content(list: list, sections: sections, ids: ids, searching: searching)
         }
