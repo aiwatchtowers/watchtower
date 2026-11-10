@@ -65,51 +65,95 @@ func (e Env) codexHome() string {
 	return filepath.Join(e.Home, ".codex")
 }
 
-// codexRoot is the folder below which every component of a Codex path must be
-// a real folder: the owner's own CODEX_HOME, else the home folder (so a
-// symlinked ~/.codex is refused like a symlinked ~/.claude).
-func (e Env) codexRoot() string {
-	if e.CodexHome != "" {
-		return e.CodexHome
-	}
-	return e.Home
-}
-
 // ClaudeSkillPath is <Home>/.claude/skills/<name>/SKILL.md.
 func ClaudeSkillPath(e Env, name string) string {
 	return filepath.Join(e.Home, ".claude", "skills", name, "SKILL.md")
 }
 
-// CodexSkillPath is the copy of a user skill Codex reads:
-// <Home>/.agents/skills/<name>/SKILL.md when it exists, else
-// <codexHome>/skills/<name>/SKILL.md when that exists; ok is false when
-// neither does. "Exists" is any kind of entry: the read refuses a symlink or
-// special file instead of falling through to the other copy.
+// CodexSkillPath is the copy of a user skill Codex reads, when there is
+// exactly one: <Home>/.agents/skills/<name>/SKILL.md or
+// <codexHome>/skills/<name>/SKILL.md. ok is false when neither exists or both
+// do (the coach refuses a skill in both folders: errCodexSkillTwice).
+// "Exists" is any kind of entry: the read refuses a symlink or special file.
 //
-// Source (checked 2026-11-10): Codex loads user skills from both roots —
+// Source (checked 2026-11-10): Codex loads user skills from both folders —
 // codex-rs/ext/skills/src/host_roots.rs lists $HOME/.agents/skills (the
 // documented user location, learn.chatgpt.com/docs/build-skills) and
 // $CODEX_HOME/skills ("deprecated user skills location, kept for backward
-// compatibility"), deduplicating roots by path only; two skills with one name
-// are not merged ("both can appear in skill selectors"). The documented
-// location is therefore the one the coach treats as the copy Codex reads.
+// compatibility"), deduplicating by path only; two skills with one name are
+// not merged ("both can appear in skill selectors"), so neither copy wins
+// (owner, ask #1202: refuse until one copy is removed).
 func CodexSkillPath(e Env, name string) (path string, ok bool) {
-	path, _, ok = codexSkill(e, name)
-	return path, ok
+	paths := codexSkillCopies(e, name)
+	if len(paths) != 1 {
+		return "", false
+	}
+	return paths[0], true
 }
 
-// codexSkill is CodexSkillPath plus the root below which no folder on the
-// way to that copy may be a symlink.
-func codexSkill(e Env, name string) (path, root string, ok bool) {
-	for _, c := range []struct{ path, root string }{
-		{filepath.Join(e.Home, ".agents", "skills", name, "SKILL.md"), e.Home},
-		{filepath.Join(e.codexHome(), "skills", name, "SKILL.md"), e.codexRoot()},
+// codexSkillCopies is the copies of a Codex user skill that exist, in the
+// order ~/.agents/skills, <codexHome>/skills.
+func codexSkillCopies(e Env, name string) []string {
+	var out []string
+	for _, p := range []string{
+		filepath.Join(e.Home, ".agents", "skills", name, "SKILL.md"),
+		filepath.Join(e.codexHome(), "skills", name, "SKILL.md"),
 	} {
-		if _, err := os.Lstat(c.path); err == nil {
-			return c.path, c.root, true
+		if _, err := os.Lstat(p); err == nil {
+			out = append(out, p)
 		}
 	}
-	return "", "", false
+	return out
+}
+
+// errCodexSkillTwice is the refusal for a Codex user skill present in both
+// folders Codex reads (owner, ask #1202).
+var errCodexSkillTwice = errors.New("a codex skill in two folders")
+
+// codexSkillTwiceError carries the owner's exact sentence, naming the real
+// Codex home when $CODEX_HOME is set.
+type codexSkillTwiceError struct{ codexSkills string }
+
+func (e codexSkillTwiceError) Error() string {
+	return "Codex sees this skill in two folders (~/.agents/skills and " + e.codexSkills +
+		") — remove one copy first."
+}
+
+func (e codexSkillTwiceError) Is(target error) bool { return target == errCodexSkillTwice }
+
+func (e Env) codexSkillsLabel() string {
+	if e.CodexHome != "" {
+		return filepath.Join(e.CodexHome, "skills")
+	}
+	return "~/.codex/skills"
+}
+
+// resolveTop is the root of a file destination: top (~/.claude, ~/.agents or
+// the Codex home) itself, or the real folder it links to — the one component
+// allowed to be a symlink (owner, ask #1202: dotfiles). A missing top is kept
+// as is (AGENTS.md creates it); anything else that is not a folder is refused.
+func (f textFile) resolveTop(top string) (string, error) {
+	fi, err := os.Lstat(top)
+	if errors.Is(err, fs.ErrNotExist) {
+		return top, nil
+	}
+	if err != nil {
+		return "", settingsErr("reading the "+f.label+" folder", err)
+	}
+	if fi.IsDir() {
+		return top, nil
+	}
+	if fi.Mode()&fs.ModeSymlink == 0 {
+		return "", f.notRegular
+	}
+	resolved, err := filepath.EvalSymlinks(top)
+	if err != nil {
+		return "", f.notRegular
+	}
+	if fi, err := os.Stat(resolved); err != nil || !fi.IsDir() {
+		return "", f.notRegular
+	}
+	return resolved, nil
 }
 
 // codexAgentsMDPath is <codexHome>/AGENTS.md.
@@ -220,13 +264,22 @@ func (f textFile) replace(root, path, from, to string, create bool) (existed boo
 }
 
 // userFile is where a file destination lives: its kind, the root below which
-// no folder may be a symlink, the path, and whether a missing file may be
-// created (only AGENTS.md).
+// no folder may be a symlink (the resolved ~/.claude, ~/.agents or Codex
+// home), the path, and whether a missing file may be created (only AGENTS.md).
 type userFile struct {
 	kind   textFile
 	root   string
 	path   string
 	create bool
+}
+
+// under is the userFile for rel below top, top resolved by resolveTop.
+func under(kind textFile, top, rel string, create bool) (userFile, error) {
+	root, err := kind.resolveTop(top)
+	if err != nil {
+		return userFile{}, err
+	}
+	return userFile{kind: kind, root: root, path: filepath.Join(root, rel), create: create}, nil
 }
 
 // userFileOf resolves a file destination for skill (skill destinations only).
@@ -239,17 +292,24 @@ func userFileOf(e Env, dest, skill string) (userFile, error) {
 			return userFile{}, err
 		}
 	}
+	rel := filepath.Join("skills", skill, "SKILL.md")
 	switch dest {
 	case DestClaudeSkillUser:
-		return userFile{kind: skillFileKind, root: e.Home, path: ClaudeSkillPath(e, skill)}, nil
+		return under(skillFileKind, filepath.Join(e.Home, ".claude"), rel, false)
 	case DestCodexSkillUser:
-		path, root, ok := codexSkill(e, skill)
-		if !ok {
+		agents := filepath.Join(e.Home, ".agents")
+		copies := codexSkillCopies(e, skill)
+		switch {
+		case len(copies) == 0:
 			return userFile{}, errSkillNotFound
+		case len(copies) > 1:
+			return userFile{}, codexSkillTwiceError{codexSkills: e.codexSkillsLabel()}
+		case copies[0] == filepath.Join(agents, rel):
+			return under(skillFileKind, agents, rel, false)
 		}
-		return userFile{kind: skillFileKind, root: root, path: path}, nil
+		return under(skillFileKind, e.codexHome(), rel, false)
 	case DestCodexAgentsMDUser:
-		return userFile{kind: agentsMDKind, root: e.codexRoot(), path: codexAgentsMDPath(e), create: true}, nil
+		return under(agentsMDKind, e.codexHome(), "AGENTS.md", true)
 	}
 	return userFile{}, errNotSupported
 }

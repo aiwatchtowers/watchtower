@@ -156,9 +156,21 @@ func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
 			got, ok := CodexSkillPath(e, "x")
 			require.True(t, ok)
 			assert.True(t, under(got, roots...), got)
+			require.NoError(t, os.Remove(p))
 		}
 		require.NoError(t, os.RemoveAll(filepath.Join(hdir, ".agents")))
 	}
+	// With a symlinked ~/.claude (dotfiles) the written file is under the
+	// folder it resolves to, never anywhere else.
+	dot := t.TempDir()
+	linked := t.TempDir()
+	require.NoError(t, os.Symlink(dot, filepath.Join(linked, ".claude")))
+	u, err := userFileOf(Env{Home: linked}, DestClaudeSkillUser, "x")
+	require.NoError(t, err)
+	resolved, err := filepath.EvalSymlinks(dot)
+	require.NoError(t, err)
+	assert.True(t, under(u.path, resolved), u.path)
+
 	// A skill name never leaves its skills folder.
 	for _, dest := range []string{DestClaudeSkillUser, DestCodexSkillUser} {
 		_, err := userFileOf(Env{Home: hdir}, dest, "../../x")
