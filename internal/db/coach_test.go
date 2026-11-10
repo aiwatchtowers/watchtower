@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -269,4 +271,143 @@ func TestFinishSpecReview_StoresFindings(t *testing.T) {
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"x":1}`, got.Result, "the re-run's result is stored")
 	assert.Equal(t, 5, got.Findings, "findings are written once")
+}
+
+func newTuningConversation(t *testing.T, d *DB) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, created_at, updated_at)
+		VALUES ('', 'analytics_tuning', 0, 0)`)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+func chatSkillFixture(fp, skill string) CoachProposal {
+	p := coachFixture(fp)
+	p.Destination = "claude_skill_user"
+	p.Skill = skill
+	return p
+}
+
+func TestCoachProposal_NewColumnsRoundTrip(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	conv := newTuningConversation(t, d)
+	p := chatSkillFixture("fp-chat", "review-pr")
+	p.Origin = "chat"
+	p.ConversationID = &conv
+	id, err := d.InsertCoachProposal(p, now)
+	require.NoError(t, err)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "chat", got.Origin)
+	assert.Equal(t, "review-pr", got.Skill)
+	require.NotNil(t, got.ConversationID)
+	assert.Equal(t, conv, *got.ConversationID)
+
+	weekly, err := d.InsertCoachProposal(coachFixture("fp-weekly"), now)
+	require.NoError(t, err)
+	got, err = d.GetCoachProposal(weekly)
+	require.NoError(t, err)
+	assert.Equal(t, "weekly", got.Origin, "an empty origin is written as weekly")
+	assert.Equal(t, "", got.Skill)
+	assert.Nil(t, got.ConversationID)
+}
+
+func TestInsertChatCoachProposal_SetsConversation(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	conv := newTuningConversation(t, d)
+	id, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), &conv, now)
+	require.NoError(t, err)
+	require.NotZero(t, id)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Equal(t, "chat", got.Origin)
+	require.NotNil(t, got.ConversationID)
+	assert.Equal(t, conv, *got.ConversationID)
+	assert.True(t, got.CreatedAt.Equal(now))
+
+	byFP, err := d.CoachProposalByFingerprint("fp1")
+	require.NoError(t, err)
+	assert.Equal(t, id, byFP.ID)
+	_, err = d.CoachProposalByFingerprint("missing")
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestInsertChatCoachProposal_ConversationRemoved(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	conv := newTuningConversation(t, d)
+	_, err := d.Exec(`DELETE FROM chat_conversations WHERE id = ?`, conv)
+	require.NoError(t, err)
+	id, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), &conv, now)
+	assert.True(t, errors.Is(err, ErrConversationRemoved), "got %v", err)
+	assert.Zero(t, id)
+	n, err := d.CountOpenCoachProposals()
+	require.NoError(t, err)
+	assert.Zero(t, n, "nothing filed")
+}
+
+func TestInsertChatCoachProposal_DeletedWorkbenchIsNotConversationRemoved(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	conv := newTuningConversation(t, d)
+	p := chatSkillFixture("fp1", "a")
+	p.WorkbenchID = 999_999 // no such workbench
+	_, err := d.InsertChatCoachProposal(p, &conv, now)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrConversationRemoved), "got %v", err)
+	assert.True(t, IsForeignKeyViolation(err), "got %v", err)
+}
+
+func TestInsertChatCoachProposal_TextBusy(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	open, err := d.InsertCoachProposal(chatSkillFixture("fp-open", "a"), now)
+	require.NoError(t, err)
+
+	_, err = d.InsertChatCoachProposal(chatSkillFixture("fp-a", "a"), nil, now)
+	require.True(t, errors.Is(err, ErrCoachTextBusy), "got %v", err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("#%d", open))
+
+	id, err := d.InsertChatCoachProposal(chatSkillFixture("fp-b", "b"), nil, now)
+	require.NoError(t, err)
+	assert.NotZero(t, id, "another skill's text is free")
+
+	// A decided proposal no longer holds the text.
+	require.NoError(t, d.DecideCoachProposal(open, "open", "declined", now))
+	id, err = d.InsertChatCoachProposal(chatSkillFixture("fp-a", "a"), nil, now)
+	require.NoError(t, err)
+	assert.NotZero(t, id)
+}
+
+func TestInsertChatCoachProposal_FingerprintConflictIsZero(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	first, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), nil, now)
+	require.NoError(t, err)
+	require.NotZero(t, first)
+	id, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), nil, now)
+	require.NoError(t, err, "a retry of the open proposal is a conflict, not busy")
+	assert.Zero(t, id)
+	require.NoError(t, d.DecideCoachProposal(first, "open", "declined", now))
+	id, err = d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), nil, now)
+	require.NoError(t, err)
+	assert.Zero(t, id)
+}
+
+func TestCoachProposal_ConversationDeletedKeepsProposal(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	conv := newTuningConversation(t, d)
+	id, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), &conv, now)
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM chat_conversations WHERE id = ?`, conv)
+	require.NoError(t, err)
+	got, err := d.GetCoachProposal(id)
+	require.NoError(t, err)
+	assert.Nil(t, got.ConversationID)
+	assert.Equal(t, "open", got.Status)
 }
