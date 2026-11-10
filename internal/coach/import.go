@@ -15,7 +15,7 @@ const maxImportTitleRunes = 80
 // coach (spec 2026-10-28 §6). It acts only on open suggestions not yet moved
 // and leaves none behind, so after its first run it is a no-op (nothing writes
 // new suggestions any more). In one transaction the newest rows (by
-// last_seen_at) that fit the free slots (maxOpen − open proposals), whose
+// last_seen_at) that fit the free slots (maxOpen − open weekly proposals), whose
 // destination no open proposal edits, and whose appended text passes
 // ValidateAfter become open "add" proposals to the same text; each such row's
 // moved_to is its proposal id, every other open row's -1 (its owner lines stay
@@ -30,7 +30,7 @@ func ImportSuggestions(main *db.DB, lang string, now time.Time) (int, error) {
 // when it is retired: no free slot, a busy or unknown destination, a chat
 // suggestion bound to a workbench, or a text that fails validation.
 func suggestionProposal(open []db.CoachProposal, s db.InstructionSuggestion, before, lang string) (db.CoachProposal, bool) {
-	if len(open) >= maxOpen {
+	if weeklyOpen(open) >= maxOpen { // a chat proposal takes no slot
 		return db.CoachProposal{}, false
 	}
 	var dest string

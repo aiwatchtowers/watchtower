@@ -74,8 +74,9 @@ type Signal struct {
 }
 
 // CurrentText is one editable destination as it stands. WorkbenchID 0 is
-// global; Skill names the skill of a skill destination ("" otherwise). Budget is the destination's rune budget; 0 means it is not a text
-// budget (the settings allow list).
+// global; Skill names the skill of a skill destination ("" otherwise). Budget
+// is the destination's rune budget; 0 means it is not a text budget (the
+// settings allow list).
 type CurrentText struct {
 	Destination string
 	WorkbenchID int64
