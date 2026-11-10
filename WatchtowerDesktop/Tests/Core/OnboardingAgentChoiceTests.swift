@@ -383,7 +383,7 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         old.signInEnded(exitCode: 0)
         // The caller probes again: the login is there now, and it opens by itself.
         old.applyLoginProbe(outdated: [])
-        XCTAssertEqual(old.terminalCommand, "claude auth login")
+        XCTAssertEqual(old.terminalCommand, "'/opt/homebrew/Caskroom/claude-code/1.0.88/claude' auth login")
         XCTAssertEqual(old.signInToOpen, .claude)
         XCTAssertEqual(old.retryLabel, "Sign in again")
     }
@@ -421,5 +421,26 @@ final class OnboardingAgentChoiceTests: XCTestCase {
             "Watchtower can’t tell how this Claude Code was installed (/opt/homebrew/Caskroom/claude-code/1.0.88/claude). "
                 + "Update it the way you installed it, then check again."
         )
+    }
+
+    func testTerminalRunsTheLocatedExecutable() {
+        var signedOut = choice(.signedOut, .ready)
+        signedOut.pick(.claude)
+        signedOut.installs = [.claude: .init(path: "/Users/acme/.local/share/claude/versions/1", kind: .native, executable: "/Users/acme/.local/bin/claude")]
+        XCTAssertEqual(signedOut.terminalCommand, "'/Users/acme/.local/bin/claude' auth login")
+        XCTAssertEqual(signedOut.setup?.steps.map(\.command), ["'/Users/acme/.local/bin/claude' auth login"])
+
+        signedOut.installs = [.claude: .init(path: "/x", kind: .native, executable: "/Users/o'brien/bin/claude")]
+        XCTAssertEqual(signedOut.terminalCommand, "'/Users/o'\\''brien/bin/claude' auth login")
+
+        var old = choice(.signedOut, .ready)
+        old.pick(.claude)
+        old.installs = [.claude: .init(path: "/Users/acme/.local/share/claude/versions/1", kind: .native, executable: "/Users/acme/.local/bin/claude")]
+        old.applyLoginProbe(outdated: [.claude])
+        XCTAssertEqual(old.terminalCommand, "'/Users/acme/.local/bin/claude' update")
+
+        var codex = choice(.ready, .signedOut, configured: "codex")
+        codex.installs = [.codex: .init(path: "/p/codex", kind: .npm, executable: "/opt/homebrew/bin/codex")]
+        XCTAssertEqual(codex.terminalCommand, "'/opt/homebrew/bin/codex' login")
     }
 }

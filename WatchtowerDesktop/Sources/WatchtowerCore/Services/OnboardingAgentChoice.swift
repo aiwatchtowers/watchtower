@@ -22,19 +22,24 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             }
         }
 
-        package var signInCommand: String {
+        package var signInCommand: String { signInCommand(executable: nil) }
+
+        /// The sign-in run through the located executable (shell-quoted);
+        /// the bare name when none is known.
+        package func signInCommand(executable: String?) -> String {
+            let program = executable.map { OnboardingAgentChoice.shellQuote($0) } ?? rawValue
             switch self {
-            case .claude: "claude auth login"
-            case .codex: "codex login"
+            case .claude: return program + " auth login"
+            case .codex: return program + " login"
             }
         }
 
         /// The update for an install too old for `signInCommand`, by how it
         /// was installed (owner, ask #1163): each way updates its own copy;
         /// an unknown way gets no command — the owner updates it their way.
-        package func updateCommand(_ kind: InstallKind) -> String? {
+        package func updateCommand(_ kind: InstallKind, executable: String? = nil) -> String? {
             switch (self, kind) {
-            case (.claude, .native): "claude update"
+            case (.claude, .native): executable.map { OnboardingAgentChoice.shellQuote($0) + " update" } ?? "claude update"
             case (.claude, .homebrew): "brew upgrade --cask claude-code"
             case (.claude, .npm): "npm install -g @anthropic-ai/claude-code@latest"
             case (.codex, .native): "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
@@ -130,9 +135,21 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     /// The resolved executable of an installed agent and how it got there.
     package struct Install: Equatable, Sendable {
+        /// Symlinks resolved: decides the kind and names the stuck note.
         package var path: String
         package var kind: InstallKind
-        package init(path: String, kind: InstallKind) { self.path = path; self.kind = kind }
+        /// Go's own lookup result, what actually runs (the terminal quotes it).
+        package var executable: String
+        package init(path: String, kind: InstallKind, executable: String? = nil) {
+            self.path = path
+            self.kind = kind
+            self.executable = executable ?? path
+        }
+    }
+
+    /// Single-quotes a path for the shell; an embedded `'` becomes `'\''`.
+    package static func shellQuote(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// The status line's colour, mapped to `Tone` by the view.
@@ -245,12 +262,16 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     /// outdated CLI can't be updated from here (`updateStuck`).
     package var terminalCommand: String? {
         guard let agent = selected, status(agent) == .signedOut else { return nil }
-        guard outdated.contains(agent) else { return agent.signInCommand }
+        guard outdated.contains(agent) else { return signInCommand(agent) }
         return updateStuck(agent) ? nil : updateCommand(agent)
     }
 
     private func updateCommand(_ agent: Agent) -> String? {
-        agent.updateCommand(installs[agent]?.kind ?? .unknown)
+        agent.updateCommand(installs[agent]?.kind ?? .unknown, executable: installs[agent]?.executable)
+    }
+
+    private func signInCommand(_ agent: Agent) -> String {
+        agent.signInCommand(executable: installs[agent]?.executable)
     }
 
     /// Outdated, and either the way it was installed is unknown or an
@@ -381,7 +402,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                 title: updating ? "Update \(agent.name) to sign in" : "Sign in to \(agent.name)",
                 steps: [Step(
                     label: "Or run it in your own Terminal:",
-                    command: updating ? updateCommand(agent) : agent.signInCommand
+                    command: updating ? updateCommand(agent) : signInCommand(agent)
                 )],
                 detail: nil,
                 showsManualPath: false,
