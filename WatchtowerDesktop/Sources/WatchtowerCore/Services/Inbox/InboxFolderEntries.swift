@@ -126,10 +126,16 @@ package enum InboxFolderEntries {
     }
 
     /// Needs approval's entries: notices first, then the native cards, then
-    /// the recipe's cards. Only approvals open in this read are drawn: the
-    /// strip's actions that wait on the owner (`openActions`; the strip also
-    /// carries approved, running and recently decided rows) and its due
-    /// reminders.
+    /// the recipe's cards, then the approved rows still in flight. The
+    /// approvals open in this read are the strip's actions that wait on the
+    /// owner (`openActions`) and its due reminders. An `approved` or
+    /// `executing` row is not closed: it stays on its native card (spec A,
+    /// "A proposal stuck in approved or executing": a stuck target proposal
+    /// shows "Didn't finish" with **Try again** there), and leaves once it
+    /// is applied, rejected or failed. Such a row is not an approval waiting
+    /// on the owner, so it never counts (the folder's count and the badge
+    /// stay `awaitingOwnerCount`). The strip's recently decided tail is
+    /// never drawn here.
     private static func approvals(_ inputs: Inputs) -> [InboxFolderEntry] {
         let state = inputs.folders.needsApproval
         let open = inputs.feed.proposals.filter { inputs.folders.openActions.contains($0.id) }
@@ -139,8 +145,11 @@ package enum InboxFolderEntries {
             recipeOn: inputs.approvalsOn && !state.stopped, lastRunFailed: state.lastRunFailed)
         let native = items.filter { $0.recipe == nil }
         let recipe = items.filter { $0.recipe != nil }
+        let inFlight = inputs.feed.proposals
+            .filter { ($0.status == "approved" || $0.isExecuting) && !inputs.folders.openActions.contains($0.id) }
+            .map { NeedsApprovalItem(.action($0)) }
         return inputs.feed.builtinNotices.map(InboxFolderEntry.builtinNotice)
-            + (native + recipe).map(InboxFolderEntry.approval)
+            + (native + recipe + inFlight).map(InboxFolderEntry.approval)
     }
 
     /// The root's legacy entries with their own times.
