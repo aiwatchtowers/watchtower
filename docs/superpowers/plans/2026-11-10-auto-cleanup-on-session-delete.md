@@ -55,7 +55,7 @@ Depends on: none
 - `SessionWorktree{Root, Branch, FirstAt, Source, Kind string}`, with `Source` ∈ `"cwd"|"command"` and `Kind` ∈ `"worktree"|"branch"`.
 - `const MaxSessionCommandRows = 512`.
 - `func (db *DB) RecordSessionCommandRow(ctx context.Context, sessionID int64, root, branch, kind, at string) (recorded, full bool, err error)`: one short write transaction. An existing `(session_id, root, branch)` row only moves `last_at` and never changes `source`.
-- `func (db *DB) SetDeleteRequested(ctx context.Context, sessionID int64, at string) error`. It is used only by Go tests; the Desktop writes this column itself.
+- No Go writer of `delete_requested_at`: the Desktop is its only writer (spec §4). Go tests set it with a raw `UPDATE` in an unexported `_test.go` helper (`setDeleteRequestedForTest`).
 
 Steps:
 - [ ] **Write the migration.** `ALTER TABLE terminal_sessions ADD COLUMN delete_requested_at TEXT;` and `ALTER TABLE terminal_session_worktrees ADD COLUMN source TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command'));` plus the same for `kind` (`'worktree'`, `CHECK (kind IN ('worktree','branch'))`). `-- +goose Down` drops the columns (SQLite ≥ 3.35 `DROP COLUMN`).
@@ -146,7 +146,6 @@ Depends on: Task 1
 **Files:**
 - Modify: `internal/sessioncleanup/ownership.go` (`observe`), `internal/sessioncleanup/plan.go` (`loadObserved`), `internal/sessioncleanup/deps.go` (new DB reads in the interface)
 - Modify: `internal/db/terminal_session_agent_sessions.go`
-- Modify: `docs/inventory/workbench.md` (PROJ-18 amendment: ledger `source`/`kind`, the scratchpad rule, caps 64/512)
 - Test: `internal/sessioncleanup/plan_test.go`, `internal/sessioncleanup/ownership_test.go`
 
 **Interfaces:**
@@ -157,7 +156,7 @@ Depends on: Task 1
   - `command` rows: `worktree` kind → `roots` and its branch → `named`; `branch` kind → `branches` and `named`;
   - `scratchRoots []string`: absolute `<tmp>/claude-<uid>/*/<uuid>/` prefixes, for uuids whose owners are exactly `[row]`.
 - `sawWorktree` also matches a root inside any `scratchRoots` prefix.
-- The `<tmp>` root is `filepath.EvalSymlinks(os.TempDir())`, with the trailing `claude-<uid>` taken from `os.Getuid()`.
+- The `<tmp>` bases are a set, because the CLI the Desktop starts may have `TMPDIR=/var/folders/…/T` while Claude Code writes its lanes under `/tmp`: `EvalSymlinks` of `/tmp` (→ `/private/tmp` on macOS), of `os.TempDir()`, and of `$CLAUDE_CODE_TMPDIR` when set, deduplicated. Under each base the prefix is `claude-<os.Getuid()>/*/<uuid>/`. `func scratchBases() []string` is a package var so tests inject a temp base. `TestScratchBases_IncludeSlashTmpWhateverTMPDIR` sets `TMPDIR` to another dir and asserts the resolved `/tmp` is still in the set.
 
 Steps:
 - [ ] **Write the failing tests:**
@@ -167,7 +166,7 @@ Steps:
   - `TestProj18_CommandNamedBranchOlderThanSessionIsKept`: the reflog birth predates the start → `existed_before_session`;
   - `TestProj18_CommandRowUnpushedIsKept` → `unpushed_commits`.
 - [ ] Run `go test ./internal/sessioncleanup -run TestProj18_`. Expected: the new ones FAIL, the old ones PASS.
-- [ ] **Implement.** Then update PROJ-18 in `docs/inventory/workbench.md`; the "Only what the session observed and what was created after the session started" sentence stays verbatim.
+- [ ] **Implement.** Do not edit `docs/inventory/workbench.md`; Task 7 owns every inventory edit of this plan, which avoids a merge conflict between lanes.
 - [ ] Run `go test ./internal/sessioncleanup ./internal/db`. Expected: PASS.
 - [ ] Commit `feat(sessioncleanup): adopt agent-created and scratchpad worktrees (#1716)`.
 
@@ -183,7 +182,7 @@ Depends on: Task 1
   - `internal/sessionstate/status.go`;
   - `cmd/workbench_session.go` (the brief's session lines);
   - `internal/sessionstart/start.go`: `latestTargetSession` (:933), the placement scan (:771), both existence checks (:597, :621), and `Start` by id (:345 → `db.ErrTerminalSessionNotFound`).
-- Modify: `internal/hub/actions/handlers/session_input.go` (a deleting row is treated as missing)
+- Modify: `internal/hub/actions/handlers/session_input.go` and `internal/hub/actions/handlers/permission.go` (`sessionInterrupt`): a deleting row is treated as missing
 - Create: `internal/db/deleting_rows_guard_test.go`
 - Test: next to each package above.
 
@@ -199,7 +198,8 @@ Steps:
   - `TestStart_DeletingRowIsNotFound`;
   - `TestTerminalSessionSlice_HidesDeletingRow`;
   - `TestWorkbenchStatus_IgnoresDeletingRow`;
-  - `TestSessionInput_DeletingRowRefused`.
+  - `TestSessionInput_DeletingRowRefused`;
+  - `TestSessionInterrupt_DeletingRowRefused`.
 - [ ] Run `go test ./internal/db -run TestProj17_DeletingRowsLeaveEveryList`. Expected: FAIL, listing the unfiltered sites.
 - [ ] **Add the filter** at each list site. Run `go test` on each touched package (`./internal/hub/... ./internal/sessionstart ./internal/sessionstate ./internal/db`) and `go test ./cmd -run 'TestWorkbenchSession'`. Expected: PASS.
 - [ ] Commit `feat: a session being deleted leaves every list (#1716)`.
@@ -253,10 +253,11 @@ Depends on: Task 1, Task 6
 - Modify: `WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+SessionCleanup.swift`: remove `startDeleteAndCleanUp`/`runDeleteAndCleanUp`/`planCleanupBeforeDelete`.
 - Modify: `WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift`: an apply with no `--item`, a 10-min timeout with a process-group kill, and a slot that waits instead of refusing.
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift`:
-  - `fetchForWorkbench`, `fetchAllWorkbenchSessions`, `fetchStandalone`, `fetchForTarget` and `fetchWorkLinks` filter deleting rows;
+  - `fetchForWorkbench`, `fetchAllWorkbenchSessions`, `fetchStandalone`, `fetchForTarget`, `fetchWorkLinks`, `fetchAgentStates`, `fetchAgentCwds`, the activity ordering in `WorkbenchQueries.swift`, and the reads in `Services/HubKeepAwake.swift` filter deleting rows. A deleting row must give no notice, no "needs you" badge, and keep nothing awake;
+  - the guard `testProj17_SwiftDeletingRowsLeaveEveryList` (in `Tests/Core`) scans `WatchtowerDesktop/Sources/**/*.swift` for string literals with `FROM terminal_sessions`. Each must contain `delete_requested_at` or be on its explicit by-id allowlist (`fetch(id:)`, `goStartRow`, `isFinished`, `fetchCleanupRecord`, `hasWorktree`, `fetchDeleting`, the update/delete statements);
   - new `fetchDeleting(projectID:)`, `markDeleteRequested(id:at:)` and `clearDeleteRequested(id:)`.
 - Delete: `WatchtowerDesktop/Sources/WatchtowerCore/Services/SessionDeleteCleanupChoice.swift` (+ its tests).
-- Modify: `docs/inventory/workbench.md` (PROJ-17 amendment, PROJ-18 Delete-and-Clean-Up sentence), `docs/features/workbench.md` (session cleanup paragraph).
+- Modify: `docs/inventory/workbench.md`, the only task that edits it. It covers the PROJ-17 amendment and the whole PROJ-18 amendment of spec §5: every delete cleans, the Delete-and-Clean-Up sentence goes, the ledger `source`/`kind` and command source, the scratchpad rule, caps 64/512. The "Only what the session observed and what was created after the session started" sentence stays verbatim. Also `docs/features/workbench.md` (session cleanup paragraph).
 - Test: `WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift`, `WorkbenchesViewModelPendingDeleteTests.swift`, new `WorkbenchesViewModelAutoCleanupTests.swift`.
 
 **Interfaces:**
@@ -265,7 +266,8 @@ Depends on: Task 1, Task 6
   - `var autoCleanupQueue: [Int64: [Int64]]` (workbench → row ids, FIFO);
   - `var notFullyCleaned: [Int64: String]` (row → mark);
   - `var cleanupNotice: SessionCleanupNotice?`;
-  - `func requeueDeletingRowsAtLaunch()` (called after `initWorkbenches`);
+  - `func requeueDeletingRowsAtLaunch()`: called after `initWorkbenches` and host reattach. It queues only rows with `delete_requested_at` and **no live terminal**; a row that is live again is left alone;
+  - quit while an apply runs: `QuitCoordinator` sends SIGTERM to the apply's process group and waits at most 5 s, then SIGKILL. The row keeps `delete_requested_at`, so the next launch re-queues it, and no old process outlives the app to race the new one;
   - `func cleanUpAgain(_ id: Int64)`, `func deleteAnyway(_ id: Int64)`;
   - Resume clears `delete_requested_at` in its own write first.
 
@@ -281,7 +283,13 @@ Steps:
   - `testTimeoutIsCouldNot` (the injected clock passes 10 min; the process kill is asserted on the fake runner);
   - `testResumeClearsDeleteRequested`; `testResumeDisabledWhileCleaning`;
   - `testDeleteAnywayDeletesRow`;
-  - `testDeletingRowsHiddenFromLists`.
+  - `testDeletingRowsHiddenFromLists`;
+  - `testDeletingRowGivesNoAgentStateNotice` (`fetchAgentStates`);
+  - `testRequeueSkipsRowWithLiveTerminal`;
+  - `testQuitStopsRunningApplyAndKeepsMark`;
+  - `testCleanUpAgainSuccessDeletesRow`, `testCleanUpAgainFailureKeepsNewMark`;
+  - `testShowInCleanUpOpensScreenScopedToSession`;
+  - `testNotFullyCleanedReportShowsCleanupSection` (the report's Cleanup section is read from `cleanup_result`).
   
   Delete `testQuickDeleteNeverCleansUp` and `testProj18_DeleteAppliesOnlyThePlannedItems`, which ask #1210 replaces.
 - [ ] Run `make test-swift FILTER='WorkbenchSessionDeleteTests|WorkbenchesViewModelPendingDeleteTests|WorkbenchesViewModelAutoCleanupTests'`. Expected: FAIL.
