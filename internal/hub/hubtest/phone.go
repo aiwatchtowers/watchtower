@@ -834,7 +834,7 @@ func FromLink(l wire.LinkPayload, f Records, clock func() time.Time) (*Phone, er
 	return FromLinkWithKey(l, f, clock, nil)
 }
 
-// FromLinkWithKey is FromLink for a phone with device key key (nil = fresh).
+// FromLinkWithKey is FromLink for a phone whose device key is given (nil = fresh).
 func FromLinkWithKey(l wire.LinkPayload, f Records, clock func() time.Time, key ed25519.PrivateKey) (*Phone, error) {
 	hub, err := secure.ParseID(l.HubID)
 	if err != nil {
