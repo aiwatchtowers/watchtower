@@ -80,6 +80,11 @@ func installSkillPair(skillsDir string, o WorkbenchInstallOptions) (core, flow S
 	if err := adoptShippedSingleFile(skillsDir); err != nil {
 		errs = append(errs, err)
 	}
+	for _, base := range []Skill{workbenchSkill(), flowSkill()} {
+		if err := adoptPlainCopy(skillsDir, base); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	var err error
 	if core, err = installSkill(skillsDir, o.coreSkill()); err != nil {
 		return SkillStatus{}, SkillStatus{}, false, append(errs, err)

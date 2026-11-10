@@ -299,3 +299,42 @@ func TestSyncMethodology_RendersTheFlowOverlay(t *testing.T) {
 		t.Fatalf("the preset must be installed rendered: %+v", rep.Claude)
 	}
 }
+
+// A plain shipped copy that lost its sidecar takes a first overlay.
+func TestOverlay_PlainCopyWithoutSidecarIsAdopted(t *testing.T) {
+	dir := t.TempDir()
+	name := Skills()[0].Name
+	if _, err := Install(dir, nil); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dir, name, shippedDigestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := RerenderSkill(dir, name, []string{"Be brief."}); err != nil || st != StateUpdated {
+		t.Fatalf("rerender: %v %v", st, err)
+	}
+	if err := os.Remove(filepath.Join(dir, name, shippedDigestFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name, "SKILL.md"), []byte(Skills()[0].Content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Install(dir, Overlays{name: {"Be brief."}})
+	if err != nil || got[0].State != StateUpdated {
+		t.Fatalf("install: %+v %v", got, err)
+	}
+
+	folder := fakeRepo(t)
+	o := workbenchOpts(folder, newFakeClaude())
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err != nil {
+		t.Fatalf("workbench: %v", err)
+	}
+	if err := os.Remove(filepath.Join(filepath.Dir(rep.Skill.Path), shippedDigestFile)); err != nil {
+		t.Fatal(err)
+	}
+	o.Overlays = Overlays{WorkbenchSkillName: {"Be brief."}}
+	if rep, err = InstallWorkbench(context.Background(), o); err != nil || rep.Skill.State != StateUpdated {
+		t.Fatalf("workbench overlay: %+v %v", rep.Skill, err)
+	}
+}

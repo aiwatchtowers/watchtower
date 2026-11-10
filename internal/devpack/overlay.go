@@ -3,7 +3,10 @@ package devpack
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -88,6 +91,9 @@ func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
 			return "", err
 		}
 	}
+	if err := adoptPlainCopy(skillsDir, s); err != nil {
+		return "", err
+	}
 	s = Render(s, lines)
 	dir := filepath.Join(skillsDir, name)
 	file := filepath.Join(dir, "SKILL.md")
@@ -136,4 +142,27 @@ func keptState(st SkillStatus) SkillStatus {
 		st.State = StateUnchanged
 	}
 	return st
+}
+
+// adoptPlainCopy records base's digest beside a copy that is byte-identical
+// to the shipped skill unrendered but has no sidecar (a crash between the
+// write and the sidecar): it is ours, so a first overlay may render into it
+// instead of reading it as an owner edit. Any other copy is left as it is.
+func adoptPlainCopy(skillsDir string, base Skill) error {
+	dir := filepath.Join(skillsDir, base.Name)
+	recorded, err := readShippedDigest(dir)
+	if err != nil || recorded != "" {
+		return err
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", filepath.Join(dir, "SKILL.md"), err)
+	}
+	if sum := sha256.Sum256(b); hex.EncodeToString(sum[:]) == base.SHA256 {
+		return writeShippedDigest(dir, base.SHA256)
+	}
+	return nil
 }

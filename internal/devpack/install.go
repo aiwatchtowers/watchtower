@@ -48,6 +48,9 @@ func Install(skillsDir string, ov Overlays) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
 	for _, s := range skills {
+		if err := adoptPlainCopy(skillsDir, s); err != nil {
+			return out, err
+		}
 		status, err := installSkill(skillsDir, ov.overlaid(s))
 		if err != nil {
 			return out, err
