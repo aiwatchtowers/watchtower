@@ -10,13 +10,15 @@ import (
 )
 
 func TestAIQueryPurpose_TagsContext(t *testing.T) {
-	ctx, err := queryContext(context.Background(), "spec_review.discuss")
-	if err != nil {
-		t.Fatalf("queryContext: %v", err)
-	}
-	got, ok := llmusage.PurposeFrom(ctx)
-	if !ok || got != "spec_review.discuss" {
-		t.Fatalf("PurposeFrom = %q, %v; want spec_review.discuss, true", got, ok)
+	for _, purpose := range []string{"spec_review.discuss", "review.reviewer"} {
+		ctx, err := queryContext(context.Background(), purpose)
+		if err != nil {
+			t.Fatalf("queryContext(%s): %v", purpose, err)
+		}
+		got, ok := llmusage.PurposeFrom(ctx)
+		if !ok || got != purpose {
+			t.Fatalf("PurposeFrom = %q, %v; want %s, true", got, ok, purpose)
+		}
 	}
 }
 

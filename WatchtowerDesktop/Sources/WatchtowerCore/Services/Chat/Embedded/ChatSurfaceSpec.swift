@@ -170,19 +170,25 @@ package struct ChatRunOptions: Equatable, Sendable {
     /// reviewer read (a spec review's Discuss thread); never with
     /// `readFolder`.
     package var readFolderAskID: Int64?
+    /// `--read-folder-round N`: the CLI reads the folder diff review round N
+    /// was taken from (the branch-review reviewer, owner ask #611); never
+    /// with `readFolder` or `readFolderAskID`.
+    package var readFolderRoundID: Int64?
 
     package init(
         provider: String? = nil,
         model: String? = nil,
         readFolder: String? = nil,
         purpose: String? = nil,
-        readFolderAskID: Int64? = nil
+        readFolderAskID: Int64? = nil,
+        readFolderRoundID: Int64? = nil
     ) {
         self.provider = provider
         self.model = model
         self.readFolder = readFolder
         self.purpose = purpose
         self.readFolderAskID = readFolderAskID
+        self.readFolderRoundID = readFolderRoundID
     }
 }
 

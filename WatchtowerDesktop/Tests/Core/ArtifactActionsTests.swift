@@ -7,7 +7,7 @@ final class ArtifactActionsTests: XCTestCase {
         return Dictionary(items.map { ($0.name, $0.value ?? "") }) { _, last in last }
     }
 
-    private func openedURL(_ action: ArtifactAction) -> URL? {
+    private func openedURL(_ action: ChatArtifactAction) -> URL? {
         guard case .open(let url) = action else { return nil }
         return url
     }

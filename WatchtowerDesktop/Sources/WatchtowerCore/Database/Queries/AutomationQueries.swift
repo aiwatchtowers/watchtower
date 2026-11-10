@@ -131,19 +131,29 @@ package enum AutomationQueries {
     private static let openInbox = "o.kind = 'inbox' AND o.done_at IS NULL AND o.dismissed_at IS NULL"
     private static let unreadInbox = "\(openInbox) AND o.read_at IS NULL"
 
-    /// Open inbox outputs, newest first, with their automation's name, its
-    /// workbench and the recipe's state; unread ones only unless `includeRead`
-    /// (the Inbox lists read cards too, Home only unread ones). `since` keeps
-    /// only the ones created then or later and `limit` caps the rows (Home's
-    /// window); the Inbox passes neither.
+    /// Open inbox outputs, the most recently changed first (`changed_at`: a
+    /// living card moves up only when its content changed, never on a
+    /// same-hash rewrite), with their automation's name, its workbench and
+    /// the recipe's state; unread ones only unless `includeRead` (the Inbox
+    /// lists read cards too, Home only unread ones). `since` keeps only the
+    /// ones changed then or later and `limit` caps the rows (Home's window);
+    /// the Inbox passes neither. `excludingAutomation` leaves one
+    /// automation's cards out before the cap (Home leaves out the
+    /// `needs-approval` built-in's, APPROVAL-01).
     package static func fetchInboxOutputs(
-        _ db: Database, since: Date? = nil, limit: Int? = nil, includeRead: Bool = false
+        _ db: Database,
+        since: Date? = nil,
+        limit: Int? = nil,
+        includeRead: Bool = false,
+        excludingAutomation: Int64? = nil
     ) throws -> [AutomationOutputCard] {
         // needs_confirmation and runnable are `Automation.needsConfirmation`
         // and `Automation.isRunnable` (Go `Runnable()`), in SQL.
         var sql = """
             SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at, o.link,
                 o.actions_json, o.read_at, o.pressed_action, o.pressed_run_id,
+                o.blocks_json, o.output_key, o.content_hash, o.written_at,
+                o.changed_at,
                 COALESCE(NULLIF(a.name, ''), a.slug) AS name, a.project_id, a.parse_error,
                 a.removed_at IS NOT NULL AS removed,
                 (a.parse_error = '' AND a.removed_at IS NULL AND a.confirmed_hash != a.approval_hash)
@@ -155,10 +165,16 @@ package enum AutomationQueries {
             """
         var arguments = StatementArguments()
         if let since {
-            sql += " AND o.created_at >= ?"
+            sql += " AND o.changed_at >= ?"
             arguments += [AutomationDates.format(since)]
         }
-        sql += " ORDER BY o.created_at DESC, o.id DESC"
+        if let excludingAutomation {
+            sql += " AND o.automation_id != ?"
+            arguments += [excludingAutomation]
+        }
+        // `changed_at` is backfilled by migration 00182 and written by every
+        // Go writer since, so the order uses `idx_automation_outputs_changed`.
+        sql += " ORDER BY o.changed_at DESC, o.id DESC"
         if let limit {
             sql += " LIMIT ?"
             arguments += [limit]
@@ -184,9 +200,43 @@ package enum AutomationQueries {
                     parseError: row["parse_error"], needsConfirmation: row["needs_confirmation"],
                     runnable: row["runnable"]
                 ),
-                recipeRemoved: row["removed"]
+                recipeRemoved: row["removed"],
+                blocksJSON: row["blocks_json"],
+                outputKey: row["output_key"],
+                contentHash: row["content_hash"],
+                writtenAt: AutomationDates.parse(row["written_at"]),
+                changedAt: AutomationDates.parse(row["changed_at"])
             )
         }
+    }
+
+    /// The people the open cards' `person` blocks name by `avatar.slack_user`
+    /// ("<account>:<user id>", the `users` key), as their best name: what
+    /// the card draws instead of an image (a card never fetches one). A
+    /// user the local table does not know is absent, so the block draws
+    /// the initials of the name the recipe wrote. A `blocks_json` that is
+    /// not JSON, or a block that is not an object, names nobody (the card
+    /// draws its unreadable fallback). Every `json_extract` on a block is
+    /// behind `json_each`'s own `b.type = 'object'` (not `json_type(b.value)`,
+    /// which parses a text element as JSON too): a text element would fail
+    /// the whole read, and SQLite may evaluate the join before the WHERE.
+    package static func artifactPeople(_ db: Database) throws -> [String: String] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT DISTINCT u.id, u.name, u.display_name, u.real_name
+            FROM automation_outputs o,
+                json_each(CASE WHEN json_valid(o.blocks_json) THEN o.blocks_json ELSE '{}' END, '$.blocks') b
+            JOIN users u ON u.id = CASE WHEN b.type = 'object'
+                THEN json_extract(b.value, '$.avatar.slack_user') END
+            WHERE \(openInbox) AND o.blocks_json != ''
+              AND CASE WHEN b.type = 'object' THEN json_extract(b.value, '$.type') END = 'person'
+            """)
+        var names: [String: String] = [:]
+        for row in rows {
+            let id: String = row["id"]
+            let candidates: [String] = [row["display_name"], row["real_name"], row["name"]]
+            names[id] = candidates.first { !$0.isEmpty } ?? id
+        }
+        return names
     }
 
     /// The badge and Home: unread open cards.
@@ -194,28 +244,40 @@ package enum AutomationQueries {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM automation_outputs o WHERE \(unreadInbox)") ?? 0
     }
 
-    /// The owner opened a card: writes `read_at` only, once, on an open card.
-    package static func markOutputOpened(_ db: Database, id: Int64, now: Date) throws {
-        try stampOnce(db, column: "read_at", id: id, now: now, extra: " AND read_at IS NULL")
+    /// The owner opened a card: writes `read_at` only, once, on an open card
+    /// still at `contentHash` (the version drawn). False when nothing
+    /// changed — the card was rewritten under the view, closed, or already
+    /// read: the caller re-reads instead of assuming the mark landed.
+    @discardableResult
+    package static func markOutputOpened(_ db: Database, id: Int64, contentHash: String, now: Date) throws -> Bool {
+        try stampOnce(db, column: "read_at", id: id, contentHash: contentHash, now: now, extra: " AND read_at IS NULL")
     }
 
-    /// Done on a card: writes `done_at` only, once.
-    package static func markOutputDone(_ db: Database, id: Int64, now: Date) throws {
-        try stampOnce(db, column: "done_at", id: id, now: now)
+    /// Done on a card: writes `done_at` only, once, at the drawn version.
+    @discardableResult
+    package static func markOutputDone(_ db: Database, id: Int64, contentHash: String, now: Date) throws -> Bool {
+        try stampOnce(db, column: "done_at", id: id, contentHash: contentHash, now: now)
     }
 
-    /// Dismiss on a card: writes `dismissed_at` only, once.
-    package static func dismissOutput(_ db: Database, id: Int64, now: Date) throws {
-        try stampOnce(db, column: "dismissed_at", id: id, now: now)
+    /// Dismiss on a card: writes `dismissed_at` only, once, at the drawn version.
+    @discardableResult
+    package static func dismissOutput(_ db: Database, id: Int64, contentHash: String, now: Date) throws -> Bool {
+        try stampOnce(db, column: "dismissed_at", id: id, contentHash: contentHash, now: now)
     }
 
-    /// Stamps one state column of an open card (neither done nor dismissed); a
-    /// closed card changes nothing.
-    private static func stampOnce(_ db: Database, column: String, id: Int64, now: Date, extra: String = "") throws {
+    /// Stamps one state column of an open card (neither done nor dismissed)
+    /// whose `content_hash` is still the drawn one. A living rewrite between
+    /// the render and the press changes the hash, so a version the owner
+    /// never saw is never marked; a row from before the migration has `''`
+    /// and the card read it as `''`. True when the row changed.
+    private static func stampOnce(
+        _ db: Database, column: String, id: Int64, contentHash: String, now: Date, extra: String = ""
+    ) throws -> Bool {
         try db.execute(sql: """
             UPDATE automation_outputs SET \(column) = ?
-            WHERE id = ? AND done_at IS NULL AND dismissed_at IS NULL\(extra)
-            """, arguments: [AutomationDates.format(now), id])
+            WHERE id = ? AND content_hash = ? AND done_at IS NULL AND dismissed_at IS NULL\(extra)
+            """, arguments: [AutomationDates.format(now), id, contentHash])
+        return db.changesCount > 0
     }
 
     // MARK: - Labels

@@ -18,7 +18,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
                model: model, provider: provider, toolMode: toolMode, readFolder: nil,
-               ownerInstructions: false, purpose: nil, readFolderAskID: nil)
+               ownerInstructions: false, purpose: nil, readFolderAskID: nil,
+               readFolderRoundID: nil)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -33,7 +34,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         readFolder: String?,
         ownerInstructions: Bool,
         purpose: String?,
-        readFolderAskID: Int64?
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let processHandle = WatchtowerProcessHandle()
         return AsyncThrowingStream { continuation in
@@ -53,6 +55,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
                         ownerInstructions: ownerInstructions,
                         purpose: purpose,
                         readFolderAskID: readFolderAskID,
+                        readFolderRoundID: readFolderRoundID,
                         processHandle: processHandle,
                         continuation: continuation
                     )
@@ -126,8 +129,12 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// `purpose` adds `--purpose P`, the usage ledger's tag for the run's
     /// calls (the CLI refuses a value it does not know). `readFolderAskID`
     /// adds `--read-folder-ask N` instead of `--read-folder`: the CLI reads
-    /// the folder review ask N's reviewer read (a spec review thread); the
-    /// two never go together, `readFolder` wins.
+    /// the folder review ask N's reviewer read (a spec review thread).
+    /// `readFolderRoundID` adds `--read-folder-round N`: the CLI reads the
+    /// folder diff review round N was taken from (the branch-review
+    /// reviewer). The CLI refuses any two of the three folder flags, so at
+    /// most one is sent: `readFolder`, then `readFolderAskID`, then
+    /// `readFolderRoundID`.
     ///
     /// `--events v2` makes the CLI speak the main chat's protocol (`ChatEvent`):
     /// tool calls as steps, the turn's usage, and no `reset` — text streamed
@@ -140,7 +147,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         readFolder: String? = nil,
         ownerInstructions: Bool = false,
         purpose: String? = nil,
-        readFolderAskID: Int64? = nil
+        readFolderAskID: Int64? = nil,
+        readFolderRoundID: Int64? = nil
     ) -> [String] {
         var args = ["ai", "query", "--prompt-stdin", "--events", "v2"]
 
@@ -160,6 +168,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             args += ["--read-folder", readFolder]
         } else if let readFolderAskID {
             args += ["--read-folder-ask", String(readFolderAskID)]
+        } else if let readFolderRoundID {
+            args += ["--read-folder-round", String(readFolderRoundID)]
         }
         if ownerInstructions {
             args.append("--owner-instructions")
@@ -218,6 +228,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         ownerInstructions: Bool,
         purpose: String?,
         readFolderAskID: Int64?,
+        readFolderRoundID: Int64?,
         processHandle: WatchtowerProcessHandle,
         continuation: AsyncThrowingStream<StreamEvent, Error>.Continuation
     ) async throws {
@@ -231,7 +242,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             readFolder: readFolder,
             ownerInstructions: ownerInstructions,
             purpose: purpose,
-            readFolderAskID: readFolderAskID
+            readFolderAskID: readFolderAskID,
+            readFolderRoundID: readFolderRoundID
         )
 
         let process = Process()

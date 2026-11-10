@@ -3,15 +3,19 @@ import GRDB
 import WatchtowerCore
 
 /// Writes a feed row's Done / Hide to its source; `HomeCenter` hides the row
-/// first and brings it back when this throws.
+/// first and brings it back when this throws or returns false.
 @MainActor
 protocol HomeFeedPerforming {
-    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws
+    /// `contentHash` is an automation card's drawn version (`""` for every
+    /// other kind). False: the card was rewritten or closed since it was
+    /// drawn and nothing was written; the caller re-reads it.
+    func perform(_ action: FeedAction, on ref: FeedRef, contentHash: String, now: Date, calendar: Calendar)
+        async throws -> Bool
 }
 
 /// The production writes: inbox rows through the Go CLI (`inbox resolve` /
 /// `inbox dismiss`), reminders, automation outputs (Done = `done_at`, Hide =
-/// dismissed) and targets through GRDB, the same writes the Inbox, the
+/// dismissed, both at the drawn content hash) and targets through GRDB, the same writes the Inbox, the
 /// action strip and Targets make. Proposals and events have no
 /// action on Home; a call for one does nothing.
 ///
@@ -30,7 +34,9 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
         self.pool = pool
     }
 
-    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+    @discardableResult
+    func perform(_ action: FeedAction, on ref: FeedRef, contentHash: String, now: Date, calendar: Calendar)
+        async throws -> Bool {
         switch ref {
         case .inbox(let id):
             guard let runner else { throw HomeFeedActionError.cliUnavailable }
@@ -45,6 +51,11 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                     case .hide: try ReminderQueries.snooze(db, id: id, until: until)
                     }
                 }
+                // As the Inbox's Done/Snooze: Needs approval redraws now,
+                // not at the sweep. Fired after the write, never awaited: a
+                // slow CLI must not hold Home's action (a failure is only logged).
+                let runner = self.runner
+                Task { await ReminderApprovalHook.changed(id, runner: runner) }
             }
         case .target(let id):
             let until = Self.tomorrowNine(now: now, calendar: calendar)
@@ -57,16 +68,18 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                 }
             }
         case .output(let id):
-            // Already done or dismissed elsewhere: the update changes nothing, which is success.
-            try await pool.write { db in
+            // Only the version drawn: a living card rewritten meanwhile, or
+            // one already closed elsewhere, changes nothing and is re-read.
+            return try await pool.write { db in
                 switch action {
-                case .done: try AutomationQueries.markOutputDone(db, id: id, now: now)
-                case .hide: try AutomationQueries.dismissOutput(db, id: id, now: now)
+                case .done: try AutomationQueries.markOutputDone(db, id: id, contentHash: contentHash, now: now)
+                case .hide: try AutomationQueries.dismissOutput(db, id: id, contentHash: contentHash, now: now)
                 }
             }
         case .proposal, .event:
-            return
+            return true
         }
+        return true
     }
 
     /// Tomorrow 09:00 in `calendar`'s time zone: where a hidden reminder or

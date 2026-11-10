@@ -145,7 +145,11 @@ func inboxReplyConfirmDetail(database *db.DB, outputID int64, index int) string 
 	if err != nil {
 		return detailUnavailable(err)
 	}
-	if index < 0 || index >= len(o.Actions) {
+	actions, err := flattenedCardActions(o)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	if index < 0 || index >= len(actions) {
 		return detailUnavailable(fmt.Errorf("inbox card %d has no button %d", outputID, index))
 	}
 	a, err := database.GetAutomation(o.AutomationID)
@@ -156,7 +160,7 @@ func inboxReplyConfirmDetail(database *db.DB, outputID int64, index int) string 
 	if name == "" {
 		name = a.Slug
 	}
-	act := o.Actions[index]
+	act := actions[index]
 	// Title and label are recipe-written: quoted, so a newline in either
 	// cannot add a line that reads as the window's own.
 	return fmt.Sprintf("Automation #%d %q\nCard: %q\nButton: %q (sends %q)", a.ID, name, o.Title, act.Label, act.Reply)

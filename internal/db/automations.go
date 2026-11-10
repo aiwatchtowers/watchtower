@@ -99,12 +99,14 @@ func (a Automation) Runnable() bool {
 func (a Automation) IsBuiltin() bool { return a.Origin == OriginBuiltin }
 
 // RunsAtSlot reports whether a's runs are executed only at a sync-cycle slot
-// by the slot executor, never by the executor's poll: a built-in, or a
-// Personal recipe with a sync trigger (a custom_tracks watch recipe, the
-// only sync slot a Personal recipe may name). Every slot-run check uses this
-// predicate, not IsBuiltin.
+// by the slot executor, never by the executor's poll: an automation whose
+// trigger is sync — a built-in at its slot, or a Personal custom_tracks
+// watch recipe (only those two parse with a sync trigger). A built-in with
+// another trigger (an event built-in such as Needs approval) runs on the
+// executor's poll right after its wake, like an owner recipe. Every
+// slot-run check uses this predicate, not IsBuiltin.
 func (a Automation) RunsAtSlot() bool {
-	return a.IsBuiltin() || (a.Scope == "personal" && a.TriggerKind == TriggerKindSync)
+	return a.TriggerKind == TriggerKindSync
 }
 
 // runnableAutomationSQL is Runnable() as a predicate over automations.

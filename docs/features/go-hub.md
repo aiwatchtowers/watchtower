@@ -97,16 +97,18 @@ missing agent binary answers exit 3 with `{"error":"agent_not_found","agent":"â€
 the workbench's placement lock (`<workspace>/workbench-<id>.place.lock`, `sessionstart.PlacementLockPath`; the
 Desktop's own launch path takes the same flock) from the place decision until the run is in the host, at most 60 s
 (then the row fails with "another start of this workbench is still placing"). It writes the owner's line about the
-place on the row (`terminal_sessions.start_notice`, migration 00179), fails a row it could not move into its worktree
+place on the row (`terminal_sessions.start_notice`, migration 00184), fails a row it could not move into its worktree
 with `Could not move the session into its worktree: â€¦` instead of deleting it, and watches the launch 3 s for an
 exit 127 (`<agent> was not found`). The Desktop's reasons are pinned by `internal/sessionstart/testdata/desktop_contract.json`.
-**Migration numbers (merge of main, 2026-11-09).** The branch's `start_notice` and `upload_id` migrations were first
-numbered 00169/00170, which main took for `llm_call_attempts`/`daily_digest_attempt`; they are now 00179/00180. A
-dev database that ran a branch build with the old numbers recorded 169/170 under the branch's names, so main's
-00169/00170 are skipped and 00179 fails with "duplicate column". Repair (on a backup copy, then reopen with a current
-build; a fresh database works too):
-`ALTER TABLE terminal_sessions DROP COLUMN start_notice; ALTER TABLE pending_transcripts DROP COLUMN upload_id;
-DELETE FROM goose_db_version WHERE version_id IN (169, 170);`. No release tag ever shipped the old numbers.
+**Migration numbers (merges of main, 2026-11-09 and 2026-11-10).** The branch's `start_notice` and `upload_id`
+migrations were first numbered 00169/00170, then 00179/00180; main took both pairs (`llm_call_attempts`/
+`daily_digest_attempt`, then `review_overview_parts`/`review_reviewer_threads`), so they are now 00184/00185. A dev
+database that ran a branch build with an old pair recorded that pair under the branch's names, so main's migrations
+of those numbers are skipped and 00184 fails with "duplicate column". Repair (on a backup copy, then reopen with a
+current build; a fresh database works too): `ALTER TABLE terminal_sessions DROP COLUMN start_notice; ALTER TABLE
+pending_transcripts DROP COLUMN upload_id;` then `DELETE FROM goose_db_version WHERE version_id IN (169, 170);` for
+a database from the first branch build, or `IN (179, 180)` for one from the second. No release tag ever shipped the
+old numbers.
 `workbench session stop --session N` is the host's Stop request (`session_id`, `stopped`). Both refuse another workbench
 inside an agent's terminal session.
 
@@ -239,7 +241,7 @@ Recorded for the owner; each was a review ruling during phase 1.
    `testFailureClassesPinned` pins the classes) never ask it to send the recording again. Only a job failed with one
    of these classes claims again (`state.DesktopFailureClasses`); `hub_moved`, an adopted Swift failure and `done`
    stay terminal. **Exactly once:** the upload is remembered as `ingesting` before the ingest starts, and the
-   ingest's reservation keeps the upload id (`pending_transcripts.upload_id`, migration 00180), so after a crash a
+   ingest's reservation keeps the upload id (`pending_transcripts.upload_id`, migration 00185), so after a crash a
    claimed job is matched to its reservation (`phoneRecording(forUpload:)`) instead of being ingested again;
    unreadable bookkeeping matches claimed jobs by upload id only and leaves an unmatched one alone. The uploads it
    took (ids, the Mac's recording path, the hub's audio path, an unsent finish) are remembered in the app's

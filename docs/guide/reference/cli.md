@@ -41,6 +41,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower briefing` | Today's [briefing](../features/briefings.md); `briefing generate` makes today's now, if there is none yet, through the Morning brief's current recipe, even with the feature off |
 | `watchtower day-plan` | The [day plan](../features/day-plan.md); `day-plan generate [--feedback <text>]` makes or redoes it the same way |
 | `watchtower inbox`, `remind <text>` | [Inbox](../features/inbox.md) and reminders |
+| `watchtower inbox folders` | The Inbox menu: `list`, and `create`, `update`, `move`, `delete`, `route <automation-id>`, each with `--expect-revision` from `list`; a stale one changes nothing ("the Inbox menu changed"). Refused in a coding agent's shell |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
 | `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md); `tracks start <id>` makes a track's watch, `tracks instruction <id> --text <t>` edits it |
 | `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
@@ -59,7 +60,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower automations reset <id>` | Put a built-in back on its shipped version, deleting your edited copy (asks you to confirm) |
 | `watchtower automations upgrade-builtins` | Retry moving your old settings and prompt edits into the built-ins and watches (the Inbox's **Retry**); refused in a coding agent's shell. Restart the daemon after "moved" |
 | `watchtower automations reply --output <id> --action <n>` | An Inbox card's Reply press: records it and queues one run; [Buttons on automation cards](../features/automations-inbox-buttons.md) |
-| `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change |
+| `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change; a row's **Reply…** proposes without it, into Needs approval |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
 
 ### Why the app asks you to confirm a command

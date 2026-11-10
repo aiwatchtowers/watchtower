@@ -95,7 +95,7 @@ package enum TerminalSessionQueries {
         /// Go recorded the start's failure (`agent_failed_at` set): its
         /// `agent_error` ("" when none); nil while none is recorded.
         package var failure: String?
-        /// The owner's line about the place (`start_notice`, 00179); nil = none.
+        /// The owner's line about the place (`start_notice`, 00184); nil = none.
         package var notice: String?
 
         package init(failure: String? = nil, notice: String? = nil) {

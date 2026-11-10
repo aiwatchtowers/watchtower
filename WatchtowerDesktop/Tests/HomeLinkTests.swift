@@ -134,10 +134,10 @@ final class HomeLinkTests: XCTestCase {
         }
     }
 
-    /// Each feature opens a tab — or an Inbox filter — whose empty state is
+    /// Each feature opens a tab — or an Inbox entry — whose empty state is
     /// about that feature (or its sibling: stream digests on Digests, Linear
     /// on Blockers, whose row speaks for both trackers,
-    /// the day plan on the Day filter, which speaks for the brief); Knowledge
+    /// the day plan on the day card, which speaks for the brief); Knowledge
     /// search opens AI Chat, which keeps its own empty state, and Jira
     /// Connections → Jira, which has none.
     func testEveryFeatureHasADestination() throws {
@@ -145,7 +145,8 @@ final class HomeLinkTests: XCTestCase {
         for feature in ReadinessFeature.allCases {
             let key: String
             if let route = InboxRoute.forFeature(feature, today: "2026-10-22") {
-                key = route.filter.emptyCopyKey
+                // The day card speaks for the brief; a legacy entry for its list.
+                key = if case let .legacy(list)? = route.entry { list.emptyCopyKey } else { "briefings" }
             } else {
                 key = try XCTUnwrap(AppState.homeDestination(for: feature), "\(feature)").rawValue
             }

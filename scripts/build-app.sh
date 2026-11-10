@@ -557,6 +557,21 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
         <key>NSAllowsArbitraryLoads</key>
         <false/>
     </dict>
+    <!-- The in-process type an Inbox folder is dragged as (InboxFolderMenu.swift's
+         UTType.inboxFolder); declared so LaunchServices knows the exported type. -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.watchtower.inbox-folder</string>
+            <key>UTTypeDescription</key>
+            <string>Watchtower Inbox folder</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

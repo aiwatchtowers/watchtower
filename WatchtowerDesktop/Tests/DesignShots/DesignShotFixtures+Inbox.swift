@@ -152,7 +152,7 @@ enum InboxShotFixtures {
             id: 1, automationID: 1, automationName: "Issue triage", runID: 212,
             title: "ACME-482: crash when importing CSV", body: body, priority: "high", createdAt: now,
             link: "https://example.com/acme/issue/482", actionsJSON: actions, recipeState: .needsConfirmation)
-        return AnyView(InboxReadingPane(item: .output(card), navScreens: ["home"], now: now) { _ in }
+        return AnyView(InboxReadingPane(item: .output(card), navScreens: ["home"], targets: InboxTargetButtonSource(), now: now) { _ in }
             .frame(width: 420)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .detailBackground())

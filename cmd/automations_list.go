@@ -249,7 +249,7 @@ func runAutomationsOutputs(cmd *cobra.Command, _ []string) error {
 	}
 	for _, o := range outs {
 		fmt.Fprintf(w, "#%d [%s] automation %d run %d %s: %s\n", o.ID, o.Kind, o.AutomationID, o.RunID,
-			o.CreatedAt.Local().Format(time.DateTime), o.Title)
+			o.ChangedAt.Local().Format(time.DateTime), o.Title)
 	}
 	return nil
 }

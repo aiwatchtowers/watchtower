@@ -260,7 +260,7 @@ struct MainNavigationView: View {
         actions.builtin = BuiltinCardActions(
             setEnabled: { await appState.setBuiltinEnabled($0, on: $1) },
             saveParameters: { await appState.saveBuiltinParameters($0) },
-            openInbox: { appState.openInbox(InboxRoute(filter: $0, selection: nil)) }
+            openInbox: { appState.openBuiltinInInbox(automationID: $0, defaultFolder: $1) }
         )
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
         actions.onOpenSession = { projectID, sessionID in

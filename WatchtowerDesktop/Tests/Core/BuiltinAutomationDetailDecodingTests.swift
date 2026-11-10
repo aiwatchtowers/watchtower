@@ -46,12 +46,38 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertFalse(reactions.runNow)
     }
 
-    func testDecodesDoesAndResultFilter() throws {
+    /// Inbox builder B's Waiting for me golden.
+    func testDecodesWaitingForMeGolden() throws {
+        let waiting = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_waiting_for_me"))
+        XCTAssertEqual(waiting.id, "waiting-for-me")
+        XCTAssertEqual(waiting.slot, "waiting_for_me")
+        XCTAssertEqual(waiting.featureIDs, ["secretary-inbox"])
+        XCTAssertEqual(waiting.parameters, [])
+        XCTAssertEqual(waiting.defaultFolder, "inbox")
+        XCTAssertTrue(waiting.runNow)
+    }
+
+    /// Inbox builder B's Needs approval golden: no slot, its own feature.
+    func testDecodesNeedsApprovalGolden() throws {
+        let needs = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden("show_needs_approval"))
+        XCTAssertEqual(needs.id, "needs-approval")
+        XCTAssertEqual(needs.slot, "", "it runs at no slot")
+        XCTAssertEqual(needs.featureIDs, ["approval-cards"])
+        XCTAssertEqual(needs.parameters, [])
+        XCTAssertEqual(needs.defaultPrompts, [:])
+        XCTAssertEqual(needs.defaultFolder, "needs-approval")
+        XCTAssertTrue(needs.runNow)
+        XCTAssertTrue(needs.shippedText.contains("type: approval"))
+    }
+
+    /// The card's Does lines and its default folder (Show in Inbox); a
+    /// block without `default_folder` hides the link ("").
+    func testDecodesDoesAndDefaultFolder() throws {
         let detail = try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden())
         XCTAssertGreaterThanOrEqual(detail.does.count, 1)
-        XCTAssertEqual(detail.resultFilter, .day)
-        let unknown = Data(#"{"id":"x","result_filter":"nope"}"#.utf8)
-        XCTAssertNil(try JSONDecoder().decode(BuiltinAutomationDetail.self, from: unknown).resultFilter)
+        XCTAssertEqual(detail.defaultFolder, "inbox")
+        let missing = Data(#"{"id":"x"}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(BuiltinAutomationDetail.self, from: missing).defaultFolder, "")
     }
 
     func testDecodesSharedGoldenBlock() throws {
@@ -66,7 +92,7 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertEqual(Set(detail.defaultPrompts.keys), ["brief", "plan"])
         XCTAssertEqual(detail.when, "Every morning at the first sync after 08:00")
         XCTAssertEqual(detail.reads.count, 5)
-        XCTAssertEqual(detail.sends, ["Your day card in the Inbox, under Day"])
+        XCTAssertEqual(detail.sends, ["Your day card in your Inbox"])
         XCTAssertEqual(detail.parameters.map(\.key), [
             "briefing.hour", "day_plan.working_hours_start", "day_plan.working_hours_end",
             "day_plan.max_timeblocks", "day_plan.min_backlog", "day_plan.max_backlog"

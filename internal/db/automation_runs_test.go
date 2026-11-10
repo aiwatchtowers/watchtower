@@ -3,6 +3,7 @@ package db
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -341,6 +342,58 @@ func TestMergeQueuedEvents_AppendsCapsAndIsIdempotent(t *testing.T) {
 	}
 	if !mustMerge(t, d, run, "A", nil, 1, 5) {
 		t.Error("merge of the run's own cycle A = false; want true")
+	}
+}
+
+// The approval merge caps its cycles (the refs) with the events: past
+// maxEvents a new ref is dropped and the run is truncated.
+func TestMergeQueuedApprovalEvents_CapsCycles(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "watch", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent,
+		EventJSON: eventPayload(t, []string{"A"}, nil, 0, false)})
+	for _, c := range []string{"B", "C"} {
+		merged, err := d.MergeQueuedApprovalEvents(run, c, nil, 0, 2)
+		if err != nil || !merged {
+			t.Fatalf("merge of %s: merged=%v err=%v", c, merged, err)
+		}
+	}
+	p := mustRunPayload(t, d, run)
+	if !reflect.DeepEqual(p.Cycles, []string{"A", "B"}) || !p.Truncated {
+		t.Errorf("payload = cycles %v truncated %v; want [A B] true", p.Cycles, p.Truncated)
+	}
+}
+
+// The bus merge never caps its cycles: past more than maxEvents merged
+// cycles, a repeated cycle is still found (the merge is a no-op and
+// EnqueueAutomationRun coalesces onto the run) — AUTO-09's one run per
+// automation per cycle.
+func TestMergeQueuedEvents_DedupesARepeatedCycleAfterMoreThan100(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "watch", 1)
+	run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "c0",
+		EventJSON: eventPayload(t, []string{"c0"}, rawEvents(0, 1), 1, false)})
+	for i := 1; i <= 120; i++ {
+		if !mustMerge(t, d, run, fmt.Sprintf("c%d", i), rawEvents(i, 1), 1, 100) {
+			t.Fatalf("merge of cycle c%d refused", i)
+		}
+	}
+	p := mustRunPayload(t, d, run)
+	if len(p.Cycles) != 121 || p.Count != 121 || len(p.Events) != 100 || !p.Truncated {
+		t.Fatalf("payload = %d cycles, count %d, %d events, truncated %v; want 121 121 100 true",
+			len(p.Cycles), p.Count, len(p.Events), p.Truncated)
+	}
+	before := mustGetAutomationRun(t, d, run).EventJSON
+	if !mustMerge(t, d, run, "c110", rawEvents(200, 1), 1, 100) {
+		t.Error("repeated merge of c110 = false; want true (already merged)")
+	}
+	if got := mustGetAutomationRun(t, d, run).EventJSON; got != before {
+		t.Errorf("repeated merge of c110 rewrote event_json")
+	}
+	again, coalesced := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerEvent, EventCycle: "c110",
+		EventJSON: eventPayload(t, []string{"c110"}, rawEvents(0, 1), 1, false)})
+	if again != run || !coalesced {
+		t.Errorf("enqueue of c110 = run %d coalesced %v; want run %d coalesced", again, coalesced, run)
 	}
 }
 

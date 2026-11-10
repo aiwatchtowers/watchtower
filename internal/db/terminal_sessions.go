@@ -895,7 +895,7 @@ func (db *DB) CreateTerminalSession(ctx context.Context, n NewTerminalSession) (
 }
 
 // SetTerminalSessionStartNotice records the owner's line about a start's
-// place on the row (start_notice, 00179); "" stores NULL (nothing to say).
+// place on the row (start_notice, 00184); "" stores NULL (nothing to say).
 // ErrTerminalSessionNotFound when the row is gone.
 func (db *DB) SetTerminalSessionStartNotice(ctx context.Context, id int64, notice string) error {
 	var v any

@@ -19,9 +19,19 @@ package enum InboxCardTexts {
         return words.prefix(previewLimit - 1).trimmingCharacters(in: .whitespaces) + "…"
     }
 
-    /// The list row's source: "<automation> · 10:00" today, else its day.
+    /// The list row's source: "<automation> · 10:00" today, else its day; a
+    /// living card "<automation> · Updated 10 min ago" (its last write).
     package static func sourceLine(_ card: AutomationOutputCard, now: Date, calendar: Calendar = .current) -> String {
-        stamped(card.automationName, at: card.createdAt, now: now, calendar: calendar)
+        if card.isLiving { return "\(card.automationName) · \(updated(card, now: now))" }
+        return stamped(card.automationName, at: card.createdAt, now: now, calendar: calendar)
+    }
+
+    /// A living card's age: "Updated 10 min ago" from `written_at`, the last
+    /// run that wrote it (spec "Living upsert and read state").
+    package static func updated(_ card: AutomationOutputCard, now: Date) -> String {
+        let age = now.timeIntervalSince(card.writtenAt)
+        guard age >= 60 else { return "Updated just now" }
+        return "Updated \(AutomationCardPresentation.relative(age)) ago"
     }
 
     /// A list row's source: "<prefix> · 10:00" today, else "<prefix> · Oct 18"
@@ -31,9 +41,13 @@ package enum InboxCardTexts {
         return "\(prefix) · \(format(date, sameDay ? "HH:mm" : "MMM d", calendar))"
     }
 
-    /// The reading pane's source, which opens the run.
-    package static func readingSourceLine(_ card: AutomationOutputCard, calendar: Calendar = .current) -> String {
-        "ϟ \(card.automationName) · run #\(card.runID) · \(format(card.createdAt, "MMM d, HH:mm", calendar))"
+    /// The reading pane's source, which opens the run; a living card reads
+    /// "Updated …" instead of its run and day.
+    package static func readingSourceLine(
+        _ card: AutomationOutputCard, now: Date = Date(), calendar: Calendar = .current
+    ) -> String {
+        if card.isLiving { return "ϟ \(card.automationName) · \(updated(card, now: now))" }
+        return "ϟ \(card.automationName) · run #\(card.runID) · \(format(card.createdAt, "MMM d, HH:mm", calendar))"
     }
 
     /// The sentence before the fenced card in an automation card's agent task.

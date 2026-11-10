@@ -21,11 +21,12 @@ import (
 var recipeFS embed.FS
 
 // Slot is the place in the daemon's sync cycle where a built-in runs (its
-// recipe's trigger.sync).
+// recipe's trigger.sync); "" for a built-in that runs at no slot (Needs
+// approval).
 type Slot string
 
-// The sync slots (automations.SyncSlots). SlotCustomTracks holds the watch
-// recipes (Personal), no built-in.
+// The sync slots (automations.SyncSlots; SlotWaitingForMe is in waiting.go).
+// SlotCustomTracks holds the watch recipes (Personal), no built-in.
 const (
 	SlotMorningBrief Slot = "morning_brief"
 	SlotCustomTracks Slot = "custom_tracks"
@@ -33,6 +34,10 @@ const (
 	SlotReactions    Slot = "reactions"
 	SlotIdeas        Slot = "ideas"
 )
+
+// RootFolder is the slug of the Inbox's root folder: an automation with no
+// route shows its artifacts there.
+const RootFolder = "inbox"
 
 // ParamKind is how a card parameter is edited.
 type ParamKind string
@@ -76,11 +81,13 @@ type Entry struct {
 	Pipelines  []string // pipeline_runs names counted in Costs before the built-in's first run
 	Reads      []string // card copy
 	Sends      []string // card copy
-	// Does is the card's steps in plain words, in order; ResultFilter is the
-	// Inbox filter ("day", "tracks", "ideas", "automations") the result lands in.
-	Does         []string
-	ResultFilter string
-	When         func(cfg *config.Config) string
+	// Does is the card's steps in plain words, in order.
+	Does []string
+	// DefaultFolder is the slug of the Inbox folder the built-in's artifacts
+	// go to: RootFolder, or another folder whose route the indexer seeds
+	// when the built-in has none (Sync), so the owner's later move is kept.
+	DefaultFolder string
+	When          func(cfg *config.Config) string
 	// RunNow: the card offers Run Now and `automations run <id>` queues a
 	// manual run. Every entry sets it explicitly.
 	RunNow bool
@@ -116,8 +123,8 @@ var registry = []Entry{
 			"Plans your day around your meetings from that brief, in the same run, at the first sync after your briefing hour",
 			"Still makes the plan when the brief fails",
 		},
-		Sends:        []string{"Your day card in the Inbox, under Day"},
-		ResultFilter: "day",
+		Sends:         []string{"Your day card in your Inbox"},
+		DefaultFolder: RootFolder,
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every morning at the first sync after %02d:00", briefingHour(cfg))
 		},
@@ -138,10 +145,10 @@ var registry = []Entry{
 			"Reads the new channel digests with your profile and your tracks, only while Slack Digests are on",
 			"Starts a track for a new thread, or adds news to one you already follow",
 		},
-		Sends:        []string{"Track cards in your Inbox, under Tracks"},
-		ResultFilter: "tracks",
-		When:         func(*config.Config) string { return "After every sync, while Slack Digests are on" },
-		RunNow:       true,
+		Sends:         []string{"Track cards in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while Slack Digests are on" },
+		RunNow:        true,
 	},
 	{
 		ID:         "idea-finder",
@@ -159,8 +166,8 @@ var registry = []Entry{
 			"Reads Slack digests, mail and tracker digests, meeting recaps and your AI chats, every few hours",
 			"Merges repeats and keeps what is worth your attention",
 		},
-		Sends:        []string{"Idea cards in your Inbox, under Ideas; decisions go to your brief"},
-		ResultFilter: "ideas",
+		Sends:         []string{"Idea cards in your Inbox; decisions go to your brief"},
+		DefaultFolder: RootFolder,
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every %d hours", ideasIntervalHours(cfg))
 		},
@@ -182,11 +189,47 @@ var registry = []Entry{
 			"Reads the message and its thread",
 			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction",
 		},
-		Sends:        []string{"A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"},
-		ResultFilter: "automations",
-		When:         func(*config.Config) string { return "When you react to a Slack message" },
-		RunNow:       false,
-		NoRunNowNote: "Reactions run for each reaction you place",
+		Sends:         []string{"A proposal in your Inbox, in Needs approval; ideas, reminders and brief notes are saved at once"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "When you react to a Slack message" },
+		RunNow:        false,
+		NoRunNowNote:  "Reactions run for each reaction you place",
+	},
+	{
+		ID:         "waiting-for-me",
+		Name:       "Waiting for me",
+		Slot:       SlotWaitingForMe,
+		Recipe:     mustRecipe("waiting-for-me"),
+		FeatureIDs: []string{"secretary-inbox"},
+		Primitives: []string{automations.PrimitiveAttentionWaiting},
+		Reads:      []string{"The mentions, messages, tickets and mail attention detection found"},
+		Does: []string{
+			"Lists everything that still waits on your answer, newest first",
+			"Updates the list after every sync; an item leaves when you answer it in the source, mark it done or snooze it",
+			"Uses no AI",
+		},
+		Sends:         []string{"One Waiting for me list in your Inbox"},
+		DefaultFolder: RootFolder,
+		When:          func(*config.Config) string { return "After every sync, while attention detection is on" },
+		RunNow:        true,
+	},
+	{
+		ID:         NeedsApprovalID,
+		Name:       "Needs approval",
+		Slot:       "", // no slot: the approval trigger queues its runs (Entry.Trigger)
+		Recipe:     mustRecipe(NeedsApprovalID),
+		FeatureIDs: []string{"approval-cards"},
+		Primitives: []string{automations.PrimitiveApprovalsList},
+		Reads:      []string{"The actions that wait for your approval", "Your reminders that came due"},
+		Does: []string{
+			"Shows every action that waits for your approval and every reminder that came due, one card each",
+			"Updates the cards as soon as one changes, and takes a card away once you approve, reject, finish or snooze it",
+			"Uses no AI",
+		},
+		Sends:         []string{"One card per approval in your Inbox, in Needs approval"},
+		DefaultFolder: NeedsApprovalID,
+		When:          func(*config.Config) string { return "When an action or a reminder needs you" },
+		RunNow:        true,
 	},
 }
 
@@ -273,6 +316,16 @@ func (e Entry) Enabled(cfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+// Trigger is the trigger e's recipe must keep (automations.IndexBuiltinRow):
+// `sync: <slot>` for a slot built-in, `event: approval` for one with no slot
+// (Needs approval, whose runs only the approval trigger queues).
+func (e Entry) Trigger() automations.Trigger {
+	if e.Slot == "" {
+		return automations.Trigger{Kind: automations.TriggerEvent, Event: &automations.EventTrigger{Type: automations.ApprovalEvent}}
+	}
+	return automations.Trigger{Kind: automations.TriggerSync, Sync: string(e.Slot)}
 }
 
 // ShippedContentHash is the content hash of e's shipped recipe bytes.

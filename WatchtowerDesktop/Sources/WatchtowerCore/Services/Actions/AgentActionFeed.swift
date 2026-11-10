@@ -189,9 +189,11 @@ package final class AgentActionFeed {
         await run("reject", id: id)
     }
 
-    /// Re-runs `apply` for a `failed`/`approved` row.
-    package func retry(_ id: Int64) async {
-        await run("apply", id: id)
+    /// Re-runs `apply` for a `failed`/`approved` row. `force` reclaims a row
+    /// stranded in `executing` (`actions apply --force`): an Inbox target
+    /// button's **Try again** on a stuck row, the owner's press.
+    package func retry(_ id: Int64, force: Bool = false) async {
+        await run("apply", id: id, extra: force ? ["--force"] : [])
         await startWatchingIfTrack(id)
     }
 
@@ -286,6 +288,11 @@ package final class AgentActionFeed {
                let err = env.error, !err.isEmpty {
                 rowErrors[id] = RowError(verb: verb, message: err)
             }
+        } catch CLIRunnerError.nonZeroExit(Self.stateMovedExit, _) {
+            // Exit 3 (an Inbox button's row): the row's state moved under
+            // the press — a newer proposal is open. Not an error: the
+            // refresh below draws the state the row is in now.
+            completed = true
         } catch {
             rowErrors[id] = RowError(verb: verb, message: error.localizedDescription)
         }
@@ -315,5 +322,8 @@ package final class AgentActionFeed {
     }
 
     nonisolated package static let automationRunContext = "automation_run"
+    /// `actions propose|apply`'s exit code for "the button's state moved"
+    /// (Go AGENT-05 refusals); every other refusal exits 1.
+    nonisolated package static let stateMovedExit: Int32 = 3
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "agent-actions")
 }

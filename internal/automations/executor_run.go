@@ -127,6 +127,9 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 		if _, err := m.AllowInboxReply(); err != nil {
 			return nil, nil, failedEnd(db.ErrKindPermission, err)
 		}
+		if end := e.replyCardChanged(run); end != nil {
+			return nil, nil, end
+		}
 	}
 	trig, err := triggerInfo(run, a, r)
 	if err != nil {
@@ -252,6 +255,35 @@ func triggerInfo(run *db.AutomationRun, a *db.Automation, r *Recipe) (TriggerInf
 	}
 	t.Truncated = p.Truncated
 	return t, nil
+}
+
+// replyCardChangedMsg is the error of a reply run cancelled because its card
+// changed between the press and the run's start.
+const replyCardChangedMsg = "The card changed after the button was pressed; nothing ran. Press the button on the updated card."
+
+// replyCardChanged ends a reply run before its script when the pressed card
+// no longer carries the content hash the press was checked against: a
+// living rewrite changed it, or output.remove deleted the row. The run ends
+// cancelled/cancelled; a payload without content_hash (a card from before
+// content hashes, a press from before this check) runs as before. Every
+// start passes here, a resumed one too.
+func (e *Executor) replyCardChanged(run *db.AutomationRun) *runEnd {
+	var p db.ReplyPayload
+	if err := json.Unmarshal([]byte(run.EventJSON), &p); err != nil {
+		return failedEnd(db.ErrKindBackend, fmt.Errorf("decoding the run's reply payload: %w", err))
+	}
+	if p.Reply.ContentHash == "" {
+		return nil
+	}
+	o, err := e.db.GetAutomationOutput(p.Reply.OutputID)
+	switch {
+	case errors.Is(err, db.ErrOutputNotFound):
+	case err != nil:
+		return failedEnd(db.ErrKindBackend, err)
+	case o.ContentHash == p.Reply.ContentHash:
+		return nil
+	}
+	return &runEnd{status: db.RunCancelled, kind: db.ErrKindCancelled, msg: replyCardChangedMsg}
 }
 
 // replyInfo decodes a reply run's event_json into the script's

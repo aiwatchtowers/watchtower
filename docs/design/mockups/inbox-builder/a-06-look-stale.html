@@ -1,0 +1,27 @@
+<h2>A-6. Look step — preview stale</h2>
+<p class="subtitle">State <code>stale</code>: the text on screen changed since the newest dry run (an edit in Form or Script, or a chat turn that did not dry-run).</p>
+
+<div class="mockup">
+  <div class="mockup-header">Automation “Threads waiting for me” · Chat | Form | Script &nbsp;&nbsp;·&nbsp;&nbsp; draft column: What it collects | <b>Look</b> | When it runs</div>
+  <div class="mockup-body">
+    <div style="display:flex; gap:16px;">
+      <div style="flex:1; border-right:1px solid #8884; padding-right:16px;">
+        <div class="label">Editor chat</div>
+        <p><b>You:</b> show it as a list, oldest first, who is waiting and for how long. A Reply button on each.</p>
+        <p><b>Assistant:</b> done — dry-ran it on your data: 3 threads.</p>
+        <p><b>You:</b> red when they have waited more than a day.</p>
+        <p><b>Assistant:</b> done, see the preview.</p>
+        <input class="mock-input" placeholder="Change something about the look…" style="width:100%">
+      </div>
+      <div style="flex:1;">
+        <div class="label">Look</div>
+        <div style="margin-bottom:6px"><small>The recipe changed since this preview.</small> <button class="mock-button" style="float:right">Dry run</button></div>
+        <div style="opacity:.45"><div style="border:1px solid #8886; border-radius:8px; padding:10px;"> <h3 style="margin:0 0 8px">Waiting for you · 3</h3>
+          <div style="padding:6px 0;"><span style="color:#d33">●</span> <b>Release checklist</b> <span style="border:1px solid #d336; border-radius:9px; padding:0 6px; font-size:11px; color:#d33">2 days</span><br><small>Colleague A in #acme-release — “Can you look at the checklist before Friday?”</small> <button class="mock-button" style="float:right" disabled>Reply</button></div>
+          <div style="padding:6px 0;"><span style="color:#d33">●</span> <b>Q4 budget</b> <span style="border:1px solid #d336; border-radius:9px; padding:0 6px; font-size:11px; color:#d33">26 h</span><br><small>Colleague B in a DM — “Will you sign off the Q4 budget?”</small> <button class="mock-button" style="float:right" disabled>Reply</button></div>
+          <div style="padding:6px 0;"><span style="color:#888">●</span> <b>Migration review</b> <span style="border:1px solid #8886; border-radius:9px; padding:0 6px; font-size:11px">3 h</span><br><small>Colleague C in #acme-infra — “Who reviews the migration?”</small> <button class="mock-button" style="float:right" disabled>Reply</button></div></div></div>
+        <div style="margin-top:12px; padding-top:8px; border-top:1px solid #8884;"><button class="mock-button">Save Look</button></div>
+      </div>
+    </div>
+  </div>
+</div>
