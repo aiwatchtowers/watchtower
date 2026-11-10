@@ -14,7 +14,8 @@ contributors.
     runner is online, else `macos-26`;
   - `linux` and `macos` (every other job) → `[self-hosted, wt-general]`
     while a `wt-general` runner is online, else `ubuntu-24.04` / `macos-26`.
-  The Dedupe gate and Prune SPM build cache jobs always run on ubuntu.
+  The Dedupe gate, Go Build (Linux) and Prune SPM build cache jobs always
+  run on ubuntu.
 - The Mac is picked only for a push, a `workflow_dispatch`, or a pull request
   whose branch lives in this repository. A fork PR, a missing secret, an API
   error or a timeout keeps everything in the cloud.
@@ -130,11 +131,11 @@ contributors.
 
 ## Known trade-offs
 
-- **No Linux CI while the Mac is online.** The `linux` class runs on macOS
-  then, so the OpenSSL build of `internal/sqlcipher` and any Linux-only Go
-  code are not built on PRs or main pushes; the release workflow still gates
-  on ubuntu, so a Linux-only break shows up there at the latest. To check a
-  branch on Linux, take the Mac offline (log out of `ci`) and re-run.
+- **Little Linux CI while the Mac is online.** The `linux` class runs on
+  macOS then; only **Go Build (Linux)** stays on ubuntu (`go build` + `go
+  vet` with OpenSSL), so a Linux build break still shows on the PR, but the
+  Go tests run on Linux only in the release workflow. To test a branch on
+  Linux, take the Mac offline (log out of `ci`) and re-run.
 - **The cloud SPM build cache ages out.** Only a GitHub-hosted Swift Test on
   a main push saves `WatchtowerDesktop/.build` to the Actions cache; while
   the Mac takes those runs the entries are not refreshed and GitHub evicts
