@@ -328,8 +328,11 @@ func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
 // diagnostics. Its connector turns SQLite's checkpoint on close off and
 // sets wal_autocheckpoint = 0, so a left-over WAL stays in the -wal file;
 // the open fails (wrapping sqlcipher.ErrNoCheckpointGuard) when SQLite does
-// not confirm that setting. The lock-metrics sink is turned off after the
-// open, so the caller writes no dblock.jsonl line.
+// not confirm that setting. After the open, lockmetrics.Configure("")
+// turns the lock-metrics sink off for the whole process, not just this
+// handle, so the caller writes no dblock.jsonl line. That makes this opener
+// for a dedicated diagnostics process (the watchtower diagnostics command),
+// never for a process that holds other database handles.
 func OpenExistingContext(ctx context.Context, dbPath string, busy time.Duration) (*DB, error) {
 	dsn := existingDSN(dbPath, busy, "_query_only=1")
 	c := engineConnector(dsn)
