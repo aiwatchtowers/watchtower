@@ -188,9 +188,11 @@ type fakeStore struct {
 	activity       []SessionActivity
 	rootOwners     map[string][]int64
 	// agentIDs are the session's agent session ids; uuidOwners the rows
-	// holding each uuid (absent = none, which adopts nothing).
-	agentIDs   []string
-	uuidOwners map[string][]int64
+	// holding each uuid (absent = none, which adopts nothing); idsErr and
+	// ownersErr fail those reads.
+	agentIDs          []db.AgentSessionID
+	uuidOwners        map[string][]int64
+	idsErr, ownersErr error
 }
 
 func (s *fakeStore) CleanupSession(_ context.Context, id int64) (SessionInfo, error) {
@@ -208,12 +210,21 @@ func (s *fakeStore) SessionTargetBranches(context.Context, int64) ([]string, err
 	return s.targetBranches, nil
 }
 
-func (s *fakeStore) AgentSessionIDs(context.Context, int64) ([]string, error) {
-	return s.agentIDs, nil
+func (s *fakeStore) AgentSessionIDs(context.Context, int64) ([]db.AgentSessionID, error) {
+	return s.agentIDs, s.idsErr
 }
 
-func (s *fakeStore) AgentSessionIDOwners(_ context.Context, uuid string) ([]int64, error) {
-	return s.uuidOwners[uuid], nil
+func (s *fakeStore) AgentSessionIDOwners(_ context.Context, uuids []string) (map[string][]int64, error) {
+	if s.ownersErr != nil {
+		return nil, s.ownersErr
+	}
+	out := map[string][]int64{}
+	for _, u := range uuids {
+		if o, ok := s.uuidOwners[u]; ok {
+			out[u] = o
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) WorkbenchFolder(_ context.Context, id int64) (string, error) {

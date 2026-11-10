@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -39,48 +40,70 @@ func (db *DB) ListTerminalAgentSessions(terminalSessionID int64) ([]TerminalAgen
 	return out, rows.Err()
 }
 
+// AgentSessionID is one agent session id a terminal session row has had and
+// Since, when the row acquired it (UTC ISO-8601 seconds, as stored).
+type AgentSessionID struct {
+	ID, Since string
+}
+
 // AgentSessionIDs is every agent session id the terminal session rowID has
-// had: its history in terminal_session_agent_sessions plus its current
-// claude_session_id (in the history too unless a trigger missed it),
-// deduplicated, sorted. An unknown row has none.
-func (db *DB) AgentSessionIDs(ctx context.Context, rowID int64) ([]string, error) {
-	rows, err := db.QueryContext(ctx, `SELECT agent_session_id FROM terminal_session_agent_sessions WHERE terminal_session_id = ?
-		UNION SELECT claude_session_id FROM terminal_sessions WHERE id = ? AND claude_session_id IS NOT NULL AND claude_session_id <> ''
-		ORDER BY 1`, rowID, rowID)
+// had, by id: its history in terminal_session_agent_sessions with each
+// first_seen_at, plus its current claude_session_id at the row's created_at
+// when the history lacks it (a pre-00127 gap). An unknown row has none.
+func (db *DB) AgentSessionIDs(ctx context.Context, rowID int64) ([]AgentSessionID, error) {
+	rows, err := db.QueryContext(ctx, `SELECT agent_session_id, first_seen_at FROM terminal_session_agent_sessions
+		WHERE terminal_session_id = ?
+		UNION ALL SELECT claude_session_id, created_at FROM terminal_sessions
+		WHERE id = ? AND claude_session_id IS NOT NULL AND claude_session_id <> ''
+		AND claude_session_id NOT IN (SELECT agent_session_id FROM terminal_session_agent_sessions WHERE terminal_session_id = ?)
+		ORDER BY 1`, rowID, rowID, rowID)
 	if err != nil {
 		return nil, fmt.Errorf("reading agent session ids of terminal session %d: %w", rowID, err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := []string{}
+	out := []AgentSessionID{}
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var a AgentSessionID
+		if err := rows.Scan(&a.ID, &a.Since); err != nil {
 			return nil, fmt.Errorf("scanning agent session id of terminal session %d: %w", rowID, err)
 		}
-		out = append(out, id)
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }
 
-// AgentSessionIDOwners is every terminal session row whose history or
-// current claude_session_id holds uuid, ascending. More than one owner
+// AgentSessionIDOwners maps each of uuids to every terminal session row
+// whose history or current claude_session_id holds it, ascending; a uuid
+// no row holds is absent. One query for all of them. More than one owner
 // means the conversation was resumed in another tab (auto cleanup spec
 // 2026-11-10 §2b: such a uuid adopts nothing).
-func (db *DB) AgentSessionIDOwners(ctx context.Context, uuid string) ([]int64, error) {
-	rows, err := db.QueryContext(ctx, `SELECT terminal_session_id FROM terminal_session_agent_sessions WHERE agent_session_id = ?
-		UNION SELECT id FROM terminal_sessions WHERE claude_session_id = ?
-		ORDER BY 1`, uuid, uuid)
+func (db *DB) AgentSessionIDOwners(ctx context.Context, uuids []string) (map[string][]int64, error) {
+	out := map[string][]int64{}
+	if len(uuids) == 0 {
+		return out, nil
+	}
+	in := strings.TrimSuffix(strings.Repeat("?,", len(uuids)), ",")
+	args := make([]any, 0, 2*len(uuids))
+	for range 2 {
+		for _, u := range uuids {
+			args = append(args, u)
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT agent_session_id, terminal_session_id FROM terminal_session_agent_sessions
+		WHERE agent_session_id IN (`+in+`)
+		UNION SELECT claude_session_id, id FROM terminal_sessions WHERE claude_session_id IN (`+in+`)
+		ORDER BY 1, 2`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("reading the owners of agent session %s: %w", uuid, err)
+		return nil, fmt.Errorf("reading the owners of %d agent session ids: %w", len(uuids), err)
 	}
 	defer func() { _ = rows.Close() }()
-	out := []int64{}
 	for rows.Next() {
+		var u string
 		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scanning an owner of agent session %s: %w", uuid, err)
+		if err := rows.Scan(&u, &id); err != nil {
+			return nil, fmt.Errorf("scanning an agent session owner: %w", err)
 		}
-		out = append(out, id)
+		out[u] = append(out[u], id)
 	}
 	return out, rows.Err()
 }

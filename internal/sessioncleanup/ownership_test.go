@@ -1,6 +1,8 @@
 package sessioncleanup
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,12 +33,28 @@ func useScratchBases(t *testing.T, bases ...string) {
 
 const testUUID = "0b7c2a4e-1d3f-4a5b-9c8d-7e6f5a4b3c2d"
 
+// scratchRoot is <base>/claude-<uid>/<slug>/<testUUID>/scratchpad/<name>.
+func (f *fixture) scratchRoot(name string) string {
+	return filepath.Join(f.base, fmt.Sprintf("claude-%d", os.Getuid()), "-tmp-acme", testUUID, "scratchpad", name)
+}
+
 // scratchWorktree adds a pushed worktree inside the Claude scratchpad of
-// testUUID under f.base: <base>/claude-<uid>/<slug>/<uuid>/scratchpad/<name>.
+// testUUID under f.base.
 func (f *fixture) scratchWorktree(name, branch string) string {
 	f.t.Helper()
-	rel := filepath.Join(fmt.Sprintf("claude-%d", os.Getuid()), "-tmp-acme", testUUID, "scratchpad", name)
+	rel, err := filepath.Rel(f.base, f.scratchRoot(name))
+	if err != nil {
+		f.t.Fatal(err)
+	}
 	return f.pushedWork(rel, branch)
+}
+
+// ownUUID makes the test session a claude row that is testUUID's only
+// owner, acquired at since.
+func (f *fixture) ownUUID(since time.Time) {
+	f.store.session.Kind = "claude"
+	f.store.agentIDs = []db.AgentSessionID{{ID: "older-id", Since: "2026-10-01T00:00:00Z"}, {ID: testUUID, Since: since.UTC().Format(time.RFC3339)}}
+	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}}
 }
 
 func TestProj18_CommandLedgerAdoptsWorktree(t *testing.T) {
@@ -62,10 +80,44 @@ func TestProj18_CommandLedgerAdoptsWorktree(t *testing.T) {
 func TestCommandWorktreeBranchIsNamed(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	root := f.pushedWork("wt-moved", "feat/named")
-	f.recordCommand("worktree", filepath.Join(f.base, "wt-typo"), "feat/named")
+	a := f.worktree("wt-a", "feat/a")
+	b := f.pushedWork("wt-b", "feat/named")
+	f.recordCommand("worktree", a, "feat/named")
 
-	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionRemove, "")
+	p := f.plan(Request{})
+	wantItem(t, p, "worktree:"+a, ActionRemove, "")
+	wantItem(t, p, "worktree:"+b, ActionRemove, "")
+}
+
+// A command run in another repository names nothing here, whichever its
+// kind: its root is no worktree of the planned repository.
+func TestProj18_CommandBranchFromOtherRepoNamesNothing(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	otherRepo := filepath.Join(f.base, "other")
+	gitIn(t, f.base, "init", "-q", "-b", "main", "other")
+	f.commit(otherRepo, "README.md", "other\n")
+	otherWT := filepath.Join(f.base, "other-wt")
+	gitIn(t, otherRepo, "worktree", "add", "-q", "-b", "feat/shared-wt", otherWT, "main")
+	f.recordCommand("branch", otherRepo, "feat/shared")
+	f.recordCommand("worktree", otherWT, "feat/shared-wt")
+	f.recordCommand("worktree", filepath.Join(f.base, "gone"), "feat/shared-gone")
+
+	mine := f.pushedWork("wt-mine", "feat/shared")
+	mine2 := f.pushedWork("wt-mine2", "feat/shared-wt")
+	mine3 := f.pushedWork("wt-mine3", "feat/shared-gone")
+
+	p := f.plan(Request{})
+	for _, key := range []string{"worktree:" + mine, "worktree:" + mine2, "worktree:" + mine3, "worktree:" + otherWT} {
+		if hasItem(p, key) {
+			t.Fatalf("%s was adopted through another repository's command: %+v", key, p.Items)
+		}
+	}
+	for _, key := range []string{"branch:feat/shared", "branch:feat/shared-wt", "branch:feat/shared-gone"} {
+		if hasItem(p, key) {
+			t.Fatalf("%s was named through another repository's command: %+v", key, p.Items)
+		}
+	}
 }
 
 func TestProj18_CommandNamedBranchOlderThanSessionIsKept(t *testing.T) {
@@ -101,9 +153,8 @@ func TestProj18_CommandRowUnpushedIsKept(t *testing.T) {
 func TestProj18_ScratchpadWorktreeIsTheSessions(t *testing.T) {
 	f := newFixture(t)
 	useScratchBases(t, f.base)
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
 	root := f.scratchWorktree("lane", "feat/lane")
-	f.store.agentIDs = []string{"older-id", testUUID}
-	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}}
 
 	p := f.plan(Request{})
 	wantItem(t, p, "worktree:"+root, ActionRemove, "")
@@ -115,23 +166,92 @@ func TestProj18_ScratchpadWorktreeIsTheSessions(t *testing.T) {
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonUncommittedChanges)
 }
 
+func wantNoLane(t *testing.T, p Plan, root, branch string) {
+	t.Helper()
+	if hasItem(p, "worktree:"+root) || hasItem(p, "branch:"+branch) {
+		t.Fatalf("the scratchpad lane was adopted: %+v", p.Items)
+	}
+}
+
 func TestProj18_ScratchpadUUIDSharedAdoptsNothing(t *testing.T) {
 	f := newFixture(t)
 	useScratchBases(t, f.base)
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
+	f.store.uuidOwners[testUUID] = []int64{testSession, testSession + 1} // resumed in another tab
 	root := f.scratchWorktree("lane", "feat/lane")
-	f.store.agentIDs = []string{testUUID}
-	f.store.uuidOwners = map[string][]int64{testUUID: {testSession, testSession + 1}} // resumed in another tab
-
-	p := f.plan(Request{})
-	if hasItem(p, "worktree:"+root) || hasItem(p, "branch:feat/lane") {
-		t.Fatalf("a shared uuid adopted the scratchpad worktree: %+v", p.Items)
-	}
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
 
 	// A uuid the row never had adopts nothing either.
-	f.store.agentIDs = []string{"other-id"}
+	f.store.agentIDs = []db.AgentSessionID{{ID: "other-id", Since: "2026-10-01T00:00:00Z"}}
 	f.store.uuidOwners = map[string][]int64{"other-id": {testSession}}
-	if p := f.plan(Request{}); hasItem(p, "worktree:"+root) {
-		t.Fatalf("another uuid's scratchpad was adopted: %+v", p.Items)
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
+}
+
+// A lane born before this row acquired the uuid was another row's (or
+// another tab's) work: it is not adopted.
+func TestProj18_ScratchpadLaneBornBeforeUUIDAcquiredIsNotAdopted(t *testing.T) {
+	f := newFixture(t)
+	useScratchBases(t, f.base)
+	root := f.scratchWorktree("lane", "feat/lane")
+	f.ownUUID(time.Now().Add(30 * time.Minute))
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
+}
+
+// The row that started the conversation was deleted first (its history
+// cascaded away), so this row, which resumed it later, is the uuid's only
+// owner: the lane, born before this row acquired the uuid, is still not
+// adopted.
+func TestScratchpadOtherOwnerDeletedFirstAdoptsNothing(t *testing.T) {
+	f := newFixture(t)
+	useScratchBases(t, f.base)
+	root := f.scratchWorktree("lane", "feat/lane")
+	resumed := time.Now().Add(10 * time.Minute)
+	f.ownUUID(resumed)
+	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}} // only this row is left
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
+}
+
+// An unknown acquisition time or lane birth adopts nothing (fail closed).
+func TestScratchpadUnknownTimesAdoptNothing(t *testing.T) {
+	f := newFixture(t)
+	useScratchBases(t, f.base)
+	root := f.scratchWorktree("lane", "feat/lane")
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
+	f.store.agentIDs[1].Since = "yesterday"
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
+
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
+	f.birth = func(string) (time.Time, bool) { return time.Time{}, false }
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
+}
+
+// Codex rows have no Claude scratchpad (spec §2b): the rule is off.
+func TestScratchpadCodexRowAdoptsNothing(t *testing.T) {
+	f := newFixture(t)
+	useScratchBases(t, f.base)
+	root := f.scratchWorktree("lane", "feat/lane")
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
+	f.store.session.Kind = "codex"
+	wantNoLane(t, f.plan(Request{}), root, "feat/lane")
+}
+
+// A failed read of the agent session ids or their owners fails the plan:
+// nothing is adopted, nothing removed.
+func TestScratchpadReadFailureFailsThePlan(t *testing.T) {
+	for name, set := range map[string]func(*fakeStore){
+		"ids":    func(s *fakeStore) { s.idsErr = errors.New("injected") },
+		"owners": func(s *fakeStore) { s.ownersErr = errors.New("injected") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			useScratchBases(t, f.base)
+			f.scratchWorktree("lane", "feat/lane")
+			f.ownUUID(time.Now().Add(-30 * time.Minute))
+			set(f.store)
+			if res, err := PlanResult(context.Background(), f.deps(), Request{SessionID: testSession}); err == nil {
+				t.Fatalf("PlanResult = %+v, want an error", res.Plan.Items)
+			}
+		})
 	}
 }
 
@@ -141,13 +261,11 @@ func TestProj18_ScratchpadBranchOlderThanSessionIsKept(t *testing.T) {
 	f := newFixture(t)
 	useScratchBases(t, f.base)
 	gitIn(t, f.repo, "branch", "feat/older", "main") // merged: only the age keeps it
-	rel := filepath.Join(fmt.Sprintf("claude-%d", os.Getuid()), "-tmp-acme", testUUID, "scratchpad", "lane")
-	root := filepath.Join(f.base, rel)
+	root := f.scratchRoot("lane")
 	gitIn(t, f.repo, "worktree", "add", "-q", root, "feat/older")
 	f.sessionCreated = time.Now().Add(time.Hour)
 	f.birth = func(string) (time.Time, bool) { return time.Now().Add(2 * time.Hour), true } // the lane is younger
-	f.store.agentIDs = []string{testUUID}
-	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}}
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
 
 	p := f.plan(Request{})
 	wantItem(t, p, "worktree:"+root, ActionRemove, "")
@@ -158,10 +276,9 @@ func TestProj18_ScratchpadBranchOlderThanSessionIsKept(t *testing.T) {
 func TestScratchpadWorktreeOlderThanSessionIsKept(t *testing.T) {
 	f := newFixture(t)
 	useScratchBases(t, f.base)
+	f.ownUUID(time.Now().Add(-30 * time.Minute))
 	root := f.scratchWorktree("lane", "feat/lane")
 	f.sessionCreated = time.Now().Add(time.Hour)
-	f.store.agentIDs = []string{testUUID}
-	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}}
 
 	wantItem(t, f.plan(Request{}), "worktree:"+root, ActionKeep, ReasonExistedBeforeSession)
 }
@@ -196,7 +313,9 @@ func TestScratchBases_IncludeSlashTmpWhateverTMPDIR(t *testing.T) {
 
 func TestScratchLaneMatch(t *testing.T) {
 	uid := os.Getuid()
-	o := observed{scratch: []string{fmt.Sprintf("/b/claude-%d", uid)}, scratchIDs: map[string]bool{"u1": true}}
+	t0 := time.Date(2026, 10, 12, 9, 30, 0, 0, time.UTC)
+	dirs := []string{fmt.Sprintf("/b/claude-%d", uid)}
+	ids := map[string]time.Time{"u1": t0}
 	for root, want := range map[string]bool{
 		fmt.Sprintf("/b/claude-%d/slug/u1/scratchpad/x", uid): true,
 		fmt.Sprintf("/b/claude-%d/slug/u1/x", uid):            true,
@@ -204,11 +323,15 @@ func TestScratchLaneMatch(t *testing.T) {
 		fmt.Sprintf("/b/claude-%d/u1/x/y", uid):               false, // no slug segment
 		fmt.Sprintf("/b/claude-%d/a/b/u1/x", uid):             false, // two segments before the uuid
 		fmt.Sprintf("/b/claude-%d/slug/u2/x", uid):            false,
+		fmt.Sprintf("/b/claude-%d/slug/u1x/x", uid):           false,
+		fmt.Sprintf("/b/claude-%d/slug/u1-other/x", uid):      false,
+		fmt.Sprintf("/b/claude-%d/slug/U1/x", uid):            false,
 		fmt.Sprintf("/b/claude-%d/slug/u1/x", uid+1):          false,
 		"/c/claude-0/slug/u1/x":                               false,
 	} {
-		if got := o.inScratch(root); got != want {
-			t.Errorf("inScratch(%s) = %v, want %v", root, got, want)
+		since, got := scratchLane(dirs, ids, root)
+		if got != want || (got && !since.Equal(t0)) {
+			t.Errorf("scratchLane(%s) = %v, %v; want %v", root, since, got, want)
 		}
 	}
 }

@@ -97,16 +97,29 @@ func TestAgentSessionIDs_HistoryAndCurrent(t *testing.T) {
 	d := openTestDB(t)
 	ctx := context.Background()
 	wb := newTestWorkbench(t, d)
-	sid := newTestSession(t, d, wb)
-	_, err := d.SetTerminalClaudeSessionID(sid, wb, "u-2")
+	res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at)
+		VALUES (?, 'claude', 'T', '/tmp/acme', 'u-1', '2026-10-12T09:30:00Z')`, wb)
 	require.NoError(t, err)
-	// The current id counts even when its ledger row is missing.
-	_, err = d.Exec(`DELETE FROM terminal_session_agent_sessions WHERE agent_session_id = 'u-2'`)
+	sid, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_session_agent_sessions SET first_seen_at = '2026-10-12T09:30:00Z' WHERE agent_session_id = 'u-1'`)
+	require.NoError(t, err)
+	_, err = d.SetTerminalClaudeSessionID(sid, wb, "u-2")
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE terminal_session_agent_sessions SET first_seen_at = '2026-10-12T10:00:00Z' WHERE agent_session_id = 'u-2'`)
 	require.NoError(t, err)
 
 	got, err := d.AgentSessionIDs(ctx, sid)
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"uuid", "u-2"}, got) // newTestSession's id, then the current one
+	assert.Equal(t, []AgentSessionID{{ID: "u-1", Since: "2026-10-12T09:30:00Z"}, {ID: "u-2", Since: "2026-10-12T10:00:00Z"}}, got)
+
+	// The current id with no history row (a pre-00127 gap) is acquired at
+	// the row's created_at.
+	_, err = d.Exec(`DELETE FROM terminal_session_agent_sessions WHERE agent_session_id = 'u-2'`)
+	require.NoError(t, err)
+	got, err = d.AgentSessionIDs(ctx, sid)
+	require.NoError(t, err)
+	assert.Equal(t, []AgentSessionID{{ID: "u-1", Since: "2026-10-12T09:30:00Z"}, {ID: "u-2", Since: "2026-10-12T09:30:00Z"}}, got)
 
 	none, err := d.AgentSessionIDs(ctx, sid+100)
 	require.NoError(t, err)
@@ -131,15 +144,11 @@ func TestAgentSessionIDOwners_HistoryAndCurrent(t *testing.T) {
 	_, err = d.SetTerminalClaudeSessionID(c, wb, "c-own")
 	require.NoError(t, err)
 
-	owners, err := d.AgentSessionIDOwners(ctx, "shared")
+	owners, err := d.AgentSessionIDOwners(ctx, []string{"shared", "c-own", "nobody"})
 	require.NoError(t, err)
-	assert.Equal(t, []int64{a, b}, owners)
+	assert.Equal(t, map[string][]int64{"shared": {a, b}, "c-own": {c}}, owners)
 
-	owners, err = d.AgentSessionIDOwners(ctx, "c-own")
+	empty, err := d.AgentSessionIDOwners(ctx, nil)
 	require.NoError(t, err)
-	assert.Equal(t, []int64{c}, owners)
-
-	owners, err = d.AgentSessionIDOwners(ctx, "nobody")
-	require.NoError(t, err)
-	assert.Empty(t, owners)
+	assert.Empty(t, empty)
 }

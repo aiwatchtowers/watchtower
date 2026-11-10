@@ -23,14 +23,12 @@ import (
 // Command ledger rows (auto cleanup spec 2026-11-10 §2a) name what the
 // agent created: a worktree row adds its root and names its branch, a
 // branch row names its branch only — its root is the repository's top
-// level, never a worktree root. scratch and scratchIDs are the session's
-// Claude scratchpad (§2b): the `<base>/claude-<uid>` dirs and the agent
-// session ids no other row has (loadScratch).
+// level, never a worktree root. A command row counts only when its root is
+// a worktree of the planned repository (loadObserved). The session's Claude
+// scratchpad lanes (§2b) are added to roots and named by loadScratch.
 type observed struct {
 	roots, branches, named              map[string]bool
 	placedCwd, placedRoot, placedBranch string
-	scratch                             []string
-	scratchIDs                          map[string]bool
 }
 
 const (
@@ -63,27 +61,31 @@ func observe(rows []db.SessionWorktree, targetBranches, declaredWorktrees, decla
 	return o
 }
 
-// sawWorktree: the session recorded or declared the root, a branch a
-// target or the agent named is checked out there, or it is a linked
-// worktree inside the session's Claude scratchpad.
+// sawWorktree: the session recorded or declared the root (a scratchpad
+// lane included), or a branch a target or the agent named is checked out
+// there.
 func (o observed) sawWorktree(w worktree) bool {
-	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch]) || (!w.Main && !w.Bare && o.inScratch(w.Root))
+	return o.roots[w.Root] || (w.Branch != "" && o.named[w.Branch])
 }
 
-// inScratch reports whether root lies strictly inside
-// `<scratch dir>/<any one segment>/<uuid>/` for one of scratchIDs.
-func (o observed) inScratch(root string) bool {
-	for _, dir := range o.scratch {
+// scratchLane reports whether root lies strictly inside
+// `<dir>/<any one segment>/<uuid>/` for one of dirs and one of ids' uuids
+// (an exact segment match), and that uuid's acquisition time.
+func scratchLane(dirs []string, ids map[string]time.Time, root string) (time.Time, bool) {
+	for _, dir := range dirs {
 		rest, ok := strings.CutPrefix(root, dir+"/")
 		if !ok {
 			continue
 		}
 		segs := strings.Split(rest, "/")
-		if len(segs) >= 3 && segs[0] != "" && segs[2] != "" && o.scratchIDs[segs[1]] {
-			return true
+		if len(segs) < 3 || segs[0] == "" || segs[2] == "" {
+			continue
+		}
+		if since, ok := ids[segs[1]]; ok {
+			return since, true
 		}
 	}
-	return false
+	return time.Time{}, false
 }
 
 // scratchBases is the set of temp roots Claude Code may write its
