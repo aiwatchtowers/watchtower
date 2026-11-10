@@ -23,6 +23,8 @@ enum TuningChatSurface {
     static let recentLimit = 10
     /// The Go `tuning.ChatPurpose`: the tuning chat's own Usage line.
     static let purpose = "tuning.chat"
+    /// The automatic title's length (`setTitleIfEmpty`).
+    static let titleLimit = 60
 
     /// AGENT-04 (the `AutomationEditorChatSurface.toolsAvailable` shape):
     /// tools only on a provider the catalog knows as a CLI child.
@@ -68,14 +70,13 @@ enum TuningChatSurface {
         guard let text = try String.fetchOne(db, sql: """
             SELECT text FROM chat_messages WHERE conversation_id = ? AND role = 'user' ORDER BY id LIMIT 1
             """, arguments: [conversationID]) else { return }
-        let title = String(text.split(whereSeparator: \.isNewline).joined(separator: " ").prefix(titleLimit))
-            .trimmingCharacters(in: .whitespaces)
+        let joined = text.split(whereSeparator: \.isNewline).joined(separator: " ")
+        let line = joined.trimmingCharacters(in: .whitespaces)
+        let title = String(line.prefix(titleLimit)).trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty else { return }
         try db.execute(sql: "UPDATE chat_conversations SET title = ? WHERE id = ? AND title = ''",
                        arguments: [title, conversationID])
     }
-
-    static let titleLimit = 60
 
     /// The conversation's tuning proposals (`origin = 'chat'`), oldest first.
     static func proposals(_ db: Database, conversationID: Int64) throws -> [CoachProposal] {

@@ -96,6 +96,7 @@ final class TuningChat {
         center.markHidden(engine.spec.key)
         self.conversationID = conversationID
         cards = TuningFeedCards.build(actions: [], proposals: [])
+        loadError = nil
         engine = center.engine(for: currentSpec())
         center.markShown(engine.spec.key)
         attach(engine)
@@ -155,6 +156,18 @@ final class TuningChat {
     /// the engine gets the rebuilt spec before the turn reads it.
     func refreshToolAccess() {
         guard !closed else { return }
+        decideToolAccess()
+    }
+
+    /// A turn of `conversationID` is about to start: only the shown
+    /// conversation's spec is this controller's to rebuild (an engine the
+    /// panel left keeps the spec it has).
+    private func willSend(conversationID: Int64) {
+        guard conversationID == self.conversationID else { return }
+        refreshToolAccess()
+    }
+
+    private func decideToolAccess() {
         let now = decideTools()
         guard now != toolsAvailable else { return }
         toolsAvailable = now
@@ -176,30 +189,69 @@ final class TuningChat {
         hook: WillSendHook
     ) -> ChatSurfaceSpec {
         TuningChatSurface.spec(workbenchID: workbenchID, conversationID: conversationID, tools: tools,
-                               period: period) { [weak hook] in hook?.chat?.refreshToolAccess() }
+                               period: period) { [weak hook] in hook?.chat?.willSend(conversationID: conversationID) }
     }
 
-    /// The engine's turn end belongs to its conversation: a turn of a
-    /// conversation the panel left only updates its title.
+    /// Every panel on the engine hears its turn end: the engine has one
+    /// `onTurnFinished`, so it goes to the engine's `TuningTurnFanOut`.
     private func attach(_ engine: EmbeddedChatEngine) {
-        let shown = conversationID
-        engine.onTurnFinished = { [weak self] _ in
-            guard let self else { return }
-            Task { await self.turnFinished(conversationID: shown) }
-        }
+        TuningTurnFanOut.of(engine, dbPool: dbPool, conversationID: conversationID).add(self)
     }
 
-    private func turnFinished(conversationID: Int64) async {
+    /// A turn of `conversationID` ended (its title is already written):
+    /// the cards follow when it is the conversation on show.
+    fileprivate func turnFinished(conversationID: Int64) async {
+        guard !closed, conversationID == self.conversationID else { return }
+        await refreshCards()
+    }
+}
+
+/// One per tuning engine: titles the conversation after each turn — whether
+/// or not a panel is still open — then tells every live panel on it.
+@MainActor
+private final class TuningTurnFanOut {
+    private static let byEngine = NSMapTable<EmbeddedChatEngine, TuningTurnFanOut>.weakToStrongObjects()
+
+    private let dbPool: DatabasePool
+    private let conversationID: Int64
+    private var panels: [WeakPanel] = []
+
+    private struct WeakPanel {
+        weak var chat: TuningChat?
+    }
+
+    private init(dbPool: DatabasePool, conversationID: Int64) {
+        self.dbPool = dbPool
+        self.conversationID = conversationID
+    }
+
+    static func of(_ engine: EmbeddedChatEngine, dbPool: DatabasePool, conversationID: Int64) -> TuningTurnFanOut {
+        if let existing = byEngine.object(forKey: engine) { return existing }
+        let fanOut = TuningTurnFanOut(dbPool: dbPool, conversationID: conversationID)
+        byEngine.setObject(fanOut, forKey: engine)
+        engine.onTurnFinished = { _ in Task { await fanOut.turnFinished() } }
+        return fanOut
+    }
+
+    func add(_ chat: TuningChat) {
+        panels.removeAll { $0.chat == nil || $0.chat === chat }
+        panels.append(WeakPanel(chat: chat))
+    }
+
+    private func turnFinished() async {
+        let conversationID = self.conversationID
         do {
             try await dbPool.write { db in
                 try TuningChatSurface.setTitleIfEmpty(db, conversationID: conversationID)
             }
         } catch {
             // Cosmetic: the chat stays untitled until a later turn titles it.
-            tuningChatLog.error("titling tuning conversation \(conversationID): \(error.localizedDescription, privacy: .public)")
+            tuningChatLog.error(
+                "titling tuning conversation \(conversationID): \(error.localizedDescription, privacy: .private)")
         }
-        guard !closed else { return }
-        await refreshCards()
+        for panel in panels {
+            await panel.chat?.turnFinished(conversationID: conversationID)
+        }
     }
 }
 

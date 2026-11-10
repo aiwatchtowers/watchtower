@@ -114,6 +114,56 @@ final class TuningChatTests: XCTestCase {
         XCTAssertTrue(first.engine === second.engine)
     }
 
+    /// Both panels on one engine hear its turn end (the engine has one
+    /// `onTurnFinished` slot).
+    func testBothPanelsRefreshAfterATurn() async throws {
+        let ai = ScriptedAIService()
+        let center = center(ai)
+        let first = try await chat(center)
+        let second = try await chat(center, conversationID: first.conversationID)
+        let conv = first.conversationID
+        try await turn(second, ai, "Make it shorter") {
+            try self.insertProposal(21, conversationID: conv)
+        }
+        let both = await eventually { first.cards.trailing == [.proposal(21)] && second.cards.trailing == [.proposal(21)] }
+        XCTAssertTrue(both)
+    }
+
+    /// The title is the engine's, not the panel's: a panel closed and gone
+    /// mid-turn still leaves a titled conversation.
+    func testTitleWrittenWhenThePanelWentMidTurn() async throws {
+        let ai = ScriptedAIService()
+        let center = center(ai)
+        var panel: TuningChat? = try await chat(center)
+        let engine = try XCTUnwrap(panel?.engine)
+        let conv = try XCTUnwrap(panel?.conversationID)
+        XCTAssertTrue(engine.send("Why did cost grow?"))
+        await engine.finished()
+        let started = await eventually { ai.calls.count == 1 }
+        XCTAssertTrue(started)
+        panel?.close()
+        chats.removeAll()
+        panel = nil
+        XCTAssertNil(panel)
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+        _ = await eventually { !engine.isStreaming }
+        await engine.finished()
+        let titled = await eventually { (try? self.title(conv)) == "Why did cost grow?" }
+        XCTAssertTrue(titled)
+    }
+
+    private func insertProposal(_ id: Int64, conversationID: Int64) throws {
+        try pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO coach_proposals (id, fingerprint, kind, destination, title, why, metric, after_text,
+                                             sources, created_at, origin, conversation_id)
+                VALUES (?, ?, 'replace', 'session', 'Shorter', 'why', 'corrections', 'Be brief.',
+                        1, '2026-11-01T00:00:00Z', 'chat', ?)
+                """, arguments: [id, "fp-\(id)", conversationID])
+        }
+    }
+
     func testDeletedWorkbenchDropsTheEngine() async throws {
         let center = center(ScriptedAIService())
         let chat = try await chat(center)
@@ -240,13 +290,8 @@ final class TuningChatTests: XCTestCase {
         let conv = chat.conversationID
         try await turn(chat, ai, "Make the session instructions shorter") {
             let turnID = try XCTUnwrap(chat.engine.messages.last { $0.message.isUser }?.message.turnID)
+            try self.insertProposal(21, conversationID: conv)
             try self.pool.write { db in
-                try db.execute(sql: """
-                    INSERT INTO coach_proposals (id, fingerprint, kind, destination, title, why, metric, after_text,
-                                                 sources, created_at, origin, conversation_id)
-                    VALUES (21, 'fp-21', 'replace', 'session', 'Shorter', 'why', 'corrections', 'Be brief.',
-                            1, '2026-11-01T00:00:00Z', 'chat', ?)
-                    """, arguments: [conv])
                 try db.execute(sql: """
                     INSERT INTO agent_actions (tool, args_json, conversation_id, turn_id, status, result_json)
                     VALUES ('propose_tuning_edit', '{}', ?, ?, 'applied', '{"proposal_id":21}')
