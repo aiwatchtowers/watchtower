@@ -7,6 +7,10 @@ package enum AssistantToolSurface {
     /// workbench (DEV-06) and never read trust, so it is no trust place.
     package static let workbench = "project"
 
+    /// `tools.ChatSurfaces()`: the surfaces a chat's tool mode binds to, in
+    /// the order pinned by `internal/tools/testdata/chat_surfaces.txt`.
+    package static let chatSurfaces = ["main", "target", "automation_editor", "tuning"]
+
     package static func label(for surface: String) -> String {
         switch surface {
         case "main": "Chat"
@@ -15,6 +19,7 @@ package enum AssistantToolSurface {
         case "project": "Workbench" // tools.WorkbenchSurface keeps the pre-rename id
         case "automation": "Automations" // tools.AutomationSurface
         case "automation_editor": "Automation editor" // tools.AutomationEditorSurface
+        case "tuning": "Tuning chat" // tools.SurfaceTuning
         default: surface
         }
     }
