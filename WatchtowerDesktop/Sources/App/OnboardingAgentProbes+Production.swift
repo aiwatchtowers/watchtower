@@ -30,7 +30,7 @@ extension OnboardingAgentProbes {
         )
     }
 
-    /// `<executable> auth --help` (claude) / `login --help` (codex): stdout and
+    /// `<executable> <loginHelpArguments>` (the adapter's `AgentSetup`): stdout and
     /// stderr together. The child runs in its own process group; on timeout
     /// the whole group is killed and the answer is nil.
     static func helpText(
@@ -39,7 +39,7 @@ extension OnboardingAgentProbes {
         environment: [String: String],
         timeout: TimeInterval
     ) async -> String? {
-        let args = agent == .claude ? ["auth", "--help"] : ["login", "--help"]
+        let args = agent.session.setup.loginHelpArguments
         return await ProcessPipes.offPool {
             spawnCapturing(executable, args, environment: environment, timeout: timeout)
         }

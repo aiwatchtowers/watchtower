@@ -20,8 +20,8 @@ Target #1521. **Spec:** [onboarding-agent-choice-design](../../../superpowers/sp
 | `failed` | Claude's check failed (Failed line + Check again) | [light](onboarding-agent-failed-light.png) | [dark](onboarding-agent-failed-dark.png) |
 | `policy` | Organization allows only Codex | [light](onboarding-agent-policy-light.png) | [dark](onboarding-agent-policy-dark.png) |
 | `policy-both` | Organization allows neither: Continue waits | [light](onboarding-agent-policy-both-light.png) | [dark](onboarding-agent-policy-both-dark.png) |
-| `other-provider` | Provider set to Ollama in Settings | [light](onboarding-agent-other-provider-light.png) | [dark](onboarding-agent-other-provider-dark.png) |
-| `other-provider-failed` | Ollama didn't answer: the tiles come back | [light](onboarding-agent-other-provider-failed-light.png) | [dark](onboarding-agent-other-provider-failed-dark.png) |
+| `other-provider` | Provider set to Ollama in Settings (named "Ollama / Local") | [light](onboarding-agent-other-provider-light.png) | [dark](onboarding-agent-other-provider-dark.png) |
+| `other-provider-failed` | "Ollama / Local" didn't answer: the tiles come back | [light](onboarding-agent-other-provider-failed-light.png) | [dark](onboarding-agent-other-provider-failed-dark.png) |
 | `continuing` | Continue saving (busy) | [light](onboarding-agent-continuing-light.png) | [dark](onboarding-agent-continuing-dark.png) |
 | `save-error` | Saving the agent failed | [light](onboarding-agent-save-error-light.png) | [dark](onboarding-agent-save-error-dark.png) |
 | `none-narrow` | No agent in a narrow window | [light](onboarding-agent-none-narrow-light.png) | [dark](onboarding-agent-none-narrow-dark.png) |

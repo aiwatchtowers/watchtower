@@ -1,7 +1,7 @@
 import Foundation
 
 /// The onboarding agent check's `config.yaml` edit: pins `claude_path` /
-/// `codex_path` (`Agent.pathKey`) to a binary the owner picked by hand.
+/// `codex_path` (`AgentSetup.pathKey`) to a binary the owner picked by hand.
 package enum OnboardingAgentPathConfig {
     /// `value` as a single-quoted YAML scalar (internal quotes doubled), so a
     /// path cannot inject YAML.
@@ -12,7 +12,7 @@ package enum OnboardingAgentPathConfig {
     /// `content` (nil: no config file yet) with the agent's top-level path
     /// line replaced by one for `path`; every other line is kept as is.
     package static func settingPath(_ path: String, for agent: OnboardingAgentChoice.Agent, in content: String?) -> String {
-        let key = agent.pathKey
+        let key = agent.session.setup.pathKey
         let line = "\(key): \(yamlQuote(path))\n"
         guard let content, !content.isEmpty else { return line }
         var kept = content.components(separatedBy: "\n")

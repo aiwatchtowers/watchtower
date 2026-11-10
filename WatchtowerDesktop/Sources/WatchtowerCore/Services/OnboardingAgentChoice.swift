@@ -5,83 +5,9 @@ import Foundation
 /// the view only lays it out. Spec:
 /// `docs/superpowers/specs/2026-11-10-onboarding-agent-choice-design.md`.
 package struct OnboardingAgentChoice: Equatable, Sendable {
-    package enum Agent: String, CaseIterable, Sendable {
-        case claude, codex
-
-        package var name: String {
-            switch self {
-            case .claude: "Claude Code"
-            case .codex: "Codex CLI"
-            }
-        }
-
-        package var installCommand: String {
-            switch self {
-            case .claude: "curl -fsSL https://claude.ai/install.sh | bash"
-            case .codex: "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
-            }
-        }
-
-        package var signInCommand: String { signInCommand(executable: nil) }
-
-        /// The sign-in run through the located executable (shell-quoted);
-        /// the bare name when none is known.
-        package func signInCommand(executable: String?) -> String {
-            let program = executable.map { OnboardingAgentChoice.shellQuote($0) } ?? rawValue
-            switch self {
-            case .claude: return program + " auth login"
-            case .codex: return program + " login"
-            }
-        }
-
-        /// The update for an install too old for `signInCommand`, by how it
-        /// was installed (owner, ask #1163): each way updates its own copy;
-        /// an unknown way gets no command — the owner updates it their way.
-        package func updateCommand(_ kind: InstallKind, executable: String? = nil) -> String? {
-            switch (self, kind) {
-            case (.claude, .native): executable.map { OnboardingAgentChoice.shellQuote($0) + " update" } ?? "claude update"
-            case (.claude, .homebrew): "brew upgrade --cask claude-code"
-            case (.claude, .npm): "npm install -g @anthropic-ai/claude-code@latest"
-            case (.codex, .native): "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
-            case (.codex, .homebrew): "brew upgrade --cask codex"
-            case (.codex, .npm): "npm install -g @openai/codex@latest"
-            case (_, .unknown): nil
-            }
-        }
-
-        /// Whether the CLI has the login command, read from the text of
-        /// `claude auth --help` / `codex login --help` — never the exit code:
-        /// an old CLI may print its general help and exit 0 (owner, ask #1163).
-        package func loginSupported(help: String) -> Bool {
-            switch self {
-            case .claude:
-                // The `auth` command list has a `login` row: "  login [options]  Sign in…".
-                help.split(separator: "\n").contains { line in
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    return line.first == " " && (trimmed == "login" || trimmed.hasPrefix("login "))
-                }
-            case .codex:
-                help.contains("Usage: codex login")
-            }
-        }
-
-        /// The vendor's install page: Homebrew, npm and the rest, for a Mac
-        /// where piping a script into the shell is not allowed.
-        package var installDocsURL: String {
-            switch self {
-            case .claude: "https://code.claude.com/docs/en/setup"
-            case .codex: "https://github.com/openai/codex"
-            }
-        }
-
-        /// The config key a manually picked executable is saved under.
-        package var pathKey: String {
-            switch self {
-            case .claude: "claude_path"
-            case .codex: "codex_path"
-            }
-        }
-    }
+    /// The agent kinds the section offers; every per-agent value is the
+    /// kind's adapter's `AgentSetup` (LLMTRANSPORT-01, ask #1211).
+    package typealias Agent = AgentKind
 
     package enum Status: Equatable, Sendable {
         case checking
@@ -118,18 +44,12 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case unknown
 
         package static func of(_ agent: Agent, resolvedPath path: String, home: String) -> Self {
-            // Claude Code's old local install keeps npm's folder under
-            // ~/.claude/local; `claude update` updates it in place.
-            if agent == .claude, path.hasPrefix(home + "/.claude/local/") { return .native }
+            // The installer's own folders first: an old local install keeps
+            // npm's folder under one and still updates itself.
+            if agent.session.setup.nativeRoots.contains(where: { path.hasPrefix(home + "/" + $0) }) { return .native }
             if path.contains("/node_modules/") { return .npm }
             if path.contains("/Caskroom/") || path.contains("/Cellar/") { return .homebrew }
-            let nativeRoots = switch agent {
-            case .claude: [home + "/.local/share/claude/"]
-            // install.sh links ~/.local/bin/codex to
-            // ~/.codex/packages/standalone/current/bin/codex (rust-v0.166).
-            case .codex: [home + "/.codex/packages/standalone/"]
-            }
-            return nativeRoots.contains { path.hasPrefix($0) } ? .native : .unknown
+            return .unknown
         }
     }
 
@@ -192,7 +112,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         package static let pathSaveFailure = "Couldn’t save the executable’s path."
         /// The open panel's message for Choose the executable….
         package static func choosePanelMessage(_ agent: Agent) -> String {
-            "Select the \(agent.name) executable"
+            "Select the \(agent.productName) executable"
         }
     }
 
@@ -370,7 +290,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         }
         return Tile(
             agent: agent,
-            title: agent.name,
+            title: agent.productName,
             status: text,
             tone: tone,
             busy: state == .checking,
@@ -387,24 +307,24 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case .notInstalled:
             return Setup(
                 agent: agent,
-                title: "Install \(agent.name)",
+                title: "Install \(agent.productName)",
                 steps: [
-                    Step(label: "Install it in Terminal:", command: agent.installCommand),
+                    Step(label: "Install it in Terminal:", command: agent.session.setup.installCommand),
                     Step(label: "Sign in:", command: agent.signInCommand)
                 ],
                 detail: nil,
                 showsManualPath: true,
-                docsURL: agent.installDocsURL,
+                docsURL: agent.session.setup.installDocsURL,
                 runsSignIn: false
             )
         case .signedOut where updateStuck(agent):
             return Setup(
                 agent: agent,
-                title: "Update \(agent.name) to sign in",
+                title: "Update \(agent.productName) to sign in",
                 steps: [],
                 detail: nil,
                 showsManualPath: true,
-                docsURL: agent.installDocsURL,
+                docsURL: agent.session.setup.installDocsURL,
                 runsSignIn: false,
                 signInNote: stuckLine(agent),
                 signInNoteWarns: true
@@ -413,7 +333,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             let updating = outdated.contains(agent)
             return Setup(
                 agent: agent,
-                title: updating ? "Update \(agent.name) to sign in" : "Sign in to \(agent.name)",
+                title: updating ? "Update \(agent.productName) to sign in" : "Sign in to \(agent.productName)",
                 steps: [Step(
                     label: "Or run it in your own Terminal:",
                     command: updating ? updateCommand(agent) : signInCommand(agent)
@@ -428,7 +348,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case .failed(let message):
             return Setup(
                 agent: agent,
-                title: "\(agent.name) didn’t answer",
+                title: "\(agent.productName) didn’t answer",
                 steps: [],
                 detail: message,
                 showsManualPath: true,
@@ -441,17 +361,17 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     private func stuckLine(_ agent: Agent) -> String {
         let path = installs[agent]?.path ?? agent.signInCommand
         if updateTried.contains(agent) {
-            return "Updating didn’t change the \(agent.name) Watchtower uses (\(path)). It may be installed twice. "
+            return "Updating didn’t change the \(agent.productName) Watchtower uses (\(path)). It may be installed twice. "
                 + "Update that copy the way you installed it, or choose another executable."
         }
-        return "Watchtower can’t tell how this \(agent.name) was installed (\(path)). "
+        return "Watchtower can’t tell how this \(agent.productName) was installed (\(path)). "
             + "Update it the way you installed it, then check again."
     }
 
     /// The line above the sign-in terminal.
     private var signInLine: String {
         if let agent = selected, outdated.contains(agent), !isEnded {
-            return "This \(agent.name) is too old to sign in from here. It updates first; sign-in starts right after."
+            return "This \(agent.productName) is too old to sign in from here. It updates first; sign-in starts right after."
         }
         switch signIn {
         case .idle, .running:
@@ -482,12 +402,12 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         guard !canContinue else { return nil }
         if isChecking { return nil }
         guard let selected else { return "Continue unlocks once an AI agent is ready" }
-        return "Continue unlocks once \(selected.name) is ready"
+        return "Continue unlocks once \(selected.productName) is ready"
     }
 
     /// The Development goal's pitch names the agent that will work the board.
     package var developmentPitch: String {
-        let name = (showsTiles ? selected?.name : nil) ?? "Your AI agent"
+        let name = (showsTiles ? selected?.productName : nil) ?? "Your AI agent"
         return "\(name) works your folder’s board. No connections needed"
     }
 
@@ -504,20 +424,14 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     package static func failureMessage(_ agent: Agent, code: String?, error: String?) -> String {
         switch code {
         case "transport", "timeout":
-            return "Couldn’t reach \(agent.name)’s service. Check the network or VPN, then check again."
+            return "Couldn’t reach \(agent.productName)’s service. Check the network or VPN, then check again."
         case "invalid_output":
             // Go's text names Codex even for Claude: always our own words.
-            return "\(agent.name) answered but ignored Watchtower’s instructions. Update it and check again."
+            return "\(agent.productName) answered but ignored Watchtower’s instructions. Update it and check again."
         default:
             let tail = error.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
-            return "\(agent.name) didn’t answer\(tail). Run it once in Terminal to see what it says, then check again."
+            return "\(agent.productName) didn’t answer\(tail). Run it once in Terminal to see what it says, then check again."
         }
-    }
-
-    /// The display name of a provider other than claude / codex: no catalog
-    /// read, so it never changes after launch.
-    package static func providerName(_ id: String) -> String {
-        id == "ollama" ? "Ollama" : id
     }
 
     /// The failure line of that provider's test (the caption wraps it).
@@ -529,4 +443,40 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package static let saveFailure = "Couldn’t save the AI agent."
+}
+
+extension AgentKind {
+    /// The tile title, from the kind's adapter.
+    package var productName: String { session.setup.productName }
+
+    /// The sign-in with the bare name, before an executable is known.
+    package var signInCommand: String { signInCommand(executable: nil) }
+
+    /// The sign-in run through the located executable (shell-quoted);
+    /// the bare name when none is known.
+    package func signInCommand(executable: String?) -> String {
+        ([program(executable)] + session.setup.signInArguments).joined(separator: " ")
+    }
+
+    /// The update for an install too old for `signInCommand`, by how it
+    /// was installed (owner, ask #1163): each way updates its own copy;
+    /// an unknown way gets no command — the owner updates it their way.
+    package func updateCommand(_ kind: OnboardingAgentChoice.InstallKind, executable: String? = nil) -> String? {
+        switch session.setup.updates[kind] {
+        case .runExecutable(let arguments): ([program(executable)] + arguments).joined(separator: " ")
+        case .literal(let command): command
+        case nil: nil
+        }
+    }
+
+    /// Whether the CLI has the login command, read from the help text
+    /// (`AgentSetup.loginHelpArguments`) — never the exit code: an old CLI
+    /// may print its general help and exit 0 (owner, ask #1163).
+    package func loginSupported(help: String) -> Bool {
+        session.setup.loginSupported(help: help)
+    }
+
+    private func program(_ executable: String?) -> String {
+        executable.map { OnboardingAgentChoice.shellQuote($0) } ?? rawValue
+    }
 }

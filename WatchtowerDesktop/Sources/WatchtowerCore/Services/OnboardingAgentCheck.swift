@@ -89,7 +89,7 @@ package enum OnboardingAgentCheck {
         let configured = probes.configuredProvider?.trimmingCharacters(in: .whitespaces) ?? ""
         if !configured.isEmpty, Agent(rawValue: configured) == nil {
             let answer = await probes.test(nil, nil)
-            result.otherProvider = OnboardingAgentChoice.providerName(configured)
+            result.otherProvider = AIModelCatalog.fallbackDisplayName(configured)
             if !answer.ok {
                 result.otherProviderFailure = OnboardingAgentChoice.otherFailureLine(code: answer.errorCode, error: answer.error)
             }

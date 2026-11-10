@@ -447,8 +447,8 @@ final class OnboardingAgentChoiceTests: XCTestCase {
     }
 
     func testOtherProviderCopy() {
-        XCTAssertEqual(Choice.providerName("ollama"), "Ollama")
-        XCTAssertEqual(Choice.providerName("acme-llm"), "acme-llm")
+        XCTAssertEqual(AIModelCatalog.fallbackDisplayName("ollama"), "Ollama / Local")
+        XCTAssertEqual(AIModelCatalog.fallbackDisplayName("acme-llm"), "acme-llm")
         XCTAssertEqual(Choice.otherFailureLine(code: "transport", error: nil), "Couldn’t reach it.")
         XCTAssertEqual(Choice.otherFailureLine(code: "timeout", error: "x"), "Couldn’t reach it.")
         XCTAssertEqual(Choice.otherFailureLine(code: "auth", error: nil), "It didn’t pass the check.")

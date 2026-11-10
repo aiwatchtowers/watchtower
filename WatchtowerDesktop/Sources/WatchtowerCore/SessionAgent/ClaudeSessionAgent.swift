@@ -64,4 +64,24 @@ package struct ClaudeSessionAgent: SessionAgent {
     /// Always `~/.claude` (`ClaudeTranscript.defaultConfigDir`), whatever the
     /// environment: the lookup finds it itself.
     package func transcriptHome(environment _: [String: String]) -> URL? { nil }
+
+    /// The old local install keeps npm's folder under `~/.claude/local`;
+    /// `claude update` updates it in place, as it does the installer's copy.
+    package var setup: AgentSetup {
+        AgentSetup(
+            productName: "Claude Code",
+            installCommand: "curl -fsSL https://claude.ai/install.sh | bash",
+            signInArguments: ["auth", "login"],
+            loginHelpArguments: ["auth", "--help"],
+            loginHelp: .indentedRow("login"),
+            installDocsURL: "https://code.claude.com/docs/en/setup",
+            pathKey: "claude_path",
+            nativeRoots: [".claude/local/", ".local/share/claude/"],
+            updates: [
+                .native: .runExecutable(["update"]),
+                .homebrew: .literal("brew upgrade --cask claude-code"),
+                .npm: .literal("npm install -g @anthropic-ai/claude-code@latest")
+            ]
+        )
+    }
 }
