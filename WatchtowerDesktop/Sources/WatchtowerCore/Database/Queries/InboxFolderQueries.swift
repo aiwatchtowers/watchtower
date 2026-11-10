@@ -181,12 +181,25 @@ package enum InboxFolderQueries {
 
     /// The `waiting-for-me` built-in as the root's composition needs it.
     /// A dry run never counts as its last run (`newestEndedRuns(dryRuns:
-    /// false)`): a dry run commits no outputs.
+    /// false)`): a dry run commits no outputs. Turned off (`enabled` 0 with
+    /// no `disabled_reason`: the owner turned attention detection off,
+    /// `turnOffBuiltinsOfDisabled`) nothing is shown and nothing counts;
+    /// stopped by the daemon (a `disabled_reason`) it is a failed run: the
+    /// Messages entry stands in.
     package static func waitingForMe(_ db: Database) throws -> WaitingForMeState {
         do {
-            let automationID = try Int64.fetchOne(
-                db, sql: "SELECT id FROM automations WHERE builtin_id = ?", arguments: [waitingForMeBuiltinID])
-            guard let automationID else { return WaitingForMeState(automationID: nil, messagesStandIn: true) }
+            guard let row = try Row.fetchOne(
+                db, sql: "SELECT id, enabled, disabled_reason FROM automations WHERE builtin_id = ?",
+                arguments: [waitingForMeBuiltinID]) else {
+                return WaitingForMeState(automationID: nil, messagesStandIn: true)
+            }
+            let automationID: Int64 = row["id"]
+            let enabled: Bool = row["enabled"] ?? true
+            let stopped = !((row["disabled_reason"] as String?) ?? "").isEmpty
+            if !enabled, !stopped {
+                return WaitingForMeState(automationID: automationID, messagesStandIn: false, turnedOff: true)
+            }
+            if stopped { return WaitingForMeState(automationID: automationID, messagesStandIn: true) }
             let status = try String.fetchOne(db, sql: """
                 SELECT status FROM automation_runs
                 WHERE automation_id = ? AND trigger != 'dry_run' AND status NOT IN ('queued', 'running', 'waiting')
@@ -277,18 +290,22 @@ package struct WaitingForMeState: Equatable, Sendable {
     /// The built-in's automation row; nil before it is indexed.
     package let automationID: Int64?
     package let messagesStandIn: Bool
+    /// The owner turned it off (attention detection off): neither its
+    /// artifacts nor the Messages entry are shown or counted.
+    package let turnedOff: Bool
 
-    package init(automationID: Int64?, messagesStandIn: Bool) {
+    package init(automationID: Int64?, messagesStandIn: Bool, turnedOff: Bool = false) {
         self.automationID = automationID
-        self.messagesStandIn = messagesStandIn
+        self.messagesStandIn = messagesStandIn && !turnedOff
+        self.turnedOff = turnedOff
     }
 
     /// `artifacts` (folder id → cards) without the built-in's cards while the
-    /// Messages entry stands in; unchanged otherwise.
+    /// Messages entry stands in or the built-in is turned off; unchanged otherwise.
     package func withoutStandInArtifacts(
         _ artifacts: [Int64: [AutomationOutputCard]]
     ) -> [Int64: [AutomationOutputCard]] {
-        guard messagesStandIn, let automationID else { return artifacts }
+        guard messagesStandIn || turnedOff, let automationID else { return artifacts }
         return artifacts.mapValues { $0.filter { $0.automationID != automationID } }
     }
 }

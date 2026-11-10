@@ -135,6 +135,31 @@ final class InboxFolderEntriesTests: XCTestCase {
         }
     }
 
+    /// Turned off after a successful run (attention detection off flips only
+    /// `enabled`): its stale card is not drawn and does not count, and the
+    /// Messages entry does not stand in either. Stopped by the daemon (a
+    /// `disabled_reason`) it is a failed run: the Messages entry stands in.
+    func testWaitingForMeTurnedOffShowsAndCountsNothing() async throws {
+        let pool = try pool()
+        let ids = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            let waiting = try self.waitingForMe(db)
+            try db.execute(sql: "UPDATE automations SET enabled = 0 WHERE id = ?", arguments: [waiting.automation])
+            return (root: folders.root, automation: waiting.automation)
+        }
+        let vm = await read(pool, folder: ids.root)
+        XCTAssertEqual(vm.folderEntries.map(\.id), [], "nothing is shown")
+        XCTAssertEqual(vm.folderMenu.snapshot.counts[ids.root] ?? 0, 0, "nothing counts")
+        XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.turnedOff)
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automations SET disabled_reason = 'run would not end' WHERE id = ?",
+                           arguments: [ids.automation])
+        }
+        await vm.refresh()
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["messages"], "stopped: the Messages entry stands in")
+    }
+
     /// Every track stopped: Track my threads stays, so its Stopped fold and
     /// Restore stay reachable.
     func testTrackMyThreadsStaysWhileTracksAreStopped() async throws {
