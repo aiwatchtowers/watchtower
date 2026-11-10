@@ -2744,6 +2744,7 @@ CREATE TABLE IF NOT EXISTS terminal_sessions (
     agent_watch_issue TEXT CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), -- why the session host's codex rollout watch cannot read a working codex row's rollout (00175, Go only); NULL = watched; the next hook event clears it
     agent_watch_issue_at TEXT, -- when that issue was written, agent_state_at format; NULL with agent_watch_issue
     start_notice      TEXT, -- Go's start (`workbench session start`): the owner's line about the place (worktree warnings, "Started in the folder: …", the setup command that did not run, a failed move); NULL/'' = nothing to say (00179)
+    delete_requested_at TEXT, -- the owner confirmed the delete and its background cleanup has not finished (Desktop only, 00186); NULL = not deleting
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -2927,6 +2928,8 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     branch     TEXT NOT NULL DEFAULT '',  -- short branch name at the time; '' = detached HEAD / unreadable
     first_at   TEXT NOT NULL,             -- agent_state_at format
     last_at    TEXT,                      -- last run it was seen in (00174), agent_state_at format; NULL = first_at
+    source     TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), -- 'cwd' = an agent worked there; 'command' = parsed from an agent's git command (00186)
+    kind       TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')), -- 'branch' = a branch-only row, root = the repository's top level (00186)
     PRIMARY KEY (session_id, root, branch)
 );
 

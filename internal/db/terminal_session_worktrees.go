@@ -8,25 +8,32 @@ import (
 	"time"
 )
 
-// MaxSessionWorktrees caps the terminal_session_worktrees rows of one
-// session: a further new (root, branch) pair is not recorded.
+// MaxSessionWorktrees caps the source='cwd' terminal_session_worktrees rows
+// of one session: a further new (root, branch) pair is not recorded.
 const MaxSessionWorktrees = 64
+
+// MaxSessionCommandRows caps the source='command' terminal_session_worktrees
+// rows of one session (board #1716), apart from the cwd cap.
+const MaxSessionCommandRows = 512
 
 // SessionWorktree is a terminal_session_worktrees row of one session: a
 // worktree root and the branch an agent of the session worked on there
 // (empty = detached HEAD or unreadable), first seen at FirstAt (agent_state_at
 // format). The row's last_at (board #1018), its last sighting, is read by
-// HasSessionWorktree and the Desktop, not carried here.
+// HasSessionWorktree and the Desktop, not carried here. Source is "cwd" (an
+// agent worked there) or "command" (parsed from an agent's git command, board
+// #1716); Kind is "worktree" (a root with its branch) or "branch" (a
+// branch-only row whose Root is the repository's top level).
 type SessionWorktree struct {
-	Root, Branch, FirstAt string
+	Root, Branch, FirstAt, Source, Kind string
 }
 
 // HasSessionWorktree reports whether session sessionID already recorded
 // (root, branch); stale, whether that pair's last sighting (last_at, else
 // first_at) is older than the session's run mark (agent_turns' since; never
 // without a readable one), so this run has not seen it yet (board #1018);
-// and whether the session is full — already at MaxSessionWorktrees rows, so
-// a new pair would not be recorded. It is one read in a read-only
+// and whether the session is full — already at MaxSessionWorktrees cwd rows,
+// so a new pair would not be recorded. It is one read in a read-only
 // transaction, so it works on a query_only handle and never takes the write
 // lock: the hook learns a pair is known in this run, or the session full,
 // without one.
@@ -42,7 +49,7 @@ func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, bra
 		(SELECT COALESCE(last_at, first_at) FROM terminal_session_worktrees
 			WHERE session_id = ? AND root = ? AND branch = ?),
 		(SELECT `+runStartExpr+` FROM terminal_sessions WHERE id = ?),
-		(SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ?)`,
+		(SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ? AND source = 'cwd')`,
 		sessionID, root, branch, sessionID, sessionID).Scan(&seen, &since, &n)
 	if err != nil {
 		return false, false, false, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
@@ -88,9 +95,9 @@ func (db *DB) TouchSessionWorktree(ctx context.Context, sessionID int64, root, b
 
 // RecordSessionWorktree records (root, branch) for session sessionID at time
 // `at` (agent_state_at format) inside tx, or in its own transaction when tx is
-// nil. A pair already recorded is left as it is. recorded is false, with no
-// error, when the pair was already there or the session already holds
-// MaxSessionWorktrees rows.
+// nil, as a source='cwd' row. A pair already recorded is left as it is.
+// recorded is false, with no error, when the pair was already there or the
+// session already holds MaxSessionWorktrees cwd rows.
 func (db *DB) RecordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, root, branch, at string) (recorded bool, err error) {
 	if tx != nil {
 		return recordSessionWorktree(ctx, tx, sessionID, root, branch, at)
@@ -112,8 +119,8 @@ func (db *DB) RecordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID i
 
 func recordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, root, branch, at string) (bool, error) {
 	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ?`,
-		sessionID).Scan(&n); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM terminal_session_worktrees
+		WHERE session_id = ? AND source = 'cwd'`, sessionID).Scan(&n); err != nil {
 		return false, fmt.Errorf("recording terminal session %d worktree: %w", sessionID, err)
 	}
 	if n >= MaxSessionWorktrees {
@@ -131,10 +138,53 @@ func recordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, roo
 	return added > 0, nil
 }
 
+// RecordSessionCommandRow records (root, branch) of kind ("worktree" or
+// "branch") for session sessionID at time `at` (agent_state_at format) as a
+// source='command' row, in one short write transaction. A pair already
+// recorded, whatever its source, keeps its source and kind; only its last_at
+// moves forward to at. recorded is false, with no error, when the pair was
+// already there; full is true, and nothing is written, when the pair is new
+// and the session already holds MaxSessionCommandRows command rows.
+func (db *DB) RecordSessionCommandRow(ctx context.Context, sessionID int64, root, branch, kind, at string) (recorded, full bool, err error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, false, fmt.Errorf("recording terminal session %d command row: %w", sessionID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists, n int
+	if err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM terminal_session_worktrees WHERE session_id = ? AND root = ? AND branch = ?),
+		(SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ? AND source = 'command')`,
+		sessionID, root, branch, sessionID).Scan(&exists, &n); err != nil {
+		return false, false, fmt.Errorf("recording terminal session %d command row: %w", sessionID, err)
+	}
+	switch {
+	case exists == 1:
+		if _, err := tx.ExecContext(ctx, `UPDATE terminal_session_worktrees SET last_at = ?
+			WHERE session_id = ? AND root = ? AND branch = ? AND COALESCE(last_at, first_at) < ?`,
+			at, sessionID, root, branch, at); err != nil {
+			return false, false, fmt.Errorf("recording terminal session %d command row: %w", sessionID, err)
+		}
+	case n >= MaxSessionCommandRows:
+		return false, true, nil
+	default:
+		if _, err := tx.ExecContext(ctx, `INSERT INTO terminal_session_worktrees
+			(session_id, root, branch, first_at, last_at, source, kind) VALUES (?, ?, ?, ?, ?, 'command', ?)`,
+			sessionID, root, branch, at, at, kind); err != nil {
+			return false, false, fmt.Errorf("recording terminal session %d command row: %w", sessionID, err)
+		}
+		recorded = true
+	}
+	if err := tx.Commit(); err != nil {
+		return false, false, fmt.Errorf("recording terminal session %d command row: %w", sessionID, err)
+	}
+	return recorded, false, nil
+}
+
 // SessionWorktrees is session sessionID's recorded worktrees in first_at
 // order; never nil.
 func (db *DB) SessionWorktrees(ctx context.Context, sessionID int64) ([]SessionWorktree, error) {
-	rows, err := db.QueryContext(ctx, `SELECT root, branch, first_at FROM terminal_session_worktrees
+	rows, err := db.QueryContext(ctx, `SELECT root, branch, first_at, source, kind FROM terminal_session_worktrees
 		WHERE session_id = ? ORDER BY first_at, root, branch`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
@@ -143,7 +193,7 @@ func (db *DB) SessionWorktrees(ctx context.Context, sessionID int64) ([]SessionW
 	out := []SessionWorktree{}
 	for rows.Next() {
 		var w SessionWorktree
-		if err := rows.Scan(&w.Root, &w.Branch, &w.FirstAt); err != nil {
+		if err := rows.Scan(&w.Root, &w.Branch, &w.FirstAt, &w.Source, &w.Kind); err != nil {
 			return nil, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
 		}
 		out = append(out, w)

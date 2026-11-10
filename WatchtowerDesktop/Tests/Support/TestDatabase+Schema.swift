@@ -1421,7 +1421,7 @@ CREATE TABLE IF NOT EXISTS "terminal_sessions" (
     chat_question_at  TEXT,
     agent_turns       TEXT,
     agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
-    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT,
+    CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, delete_requested_at TEXT,
     CHECK (title != '' AND folder_path != ''),
     CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
 );
@@ -1429,7 +1429,7 @@ CREATE TABLE IF NOT EXISTS terminal_session_worktrees (
     session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
     root       TEXT NOT NULL,
     branch     TEXT NOT NULL DEFAULT '',
-    first_at   TEXT NOT NULL, last_at TEXT,
+    first_at   TEXT NOT NULL, last_at TEXT, source TEXT NOT NULL DEFAULT 'cwd' CHECK (source IN ('cwd','command')), kind TEXT NOT NULL DEFAULT 'worktree' CHECK (kind IN ('worktree','branch')),
     PRIMARY KEY (session_id, root, branch)
 );
 CREATE TABLE IF NOT EXISTS "tool_trust" (
