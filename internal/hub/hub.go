@@ -55,6 +55,7 @@ import (
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/slices/sources"
 	"watchtower/internal/hub/state"
+	"watchtower/internal/hub/switcher"
 	"watchtower/internal/hub/transport"
 	"watchtower/internal/hub/transport/cloudkit"
 	"watchtower/internal/policy"
@@ -210,6 +211,8 @@ type Options struct {
 	afterFreshRead func()
 	// started sees each hub runtime once it runs (nil = none).
 	started func(h *hubRuntime)
+	// switcherRun runs a desktop host's switcher loop (nil = sw.Run).
+	switcherRun func(ctx context.Context, sw *switcher.Switcher) error
 }
 
 // staleCheck is the stale check's delay after a Desktop heartbeat.

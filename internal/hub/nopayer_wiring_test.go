@@ -69,7 +69,11 @@ func (unvouchedFake) Admitted() bool                          { return false }
 func (unvouchedFake) LastAccountState() *relayv1.AccountState { return nil }
 
 // g2Rig is a desktop host on the relay (one phone linked, no CloudKit link)
-// with a clock the test sets and the upkeep out of the way.
+// with a clock the test sets and the upkeep out of the way. The switcher's
+// loop is the test's: the host runs no Run of its own (switcherRun), so every
+// PollOther and Step lands at an instant the test chose — a G2 read of the
+// host's own at the frozen start instant could otherwise land after the test
+// set its scenario and count before the test does.
 type g2Rig struct {
 	*deskRig
 	h     *hubRuntime
@@ -99,8 +103,8 @@ func startG2(t *testing.T, unvouched bool) *g2Rig {
 	_ = st.Close()
 	setMeta(t, r.dir, switcher.MetaTransport, "relay") // a phone with an iCloud route, the host on the relay
 	g := &g2Rig{deskRig: r, clock: &setClock{now: time.Unix(1_800_000_000, 0)}, fake: &watchFake{Fake: r.fake}}
-	// Somebody pays at first, so the host's own early polls (at the frozen
-	// clock) reset the check instead of counting before the test does.
+	// Somebody pays at first, so the first poll (at the frozen clock) resets
+	// the check instead of counting.
 	g.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{{PhoneDeviceId: "unlinked-phone", Paying: true}}})
 	o := r.options()
 	o.Clock = g.clock.Now
@@ -112,9 +116,13 @@ func startG2(t *testing.T, unvouched bool) *g2Rig {
 		return g.fake, nil
 	}
 	o.started = func(rt *hubRuntime) { g.h = rt }
+	o.switcherRun = func(ctx context.Context, _ *switcher.Switcher) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	r.start(o)
 	r.waitState(StateRunning, "")
-	if !g.h.sw.IsActive(transport.KindRelay) {
+	if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
 		t.Fatal("the host does not start on the relay")
 	}
 	g.h.sw.PollOther(context.Background())
@@ -125,11 +133,21 @@ func startG2(t *testing.T, unvouched bool) *g2Rig {
 func (g *g2Rig) poll() {
 	g.clock.Advance(switcher.NoPayerPoll + time.Second)
 	g.h.sw.PollOther(context.Background())
-	// A read the host made at the same frozen instant (its own polls) leaves
-	// this one in the reader's window, not fresh and not counted: one more
+	// A read the host made at the same frozen instant (its link upkeep's)
+	// leaves this one in the reader's window, not fresh and not counted: one more
 	// poll once the window has passed counts it (a counted one throttles it).
 	g.clock.Advance(unvouchedPoll + time.Second)
 	g.h.sw.PollOther(context.Background())
+}
+
+// onCloudKit carries out the accepted switch (the Steps the host's own Run
+// would make, a failed one tried again) until the host runs on CloudKit.
+func (g *g2Rig) onCloudKit(t *testing.T) {
+	t.Helper()
+	eventually(t, 10*time.Second, "the host on CloudKit", func() bool {
+		_ = g.h.sw.Step(context.Background())
+		return g.h.sw.IsActive(transport.KindCloudKit)
+	})
 }
 
 func TestG2TheDesktopWiringMovesOffARelayNobodyPays(t *testing.T) {
@@ -142,11 +160,11 @@ func TestG2TheDesktopWiringMovesOffARelayNobodyPays(t *testing.T) {
 			g := startG2(t, unvouched)
 			g.fake.SetAccountState(&relayv1.AccountState{})
 			g.poll()
-			if !g.h.sw.IsActive(transport.KindRelay) {
+			if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
 				t.Fatal("moved on one read")
 			}
 			g.poll()
-			eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
+			g.onCloudKit(t)
 		})
 	}
 }
@@ -166,9 +184,8 @@ func TestG2AFailedReadBetweenTheTwoDoesNotLetTheCacheAnswer(t *testing.T) {
 	g.h.sw.PollOther(context.Background()) // inside the failed read's window
 	g.fake.SetAvailable(true)
 	g.clock.Advance(unvouchedPoll)
-	g.h.sw.PollOther(context.Background()) // a real read now: count 1, not 2
-	time.Sleep(200 * time.Millisecond)
-	if !g.h.sw.IsActive(transport.KindRelay) {
+	g.h.sw.PollOther(context.Background()) // a real read now: count 1, not 2 (a move would be accepted in it)
+	if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
 		t.Fatal("moved on a cached answer after a failed read")
 	}
 }
@@ -193,7 +210,7 @@ func TestG2IsNotStarvedByTheLapseRecheck(t *testing.T) {
 	g.fake.SetAccountState(&relayv1.AccountState{})
 	g.poll() // count 1
 	g.poll()
-	eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
+	g.onCloudKit(t)
 }
 
 // Rule 16 through the real reader and the desktop wiring (Config.AccountPhones):
@@ -223,14 +240,43 @@ func TestALapseReadsTheAccountThroughTheDesktopWiring(t *testing.T) {
 			if err := g.h.sw.OnControl(context.Background(), transport.Control{Kind: transport.EntitlementExpired, Detail: lapsed.RelayDeviceID}); err != nil {
 				t.Fatal(err)
 			}
+			g.decideLapse(t)
 			if unlinkedPays {
-				time.Sleep(300 * time.Millisecond)
-				if !g.h.sw.IsActive(transport.KindRelay) {
+				if !g.h.sw.IsActive(transport.KindRelay) || g.h.sw.Pending() {
 					t.Fatal("moved with a paying phone in the account")
 				}
 				return
 			}
-			eventually(t, 10*time.Second, "the host on CloudKit", func() bool { return g.h.sw.IsActive(transport.KindCloudKit) })
+			g.onCloudKit(t)
 		})
+	}
+}
+
+// decideLapse runs the Step until the waiting lapse is decided (hub_meta
+// lapse_pending empty). The lapse's account read must be fresh, and the clock
+// is frozen: a read made at this instant (the link upkeep's) leaves it in the
+// reader's unvouched window (ErrNotFresh), and the lapse waits for the next
+// Step, which on a real clock comes past the window (OtherPoll). Here a Step
+// that left the lapse waiting moves the clock past the window for the next
+// one, a few times at most, so the lapse is still inside LapseFresh.
+func (g *g2Rig) decideLapse(t *testing.T) {
+	t.Helper()
+	const maxMoves = 3
+	if maxMoves*unvouchedPoll >= switcher.LapseFresh {
+		t.Fatal("the moves would age the lapse past LapseFresh")
+	}
+	for moves := 0; ; moves++ {
+		_ = g.h.sw.Step(context.Background()) // the lapse is tried in it (an error is the carry-out's: onCloudKit retries it)
+		v, _, err := g.h.st.Meta(state.MetaLapsePending)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v == "" {
+			return
+		}
+		if moves == maxMoves {
+			t.Fatalf("the lapse is still waiting after %d Steps: %q", moves+1, v)
+		}
+		g.clock.Advance(unvouchedPoll)
 	}
 }

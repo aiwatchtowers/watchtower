@@ -260,10 +260,14 @@ func (h *hubRuntime) startDesktop(ctx context.Context) {
 		h.bridgeStop = runBridge(h.bridge)
 	}
 	if h.sw != nil {
+		run := h.sw.Run
+		if h.sup.o.switcherRun != nil {
+			run = func(ctx context.Context) error { return h.sup.o.switcherRun(ctx, h.sw) }
+		}
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
-			_ = h.sw.Run(ctx)
+			_ = run(ctx)
 		}()
 	}
 }
