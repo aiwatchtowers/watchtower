@@ -2851,11 +2851,16 @@ CREATE TABLE IF NOT EXISTS spec_review_thread_findings (
 );
 
 -- Agent coach (00162): one proposed edit to the owner's setup and its outcome.
+-- 00184 (tuning chat): the user skill, pack overlay, Codex and workbench
+-- repository (repo_*) destinations, and origin/skill/conversation_id/
+-- written_branch/measure_from.
 CREATE TABLE IF NOT EXISTS coach_proposals (
     id            INTEGER PRIMARY KEY,
     fingerprint   TEXT NOT NULL UNIQUE,
     kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
-    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user')),
+    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user',
+                  'claude_skill_user','codex_skill_user','pack_overlay','codex_agents_md_user','codex_rules_allow',
+                  'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow')),
     workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
     prompt_id     TEXT NOT NULL DEFAULT '',
     title         TEXT NOT NULL,
@@ -2873,8 +2878,14 @@ CREATE TABLE IF NOT EXISTS coach_proposals (
     baseline_n    INTEGER NOT NULL DEFAULT 0,
     verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
     verdict_value REAL,
-    verdict_at    TEXT NOT NULL DEFAULT ''
+    verdict_at    TEXT NOT NULL DEFAULT '',
+    origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat')), -- 'chat' = filed by a tuning conversation
+    skill           TEXT NOT NULL DEFAULT '',  -- the skill a skill or pack_overlay destination names
+    conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL, -- the tuning conversation of a chat proposal
+    written_branch  TEXT NOT NULL DEFAULT '',  -- repo_*: the branch Accept wrote on
+    measure_from    TEXT                       -- repo_*: when the edit was first seen at HEAD; NULL = not yet / not repo_*
 );
+CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
 
 -- Owner-accepted additions to a Watchtower prompt (00162).
 CREATE TABLE IF NOT EXISTS prompt_additions (
@@ -2885,6 +2896,17 @@ CREATE TABLE IF NOT EXISTS prompt_additions (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS prompt_additions_prompt ON prompt_additions(prompt_id, id);
+
+-- Owner-accepted lines rendered into a shipped skill of the pack (00184), one
+-- row per overlay line.
+CREATE TABLE IF NOT EXISTS skill_pack_overlays (
+    id          INTEGER PRIMARY KEY,
+    skill       TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
 
 -- Home's Learn zone (00159): one row per guide card the owner has seen
 -- (got_it, its button, or the feature in use). Written once by the Desktop
