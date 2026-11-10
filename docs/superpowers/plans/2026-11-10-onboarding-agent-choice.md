@@ -264,12 +264,12 @@
   **Reset between runs**, as the test user, with the app quit: `defaults delete com.watchtower.desktop; rm -rf ~/Library/Application\ Support/Watchtower ~/.config/watchtower`. Onboarding then starts again at Goals.
 
   **Run B — outdated CLI and a failed update (`signed-out-outdated`, `signed-out-update-failed`):**
-  6. `/Users/Shared/wt-check/stub/claude` handles three cases:
+  6. Copy the stub into the test user's `~/.claude/local/` (`mkdir -p ~/.claude/local && cp /Users/Shared/wt-check/stub/claude ~/.claude/local/claude && chmod +x ~/.claude/local/claude`). There its install kind reads as native (the `~/.claude/local/` row), so the update terminal runs `'<that path>' update`. From `/Users/Shared` the kind would be unknown, with no update offered. The stub handles three cases:
      - `auth --help` prints a general help with no `login` row and exits 0;
      - `update` sleeps 3 s and exits 1;
      - anything else writes the line `Not logged in · Please run /login` to **stderr**, nothing to stdout, and **exits 0**.
 
-     Go reads that line as `auth` only on a clean exit (`providers.CleanExitFailure` → `diagnosticCategory`, `internal/providers/failure.go`); a non-zero exit is classified without reading the text. Before launching: `/Users/Shared/wt-check/Watchtower.app/Contents/Resources/watchtower config set claude_path /Users/Shared/wt-check/stub/claude`. Open the app: the tile reads Installed · not signed in, the update terminal runs, then "Update stopped before it finished (exit code 1)." with **Update again**. Compare both with their mockups.
+     Go reads that line as `auth` only on a clean exit (`providers.CleanExitFailure` → `diagnosticCategory`, `internal/providers/failure.go`); a non-zero exit is classified without reading the text. Before launching: `/Users/Shared/wt-check/Watchtower.app/Contents/Resources/watchtower config set claude_path ~/.claude/local/claude`. Open the app: the tile reads Installed · not signed in, the update terminal runs, then "Update stopped before it finished (exit code 1)." with **Update again**. Compare both with their mockups.
   7. Delete the test user (System Settings → Users & Groups).
   The controller does not wait on this ask to merge the task PRs into the umbrella branch; the umbrella PR into `main` waits for the check.
 
