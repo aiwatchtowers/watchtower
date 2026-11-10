@@ -261,7 +261,7 @@ func TestAgentFor(t *testing.T) {
 	for dest, want := range map[string]string{
 		DestClaudeMDUser: "claude", "claude_skill_user": "claude", DestSettingsAllow: "claude",
 		DestPromptAdd: "claude", "repo_claude_md": "claude", "repo_claude_skill": "claude",
-		DestSession: "claude", DestProcedure: "claude", DestChat: "claude",
+		DestChat: "claude", DestSession: agentreport.AgentAll, DestProcedure: agentreport.AgentAll,
 		"codex_skill_user": "codex", "codex_agents_md_user": "codex", "codex_rules_allow": "codex",
 		"repo_agents_md": "codex", "repo_codex_skill": "codex",
 		"pack_overlay": agentreport.AgentAll, "repo_workflow": agentreport.AgentAll,

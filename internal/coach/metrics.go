@@ -112,15 +112,18 @@ func (m Metrics) Of(metric string) Value {
 // AgentFor names the agent whose sessions measure a proposal of destination,
 // baseline and verdict alike: a Codex text (the owner's Codex skills,
 // AGENTS.md and rules, the workbench's AGENTS.md and .agents/skills) on Codex
-// sessions; the skill pack overlay and the workbench's workflow.md, which both
-// agents read, on every session; every other destination on Claude sessions.
+// sessions; the texts both agents read — the session instructions and the
+// target procedure (both agents' briefs, update_target), the skill pack
+// overlay and the workbench's workflow.md — on every session (owner, ask
+// #1196); every other destination on Claude sessions. The chat instructions
+// stay on Claude: they reach the AI chats, not an agent session.
 func AgentFor(destination string) string {
 	// Phase 2 consts: the codex_*, pack_overlay and repo_* names are literals
 	// until the destination consts land on this base.
 	switch destination {
 	case "codex_skill_user", "codex_agents_md_user", "codex_rules_allow", "repo_agents_md", "repo_codex_skill":
 		return string(agentkind.Codex)
-	case "pack_overlay", "repo_workflow":
+	case DestSession, DestProcedure, "pack_overlay", "repo_workflow":
 		return agentreport.AgentAll
 	}
 	return string(agentkind.Claude)
