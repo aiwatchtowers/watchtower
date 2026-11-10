@@ -600,12 +600,32 @@ func backgroundColumns(t *testing.T, d *DB, id int64) (sql.NullInt64, sql.NullSt
 	return n, at
 }
 
-// requireNoBackground fails unless row id stores neither background column.
+// requireNoBackground fails unless row id stores none of the background
+// columns (the shells since board #1712).
 func requireNoBackground(t *testing.T, d *DB, id int64, what string) {
 	t.Helper()
 	if n, at := backgroundColumns(t, d, id); n.Valid || at.Valid {
 		t.Fatalf("%s: agent_background %v, agent_background_at %v, want both NULL", what, n, at)
 	}
+	if shells := shellColumn(t, d, id); shells.Valid {
+		t.Fatalf("%s: agent_background_shells %v, want NULL", what, shells)
+	}
+}
+
+// shellColumn reads row id's agent_background_shells as stored.
+func shellColumn(t *testing.T, d *DB, id int64) sql.NullInt64 {
+	t.Helper()
+	var n sql.NullInt64
+	if err := d.QueryRow(`SELECT agent_background_shells FROM terminal_sessions WHERE id = ?`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// stopWithShells is a Stop counting agents and shells (board #1712).
+func stopWithShells(agents, shells int64) AgentOrder {
+	return AgentOrder{Stop: true, Background: sql.NullInt64{Int64: agents, Valid: true},
+		Shells: sql.NullInt64{Int64: shells, Valid: true}}
 }
 
 // requireBackground fails unless row id stores count n reported at at.
@@ -912,7 +932,7 @@ func TestProj11_MainTurnAndIdleNoticeClearTheCount(t *testing.T) {
 		{"an idle notice", "waiting", "", nil, false, AgentOrder{}},
 	} {
 		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWithShells(2, 1))) {
 			t.Fatalf("%s: the Stop did not write", tc.name)
 		}
 		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, tc.state, t0.Add(time.Second), tc.onlyFrom, tc.failure, tc.prompt, tc.order)) {
@@ -960,7 +980,7 @@ func TestProj11_NewRunAndConversationSwitchClearTheCount(t *testing.T) {
 		}},
 	} {
 		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
-		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWithShells(2, 1))) {
 			t.Fatalf("%s: the Stop did not write", tc.name)
 		}
 		if err := d.SetChatQuestion(id, pid, agentStateUUID, sampleChatQuestion("Which DB?"), t0); err != nil {
@@ -2126,5 +2146,98 @@ func TestSetTerminalAgentState_InterruptOverWaitingMovesTheTurnEnd(t *testing.T)
 	}
 	if s, _ := d.GetTerminalSession(id); s.TurnEnd.Int64 != 420 {
 		t.Fatalf("turn end %v; want 420", s.TurnEnd)
+	}
+}
+
+// Board #1712: the idle notice (KeepShells) ends the agent count but keeps a
+// stored shell count and its stamp; over a row whose agents are already 0
+// it is a repeat (nothing written); with no shells stored it clears all
+// three as before.
+func TestIdleNoticeKeepsBackgroundShells(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+	idle := AgentOrder{KeepShells: true}
+
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWithShells(2, 1))) {
+		t.Fatal("the Stop did not write")
+	}
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(time.Minute), "", nil, false, idle)) {
+		t.Fatal("the idle notice over counted agents did not write")
+	}
+	requireBackground(t, d, id, 0, t0, "agents ended, the shells' stamp kept")
+	if got := shellColumn(t, d, id); got.Int64 != 1 || !got.Valid {
+		t.Fatalf("shells %v, want 1", got)
+	}
+	if w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0.Add(2*time.Minute), "", nil, false, idle)) {
+		t.Fatal("a second idle notice over shells only wrote")
+	}
+
+	plain := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	if !w(d.SetTerminalAgentState(plain, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	if !w(d.SetTerminalAgentState(plain, pid, agentStateUUID, "waiting", t0.Add(time.Minute), "", nil, false, idle)) {
+		t.Fatal("the idle notice did not write")
+	}
+	requireNoBackground(t, d, plain, "no shells stored")
+}
+
+// Board #1712: EndTerminalBackgroundAgents ends only the agents, only on the
+// stamp the probe read, only with shells counted; a second end is a no-op.
+func TestEndTerminalBackgroundAgentsIsCompareAndClear(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	seen := t0.Format(agentStateAtLayout)
+	w := writeResult(t)
+	row := func(order AgentOrder) int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, order)) {
+			t.Fatal("the Stop did not write")
+		}
+		return id
+	}
+
+	id := row(stopWithShells(2, 1))
+	if w(d.EndTerminalBackgroundAgents(id, pid, agentStateUUID, t0.Add(-time.Second).Format(agentStateAtLayout))) {
+		t.Fatal("ended on a stamp the probe did not read")
+	}
+	if !w(d.EndTerminalBackgroundAgents(id, pid, agentStateUUID, seen)) {
+		t.Fatal("did not end the agents")
+	}
+	requireBackground(t, d, id, 0, t0, "agents ended")
+	if got := shellColumn(t, d, id); got.Int64 != 1 {
+		t.Fatalf("shells %v, want 1", got)
+	}
+	if w(d.EndTerminalBackgroundAgents(id, pid, agentStateUUID, seen)) {
+		t.Fatal("a second end wrote")
+	}
+	if w(d.EndTerminalBackgroundAgents(row(stopWith(2)), pid, agentStateUUID, seen)) {
+		t.Fatal("ended agents with no shells counted")
+	}
+}
+
+// Board #1712: GetTerminalSession reads a database not yet migrated past
+// 00184 (the readers that open without migrating) as no shells.
+func TestGetTerminalSessionNeedsNoShellColumn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+	w := writeResult(t)
+	if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", time.Now(), "", nil, false, stopWith(2))) {
+		t.Fatal("the Stop did not write")
+	}
+	if _, err := d.Exec(`ALTER TABLE terminal_sessions DROP COLUMN agent_background_shells`); err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.GetTerminalSession(id)
+	if err != nil {
+		t.Fatalf("GetTerminalSession on a pre-00184 schema: %v", err)
+	}
+	if s.BackgroundShells.Valid || s.Background.Int64 != 2 {
+		t.Fatalf("background %v shells %v", s.Background, s.BackgroundShells)
 	}
 }

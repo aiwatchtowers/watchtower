@@ -2221,3 +2221,40 @@ func TestProj11_ShellCountNeverMakesACodexRepeatATransition(t *testing.T) {
 	assert.True(t, repeatsAgentState(s, "waiting", nil, false, bgCount(1), sql.NullInt64{}))
 	assert.False(t, repeatsAgentState(s, "waiting", nil, false, bgCount(1), bgCount(0)))
 }
+
+// PROJ-11, board #1712: Claude Code holds the idle_prompt notice back only
+// for background agents, so the notice over a counted shell keeps it (and
+// its report time): the session still reads Background task running. Over
+// agents and a shell it ends the agents only; with no shells it clears the
+// count as before.
+func TestProj11_IdleNoticeKeepsBackgroundShells(t *testing.T) {
+	idle := statePayload("Notification", briefLaunchID, "idle_prompt")
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+
+	s := hookStep(t, database, pid, row, at, 1, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	stopAt, reportAt := s.AgentStateAt, s.BackgroundAt
+	s = hookStep(t, database, pid, row, at, 61, idle)
+	assert.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, bgCount(0), s.Background)
+	assert.Equal(t, bgCount(1), s.BackgroundShells, "the shell still runs")
+	assert.Equal(t, stopAt, s.AgentStateAt, "a repeat: nothing moves")
+	assert.Equal(t, reportAt, s.BackgroundAt)
+
+	hookStep(t, database, pid, row, at, 70, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	hookStep(t, database, pid, row, at, 71, subagentStart("a1", "general-purpose"))
+	s = hookStep(t, database, pid, row, at, 72,
+		stopWithBackground(`[{"id":"a1","type":"subagent"},{"id":"sh","type":"shell"}]`))
+	require.Equal(t, bgCount(1), s.Background)
+	s = hookStep(t, database, pid, row, at, 140, idle)
+	assert.Equal(t, bgCount(0), s.Background, "the notice says no agent runs")
+	assert.Equal(t, bgCount(1), s.BackgroundShells)
+
+	hookStep(t, database, pid, row, at, 150, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	hookStep(t, database, pid, row, at, 151, subagentStart("a2", "general-purpose"))
+	hookStep(t, database, pid, row, at, 152, stopWithBackground(`[{"id":"a2","type":"subagent"}]`))
+	s = hookStep(t, database, pid, row, at, 220, idle)
+	assert.False(t, s.Background.Valid, "no shells: the notice clears the count")
+	assert.False(t, s.BackgroundShells.Valid)
+}

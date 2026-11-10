@@ -30,7 +30,7 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         var policy = SessionAgentNoticePolicy()
         XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.working), at: "t1")), canPost: true), [])
         let first = policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t2")), canPost: true)
-        XCTAssertEqual(first, [.post(.init(sessionID: 1, workbenchID: 7, title: "Release work stopped",
+        XCTAssertEqual(first, [.post(.init(sessionID: 1, workbenchID: 7, title: "Release work is idle",
                                            body: "acme"))])
         XCTAssertEqual(first.first.flatMap { postedNotices([$0]).first?.identifier }, "workbench-session-1")
         for _ in 0..<3 {
@@ -50,7 +50,7 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
                        "working → background posts nothing")
         XCTAssertEqual(postedNotices(background.update(statusMap(agentStatus(2, .live(.stopped), at: "t1")),
                                                        canPost: true)).map(\.title),
-                       ["Release work stopped"], "background → stopped: one notice")
+                       ["Release work is idle"], "background → stopped: one notice")
 
         var alone = SessionAgentNoticePolicy()
         XCTAssertEqual(alone.update(statusMap(agentStatus(3, .live(.background, backgroundAgents: 2), at: "t1")),
@@ -73,7 +73,7 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         XCTAssertEqual(checked.update(statusMap(agentStatus(5, ready, at: "t2")), canPost: true), [])
         XCTAssertEqual(postedNotices(checked.update(statusMap(agentStatus(5, .live(.stopped), at: "t3")),
                                                     canPost: true)).map(\.title),
-                       ["Release work stopped"], "ready → stopped (asks answered, turn over): one notice")
+                       ["Release work is idle"], "ready → stopped (asks answered, turn over): one notice")
 
         // A row shaped like a check filed, then `finish_session` (seeded:
         // finished_at set, this run's Stop after it, one open check) resolves
@@ -123,7 +123,7 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         }
         XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")),
                                                    canPost: true)).map(\.title),
-                       ["Release work stopped"], "the grace expired: stopped@t1 once")
+                       ["Release work is idle"], "the grace expired: stopped@t1 once")
         XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")), canPost: true), [])
         XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.working), at: "t2")), canPost: true),
                        [.withdraw(identifier: "workbench-session-1")], "main wakes")
@@ -151,7 +151,7 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
     func testFirstSightOfASessionAlreadyWaitingNotifies() {
         var policy = SessionAgentNoticePolicy()
         let actions = policy.update(statusMap(agentStatus(4, .live(.stopped), at: "t9", title: "Docs")), canPost: true)
-        XCTAssertEqual(postedNotices(actions).map(\.title), ["Docs stopped"])
+        XCTAssertEqual(postedNotices(actions).map(\.title), ["Docs is idle"])
     }
 
     func testATransitionSeenWhilePostingIsBlockedIsNotReplayed() {
@@ -251,6 +251,6 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         var policy = SessionAgentNoticePolicy()
         _ = policy.update(statusMap(agentStatus(1, .live(.waitingOnAsk, openAsks: 1), at: "t1")), canPost: true)
         XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")), canPost: true))
-            .map(\.title), ["Release work stopped"])
+            .map(\.title), ["Release work is idle"])
     }
 }

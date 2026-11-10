@@ -146,8 +146,6 @@ final class SessionBackgroundProberTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["workbench", "session-probe", "--workbench", "7", "--session", "1"]])
     }
 
-    /// ask #142: `busy` keeps Agents working; the same count is asked again
-    /// only after another 30 minutes of silence.
     /// #1712: a count of background shells alone is probed like one of
     /// agents, after 30 minutes of silence; past the shell cap it no longer
     /// shows, so it is not probed.
@@ -172,6 +170,8 @@ final class SessionBackgroundProberTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1, "a count no longer shown is not probed")
     }
 
+    /// ask #142: `busy` keeps Agents working; the same count is asked again
+    /// only after another 30 minutes of silence.
     func testABusyCountIsProbedAgainOnlyAfterAnotherThirtyMinutes() async {
         let runner = ScriptedProbeRunner(json: ProbeAnswer.ran("busy"))
         let prober = makeProber(runner)

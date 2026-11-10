@@ -268,6 +268,7 @@ func recordHookAgentState(stdin io.Reader, stderr io.Writer, rowID int64, rawWor
 		state = agentStateWaiting
 	}
 	turn, subagentToolRun := toolRunTurnOf(in)
+	turn.idle = in.Event == "Notification" && in.NotificationType == "idle_prompt"
 	turn.cwd = hookCwd(in.Event, in.AgentID, in.Cwd)
 	turn.lock = stateHookLockWait.until(deadline)
 	// Not under a deadline: db.Open may be applying a migration, which must
@@ -481,6 +482,9 @@ type hookTurn struct {
 	// none or unknown, both valid (one may be zero) when either is above
 	// zero.
 	background, shells sql.NullInt64
+	// idle marks the idle_prompt notice: it keeps a stored shell count
+	// (board #1712, db.AgentOrder.KeepShells).
+	idle bool
 	// cwd is the main agent's working directory the event reports (hookCwd,
 	// board #566); "" = none. It rides in the state write, or is written
 	// alone when the state write is a repeat or held back.
@@ -632,6 +636,10 @@ func recordAgentState(database *db.DB, rowID, workbenchID int64, sessionID, stat
 		return err
 	}
 	at = at.Truncate(time.Millisecond) // the stored precision
+	if turn.idle && row.BackgroundShells.Int64 > 0 {
+		// What the write keeps: the shells, with the agents ended.
+		turn.background, turn.shells = sql.NullInt64{Int64: 0, Valid: true}, row.BackgroundShells
+	}
 	if turn.stop && turn.tasks.Present {
 		turns, err := readTerminalAgentTurns(database, row.ID)
 		if err != nil {
@@ -681,7 +689,7 @@ func recordAgentStateOver(database *db.DB, row *db.TerminalSession, workbenchID 
 // clear when a main-thread tool result ended a `waiting`.
 func writeAgentState(database *db.DB, row *db.TerminalSession, workbenchID int64, sessionID, state, onlyFrom string,
 	failure *db.AgentFailure, prompt bool, at time.Time, turn hookTurn) error {
-	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Shells: turn.shells, Cwd: turn.cwd, NotOverApproval: turn.notOverApproval,
+	order := db.AgentOrder{Stop: turn.stop, Background: turn.background, Shells: turn.shells, KeepShells: turn.idle, Cwd: turn.cwd, NotOverApproval: turn.notOverApproval,
 		ToolRun: turn.toolRun, Interrupt: turn.interrupt}
 	var noteErr error
 	if turn.toolRun || turn.interrupt {

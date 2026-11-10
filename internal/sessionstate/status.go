@@ -205,7 +205,9 @@ func BackgroundAgentsRun(r Row, now time.Time) bool {
 // SessionBackgroundPolicy.shellsRun says they run (reported under
 // BackgroundShellCap ago); 0 otherwise.
 func BackgroundShells(r Row, now time.Time) int {
-	if r.AgentBackgroundShells == nil || *r.AgentBackgroundShells <= 0 {
+	// Shells never count without the Stop's agent count beside them (the
+	// Stop stores both), as SessionAgentStatus.backgroundWork.
+	if r.AgentBackground == nil || r.AgentBackgroundShells == nil || *r.AgentBackgroundShells <= 0 {
 		return 0
 	}
 	reported, ok := backgroundReport(r, now)

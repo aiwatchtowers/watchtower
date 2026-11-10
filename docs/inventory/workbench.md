@@ -1210,7 +1210,10 @@ entries of type `shell`, a `run_in_background` Bash that wakes the agent when
 it exits) in `agent_background_shells`, beside the agent count; when either is
 above zero both are stored (the agent count may be 0), else all three columns
 are NULL. A `SubagentStop` lowers the shells to its snapshot like the agents;
-everything that clears the agent count clears the shells. A trusted `waiting`
+everything that clears the agent count clears the shells, except the
+`idle_prompt` notice (Claude Code holds it back only for background agents):
+over counted shells it ends only the agents and keeps the shells and their
+report time. A trusted `waiting`
 with shells counted under 2 hours ago (`SessionBackgroundPolicy.shellCap`, Go
 `sessionstate.BackgroundShellCap`; shells end on the clock, agents never do)
 shows as Agents working's kind with the caption **Background task running** /

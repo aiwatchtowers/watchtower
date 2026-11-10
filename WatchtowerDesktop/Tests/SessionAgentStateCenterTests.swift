@@ -676,7 +676,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         await center.poll()
         await center.poll()
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         XCTAssertEqual(notifier.posted.first?.identifier, "workbench-session-\(row.id)")
         try hookWrites(row.id, "approval", at: 2)
         await center.poll()
@@ -756,7 +756,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
         XCTAssertEqual(changes, 1)
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 1, "announced once")
     }
@@ -805,7 +805,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         ]])
         XCTAssertEqual(center.statuses[row.id]?.at, stamp(1))
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         clock.now = clock.now.addingTimeInterval(3600)
         await center.poll()
         XCTAssertEqual(notifier.posted.count, 1, "announced once")
@@ -837,7 +837,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         }
         XCTAssertEqual(stored.row, backgroundRow(row), "nothing written")
         XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
-                                               title: "Release work stopped", body: "acme")])
+                                               title: "Release work is idle", body: "acme")])
         clock.now = clock.now.addingTimeInterval(SessionBackgroundProber.retryAfter)
         await center.poll()
         try await Task.sleep(for: .milliseconds(30))

@@ -1003,6 +1003,31 @@
     "needs_approval": false,
     "background_shells": 0
    }
+  },
+  {
+   "name": "background shells without the agent count",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": null,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "agent_background_shells": 1,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false,
+    "background_shells": 0
+   }
   }
  ],
  "note": "idle/working/needs_approval mirror SessionControl.isIdle / isWorking and the lineCheck needs-approval test (Swift)"

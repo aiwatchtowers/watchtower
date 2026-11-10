@@ -62,6 +62,23 @@ type TerminalSession struct {
 	AutomationRunID  sql.NullInt64 // automation_run_id (00122): the run that started the session; NULL = none. Read by the Desktop launch center (P5 part 2)
 }
 
+// terminalBackgroundShells reads row id's agent_background_shells (00184)
+// on its own, only for a row with a background count: a database not yet
+// migrated past it (the readers that open without migrating, such as the
+// Stop ask guard and `workbench asks`) reads as no shells rather than
+// failing the row.
+func (db *DB) terminalBackgroundShells(id int64) (sql.NullInt64, error) {
+	ok, err := db.HasColumns("terminal_sessions", "agent_background_shells")
+	if err != nil || !ok {
+		return sql.NullInt64{}, err
+	}
+	var n sql.NullInt64
+	if err := db.QueryRow(`SELECT agent_background_shells FROM terminal_sessions WHERE id = ?`, id).Scan(&n); err != nil {
+		return sql.NullInt64{}, fmt.Errorf("reading terminal session %d background shells: %w", id, err)
+	}
+	return n, nil
+}
+
 // AgentFailure flags a stored `waiting` as a turn that ended on an error (a
 // StopFailure hook). At is agent_failed_at, the agent_state_at of the write
 // that set it or, when a counted Stop kept the error, of that write: a write
@@ -79,12 +96,11 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL,
 		agent_turn_end, agent_tool_run, agent_background, agent_background_at, worktree_branch,
 		CASE WHEN chat_question IS NULL THEN '' ELSE COALESCE(chat_question_at, '') END,
-		automation_run_id, agent_background_shells
+		automation_run_id
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
 			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished, &s.TurnEnd, &s.ToolRun,
-			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt, &s.AutomationRunID,
-			&s.BackgroundShells)
+			&s.Background, &backgroundAt, &s.WorktreeBranch, &s.ChatQuestionAt, &s.AutomationRunID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -100,6 +116,11 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 		}
 	}
 	s.BackgroundAt = parsedStampOrZero(backgroundAt)
+	if s.Background.Valid {
+		if s.BackgroundShells, err = db.terminalBackgroundShells(id); err != nil {
+			return nil, err
+		}
+	}
 	if failedAt.Valid {
 		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
 	}
@@ -451,6 +472,13 @@ type AgentOrder struct {
 	// (board #1712), stored with Background in agent_background_shells as
 	// given (NULL when invalid: an agent that reports no shells, Codex).
 	Shells sql.NullInt64
+	// KeepShells marks the idle notice's `waiting` (board #1712): Claude
+	// Code holds idle_prompt back only for background agents, so it ends
+	// the agent count (agent_background = 0) but keeps a stored shell count
+	// and its agent_background_at; with no shells stored it NULLs all three
+	// as before. A row whose agent count is already 0 next to shells is a
+	// repeat for it.
+	KeepShells bool
 	// Cwd is the main agent's working directory the hook reported (board
 	// #566); "" = none. It rides in the write's UPDATE — agent_cwd and
 	// agent_cwd_at take it and the write's time — only when the stored
@@ -523,12 +551,16 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	}
 	// keepBackground: an `approval` keeps the count; otherwise the write
 	// stores background (NULL unless the Stop counted some) stamped at.
-	keepBackground := 0
+	// keepShells: an idle notice keeps a stored shell count (and its
+	// stamp) and ends only the agent count (board #1712).
+	keepBackground, keepShells := 0, 0
 	var background, shells sql.NullInt64
 	var backgroundAt sql.NullString
 	switch {
 	case state == "approval":
 		keepBackground = 1
+	case state == "waiting" && order.KeepShells:
+		keepShells = 1
 	case state == "waiting" && order.Stop && (countOf(order.Background) > 0 || countOf(order.Shells) > 0):
 		background = sql.NullInt64{Int64: countOf(order.Background), Valid: true}
 		if order.Shells.Valid {
@@ -547,9 +579,12 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		                   THEN agent_error ELSE ? END,
 		agent_tool_run = ?,
 		agent_turn_end = CASE WHEN ? = 1 THEN ? ELSE agent_turn_end END,
-		agent_background = CASE WHEN ? = 1 THEN agent_background ELSE ? END,
-		agent_background_at = CASE WHEN ? = 1 THEN agent_background_at ELSE ? END,
-		agent_background_shells = CASE WHEN ? = 1 THEN agent_background_shells ELSE ? END,
+		agent_background = CASE WHEN ? = 1 THEN agent_background
+		                        WHEN ? = 1 AND agent_background_shells > 0 THEN 0 ELSE ? END,
+		agent_background_at = CASE WHEN ? = 1 OR (? = 1 AND agent_background_shells > 0)
+		                           THEN agent_background_at ELSE ? END,
+		agent_background_shells = CASE WHEN ? = 1 OR (? = 1 AND agent_background_shells > 0)
+		                               THEN agent_background_shells ELSE ? END,
 		finished_at = CASE WHEN ? = 'working' AND (agent_state IS NOT 'working' OR ? = 1)
 		                   THEN NULL ELSE finished_at END,
 		agent_cwd = CASE WHEN `+cwdNewerClause+` THEN ? ELSE agent_cwd END,
@@ -557,7 +592,8 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		WHERE id = ? AND project_id = ? AND kind IN `+agentkind.SQLKinds()+` AND claude_session_id = ?
 		  AND (agent_state IS NOT ? OR (? = 1 AND (agent_failed_at IS NULL OR agent_error IS NOT ?))
 		       OR (? = 'working' AND ? = 1 AND finished_at IS NOT NULL)
-		       OR (? = 'waiting' AND (agent_background IS NOT ? OR agent_background_shells IS NOT ?))
+		       OR (? = 'waiting' AND CASE WHEN ? = 1 AND agent_background_shells > 0 THEN agent_background IS NOT 0
+		                                  ELSE (agent_background IS NOT ? OR agent_background_shells IS NOT ?) END)
 		       OR (? = 1 AND agent_turn_end IS NOT ?))
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`'
 		       OR (? = 1 AND agent_state = 'working' AND agent_tool_run = 1))
@@ -566,11 +602,12 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 		  AND (? = 0 OR agent_turn_end IS ?)`,
 		state, stamp, stamp,
 		failed, state, stamp, stamp, failedAt, failed, state, agentError,
-		toolRun, turnEnd, order.TurnEnd, keepBackground, background, keepBackground, backgroundAt, keepBackground, shells,
+		toolRun, turnEnd, order.TurnEnd, keepBackground, keepShells, background, keepBackground, keepShells, backgroundAt,
+		keepBackground, keepShells, shells,
 		state, fromPrompt,
 		order.Cwd, stamp, stamp, order.Cwd, order.Cwd, stamp, stamp, stamp,
 		id, workbenchID, sessionID, state, failed, agentError,
-		state, fromPrompt, state, background, shells, turnEnd, order.TurnEnd, stamp, stop, onlyFrom, onlyFrom, notOverApproval, seenTurn, order.SeenTurnEnd)
+		state, fromPrompt, state, keepShells, background, shells, turnEnd, order.TurnEnd, stamp, stop, onlyFrom, onlyFrom, notOverApproval, seenTurn, order.SeenTurnEnd)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}

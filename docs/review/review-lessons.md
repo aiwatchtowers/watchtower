@@ -2832,3 +2832,12 @@ Entry format:
 - rule-gap (candidate, dim 7/8): *a Swift test that feeds a CLI stream or envelope uses a sequence captured from the Go side's test for the same outcome (or the shared golden), never a hand-written mix of events.*
 - rule-gap (candidate, dim 9): *a `--stream` command writes its envelope as the last line on every return path, early refusals and usage errors included; a bare `return err` after the stream starts is the tell.*
 - outcome: TBD
+
+## 2026-11-10 — fix/1712-background-shell-state (board #1712: migration 00184 `agent_background_shells`, Stop counts `shell` entries, probe `shell` ends only the subagents, 2 h shell cap Go↔Swift, "Stopped" → "Idle"; 41 files +845/−175; panel: prosecutor (9) + codex (0); pr-review-toolkit specialists unavailable; judge verified cc37ecfd3 by reading, no runs) — verdict: changes-needed
+
+- contested: whether the `idle_prompt` notice NULLing the new shell count (F1) is a blocker without proof that Claude Code sends it while a background shell runs. The only documented hold-back is for background *agents*; the spec's capture (C.2, t = 89.7) had the shell already finished at t ≈ 53 s, so nothing settles it. Ruled a blocker because it would break the fix's own motivating case (a CI watch over ~60 s) and the defensive change (idle_prompt keeps the shells; the 2 h cap and the 30-min probe already bound them) is cheap. **When a fix adds a new count beside an old one, every writer that clears the old count on "positive evidence nothing runs" must be re-checked: was that evidence ever about the new kind?** [6/8]
+- false-positive: F3 (Swift/Go parity break for `agent_background` NULL with shells > 0) is real in code but unreachable: every writer stores the agent count whenever it stores shells. Downgraded to a nit (add a fixture case). F2's "undocumented" half: the 2 h cap is in the feature note; only the notice consequence is not. [8]
+- miss: none beyond the prosecutor; codex returned 0 on a diff with a plausible core-path hole (F1). A quiet codex lane is not evidence that the change works. [6]
+- weak-dimension: 6 (the AC rested on an assumption about an external producer's event timing that no capture covers).
+- rule-gap (candidate, dim 6/8): *a state derived from an external tool's hook events cites a capture (or the tool's docs) for every event that can clear it, for the new case specifically; "the old case was documented" does not carry over.*
+- outcome: TBD

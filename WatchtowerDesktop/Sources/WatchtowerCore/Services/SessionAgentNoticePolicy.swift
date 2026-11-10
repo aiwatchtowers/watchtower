@@ -93,7 +93,8 @@ package struct SessionAgentNoticePolicy: Sendable {
             (title, body) = ("\(status.title) finished", finishedBody(status) ?? name)
         default:
             // `stopped`, the only other announced kind.
-            (title, body) = ("\(status.title) stopped", name)
+            // Caption Idle since board #1712; the kind id stays `stopped`.
+            (title, body) = ("\(status.title) is idle", name)
         }
         return Notice(sessionID: status.sessionID, workbenchID: workbenchID, title: title, body: body)
     }
