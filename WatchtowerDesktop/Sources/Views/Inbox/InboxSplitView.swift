@@ -133,7 +133,7 @@ struct InboxSplitView<EmptyList: View>: View {
                         .selectionDisabled()
                         .listRowSeparator(.hidden)
                     ForEach(section.items) { item in
-                        InboxListRow(item: item, proposalLabel: proposalLabel(item), now: now)
+                        InboxListRow(item: item, now: now)
                             .tag(Optional(item.id))
                             .listRowSeparator(.hidden)
                     }
@@ -169,11 +169,6 @@ struct InboxSplitView<EmptyList: View>: View {
             vm.selection = item
             Task { await vm.select(item) }
         })
-    }
-
-    private func proposalLabel(_ item: InboxListItem) -> String? {
-        guard case .proposal(let action) = item else { return nil }
-        return vm.actionLabels[action.id]
     }
 
     private static func icon(_ section: String) -> String {

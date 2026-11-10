@@ -85,7 +85,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     /// Calendar sits right under them (board #206; it was in FOCUS before): a root
     /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
     /// hiding it in FOCUS is ignored and the tab shows again. Tracks left the
-    /// root with the one Inbox (C1): its cards are the Inbox's Tracks filter.
+    /// root with the one Inbox (C1): its cards are the Inbox root's Track my
+    /// threads entry (inbox builder B).
     static var rootItems: [Self] {
         [.home, .targets, .workbench, .automations, .calendar]
     }

@@ -7,7 +7,8 @@ import WatchtowerCore
 final class SidebarCountsViewModel {
     /// The owner-gated track counts (OWNER-01's
     /// `testOwner01GoogleOnlyInstallCountsTracks`). No sidebar badge reads
-    /// them since the Tracks tab became an Inbox filter (C1).
+    /// them since the Tracks tab moved into the Inbox (C1; the root's Track
+    /// my threads entry since inbox builder B).
     var updatedTrackCount: Int = 0
     var totalTrackCount: Int = 0
     var unreadDigestCount: Int = 0
