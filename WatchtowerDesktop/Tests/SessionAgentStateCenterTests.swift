@@ -765,6 +765,32 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertEqual(notifier.posted.count, 1, "announced once")
     }
 
+    /// Ask #1217 (board #1712): a turn that ends with only a background
+    /// shell running is announced at once — the row still reads Background
+    /// task running — and the shell's end on the clock (the shell cap, no
+    /// write) is no second notice.
+    func testAShellsOnlyTurnEndIsAnnouncedAtOnce() async throws {
+        let row = try await session(title: "Release work")
+        terminals.start(row, fresh: true)
+        let stored = SessionAgentStateRow(
+            id: row.id, projectID: row.projectID, title: "Release work", agentState: "waiting",
+            agentStateAt: stamp(1), workbenchName: "acme", agentBackground: 0, agentBackgroundAt: stamp(1),
+            agentBackgroundShells: 1
+        )
+        let clock = ManualClock(started.addingTimeInterval(60))
+        let center = makeCenter(interval: .seconds(60), read: { _ in [stored] }, clock: { clock.now })
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.background, backgroundShells: 1))
+        XCTAssertEqual(notifier.posted, [.init(sessionID: row.id, workbenchID: try XCTUnwrap(row.projectID),
+                                               title: "Release work is idle", body: "acme")],
+                       "the turn end is announced while the shell runs")
+
+        clock.now = started.addingTimeInterval(1 + SessionBackgroundPolicy.shellCap + 1)
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .live(.stopped))
+        XCTAssertEqual(notifier.posted.count, 1, "the shell's end at the same stamp: no second notice")
+    }
+
     /// The row a background test reads, which a fake Go write changes.
     private final class StoredRow: @unchecked Sendable {
         private let lock = NSLock()

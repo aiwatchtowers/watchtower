@@ -9,10 +9,11 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         workbench: Int64? = 7,
         name: String? = "acme",
         title: String = "Release work",
-        summary: String = ""
+        summary: String = "",
+        finishedAt: String? = nil
     ) -> SessionAgentStatus {
         SessionAgentStatus(sessionID: id, workbenchID: workbench, workbenchName: name, title: title, state: state, at: at,
-                           finishSummary: summary)
+                           finishSummary: summary, finishedAt: finishedAt)
     }
 
     private func statusMap(_ statuses: SessionAgentStatus...) -> [Int64: SessionAgentStatus] {
@@ -252,5 +253,59 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         _ = policy.update(statusMap(agentStatus(1, .live(.waitingOnAsk, openAsks: 1), at: "t1")), canPost: true)
         XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")), canPost: true))
             .map(\.title), ["Release work is idle"])
+    }
+
+    /// Ask #1217 (board #1712): background shells alone never hold the
+    /// turn-end notice back — it posts at the turn end, once; the shells'
+    /// end at the same stamp is no second notice, the next turn end is.
+    func testProj11_ShellsOnlyBackgroundIsAnnouncedAtTheTurnEnd() {
+        var policy = SessionAgentNoticePolicy()
+        let shells = SessionSwitcherPresentation.State.live(.background, backgroundShells: 1)
+        _ = policy.update(statusMap(agentStatus(1, .live(.working), at: "t0")), canPost: true)
+        XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, shells, at: "t1")), canPost: true))
+            .map(\.title), ["Release work is idle"], "the turn ended with a shell running: notified now")
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, shells, at: "t1")), canPost: true), [],
+                       "a repeat poll is silent")
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")), canPost: true), [],
+                       "the shell ended at the same stamp: no second notice")
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.working), at: "t2")), canPost: true),
+                       [.withdraw(identifier: "workbench-session-1")], "the shell's exit woke the agent")
+        XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, shells, at: "t3")), canPost: true))
+            .count, 1, "the next turn end: one more")
+    }
+
+    /// Ask #1217: background agents keep holding the notice back, shells
+    /// beside them or not; once only shells are left it posts, once.
+    func testProj11_AgentsBesideShellsStillHoldTheNoticeBack() {
+        var policy = SessionAgentNoticePolicy()
+        let both = SessionSwitcherPresentation.State.live(.background, backgroundAgents: 1, backgroundShells: 1)
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, both, at: "t1")), canPost: true), [],
+                       "an agent runs: no notice")
+        let shells = SessionSwitcherPresentation.State.live(.background, backgroundShells: 1)
+        XCTAssertEqual(postedNotices(policy.update(statusMap(agentStatus(1, shells, at: "t1")), canPost: true))
+            .map(\.title), ["Release work is idle"], "the agent ended, the shell runs: notified")
+        XCTAssertEqual(policy.update(statusMap(agentStatus(1, .live(.stopped), at: "t1")), canPost: true), [])
+    }
+
+    /// Ask #1217: a shells-only background rests as it would without the
+    /// shells — open asks post no state notice (the ask did), a finish
+    /// posts "finished" — and a blocked post is consumed, not replayed.
+    func testProj11_ShellsOnlyBackgroundReadsItsRestingKind() {
+        var asks = SessionAgentNoticePolicy()
+        let withAsk = SessionSwitcherPresentation.State.live(.background, openAsks: 1, backgroundShells: 1)
+        XCTAssertEqual(asks.update(statusMap(agentStatus(1, withAsk, at: "t1")), canPost: true), [])
+
+        var finished = SessionAgentNoticePolicy()
+        let shells = SessionSwitcherPresentation.State.live(.background, backgroundShells: 2)
+        let done = agentStatus(2, shells, at: "t1", summary: "Shipped the fix", finishedAt: "t1")
+        XCTAssertEqual(postedNotices(finished.update(statusMap(done), canPost: true)).map(\.title),
+                       ["Release work finished"])
+        XCTAssertEqual(finished.update(statusMap(agentStatus(2, .live(.finished), at: "t1", finishedAt: "t1")),
+                                       canPost: true), [], "the shells ended: the same transition")
+
+        var blocked = SessionAgentNoticePolicy()
+        XCTAssertEqual(blocked.update(statusMap(agentStatus(3, shells, at: "t1")), canPost: false), [])
+        XCTAssertEqual(blocked.update(statusMap(agentStatus(3, .live(.stopped), at: "t1")), canPost: true), [],
+                       "seen while posting was blocked: never replayed")
     }
 }

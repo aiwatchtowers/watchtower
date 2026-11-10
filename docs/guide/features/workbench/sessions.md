@@ -34,11 +34,11 @@ A caption under the session name says what the agent is doing. When several appl
 | **Error: …** | red | The turn stopped on an error. The caption names it, for example "Error: rate limit". |
 | **Working** | green | The agent works on your prompt. |
 | **Agents working** (or **N agents working**) | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
-| **Background task running** | green, pulsing | The turn is over but a background command runs, such as a CI wait; the agent resumes when it ends. Shown for up to 2 hours. |
+| **Background task running** | green, pulsing | The turn is over but a background command runs, such as a CI wait; then the agent resumes. Up to 2 hours. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
 | **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
-| **Idle** | grey | The agent finished its turn and waits for you. |
+| **Idle** | grey | The turn is over; the agent waits for you. |
 | **Running** / **Not running** | green / grey | No state reported yet, or not started. |
 
 A ring instead of a filled dot means the session is not running. A blue ring is finished, orange still has a question, purple still has checks or reviews for you. A state from before an exit, a Restart or a Watchtower restart is never shown.
@@ -134,7 +134,7 @@ Workchat is a session's second mode: its dialog as a chat that you can write to,
 
 ### Get notified
 
-While Watchtower is in the background, a running session that turns idle, needs approval, hits an error or finishes sends one notice; asks and background states send none. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
+While Watchtower is in the background, a running session that turns idle, needs approval, hits an error or finishes sends one notice, background command or not; asks and busy helpers send none. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
 
 ## When it's empty or wrong
 

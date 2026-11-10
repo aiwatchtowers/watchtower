@@ -2258,3 +2258,43 @@ func TestProj11_IdleNoticeKeepsBackgroundShells(t *testing.T) {
 	assert.False(t, s.Background.Valid, "no shells: the notice clears the count")
 	assert.False(t, s.BackgroundShells.Valid)
 }
+
+// PROJ-11, ask #1217 (board #1712): the Desktop announces a turn end once
+// per (kind, agent_state_at), so a turn that ends with only background shells
+// running must stamp the turn end at its Stop — the notice goes then — and no
+// later word about those shells may move that stamp, or the shells' end would
+// read as a second turn end: not the idle_prompt notice, not a SubagentStop
+// snapshot lowering them, not the staleness probe ending them.
+func TestProj11_ShellsNeverMoveTheTurnEndStamp(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+
+	s := hookStep(t, database, pid, row, at, 1, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	require.Equal(t, "working", s.AgentState.String)
+	workingAt := s.AgentStateAt
+	s = hookStep(t, database, pid, row, at, 2, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	require.Equal(t, "waiting", s.AgentState.String)
+	require.Equal(t, bgCount(1), s.BackgroundShells)
+	turnEnd := s.AgentStateAt
+	assert.True(t, turnEnd.After(workingAt), "the Stop with a shell running is the turn end's transition")
+
+	s = hookStep(t, database, pid, row, at, 62, statePayload("Notification", briefLaunchID, "idle_prompt"))
+	assert.Equal(t, turnEnd, s.AgentStateAt, "the idle notice over the shell")
+	s = hookStep(t, database, pid, row, at, 70, subagentStop("t1", "alpha", `[]`))
+	assert.Equal(t, bgCount(0), s.BackgroundShells, "the snapshot lowered the shells")
+	assert.Equal(t, turnEnd, s.AgentStateAt, "the shells lowered by a snapshot")
+
+	hookStep(t, database, pid, row, at, 80, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	s = hookStep(t, database, pid, row, at, 81, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	turnEnd = s.AgentStateAt
+	var seen string
+	require.NoError(t, database.QueryRow(`SELECT agent_background_at FROM terminal_sessions WHERE id = ?`, row).Scan(&seen))
+	ended, err := database.EndTerminalBackground(row, pid, briefLaunchID, seen)
+	require.NoError(t, err)
+	require.True(t, ended)
+	s, err = database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.False(t, s.BackgroundShells.Valid, "the probe ended the shells")
+	assert.Equal(t, turnEnd, s.AgentStateAt, "the shells ended by the probe")
+}

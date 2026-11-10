@@ -10,6 +10,11 @@ import Foundation
 /// notifications are paused) is consumed, never replayed. Waiting on an ask, ready to
 /// check (#534), or working with asks, gets no state notice:
 /// `WorkbenchNotificationPolicy.askOpened` already announced the ask.
+/// Background shells alone never hold the turn end back (ask #1217, board
+/// #1712): a background session whose only work is shells is announced as
+/// the kind it rests in without them, so the notice comes at the turn end
+/// and the shells' end, at the same stamp, is no second one. Background
+/// agents still hold it until they end.
 package struct SessionAgentNoticePolicy: Sendable {
     package struct Notice: Equatable, Sendable {
         package let sessionID: Int64
@@ -73,18 +78,32 @@ package struct SessionAgentNoticePolicy: Sendable {
     /// needs approval, failed, stopped or finished, reached by a hook write
     /// of the current run; nil for anything else.
     private static func transition(_ status: SessionAgentStatus?) -> String? {
-        guard let status, status.state.live, let at = status.at else { return nil }
+        guard let status, let kind = announcedKind(status), let at = status.at else { return nil }
+        return "\(kind)@\(at)"
+    }
+
+    /// The kind a live status is announced as, nil when it is not: a
+    /// shells-only background reads as its resting kind without the shells
+    /// (the resting order of `SessionAgentStatus.effective`, turn ended; ask #1217) —
+    /// open asks (ready to check, waiting on an ask: the ask was announced),
+    /// else finished, else stopped.
+    private static func announcedKind(_ status: SessionAgentStatus) -> SessionSwitcherPresentation.State.Kind? {
+        guard status.state.live else { return nil }
         switch status.state.kind {
-        case .needsApproval, .failed, .stopped, .finished: return "\(status.state.kind)@\(at)"
+        case .needsApproval, .failed, .stopped, .finished: return status.state.kind
+        case .background where status.state.shellsOnly:
+            if status.state.openAsks > 0 { return nil }
+            return status.finishedAt != nil ? .finished : .stopped
         case .notStarted, .running, .working, .waitingOnAsk, .readyToCheck, .background: return nil
         }
     }
 
     /// nil for a standalone terminal or a workbench that no longer exists.
     private static func notice(for status: SessionAgentStatus) -> Notice? {
-        guard let workbenchID = status.workbenchID, let name = status.workbenchName else { return nil }
+        guard let workbenchID = status.workbenchID, let name = status.workbenchName,
+              let kind = announcedKind(status) else { return nil }
         let (title, body): (String, String)
-        switch status.state.kind {
+        switch kind {
         case .needsApproval:
             (title, body) = ("\(status.title) needs approval", name)
         case .failed:
