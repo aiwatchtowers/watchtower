@@ -5,6 +5,7 @@ package diagnostics
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -250,3 +251,70 @@ func CrashScanStopped(mb int) string { return fmt.Sprintf(crashScanStoppedFmt, m
 
 // CrashNoneScanStopped is `none in the first <N> MB of the logs (scan stopped)`.
 func CrashNoneScanStopped(mb int) string { return fmt.Sprintf(crashNoneScanStoppedFmt, mb) }
+
+// ---- Local lines (Task 10): version, machine, daemon, logs, crash, policy,
+// iPhone. Kept as one block so parallel line tasks merge cleanly.
+
+// Chip options of the GitHub form, `Apple M1`…`Apple M5`.
+const chipAppleFmt = "Apple M%d"
+
+// Ages of the last cycle and file sizes.
+const (
+	AgeUnderMinute = "under 1 min"
+	ageMinutesFmt  = "%d min"
+	ageHoursFmt    = "%d h"
+	ageDaysFmt     = "%d d"
+	sizeFmt        = "%s %s"
+	SizeB          = "B"
+	SizeKB         = "KB"
+	SizeMB         = "MB"
+	SizeGB         = "GB"
+	logSizeFmt     = "%s %s"
+	iPhoneFmt      = "%s %s"
+)
+
+// ChipApple is the form's `Apple M<n>` option.
+func ChipApple(n int) string { return fmt.Sprintf(chipAppleFmt, n) }
+
+// Age is the `<n> min|h|d` of `last cycle <age> ago`; under a minute (or a
+// time in the future, a skewed clock) is `under 1 min`.
+func Age(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return AgeUnderMinute
+	case d < time.Hour:
+		return fmt.Sprintf(ageMinutesFmt, int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf(ageHoursFmt, int(d/time.Hour))
+	default:
+		return fmt.Sprintf(ageDaysFmt, int(d/(24*time.Hour)))
+	}
+}
+
+// Size prints a byte count as `<n> B|KB|MB|GB` (1024-based): one decimal
+// below 10 of a unit (`1.2 GB`, `4 MB` when exact), whole numbers above.
+func Size(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf(sizeFmt, strconv.FormatInt(max(n, 0), 10), SizeB)
+	}
+	v, unit := float64(n)/1024, SizeKB
+	for _, u := range []string{SizeMB, SizeGB} {
+		if v < 1024 {
+			break
+		}
+		v, unit = v/1024, u
+	}
+	var num string
+	if v < 10 {
+		num = strings.TrimSuffix(strconv.FormatFloat(v, 'f', 1, 64), ".0")
+	} else {
+		num = strconv.FormatInt(int64(v), 10)
+	}
+	return fmt.Sprintf(sizeFmt, num, unit)
+}
+
+// LogSize is one `<file> <size|missing|unreadable>` part of the Logs line.
+func LogSize(file, size string) string { return fmt.Sprintf(logSizeFmt, file, size) }
+
+// IPhone is the `iPhone companion on|off` part.
+func IPhone(state string) string { return fmt.Sprintf(iPhoneFmt, IPhoneCompanion, state) }

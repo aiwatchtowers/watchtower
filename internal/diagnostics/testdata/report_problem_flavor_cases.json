@@ -1,0 +1,7 @@
+[
+  {"build_flavor": "", "flavor": "default"},
+  {"build_flavor": "dev", "flavor": "default"},
+  {"build_flavor": "acme", "flavor": "corp"},
+  {"build_flavor": "Dev", "flavor": "corp"},
+  {"build_flavor": " ", "flavor": "corp"}
+]
