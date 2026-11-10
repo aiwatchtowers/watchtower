@@ -14,7 +14,7 @@
 
 ## Global Constraints
 
-- Migrations: main database `internal/db/migrations/00179_tuning_chat.sql` (take the next free number if main moved on); no agentlogdb migration (main's 00003 is the latest; none of Phase 4's gaps needs a column). A table rebuild = `-- +goose NO TRANSACTION`, `PRAGMA foreign_keys = OFF;`, one `BEGIN IMMEDIATE; … COMMIT;` in one `StatementBegin`/`StatementEnd`, then `PRAGMA foreign_keys = ON;` (CLAUDE.md "Database & Migrations", `add-migration` skill, `00150`).
+- Migrations: main database `internal/db/migrations/00184_tuning_chat.sql` (take the next free number if main moved on); no agentlogdb migration (main's 00003 is the latest; none of Phase 4's gaps needs a column). A table rebuild = `-- +goose NO TRANSACTION`, `PRAGMA foreign_keys = OFF;`, one `BEGIN IMMEDIATE; … COMMIT;` in one `StatementBegin`/`StatementEnd`, then `PRAGMA foreign_keys = ON;` (CLAUDE.md "Database & Migrations", `add-migration` skill, `00150`).
 - Every new table/column/CHECK is mirrored in `internal/db/schema.sql`, `TestAllTablesExist`, the schema golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`).
 - Write transactions stay short: no model call, network or render inside one.
 - Logs carry ids, counts and fingerprints only, never captured text, skill text or outputs (FILES-01, `internal/logredact`).
@@ -110,11 +110,11 @@ Blanked proposal text (trigger SQL and Go must agree; pinned by Task 1.2): title
 
 ---
 
-### Task 1.1: Migration 00179 `tuning_chat`
+### Task 1.1: Migration 00184 `tuning_chat`
 
 **Depends on:** none
 **Files:**
-- Create: `internal/db/migrations/00179_tuning_chat.sql`
+- Create: `internal/db/migrations/00184_tuning_chat.sql`
 - Modify: `internal/db/schema.sql` (mirror: new `coach_proposals` columns/CHECK, six tables, indexes, ten triggers)
 - Modify: `internal/db/db_test.go` (`TestAllTablesExist` += `prompt_inputs`, `prompt_input_items`, `prompt_replays`, `chat_conversation_sources`, `coach_proposal_sources`, `skill_pack_overlays`)
 - Modify (regenerated): schema golden snapshot, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
@@ -124,12 +124,12 @@ Blanked proposal text (trigger SQL and Go must agree; pinned by Task 1.2): title
 - Produces: the tables, columns and triggers below (Phase 2 reads `coach_proposals.origin/skill/source_removed_at/conversation_id`, `coach_proposal_sources`, `skill_pack_overlays`; Phase 3 reads `prompt_replays`).
 
 - [ ] **Step 1: Write the failing tests** (`openRawDBAtVersion(t, 178)` + `applyNextMigration`, from `voice_registry_migration_test.go`):
-  - `TestMigration00179_CoachRebuildKeepsRows`: seed 3 `coach_proposals` (ids 4, 7, 9; 9 has `reverts_id = 7`; every v1 destination column filled), 2 `prompt_additions` with `proposal_id` 4 and 7; migrate; assert every column value and id equal, `reverts_id` 9→7 kept, both `prompt_additions.proposal_id` kept, new columns read `origin='weekly'`, `skill=''`, `source_removed_at IS NULL`, `conversation_id IS NULL`; `PRAGMA foreign_key_check` empty.
-  - `TestMigration00179_DestinationCheck`: insert with each of `claude_skill_user`, `codex_skill_user`, `pack_overlay`, `codex_agents_md_user`, `codex_rules_allow` succeeds; `destination='nope'` fails; `origin='other'` fails.
-  - `TestMigration00179_FailureLeavesNothing`: at v178 create a trigger named `agent_actions_tuning_conversation` on `agent_actions` (the last object the block creates); `gooseUpByOne` returns an error; assert `coach_proposals` has no `origin` column, none of the six tables and none of the other nine triggers exist, goose version is still 178; drop the planted trigger, apply again → success.
-  - `TestMigration00179_DownUp`: up, insert one row per new table, down (rows with a new destination dropped, others kept), up again.
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/db -run 'TestMigration00179|TestAllTablesExist'` (no such migration / tables).
-- [ ] **Step 3: Write `00179_tuning_chat.sql`.** Header comment in the 00150 style. Shape:
+  - `TestMigration00184_CoachRebuildKeepsRows`: seed 3 `coach_proposals` (ids 4, 7, 9; 9 has `reverts_id = 7`; every v1 destination column filled), 2 `prompt_additions` with `proposal_id` 4 and 7; migrate; assert every column value and id equal, `reverts_id` 9→7 kept, both `prompt_additions.proposal_id` kept, new columns read `origin='weekly'`, `skill=''`, `source_removed_at IS NULL`, `conversation_id IS NULL`; `PRAGMA foreign_key_check` empty.
+  - `TestMigration00184_DestinationCheck`: insert with each of `claude_skill_user`, `codex_skill_user`, `pack_overlay`, `codex_agents_md_user`, `codex_rules_allow` succeeds; `destination='nope'` fails; `origin='other'` fails.
+  - `TestMigration00184_FailureLeavesNothing`: at v178 create a trigger named `agent_actions_tuning_conversation` on `agent_actions` (the last object the block creates); `gooseUpByOne` returns an error; assert `coach_proposals` has no `origin` column, none of the six tables and none of the other nine triggers exist, goose version is still 178; drop the planted trigger, apply again → success.
+  - `TestMigration00184_DownUp`: up, insert one row per new table, down (rows with a new destination dropped, others kept), up again.
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/db -run 'TestMigration00184|TestAllTablesExist'` (no such migration / tables).
+- [ ] **Step 3: Write `00184_tuning_chat.sql`.** Header comment in the 00150 style. Shape:
 
 ```sql
 -- +goose NO TRANSACTION
@@ -288,8 +288,8 @@ END;
 
   `-- +goose Down`: same FK-off block — rebuild `coach_proposals` back to the 00162 definition copying only rows whose destination is a v1 one, drop the ten triggers, the six tables and `coach_proposals_conversation`.
   Mirror everything into `schema.sql` (the `coach_proposals` definition in place, new tables after `prompt_additions`, triggers beside them). Regenerate: `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/db -run 'TestMigration00179|TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`, then `go test ./internal/db`, `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(db): migration 00179 tuning_chat — coach_proposals rebuild, capture tables, removal triggers (#1517)"`.
+- [ ] **Step 4: Run, expect PASS** — `go test ./internal/db -run 'TestMigration00184|TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`, then `go test ./internal/db`, `make lint-diff`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(db): migration 00184 tuning_chat — coach_proposals rebuild, capture tables, removal triggers (#1517)"`.
 
 ---
 
@@ -714,7 +714,7 @@ Side is `system` and tail is `""` for all of these.
 Spec: `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` §4.2 (ValidateChatProposal, keyOf, writeCut), §4.3, §4.4 (labels), §4.5 "Chat proposals", §4.8 first three rows, §4.9 (struct, JSON keys, Swift model), §5 (ValidateChatProposal, file destinations, pack overlay, proposal-tool edge cases).
 Read before starting: `docs/features/agent-coach.md`, `docs/inventory/coach.md` (COACH-01), `internal/coach/*.go`, `internal/db/coach.go`, `internal/devpack/install.go`.
 
-Assumed from Task 1.1 (migration `00179_tuning_chat.sql`): `coach_proposals` gains `origin TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat'))`, `skill TEXT NOT NULL DEFAULT ''`, `source_removed_at TEXT`, `conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL`, and the `destination` CHECK lists the five new values; tables `coach_proposal_sources(proposal_id, source, account_id, item_key)` (proposal_id cascades), `chat_conversation_sources(conversation_id, source, account_id, item_key)`, `prompt_input_items(input_id, source, account_id, item_key)`, `prompt_inputs.refs` (JSON `[{source, account_id, transcript_id?}]`), `prompt_replays(… input_ids JSON, proposal_id …)`, and `skill_pack_overlays` shaped like `prompt_additions` (see Open points). The source-table triggers of §4.5 (Task 1.1) blank with the literal title `'Removed with its source data'`.
+Assumed from Task 1.1 (migration `00184_tuning_chat.sql`): `coach_proposals` gains `origin TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat'))`, `skill TEXT NOT NULL DEFAULT ''`, `source_removed_at TEXT`, `conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL`, and the `destination` CHECK lists the five new values; tables `coach_proposal_sources(proposal_id, source, account_id, item_key)` (proposal_id cascades), `chat_conversation_sources(conversation_id, source, account_id, item_key)`, `prompt_input_items(input_id, source, account_id, item_key)`, `prompt_inputs.refs` (JSON `[{source, account_id, transcript_id?}]`), `prompt_replays(… input_ids JSON, proposal_id …)`, and `skill_pack_overlays` shaped like `prompt_additions` (see Open points). The source-table triggers of §4.5 (Task 1.1) blank with the literal title `'Removed with its source data'`.
 
 Inner loop per task: `go test ./internal/<pkg>` (+ `-run`), `make lint-diff`; Swift: `make test-swift FILTER=…` and `make lint-swift`. Never `-count=1` by reflex.
 
@@ -746,7 +746,7 @@ Inner loop per task: `go test ./internal/<pkg>` (+ `-run`), `make lint-diff`; Sw
   - `TestInsertCoachProposalWithSources_CutCopiesOriginalLinks`: original id 5 has two `coach_proposal_sources`; insert a cut with `RevertsID: 5`, `convID=nil`, `replayID=nil` → the cut has the same two links; a cut of a proposal with no links gets none.
   - `TestInsertCoachProposalWithSources_TextBusy`: an open proposal on `(claude_skill_user, wb 0, prompt '', skill 'a')` → a second insert for skill `a` → `errors.Is(err, ErrCoachTextBusy)`, message contains `#<id>`; for skill `b` → inserted.
   - `TestInsertCoachProposalWithSources_FingerprintConflictIsZero`: same fingerprint twice → second returns `0, nil`, no sources copied for it.
-  - `TestCoachRemovedTitle_MatchesTriggers`: read `migrations/00179_tuning_chat.sql` via the embedded FS; `strings.Count(sql, "'"+CoachRemovedTitle+"'") >= 1`.
+  - `TestCoachRemovedTitle_MatchesTriggers`: read `migrations/00184_tuning_chat.sql` via the embedded FS; `strings.Count(sql, "'"+CoachRemovedTitle+"'") >= 1`.
 - [ ] **Step 2: Run them, expect FAIL** — `go test ./internal/db -run 'TestCoachProposal_NewColumns|TestInsertCoachProposalWithSources|TestCoachRemovedTitle'` (undefined fields/functions).
 - [ ] **Step 3: Implement**
   - `coachCols` adds `origin, skill, conversation_id, COALESCE(source_removed_at, '')`; `scanCoachProposal` scans `conversation_id` into `sql.NullInt64`. `insertCoachProposal` writes the four columns too (`origin` defaulting to `weekly`), so the weekly path keeps working through `InsertCoachProposal`.
@@ -1184,7 +1184,7 @@ Inner loop per task: `go test ./internal/<pkg>` (+ `-run`), `make lint-diff`; Sw
 | §4.4 destination labels | already on the branch (Swift `destinationLabel` + `CoachPresentationTests`); Go human output names the skill: 2.11 |
 | COACH-01 guard for the new destinations (additive) | 2.3, 2.4 |
 
-Not in Phase 2: `coach.Measure`/`BuildOverview` per agent (Phase 4); the MCP tools, `prompts replay propose` verb, `agent_actions` trigger (Phase 3); the source-table triggers and `00179` itself (Phase 1); inventory/doc text (Phase 6).
+Not in Phase 2: `coach.Measure`/`BuildOverview` per agent (Phase 4); the MCP tools, `prompts replay propose` verb, `agent_actions` trigger (Phase 3); the source-table triggers and `00184` itself (Phase 1); inventory/doc text (Phase 6).
 
 ### Phase 2 notes from recon (resolved above where they conflict)
 1. **Signatures differ from the brief.** `ValidateChatProposal(ctx, d, e ChatEdit, env Env) (db.CoachProposal, error)` instead of `(ctx, d, p db.CoachProposal, env Env) error`: the chat sends `find`/`replace`, and only the validator can compute `before`/`after`/fingerprint from the file it reads, so it takes the edit and returns the proposal to insert. `Validate` takes `(raw string, in Inputs)` — there was no `Env`; `Env{Home, CodexHome}` is new (Task 2.4), mirroring `Applier.Home`. `InsertCoachProposalWithSources` gains a trailing `now time.Time` (every coach insert takes `now`; `CreatedAt` is never caller-set) and writes `convID` as `conversation_id` (it overrides `p.ConversationID`); on a fingerprint conflict it returns `0, nil` like `InsertCoachProposal`.
@@ -1203,7 +1203,7 @@ Not in Phase 2: `coach.Measure`/`BuildOverview` per agent (Phase 4); the MCP too
 ## Phase 3 — `tuning` surface, read and proposal tools, A/B replay CLI and sweep, chat-history filter
 
 Spec: `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` §4.1, §4.2, §4.5 ("Other readers of chat history"), §4.6, §4.9 (surface paths), §5.
-Needs Phase 1 (migration 00179, capture, `prompt_inputs` accessors) and Phase 2 (`ValidateChatProposal`, chat-origin insert, new destinations). Phase 4 is needed only by Task 3.8's `agent` pass-through.
+Needs Phase 1 (migration 00184, capture, `prompt_inputs` accessors) and Phase 2 (`ValidateChatProposal`, chat-origin insert, new destinations). Phase 4 is needed only by Task 3.8's `agent` pass-through.
 
 New package for the tool code and the replay runner: `internal/tuning` (outside the code-question guard's scanned dirs, and it reads no chat table itself — every chat/conversation access goes through `internal/db`). The pure block cut/insert lives in `internal/prompts/replay.go`, because the per-family golden tests in the pipeline packages already import `prompts`.
 
@@ -1303,14 +1303,14 @@ Rules:
 
 ### Task 3.3: `prompt_replays` accessors, stale sweep and median output in `internal/db`
 
-**Depends on:** Task 1.1 (migration 00179), the Phase 1 task that defines `db.PromptReplay` (if none does, this task defines it)
+**Depends on:** Task 1.1 (migration 00184), the Phase 1 task that defines `db.PromptReplay` (if none does, this task defines it)
 **Files:**
 - Create: `internal/db/prompt_replays.go`
 - Modify: `internal/db/llm_calls.go` (`MedianLLMOutputTokens`)
 - Test: `internal/db/prompt_replays_test.go`, `internal/db/llm_calls_test.go`
 
 **Interfaces:**
-- Consumes: table `prompt_replays` from 00179 (columns of spec §4.5 + `updated_at`, see Open points), `chat_conversations`, `prompt_inputs`.
+- Consumes: table `prompt_replays` from 00184 (columns of spec §4.5 + `updated_at`, see Open points), `chat_conversations`, `prompt_inputs`.
 - Produces:
   ```go
   type PromptReplay struct {
@@ -1345,7 +1345,7 @@ Rules:
   - `TestPromptReplay_InsertOnRemovedConversation`: delete the conversation, insert → `errors.Is(err, ErrConversationRemoved)`, no row.
   - `TestPromptReplay_CASFirstWins`: two `CASPromptReplayState(id,"proposed","running")` → `true` then `false`.
   - `TestPromptReplay_SetResultOnlyWhileRunning`: on `proposed` → `false`; after start → `true`, `calls_done` 1, `Results[in].Without.Out == "a"`; `SetPromptReplayResult(..., "without", "a", 0.012)` stores `cost_usd 0.012`; `SetPromptReplayError(..., "with", "boom", 0)` → `Results[in].With.Error == "boom"`, `CostUSD == 0`, `calls_done` 2; each write moves `updated_at`.
-  - `TestPromptReplay_SetResultOnDeletedRowStops`: delete the input (the 00179 `prompt_inputs` trigger deletes the replay) → `SetPromptReplayResult` returns `(false, nil)`; `GetPromptReplay` → `ErrNotFound`.
+  - `TestPromptReplay_SetResultOnDeletedRowStops`: delete the input (the 00184 `prompt_inputs` trigger deletes the replay) → `SetPromptReplayResult` returns `(false, nil)`; `GetPromptReplay` → `ErrNotFound`.
   - `TestPromptReplay_Discard`: from `proposed`, `done`, `failed` → `true`; from `running` and `discarded` → `false`.
   - `TestSweepStalePromptReplays`: a `running` row with `updated_at` 11 min old, `calls_done` 4, 5 inputs → becomes `failed`, `failure='stopped'`, `error == "stopped after 4 of 10"`, `finished_at` set; a `running` row 9 min old and a `proposed` row 1 h old are untouched; returns 1.
   - `TestMedianLLMOutputTokens`: purpose `digest.channel` outputs 10, 30, 20 within 30 days + one 999 outside → `(20, true)`; unknown purpose → `(0, false)`.
@@ -1616,7 +1616,7 @@ Rules:
   - `TestGetPromptReplay_FencesAndMark`: tool has `CompanyData`; an output containing `</replay_output>` is escaped; each output starts `<replay_output input=<id> side=with>`.
   - `TestGetPromptReplay_DiscardedAndStale`: discarded → `state "discarded"`, no outputs; after the template text changes → `stale true`.
   - `TestGetPromptReplay_OtherConversation` → not found.
-  - `TestProposalTools_ConversationRemovedBeforeInsert`: delete the conversation through a second connection, then `Propose` each proposal tool: error contains `"conversation removed"`; no `agent_actions` row (00179's BEFORE INSERT trigger), no proposal, no replay.
+  - `TestProposalTools_ConversationRemovedBeforeInsert`: delete the conversation through a second connection, then `Propose` each proposal tool: error contains `"conversation removed"`; no `agent_actions` row (00184's BEFORE INSERT trigger), no proposal, no replay.
   - `TestProposalTools_RemovalBetweenCalls`: one read succeeds, conversation deleted via a second connection, the next `get_prompt_input` and the next `propose_tuning_edit` both fail with `"conversation removed"`.
   - `TestProposalTools_NotFound` (table): `workbench_id` 99, `prompt_id "nope"`, `skill "nope"`, `input_ids [999]` → `"… not found"`, nothing written (no `agent_actions`, no proposal/replay, no `chat_conversation_sources`).
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/tuning -run 'TestProposeTuningEdit|TestProposePromptReplay|TestGetPromptReplay|TestProposalTools'`.
@@ -2113,7 +2113,7 @@ Recon facts the tasks rely on:
 
 ### Task 5.1: Swift readers of the new coach and agent_actions columns
 
-**Depends on:** Task 1.1 (migration 00179 + regenerated `Tests/Support/TestDatabase+Schema.swift`); the Phase 2 task that pins the `coach proposals --json` keys `origin`, `skill`, `conversation_id`, `source_removed_at`
+**Depends on:** Task 1.1 (migration 00184 + regenerated `Tests/Support/TestDatabase+Schema.swift`); the Phase 2 task that pins the `coach proposals --json` keys `origin`, `skill`, `conversation_id`, `source_removed_at`
 **Files:**
 - Modify: `Sources/WatchtowerCore/Models/Coach.swift` (`CoachProposal` gains `origin`, `conversationID`, `sourceRemovedAt`; `CoachFailure` unchanged)
 - Modify: `Sources/WatchtowerCore/Models/CoachProposal+Row.swift` (reads `origin`, `skill`, `conversation_id`, `source_removed_at`)
@@ -2538,7 +2538,7 @@ action: nav:projects
 - Modify: `docs/inventory/dev-surface.md` (DEV-04: the pack overlay renders into the shipped digest, so it is not drift; a hand-edited copy stays drifted; D15, ask #999; guard from Phase 2)
 - Create: `docs/inventory/prompt-capture.md` (`CAPTURE-01` — captured inputs never outlive their sources: per-item triggers, purge by `refs`, 5-row trim never deleting a pinned row, 7-day sweep of inputs and replays, a capture whose item is already gone writes nothing, private transcripts refused, no text in logs; `CAPTURE-02` — what a tuning conversation or chat proposal read goes with it (`chat_conversation_sources`, `coach_proposal_sources`, the read-after-commit rule); guards = Phase 1's `TestCAPTURE01_*` (trigger, trim, retention, purge, item-gone and private tests) and `TestCAPTURE02_*` (conversation and proposal removal, read-after-commit); `CAPTURE-03` — every `prompts.Resolve` caller captures at its leaf or is listed with a reason, guards `TestCAPTURE03_ResolveCallersCapture`, `TestCAPTURE03_LeavesRecordCapture`)
 - Modify: `docs/inventory/llm-transport.md` (LLMTRANSPORT-01 note, changelog line only: the tuning code adds no baseline entry, Go (`internal/transporttest/testdata/llmtransport_allow.txt`) or Swift (`LLMTransportGuardTests`): `replayGenerator` goes through `providers.CapsFor` + `transport.For(p).NewGenerator`, the runtime-B refusal through `providers.RunsChild`, `replayCost` takes no provider, and the Desktop decides tool access through `AIModelCatalog.isKnownCLI`; Step 1 checks the allow file has no new line)
-- Modify: `docs/inventory/README.md` (mapping row: `Prompt capture` → `prompt-capture.md` → `internal/prompts/capture*.go`, `internal/db/prompt_inputs.go`, `internal/db/migrations/00179_tuning_chat.sql`, `cmd/prompts_replay.go`)
+- Modify: `docs/inventory/README.md` (mapping row: `Prompt capture` → `prompt-capture.md` → `internal/prompts/capture*.go`, `internal/db/prompt_inputs.go`, `internal/db/migrations/00184_tuning_chat.sql`, `cmd/prompts_replay.go`)
 
 - [ ] **Step 1: Collect the guard names** — `grep -rn 'func TestCAPTURE0[123]_\|func TestCOACH01_\|func TestAgent01_\|func TestDEV04\|TestListChatTurnsForIdeas' --include='*_test.go' internal cmd` and the Swift test names above; every guard cited must exist; `git diff origin/main -- internal/transporttest/testdata/llmtransport_allow.txt` is empty (no LLMTRANSPORT baseline entry added).
 - [ ] **Step 2: Write** the amendments in each file's existing format (Status / Observable / Why locked / Test guards / Locked since, and a dated changelog line naming the ask); never weaken an existing guard line.
