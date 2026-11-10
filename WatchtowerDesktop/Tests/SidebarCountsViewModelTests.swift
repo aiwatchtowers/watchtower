@@ -321,6 +321,32 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.catchUpTotalCount, 1)
     }
 
+    /// A write to `automations` (Waiting for me turned off in this process)
+    /// re-counts the badge: the observation tracks the table.
+    func testTheTableObservationRefreshesOnAnAutomationsWrite() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
+            try Self.insertWaitingForMe(db, enabled: true)
+        }
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+        XCTAssertEqual(vm.inboxStripCount, 1, "no run yet: the Messages entry stands in")
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        // Let the start's own value land first, so only the write can re-count.
+        try await Task.sleep(for: .milliseconds(300))
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "UPDATE automations SET enabled = 0 WHERE builtin_id = 'waiting-for-me'")
+        }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while vm.inboxStripCount != 0, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.inboxStripCount, 0, "turned off: the badge re-counts without another table's write")
+    }
+
     /// Every start delivers a value, so an error right after each start must
     /// keep doubling the pause; a delivered change resets it.
     func testTheBackoffDoublesWhenEachStartFailsAfterItsFirstValue() async throws {
