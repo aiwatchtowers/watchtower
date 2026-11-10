@@ -172,7 +172,7 @@ package enum AutomationQueries {
             sql += " AND o.automation_id != ?"
             arguments += [excludingAutomation]
         }
-        // `changed_at` is backfilled by migration 00180 and written by every
+        // `changed_at` is backfilled by migration 00182 and written by every
         // Go writer since, so the order uses `idx_automation_outputs_changed`.
         sql += " ORDER BY o.changed_at DESC, o.id DESC"
         if let limit {

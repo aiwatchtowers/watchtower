@@ -98,7 +98,7 @@ func TestInboxFolders_MigrationOnExistingOutputsPutsInboxCardsInRoot(t *testing.
 	path := filepath.Join(t.TempDir(), "w.db")
 	d, err := Open(path)
 	require.NoError(t, err)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 180))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 182))
 	assert.False(t, columnNames(t, d.DB, "automation_outputs")["folder_id"])
 	a := seedRunAutomation(t, d, "acme-digest", 1)
 	in1 := seedOutputOfKind(t, d, a, "inbox")
@@ -121,7 +121,7 @@ func TestInboxFolders_MigrationDownThenUp(t *testing.T) {
 	require.NoError(t, err)
 	a := seedRunAutomation(t, d, "acme-digest", 1)
 	seedOutputOfKind(t, d, a, "inbox")
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 180))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 182))
 	for _, name := range []string{"inbox_folders", "inbox_folder_state", "inbox_folder_routes", "inbox_artifact_folders"} {
 		var n int
 		require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = ?`, name).Scan(&n))

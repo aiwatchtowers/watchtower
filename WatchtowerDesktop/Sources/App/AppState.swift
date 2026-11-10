@@ -1792,9 +1792,10 @@ final class AppState {
         vm.managedPolicy = { [managedPolicy] in managedPolicy.policy }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
         wireCodeViewer(vm, dbPool: dbPool)
-        vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
+        vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter, weak vm] in
             codeQuestionCenter?.workbenchRemoved($0)
             codeUsagesCenter?.workbenchRemoved($0)
+            vm?.reviewer?.workbenchRemoved($0)
         }
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }

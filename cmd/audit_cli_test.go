@@ -426,6 +426,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench review lessons accept":  true,
 	"workbench review lessons dismiss": true,
 	"workbench review lessons propose": true,
+	"workbench review map":             true,
 	"workbench review overview":        true,
 	"workbench review revert-hunk":     true,
 	"workbench review send":            true,

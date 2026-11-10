@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One folder of the Inbox menu (`inbox_folders`, migration 00181). The
+/// One folder of the Inbox menu (`inbox_folders`, migration 00183). The
 /// Desktop only reads these rows: every write goes through
 /// `watchtower inbox folders …` (`InboxFoldersCLI`).
 package struct InboxFolder: Identifiable, Equatable, Sendable {
