@@ -856,13 +856,20 @@ func TestProj11_RaiseTerminalBackgroundOnlyRaises(t *testing.T) {
 		name          string
 		stored, count int64
 		wantN         int64
+		garbledStamp  bool
 	}{
-		{"a higher count", 3, 5, 5},
-		{"a lower count keeps it", 3, 1, 3},
-		{"from zero", 0, 2, 2},
-		{"zero over zero still reports", 0, 0, 0},
+		{"a higher count", 3, 5, 5, false},
+		{"a lower count keeps it", 3, 1, 3, false},
+		{"from zero", 0, 2, 2, false},
+		{"zero over zero still reports", 0, 0, 0, false},
+		{"an unreadable report stamp never blocks", 3, 2, 3, true},
 	} {
 		id := counted(tc.stored)
+		if tc.garbledStamp {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background_at = 'garbage' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}
 		others := otherAgentColumns(t, d, id)
 		at := t0.Add(time.Second)
 		if !w(d.RaiseTerminalBackground(id, pid, agentStateUUID, at, tc.count)) {

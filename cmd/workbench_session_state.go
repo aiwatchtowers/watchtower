@@ -890,8 +890,10 @@ func recordBackgroundReport(database *db.DB, rowID, workbenchID int64, sessionID
 // writes only over a `waiting` whose count the Stop started (NULL never
 // starts here, 0 does rise again) and that was reported before at, and
 // RaiseTerminalBackground repeats every guard. It stamps the report time even
-// when the count stays, so an older SubagentStop that lands after it — the
-// stop of the turn this start resumes from — cannot lower the count past it.
+// when the count stays, so any SubagentStop stamped before it that lands
+// after it — above all the stop of the turn this start resumes from — is
+// refused like every older report (spec §12.3): its turn end is still
+// recorded, and the next report counts from it.
 func recordBackgroundRaise(database *db.DB, rowID, workbenchID int64, sessionID string, at time.Time, count int64,
 	lock hookLockWait) error {
 	row, err := hookSessionRow(database, rowID, workbenchID, sessionID)

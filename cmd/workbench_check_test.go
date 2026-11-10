@@ -373,7 +373,7 @@ func TestBackgroundAgentsFollowsTheAgentTree(t *testing.T) {
 	const t1, t2 = "2026-11-10T10:00:00.000Z", "2026-11-10T10:00:01.000Z"
 	open := db.AgentTurn{Start: t2, Stop: t1}
 	closed := db.AgentTurn{Start: t1, Stop: t2}
-	tree := map[string]string{"c1": "i1", "c2": "i1", "g1": "c1", "x": "y", "y": "x"}
+	tree := map[string]string{"c1": "i1", "c2": "i1", "g1": "c1", "x": "y", "y": "x", "c3": "aalpha-1"}
 	list := func(ids ...string) string {
 		entries := make([]string, len(ids))
 		for i, id := range ids {
@@ -413,6 +413,8 @@ func TestBackgroundAgentsFollowsTheAgentTree(t *testing.T) {
 			db.AgentTurns{"x": closed, "y": open}, false, 2},
 		{"teammates keep their own cap", list("tm1", "i1"), "",
 			db.AgentTurns{"aalpha-1": open, "c1": open}, false, 3},
+		{"an open unlisted parent counts once, not also as a teammate", list("tm1", "c3"), "",
+			db.AgentTurns{"aalpha-1": open, "c3": open}, false, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var in stopHookInput

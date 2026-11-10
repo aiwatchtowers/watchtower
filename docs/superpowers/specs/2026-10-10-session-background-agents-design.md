@@ -484,7 +484,7 @@ count(tasks, turns, except, parents) =
     #(subagent or workflow entries, not except, whose turn is not closed)                 -- §11.3
   + #(open turns no entry lists, not except, with a listed subagent above them)           -- nested work
   + #(agents above any counted agent that are not counted themselves, each once)           -- waiting parents
-  + min(#(other open unlisted turns, not except), #(teammate entries))                     -- §11.3
+  + min(#(other open unlisted turns, not except, not counted as waiting parents), #(teammate entries))  -- §11.3
 ```
 
 `agentsInTurn(turns, parents)` (a `SubagentStart`, which has no list) = the open turns + the agents above them,
@@ -510,7 +510,9 @@ each once.
 Races: every report carries its hook's start stamp and is refused when `agent_background_at` is newer, so of two
 reports the later-stamped one wins whatever their commit order; `agent_turns` stamps only move forward. The start
 always stamps, so a resume whose start lands before the stop of the turn it follows makes that older stop a no-op
-instead of lowering past the live agent (test `TestProj11_NestedAgentsAndWaitingImplementersCount`).
+instead of lowering past the live agent (test `TestProj11_NestedAgentsAndWaitingImplementersCount`). It voids
+any other agent's stop stamped before it as well: that turn end is still recorded in `agent_turns`, and the count
+follows it from the next report.
 
 ### 12.4 Failure modes
 

@@ -2,7 +2,6 @@ package agentfiles
 
 import (
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -33,12 +32,8 @@ func SubagentParent(subagentsDir, agentID string) string {
 	if subagentsDir == "" || !plainAgentID(agentID) {
 		return ""
 	}
-	path := filepath.Join(subagentsDir, "agent-"+agentID+".meta.json")
-	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() || fi.Size() > maxMetaBytes {
-		return ""
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
+	raw, ok := readMetaFile(filepath.Join(subagentsDir, "agent-"+agentID+".meta.json"))
+	if !ok {
 		return ""
 	}
 	var m struct {

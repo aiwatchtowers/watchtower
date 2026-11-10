@@ -229,7 +229,7 @@ func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string,
 			teammates++
 		}
 	}
-	var open int64
+	var loose []string
 	for id := range turns {
 		if (except == "" || id != except) && !listed[id] && turns.Open(id) {
 			if launchedUnder(id, listedSubagents, parents) {
@@ -237,10 +237,17 @@ func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string,
 				working = append(working, id)
 				continue
 			}
+			loose = append(loose, id)
+		}
+	}
+	waiting := waitingAncestors(working, parents)
+	var open int64
+	for _, id := range loose {
+		if !waiting[id] { // an open turn waiting on a counted agent counts once, as such
 			open++
 		}
 	}
-	return n + waitingAncestors(working, parents) + min(open, teammates), true
+	return n + int64(len(waiting)) + min(open, teammates), true
 }
 
 // agentParents resolves an agent id to the agent that launched it: "" for
@@ -270,50 +277,52 @@ func subagentParents(transcriptPath string) agentParents {
 }
 
 // ancestors calls visit for each agent above id, nearest first, up to
-// maxSpawnDepth and never twice (a looped chain ends the walk).
-func ancestors(id string, parents agentParents, visit func(string)) {
+// maxSpawnDepth and never twice (a looped chain ends the walk); a visit
+// returning false ends it too.
+func ancestors(id string, parents agentParents, visit func(string) bool) {
 	if parents == nil {
 		return
 	}
 	seen := map[string]bool{id: true}
 	for range maxSpawnDepth {
 		id = parents(id)
-		if id == "" || seen[id] {
+		if id == "" || seen[id] || !visit(id) {
 			return
 		}
 		seen[id] = true
-		visit(id)
 	}
 }
 
 // launchedUnder says one of id's ancestors is in set.
 func launchedUnder(id string, set map[string]bool, parents agentParents) bool {
 	found := false
-	ancestors(id, parents, func(a string) { found = found || set[a] })
+	ancestors(id, parents, func(a string) bool {
+		found = set[a]
+		return !found
+	})
 	return found
 }
 
-// waitingAncestors counts the ancestors of the working agents that are not
-// working themselves, each once: agents waiting for their own background
-// agents.
-func waitingAncestors(working []string, parents agentParents) int64 {
+// waitingAncestors is the set of the working agents' ancestors that are not
+// working themselves: agents waiting for their own background agents.
+func waitingAncestors(working []string, parents agentParents) map[string]bool {
+	waiting := map[string]bool{}
 	if parents == nil {
-		return 0
+		return waiting
 	}
-	counted := make(map[string]bool, len(working))
+	isWorking := make(map[string]bool, len(working))
 	for _, id := range working {
-		counted[id] = true
+		isWorking[id] = true
 	}
-	var n int64
 	for _, id := range working {
-		ancestors(id, parents, func(a string) {
-			if !counted[a] {
-				counted[a] = true
-				n++
+		ancestors(id, parents, func(a string) bool {
+			if !isWorking[a] {
+				waiting[a] = true
 			}
+			return true
 		})
 	}
-	return n
+	return waiting
 }
 
 // agentsInTurn is a SubagentStart's count (board #1710; it has no list): the
@@ -325,7 +334,7 @@ func agentsInTurn(turns db.AgentTurns, parents agentParents) int64 {
 			working = append(working, id)
 		}
 	}
-	return int64(len(working)) + waitingAncestors(working, parents)
+	return int64(len(working) + len(waitingAncestors(working, parents)))
 }
 
 // codexBackgroundCount is a Codex Stop's count of background agents: the
