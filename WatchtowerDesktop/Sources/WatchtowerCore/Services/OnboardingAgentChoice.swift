@@ -120,7 +120,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             if path.contains("/Caskroom/") || path.contains("/Cellar/") { return .homebrew }
             let nativeRoots = switch agent {
             case .claude: [home + "/.local/share/claude/"]
-            case .codex: [home + "/.codex/", home + "/.local/"]
+            // install.sh links ~/.local/bin/codex to
+            // ~/.codex/packages/standalone/current/bin/codex (rust-v0.166).
+            case .codex: [home + "/.codex/packages/standalone/"]
             }
             return nativeRoots.contains { path.hasPrefix($0) } ? .native : .unknown
         }
@@ -419,10 +421,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         switch signIn {
         case .idle, .running:
             return "Your browser opens to sign in. When it’s done, this closes and Watchtower checks again."
-        case .ended(let code?):
-            return "Sign-in stopped before it finished (exit code \(code))."
-        case .ended(nil):
-            return "Sign-in stopped before it finished."
+        case .ended(let code):
+            let what = selected.map { outdated.contains($0) } == true ? "Update" : "Sign-in"
+            return "\(what) stopped before it finished" + (code.map { " (exit code \($0))." } ?? ".")
         }
     }
 

@@ -330,7 +330,11 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         )
         XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js", home: home), .npm)
         XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/Caskroom/codex/0.166.0/codex", home: home), .homebrew)
-        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/Users/owner/.local/bin/codex", home: home), .native)
+        XCTAssertEqual(
+            Kind.of(.codex, resolvedPath: "/Users/owner/.codex/packages/standalone/releases/0.166.0/bin/codex", home: home), .native
+        )
+        // A plain file in ~/.local/bin is not the script's install: unknown, no command.
+        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/Users/owner/.local/bin/codex", home: home), .unknown)
         XCTAssertEqual(Kind.of(.claude, resolvedPath: "/usr/local/bin/claude", home: home), .unknown)
         // The old local install is not a global npm one: `claude update`, never `npm install -g`.
         XCTAssertEqual(
@@ -371,6 +375,10 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         old.signInStarted()
         old.signInEnded(exitCode: 1)
         XCTAssertEqual(old.retryLabel, "Update again")
+        XCTAssertEqual(old.setup?.signInNote, "Update stopped before it finished (exit code 1).")
+        XCTAssertEqual(old.setup?.steps.map(\.command), ["brew upgrade --cask claude-code"])
+        old.signInStopped()
+        XCTAssertEqual(old.setup?.signInNote, "Update stopped before it finished.")
         old.signInStarted()
         old.signInEnded(exitCode: 0)
         // The caller probes again: the login is there now, and it opens by itself.

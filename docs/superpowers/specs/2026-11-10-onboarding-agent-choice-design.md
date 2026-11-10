@@ -85,13 +85,14 @@ When the picked agent is signed out, the panel runs its sign-in in an embedded t
   | Path contains | Kind | Claude Code | Codex CLI |
   |---|---|---|---|
   | `~/.claude/local/` (Claude Code's old local install; checked first) | native | `claude update` | — |
+  | `~/.codex/packages/standalone/` (Codex's `install.sh` links `~/.local/bin/codex` to `…/standalone/current/bin/codex`, checked against the script on 2026-11-10; a plain file in `~/.local/bin` is unknown) | native | — | the install script |
   | `/node_modules/` (any other) | npm | `npm install -g @anthropic-ai/claude-code@latest` | `npm install -g @openai/codex@latest` |
   | `/Caskroom/` or `/Cellar/` | Homebrew | `brew upgrade --cask claude-code` | `brew upgrade --cask codex` |
-  | `~/.local/share/claude/` (Claude), `~/.codex/` or `~/.local/` (Codex) | native | `claude update` | the install script |
+  | `~/.local/share/claude/` (Claude) | native | `claude update` | — |
   | anything else | unknown | — | — |
 
   So an update never installs a second copy somewhere else. The old local install keeps npm's folder under `~/.claude/local/node_modules`, but it is not a global npm install: it gets `claude update`, never `npm install -g`.
-- **The update itself fails** (non-zero exit, or Stop). The note reads "Sign-in stopped before it finished (exit code N)." in `Tone.warning`, and the button is **Update again**. The owner presses it to rerun the same update; nothing reruns by itself, so a failing update can't loop. The Terminal fallback shows the same update command. An update that exits 0 without fixing anything goes to the stuck state below. Implementation checks the Codex script's install folder against the real script before release.
+- **The update itself fails** (non-zero exit, or Stop). The note reads "Update stopped before it finished (exit code N)." (or "Update stopped before it finished." after Stop) in `Tone.warning`, and the button is **Update again**. The owner presses it to rerun the same update; nothing reruns by itself, so a failing update can't loop. The Terminal fallback shows the same update command. An update that exits 0 without fixing anything goes to the stuck state below. The Codex row was read from the live `install.sh` (`BIN_DIR=$HOME/.local/bin`, `STANDALONE_ROOT=$CODEX_HOME/packages/standalone`); a custom `CODEX_HOME` reads as unknown (no command, the owner updates it their way).
 - **No update loop.** After an update exits 0, the probe runs again. If the login is there, the sign-in opens by itself. If the CLI is still outdated (another copy comes first on PATH), or the kind is unknown, the panel stops offering an update (`updateStuck`): no terminal and no **Update again**. It shows the warning "Updating didn't change the Claude Code Watchtower uses (`<path>`). It may be installed twice. Update that copy the way you installed it, or choose another executable." (unknown kind: "Watchtower can't tell how this Claude Code was installed (`<path>`). Update it the way you installed it, then check again."), with **Choose the executable…**, **Other ways to install** and **Check again**.
 - The terminal is SwiftTerm's `LocalProcessTerminalView` (as in the Workbench), started in the login-shell environment (`Constants.resolvedEnvironmentAsync`) with the agent's resolved executable. It is not a Workbench session: no session host, nothing stored, about ten rows (`OnboardingAgentSection.terminalHeight`).
 
@@ -126,7 +127,7 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 - `OnboardingGoalCards` and `OnboardingGoalsFooter` are extracted from `OnboardingGoalsStepView`, so the mockups render the step's own parts.
 - `OnboardingCLIProbe` is replaced by a per-agent check that returns `[Agent: Status]`. `OnboardingGoalsModel` keeps an `OnboardingAgentChoice` in place of `OnboardingCLICheck`. `onProviderSwitched` fires after the Continue write instead of after the check.
 - `OnboardingSignInTerminal` (Views/Onboarding): the PTY host for the sign-in. It reports start/exit to the model; quitting, leaving the step or picking the other tile sends SIGTERM to its process group.
-- Mockups: `OnboardingAgentShotFixtures` in `DesignShotCatalog`, 18 scenes × light/dark (the sign-in terminal as a still).
+- Mockups: `OnboardingAgentShotFixtures` in `DesignShotCatalog`, 19 scenes × light/dark (the sign-in terminal as a still).
 
 ### Docs updated in the same PR
 
@@ -151,7 +152,7 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 | Sign-in terminal: host closes or the app quits mid-login | SIGTERM to the process group (as `CodeCLIProcess` groups are reaped); the CLI's own credential store is its business; the next check reports what is true | terminal: process group gone after stop |
 | Sign-in exits 0 but the test still fails | the tile shows the real status (signed out again → the terminal does not reopen by itself; Sign in again is there) | choice: `signInOpened` keeps it closed |
 | CLI too old for `auth login` (general help, exit 0 included) | the help text decides `outdated`; the terminal runs the update for its install kind, then the sign-in | choice: `testLoginSupportReadsTheHelpText`, `testOutdatedCLIUpdatesThenSignsIn` |
-| The update fails (non-zero exit or Stop) | warning note with the exit code, **Update again** (owner-pressed only), the update command for Terminal | choice: `testOutdatedCLIUpdatesThenSignsIn` (exit 1 → Update again) |
+| The update fails (non-zero exit or Stop) | "Update stopped before it finished (exit code N).", **Update again** (owner-pressed only), the update command for Terminal | choice: `testOutdatedCLIUpdatesThenSignsIn` (exit 1 → Update again); M `signed-out-update-failed` |
 | Old local Claude install (`~/.claude/local`) | `claude update`, not a global npm install | choice: `testInstallKindFromTheResolvedPath` |
 | Update succeeds but another copy still wins on PATH | the probe still finds no login → `updateStuck`: no terminal, no Update again, the path named, Choose the executable | choice: `testUpdateThatChangedNothingNeverLoops` |
 | Install kind unknown | no update command offered; the path named, update it the owner's way | choice: `testUnknownInstallOffersNoUpdateCommand` |
@@ -166,7 +167,7 @@ Each promise above, checked by a test (T), a mockup (M) or by hand on a real Mac
 3. No CLI → the "needs" caption, install steps for the picked tile with copy buttons and Other ways to install, Continue disabled with its hint, goal cards stay cards (T, M `none`, `none-codex`, `none-narrow`).
 4. Coming back to the window rechecks; Check again rechecks (H: install Claude with the step open, switch back, the tile turns Signed out or Ready without a click).
 5. Signed out → the sign-in terminal opens by itself once, runs `claude auth login`/`codex login`; exit 0 → recheck, Ready, Continue unlocks; Stop/non-zero → warning, Sign in again; never reopens by itself (T, M `signed-out`, `signed-out-stopped`; H on a signed-out install).
-6. Old CLI → help text marks it outdated; the update for its install kind runs first, then the sign-in; a failed update offers Update again; an update that changed nothing stops with the path named (T, M `signed-out-outdated`, `signed-out-update-stuck`).
+6. Old CLI → help text marks it outdated; the update for its install kind runs first, then the sign-in; a failed update says "Update stopped…" and offers Update again; an update that changed nothing stops with the path named; the install kind is read from the resolved path, including Codex's `~/.codex/packages/standalone/` (T `testInstallKindFromTheResolvedPath`, M `signed-out-outdated`, `signed-out-update-failed`, `signed-out-update-stuck`; H: one Codex installed by `install.sh` shows kind native).
 7. Failed check → the Failed line by `error_code` (T, M `failed`).
 8. Policy → a forbidden tile is disabled; both forbidden → no selection, Continue disabled (T, M `policy`, `policy-both`).
 9. Ollama set in Settings → one line; its failure brings the tiles back (T, M `other-provider`, `other-provider-failed`).
