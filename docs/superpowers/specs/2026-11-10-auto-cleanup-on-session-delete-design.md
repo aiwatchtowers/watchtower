@@ -70,7 +70,7 @@ The session-state hook already gets `tool_name` and `tool_input` on PostToolUse,
 
 ### 2b. The session's Claude scratchpad
 
-A linked worktree whose root lies under `<TMPDIR>/claude-<uid>/<any slug>/<claude-session-uuid>/` belongs to the session, if the uuid is one of the row's agent session ids (`terminal_session_agent_sessions`, migration 00127, every id the row has had) **and no other `terminal_sessions` row has that uuid**. A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed; the ledger and command sources still apply. This catches lanes made before the hook change shipped and commands the parser missed. The `TMPDIR` root is read from the environment of the process that plans (`os.TempDir()`, symlink-resolved, since `/tmp` → `/private/tmp`). Codex rows have no such directory; this rule does not apply to them.
+A linked worktree whose root lies under `<TMPDIR>/claude-<uid>/<any slug>/<claude-session-uuid>/` belongs to the session, if the uuid is one of the row's agent session ids (`terminal_session_agent_sessions`, migration 00127, every id the row has had) **and no other `terminal_sessions` row has that uuid**. "Has" means the uuid appears in the other row's history in `terminal_session_agent_sessions` (any id it ever had, not only its current `claude_session_id`), or in its current `claude_session_id`. A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed; the ledger and command sources still apply. This catches lanes made before the hook change shipped and commands the parser missed. The `TMPDIR` root is read from the environment of the process that plans (`os.TempDir()`, symlink-resolved, since `/tmp` → `/private/tmp`). Codex rows have no such directory; this rule does not apply to them.
 
 ### What stays unseen
 
@@ -129,6 +129,12 @@ While a background cleanup runs, the row is hidden (it is still in the deleting 
   - the Swift mobile hub slices that list sessions;
   - Go: `internal/hub/slices/sources/terminal_session.go`, `timeline.go`, `workbench.go`, `target.go`, `internal/hub/lane.go`, `db/terminal_sessions_recent.go`, `sessionstate/status.go` (the workbench status rollup);
   - the brief's session lines (`cmd/workbench_session.go`).
+  - **Session start (`internal/sessionstart/start.go`)**:
+    - `latestTargetSession` never picks a deleting row, so a target's Start or Reopen opens or creates another session;
+    - the scan of the workbench's other sessions (placement: is a live agent in the folder?) skips deleting rows;
+    - both "deleted before it started" checks treat a deleting row as deleted: the run never launches, or it is stopped at once;
+    - `Start` by id of a deleting row is refused with `db.ErrTerminalSessionNotFound`.
+    The one way back is the Desktop's **Resume** on a Not-fully-cleaned row. It clears `delete_requested_at` in its own write before it starts the session. Resume is disabled while a background cleanup of that row runs (the state of mockup 8), so the two never overlap.
   The phone therefore drops the session when the Undo window ends, as if it were deleted, and never shows the mark. Its actions (input, interrupt) on such a row are refused as for a missing row (`hub/actions/handlers/session_input.go`).
 - **Lookups by id are unchanged**: session report, `owner_asks` joins, `review_agent`, agent analytics, automation session steps, `session_ticket`, `terminal_agent_turns`, the spec-review sweep. A deleting row behaves there as a finished session, and the cascade removes its rows when the row goes. No hook writes to it, because its terminal is closed.
 
