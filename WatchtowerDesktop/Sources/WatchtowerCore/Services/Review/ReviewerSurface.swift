@@ -5,8 +5,9 @@ import Foundation
 ///
 /// - Draft-only (review-rules "The assistant & chat contracts", AGENT-04):
 ///   no tool mode; the provider's own read-only file tools read the folder
-///   the round was taken from (`ai query --read-folder`, widened to a
-///   workbench's registered session worktrees — ask #560).
+///   the round was taken from, named by the round (`ai query
+///   --read-folder-round N`, owner ask #611: the CLI reads the round's
+///   recorded folder; `--read-folder` stays workbench folders only).
 /// - One thread per branch (`review_reviewer_threads`, migration 00180):
 ///   `chat_conversations` of context type `review_reviewer`, context id
 ///   `<workbench>:<branch>`; two sessions on one branch share it.
@@ -39,14 +40,16 @@ package enum ReviewerSurface {
     }
 
     /// Where the reviewer works: the thread's workbench and branch key, the
-    /// branch as the owner reads it and the folder the round was taken from.
+    /// branch as the owner reads it and the round whose folder it reads.
     package struct Context: Equatable, Sendable {
         package let projectID: Int64
         /// The thread key (`threadBranch`).
         package let branch: String
         /// The branch's name for the panel's line; "" for a detached HEAD.
         package let branchLabel: String
-        package let readFolder: String
+        /// The open round: the CLI reads the folder it was taken from
+        /// (`--read-folder-round`).
+        package let roundID: Int64
         /// The folder is the session's own worktree, not the workbench folder.
         package let inWorktree: Bool
         /// A branch-tip round's tree (#1012): the branch is read from refs and
@@ -59,14 +62,14 @@ package enum ReviewerSurface {
             projectID: Int64,
             branch: String,
             branchLabel: String,
-            readFolder: String,
+            roundID: Int64,
             inWorktree: Bool,
             tipTree: String? = nil
         ) {
             self.projectID = projectID
             self.branch = branch
             self.branchLabel = branchLabel
-            self.readFolder = readFolder
+            self.roundID = roundID
             self.inWorktree = inWorktree
             self.tipTree = tipTree
         }
@@ -91,7 +94,7 @@ package enum ReviewerSurface {
         if case .worktree = place { inWorktree = true }
         return Context(projectID: projectID, branch: branch,
                        branchLabel: branch.hasPrefix(sessionKeyPrefix) ? "" : branch,
-                       readFolder: round.folderRoot, inWorktree: inWorktree,
+                       roundID: round.id, inWorktree: inWorktree,
                        tipTree: round.isBranchTip ? round.treeSha : nil)
     }
 
@@ -140,7 +143,7 @@ package enum ReviewerSurface {
         map: @escaping @MainActor () -> ReviewerMapInput
     ) -> ChatSurfaceSpec {
         let runOptions = { @MainActor () -> ChatRunOptions in
-            ChatRunOptions(readFolder: reader() == .none ? nil : context.readFolder, purpose: purpose)
+            ChatRunOptions(purpose: purpose, readFolderRoundID: reader() == .none ? nil : context.roundID)
         }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType,

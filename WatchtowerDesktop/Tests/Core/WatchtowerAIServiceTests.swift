@@ -51,6 +51,24 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertFalse(none.contains("--read-folder-ask"))
     }
 
+    /// The branch-review reviewer names its folder by the round (owner, ask
+    /// #611): `--read-folder-round N`, never with another folder flag.
+    func testBuildArgsReadFolderRound() {
+        let args = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil,
+                                                 purpose: "review.reviewer", readFolderRoundID: 7)
+        XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--events", "v2", "--read-folder-round", "7",
+                              "--purpose", "review.reviewer"])
+        let withFolder = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil,
+                                                       readFolder: "/work/acme", readFolderRoundID: 7)
+        XCTAssertFalse(withFolder.contains("--read-folder-round"), "the CLI refuses the pair")
+        let withAsk = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil,
+                                                    readFolderAskID: 42, readFolderRoundID: 7)
+        XCTAssertEqual(Array(withAsk.suffix(2)), ["--read-folder-ask", "42"])
+        XCTAssertFalse(withAsk.contains("--read-folder-round"), "the CLI refuses the pair")
+        let none = WatchtowerAIService.buildArgs(dbPath: nil, model: nil, provider: nil, toolMode: nil)
+        XCTAssertFalse(none.contains("--read-folder-round"))
+    }
+
     func testBuildArgsOmitsProviderFlagWhenNil() {
         let args = WatchtowerAIService.buildArgs(
             dbPath: nil,

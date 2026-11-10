@@ -63,7 +63,7 @@ final class ReviewerSurfaceTests: XCTestCase {
 
     private let context = ReviewerSurface.Context(
         projectID: 4, branch: "feature/registry", branchLabel: "feature/registry",
-        readFolder: "/tmp/acme-wt", inWorktree: true
+        roundID: 7, inWorktree: true
     )
 
     func testSpecIsDraftOnlyAndReadsTheRoundsFolder() {
@@ -72,13 +72,15 @@ final class ReviewerSurfaceTests: XCTestCase {
         XCTAssertNil(spec.toolAccess.toolMode(key: spec.key, turnID: "t"), "no Watchtower tools (AGENT-04)")
         XCTAssertEqual(spec.persistence, .database(conversationID: 11))
         XCTAssertEqual(spec.key, EmbeddedChatKey(contextType: "review_reviewer", contextID: "4:feature/registry", conversationID: 11))
-        XCTAssertEqual(spec.runOptions(), ChatRunOptions(readFolder: "/tmp/acme-wt", purpose: "review.reviewer"))
+        XCTAssertEqual(spec.runOptions(), ChatRunOptions(purpose: "review.reviewer", readFolderRoundID: 7),
+                       "the CLI reads the round's folder; never --read-folder (owner, ask #611)")
         XCTAssertTrue(spec.ownerInstructions)
     }
 
     func testAProviderThatCannotReadRunsWithoutTheFolder() {
         let spec = ReviewerSurface.spec(context: context, conversationID: 11, reader: { .none }, map: { .empty })
         XCTAssertNil(spec.runOptions().readFolder)
+        XCTAssertNil(spec.runOptions().readFolderRoundID)
         XCTAssertTrue(spec.systemPrompt().contains("You cannot read any file"))
     }
 
@@ -112,7 +114,7 @@ final class ReviewerSurfaceTests: XCTestCase {
         XCTAssertEqual(ReviewerSurface.mapLine(context, reader: .claudeTools),
                        "Read-only · reads feature/registry in the session's worktree · sees the chapters, their danger"
                        + " and the summary · never talks to the author's session")
-        let folder = ReviewerSurface.Context(projectID: 4, branch: "session:9", branchLabel: "", readFolder: "/tmp/acme",
+        let folder = ReviewerSurface.Context(projectID: 4, branch: "session:9", branchLabel: "", roundID: 7,
                                              inWorktree: false)
         XCTAssertTrue(ReviewerSurface.mapLine(folder, reader: .codexSandbox)
             .hasPrefix("Read-only · reads this branch in the workbench folder"))
@@ -123,7 +125,7 @@ final class ReviewerSurfaceTests: XCTestCase {
     /// A branch-tip round's folder is on another branch: the line and the
     /// prompt say so instead of claiming the branch is read.
     func testBranchTipRoundSaysTheFolderIsNotTheBranch() {
-        let tip = ReviewerSurface.Context(projectID: 4, branch: "feature/x", branchLabel: "feature/x", readFolder: "/tmp/acme",
+        let tip = ReviewerSurface.Context(projectID: 4, branch: "feature/x", branchLabel: "feature/x", roundID: 7,
                                           inWorktree: false, tipTree: "abc123")
         XCTAssertTrue(ReviewerSurface.mapLine(tip, reader: .claudeTools)
             .hasPrefix("Read-only · reads the workbench folder, which is not on feature/x"))

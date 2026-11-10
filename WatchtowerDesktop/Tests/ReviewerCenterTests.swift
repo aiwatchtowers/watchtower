@@ -5,12 +5,17 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 /// A provider stand-in that reads files the way the real ones do under
-/// `--read-folder`: it is handed the folder, picks the `.go` paths the turn's
-/// prompt names, reads each one from that folder and cites it.
+/// `--read-folder-round N`: it is handed the round, finds its folder as the
+/// CLI does (`roundFolders`, the round's recorded folder), picks the `.go`
+/// paths the turn's prompt names, reads each one from that folder and cites it.
 private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendable {
     private let lock = NSLock()
+    private let roundFolders: [Int64: String]
+    private var _rounds: [Int64?] = []
     private var _folders: [String?] = []
     private var _prompts: [String] = []
+    init(roundFolders: [Int64: String]) { self.roundFolders = roundFolders }
+    var rounds: [Int64?] { lock.withLock { _rounds } }
     var folders: [String?] { lock.withLock { _folders } }
     var prompts: [String] { lock.withLock { _prompts } }
 
@@ -25,7 +30,7 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath, model: model,
                provider: provider, toolMode: toolMode, readFolder: nil, ownerInstructions: false,
-               purpose: nil, readFolderAskID: nil)
+               purpose: nil, readFolderAskID: nil, readFolderRoundID: nil)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -40,9 +45,12 @@ private final class FolderReadingAIService: AIServiceProtocol, @unchecked Sendab
         readFolder: String?,
         ownerInstructions: Bool,
         purpose: String?,
-        readFolderAskID: Int64?
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
+        let readFolder = readFolder ?? readFolderRoundID.flatMap { roundFolders[$0] }
         lock.withLock {
+            _rounds.append(readFolderRoundID)
             _folders.append(readFolder)
             _prompts.append(prompt)
         }
@@ -130,8 +138,9 @@ final class ReviewerCenterTests: XCTestCase {
     // MARK: - End to end
 
     /// A session in its own registered worktree; a question that needs a
-    /// file of each of two chapters: the turn runs with `--read-folder` = that
-    /// worktree, the answer cites both files, and nothing is written to the round.
+    /// file of each of two chapters: the turn runs with `--read-folder-round` =
+    /// the round taken in that worktree, the answer cites both files, and
+    /// nothing is written to the round.
     func testReviewerReadsTwoChaptersFromTheSessionsWorktree() async throws {
         let h = try harness()
         let worktree = FileManager.default.temporaryDirectory.appendingPathComponent("reviewer-e2e-\(UUID().uuidString)")
@@ -161,16 +170,17 @@ final class ReviewerCenterTests: XCTestCase {
         let context = try XCTUnwrap(ReviewerSurface.context(projectID: h.projectID, sessionID: sessionID,
                                                             round: h.model.round, place: place, mainStatus: nil))
         XCTAssertEqual(context.branch, "feature/registry")
-        XCTAssertEqual(context.readFolder, worktree.path)
+        XCTAssertEqual(context.roundID, 7)
         XCTAssertTrue(context.inWorktree)
 
         let before = try await counts(h.db)
-        let ai = FolderReadingAIService()
+        let ai = FolderReadingAIService(roundFolders: [7: worktree.path])
         let (_, engine) = try await engine(h, context: context, ai: ai)
         engine.send("What would adding another provider take?")
         let done = await eventually { !engine.isBusy && engine.messages.count == 2 }
         XCTAssertTrue(done)
 
+        XCTAssertEqual(ai.rounds, [7], "the turn names the round, not a folder")
         XCTAssertEqual(ai.folders, [worktree.path], "the turn reads the session's worktree")
         let answer = try XCTUnwrap(engine.messages.last?.message)
         XCTAssertEqual(answer.status, "complete")
@@ -294,7 +304,8 @@ final class ReviewerCenterTests: XCTestCase {
         XCTAssertEqual(reply.message.status, "error")
         XCTAssertTrue(engine.canRetry)
         XCTAssertFalse(ReviewerAnswerActions.offers(reply, isLive: false))
-        XCTAssertEqual(ai.calls.first?.readFolder, "/tmp/acme")
+        XCTAssertNil(ai.calls.first?.readFolder, "never --read-folder (owner, ask #611)")
+        XCTAssertEqual(ai.calls.first?.readFolderRoundID, 7, "--read-folder-round = the open round")
         XCTAssertNil(ai.calls.first?.toolMode, "draft-only (AGENT-04)")
     }
 
@@ -322,7 +333,7 @@ final class ReviewerCenterTests: XCTestCase {
     func testWorkbenchRemovedDropsItsEnginesAndThreads() async throws {
         let h = try harness()
         let context = ReviewerSurface.Context(projectID: h.projectID, branch: "feature/a", branchLabel: "feature/a",
-                                              readFolder: "/tmp", inWorktree: false, tipTree: nil)
+                                              roundID: 7, inWorktree: false, tipTree: nil)
         let (center, _) = try await engine(h, context: context, ai: ScriptedAIService())
         let other = ReviewerCenter.ThreadID(projectID: h.projectID + 1, branch: "feature/a")
         await center.open(other)
