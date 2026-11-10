@@ -26,13 +26,25 @@
 - Inner loop only per task: `go test ./internal/<pkg>` / `go test ./cmd -run <Name>`, `make test-swift FILTER=<Class>`, `make lint-diff` (Go), `make lint-swift` (Swift; lint-diff never checks Swift). The full gate runs once, in Task 16.
 - Tests that create files use `t.TempDir()`; tests that hold a SQLite lock close it in `t.Cleanup`; no test starts a real `claude`/`codex`.
 
+## Deviations from the spec
+
+- **Database reads live in `internal/diagnostics/lines_db.go`, not `cmd/diagnostics.go`** (the spec's "Time budget" said the command's own `QueryContext` calls sit in `cmd/diagnostics.go`). Why: they can then be tested against a migrated test database and fake openers without building the cobra command; `cmd/diagnostics.go` only wires them. They are still the command's own queries — no shared `internal/db` helper gains a context parameter. The spec sentence is patched to match.
+
+## Shared paths (Go ↔ Swift)
+
+- **Flavor rule:** Go `diagnostics.Flavor(buildFlavor string) string` (`""`/`dev` → `default`, else `corp`) ↔ Swift `HubIdentity.flavor(buildFlavor:)` (`WatchtowerDesktop/Sources/Services/MobileHub/HubIdentity.swift`, returns `.default`/`.corp`). Both are pinned by one case table, `internal/diagnostics/testdata/report_problem_flavor_cases.json` (the `internal/policy/testdata/policy_cases.json` pattern): Go `TestFlavorCases` (Task 10), Swift `ReportProblemFlavorCasesTests` (Task 15).
+- **Issue form:** `.github/ISSUE_TEMPLATE/bug_report.yml` ids/options ↔ Go mappings (`TestDiagnostics_FormOptions`, Task 11) ↔ Swift link keys (`testLinkKeysMatchForm`, Task 13).
+- **CLI JSON keys:** `Report.JSON()` (Task 7, `TestReport_JSONKeys`) ↔ `DiagnosticsAnswer` (Task 13, `testDecodesPinnedKeys`).
+
 ## Review Focus
+
+Added by the plan author (not in the spec) — the owner sees them in this review:
 
 - A second **Retry** (or a re-open of the sheet) while a collection is running must not start a second `watchtower` process — test `testRetryWhileCollectingRunsOnce` in Task 14.
 - The CLI may print a stray line before its JSON (a warning on stdout); the Desktop decodes the **last** non-empty stdout line — test `testDecodesLastJSONLine` in Task 13.
 - A "What happened?" text of only spaces or newlines keeps Open GitHub Issue disabled — test `testWhitespaceOnlyKeepsOpenDisabled` in Task 14.
 - A config path that is a directory (or a symlink loop) prints `Config: unreadable (other)` and exits 0 — case `config_is_directory` in `TestDiagnostics_InputFailures`, Task 8.
-- Choosing Help → Report a Problem… while the sheet is already open brings it forward instead of stacking a second sheet — test `testSecondOpenReusesSheet` in Task 15.
+- Choosing Help → Report a Problem… while the sheet is already open must not stack a second sheet. No new code path: the sheet is a single `.sheet(item:)` on `AppState.reportProblemModel`, and `reportProblem()` only fronts the window when a model is already set (SwiftUI keeps the one presented sheet). Test `testSecondOpenReusesSheet` in Task 15 asserts the model instance is unchanged after a second call.
 
 ---
 
@@ -222,7 +234,7 @@
   - `TestDiagnostics_RecentErrors`: 25 error rows → 20 newest, `HH:mmZ`, phase, class from `ErrorClass`; no rows → `none`; `error_msg` text never appears.
   - `TestDiagnostics_DatabaseLine`: `schema <max goose version>`; no goose table → `schema unknown`.
   - Open-error cases `db_missing`, `db_not_a_database` (random bytes), `db_corrupt` (valid header, damaged page), `db_permission` (mode 000), `db_no_ckpt_guard` (open fake returns `sqlcipher.ErrNoCheckpointGuard`), `db_other` → exact texts.
-  - `TestDiagnostics_DeadlineMidway`: fake open whose queries sleep 1.5 s; `DB: 4s` → parts finished before the deadline kept, the rest `unknown (database busy)`, reason busy, total < 5 s.
+  - `TestDiagnostics_DeadlineMidway` (this is the spec's `budget_db_midway` case; keep that name as a subtest too): fake open whose queries sleep 1.5 s; `DB: 4s` → parts finished before the deadline kept, the rest `unknown (database busy)`, reason busy, total < 5 s.
   - `busy_single_statement`: one query returns `SQLITE_BUSY` → that part busy, reason busy.
 - [ ] **Step 2: Run** `go test ./internal/diagnostics -run 'Sources|AccountTables|quick_|RecentErrors|DatabaseLine|db_|Deadline|busy_'` — FAIL.
 - [ ] **Step 3: Implement** with the command's own `QueryContext` aggregates (`SELECT status, enabled, count(*) … GROUP BY status, enabled`; `provider` split for `email_accounts`; `gmail_enabled`/`calendar_enabled` for Google).
@@ -234,14 +246,15 @@
 **Depends on:** Task 3, Task 6, Task 7
 
 **Files:**
-- Create: `internal/diagnostics/lines_local.go`
+- Create: `internal/diagnostics/lines_local.go`, `internal/diagnostics/testdata/report_problem_flavor_cases.json`
 - Test: `internal/diagnostics/lines_local_test.go`
 
 **Interfaces:**
 - Consumes: `daemon.PeekProcess`, `ScanCrashes`, `policy.Policy`.
-- Produces: `type Build struct{ Version, Commit, Flavor, AppVersion string }`; `func VersionLine(b Build) (text, flavor string)`; `func MachineLine(sysctl func(string) (string, error)) (text, macos, chip string)` (chip mapping: brand `Apple M<n>[ Pro|Max|Ultra]` → `Apple M<n>` for n 1–5, else `Other`); `func DaemonLine(pidPath, lastSyncPath string, now time.Time, peek func(string) (int, daemon.PeekState, error)) string`; `func SyncRow(lastSyncPath string) (row string, ok bool)`; `func LogsLine(dir string) string`; `func CrashLine(c CrashScan) (text, reason string)`; `func PolicyPart(p policy.Policy) string`; `func IPhonePart(flag string) string` (`""` when not given).
+- Produces: `func Flavor(buildFlavor string) string` (`default`/`corp`); `type Build struct{ Version, Commit, Flavor, AppVersion string }`; `func VersionLine(b Build) (text, flavor string)`; `func MachineLine(sysctl func(string) (string, error)) (text, macos, chip string)` (chip mapping: brand `Apple M<n>[ Pro|Max|Ultra]` → `Apple M<n>` for n 1–5, else `Other`); `func DaemonLine(pidPath, lastSyncPath string, now time.Time, peek func(string) (int, daemon.PeekState, error)) string`; `func SyncRow(lastSyncPath string) (row string, ok bool)`; `func LogsLine(dir string) string`; `func CrashLine(c CrashScan) (text, reason string)`; `func PolicyPart(p policy.Policy) string`; `func IPhonePart(flag string) string` (`""` when not given).
 - [ ] **Step 1: Write the failing tests:**
   - `TestDiagnostics_VersionLine`: flavor `""`/`dev` → `default`, `acme-corp` → `corp` (raw value absent); no app version → no `· app` part.
+  - `TestFlavorCases`: create `internal/diagnostics/testdata/report_problem_flavor_cases.json` — `[{"build_flavor":"","flavor":"default"},{"build_flavor":"dev","flavor":"default"},{"build_flavor":"acme","flavor":"corp"},{"build_flavor":"Dev","flavor":"corp"},{"build_flavor":" ","flavor":"corp"}]` — and assert `Flavor(c.BuildFlavor) == c.Flavor` for every case. (`Dev` and `" "` pin the exact-match rule of `HubIdentity.flavor`: `buildFlavor.isEmpty || buildFlavor == "dev"`.)
   - `TestDiagnostics_SysctlFailure`: error → `macOS unknown`, chip `Other`; `Apple M3 Max` → `Apple M3`; `Apple M7` → `Other`.
   - `TestDiagnostics_DaemonLine` cases `no_pid_file`, `stale_dead_pid`, `reused_pid`, `old_untagged`, `running_confirmed`, `identity_unknown`, `empty_file`, `garbage_file`, `permission_denied`, `last_sync_missing` (`no cycle yet`), `last_sync_corrupt` (`last cycle unknown`) with the spec's exact texts; a fake `peek` for states, real files for the read errors.
   - Cases `sync_row_missing`, `sync_row_corrupt` (`  sync result unknown`).
@@ -327,7 +340,7 @@
 **Interfaces:**
 - Consumes: Task 13's types; `CLIRunnerProtocol.run(args:timeout:)`.
 - Produces: `@MainActor @Observable package final class ReportProblemModel` with
-  - `init(runner: any CLIRunnerProtocol, appVersion: String, macOS: String, iPhoneOn: Bool, isCorp: Bool, openURL: @escaping (URL) -> Bool, writePasteboard: @escaping (String) -> Void, writeFile: @escaping (String, URL) throws -> Void)`;
+  - `init(runner: any CLIRunnerProtocol, appVersion: String, macOS: String, iPhoneOn: Bool, isCorp: Bool, openURL: @escaping (URL) -> Bool, writePasteboard: @escaping (String) -> Void, writeFile: @escaping (String, URL) throws -> Void = ReportProblemModel.writeAtomically)`; `static func writeAtomically(_ text: String, to url: URL) throws` = `try Data(text.utf8).write(to: url, options: .atomic)` (the repo's pattern, e.g. `CodeFileBuffer.swift:306`);
   - `enum Phase { case collecting, ready(DiagnosticsAnswer), failed(ReportProblemCopy.FailureReason) }`, `enum Notice { case none, opened, tooLong, browserFailed, saveFailed(String), copied(CopiedKind) }`;
   - `var text: String` (capped at 2 000), `phase`, `notice`, `canOpen: Bool` (non-corp, not collecting, trimmed text non-empty), `canSave: Bool` (not collecting), `afterOpen: Bool` (Cancel shows as Done), `report: String` (user text + diagnostics or the partial lines), `diagnosticsText: String`;
   - `func start()`, `func retry()`, `func openIssue()`, `func copyReport()`, `func copyLink()`, `func save(to url: URL)`, `func cancel()`.
@@ -336,7 +349,7 @@
   - `testDiagnosticsArguments`; `testMissingCLI` (launch error → `.failed(.missing)`); `testTimeoutShowsRetry` (`nonZeroExit(-1)` → `.timedOut`); `testNonZeroExit` (exit 3 → `.exit(3)`); `testUndecodableJSON` (`.unreadable`); `testBusyDatabaseLinesShown` (answer with `partial: true` → `.ready`); `testRetryWhileCollectingRunsOnce` (two `retry()` while the runner is suspended → one run).
   - `testOpenNeedsTextInEveryState` (collecting/ready/failed × empty/text) and `testWhitespaceOnlyKeepsOpenDisabled`.
   - `testSheetStaysOpenAfterOpen` (opener true → `.opened`, `afterOpen`, text kept); `testBrowserFailureOffersCopyLink` (opener false → `.browserFailed`, pasteboard untouched until `copyLink()`); `testClipboardWrittenOnlyByCopyButtons` (start, open success, open failure, save → zero pasteboard writes; `copyReport()` then `copyLink()` → two writes with the report then the link, notices `Report copied.` / `Link copied.`); too-long link → `.tooLong`.
-  - `testSaveFailureShowsReason` (writer throws → `.saveFailed(localizedDescription)`); `testCorpBuildOffersSaveOnly` (`canOpen` false always, `openIssue()` does nothing); `testCancelWhileCollectingTerminates` (the runner's task is cancelled; nothing written); `testReportCarriesOnlyCLITextAndUserText` (`report` == user text + `\n\n` + answer `text`, nothing else).
+  - `testSaveFailureShowsReason` (writer throws → `.saveFailed(localizedDescription)`); `testSaveWritesAtomically` (real `writeAtomically` into a temporary directory: an existing file is fully replaced with the report; writing into a read-only directory throws and leaves the old file byte-identical, no partial file beside it); `testCorpBuildOffersSaveOnly` (`canOpen` false always, `openIssue()` does nothing); `testCancelWhileCollectingTerminates` (the runner's task is cancelled; nothing written); `testReportCarriesOnlyCLITextAndUserText` (`report` == user text + `\n\n` + answer `text`, nothing else).
 - [ ] **Step 2: Run** `make test-swift FILTER=ReportProblemModelTests` — FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** — PASS; `make lint-swift`.
@@ -349,16 +362,16 @@
 **Files:**
 - Create: `WatchtowerDesktop/Sources/Views/ReportProblem/ReportProblemSheet.swift`, `WatchtowerDesktop/Sources/App/AppState+ReportProblem.swift`
 - Modify: `WatchtowerDesktop/Sources/App/WorkbenchCommands.swift` (`HelpCommands`: `Report a Problem…` after `Watchtower User Guide`), `WatchtowerDesktop/Sources/Views/Settings/SystemSettings.swift` (Logs section: the button beside **Open Logs**), the main window's sheet host, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+ReportProblem.swift` (render `ReportProblemSheet` over fixture models; delete `ReportProblemMockCopy`)
-- Test: `WatchtowerDesktop/Tests/ReportProblemPresentationTests.swift`
+- Test: `WatchtowerDesktop/Tests/ReportProblemPresentationTests.swift`, `WatchtowerDesktop/Tests/MobileHub/ReportProblemFlavorCasesTests.swift`
 
 **Interfaces:**
-- Consumes: `ReportProblemModel`, `ReportProblemCopy`, `AppState.bringMainWindowForward(windows:activate:)`, `HubIdentity.bundleFlavor()`, `CLIBinaryStore`/the app's `CLIRunner`.
+- Consumes: `ReportProblemModel`, `ReportProblemCopy`, `AppState.bringMainWindowForward(windows:activate:)`, `HubIdentity.bundleFlavor()`, `CLIBinaryStore`/the app's `CLIRunner`, and `AppState.isMobileSyncEnabled` (`App/AppState+MobileHub.swift`: the owner's `mobileSyncEnabled` toggle **and** `managedPolicy.policy.mobileSyncMode != "off"`) as `iPhoneOn`.
 - Produces: `AppState.reportProblem()` (always fronts the main window, then presents; a second call while shown brings the same sheet forward), `AppState.reportProblemModel: ReportProblemModel?` (nil when closed); `ReportProblemSheet(model:)` rendering every state of the mockups: collecting, empty, filled, busy, failed, opened, tooLong, browserFailed, saveFailed, corp, narrow (buttons stack via `ViewThatFits`), and the Settings entry.
-- [ ] **Step 1: Write the failing tests:** `testMenuFrontsMainWindow` (no window → opener called, then the model is set), `testSettingsEntryFrontsVisibleMainWindow` (visible main window behind Settings → `activate` and `makeKeyAndOrderFront` before the model is set; injected windows/activate), `testSecondOpenReusesSheet`, `testCorpFlavorBuildsCorpModel`.
-- [ ] **Step 2: Run** `make test-swift FILTER=ReportProblemPresentationTests` — FAIL.
+- [ ] **Step 1: Write the failing tests:** `testIPhoneArgumentFollowsMobileSync` (toggle on + policy unset → `--iphone on`; toggle on + `MobileSync = off` → `--iphone off`; toggle off → `off`; asserts the model's CLI args), `ReportProblemFlavorCasesTests.testSharedFlavorCases` (reads `internal/diagnostics/testdata/report_problem_flavor_cases.json` via `#filePath`, like `ManagedPolicyTests`; `HubIdentity.flavor(buildFlavor:)` maps each case to `.default`/`.corp` as listed), `testMenuFrontsMainWindow` (no window → opener called, then the model is set), `testSettingsEntryFrontsVisibleMainWindow` (visible main window behind Settings → `activate` and `makeKeyAndOrderFront` before the model is set; injected windows/activate), `testSecondOpenReusesSheet`, `testCorpFlavorBuildsCorpModel`.
+- [ ] **Step 2: Run** `make test-swift FILTER='ReportProblemPresentationTests|ReportProblemFlavorCasesTests'` — FAIL.
 - [ ] **Step 3: Implement** the sheet with DesignKit only (`.kitPrimary` Open GitHub Issue — or Save Diagnostics… in corp —, `.kitSecondary`, `.kitQuiet`, `.card()`, `Tone.warning`/`Tone.success`, `.textFieldStyle(.kit)` where a field is used, `TextEditor` in a `.card()`), every string from `ReportProblemCopy` (corp: corp intro and corp placeholder, no public note), **Save Diagnostics…** through `NSSavePanel` with the default name `watchtower-diagnostics-<yyyy-MM-dd>.txt` calling `model.save(to:)`, Discussions link to `ReleaseLinks.repository/discussions` (hidden in corp); wire the menu, Settings button and AppState.
 - [ ] **Step 4: Run** the presentation tests — PASS; `make lint-swift`.
-- [ ] **Step 5: Compare with the mockups.** Run `make desktop-shots DESKTOP_SHOTS=build/report-problem-shots` (or `cd WatchtowerDesktop && DESKTOP_SHOTS_DIR=… swift test --filter DesignShotsTests/testReportProblemShotsRender`); open each `report-problem-*` PNG next to the committed one in `docs/design/mockups/report-a-problem/` (light and dark): same text, same buttons and their enabled state, no row separators, nothing clipped at 360 pt. Copy the new PNGs over the committed ones only where the difference is intended, and say which in the commit message.
+- [ ] **Step 5: Render and compare — never replace the mockups.** Run `make desktop-shots DESKTOP_SHOTS=build/report-problem-shots` (or `cd WatchtowerDesktop && DESKTOP_SHOTS_DIR=$PWD/../build/report-problem-shots swift test --filter DesignShotsTests/testReportProblemShotsRender`). Compare each `report-problem-*` PNG (light and dark) with the committed one in `docs/design/mockups/report-a-problem/`: text, buttons and their enabled state, no row separators, nothing clipped at 360 pt. **Leave the committed mockups untouched.** Copy the new shots to `docs/design/shots/report-a-problem/` (a separate folder) and list in the commit message every shot that differs from its mockup and why; the controller takes them to the owner in Task 16.
 - [ ] **Step 6: Commit** `feat(desktop): Report a Problem sheet, Help menu and Settings entry (#1527)`.
 
 ### Task 16: Phase gate (controller)
@@ -370,3 +383,4 @@
 - [ ] **Step 3:** `make lint-all > build/gate-lint.log 2>&1; echo "exit=$?"` — exit 0.
 - [ ] **Step 4:** `go test -race ./internal/diagnostics ./internal/daemon -run 'TestPeekProcess|TestDiagnostics|HardStop'` — PASS.
 - [ ] **Step 5:** Fix any failure in the owning task's files, re-run only the failing step, commit `chore: Report a Problem gate fixes (#1527)` if anything changed.
+- [ ] **Step 6: Owner check of the screens (before the PR is merged).** The controller files a `kind: check` ask (`ask_owner`) with the rendered shots from `docs/design/shots/report-a-problem/` next to the committed mockups, naming every difference Task 15 listed (style guide: look at your screen before review). Only after the owner approves are the mockup PNGs in `docs/design/mockups/report-a-problem/` replaced by the shots, in a commit that cites the ask; until then the PR is not merged.
