@@ -58,10 +58,13 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     }
 
     /// One read, nothing written. Each source tolerates a schema that
-    /// predates it; any other error is thrown.
-    package static func read(_ db: Database, nowUTC: String) throws -> Self {
+    /// predates it; any other error is thrown. `disabledFeatures` are the
+    /// feature ids the owner turned off (attention detection off hides
+    /// Waiting for me and its stand-in, `InboxFolderQueries.waitingForMe`).
+    package static func read(_ db: Database, nowUTC: String, disabledFeatures: Set<String> = []) throws -> Self {
         let tree = try InboxFolderQueries.tree(db)
-        let waitingForMe = try InboxFolderQueries.waitingForMe(db)
+        let waitingForMe = try InboxFolderQueries.waitingForMe(
+            db, featureOn: !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID))
         let needsApproval = try InboxFolderQueries.needsApproval(db)
         // The stand-in rule (`WaitingForMeState`): a stale Waiting for me
         // list never counts beside the Messages entry it gives way to.
@@ -137,6 +140,9 @@ package final class InboxFolderMenuModel {
     package private(set) var readError: String?
     /// Needs approval's built-in is on (its ⋯ offers Turn Off, else Turn On).
     package var approvalsEnabled = true
+    /// The feature ids turned off, for this menu's own reads (the owner's
+    /// ActionStripViewModel keeps it in step).
+    package var disabledFeatures: Set<String> = []
     private var collapsed: Set<Int64> = []
     private var cliMissing = false
     private var noteTask: Task<Void, Never>?
@@ -195,8 +201,11 @@ package final class InboxFolderMenuModel {
     /// tree with the error in `readError`; it also re-checks the CLI.
     package func reload() async {
         let nowUTC = AutomationDates.format(clock())
+        let disabledFeatures = disabledFeatures
         do {
-            receive(try await dbPool.read { db in try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC) })
+            receive(try await dbPool.read { db in
+                try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+            })
         } catch {
             receiveFailure(error.localizedDescription)
         }

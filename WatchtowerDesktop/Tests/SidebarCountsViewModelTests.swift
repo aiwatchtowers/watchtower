@@ -125,6 +125,37 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(counts.inboxStripCount, 1)
     }
 
+    /// Attention detection turned off (the CLI's config write, which no
+    /// observation sees) reaches the badge through `disabledFeatures`:
+    /// neither Waiting for me nor the Messages stand-in counts, even on a
+    /// row the daemon stopped earlier (the owner's off wins).
+    func testInboxBadgeCountsNoWaitingForMeWhileAttentionDetectionIsOff() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { db in
+            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
+            try Self.insertWaitingForMe(db, enabled: false, disabledReason: "run would not end")
+        }
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+        XCTAssertEqual(vm.inboxStripCount, 1, "stopped by the daemon: the Messages entry stands in")
+
+        vm.disabledFeatures = [InboxFolderQueries.waitingForMeFeatureID]
+        await vm.refresh()
+        XCTAssertEqual(vm.inboxStripCount, 0, "turned off by the owner: nothing counts")
+    }
+
+    /// The `waiting-for-me` built-in's row as the indexer writes it.
+    nonisolated private static func insertWaitingForMe(
+        _ db: Database, enabled: Bool, disabledReason: String = ""
+    ) throws {
+        let id = try TestDatabase.insertAutomation(db, slug: "waiting-for-me", name: "Waiting for me")
+        try db.execute(sql: """
+            UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me',
+                enabled = ?, disabled_reason = ? WHERE id = ?
+            """, arguments: [enabled, disabledReason, id])
+    }
+
     func testInboxBadgeIsZeroOnEmptyDB() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
