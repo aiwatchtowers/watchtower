@@ -6,10 +6,10 @@ import (
 )
 
 // statusCode matches an HTTP code only in a status form:
-// `(status|http|status code)[ :=]*NNN` or `NNN <reason phrase>`. A bare
+// `(status|http|status code|error)[ :=]*NNN` or `NNN <reason phrase>`. A bare
 // number (an id, a count) never matches. Applied to the lower-cased message.
 func statusCode(code, reason string) *regexp.Regexp {
-	return regexp.MustCompile(`\b(?:status code|status|http)[ :=]*` + code + `\b|\b` + code + ` ` + reason)
+	return regexp.MustCompile(`\b(?:status code|status|http|error)[ :=]*` + code + `\b|\b` + code + ` ` + reason)
 }
 
 var (
@@ -27,11 +27,11 @@ var errorClasses = []struct {
 }{
 	{"cancelled", []string{"context canceled"}, nil},
 	{"timeout", []string{"deadline exceeded", "timed out", "timeout"}, nil},
-	{"rate_limit", []string{"rate limit", "too many requests"}, []*regexp.Regexp{status429}},
+	{"rate_limit", []string{"rate limit", "ratelimited", "rate_limited", "rate-limited", "too many requests"}, []*regexp.Regexp{status429}},
 	{"quota", []string{"usage limit", "quota", "insufficient credit"}, nil},
-	{"auth", []string{"invalid_auth", "token revoked", "unauthorized", "forbidden"}, []*regexp.Regexp{status401, status403}},
+	{"auth", []string{"invalid_auth", "token revoked", "unauthorized", "forbidden", "not_authed", "token_expired", "invalid_grant", "authentication_error", "invalid api key"}, []*regexp.Regexp{status401, status403}},
 	{"not_found", []string{"not_found"}, []*regexp.Regexp{status404}},
-	{"network", []string{"connection refused", "no such host", "network is unreachable", "connection reset"}, nil},
+	{"network", []string{"connection refused", "no such host", "network is unreachable", "connection reset", "no route to host", "broken pipe", "unexpected eof"}, nil},
 	{"parse", []string{"unmarshal", "invalid character", "unexpected end of json"}, nil},
 }
 
