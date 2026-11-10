@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/features"
+	"watchtower/internal/providers"
 	"watchtower/internal/providers/caps"
 )
 
@@ -189,17 +190,18 @@ func readRawAI(path string) (rawAI, error) {
 }
 
 // providerName maps a known provider id to its printed name and its form
-// option; ok is false for an unknown id.
+// option from the provider registry (never by naming a transport here,
+// LLMTRANSPORT-01); "" is the default provider. ok is false for an id the
+// config does not accept.
 func providerName(id string) (name, option string, ok bool) {
-	switch id {
-	case "", config.DefaultAIProvider:
-		return ProviderClaude, ProviderClaude, true
-	case "codex":
-		return ProviderCodex, ProviderCodex, true
-	case "ollama":
-		return ProviderOllama, ProviderOllamaOption, true
+	if id == "" {
+		id = config.DefaultAIProvider
 	}
-	return "", "", false
+	if !config.KnownAIProvider(id) {
+		return "", "", false
+	}
+	p := providers.ByID(id)
+	return p.ReportName, p.ReportOption, true
 }
 
 // AILine returns the AI: line's text (after LabelAI) and the JSON

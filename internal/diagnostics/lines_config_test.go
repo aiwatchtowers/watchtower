@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/providers"
 )
 
 // canary stands in for a raw value that must never reach the report.
@@ -390,6 +391,30 @@ func TestDiagnostics_FeaturesConfigGoneUnreadable(t *testing.T) {
 	unreadable(t, cfgPath)
 	if got := FeaturesLine(r, env); got != UnknownNoConfig {
 		t.Errorf("features %q, want %q", got, UnknownNoConfig)
+	}
+}
+
+// TestDiagnostics_ProviderNamesPinned pins the registry's report names to
+// the report's vocabulary in text.go, and requires every registered
+// provider to have both (a new provider must fill them).
+func TestDiagnostics_ProviderNamesPinned(t *testing.T) {
+	want := map[string][2]string{
+		"claude": {ProviderClaude, ProviderClaude},
+		"codex":  {ProviderCodex, ProviderCodex},
+		"ollama": {ProviderOllama, ProviderOllamaOption},
+	}
+	for _, p := range providers.All() {
+		w, ok := want[p.ID]
+		if !ok {
+			t.Errorf("provider %q has no pinned report name here", p.ID)
+			continue
+		}
+		if p.ReportName != w[0] || p.ReportOption != w[1] {
+			t.Errorf("provider %q: report name %q / option %q, want %q / %q", p.ID, p.ReportName, p.ReportOption, w[0], w[1])
+		}
+	}
+	if len(providers.All()) != len(want) {
+		t.Errorf("registry has %d providers, pinned %d", len(providers.All()), len(want))
 	}
 }
 

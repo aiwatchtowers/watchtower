@@ -36,6 +36,13 @@ type Provider struct {
 	KnownModels []string `json:"-"`
 	// Caps is what the provider's transport offers (capabilities.go).
 	Caps Capabilities `json:"capabilities"`
+	// ReportName is the provider's name on the `AI:` line of
+	// `watchtower diagnostics`, and ReportOption its option in the GitHub
+	// bug form's AI provider dropdown (.github/ISSUE_TEMPLATE/bug_report.yml).
+	// Both are pinned to internal/diagnostics/text.go by
+	// TestDiagnostics_ProviderNamesPinned.
+	ReportName   string `json:"-"`
+	ReportOption string `json:"-"`
 }
 
 // registry order is the display order in UIs.
@@ -47,6 +54,8 @@ var registry = []Provider{
 		DefaultLight:  "haiku",
 		DefaultStrong: "opus",
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
+		ReportName:    "Claude Code",
+		ReportOption:  "Claude Code",
 	},
 	{
 		ID:          "codex",
@@ -58,6 +67,8 @@ var registry = []Provider{
 		// one pin away in Settings.
 		DefaultLight:  "gpt-5.6-luna",
 		DefaultStrong: "gpt-5.6-sol",
+		ReportName:    "Codex",
+		ReportOption:  "Codex",
 	},
 	{
 		ID:          "ollama",
@@ -66,7 +77,9 @@ var registry = []Provider{
 		// No default model on purpose: local installs vary too much for any
 		// literal to be likely installed. Unconfigured resolves to "" and the
 		// UI/CLI surfaces prompt the user to pick from the live list.
-		LiveModels: true,
+		LiveModels:   true,
+		ReportName:   "Ollama",
+		ReportOption: "Ollama (or another local server)",
 	},
 }
 
