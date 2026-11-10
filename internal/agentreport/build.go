@@ -20,11 +20,7 @@ var ErrUnknownAgent = errors.New("agent must be all, claude or codex")
 
 // ValidAgent says whether agent is a filter BuildOverview takes ("" = all).
 func ValidAgent(agent string) bool {
-	switch agent {
-	case "", AgentAll, string(agentkind.Claude), string(agentkind.Codex):
-		return true
-	}
-	return false
+	return agent == "" || agent == AgentAll || agentkind.IsAgent(agent)
 }
 
 // agentsOf is the sorted agents of sessions that keep accepts (nil = every
