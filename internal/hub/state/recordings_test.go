@@ -2,6 +2,9 @@ package state
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +65,123 @@ func TestRecordingJobLifecycle(t *testing.T) {
 	}
 	if _, err := s.ClaimRecording("u1", now); !errors.Is(err, ErrJobState) {
 		t.Fatalf("claim of a done job: %v", err)
+	}
+}
+
+// TestAFailedJobIsClaimedAgainForARetry: the owner's Retry of a failed
+// transcription on the Mac claims the job again (the Swift hub's job went
+// back to queued the same way), its class, finish and phase cleared; a
+// hub_moved job (adoption) and a done one are never claimed.
+func TestAFailedJobIsClaimedAgainForARetry(t *testing.T) {
+	s := openTest(t)
+	now := time.Unix(1_800_000_000, 0)
+	for _, id := range []string{"u1", "u2"} {
+		if err := s.QueueRecording(id, "aabb", now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimRecording(id, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.FinishRecording("u1", nil, ClassTranscriptionFailed, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	job, err := s.ClaimRecording("u1", now.Add(time.Hour))
+	if err != nil || job.Status != RecordingClaimed || job.ErrorClass != "" || !job.FinishedAt.IsZero() ||
+		job.ClaimedAt.Unix() != now.Add(time.Hour).Unix() {
+		t.Fatalf("claim of a failed job: %+v %v", job, err)
+	}
+	tid := int64(9)
+	if job, err := s.FinishRecording("u1", &tid, "", now.Add(2*time.Hour)); err != nil || job.Status != RecordingDone {
+		t.Fatalf("the retry's finish: %+v %v", job, err)
+	}
+	if _, err := s.FinishRecording("u2", nil, ClassHubMoved, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimRecording("u2", now); !errors.Is(err, ErrJobState) {
+		t.Fatalf("claim of a hub_moved job: %v", err)
+	}
+	// A failure Desktop did not report (an adopted Swift one: its error text's class) stays terminal.
+	if err := s.QueueRecording("u3", "aabb", now); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.ClaimRecording("u3", now)
+	if _, err := s.FinishRecording("u3", nil, "Disk full", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimRecording("u3", now); !errors.Is(err, ErrJobState) {
+		t.Fatalf("claim of a failure Desktop did not report: %v", err)
+	}
+	// Every class Desktop reports claims again.
+	for class := range DesktopFailureClasses {
+		id := "d-" + class
+		_ = s.QueueRecording(id, "aabb", now)
+		_, _ = s.ClaimRecording(id, now)
+		_, _ = s.FinishRecording(id, nil, class, now)
+		if _, err := s.ClaimRecording(id, now); err != nil {
+			t.Errorf("%s: %v", class, err)
+		}
+	}
+}
+
+// TestRecordingEventIDShape: only an id-shaped event id is stored (a
+// calendar id's charset, at most 256 bytes); text is dropped.
+func TestRecordingEventIDShape(t *testing.T) {
+	s := openTest(t)
+	now := time.Unix(1_800_000_000, 0)
+	cases := map[string]string{
+		"abc123_20261102T100000Z":  "abc123_20261102T100000Z",
+		"acct-1:evt.2@example.com": "acct-1:evt.2@example.com",
+		"Acme sync with colleague": "",
+		"evt\n1":                   "",
+		strings.Repeat("a", 256):   strings.Repeat("a", 256),
+		strings.Repeat("a", 257):   "",
+	}
+	i := 0
+	for in, want := range cases {
+		i++
+		id := fmt.Sprintf("u%d", i)
+		if err := s.QueueRecordingFrom(id, "aabb", RecordingOrigin{EventID: in}, now); err != nil {
+			t.Fatal(err)
+		}
+		job, err := s.RecordingJob(id)
+		if err != nil || job.EventID != want {
+			t.Errorf("%q stored as %q (%v), want %q", in, job.EventID, err, want)
+		}
+	}
+}
+
+// TestPruneRemovesTheAudioDesktopKeptOnAFailure: the hub's copy of a job
+// Desktop failed goes with the job at the prune, and not before; a done
+// job's file is Desktop's and stays.
+func TestPruneRemovesTheAudioDesktopKeptOnAFailure(t *testing.T) {
+	s := openTest(t)
+	rec := t.TempDir()
+	now := time.Unix(1_800_000_000, 0)
+	for _, id := range []string{"failed", "done"} {
+		_ = s.QueueRecording(id, "aabb", now)
+		_, _ = s.ClaimRecording(id, now)
+		if err := os.WriteFile(filepath.Join(rec, id+".m4a"), []byte("a"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _ = s.FinishRecording("failed", nil, ClassIngestFailed, now)
+	tid := int64(1)
+	_, _ = s.FinishRecording("done", &tid, "", now)
+	if n, err := s.PruneRecordingJobs(rec, now.Add(-time.Second)); err != nil || n != 0 {
+		t.Fatalf("early prune: %d %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "failed.m4a")); err != nil {
+		t.Fatal("the kept audio went before the prune")
+	}
+	if n, err := s.PruneRecordingJobs(rec, now.Add(time.Second)); err != nil || n != 2 {
+		t.Fatalf("prune: %d %v", n, err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "failed.m4a")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the failed job's audio stays: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rec, "done.m4a")); err != nil {
+		t.Errorf("a done job's file is Desktop's: %v", err)
 	}
 }
 

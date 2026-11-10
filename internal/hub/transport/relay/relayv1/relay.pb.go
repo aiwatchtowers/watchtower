@@ -30,6 +30,8 @@ const (
 	ControlKind_CONTROL_KIND_SLOT_REMOVED        ControlKind = 3
 	ControlKind_CONTROL_KIND_PAIRING_OPENED      ControlKind = 4
 	ControlKind_CONTROL_KIND_SESSION_EXPIRED     ControlKind = 5
+	// To a hub: a phone put it into a slot (detail: the phone's device id). Best effort, not retried.
+	ControlKind_CONTROL_KIND_SLOT_ADDED ControlKind = 6
 )
 
 // Enum value maps for ControlKind.
@@ -41,6 +43,7 @@ var (
 		3: "CONTROL_KIND_SLOT_REMOVED",
 		4: "CONTROL_KIND_PAIRING_OPENED",
 		5: "CONTROL_KIND_SESSION_EXPIRED",
+		6: "CONTROL_KIND_SLOT_ADDED",
 	}
 	ControlKind_value = map[string]int32{
 		"CONTROL_KIND_UNSPECIFIED":         0,
@@ -49,6 +52,7 @@ var (
 		"CONTROL_KIND_SLOT_REMOVED":        3,
 		"CONTROL_KIND_PAIRING_OPENED":      4,
 		"CONTROL_KIND_SESSION_EXPIRED":     5,
+		"CONTROL_KIND_SLOT_ADDED":          6,
 	}
 )
 
@@ -106,6 +110,9 @@ const (
 	ErrorCode_ERROR_CODE_ATTESTATION_REQUIRED ErrorCode = 20
 	// An attestation check failed: signature, chain, app id, environment, counter or nonce.
 	ErrorCode_ERROR_CODE_ATTESTATION_FAILED ErrorCode = 21
+	// A hub in no slot: it may only log in, subscribe, read its account state and use its pairing slot.
+	// From add_slot / promote_pairing: the hub has no unexpired vouch from this phone.
+	ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED ErrorCode = 22
 )
 
 // Enum value maps for ErrorCode.
@@ -133,6 +140,7 @@ var (
 		19: "ERROR_CODE_UNAVAILABLE",
 		20: "ERROR_CODE_ATTESTATION_REQUIRED",
 		21: "ERROR_CODE_ATTESTATION_FAILED",
+		22: "ERROR_CODE_HUB_NOT_VOUCHED",
 	}
 	ErrorCode_value = map[string]int32{
 		"ERROR_CODE_UNSPECIFIED":            0,
@@ -157,6 +165,7 @@ var (
 		"ERROR_CODE_UNAVAILABLE":            19,
 		"ERROR_CODE_ATTESTATION_REQUIRED":   20,
 		"ERROR_CODE_ATTESTATION_FAILED":     21,
+		"ERROR_CODE_HUB_NOT_VOUCHED":        22,
 	}
 )
 
@@ -193,6 +202,8 @@ const (
 	DeviceKind_DEVICE_KIND_UNSPECIFIED DeviceKind = 0
 	DeviceKind_DEVICE_KIND_PHONE       DeviceKind = 1
 	DeviceKind_DEVICE_KIND_MAC         DeviceKind = 2
+	// A headless hub (Linux, Raspberry Pi). Same rules as a Mac: no attestation, vouched by a phone.
+	DeviceKind_DEVICE_KIND_HUB DeviceKind = 3
 )
 
 // Enum value maps for DeviceKind.
@@ -201,11 +212,13 @@ var (
 		0: "DEVICE_KIND_UNSPECIFIED",
 		1: "DEVICE_KIND_PHONE",
 		2: "DEVICE_KIND_MAC",
+		3: "DEVICE_KIND_HUB",
 	}
 	DeviceKind_value = map[string]int32{
 		"DEVICE_KIND_UNSPECIFIED": 0,
 		"DEVICE_KIND_PHONE":       1,
 		"DEVICE_KIND_MAC":         2,
+		"DEVICE_KIND_HUB":         3,
 	}
 )
 
@@ -243,6 +256,8 @@ const (
 	// buf:lint:ignore ENUM_ZERO_VALUE_SUFFIX
 	ChallengePurpose_CHALLENGE_PURPOSE_LOGIN    ChallengePurpose = 0
 	ChallengePurpose_CHALLENGE_PURPOSE_REGISTER ChallengePurpose = 1
+	// A single-use nonce for vouch_hub, from the phone's own device.
+	ChallengePurpose_CHALLENGE_PURPOSE_VOUCH ChallengePurpose = 2
 )
 
 // Enum value maps for ChallengePurpose.
@@ -250,10 +265,12 @@ var (
 	ChallengePurpose_name = map[int32]string{
 		0: "CHALLENGE_PURPOSE_LOGIN",
 		1: "CHALLENGE_PURPOSE_REGISTER",
+		2: "CHALLENGE_PURPOSE_VOUCH",
 	}
 	ChallengePurpose_value = map[string]int32{
 		"CHALLENGE_PURPOSE_LOGIN":    0,
 		"CHALLENGE_PURPOSE_REGISTER": 1,
+		"CHALLENGE_PURPOSE_VOUCH":    2,
 	}
 )
 
@@ -696,6 +713,7 @@ type Request struct {
 	//	*Request_SendAlert
 	//	*Request_SubmitTransaction
 	//	*Request_GetAccountState
+	//	*Request_VouchHub
 	Op            isRequest_Op `protobuf_oneof:"op"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -916,6 +934,15 @@ func (x *Request) GetGetAccountState() *GetAccountState {
 	return nil
 }
 
+func (x *Request) GetVouchHub() *VouchHub {
+	if x != nil {
+		if x, ok := x.Op.(*Request_VouchHub); ok {
+			return x.VouchHub
+		}
+	}
+	return nil
+}
+
 type isRequest_Op interface {
 	isRequest_Op()
 }
@@ -996,6 +1023,10 @@ type Request_GetAccountState struct {
 	GetAccountState *GetAccountState `protobuf:"bytes,20,opt,name=get_account_state,json=getAccountState,proto3,oneof"`
 }
 
+type Request_VouchHub struct {
+	VouchHub *VouchHub `protobuf:"bytes,21,opt,name=vouch_hub,json=vouchHub,proto3,oneof"`
+}
+
 func (*Request_Register) isRequest_Op() {}
 
 func (*Request_Challenge) isRequest_Op() {}
@@ -1033,6 +1064,8 @@ func (*Request_SendAlert) isRequest_Op() {}
 func (*Request_SubmitTransaction) isRequest_Op() {}
 
 func (*Request_GetAccountState) isRequest_Op() {}
+
+func (*Request_VouchHub) isRequest_Op() {}
 
 type Response struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1882,10 +1915,14 @@ func (x *DeleteConflict) GetCurrent() *Record {
 }
 
 type Changes struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Zone          string                 `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
-	SinceSeq      uint64                 `protobuf:"varint,2,opt,name=since_seq,json=sinceSeq,proto3" json:"since_seq,omitempty"`
-	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Zone     string                 `protobuf:"bytes,1,opt,name=zone,proto3" json:"zone,omitempty"`
+	SinceSeq uint64                 `protobuf:"varint,2,opt,name=since_seq,json=sinceSeq,proto3" json:"since_seq,omitempty"`
+	Limit    uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	// Set on every page of a full resync (a pull that started at since_seq = 0): a since_seq below the
+	// tombstone floor then continues instead of answering TOKEN_EXPIRED. The caller computes deletions
+	// itself (local names the resync did not return), so purged tombstones do not matter to it.
+	Resync        bool `protobuf:"varint,4,opt,name=resync,proto3" json:"resync,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1939,6 +1976,13 @@ func (x *Changes) GetLimit() uint32 {
 		return x.Limit
 	}
 	return 0
+}
+
+func (x *Changes) GetResync() bool {
+	if x != nil {
+		return x.Resync
+	}
+	return false
 }
 
 type ChangesResult struct {
@@ -2574,6 +2618,78 @@ func (x *DeviceRegistered) GetAccountId() string {
 	return ""
 }
 
+// vouch_hub (phone only): the phone vouches for a hub after the pairing code was confirmed, before
+// add_slot or promote_pairing. attestation: an App Attest assertion over
+// SHA256("relay/v1/vouch" ‖ nonce ‖ hub_device_id ‖ auth_pub ‖ server_origin).
+type VouchHub struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	HubDeviceId string                 `protobuf:"bytes,1,opt,name=hub_device_id,json=hubDeviceId,proto3" json:"hub_device_id,omitempty"`
+	AuthPub     []byte                 `protobuf:"bytes,2,opt,name=auth_pub,json=authPub,proto3" json:"auth_pub,omitempty"`
+	// From GetChallenge{purpose: VOUCH}.
+	Nonce         []byte       `protobuf:"bytes,3,opt,name=nonce,proto3" json:"nonce,omitempty"`
+	Attestation   *Attestation `protobuf:"bytes,4,opt,name=attestation,proto3" json:"attestation,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VouchHub) Reset() {
+	*x = VouchHub{}
+	mi := &file_relay_v1_relay_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VouchHub) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VouchHub) ProtoMessage() {}
+
+func (x *VouchHub) ProtoReflect() protoreflect.Message {
+	mi := &file_relay_v1_relay_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VouchHub.ProtoReflect.Descriptor instead.
+func (*VouchHub) Descriptor() ([]byte, []int) {
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *VouchHub) GetHubDeviceId() string {
+	if x != nil {
+		return x.HubDeviceId
+	}
+	return ""
+}
+
+func (x *VouchHub) GetAuthPub() []byte {
+	if x != nil {
+		return x.AuthPub
+	}
+	return nil
+}
+
+func (x *VouchHub) GetNonce() []byte {
+	if x != nil {
+		return x.Nonce
+	}
+	return nil
+}
+
+func (x *VouchHub) GetAttestation() *Attestation {
+	if x != nil {
+		return x.Attestation
+	}
+	return nil
+}
+
 type GetChallenge struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	DeviceId      string                 `protobuf:"bytes,1,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
@@ -2584,7 +2700,7 @@ type GetChallenge struct {
 
 func (x *GetChallenge) Reset() {
 	*x = GetChallenge{}
-	mi := &file_relay_v1_relay_proto_msgTypes[27]
+	mi := &file_relay_v1_relay_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2596,7 +2712,7 @@ func (x *GetChallenge) String() string {
 func (*GetChallenge) ProtoMessage() {}
 
 func (x *GetChallenge) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[27]
+	mi := &file_relay_v1_relay_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2609,7 +2725,7 @@ func (x *GetChallenge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetChallenge.ProtoReflect.Descriptor instead.
 func (*GetChallenge) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{27}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *GetChallenge) GetDeviceId() string {
@@ -2635,7 +2751,7 @@ type Challenge struct {
 
 func (x *Challenge) Reset() {
 	*x = Challenge{}
-	mi := &file_relay_v1_relay_proto_msgTypes[28]
+	mi := &file_relay_v1_relay_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2647,7 +2763,7 @@ func (x *Challenge) String() string {
 func (*Challenge) ProtoMessage() {}
 
 func (x *Challenge) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[28]
+	mi := &file_relay_v1_relay_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2660,7 +2776,7 @@ func (x *Challenge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Challenge.ProtoReflect.Descriptor instead.
 func (*Challenge) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{28}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Challenge) GetNonce() []byte {
@@ -2682,7 +2798,7 @@ type Login struct {
 
 func (x *Login) Reset() {
 	*x = Login{}
-	mi := &file_relay_v1_relay_proto_msgTypes[29]
+	mi := &file_relay_v1_relay_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2694,7 +2810,7 @@ func (x *Login) String() string {
 func (*Login) ProtoMessage() {}
 
 func (x *Login) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[29]
+	mi := &file_relay_v1_relay_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2707,7 +2823,7 @@ func (x *Login) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Login.ProtoReflect.Descriptor instead.
 func (*Login) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{29}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *Login) GetDeviceId() string {
@@ -2748,7 +2864,7 @@ type Session struct {
 
 func (x *Session) Reset() {
 	*x = Session{}
-	mi := &file_relay_v1_relay_proto_msgTypes[30]
+	mi := &file_relay_v1_relay_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2760,7 +2876,7 @@ func (x *Session) String() string {
 func (*Session) ProtoMessage() {}
 
 func (x *Session) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[30]
+	mi := &file_relay_v1_relay_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2773,7 +2889,7 @@ func (x *Session) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Session.ProtoReflect.Descriptor instead.
 func (*Session) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{30}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *Session) GetToken() string {
@@ -2799,7 +2915,7 @@ type Subscribe struct {
 
 func (x *Subscribe) Reset() {
 	*x = Subscribe{}
-	mi := &file_relay_v1_relay_proto_msgTypes[31]
+	mi := &file_relay_v1_relay_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2811,7 +2927,7 @@ func (x *Subscribe) String() string {
 func (*Subscribe) ProtoMessage() {}
 
 func (x *Subscribe) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[31]
+	mi := &file_relay_v1_relay_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2824,7 +2940,7 @@ func (x *Subscribe) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Subscribe.ProtoReflect.Descriptor instead.
 func (*Subscribe) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{31}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *Subscribe) GetZones() []string {
@@ -2843,7 +2959,7 @@ type AddMacSlot struct {
 
 func (x *AddMacSlot) Reset() {
 	*x = AddMacSlot{}
-	mi := &file_relay_v1_relay_proto_msgTypes[32]
+	mi := &file_relay_v1_relay_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2855,7 +2971,7 @@ func (x *AddMacSlot) String() string {
 func (*AddMacSlot) ProtoMessage() {}
 
 func (x *AddMacSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[32]
+	mi := &file_relay_v1_relay_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2868,7 +2984,7 @@ func (x *AddMacSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddMacSlot.ProtoReflect.Descriptor instead.
 func (*AddMacSlot) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{32}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *AddMacSlot) GetMacDeviceId() string {
@@ -2888,7 +3004,7 @@ type RemoveMacSlot struct {
 
 func (x *RemoveMacSlot) Reset() {
 	*x = RemoveMacSlot{}
-	mi := &file_relay_v1_relay_proto_msgTypes[33]
+	mi := &file_relay_v1_relay_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2900,7 +3016,7 @@ func (x *RemoveMacSlot) String() string {
 func (*RemoveMacSlot) ProtoMessage() {}
 
 func (x *RemoveMacSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[33]
+	mi := &file_relay_v1_relay_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2913,7 +3029,7 @@ func (x *RemoveMacSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveMacSlot.ProtoReflect.Descriptor instead.
 func (*RemoveMacSlot) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{33}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *RemoveMacSlot) GetPhoneDeviceId() string {
@@ -2939,7 +3055,7 @@ type OpenPairingSlot struct {
 
 func (x *OpenPairingSlot) Reset() {
 	*x = OpenPairingSlot{}
-	mi := &file_relay_v1_relay_proto_msgTypes[34]
+	mi := &file_relay_v1_relay_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2951,7 +3067,7 @@ func (x *OpenPairingSlot) String() string {
 func (*OpenPairingSlot) ProtoMessage() {}
 
 func (x *OpenPairingSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[34]
+	mi := &file_relay_v1_relay_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2964,7 +3080,7 @@ func (x *OpenPairingSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenPairingSlot.ProtoReflect.Descriptor instead.
 func (*OpenPairingSlot) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{34}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *OpenPairingSlot) GetMacDeviceId() string {
@@ -2984,7 +3100,7 @@ type PairingSlot struct {
 
 func (x *PairingSlot) Reset() {
 	*x = PairingSlot{}
-	mi := &file_relay_v1_relay_proto_msgTypes[35]
+	mi := &file_relay_v1_relay_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2996,7 +3112,7 @@ func (x *PairingSlot) String() string {
 func (*PairingSlot) ProtoMessage() {}
 
 func (x *PairingSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[35]
+	mi := &file_relay_v1_relay_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3009,7 +3125,7 @@ func (x *PairingSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PairingSlot.ProtoReflect.Descriptor instead.
 func (*PairingSlot) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{35}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PairingSlot) GetSlotId() string {
@@ -3035,7 +3151,7 @@ type ClosePairingSlot struct {
 
 func (x *ClosePairingSlot) Reset() {
 	*x = ClosePairingSlot{}
-	mi := &file_relay_v1_relay_proto_msgTypes[36]
+	mi := &file_relay_v1_relay_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3047,7 +3163,7 @@ func (x *ClosePairingSlot) String() string {
 func (*ClosePairingSlot) ProtoMessage() {}
 
 func (x *ClosePairingSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[36]
+	mi := &file_relay_v1_relay_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3060,7 +3176,7 @@ func (x *ClosePairingSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClosePairingSlot.ProtoReflect.Descriptor instead.
 func (*ClosePairingSlot) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{36}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ClosePairingSlot) GetSlotId() string {
@@ -3079,7 +3195,7 @@ type PromotePairing struct {
 
 func (x *PromotePairing) Reset() {
 	*x = PromotePairing{}
-	mi := &file_relay_v1_relay_proto_msgTypes[37]
+	mi := &file_relay_v1_relay_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3091,7 +3207,7 @@ func (x *PromotePairing) String() string {
 func (*PromotePairing) ProtoMessage() {}
 
 func (x *PromotePairing) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[37]
+	mi := &file_relay_v1_relay_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3104,7 +3220,7 @@ func (x *PromotePairing) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PromotePairing.ProtoReflect.Descriptor instead.
 func (*PromotePairing) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{37}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PromotePairing) GetSlotId() string {
@@ -3123,7 +3239,7 @@ type SetHubReaders struct {
 
 func (x *SetHubReaders) Reset() {
 	*x = SetHubReaders{}
-	mi := &file_relay_v1_relay_proto_msgTypes[38]
+	mi := &file_relay_v1_relay_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3135,7 +3251,7 @@ func (x *SetHubReaders) String() string {
 func (*SetHubReaders) ProtoMessage() {}
 
 func (x *SetHubReaders) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[38]
+	mi := &file_relay_v1_relay_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3148,7 +3264,7 @@ func (x *SetHubReaders) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetHubReaders.ProtoReflect.Descriptor instead.
 func (*SetHubReaders) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{38}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *SetHubReaders) GetPhoneDeviceIds() []string {
@@ -3168,7 +3284,7 @@ type CreateUpload struct {
 
 func (x *CreateUpload) Reset() {
 	*x = CreateUpload{}
-	mi := &file_relay_v1_relay_proto_msgTypes[39]
+	mi := &file_relay_v1_relay_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3180,7 +3296,7 @@ func (x *CreateUpload) String() string {
 func (*CreateUpload) ProtoMessage() {}
 
 func (x *CreateUpload) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[39]
+	mi := &file_relay_v1_relay_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3193,7 +3309,7 @@ func (x *CreateUpload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateUpload.ProtoReflect.Descriptor instead.
 func (*CreateUpload) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{39}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *CreateUpload) GetZone() string {
@@ -3222,7 +3338,7 @@ type Upload struct {
 
 func (x *Upload) Reset() {
 	*x = Upload{}
-	mi := &file_relay_v1_relay_proto_msgTypes[40]
+	mi := &file_relay_v1_relay_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3234,7 +3350,7 @@ func (x *Upload) String() string {
 func (*Upload) ProtoMessage() {}
 
 func (x *Upload) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[40]
+	mi := &file_relay_v1_relay_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3247,7 +3363,7 @@ func (x *Upload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Upload.ProtoReflect.Descriptor instead.
 func (*Upload) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{40}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *Upload) GetAttachmentId() string {
@@ -3288,7 +3404,7 @@ type GetDownload struct {
 
 func (x *GetDownload) Reset() {
 	*x = GetDownload{}
-	mi := &file_relay_v1_relay_proto_msgTypes[41]
+	mi := &file_relay_v1_relay_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3300,7 +3416,7 @@ func (x *GetDownload) String() string {
 func (*GetDownload) ProtoMessage() {}
 
 func (x *GetDownload) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[41]
+	mi := &file_relay_v1_relay_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3313,7 +3429,7 @@ func (x *GetDownload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDownload.ProtoReflect.Descriptor instead.
 func (*GetDownload) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{41}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *GetDownload) GetZone() string {
@@ -3340,7 +3456,7 @@ type Download struct {
 
 func (x *Download) Reset() {
 	*x = Download{}
-	mi := &file_relay_v1_relay_proto_msgTypes[42]
+	mi := &file_relay_v1_relay_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3352,7 +3468,7 @@ func (x *Download) String() string {
 func (*Download) ProtoMessage() {}
 
 func (x *Download) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[42]
+	mi := &file_relay_v1_relay_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3365,7 +3481,7 @@ func (x *Download) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Download.ProtoReflect.Descriptor instead.
 func (*Download) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{42}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *Download) GetUrl() string {
@@ -3392,7 +3508,7 @@ type RegisterPushToken struct {
 
 func (x *RegisterPushToken) Reset() {
 	*x = RegisterPushToken{}
-	mi := &file_relay_v1_relay_proto_msgTypes[43]
+	mi := &file_relay_v1_relay_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3404,7 +3520,7 @@ func (x *RegisterPushToken) String() string {
 func (*RegisterPushToken) ProtoMessage() {}
 
 func (x *RegisterPushToken) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[43]
+	mi := &file_relay_v1_relay_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3417,7 +3533,7 @@ func (x *RegisterPushToken) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterPushToken.ProtoReflect.Descriptor instead.
 func (*RegisterPushToken) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{43}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *RegisterPushToken) GetToken() string {
@@ -3444,7 +3560,7 @@ type SendAlert struct {
 
 func (x *SendAlert) Reset() {
 	*x = SendAlert{}
-	mi := &file_relay_v1_relay_proto_msgTypes[44]
+	mi := &file_relay_v1_relay_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3456,7 +3572,7 @@ func (x *SendAlert) String() string {
 func (*SendAlert) ProtoMessage() {}
 
 func (x *SendAlert) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[44]
+	mi := &file_relay_v1_relay_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3469,7 +3585,7 @@ func (x *SendAlert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SendAlert.ProtoReflect.Descriptor instead.
 func (*SendAlert) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{44}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *SendAlert) GetPhoneDeviceId() string {
@@ -3495,7 +3611,7 @@ type SubmitTransaction struct {
 
 func (x *SubmitTransaction) Reset() {
 	*x = SubmitTransaction{}
-	mi := &file_relay_v1_relay_proto_msgTypes[45]
+	mi := &file_relay_v1_relay_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3507,7 +3623,7 @@ func (x *SubmitTransaction) String() string {
 func (*SubmitTransaction) ProtoMessage() {}
 
 func (x *SubmitTransaction) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[45]
+	mi := &file_relay_v1_relay_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3520,7 +3636,7 @@ func (x *SubmitTransaction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitTransaction.ProtoReflect.Descriptor instead.
 func (*SubmitTransaction) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{45}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SubmitTransaction) GetSignedTransaction() string {
@@ -3540,7 +3656,7 @@ type EntitlementState struct {
 
 func (x *EntitlementState) Reset() {
 	*x = EntitlementState{}
-	mi := &file_relay_v1_relay_proto_msgTypes[46]
+	mi := &file_relay_v1_relay_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3552,7 +3668,7 @@ func (x *EntitlementState) String() string {
 func (*EntitlementState) ProtoMessage() {}
 
 func (x *EntitlementState) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[46]
+	mi := &file_relay_v1_relay_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3565,7 +3681,7 @@ func (x *EntitlementState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EntitlementState.ProtoReflect.Descriptor instead.
 func (*EntitlementState) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{46}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *EntitlementState) GetState() EntitlementKind {
@@ -3592,7 +3708,7 @@ type GetAccountState struct {
 
 func (x *GetAccountState) Reset() {
 	*x = GetAccountState{}
-	mi := &file_relay_v1_relay_proto_msgTypes[47]
+	mi := &file_relay_v1_relay_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3604,7 +3720,7 @@ func (x *GetAccountState) String() string {
 func (*GetAccountState) ProtoMessage() {}
 
 func (x *GetAccountState) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[47]
+	mi := &file_relay_v1_relay_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3617,7 +3733,7 @@ func (x *GetAccountState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetAccountState.ProtoReflect.Descriptor instead.
 func (*GetAccountState) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{47}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{48}
 }
 
 type AccountState struct {
@@ -3637,7 +3753,7 @@ type AccountState struct {
 
 func (x *AccountState) Reset() {
 	*x = AccountState{}
-	mi := &file_relay_v1_relay_proto_msgTypes[48]
+	mi := &file_relay_v1_relay_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3649,7 +3765,7 @@ func (x *AccountState) String() string {
 func (*AccountState) ProtoMessage() {}
 
 func (x *AccountState) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[48]
+	mi := &file_relay_v1_relay_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3662,7 +3778,7 @@ func (x *AccountState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountState.ProtoReflect.Descriptor instead.
 func (*AccountState) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{48}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *AccountState) GetEntitlement() *EntitlementState {
@@ -3704,7 +3820,7 @@ type SlotHolder struct {
 
 func (x *SlotHolder) Reset() {
 	*x = SlotHolder{}
-	mi := &file_relay_v1_relay_proto_msgTypes[49]
+	mi := &file_relay_v1_relay_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3716,7 +3832,7 @@ func (x *SlotHolder) String() string {
 func (*SlotHolder) ProtoMessage() {}
 
 func (x *SlotHolder) ProtoReflect() protoreflect.Message {
-	mi := &file_relay_v1_relay_proto_msgTypes[49]
+	mi := &file_relay_v1_relay_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3729,7 +3845,7 @@ func (x *SlotHolder) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SlotHolder.ProtoReflect.Descriptor instead.
 func (*SlotHolder) Descriptor() ([]byte, []int) {
-	return file_relay_v1_relay_proto_rawDescGZIP(), []int{49}
+	return file_relay_v1_relay_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *SlotHolder) GetPhoneDeviceId() string {
@@ -3765,7 +3881,7 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\rsession_token\x18\x02 \x01(\tR\fsessionToken\".\n" +
 	"\aHelloOk\x12#\n" +
 	"\rconnection_id\x18\x01 \x01(\tR\fconnectionId\"\v\n" +
-	"\tGoingAway\"\xf4\b\n" +
+	"\tGoingAway\"\xa7\t\n" +
 	"\aRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x126\n" +
 	"\bregister\x18\x02 \x01(\v2\x18.relay.v1.RegisterDeviceH\x00R\bregister\x126\n" +
@@ -3789,7 +3905,8 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
 	"send_alert\x18\x12 \x01(\v2\x13.relay.v1.SendAlertH\x00R\tsendAlert\x12L\n" +
 	"\x12submit_transaction\x18\x13 \x01(\v2\x1b.relay.v1.SubmitTransactionH\x00R\x11submitTransaction\x12G\n" +
-	"\x11get_account_state\x18\x14 \x01(\v2\x19.relay.v1.GetAccountStateH\x00R\x0fgetAccountStateB\x04\n" +
+	"\x11get_account_state\x18\x14 \x01(\v2\x19.relay.v1.GetAccountStateH\x00R\x0fgetAccountState\x121\n" +
+	"\tvouch_hub\x18\x15 \x01(\v2\x12.relay.v1.VouchHubH\x00R\bvouchHubB\x04\n" +
 	"\x02op\"\xbb\x05\n" +
 	"\bResponse\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x04R\x02id\x12\x1e\n" +
@@ -3850,11 +3967,12 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\x05index\x18\x01 \x01(\rR\x05index\x12/\n" +
 	"\acurrent\x18\x02 \x01(\v2\x10.relay.v1.RecordH\x00R\acurrent\x88\x01\x01B\n" +
 	"\n" +
-	"\b_current\"P\n" +
+	"\b_current\"h\n" +
 	"\aChanges\x12\x12\n" +
 	"\x04zone\x18\x01 \x01(\tR\x04zone\x12\x1b\n" +
 	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\"\x82\x01\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit\x12\x16\n" +
+	"\x06resync\x18\x04 \x01(\bR\x06resync\"\x82\x01\n" +
 	"\rChangesResult\x12*\n" +
 	"\achanged\x18\x01 \x03(\v2\x10.relay.v1.RecordR\achanged\x12\x18\n" +
 	"\adeleted\x18\x02 \x03(\tR\adeleted\x12\x17\n" +
@@ -3897,7 +4015,12 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\x10DeviceRegistered\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x1d\n" +
 	"\n" +
-	"account_id\x18\x02 \x01(\tR\taccountId\"a\n" +
+	"account_id\x18\x02 \x01(\tR\taccountId\"\x98\x01\n" +
+	"\bVouchHub\x12\"\n" +
+	"\rhub_device_id\x18\x01 \x01(\tR\vhubDeviceId\x12\x19\n" +
+	"\bauth_pub\x18\x02 \x01(\fR\aauthPub\x12\x14\n" +
+	"\x05nonce\x18\x03 \x01(\fR\x05nonce\x127\n" +
+	"\vattestation\x18\x04 \x01(\v2\x15.relay.v1.AttestationR\vattestation\"a\n" +
 	"\fGetChallenge\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x124\n" +
 	"\apurpose\x18\x02 \x01(\x0e2\x1a.relay.v1.ChallengePurposeR\apurpose\"!\n" +
@@ -3967,14 +4090,15 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\n" +
 	"SlotHolder\x12&\n" +
 	"\x0fphone_device_id\x18\x01 \x01(\tR\rphoneDeviceId\x12\x16\n" +
-	"\x06paying\x18\x02 \x01(\bR\x06paying*\xd8\x01\n" +
+	"\x06paying\x18\x02 \x01(\bR\x06paying*\xf5\x01\n" +
 	"\vControlKind\x12\x1c\n" +
 	"\x18CONTROL_KIND_UNSPECIFIED\x10\x00\x12$\n" +
 	" CONTROL_KIND_ENTITLEMENT_EXPIRED\x10\x01\x12#\n" +
 	"\x1fCONTROL_KIND_SUBSCRIPTION_MOVED\x10\x02\x12\x1d\n" +
 	"\x19CONTROL_KIND_SLOT_REMOVED\x10\x03\x12\x1f\n" +
 	"\x1bCONTROL_KIND_PAIRING_OPENED\x10\x04\x12 \n" +
-	"\x1cCONTROL_KIND_SESSION_EXPIRED\x10\x05*\xd8\x05\n" +
+	"\x1cCONTROL_KIND_SESSION_EXPIRED\x10\x05\x12\x1b\n" +
+	"\x17CONTROL_KIND_SLOT_ADDED\x10\x06*\xf8\x05\n" +
 	"\tErrorCode\x12\x1a\n" +
 	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\"\n" +
 	"\x1eERROR_CODE_UNSUPPORTED_VERSION\x10\x01\x12\x1e\n" +
@@ -3998,15 +4122,18 @@ const file_relay_v1_relay_proto_rawDesc = "" +
 	"\x1eERROR_CODE_INVALID_TRANSACTION\x10\x12\x12\x1a\n" +
 	"\x16ERROR_CODE_UNAVAILABLE\x10\x13\x12#\n" +
 	"\x1fERROR_CODE_ATTESTATION_REQUIRED\x10\x14\x12!\n" +
-	"\x1dERROR_CODE_ATTESTATION_FAILED\x10\x15*U\n" +
+	"\x1dERROR_CODE_ATTESTATION_FAILED\x10\x15\x12\x1e\n" +
+	"\x1aERROR_CODE_HUB_NOT_VOUCHED\x10\x16*j\n" +
 	"\n" +
 	"DeviceKind\x12\x1b\n" +
 	"\x17DEVICE_KIND_UNSPECIFIED\x10\x00\x12\x15\n" +
 	"\x11DEVICE_KIND_PHONE\x10\x01\x12\x13\n" +
-	"\x0fDEVICE_KIND_MAC\x10\x02*O\n" +
+	"\x0fDEVICE_KIND_MAC\x10\x02\x12\x13\n" +
+	"\x0fDEVICE_KIND_HUB\x10\x03*l\n" +
 	"\x10ChallengePurpose\x12\x1b\n" +
 	"\x17CHALLENGE_PURPOSE_LOGIN\x10\x00\x12\x1e\n" +
-	"\x1aCHALLENGE_PURPOSE_REGISTER\x10\x01*R\n" +
+	"\x1aCHALLENGE_PURPOSE_REGISTER\x10\x01\x12\x1b\n" +
+	"\x17CHALLENGE_PURPOSE_VOUCH\x10\x02*R\n" +
 	"\aPushEnv\x12\x18\n" +
 	"\x14PUSH_ENV_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10PUSH_ENV_SANDBOX\x10\x01\x12\x17\n" +
@@ -4032,7 +4159,7 @@ func file_relay_v1_relay_proto_rawDescGZIP() []byte {
 }
 
 var file_relay_v1_relay_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 51)
+var file_relay_v1_relay_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
 var file_relay_v1_relay_proto_goTypes = []any{
 	(ControlKind)(0),           // 0: relay.v1.ControlKind
 	(ErrorCode)(0),             // 1: relay.v1.ErrorCode
@@ -4067,30 +4194,31 @@ var file_relay_v1_relay_proto_goTypes = []any{
 	(*AppAttestAssertion)(nil), // 30: relay.v1.AppAttestAssertion
 	(*RegisterDevice)(nil),     // 31: relay.v1.RegisterDevice
 	(*DeviceRegistered)(nil),   // 32: relay.v1.DeviceRegistered
-	(*GetChallenge)(nil),       // 33: relay.v1.GetChallenge
-	(*Challenge)(nil),          // 34: relay.v1.Challenge
-	(*Login)(nil),              // 35: relay.v1.Login
-	(*Session)(nil),            // 36: relay.v1.Session
-	(*Subscribe)(nil),          // 37: relay.v1.Subscribe
-	(*AddMacSlot)(nil),         // 38: relay.v1.AddMacSlot
-	(*RemoveMacSlot)(nil),      // 39: relay.v1.RemoveMacSlot
-	(*OpenPairingSlot)(nil),    // 40: relay.v1.OpenPairingSlot
-	(*PairingSlot)(nil),        // 41: relay.v1.PairingSlot
-	(*ClosePairingSlot)(nil),   // 42: relay.v1.ClosePairingSlot
-	(*PromotePairing)(nil),     // 43: relay.v1.PromotePairing
-	(*SetHubReaders)(nil),      // 44: relay.v1.SetHubReaders
-	(*CreateUpload)(nil),       // 45: relay.v1.CreateUpload
-	(*Upload)(nil),             // 46: relay.v1.Upload
-	(*GetDownload)(nil),        // 47: relay.v1.GetDownload
-	(*Download)(nil),           // 48: relay.v1.Download
-	(*RegisterPushToken)(nil),  // 49: relay.v1.RegisterPushToken
-	(*SendAlert)(nil),          // 50: relay.v1.SendAlert
-	(*SubmitTransaction)(nil),  // 51: relay.v1.SubmitTransaction
-	(*EntitlementState)(nil),   // 52: relay.v1.EntitlementState
-	(*GetAccountState)(nil),    // 53: relay.v1.GetAccountState
-	(*AccountState)(nil),       // 54: relay.v1.AccountState
-	(*SlotHolder)(nil),         // 55: relay.v1.SlotHolder
-	nil,                        // 56: relay.v1.Upload.HeadersEntry
+	(*VouchHub)(nil),           // 33: relay.v1.VouchHub
+	(*GetChallenge)(nil),       // 34: relay.v1.GetChallenge
+	(*Challenge)(nil),          // 35: relay.v1.Challenge
+	(*Login)(nil),              // 36: relay.v1.Login
+	(*Session)(nil),            // 37: relay.v1.Session
+	(*Subscribe)(nil),          // 38: relay.v1.Subscribe
+	(*AddMacSlot)(nil),         // 39: relay.v1.AddMacSlot
+	(*RemoveMacSlot)(nil),      // 40: relay.v1.RemoveMacSlot
+	(*OpenPairingSlot)(nil),    // 41: relay.v1.OpenPairingSlot
+	(*PairingSlot)(nil),        // 42: relay.v1.PairingSlot
+	(*ClosePairingSlot)(nil),   // 43: relay.v1.ClosePairingSlot
+	(*PromotePairing)(nil),     // 44: relay.v1.PromotePairing
+	(*SetHubReaders)(nil),      // 45: relay.v1.SetHubReaders
+	(*CreateUpload)(nil),       // 46: relay.v1.CreateUpload
+	(*Upload)(nil),             // 47: relay.v1.Upload
+	(*GetDownload)(nil),        // 48: relay.v1.GetDownload
+	(*Download)(nil),           // 49: relay.v1.Download
+	(*RegisterPushToken)(nil),  // 50: relay.v1.RegisterPushToken
+	(*SendAlert)(nil),          // 51: relay.v1.SendAlert
+	(*SubmitTransaction)(nil),  // 52: relay.v1.SubmitTransaction
+	(*EntitlementState)(nil),   // 53: relay.v1.EntitlementState
+	(*GetAccountState)(nil),    // 54: relay.v1.GetAccountState
+	(*AccountState)(nil),       // 55: relay.v1.AccountState
+	(*SlotHolder)(nil),         // 56: relay.v1.SlotHolder
+	nil,                        // 57: relay.v1.Upload.HeadersEntry
 }
 var file_relay_v1_relay_proto_depIdxs = []int32{
 	7,  // 0: relay.v1.Frame.hello:type_name -> relay.v1.Hello
@@ -4100,67 +4228,69 @@ var file_relay_v1_relay_proto_depIdxs = []int32{
 	24, // 4: relay.v1.Frame.event:type_name -> relay.v1.Event
 	9,  // 5: relay.v1.Frame.going_away:type_name -> relay.v1.GoingAway
 	31, // 6: relay.v1.Request.register:type_name -> relay.v1.RegisterDevice
-	33, // 7: relay.v1.Request.challenge:type_name -> relay.v1.GetChallenge
-	35, // 8: relay.v1.Request.login:type_name -> relay.v1.Login
+	34, // 7: relay.v1.Request.challenge:type_name -> relay.v1.GetChallenge
+	36, // 8: relay.v1.Request.login:type_name -> relay.v1.Login
 	14, // 9: relay.v1.Request.save:type_name -> relay.v1.Save
 	18, // 10: relay.v1.Request.delete:type_name -> relay.v1.Delete
 	22, // 11: relay.v1.Request.changes:type_name -> relay.v1.Changes
-	37, // 12: relay.v1.Request.subscribe:type_name -> relay.v1.Subscribe
-	38, // 13: relay.v1.Request.add_slot:type_name -> relay.v1.AddMacSlot
-	39, // 14: relay.v1.Request.remove_slot:type_name -> relay.v1.RemoveMacSlot
-	40, // 15: relay.v1.Request.open_pairing:type_name -> relay.v1.OpenPairingSlot
-	42, // 16: relay.v1.Request.close_pairing:type_name -> relay.v1.ClosePairingSlot
-	43, // 17: relay.v1.Request.promote_pairing:type_name -> relay.v1.PromotePairing
-	44, // 18: relay.v1.Request.set_hub_readers:type_name -> relay.v1.SetHubReaders
-	45, // 19: relay.v1.Request.create_upload:type_name -> relay.v1.CreateUpload
-	47, // 20: relay.v1.Request.get_download:type_name -> relay.v1.GetDownload
-	49, // 21: relay.v1.Request.register_push:type_name -> relay.v1.RegisterPushToken
-	50, // 22: relay.v1.Request.send_alert:type_name -> relay.v1.SendAlert
-	51, // 23: relay.v1.Request.submit_transaction:type_name -> relay.v1.SubmitTransaction
-	53, // 24: relay.v1.Request.get_account_state:type_name -> relay.v1.GetAccountState
-	12, // 25: relay.v1.Response.ok:type_name -> relay.v1.Ok
-	32, // 26: relay.v1.Response.registered:type_name -> relay.v1.DeviceRegistered
-	34, // 27: relay.v1.Response.challenge:type_name -> relay.v1.Challenge
-	36, // 28: relay.v1.Response.session:type_name -> relay.v1.Session
-	16, // 29: relay.v1.Response.save:type_name -> relay.v1.SaveResult
-	23, // 30: relay.v1.Response.changes:type_name -> relay.v1.ChangesResult
-	41, // 31: relay.v1.Response.pairing_slot:type_name -> relay.v1.PairingSlot
-	46, // 32: relay.v1.Response.upload:type_name -> relay.v1.Upload
-	48, // 33: relay.v1.Response.download:type_name -> relay.v1.Download
-	52, // 34: relay.v1.Response.entitlement:type_name -> relay.v1.EntitlementState
-	27, // 35: relay.v1.Response.error:type_name -> relay.v1.Error
-	20, // 36: relay.v1.Response.delete:type_name -> relay.v1.DeleteResult
-	54, // 37: relay.v1.Response.account_state:type_name -> relay.v1.AccountState
-	15, // 38: relay.v1.Save.items:type_name -> relay.v1.SaveItem
-	13, // 39: relay.v1.SaveItem.record:type_name -> relay.v1.Record
-	13, // 40: relay.v1.SaveResult.saved:type_name -> relay.v1.Record
-	17, // 41: relay.v1.SaveResult.conflicts:type_name -> relay.v1.SaveConflict
-	13, // 42: relay.v1.SaveConflict.current:type_name -> relay.v1.Record
-	19, // 43: relay.v1.Delete.items:type_name -> relay.v1.DeleteItem
-	21, // 44: relay.v1.DeleteResult.conflicts:type_name -> relay.v1.DeleteConflict
-	13, // 45: relay.v1.DeleteConflict.current:type_name -> relay.v1.Record
-	13, // 46: relay.v1.ChangesResult.changed:type_name -> relay.v1.Record
-	25, // 47: relay.v1.Event.zone_changed:type_name -> relay.v1.ZoneChanged
-	26, // 48: relay.v1.Event.control:type_name -> relay.v1.Control
-	13, // 49: relay.v1.ZoneChanged.record:type_name -> relay.v1.Record
-	0,  // 50: relay.v1.Control.kind:type_name -> relay.v1.ControlKind
-	1,  // 51: relay.v1.Error.code:type_name -> relay.v1.ErrorCode
-	29, // 52: relay.v1.Attestation.app_attest:type_name -> relay.v1.AppAttest
-	30, // 53: relay.v1.Attestation.app_attest_assertion:type_name -> relay.v1.AppAttestAssertion
-	2,  // 54: relay.v1.RegisterDevice.device_kind:type_name -> relay.v1.DeviceKind
-	28, // 55: relay.v1.RegisterDevice.attestation:type_name -> relay.v1.Attestation
-	3,  // 56: relay.v1.GetChallenge.purpose:type_name -> relay.v1.ChallengePurpose
-	28, // 57: relay.v1.Login.attestation:type_name -> relay.v1.Attestation
-	56, // 58: relay.v1.Upload.headers:type_name -> relay.v1.Upload.HeadersEntry
-	4,  // 59: relay.v1.RegisterPushToken.env:type_name -> relay.v1.PushEnv
-	5,  // 60: relay.v1.EntitlementState.state:type_name -> relay.v1.EntitlementKind
-	52, // 61: relay.v1.AccountState.entitlement:type_name -> relay.v1.EntitlementState
-	55, // 62: relay.v1.AccountState.phones:type_name -> relay.v1.SlotHolder
-	63, // [63:63] is the sub-list for method output_type
-	63, // [63:63] is the sub-list for method input_type
-	63, // [63:63] is the sub-list for extension type_name
-	63, // [63:63] is the sub-list for extension extendee
-	0,  // [0:63] is the sub-list for field type_name
+	38, // 12: relay.v1.Request.subscribe:type_name -> relay.v1.Subscribe
+	39, // 13: relay.v1.Request.add_slot:type_name -> relay.v1.AddMacSlot
+	40, // 14: relay.v1.Request.remove_slot:type_name -> relay.v1.RemoveMacSlot
+	41, // 15: relay.v1.Request.open_pairing:type_name -> relay.v1.OpenPairingSlot
+	43, // 16: relay.v1.Request.close_pairing:type_name -> relay.v1.ClosePairingSlot
+	44, // 17: relay.v1.Request.promote_pairing:type_name -> relay.v1.PromotePairing
+	45, // 18: relay.v1.Request.set_hub_readers:type_name -> relay.v1.SetHubReaders
+	46, // 19: relay.v1.Request.create_upload:type_name -> relay.v1.CreateUpload
+	48, // 20: relay.v1.Request.get_download:type_name -> relay.v1.GetDownload
+	50, // 21: relay.v1.Request.register_push:type_name -> relay.v1.RegisterPushToken
+	51, // 22: relay.v1.Request.send_alert:type_name -> relay.v1.SendAlert
+	52, // 23: relay.v1.Request.submit_transaction:type_name -> relay.v1.SubmitTransaction
+	54, // 24: relay.v1.Request.get_account_state:type_name -> relay.v1.GetAccountState
+	33, // 25: relay.v1.Request.vouch_hub:type_name -> relay.v1.VouchHub
+	12, // 26: relay.v1.Response.ok:type_name -> relay.v1.Ok
+	32, // 27: relay.v1.Response.registered:type_name -> relay.v1.DeviceRegistered
+	35, // 28: relay.v1.Response.challenge:type_name -> relay.v1.Challenge
+	37, // 29: relay.v1.Response.session:type_name -> relay.v1.Session
+	16, // 30: relay.v1.Response.save:type_name -> relay.v1.SaveResult
+	23, // 31: relay.v1.Response.changes:type_name -> relay.v1.ChangesResult
+	42, // 32: relay.v1.Response.pairing_slot:type_name -> relay.v1.PairingSlot
+	47, // 33: relay.v1.Response.upload:type_name -> relay.v1.Upload
+	49, // 34: relay.v1.Response.download:type_name -> relay.v1.Download
+	53, // 35: relay.v1.Response.entitlement:type_name -> relay.v1.EntitlementState
+	27, // 36: relay.v1.Response.error:type_name -> relay.v1.Error
+	20, // 37: relay.v1.Response.delete:type_name -> relay.v1.DeleteResult
+	55, // 38: relay.v1.Response.account_state:type_name -> relay.v1.AccountState
+	15, // 39: relay.v1.Save.items:type_name -> relay.v1.SaveItem
+	13, // 40: relay.v1.SaveItem.record:type_name -> relay.v1.Record
+	13, // 41: relay.v1.SaveResult.saved:type_name -> relay.v1.Record
+	17, // 42: relay.v1.SaveResult.conflicts:type_name -> relay.v1.SaveConflict
+	13, // 43: relay.v1.SaveConflict.current:type_name -> relay.v1.Record
+	19, // 44: relay.v1.Delete.items:type_name -> relay.v1.DeleteItem
+	21, // 45: relay.v1.DeleteResult.conflicts:type_name -> relay.v1.DeleteConflict
+	13, // 46: relay.v1.DeleteConflict.current:type_name -> relay.v1.Record
+	13, // 47: relay.v1.ChangesResult.changed:type_name -> relay.v1.Record
+	25, // 48: relay.v1.Event.zone_changed:type_name -> relay.v1.ZoneChanged
+	26, // 49: relay.v1.Event.control:type_name -> relay.v1.Control
+	13, // 50: relay.v1.ZoneChanged.record:type_name -> relay.v1.Record
+	0,  // 51: relay.v1.Control.kind:type_name -> relay.v1.ControlKind
+	1,  // 52: relay.v1.Error.code:type_name -> relay.v1.ErrorCode
+	29, // 53: relay.v1.Attestation.app_attest:type_name -> relay.v1.AppAttest
+	30, // 54: relay.v1.Attestation.app_attest_assertion:type_name -> relay.v1.AppAttestAssertion
+	2,  // 55: relay.v1.RegisterDevice.device_kind:type_name -> relay.v1.DeviceKind
+	28, // 56: relay.v1.RegisterDevice.attestation:type_name -> relay.v1.Attestation
+	28, // 57: relay.v1.VouchHub.attestation:type_name -> relay.v1.Attestation
+	3,  // 58: relay.v1.GetChallenge.purpose:type_name -> relay.v1.ChallengePurpose
+	28, // 59: relay.v1.Login.attestation:type_name -> relay.v1.Attestation
+	57, // 60: relay.v1.Upload.headers:type_name -> relay.v1.Upload.HeadersEntry
+	4,  // 61: relay.v1.RegisterPushToken.env:type_name -> relay.v1.PushEnv
+	5,  // 62: relay.v1.EntitlementState.state:type_name -> relay.v1.EntitlementKind
+	53, // 63: relay.v1.AccountState.entitlement:type_name -> relay.v1.EntitlementState
+	56, // 64: relay.v1.AccountState.phones:type_name -> relay.v1.SlotHolder
+	65, // [65:65] is the sub-list for method output_type
+	65, // [65:65] is the sub-list for method input_type
+	65, // [65:65] is the sub-list for extension type_name
+	65, // [65:65] is the sub-list for extension extendee
+	0,  // [0:65] is the sub-list for field type_name
 }
 
 func init() { file_relay_v1_relay_proto_init() }
@@ -4196,6 +4326,7 @@ func file_relay_v1_relay_proto_init() {
 		(*Request_SendAlert)(nil),
 		(*Request_SubmitTransaction)(nil),
 		(*Request_GetAccountState)(nil),
+		(*Request_VouchHub)(nil),
 	}
 	file_relay_v1_relay_proto_msgTypes[5].OneofWrappers = []any{
 		(*Response_Ok)(nil),
@@ -4235,7 +4366,7 @@ func file_relay_v1_relay_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_relay_v1_relay_proto_rawDesc), len(file_relay_v1_relay_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   51,
+			NumMessages:   52,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

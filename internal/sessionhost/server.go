@@ -74,6 +74,9 @@ type Options struct {
 	afterReap func()
 	// checkTimeout replaces CheckTimeout (tests only).
 	checkTimeout time.Duration
+	// inPause runs inside a delivery's pause, after its settle sleep and
+	// before the re-check (tests only: the owner typing during the pause).
+	inPause func()
 	// CodexWatch opens the store of a codex launch's database for its
 	// rollout watch (spec 2026-11-05 §3.5); nil = the host watches nothing.
 	// Its error is logged, so it must carry no path (FILES-01).

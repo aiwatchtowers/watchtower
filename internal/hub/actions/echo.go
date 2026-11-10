@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"watchtower/internal/hub/link"
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -21,6 +22,10 @@ const (
 // control_queue.kind values: an echo of an action record, or a control kind.
 const queueEcho = "echo"
 
+// QueueEcho is control_queue.kind of a queued echo (the switcher moves a
+// lapsed phone's owed echoes, sim rule 16).
+const QueueEcho = queueEcho
+
 // Wire reasons this package answers with (the Kit's ActionReason).
 const (
 	reasonDeviceNotLinked = "device_not_linked"
@@ -29,6 +34,13 @@ const (
 	reasonOutcomeUnknown  = "outcome_unknown"
 	reasonUnsupported     = "unsupported_in_poc"
 	reasonWriteFailed     = "write_failed"
+	// reasonNotDelivered: an upload a lapsed relay phone sent (sim rule
+	// 16); the hub's ledger class (an upload echo's reason reads as none
+	// on today's Kit, protocol §7.7).
+	reasonNotDelivered = "not_delivered"
+	// ReasonNotSupported: this host does not record (protocol §9); the
+	// recording intake answers it too.
+	ReasonNotSupported = "not_supported"
 )
 
 // The Swift hub's messages, verbatim.
@@ -37,6 +49,9 @@ const (
 	wrongHubMessage   = "This was sent to another Mac."
 	clockAheadMessage = "Your iPhone's and Mac's clocks differ by more than 5 minutes — check Date & Time on both."
 	restartedMessage  = "The Mac restarted while applying this"
+	// notDeliveredUploadMessage is the failed echo of an upload a lapsed
+	// relay phone sent: the phone keeps the audio and may send it again.
+	notDeliveredUploadMessage = "Your Relay subscription ended before your Mac got this recording. It stays on your iPhone; send it again."
 )
 
 // knownStatuses are the statuses a handler may answer with.
@@ -174,15 +189,19 @@ func expectSeq(seq uint64) state.Control {
 
 var expectAbsent = state.Control{Expect: state.ExpectAbsent}
 
-// sealEcho seals a's echo with o for the phone at b, overwriting wireName
-// under expect. Sealing happens before the deciding transaction: the Sealer
+// sealEcho seals a's echo with o for the phone at b (in the epoch phoneSealer
+// picks), overwriting wireName under expect. Sealing happens before the deciding transaction: the Sealer
 // may write the seq ceiling in a transaction of its own.
 func (p *Processor) sealEcho(b mailbox, wireName, plain string, a wire.ActionRequest, o Outcome, expect state.Control) (queued, error) {
 	payload, err := echoPayload(a, o)
 	if err != nil {
 		return queued{}, err
 	}
-	rec, err := p.cfg.Sealer.ToPhone(b.zone, b.id, wireName, kindAction, plain, payload)
+	sealer, err := p.phoneSealer(b)
+	if err != nil {
+		return queued{}, err
+	}
+	rec, err := sealer.ToPhone(b.zone, b.id, wireName, kindAction, plain, payload)
 	if err != nil {
 		return queued{}, fmt.Errorf("actions: sealing an echo: %w", err)
 	}
@@ -224,7 +243,7 @@ func errClass(err error) string {
 		{secure.ErrWrongSender, "wrong_sender"}, {secure.ErrWrongHub, "wrong_hub"},
 		{secure.ErrNameMismatch, "name_mismatch"}, {secure.ErrRolledBack, "rolled_back"},
 		{secure.ErrEpochNotAccepted, "epoch_not_accepted"}, {secure.ErrNoRelayKey, "no_relay_key"},
-		{secure.ErrAuthenticationFailed, "authentication_failed"},
+		{secure.ErrAuthenticationFailed, "authentication_failed"}, {link.ErrOwnerUnreadable, "owner_unreadable"},
 	}
 	for _, c := range classes {
 		if errors.Is(err, c.err) {

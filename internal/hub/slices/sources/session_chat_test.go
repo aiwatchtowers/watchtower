@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -566,5 +567,86 @@ func TestSessionChatPassStopsWhenDroppedMidPass(t *testing.T) {
 	}
 	if len(chatItems(t, s)) != 0 {
 		t.Fatal("the cut read stored a payload")
+	}
+}
+
+// twin of SessionChatRunnerTests.testAChangedFeedNudgesTheChatKind: the
+// first payload is a change, and a feed that changed nudges again.
+func TestSessionChatAChangedFeedNudges(t *testing.T) {
+	ctx := context.Background()
+	r := newChatRig(t)
+	r.live[7] = time.Now()
+	text := "Hello"
+	s := r.source(func(context.Context, int64, string) ([]sessionfeed.Entry, error) {
+		return []sessionfeed.Entry{feedEntry(0, text)}, nil
+	}, ChatTiming{})
+	r.watch(7, "", "")
+	s.RunDue(ctx)
+	if r.nudges != 1 {
+		t.Fatalf("the first payload nudged %d times, want 1", r.nudges)
+	}
+	text = "Hello again"
+	r.clock.advance(3 * time.Second)
+	s.RunDue(ctx)
+	if r.nudges != 2 {
+		t.Fatalf("a changed feed: %d nudges, want 2", r.nudges)
+	}
+}
+
+// twin of SessionChatRunnerTests.testRepeatRequestExtendsWatch: a repeated
+// request extends the 5-minute watch from the last request.
+func TestSessionChatRepeatRequestExtendsTheWatch(t *testing.T) {
+	r := newChatRig(t)
+	s := r.source(nil, ChatTiming{})
+	r.watch(7, "", "")
+	s.RunDue(context.Background())
+	r.clock.advance(200 * time.Second)
+	r.watch(7, "", "")
+	r.clock.advance(200 * time.Second)
+	if n := len(chatItems(t, s)); n != 1 {
+		t.Fatalf("400 s after the first request, 200 s after the last: %d records, want 1", n)
+	}
+	r.clock.advance(101 * time.Second)
+	if got := chatItems(t, s); len(got) != 0 {
+		t.Fatalf("the extended watch outlived its 5 minutes: %v", got)
+	}
+}
+
+// twin of SessionChatRunnerTests.testLoopRunsOnlyWhilePhoneIsLinked: with no
+// linked phone the loop wakes but reads no feed.
+func TestSessionChatLoopReadsNothingWhileUnlinked(t *testing.T) {
+	r := newChatRig(t)
+	var checks atomic.Int32
+	s := SessionChat(r.watches, nil, SessionChatOptions{
+		Timing: ChatTiming{Every: 10 * time.Second, Timeout: 5 * time.Second, Wake: 10 * time.Millisecond},
+		Fetch: func(context.Context, int64, string) ([]sessionfeed.Entry, error) {
+			r.mu.Lock()
+			r.calls = append(r.calls, "read")
+			r.mu.Unlock()
+			return []sessionfeed.Entry{feedEntry(0, "hi")}, nil
+		},
+		Active: func() bool {
+			checks.Add(1)
+			return false
+		},
+		Now: r.clock.Now,
+	})
+	r.watch(7, "", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for checks.Load() < 3 {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("the loop never woke three times")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if n := r.callCount(); n != 0 {
+		t.Fatalf("the loop read %d feeds with no linked phone", n)
 	}
 }

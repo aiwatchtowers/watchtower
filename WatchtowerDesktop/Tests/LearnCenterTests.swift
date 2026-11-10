@@ -227,3 +227,35 @@ private actor LoadCounter {
     private(set) var count = 0
     func increment() { count += 1 }
 }
+
+/// No hub answers on the socket: `HubCenter` reads `hub status --json` instead.
+private struct NoHubClient: HubControlClienting {
+    func send(_ request: HubControlRequest) async throws -> HubControlAnswer { throw HubControlError.noHub }
+    func watch() -> AsyncThrowingStream<HubEvent, Error> {
+        AsyncThrowingStream { $0.finish(throwing: HubControlError.noHub) }
+    }
+}
+
+/// Learn's "iPhone paired" is the Go hub's `phones` count from `hub status`.
+@MainActor
+final class LiveLearnEnvironmentTests: XCTestCase {
+    func testIPhonePairedReadsThePhonesCountOfTheHubStatus() async throws {
+        let appState = AppState { [:] }
+        let environment = LiveLearnEnvironment(appState: appState)
+        XCTAssertFalse(environment.iphonePaired, "no hub center")
+
+        for (phones, paired) in [(0, false), (2, true)] {
+            let cli = FakeCLIRunner(stdout: Data(#"{"state":"running","phones":\#(phones)}"#.utf8))
+            let center = HubCenter(client: NoHubClient(), cli: cli) { _ in try? await Task.sleep(for: .seconds(60)) }
+            appState.hubCenter = center
+            center.start()
+            defer { center.stop() }
+            let deadline = ContinuousClock.now + .seconds(5)
+            while center.status?.phones == nil, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(center.status?.phones, phones)
+            XCTAssertEqual(environment.iphonePaired, paired, "\(phones) phones")
+        }
+    }
+}

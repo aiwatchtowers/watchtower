@@ -18,7 +18,7 @@ import WatchtowerSync
 /// The socket is the device's one `HostedRelaySession` (R2): `init(session:…)` shares it with
 /// every other relay object of the process, and account-level signals go to `session.events`;
 /// `init(client:…)` builds a private session whose account-level signals are also `relayEvents`.
-public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport {
+public actor HostedRelayTransport: LiveTransport, ConditionalTransport, CompactingTransport, InitialLoadReporting {
     static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     /// How long a resync the relay refused partway waits before it starts again (`start()` ends
     /// the wait at once).
@@ -58,6 +58,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     var loginNotBefore: Date?
     /// Whether the last op reached the relay (`reachabilityKnown` false before any).
     var reachable = false
+    /// The debug meter of this transport's relay traffic and wakes (a no-op in Release).
+    var traffic = RelayTrafficMeter()
     var reachabilityKnown = false
 
     /// The pull in flight and the zones it still owes (`HostedRelayTransport+Pull.swift`).
@@ -168,6 +170,16 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
         try store.changes(in: zone, since: token)
     }
 
+    /// False while a pull is paging or the data zone's first pull / a resync has pages left (that state is
+    /// persisted, so a pull that failed midway or an app restart still reads as loading); the buffer is whole
+    /// only after the load's last page.
+    public func dataLoadComplete() async -> Bool {
+        guard pullTask == nil else { return false }
+        // Cursor 0 and no marker: the first pull has not started, so what the buffer holds is not a load.
+        guard let cursor = try? store.relayCursor(zone: .data), cursor > 0 else { return false }
+        return !((try? store.relayResyncPending(.data)) ?? true)
+    }
+
     public func compact(in zone: CloudZoneID, keepSince token: CloudChangeToken) async throws {
         try store.compactEvents(in: zone, keepSince: token)
     }
@@ -232,6 +244,8 @@ public actor HostedRelayTransport: LiveTransport, ConditionalTransport, Compacti
     /// throttle does).
     public func fetchForPush(since: Date, grace: TimeInterval, pollOnFallback: Bool) async throws {
         guard held() == nil else { return }
+        traffic.recordWake()
+        defer { traffic.logPass(to: Self.logger) }
         try await pull()
     }
 

@@ -213,6 +213,7 @@ func TestEnsureStartsAHostWhenNoneAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(asHostEnv, "1")
+	started := SetTestLauncher(t)
 	ctx := ctxT(t)
 	if err := Ensure(ctx, path, exe); err != nil {
 		t.Fatal(err)
@@ -223,9 +224,8 @@ func TestEnsureStartsAHostWhenNoneAnswers(t *testing.T) {
 	}
 	pid := cl.Pid()
 	_ = cl.Close()
-	t.Cleanup(func() { reap(t, pid) })
-	if pid == os.Getpid() || pid <= 0 {
-		t.Fatalf("host pid = %d, want a started process", pid)
+	if pids := started(); len(pids) != 1 || pids[0] != pid {
+		t.Fatalf("started %v, want the one host %d", pids, pid)
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
 		t.Fatalf("started host not alive: %v", err)
@@ -233,6 +233,9 @@ func TestEnsureStartsAHostWhenNoneAnswers(t *testing.T) {
 	// A second Ensure finds it answering and starts nothing.
 	if err := Ensure(ctx, path, "/nonexistent/watchtower"); err != nil {
 		t.Fatalf("Ensure with a live v2 host = %v", err)
+	}
+	if pids := started(); len(pids) != 1 {
+		t.Fatalf("a second Ensure started a host: %v", pids)
 	}
 }
 

@@ -159,7 +159,7 @@ final class ReplicaOutboxTests: XCTestCase {
         try phone.store.markSent(actionID: "a1", recordSeq: 6, at: base.addingTimeInterval(5))
         let row = try XCTUnwrap(try phone.store.outboxRows([.sent]).first)
         XCTAssertEqual(row.recordSeq, 6)
-        XCTAssertEqual(row.sentAt, base.addingTimeInterval(5))
+        XCTAssertEqual(row.sentAt, base, "the 24 h rule's clock: a rewrite never restarts it (#1498)")
     }
 
     func testUndeliveredRowsReadAsFailed() async throws {

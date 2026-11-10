@@ -94,15 +94,13 @@ func findings(r *specreview.Result) []finding {
 
 // buildSpecReviewAnswer is SpecReviewAnswer.build: base with the marks'
 // comments after its own; with a finished loop, the loop's comments first,
-// then those of marks the ledger never carried.
-//
-// Known divergence: Swift re-locates each quote in the rendered snapshot
-// (DocumentRendering) to fill prefix and suffix; Go has no markdown renderer,
-// so a comment carries the heading and quote with empty context.
+// then those of marks the ledger never carried. Every comment is placed in
+// the rendered snapshot (placeComment), as the Desktop's.
 func buildSpecReviewAnswer(result *specreview.Result, marks map[string]db.SpecReviewMark,
-	ledger []specreview.LedgerEntry, loop bool, base asks.Answer, snapshot string) asks.Answer {
+	ledger []specreview.LedgerEntry, loop bool, base asks.Answer, markdown string) asks.Answer {
 	out := base
 	out.Comments = append([]asks.Comment{}, base.Comments...)
+	snapshot := &reviewSnapshot{markdown: markdown}
 	if !loop {
 		out.Comments = append(out.Comments, markComments(result, marks, snapshot)...)
 		return out
@@ -126,13 +124,13 @@ func buildSpecReviewAnswer(result *specreview.Result, marks map[string]db.SpecRe
 					break
 				}
 			}
-			if a, ok := chapterAnchor(result, chapter, snapshot); ok {
+			if a, ok := chapterAnchor(result, chapter, snapshot.markdown); ok {
 				anchor = a
 			} else {
-				anchor = firstHeadingAnchor(snapshot)
+				anchor = firstHeadingAnchor(snapshot.markdown)
 			}
 		}
-		out.Comments = append(out.Comments, asks.Comment{Heading: anchor[0], Quote: anchor[1], Body: loopBody(e, m.Body)})
+		out.Comments = append(out.Comments, placeComment(anchor[0], anchor[1], loopBody(e, m.Body), snapshot.rendered()))
 	}
 	rest := map[string]db.SpecReviewMark{}
 	for k, m := range marks {
@@ -142,6 +140,21 @@ func buildSpecReviewAnswer(result *specreview.Result, marks map[string]db.SpecRe
 	}
 	out.Comments = append(out.Comments, markComments(result, rest, snapshot)...)
 	return out
+}
+
+// reviewSnapshot is the ask's doc_snapshot, rendered once and only when a
+// comment is placed in it.
+type reviewSnapshot struct {
+	markdown string
+	doc      *plainDoc
+}
+
+func (s *reviewSnapshot) rendered() *plainDoc {
+	if s.doc == nil {
+		d := renderDocument(s.markdown)
+		s.doc = &d
+	}
+	return s.doc
 }
 
 // loopBody is SpecReviewAnswer.loopBody.
@@ -173,7 +186,7 @@ func loopBody(e specreview.LedgerEntry, owner string) string {
 // markComments is SpecReviewAnswer.comments: the comment marks in findings
 // order, then the marks whose finding the result no longer has (no result:
 // every comment mark), as "From the previous run".
-func markComments(result *specreview.Result, marks map[string]db.SpecReviewMark, snapshot string) []asks.Comment {
+func markComments(result *specreview.Result, marks map[string]db.SpecReviewMark, snapshot *reviewSnapshot) []asks.Comment {
 	var out []asks.Comment
 	known := map[string]bool{}
 	for _, f := range findings(result) {
@@ -185,12 +198,12 @@ func markComments(result *specreview.Result, marks map[string]db.SpecReviewMark,
 		var anchor [2]string
 		if f.anchor != nil {
 			anchor = [2]string{f.anchor.Heading, f.anchor.Quote}
-		} else if a, ok := chapterAnchor(result, f.chapter, snapshot); ok {
+		} else if a, ok := chapterAnchor(result, f.chapter, snapshot.markdown); ok {
 			anchor = a
 		} else {
-			anchor = firstHeadingAnchor(snapshot)
+			anchor = firstHeadingAnchor(snapshot.markdown)
 		}
-		out = append(out, asks.Comment{Heading: anchor[0], Quote: anchor[1], Body: joinBody(f.text, m.Body)})
+		out = append(out, placeComment(anchor[0], anchor[1], joinBody(f.text, m.Body), snapshot.rendered()))
 	}
 	var orphans []string
 	for k, m := range marks {
@@ -202,14 +215,14 @@ func markComments(result *specreview.Result, marks map[string]db.SpecReviewMark,
 	if len(orphans) == 0 {
 		return out
 	}
-	anchor := firstHeadingAnchor(snapshot)
+	anchor := firstHeadingAnchor(snapshot.markdown)
 	for _, k := range orphans {
 		m := marks[k]
 		about := m.Body
 		if m.About != "" {
 			about = joinBody(m.About, m.Body)
 		}
-		out = append(out, asks.Comment{Heading: anchor[0], Quote: anchor[1], Body: "From the previous run: " + about})
+		out = append(out, placeComment(anchor[0], anchor[1], "From the previous run: "+about, snapshot.rendered()))
 	}
 	return out
 }
@@ -304,8 +317,8 @@ func headingTitle(line string) string {
 	return strings.TrimSpace(line[n:])
 }
 
-// renderedQuote strips quote and list markers and the inline emphasis and
-// code markers (an approximation of Swift's DocumentRendering).
+// renderedQuote is SpecReviewAnswer.renderedQuote: quote and list markers
+// stripped, then the first line of the rest as rendered.
 func renderedQuote(line string) string {
 	text := strings.TrimLeft(line, "> ")
 	switch {
@@ -317,6 +330,7 @@ func renderedQuote(line string) string {
 			text = text[dot+2:]
 		}
 	}
-	text = strings.NewReplacer("**", "", "__", "", "`", "").Replace(text)
-	return strings.TrimSpace(text)
+	rendered := strings.TrimSpace(renderPlain(text))
+	first, _, _ := strings.Cut(rendered, "\n")
+	return strings.TrimSpace(first)
 }

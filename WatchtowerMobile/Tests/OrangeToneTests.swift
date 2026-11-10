@@ -50,7 +50,8 @@ final class OrangeToneTests: XCTestCase {
             id: "a", kind: .sessionStop, entityRecordName: "terminal_session-10", params: [:], createdAt: now, seq: 1,
             delivery: .undelivered, reason: .noAnswer)
         uses += NowOutboxRows(
-            lastFlushStopped: true, queued: [queued], undelivered: [undelivered], snapshot: snapshot, now: now, calendar: .current
+            lastFlushStopped: true, queued: [queued], undelivered: [undelivered], snapshot: snapshot, now: now, calendar: .current,
+            parked: NowParkedRow(macName: "Acme Mac", sent: 2)
         )?.toneUses ?? []
         uses += NotDeliveredModel(
             items: [undelivered], snapshot: snapshot, macName: "Acme Mac", now: now, calendar: .current,
