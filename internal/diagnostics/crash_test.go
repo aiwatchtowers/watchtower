@@ -59,6 +59,20 @@ func TestDiagnostics_CrashRuntimeHeaders(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_CrashRecoveredRepanic(t *testing.T) {
+	log := "2026/11/04 09:00:00 x\n" +
+		"panic: first [recovered]\n" +
+		"\tpanic: second\n" +
+		"\n" +
+		"goroutine 5 [running]:\n" +
+		"watchtower/internal/ideas.Run(...)\n" +
+		"\t/src/internal/ideas/run.go:1\n"
+	got := scanUTC(crashFiles(t, log, "", ""))
+	if got.Count != 1 || !got.TimeKnown || got.Place != "watchtower/internal/ideas.Run" {
+		t.Fatalf("recovered re-panic: got %+v, want one crash", got)
+	}
+}
+
 func TestDiagnostics_IgnoresLoggedPanicText(t *testing.T) {
 	logged := "2026/11/04 09:00:00 recovered panic: x\n" +
 		"goroutine 3 [running]:\n"
@@ -196,6 +210,13 @@ func TestDiagnostics_CrashOrderAcrossFiles(t *testing.T) {
 	got = scanUTC(crashFiles(t, "", same+b, same+c))
 	if got.Place != "watchtower/internal/sync.rotated" {
 		t.Fatalf("equal times: got %+v", got)
+	}
+
+	// Mixed: watchtower.log's crash has an unknown time, .1's a known one —
+	// an unknown time goes by file order, so watchtower.log wins.
+	got = scanUTC(crashFiles(t, a, late, ""))
+	if got.Count != 2 || got.TimeKnown || got.Place != "watchtower/internal/sync.current" {
+		t.Fatalf("mixed known/unknown: got %+v", got)
 	}
 
 	// Two crashes in one file: the later one.
