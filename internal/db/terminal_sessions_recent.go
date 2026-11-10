@@ -19,7 +19,7 @@ type RecentWorkbenchSession struct {
 func (db *DB) ListWorkbenchTerminalSessionsSince(since time.Time) ([]RecentWorkbenchSession, error) {
 	rows, err := db.Query(`SELECT id, project_id, kind, folder_path, claude_session_id, agent_transcript_path
 		FROM terminal_sessions
-		WHERE project_id IS NOT NULL AND kind IN ('claude','codex') AND last_active_at >= ?
+		WHERE project_id IS NOT NULL AND kind IN ('claude','codex') AND last_active_at >= ? AND `+NotDeletingSQL+`
 		ORDER BY id`, since.UTC().Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("listing recent workbench sessions: %w", err)

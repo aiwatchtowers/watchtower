@@ -13,6 +13,14 @@ import (
 
 var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 
+// NotDeletingSQL is the one filter every list read of terminal_sessions
+// carries (spec §4, board #1716): a row with delete_requested_at set is
+// deleted as far as the owner is concerned, so it leaves every list, the
+// phone and every session start. Lookups by id stay unfiltered; the guard
+// TestProj17_DeletingRowsLeaveEveryList names them. Qualify it with the
+// table alias when the query has one ("s." + NotDeletingSQL).
+const NotDeletingSQL = "delete_requested_at IS NULL"
+
 // agentStateAtLayout is agent_state_at's fixed-width UTC form: string order
 // is time order, and the Desktop parses it pinned to UTC.
 const agentStateAtLayout = "2006-01-02T15:04:05.000Z"

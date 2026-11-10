@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"watchtower/internal/db"
 	hubslices "watchtower/internal/hub/slices"
 )
 
@@ -130,14 +131,16 @@ func (l *stateLane) stateChanged(ctx context.Context, workbenches []int64) {
 	}
 }
 
-// readSessionFacts is every session's hook facts and open asks.
+// readSessionFacts is every session's hook facts and open asks; a row
+// being deleted (#1716) is left out, as if it were gone.
 func readSessionFacts(ctx context.Context, d *sql.DB) (map[int64]sessionFacts, error) {
 	rows, err := d.QueryContext(ctx, `
 SELECT t.id, COALESCE(t.project_id, 0), COALESCE(t.agent_state, ''), COALESCE(t.agent_state_at, ''),
        COALESCE(t.finished_at, ''), COALESCE(t.agent_failed_at, ''), COALESCE(t.agent_background, -1),
        COALESCE(t.agent_background_at, ''), COALESCE(t.chat_question_at, ''),
        (SELECT COUNT(*) FROM owner_asks a WHERE a.session_id = t.id AND a.status = 'open')
-FROM terminal_sessions t`)
+FROM terminal_sessions t
+WHERE t.`+db.NotDeletingSQL)
 	if err != nil {
 		return nil, err
 	}

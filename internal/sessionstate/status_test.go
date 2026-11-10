@@ -2,7 +2,9 @@ package sessionstate
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -101,6 +103,22 @@ func TestLoadReadsRowAndOpenAsks(t *testing.T) {
 	}
 	if _, err := Load(context.Background(), d, 99); err == nil {
 		t.Error("missing session: want error")
+	}
+}
+
+// A session being deleted (delete_requested_at, #1716) reads as missing,
+// so the status the phone's actions resolve never counts it.
+func TestWorkbenchStatus_IgnoresDeletingRow(t *testing.T) {
+	d := openTestDB(t)
+	mustExec(t, d, `INSERT INTO projects(id,name,folder_path) VALUES (1,'wb','/tmp/wb')`)
+	mustExec(t, d, `INSERT INTO terminal_sessions(id,project_id,kind,title,folder_path,claude_session_id,agent_state,agent_state_at)
+		VALUES (7,1,'claude','t','/tmp/wb','sid','working','2026-10-31T11:30:00.000Z')`)
+	if _, err := Load(context.Background(), d, 7); err != nil {
+		t.Fatalf("live row: %v", err)
+	}
+	mustExec(t, d, `UPDATE terminal_sessions SET delete_requested_at = '2026-11-10T12:00:00Z' WHERE id = 7`)
+	if _, err := Load(context.Background(), d, 7); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleting row err = %v, want sql.ErrNoRows", err)
 	}
 }
 

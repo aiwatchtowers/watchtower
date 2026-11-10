@@ -151,7 +151,7 @@ SELECT r.id, r.terminal_session_id, r.workbench_id, r.tool_name, r.summary, r.su
        r.created_at, s.project_id
 FROM permission_requests r
 JOIN terminal_sessions s ON s.id = r.terminal_session_id
-WHERE r.status = 'pending' AND s.kind = 'claude'
+WHERE r.status = 'pending' AND s.kind = 'claude' AND s.`+db.NotDeletingSQL+`
 ORDER BY r.id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading permission requests: %w", err)
