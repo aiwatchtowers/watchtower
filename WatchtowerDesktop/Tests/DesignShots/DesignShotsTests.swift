@@ -67,7 +67,9 @@ final class DesignShotsTests: XCTestCase {
     }
 
     func testOnboardingAgentShotsRender() throws {
-        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("onboarding-agent-") })
+        try renderShots(DesignShotCatalog.all.filter {
+            $0.name.hasPrefix("onboarding-agent-") || $0.name.hasPrefix("onboarding-step-live-")
+        })
     }
 
     private func renderShots(_ shots: [DesignShot]) throws {

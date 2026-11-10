@@ -379,6 +379,27 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertTrue(model.canContinue)
     }
 
+    /// A check that started before the sign-in ended cannot see the new
+    /// login: exit 0 waits for it and then runs one more.
+    func testSignInExitZeroRechecksAfterInFlightCheck() async {
+        let gate = GatedCheck()
+        let model = makeModel { await gate.runCheck() }
+        let early = Task { await model.runAgentCheck() }
+        await yieldALot()
+        model.signInStarted()
+        let ended = Task { await model.signInEnded(exitCode: 0) }
+        await yieldALot()
+        XCTAssertEqual(gate.calls, 1)
+
+        gate.release(0, with: Self.noneInstalled)
+        await early.value
+        await yieldALot()
+        XCTAssertEqual(gate.calls, 2)
+        gate.release(1, with: Self.claudeReady)
+        await ended.value
+        XCTAssertTrue(model.canContinue)
+    }
+
     /// A failed check is not rerun by the step re-appearing; Check again
     /// runs it.
     func testReappearingDoesNotRerunAFailedCheck() async {

@@ -163,6 +163,8 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertEqual(Choice.Setup.manualPath, "Choose the executable…")
         XCTAssertEqual(Choice.Setup.autoCheck, "Watchtower checks again when you come back to this window.")
         XCTAssertEqual(Choice.saveFailure, "Couldn’t save the AI agent.")
+        XCTAssertEqual(Choice.Setup.pathSaveFailure, "Couldn’t save the executable’s path.")
+        XCTAssertEqual(Choice.Setup.choosePanelMessage(.codex), "Select the Codex CLI executable")
     }
 
     func testContinueHint() {
