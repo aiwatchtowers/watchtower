@@ -84,6 +84,10 @@ var aiQueryCmd = &cobra.Command{
 var aiModelsFlagJSON bool
 var aiTestCLIPath string
 
+// aiWhichFlagJSON is accepted for the documented spelling; the output is one
+// JSON line either way.
+var aiWhichFlagJSON bool
+
 // Catalog reads must not inherit the database/config schema upgrade hook:
 // Settings uses saved file identity to confirm daemon application.
 var aiModelsCmd = &cobra.Command{
@@ -100,6 +104,15 @@ var aiTestCmd = &cobra.Command{
 	Short:             "Test AI provider connectivity",
 	Long:              "Verifies that the configured AI provider is available and responds. Outputs JSON with status.",
 	RunE:              runAITest,
+}
+
+// aiWhichCmd reports the claude/codex executable Go's own lookup would run.
+var aiWhichCmd = &cobra.Command{
+	Use:               "which",
+	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
+	Short:             "Print the agent CLI binary watchtower would run",
+	Long:              "Prints {\"provider\",\"path\",\"found\"} for --provider claude|codex: the configured claude_path/codex_path when it is an executable file, else the same lookup every spawn uses. Read-only: no request, no auth read, no config write.",
+	RunE:              runAIWhich,
 }
 
 // aiStreamEvent is a JSON line emitted by `watchtower ai query`.
@@ -123,7 +136,9 @@ func init() {
 	aiCmd.AddCommand(aiQueryCmd)
 	aiCmd.AddCommand(aiTestCmd)
 	aiCmd.AddCommand(aiModelsCmd)
+	aiCmd.AddCommand(aiWhichCmd)
 
+	aiWhichCmd.Flags().BoolVar(&aiWhichFlagJSON, "json", false, "output JSON (always on)")
 	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	aiTestCmd.Flags().StringVar(&aiTestCLIPath, "cli-path", "", "test this CLI path without saving it")
@@ -759,4 +774,40 @@ func chatMCPArgs() []string {
 		args = append(args, "--context-type", aiFlagContextType, "--context-id", aiFlagContextID)
 	}
 	return args
+}
+
+// isExecutableFile reports whether p is a regular file with an execute bit.
+func isExecutableFile(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// runAIWhich prints the agent binary Go would run. found is false when the
+// lookup returned the bare fallback name, nothing, an error, or a path that
+// is not an executable file; path is then "".
+func runAIWhich(cmd *cobra.Command, _ []string) error {
+	provider := flagProvider
+	if provider != "claude" && provider != "codex" {
+		return &exitCodeError{code: 2, err: fmt.Errorf("ai which: --provider must be claude or codex, got %q", provider)}
+	}
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+	override, bare := cfg.ClaudePath, "claude"
+	if provider == "codex" {
+		override, bare = cfg.CodexPath, "codex"
+	}
+	path := ""
+	if override != "" && isExecutableFile(override) {
+		path = override
+	} else if provider == "claude" {
+		path = claudeFindBinary()
+	} else if p, ferr := codexFindBinary(); ferr == nil {
+		path = p
+	}
+	if path == bare || !isExecutableFile(path) {
+		path = ""
+	}
+	return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"provider": provider, "path": path, "found": path != ""})
 }
