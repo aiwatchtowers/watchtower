@@ -48,8 +48,12 @@ enum OnboardingAgentShotFixtures {
         var signingIn = choice(.signedOut, .notInstalled)
         signingIn.signInStarted()
         var updating = choice(.signedOut, .notInstalled)
-        updating.outdated = [.claude]
+        updating.installs = [.claude: .init(path: "/Users/acme/.local/share/claude/versions/1.0.88", kind: .native)]
+        updating.applyLoginProbe(outdated: [.claude])
         updating.signInStarted()
+        var stuck = updating
+        stuck.signInEnded(exitCode: 0)
+        stuck.applyLoginProbe(outdated: [.claude])
         var signInStopped = signingIn
         signInStopped.signInStopped()
         return [
@@ -60,6 +64,7 @@ enum OnboardingAgentShotFixtures {
             Scene(name: "signed-out", choice: signingIn),
             Scene(name: "signed-out-stopped", choice: signInStopped),
             Scene(name: "signed-out-outdated", choice: updating),
+            Scene(name: "signed-out-update-stuck", choice: stuck),
             Scene(name: "none", choice: choice(.notInstalled, .notInstalled)),
             Scene(name: "none-codex", choice: choice(.notInstalled, .notInstalled, pick: .codex)),
             Scene(name: "failed", choice: choice(

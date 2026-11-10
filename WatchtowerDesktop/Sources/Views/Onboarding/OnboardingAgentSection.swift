@@ -82,7 +82,15 @@ struct OnboardingAgentSection: View {
     private func setupPanel(_ setup: OnboardingAgentChoice.Setup) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(setup.title).font(.callout.weight(.semibold))
-            if setup.runsSignIn { signInBlock(setup) }
+            if setup.runsSignIn {
+                signInBlock(setup)
+            } else if let note = setup.signInNote {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(Tone.warning)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ForEach(Array(setup.steps.enumerated()), id: \.offset) { index, step in
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     Text(setup.steps.count > 1 ? "\(index + 1). \(step.label)" : step.label).font(.caption).foregroundStyle(.secondary)

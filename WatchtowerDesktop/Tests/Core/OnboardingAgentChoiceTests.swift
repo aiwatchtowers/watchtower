@@ -280,13 +280,84 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertEqual(both.continueHint, "Continue unlocks once an AI agent is ready")
     }
 
-    func testOutdatedCLIUpdatesThenSignsIn() throws {
+    // MARK: Outdated CLI (asks #1161, #1163)
+
+    /// `claude auth --help` of Claude Code 2.1.322.
+    private let claudeAuthHelp = """
+    Usage: claude auth [options] [command]
+
+    Manage authentication
+
+    Options:
+      -h, --help        Display help for command
+
+    Commands:
+      help [command]    display help for command
+      login [options]   Sign in to your Anthropic account
+      logout            Log out from your Anthropic account
+      status [options]  Show authentication status
+    """
+
+    /// An old Claude Code that doesn't know `auth`: its general help, exit 0.
+    private let claudeGeneralHelp = """
+    Usage: claude [options] [command] [prompt]
+
+    Options:
+      -p, --print       Print response and exit
+      --login-hint <x>  Not a command
+
+    Commands:
+      config            Manage configuration
+      mcp               Configure and manage MCP servers
+      update            Check for updates and install if available
+    """
+
+    func testLoginSupportReadsTheHelpText() {
+        XCTAssertTrue(Choice.Agent.claude.loginSupported(help: claudeAuthHelp))
+        XCTAssertFalse(Choice.Agent.claude.loginSupported(help: claudeGeneralHelp))
+        XCTAssertFalse(Choice.Agent.claude.loginSupported(help: ""))
+        XCTAssertTrue(Choice.Agent.codex.loginSupported(help: "Manage login\n\nUsage: codex login [OPTIONS] [COMMAND]\n"))
+        XCTAssertFalse(Choice.Agent.codex.loginSupported(help: "Usage: codex [OPTIONS] [PROMPT]\n"))
+    }
+
+    func testInstallKindFromTheResolvedPath() {
+        let home = "/Users/owner"
+        typealias Kind = Choice.InstallKind
+        XCTAssertEqual(Kind.of(.claude, resolvedPath: "/Users/owner/.local/share/claude/versions/2.1.322", home: home), .native)
+        XCTAssertEqual(Kind.of(.claude, resolvedPath: "/opt/homebrew/Caskroom/claude-code/2.1.3/claude", home: home), .homebrew)
+        XCTAssertEqual(
+            Kind.of(.claude, resolvedPath: "/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/cli.js", home: home), .npm
+        )
+        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js", home: home), .npm)
+        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/Caskroom/codex/0.166.0/codex", home: home), .homebrew)
+        XCTAssertEqual(Kind.of(.codex, resolvedPath: "/Users/owner/.local/bin/codex", home: home), .native)
+        XCTAssertEqual(Kind.of(.claude, resolvedPath: "/usr/local/bin/claude", home: home), .unknown)
+    }
+
+    func testUpdateCommandPerInstallKind() {
+        XCTAssertEqual(Choice.Agent.claude.updateCommand(.native), "claude update")
+        XCTAssertEqual(Choice.Agent.claude.updateCommand(.homebrew), "brew upgrade --cask claude-code")
+        XCTAssertEqual(Choice.Agent.claude.updateCommand(.npm), "npm install -g @anthropic-ai/claude-code@latest")
+        XCTAssertEqual(Choice.Agent.codex.updateCommand(.native), "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
+        XCTAssertEqual(Choice.Agent.codex.updateCommand(.homebrew), "brew upgrade --cask codex")
+        XCTAssertEqual(Choice.Agent.codex.updateCommand(.npm), "npm install -g @openai/codex@latest")
+        XCTAssertNil(Choice.Agent.claude.updateCommand(.unknown))
+    }
+
+    private func outdatedClaude(_ kind: Choice.InstallKind) -> Choice {
         var old = choice(.signedOut, .notInstalled)
-        old.outdated = [.claude]
-        XCTAssertEqual(old.terminalCommand, "claude update")
+        old.installs = [.claude: .init(path: "/opt/homebrew/Caskroom/claude-code/1.0.88/claude", kind: kind)]
+        old.applyLoginProbe(outdated: [.claude])
+        return old
+    }
+
+    func testOutdatedCLIUpdatesThenSignsIn() throws {
+        var old = outdatedClaude(.homebrew)
+        XCTAssertEqual(old.terminalCommand, "brew upgrade --cask claude-code")
         let setup = try XCTUnwrap(old.setup)
         XCTAssertEqual(setup.title, "Update Claude Code to sign in")
-        XCTAssertEqual(setup.steps.map(\.command), ["claude update"])
+        XCTAssertEqual(setup.steps.map(\.command), ["brew upgrade --cask claude-code"])
+        XCTAssertTrue(setup.runsSignIn)
         XCTAssertEqual(
             setup.signInNote,
             "This Claude Code is too old to sign in from here. It updates first; sign-in starts right after."
@@ -295,14 +366,47 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         old.signInStarted()
         old.signInEnded(exitCode: 1)
         XCTAssertEqual(old.retryLabel, "Update again")
-        XCTAssertEqual(old.setup?.signInNote, "Sign-in stopped before it finished (exit code 1).")
         old.signInStarted()
         old.signInEnded(exitCode: 0)
-        // Updated: the sign-in command opens by itself next.
-        XCTAssertTrue(old.outdated.isEmpty)
+        // The caller probes again: the login is there now, and it opens by itself.
+        old.applyLoginProbe(outdated: [])
         XCTAssertEqual(old.terminalCommand, "claude auth login")
         XCTAssertEqual(old.signInToOpen, .claude)
         XCTAssertEqual(old.retryLabel, "Sign in again")
-        XCTAssertEqual(Choice.Agent.codex.updateCommand, "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
+    }
+
+    func testUpdateThatChangedNothingNeverLoops() throws {
+        var old = outdatedClaude(.homebrew)
+        old.signInStarted()
+        old.signInEnded(exitCode: 0)
+        // Another copy is first on PATH: the probe still finds no login.
+        old.applyLoginProbe(outdated: [.claude])
+        XCTAssertTrue(old.updateStuck(.claude))
+        XCTAssertNil(old.terminalCommand)
+        XCTAssertNil(old.signInToOpen)
+        let setup = try XCTUnwrap(old.setup)
+        XCTAssertFalse(setup.runsSignIn)
+        XCTAssertTrue(setup.steps.isEmpty)
+        XCTAssertTrue(setup.showsManualPath)
+        XCTAssertEqual(setup.docsURL, "https://code.claude.com/docs/en/setup")
+        XCTAssertTrue(setup.signInNoteWarns)
+        XCTAssertEqual(
+            setup.signInNote,
+            "Updating didn’t change the Claude Code Watchtower uses (/opt/homebrew/Caskroom/claude-code/1.0.88/claude). "
+                + "It may be installed twice. Update that copy the way you installed it, or choose another executable."
+        )
+    }
+
+    func testUnknownInstallOffersNoUpdateCommand() throws {
+        let old = outdatedClaude(.unknown)
+        XCTAssertNil(old.terminalCommand)
+        XCTAssertNil(old.signInToOpen)
+        let setup = try XCTUnwrap(old.setup)
+        XCTAssertFalse(setup.runsSignIn)
+        XCTAssertEqual(
+            setup.signInNote,
+            "Watchtower can’t tell how this Claude Code was installed (/opt/homebrew/Caskroom/claude-code/1.0.88/claude). "
+                + "Update it the way you installed it, then check again."
+        )
     }
 }

@@ -29,13 +29,34 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             }
         }
 
-        /// Updates an install too old for `signInCommand` (`<cli> login
-        /// --help` / `claude auth --help` failed): `claude update` exists in
-        /// every Claude Code that predates `auth login`; Codex reinstalls.
-        package var updateCommand: String {
+        /// The update for an install too old for `signInCommand`, by how it
+        /// was installed (owner, ask #1163): each way updates its own copy;
+        /// an unknown way gets no command — the owner updates it their way.
+        package func updateCommand(_ kind: InstallKind) -> String? {
+            switch (self, kind) {
+            case (.claude, .native): "claude update"
+            case (.claude, .homebrew): "brew upgrade --cask claude-code"
+            case (.claude, .npm): "npm install -g @anthropic-ai/claude-code@latest"
+            case (.codex, .native): "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+            case (.codex, .homebrew): "brew upgrade --cask codex"
+            case (.codex, .npm): "npm install -g @openai/codex@latest"
+            case (_, .unknown): nil
+            }
+        }
+
+        /// Whether the CLI has the login command, read from the text of
+        /// `claude auth --help` / `codex login --help` — never the exit code:
+        /// an old CLI may print its general help and exit 0 (owner, ask #1163).
+        package func loginSupported(help: String) -> Bool {
             switch self {
-            case .claude: "claude update"
-            case .codex: "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+            case .claude:
+                // The `auth` command list has a `login` row: "  login [options]  Sign in…".
+                help.split(separator: "\n").contains { line in
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    return line.first == " " && (trimmed == "login" || trimmed.hasPrefix("login "))
+                }
+            case .codex:
+                help.contains("Usage: codex login")
             }
         }
 
@@ -82,6 +103,33 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case ended(Int32?)
     }
 
+    /// How a CLI got onto the Mac, from its executable with symlinks
+    /// resolved: it decides the update command.
+    package enum InstallKind: Equatable, Sendable {
+        /// The vendor's installer (`claude.ai/install.sh`, `codex/install.sh`).
+        case native
+        case homebrew
+        case npm
+        case unknown
+
+        package static func of(_ agent: Agent, resolvedPath path: String, home: String) -> InstallKind {
+            if path.contains("/node_modules/") { return .npm }
+            if path.contains("/Caskroom/") || path.contains("/Cellar/") { return .homebrew }
+            let nativeRoots = switch agent {
+            case .claude: [home + "/.local/share/claude/"]
+            case .codex: [home + "/.codex/", home + "/.local/"]
+            }
+            return nativeRoots.contains { path.hasPrefix($0) } ? .native : .unknown
+        }
+    }
+
+    /// The resolved executable of an installed agent and how it got there.
+    package struct Install: Equatable, Sendable {
+        package var path: String
+        package var kind: InstallKind
+        package init(path: String, kind: InstallKind) { self.path = path; self.kind = kind }
+    }
+
     /// The status line's colour, mapped to `Tone` by the view.
     package enum Tone: Equatable, Sendable { case success, warning, error, neutral }
 
@@ -125,9 +173,13 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     /// Agents whose sign-in already started once: the terminal opens by
     /// itself only the first time, never again after a Stop.
     package private(set) var signInOpened: Set<Agent> = []
-    /// Signed-out agents whose CLI has no login command yet: the terminal
-    /// runs `updateCommand` first, then the sign-in opens by itself.
-    package var outdated: Set<Agent> = []
+    /// Signed-out agents whose CLI has no login command yet (the help
+    /// probe): the terminal runs the update first, then the sign-in.
+    package private(set) var outdated: Set<Agent> = []
+    package var installs: [Agent: Install] = [:]
+    /// Agents whose update already ran to exit 0 once: still outdated after
+    /// it means another copy is in the way, so no second update is offered.
+    package private(set) var updateTried: Set<Agent> = []
     package private(set) var selected: Agent?
     /// The owner tapped a tile: later checks never move the selection.
     package private(set) var picked = false
@@ -180,14 +232,36 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     /// signed out, not opened before.
     package var signInToOpen: Agent? {
         guard let agent = selected, status(agent) == .signedOut, signIn == .idle,
-              !signInOpened.contains(agent) else { return nil }
+              !signInOpened.contains(agent), terminalCommand != nil else { return nil }
         return agent
     }
 
-    /// What the panel's terminal runs for the picked agent.
+    /// What the panel's terminal runs for the picked agent; nil when an
+    /// outdated CLI can't be updated from here (`updateStuck`).
     package var terminalCommand: String? {
         guard let agent = selected, status(agent) == .signedOut else { return nil }
-        return outdated.contains(agent) ? agent.updateCommand : agent.signInCommand
+        guard outdated.contains(agent) else { return agent.signInCommand }
+        return updateStuck(agent) ? nil : updateCommand(agent)
+    }
+
+    private func updateCommand(_ agent: Agent) -> String? {
+        agent.updateCommand(installs[agent]?.kind ?? .unknown)
+    }
+
+    /// Outdated, and either the way it was installed is unknown or an
+    /// update already ran without fixing it.
+    package func updateStuck(_ agent: Agent) -> Bool {
+        outdated.contains(agent) && (updateTried.contains(agent) || updateCommand(agent) == nil)
+    }
+
+    /// The help probe's result after a check. An agent that stops being
+    /// outdated after its update gets its sign-in opened by itself again.
+    package mutating func applyLoginProbe(outdated newOutdated: Set<Agent>) {
+        for agent in outdated.subtracting(newOutdated) where updateTried.contains(agent) {
+            signInOpened.remove(agent)
+            updateTried.remove(agent)
+        }
+        outdated = newOutdated
     }
 
     package mutating func signInStarted() {
@@ -199,9 +273,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     /// The process ended; `0` means signed in — the caller checks again.
     package mutating func signInEnded(exitCode: Int32) {
         signIn = exitCode == 0 ? .idle : .ended(exitCode)
-        // A finished update hands over to the sign-in, which opens by itself.
-        if exitCode == 0, let agent = selected, outdated.remove(agent) != nil {
-            signInOpened.remove(agent)
+        // A finished update: the caller probes again (`applyLoginProbe`).
+        if exitCode == 0, let agent = selected, outdated.contains(agent) {
+            updateTried.insert(agent)
         }
     }
 
@@ -283,6 +357,18 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                 docsURL: agent.installDocsURL,
                 runsSignIn: false
             )
+        case .signedOut where updateStuck(agent):
+            return Setup(
+                agent: agent,
+                title: "Update \(agent.name) to sign in",
+                steps: [],
+                detail: nil,
+                showsManualPath: true,
+                docsURL: agent.installDocsURL,
+                runsSignIn: false,
+                signInNote: stuckLine(agent),
+                signInNoteWarns: true
+            )
         case .signedOut:
             let updating = outdated.contains(agent)
             return Setup(
@@ -290,7 +376,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                 title: updating ? "Update \(agent.name) to sign in" : "Sign in to \(agent.name)",
                 steps: [Step(
                     label: "Or run it in your own Terminal:",
-                    command: updating ? agent.updateCommand : agent.signInCommand
+                    command: updating ? updateCommand(agent) : agent.signInCommand
                 )],
                 detail: nil,
                 showsManualPath: false,
@@ -310,6 +396,16 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                 runsSignIn: false
             )
         }
+    }
+
+    private func stuckLine(_ agent: Agent) -> String {
+        let path = installs[agent]?.path ?? agent.signInCommand
+        if updateTried.contains(agent) {
+            return "Updating didn’t change the \(agent.name) Watchtower uses (\(path)). It may be installed twice. "
+                + "Update that copy the way you installed it, or choose another executable."
+        }
+        return "Watchtower can’t tell how this \(agent.name) was installed (\(path)). "
+            + "Update it the way you installed it, then check again."
     }
 
     /// The line above the sign-in terminal.
