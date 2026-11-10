@@ -39,11 +39,14 @@ func (a *Applier) linesOf(p db.CoachProposal) lineStore {
 		return lineStore{
 			list: func() ([]lineRow, error) {
 				rows, err := a.DB.ListSkillPackOverlays(p.Skill)
+				if err != nil {
+					return nil, err
+				}
 				out := make([]lineRow, len(rows))
 				for i, r := range rows {
 					out[i] = lineRow{ID: r.ID, Text: r.Text, ProposalID: r.ProposalID}
 				}
-				return out, err
+				return out, nil
 			},
 			edit: func(removeIDs []int64, add []lineRow, now time.Time) ([]int64, error) {
 				rows := make([]db.SkillPackOverlay, len(add))
@@ -57,11 +60,14 @@ func (a *Applier) linesOf(p db.CoachProposal) lineStore {
 	return lineStore{
 		list: func() ([]lineRow, error) {
 			rows, err := a.DB.ListPromptAdditions(p.PromptID)
+			if err != nil {
+				return nil, err
+			}
 			out := make([]lineRow, len(rows))
 			for i, r := range rows {
 				out[i] = lineRow{ID: r.ID, Text: r.Text, ProposalID: r.ProposalID}
 			}
-			return out, err
+			return out, nil
 		},
 		edit: func(removeIDs []int64, add []lineRow, now time.Time) ([]int64, error) {
 			rows := make([]db.PromptAddition, len(add))
@@ -195,15 +201,12 @@ func (a *Applier) restoreLines(p db.CoachProposal, now time.Time) error {
 // read or written is logged (a fingerprint, never a path) and skipped, and the
 // next integrate or workbench open renders it.
 func (a *Applier) rerenderPack(skill string) (updated, drifted int) {
-	rows, err := a.DB.ListSkillPackOverlays(skill)
+	rows, err := a.linesOf(db.CoachProposal{Destination: DestPackOverlay, Skill: skill}).list()
 	if err != nil {
 		log.Printf("coach: re-rendering pack skill %s: %s", skill, logredact.Body([]byte(err.Error())))
 		return 0, 0
 	}
-	lines := make([]string, len(rows))
-	for i, r := range rows {
-		lines[i] = r.Text
-	}
+	lines := nonEmptyLines(joinLines(rows))
 	count := func(st devpack.State) {
 		switch st {
 		case devpack.StateUpdated:

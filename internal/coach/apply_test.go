@@ -575,6 +575,39 @@ func TestRollback_PackOverlayRemovesItsLinesAndRerenders(t *testing.T) {
 	assert.Equal(t, s.Content, string(b))
 }
 
+func TestAccept_PackOverlayEditedTextAndRecovery(t *testing.T) {
+	d := openDBs(t)
+	a := newApplier(t, d)
+	f := t.TempDir()
+	_, err := d.CreateWorkbench("a", f)
+	require.NoError(t, err)
+	c := installPlain(t, filepath.Join(f, ".claude", "skills"), devpack.FlowSkillName)
+
+	// The owner's own text is what lands in the rows and the copy.
+	id := propose(t, d, db.CoachProposal{Destination: DestPackOverlay, Skill: devpack.FlowSkillName, AfterText: "Be brief."})
+	res, err := a.Accept(id, "Be very brief.")
+	require.NoError(t, err)
+	assert.Equal(t, AcceptResult{PackCopiesUpdated: 1}, res)
+	b, err := os.ReadFile(c)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), devpack.OverlayHeading+"\n\nBe very brief.\n")
+	assert.Equal(t, "Be very brief.", proposal(t, d, id).AfterText)
+
+	// Rows already written by an earlier Accept that failed to record it:
+	// only the status is written, and the copy still follows the rows.
+	id2 := propose(t, d, db.CoachProposal{Destination: DestPackOverlay, Skill: devpack.FlowSkillName,
+		BeforeText: "Be very brief.", AfterText: "Be very brief.\nCite ids."})
+	_, err = d.EditSkillPackOverlays(devpack.FlowSkillName, nil, []db.SkillPackOverlay{{Text: "Cite ids.", ProposalID: id2}}, applyNow)
+	require.NoError(t, err)
+	res, err = a.Accept(id2, "")
+	require.NoError(t, err)
+	assert.Equal(t, AcceptResult{PackCopiesUpdated: 1}, res)
+	assert.Equal(t, "accepted", proposal(t, d, id2).Status)
+	b, err = os.ReadFile(c)
+	require.NoError(t, err)
+	assert.Contains(t, string(b), "Be very brief.\nCite ids.\n")
+}
+
 func TestValidateAfter_PackOverlay(t *testing.T) {
 	cur := CurrentText{Destination: DestPackOverlay, Skill: devpack.WorkbenchSkillName, Budget: BudgetOf(DestPackOverlay, "")}
 	require.NoError(t, ValidateAfter(cur, "Be brief.\nCite ids."))

@@ -59,16 +59,8 @@ func (a *Applier) now() time.Time {
 // many were left because the owner edited them by hand.
 type AcceptResult struct{ PackCopiesUpdated, PackCopiesDrifted int }
 
-// Accept applies an open proposal. edited "" applies the proposed text;
-// otherwise edited is the owner's own whole after-text, checked by the same
-// rules. The destination must still hold the proposal's before-text, else the
-// proposal is superseded and ErrStale returned; an owner text is written by a
-// compare-and-set on that before-text, so an edit made after the check is
-// never overwritten. When the destination already holds the proposal's own
-// after-text (an earlier Accept wrote it but failed to record it), only the
-// status is written; an edited text never takes that shortcut. The destination is written first, then the status; when
-// the status write fails the before-state is put back. A pack overlay then
-// re-renders the skill's installed copies (rerenderPack).
+// Accept applies an open proposal (accept); a pack overlay then re-renders
+// the skill's installed copies (rerenderPack) and the result counts them.
 func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 	p, err := a.DB.GetCoachProposal(id)
 	if err != nil {
@@ -84,6 +76,16 @@ func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 	return r, nil
 }
 
+// accept applies p. edited "" applies the proposed text; otherwise edited is
+// the owner's own whole after-text, checked by the same rules. The
+// destination must still hold the proposal's before-text, else the proposal
+// is superseded and ErrStale returned; an owner text is written by a
+// compare-and-set on that before-text, so an edit made after the check is
+// never overwritten. When the destination already holds the proposal's own
+// after-text (an earlier Accept wrote it but failed to record it), only the
+// status is written; an edited text never takes that shortcut. The
+// destination is written first, then the status; when the status write fails
+// the before-state is put back.
 func (a *Applier) accept(p db.CoachProposal, edited string) error {
 	id := p.ID
 	if p.Status != "open" {
@@ -181,8 +183,9 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 		return "", fmt.Errorf("rolling back coach proposal %d (%s): %w", id, p.Destination, err)
 	}
 	if p.Destination == DestPackOverlay {
-		// The rows are back: the copies follow them whatever the status write does.
-		a.rerenderPack(p.Skill)
+		// The rows are back: the copies follow them whatever the status write
+		// does. The counts are reported for an Accept only.
+		_, _ = a.rerenderPack(p.Skill)
 	}
 	// The destination is back; only the status is left. An accepted proposal
 	// can only move to rolled_back, so a failed CAS means another rollback won.
@@ -194,8 +197,9 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 
 // stillHolds is whether the destination still contains p's accepted edit: an
 // owner text is exactly the after-text; a prompt or a pack skill's overlay
-// still has every row this proposal added, with the same text; the allow list or the Codex rules still
-// have every rule the proposal added. Later additions and rules of others do not count.
+// still has every row this proposal added, with the same text; the allow list
+// or the Codex rules still have every rule the proposal added. Later
+// additions and rules of others do not count.
 func (a *Applier) stillHolds(p db.CoachProposal, cur CurrentText) (bool, error) {
 	switch p.Destination {
 	case DestPromptAdd, DestPackOverlay:
