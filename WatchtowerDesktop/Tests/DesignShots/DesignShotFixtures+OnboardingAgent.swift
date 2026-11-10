@@ -114,9 +114,8 @@ enum OnboardingAgentShotFixtures {
                     hint: scene.choice.continueHint,
                     error: scene.error,
                     canContinue: scene.choice.canContinue,
-                    isContinuing: scene.continuing,
-                    onContinue: {}
-                )
+                    isContinuing: scene.continuing
+                ) {}
                 .padding(.top, Spacing.regular)
             }
             .padding(Spacing.page)

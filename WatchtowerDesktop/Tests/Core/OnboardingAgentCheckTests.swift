@@ -44,7 +44,8 @@ final class OnboardingAgentCheckTests: XCTestCase {
 
     func testForbiddenAgentIsNeverLocatedOrTested() async {
         let calls = Calls()
-        let result = await OnboardingAgentCheck.run(probes(allowed: { $0 != .claude }, calls: calls) { _, _ in Result(ok: true) })
+        let pass: @Sendable (String?, String?) async -> Result = { _, _ in Result(ok: true) }
+        let result = await OnboardingAgentCheck.run(probes(allowed: { $0 != .claude }, calls: calls, test: pass))
         XCTAssertEqual(result.statuses[.claude], .forbidden)
         let located = await calls.located
         let tested = await calls.tested
@@ -79,9 +80,15 @@ final class OnboardingAgentCheckTests: XCTestCase {
 
     func testStatusFromTheTest() async {
         func status(_ code: String?) async -> OnboardingAgentChoice.Status? {
-            let r = await OnboardingAgentCheck.run(probes(located: [.claude: "/opt/bin/claude"], help: { _, _ in "  login [options]\n" }, calls: Calls()) { _, _ in
+            let run: @Sendable (String?, String?) async -> Result = { _, _ in
                 code == nil ? Result(ok: true) : Result(ok: false, errorCode: code, error: "boom")
-            })
+            }
+            let r = await OnboardingAgentCheck.run(probes(
+                located: [.claude: "/opt/bin/claude"],
+                help: { _, _ in "  login [options]\n" },
+                calls: Calls(),
+                test: run
+            ))
             return r.statuses[.claude]
         }
         let ready = await status(nil)
@@ -111,11 +118,16 @@ final class OnboardingAgentCheckTests: XCTestCase {
         let calls = Calls()
         let seen = Calls()
         let resolved = "/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js"
+        let record: @Sendable (String?, String?) async -> Result = { _, exe in
+            await seen.test(exe ?? "nil")
+            return Result(ok: true)
+        }
         let result = await OnboardingAgentCheck.run(probes(
             located: [.codex: "/opt/homebrew/bin/codex"],
             resolve: { $0 == "/opt/homebrew/bin/codex" ? resolved : $0 },
-            calls: calls
-        ) { _, exe in await seen.test(exe ?? "nil"); return Result(ok: true) })
+            calls: calls,
+            test: record
+        ))
         XCTAssertEqual(result.installs[.codex], .init(path: resolved, kind: .npm, executable: "/opt/homebrew/bin/codex"))
         let exes = await seen.tested
         XCTAssertEqual(exes, ["/opt/homebrew/bin/codex"])
@@ -124,19 +136,27 @@ final class OnboardingAgentCheckTests: XCTestCase {
     func testHelpProbeOnlyForSignedOut() async {
         let calls = Calls()
         let helpSeen = Calls()
+        let claudeSignedOut: @Sendable (String?, String?) async -> Result = { provider, _ in
+            provider == "claude" ? Result(ok: false, errorCode: "auth") : Result(ok: true)
+        }
         let result = await OnboardingAgentCheck.run(probes(
             help: { agent, exe in await helpSeen.help("\(agent.rawValue)=\(exe)"); return "Commands:\n  logout\n" },
-            calls: calls
-        ) { provider, _ in provider == "claude" ? Result(ok: false, errorCode: "auth") : Result(ok: true) })
+            calls: calls,
+            test: claudeSignedOut
+        ))
         let helped = await helpSeen.helped
         XCTAssertEqual(helped, ["claude=/opt/bin/claude"])
         XCTAssertEqual(result.outdated, [.claude])
     }
 
     func testHelpTimeoutCountsAsOutdated() async {
-        let result = await OnboardingAgentCheck.run(probes(located: [.claude: "/opt/bin/claude"], help: { _, _ in nil }, calls: Calls()) { _, _ in
-            Result(ok: false, errorCode: "auth")
-        })
+        let authFails: @Sendable (String?, String?) async -> Result = { _, _ in Result(ok: false, errorCode: "auth") }
+        let result = await OnboardingAgentCheck.run(probes(
+            located: [.claude: "/opt/bin/claude"],
+            help: { _, _ in nil },
+            calls: Calls(),
+            test: authFails
+        ))
         XCTAssertEqual(result.outdated, [.claude])
     }
 

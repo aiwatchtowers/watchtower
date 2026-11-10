@@ -151,7 +151,7 @@ final class OnboardingAgentProbesTests: XCTestCase {
         let listed = Set(text.split(whereSeparator: \.isWhitespace).compactMap { Int32($0) })
         XCTAssertTrue(listed.isSuperset(of: [0, 1, 2]), "the capture fds are there: \(listed)")
         XCTAssertFalse(listed.contains(high), "the app's descriptor \(high) leaked into the child: \(listed)")
-        XCTAssertTrue(listed.filter { $0 > 10 }.isEmpty, "unexpected descriptors: \(listed)")
+        XCTAssertFalse(listed.contains { $0 > 10 }, "unexpected descriptors: \(listed)")
     }
 
     func testAllowedFollowsThePolicy() {
