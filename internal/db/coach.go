@@ -378,10 +378,11 @@ func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float6
 // SetCoachMeasureFrom starts the verdict window of an accepted repo_* edit:
 // the first time the daemon sees it at the folder's HEAD. A compare-and-set on
 // measure_from IS NULL and status accepted: false (no error) when it was
-// already set or the proposal left accepted, so a second pass is a no-op.
+// already set, the proposal left accepted or was judged meanwhile (the
+// 30-day too_little_data is final), so a second pass is a no-op.
 func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
 	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?
-		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL`, coachStamp(at), id)
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL AND verdict = ''`, coachStamp(at), id)
 	if err != nil {
 		return false, fmt.Errorf("setting coach measure_from: %w", err)
 	}

@@ -544,3 +544,18 @@ func TestJudge_RepoNotCommittedIn30Days(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, awaiting, "the commit check leaves it")
 }
+
+// A commit first seen after 30 days (committed late, or the daemon was off)
+// does not reopen the window: too_little_data, as never committed.
+func TestJudge_RepoCommittedAfter30Days(t *testing.T) {
+	d, id := repoJudgeFixture(t, 5)
+	late := judgeDecided.Add(31 * 24 * time.Hour)
+	set, err := d.SetCoachMeasureFrom(id, late)
+	require.NoError(t, err)
+	require.True(t, set)
+	j, c := runJudge(t, d, late.Add(time.Hour))
+	assert.Zero(t, j+c)
+	assert.Equal(t, "too_little_data", proposal(t, d, id).Verdict)
+	runJudge(t, d, late.Add(15*24*time.Hour))
+	assert.Equal(t, late.Add(time.Hour), proposal(t, d, id).VerdictAt.UTC(), "final: never measured")
+}

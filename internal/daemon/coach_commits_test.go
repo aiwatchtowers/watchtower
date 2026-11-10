@@ -141,3 +141,20 @@ func TestRepoMeasureFrom_FolderGoneSkipped(t *testing.T) {
 		assert.NotContains(t, out, f, "ids only in the log")
 	}
 }
+
+// A failed list or a cancelled cycle does not stamp the day: tried next cycle.
+func TestRepoMeasureFrom_CancelledCheckRetriedNextCycle(t *testing.T) {
+	d, database := coachDaemon(t)
+	stubCoach(t, nil)
+	folder, id := acceptedRepoEdit(t, database)
+	commitGit(t, folder, "commit", "-q", "-am", "owner commits")
+	d.lastCoach = time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.False(t, d.coachCommitCheck(ctx, time.Now()))
+	assert.True(t, measureFrom(t, database, id).IsZero())
+
+	d.phaseCoach(context.Background())
+	assert.False(t, d.lastCoachCommits.IsZero(), "a full pass stamps the day")
+	assert.False(t, measureFrom(t, database, id).IsZero())
+}

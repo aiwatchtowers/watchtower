@@ -137,6 +137,7 @@ func (a *Applier) accept(p db.CoachProposal, edited string) (string, error) {
 	if cur.Text != p.BeforeText {
 		// Recovery only: an edited text always takes the normal path below.
 		if cur.Text == p.AfterText {
+			// The branch now, which may not be the one of the earlier write.
 			branch := a.writtenBranch(p)
 			if err := a.DB.MarkCoachAccepted(id, cur.Text, branch, baseline, n, now); err != nil {
 				return "", fmt.Errorf("accepting coach proposal %d: %w", id, err)

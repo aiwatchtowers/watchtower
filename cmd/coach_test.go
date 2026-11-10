@@ -909,6 +909,12 @@ func TestCoachProposals_FolderBranch(t *testing.T) {
 	acc := coachItemByID(t, items, accepted)
 	assert.NotContains(t, acc, "folder_branch")
 	assert.JSONEq(t, `"main"`, string(acc["written_branch"]))
+	assert.Equal(t, "null", string(acc["measure_from"]))
+	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
+	_, err = d.SetCoachMeasureFrom(accepted, at)
+	require.NoError(t, err)
+	items = coachProposalItems(t, "--status", "accepted")
+	assert.JSONEq(t, `"2026-11-02T09:00:00Z"`, string(coachItemByID(t, items, accepted)["measure_from"]))
 
 	gitIn("switch", "-q", "--detach")
 	c := exec.Command("git", "rev-parse", "--short=7", "HEAD")
@@ -922,4 +928,11 @@ func TestCoachProposals_FolderBranch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "  where: "+coach.DestRepoClaudeMD+fmt.Sprintf(" (workbench %d) on detached:", wb))
 	assert.Contains(t, out, "  where: "+coach.DestRepoClaudeMD+fmt.Sprintf(" (workbench %d)\n", wbPlain), "no branch, no suffix")
+
+	// A folder gone: "" and no git read.
+	require.NoError(t, os.RemoveAll(plain))
+	reads = 0
+	items = coachProposalItems(t)
+	assert.JSONEq(t, `""`, string(coachItemByID(t, items, inPlain)["folder_branch"]))
+	assert.Equal(t, 1, reads, "only the live folder is read")
 }

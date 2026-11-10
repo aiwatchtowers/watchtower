@@ -35,8 +35,8 @@ const (
 // judgeAfter ago with no verdict, or with too_little_data (until judgeGiveUp),
 // is measured over [decided_at, now) — for a workbench repository file over
 // [measure_from, now), from when the daemon first saw the edit committed
-// (windowStart; never committed within repoCommitWait: too_little_data,
-// final): under judgeMinSessions sessions, no
+// (windowStart; not committed within repoCommitWait: a final too_little_data
+// at the first weekly pass after it): under judgeMinSessions sessions, no
 // baseline or no value is too_little_data; a value at least judgeImprovement
 // below the baseline is works; anything else is no_effect. A no_effect edit
 // gets one mechanical cut proposal (no model call) when a slot is free. judged
@@ -76,9 +76,10 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 	}
 	var errs []error
 	for _, p := range accepted {
-		if isRepoDestination(p.Destination) && p.MeasureFrom.IsZero() {
+		if isRepoDestination(p.Destination) && !committedInTime(p) {
 			// Not committed yet: no window to measure. Past repoCommitWait
-			// it never will be (the daily commit check skips a judged row).
+			// it never will be (the daily commit check skips a judged row);
+			// a commit first seen after it counts as never committed.
 			if p.Verdict != "" || p.DecidedAt.IsZero() || now.Sub(p.DecidedAt) < repoCommitWait {
 				continue
 			}
@@ -135,6 +136,12 @@ func windowStart(p db.CoachProposal) time.Time {
 		return p.MeasureFrom
 	}
 	return p.DecidedAt
+}
+
+// committedInTime: p's commit was seen at most repoCommitWait after the
+// Accept (a repository edit only).
+func committedInTime(p db.CoachProposal) bool {
+	return !p.MeasureFrom.IsZero() && p.MeasureFrom.Sub(p.DecidedAt) <= repoCommitWait
 }
 
 // verdictOf measures p's period and names the verdict and the measured value.

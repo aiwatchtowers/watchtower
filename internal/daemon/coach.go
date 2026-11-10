@@ -137,8 +137,8 @@ func (d *Daemon) markCoachFailed(now time.Time) {
 }
 
 // phaseCoach checks the accepted workbench repository edits for their commit
-// once a day (coachCommitCheck), and runs the agent coach once a week: fold the old instruction
-// suggestions in (once ever, ImportSuggestions), judge the accepted proposals
+// once a day (coachCommitCheck), and runs the agent coach once a week: fold
+// the old instruction suggestions in (once ever, ImportSuggestions), judge the accepted proposals
 // that are old enough, collect the signals, ask for new proposals. The fold
 // runs under the lock, before proposing, so it and `coach run` never race on
 // the free slots; its error is logged and the pass goes on. There is no
@@ -155,8 +155,9 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 	}
 	now := time.Now()
 	if d.lastCoachCommits.IsZero() || now.Sub(d.lastCoachCommits) >= coachCommitsEvery {
-		d.lastCoachCommits = now
-		d.coachCommitCheck(ctx, now)
+		if d.coachCommitCheck(ctx, now) {
+			d.lastCoachCommits = now
+		}
 	}
 	if !d.lastCoach.IsZero() && now.Sub(d.lastCoach) < coachInterval {
 		return
@@ -237,16 +238,18 @@ func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
 // or cannot be read skips the row that day; the judge's 30-day rule ends a
 // row never committed. Git is read outside any write transaction; each
 // SetCoachMeasureFrom is its own short write. Logs carry ids, never a path.
-func (d *Daemon) coachCommitCheck(ctx context.Context, now time.Time) {
+// done is false when the list failed or the cycle was cancelled: the check
+// is tried again next cycle, not a day later.
+func (d *Daemon) coachCommitCheck(ctx context.Context, now time.Time) (done bool) {
 	ps, err := d.db.ListRepoProposalsAwaitingCommit()
 	if err != nil {
 		d.logger.Printf("coach: commit check: %v", err)
-		return
+		return false
 	}
 	committed := 0
 	for _, p := range ps {
 		if ctx.Err() != nil {
-			return
+			return false
 		}
 		seen, why := d.coachEditAtHead(ctx, p)
 		if why != "" {
@@ -268,6 +271,7 @@ func (d *Daemon) coachCommitCheck(ctx context.Context, now time.Time) {
 	if committed > 0 {
 		d.logger.Printf("coach: commit check: %d repository edit(s) committed, measured from now", committed)
 	}
+	return true
 }
 
 // coachEditAtHead reports whether p's file at its workbench folder's HEAD
