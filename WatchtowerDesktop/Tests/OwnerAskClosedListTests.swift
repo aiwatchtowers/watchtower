@@ -303,6 +303,10 @@ final class OwnerAskClosedListTests: XCTestCase {
         let vm = await page(s)
         await vm.showClosedList(projectID: s.project, sessionID: s.session)
         let visible = [s.closed[1]]
+        XCTAssertFalse(vm.pressInClosedList(.escape, key: key(s), visibleIDs: visible),
+                       "no click in the drawer yet: its keys are not taken")
+        XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s))
+        vm.asks.setDrawerKeysActive(true, projectID: s.project)
         XCTAssertTrue(vm.pressInClosedList(.down, key: key(s), visibleIDs: visible))
         XCTAssertEqual(vm.asks.closedListCursors[key(s)], s.closed[1])
         // The search hid the cursor's row: Return opens nothing blind.
@@ -324,6 +328,7 @@ final class OwnerAskClosedListTests: XCTestCase {
         let vm = await page(s)
         await vm.showClosedList(projectID: s.project, sessionID: s.session)
         vm.asks.closedListCursors[key(s)] = s.closed[0]
+        vm.asks.setDrawerKeysActive(true, projectID: s.project)
         XCTAssertTrue(vm.pressInClosedList(.open, key: key(s), visibleIDs: s.closed))
         let deadline = Date().addingTimeInterval(5)
         while vm.asks.drawerAskIDs[s.project] != s.closed[0], Date() < deadline {

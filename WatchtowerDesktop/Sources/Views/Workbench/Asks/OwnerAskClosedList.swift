@@ -66,7 +66,7 @@ struct OwnerAskClosedListPane: View {
         .background(OwnerAskKeyCatcher(
             onPress: { [vm, key] press in
                 guard let action = Model.keyAction(for: press) else { return false }
-                if action == .search {
+                if action == .search, vm.asks.drawerKeysActive.contains(key.projectID) {
                     searchFocused = true
                     return true
                 }

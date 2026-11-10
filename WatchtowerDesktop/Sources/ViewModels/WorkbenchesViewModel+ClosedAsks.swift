@@ -65,6 +65,8 @@ extension WorkbenchesViewModel {
         key: OwnerAsksViewModel.ClosedListKey,
         visibleIDs ids: [Int64]
     ) -> Bool {
+        // Only after a click in the drawer, as its ask keys (board #412).
+        guard asks.drawerKeysActive.contains(key.projectID) else { return false }
         switch action {
         case .up, .down:
             asks.moveClosedListCursor(key, ids: ids, forward: action == .down)
