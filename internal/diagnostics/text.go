@@ -254,3 +254,45 @@ func CrashScanStopped(mb int) string { return fmt.Sprintf(crashScanStoppedFmt, m
 
 // CrashNoneScanStopped is `none in the first <N> MB of the logs (scan stopped)`.
 func CrashNoneScanStopped(mb int) string { return fmt.Sprintf(crashNoneScanStoppedFmt, mb) }
+
+// ---- Database parts (Task 9, lines_db.go / sources.go) ----
+
+// Source kinds as the Sources line prints them. The form's checkbox
+// labels are the same words, except FormEmailOverIMAP (IMAP and Outlook
+// mailboxes both tick it); CalDAV/ICS calendars have no checkbox.
+const (
+	KindSlack          = "Slack"
+	KindGmail          = "Gmail"
+	KindGoogleCalendar = "Google Calendar"
+	KindJira           = "Jira"
+	KindConfluence     = "Confluence"
+	KindLinear         = "Linear"
+	KindEmailIMAP      = "Email (IMAP)"
+	KindOutlook        = "Outlook"
+	KindCalDAV         = "Calendar (CalDAV/ICS)"
+	FormEmailOverIMAP  = "Email over IMAP"
+)
+
+// Sources line formats: `Slack 2 ok`, `Gmail 2 (1 needs sign-in)`,
+// `Confluence 3 spaces ok`, `Linear unknown`, `Quick Connections 4`.
+const (
+	kindCountFmt  = "%s %d"
+	kindWordFmt   = "%s %s"
+	kindStatesFmt = "%s (%s)"
+	stateCountFmt = "%d %s"
+	StateSep      = ", "
+)
+
+// kindCount is `<kind> <n>`.
+func kindCount(kind string, n int) string { return fmt.Sprintf(kindCountFmt, kind, n) }
+
+// kindWord is `<kind> <word>`, e.g. `Linear unknown`, `Slack 2 ok`.
+func kindWord(kind, word string) string { return fmt.Sprintf(kindWordFmt, kind, word) }
+
+// kindStates is `<kind> <n> (<states>)`.
+func kindStates(head string, states []string) string {
+	return fmt.Sprintf(kindStatesFmt, head, strings.Join(states, StateSep))
+}
+
+// stateCount is `<k> <state>`.
+func stateCount(k int, state string) string { return fmt.Sprintf(stateCountFmt, k, state) }
