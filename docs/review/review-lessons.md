@@ -2832,3 +2832,12 @@ Entry format:
 - rule-gap (candidate, dim 7/8): *a Swift test that feeds a CLI stream or envelope uses a sequence captured from the Go side's test for the same outcome (or the shared golden), never a hand-written mix of events.*
 - rule-gap (candidate, dim 9): *a `--stream` command writes its envelope as the last line on every return path, early refusals and usage errors included; a bare `return err` after the stream starts is the tell.*
 - outcome: TBD
+
+## 2026-11-10 — ci/self-hosted-mac (PR #750, board #1705: CI jobs on the owner's Mac when its self-hosted runners are online, else cloud; picker script + tests, setup script + README; CI YAML + shell only; panel: prosecutor (10) + codex (1); pr-review-toolkit specialists unavailable; judge verified 19291598e by reading, no runs) — verdict: changes-needed
+
+- contested: F2 "Linux/OpenSSL path no longer tested on PRs" raised major. Held minor plus Needs human. The owner chose "all jobs on the Mac" (asks #1184/#1187), release.yml still gates on ubuntu, and the Mac runs the CommonCrypto engine that actually ships. Only the doc drift and an unrecorded trade-off were defects. **When the owner has approved a topology, a reviewer flags the coverage it gives up as a documented trade-off, not as a blocker against the decision.** [2/8]
+- false-positive: F4 cited `internal/auth` `EnsureCert` tests as writing to the real `~/.local/share/watchtower/.certs`. They use `t.TempDir()` with `generateAndSaveCert`. The shared-home concern is plausible but had no concrete example, so it went down to a doc note. Codex's jq finding went down to nit: macOS 15+ ships `/usr/bin/jq`, and `/usr/bin` is on the runner PATH. [7]
+- miss: no lane pointed out that the Mac path never ran. The PR body says so. Go Test, the race shards and Go Lint now run darwin-tagged code in CI for the first time (keychain, cgo policy reader, osascript), and lint covers darwin files instead of linux files. **A CI change that moves jobs to a new OS needs one green run on that OS before merge, not only the fallback path.** [6]
+- weak-dimension: 6. Both lanes reviewed the YAML's branching on `runner.environment` but not whether the suite passes on macOS.
+- rule-gap (candidate, dim 9): *self-hosted runners on a public repository ship with the fork-PR approval policy applied by the setup code itself, not by a README step.* The fix round in the working tree does this.
+- outcome: TBD

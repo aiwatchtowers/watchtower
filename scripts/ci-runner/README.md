@@ -90,9 +90,11 @@ contributors.
    When the token expires, the picker falls back to the cloud: renew it and
    set the secret again.
 
-6. **Make fork PRs wait for approval.** The picker never sends a fork PR to
-   the Mac, but a fork PR could edit `ci.yml` to ask for `self-hosted`
-   directly. Require approval before any outside contributor's workflow runs:
+6. **Fork PRs wait for approval.** The picker never sends a fork PR to the
+   Mac, but a fork PR could edit `ci.yml` to ask for `self-hosted` directly.
+   The setup script (step 2) therefore requires approval before any outside
+   contributor's workflow runs (the repository default only asks for
+   first-time contributors), and stops if it cannot. By hand:
 
    ```sh
    gh api -X PUT repos/aiwatchtowers/watchtower/actions/permissions/fork-pr-contributor-approval \
@@ -122,6 +124,24 @@ contributors.
   and to `_diag/` inside its folder.
 - **Leftover simulators** (a job killed before its cleanup step) are named
   `wt-ci-<run id>-<attempt>`; as `ci`: `xcrun simctl delete <name>`.
-- **Xcode:** the Mac runs whatever Xcode `--xcode` points at; the cloud runs
-  Xcode 26.4.1. Keep them on the same Swift version, or a Mac-only failure
-  may be a toolchain difference.
+- **Xcode:** the Mac runs whatever Xcode `--xcode` points at (the setup
+  script prints its version); the cloud runs Xcode 26.4.1. Keep them on the
+  same Swift version, or a Mac-only failure may be a toolchain difference.
+
+## Known trade-offs
+
+- **No Linux CI while the Mac is online.** The `linux` class runs on macOS
+  then, so the OpenSSL build of `internal/sqlcipher` and any Linux-only Go
+  code are not built on PRs or main pushes; the release workflow still gates
+  on ubuntu, so a Linux-only break shows up there at the latest. To check a
+  branch on Linux, take the Mac offline (log out of `ci`) and re-run.
+- **The cloud SPM build cache ages out.** Only a GitHub-hosted Swift Test on
+  a main push saves `WatchtowerDesktop/.build` to the Actions cache; while
+  the Mac takes those runs the entries are not refreshed and GitHub evicts
+  them after 7 days, so the next cloud (or release) Swift Test builds cold.
+- **One home for every job.** Jobs share `ci`'s home and run three at a
+  time, so a test that writes to the real home (rather than a temp folder)
+  sees what other jobs and earlier runs left there.
+- **No spill-over.** A class goes to the Mac whenever one of its runners is
+  online, busy or not; concurrent runs queue for the four runners rather
+  than overflow to the cloud.

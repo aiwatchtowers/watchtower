@@ -86,7 +86,7 @@ Go and Swift move together, and the interop test is the gate:
 ### Build, CI and release
 
 - **Local.** The first `go test` or build after a clean cache compiles the amalgamation (~30 s). After that the Go build cache keeps it, so never pass `-count=1` by reflex. `CGO_ENABLED=0` no longer builds.
-- **Linux is a CI-only build** with OpenSSL. Every Ubuntu job that compiles Go installs `libssl-dev` explicitly (Guide Check, Go Lint, Go Test, the race shards, Code Index full grammars, and the release Go gate and race shards). CI therefore tests the engine that ships, never another one.
+- **Linux is a CI-only build** with OpenSSL. Every Ubuntu job that compiles Go installs `libssl-dev` explicitly (Guide Check, Go Lint, Go Test, the race shards, Code Index full grammars, and the release Go gate and race shards). While the owner's Mac serves CI (`scripts/ci-runner/README.md`), those jobs run on macOS instead and build the CommonCrypto engine that ships; the OpenSSL build is then checked only by the release workflow, which always runs on ubuntu.
 - **`.goreleaser.yaml` is deleted.** It built `CGO_ENABLED=0` binaries, nothing called it, and its Homebrew tap does not exist. There is no Linux or Intel release binary.
 - **Notices.** `THIRD_PARTY_NOTICES.md` § SQLite engine lists the mattn fork, the SQLCipher amalgamation, `SQLCipher.swift` and the GRDB fork, with the Zetetic licence text. `scripts/tests/test-build-app-notices.sh` checks that `VERSION`'s tags appear there.
 

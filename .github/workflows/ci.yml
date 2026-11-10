@@ -83,8 +83,11 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # scripts/ci-pick-runner.sh, tested by scripts/tests/test-ci-pick-runner.sh.
-      # Never fails: anything unexpected keeps every job in the cloud.
+      # Never fails the gate: anything unexpected — the script's own error
+      # included (continue-on-error, then the outputs' cloud defaults above) —
+      # keeps every job in the cloud.
       - id: pick
+        continue-on-error: true
         env:
           EVENT: ${{ github.event_name }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -245,7 +248,8 @@ jobs:
         run: go build ./...
 
       # The shell suite over scripts/build-app.sh — it stubs `ps` and never
-      # builds, so it rides this Linux job rather than paying for a macOS one.
+      # builds, so it rides this job (Linux in the cloud) rather than paying
+      # for a macOS one.
       # Seconds long, so it runs before the coverage gate: earlier signal, no cost.
       - name: Test (shell scripts)
         run: make test-scripts

@@ -179,16 +179,35 @@ or pass --allow-open-home to go ahead anyway."
     fi
 }
 
+# The runners' PATH is Homebrew's bin plus the system's (see install), so the
+# tools are checked there, not on your PATH.
 ensure_tools() {
     command -v brew >/dev/null || die "Homebrew is required (swiftlint comes from it)"
-    if ! command -v swiftlint >/dev/null; then
-        step "installing swiftlint (Homebrew, as you: $CI_USER cannot write there)"
-        brew install swiftlint
-    fi
+    local brew_bin tool
+    brew_bin="$(brew --prefix)/bin"
+    # swiftlint: Swift Lint. jq: make test-scripts (macOS 15+ has /usr/bin/jq).
+    for tool in swiftlint jq; do
+        if [ ! -x "$brew_bin/$tool" ] && [ ! -x "/usr/bin/$tool" ]; then
+            step "installing $tool (Homebrew, as you: $CI_USER cannot write there)"
+            brew install "$tool"
+        fi
+    done
     [ -d "$XCODE_APP/Contents/Developer" ] || die "no Xcode at $XCODE_APP (see --xcode)"
     step "accepting the Xcode license and installing its first-launch packages"
     sudo env DEVELOPER_DIR="$XCODE_APP/Contents/Developer" xcodebuild -license accept
     sudo env DEVELOPER_DIR="$XCODE_APP/Contents/Developer" xcodebuild -runFirstLaunch
+    # The cloud runs Xcode 26.4.1; a different Swift here makes Mac-only failures.
+    echo "   the runners use $(DEVELOPER_DIR="$XCODE_APP/Contents/Developer" xcodebuild -version | head -1) (the cloud: Xcode 26.4.1)"
+}
+
+# Fork PRs could ask for the self-hosted runners in their own ci.yml: make
+# every outside contributor's workflow wait for an approval.
+require_fork_approval() {
+    step "requiring approval for every outside contributor's fork PR workflow"
+    if ! gh api -X PUT "repos/$REPO/actions/permissions/fork-pr-contributor-approval" \
+        -f approval_policy=all_external_contributors >/dev/null; then
+        die "could not set the fork PR approval policy; set it by hand (README.md, step 6) and run again"
+    fi
 }
 
 # The runner reads PATH from .path and extra variables from .env at start.
@@ -216,6 +235,7 @@ download_runner() {
 
 install() {
     check_owner_home
+    require_fork_approval
     ensure_user
     ensure_tools
 
@@ -259,7 +279,7 @@ install() {
         echo "(Fast User Switching), then switch back to your account without logging out."
     fi
     echo "Keep the Mac awake on power while it serves CI:  sudo pmset -c sleep 0"
-    echo "The rest of the checklist (token secret, fork approvals) is in scripts/ci-runner/README.md."
+    echo "The rest of the checklist (the RUNNER_STATUS_TOKEN secret) is in scripts/ci-runner/README.md."
 }
 
 sudo -v || die "sudo is required"
