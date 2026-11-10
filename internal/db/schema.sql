@@ -3257,7 +3257,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   sent_at        TEXT,
   delivered_at   TEXT,
   outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), -- how the owner closed a sent round (00155)
-  branch         TEXT NOT NULL DEFAULT '' -- the branch a source='pr' round reviews; '' for a folder round (00173)
+  branch         TEXT NOT NULL DEFAULT '', -- the branch a source='pr' round reviews; '' for a folder round (00173)
+  head_sha       TEXT NOT NULL DEFAULT '' -- the commit the snapshot was taken at (rev-parse HEAD / the branch tip read); '' = a round made before 00179, no lane attribution
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
@@ -3331,6 +3332,18 @@ CREATE TABLE IF NOT EXISTS review_overviews (
   PRIMARY KEY (project_id, tree_sha, base_sha, intent_hash)
 );
 
+-- One cached AI description per overview chapter (00179, board #1025):
+-- part_hash = sha256 of the chapter key, its files' (path, old blob, new blob),
+-- the agent's notes on them and the prompt id + version. Pruned after 30 days on write.
+CREATE TABLE IF NOT EXISTS review_overview_parts (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  part_hash  TEXT NOT NULL,
+  json       TEXT NOT NULL,
+  model      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, part_hash)
+);
+
 CREATE TABLE IF NOT EXISTS review_reverts (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   round_id INTEGER NOT NULL REFERENCES review_rounds(id) ON DELETE CASCADE,
@@ -3352,6 +3365,22 @@ CREATE TABLE IF NOT EXISTS review_lessons (
   created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   decided_at         TEXT
 );
+
+-- The independent reviewer's thread per branch of a workbench (00180, Desktop writer).
+-- branch = the round's branch, else the folder's checked-out branch; a detached HEAD
+-- keys by 'session:<id>'. conversation_id is a chat_conversations row of context type
+-- 'review_reviewer', deleted with its thread row.
+CREATE TABLE IF NOT EXISTS review_reviewer_threads (
+  project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  branch          TEXT NOT NULL CHECK (branch != ''),
+  conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project_id, branch)
+);
+CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
+BEGIN
+  DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
+END;
 
 -- Permission prompts a Claude Code PermissionRequest hook waits on, answered from the phone
 -- or the Mac (00130). summary is what the owner approves (clipped to 2000 chars); no tool_input.

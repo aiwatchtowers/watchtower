@@ -2881,6 +2881,16 @@ why TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
+table	review_overview_parts
+CREATE TABLE review_overview_parts (
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+part_hash TEXT NOT NULL,
+json TEXT NOT NULL,
+model TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (project_id, part_hash)
+)
+
 table	review_overviews
 CREATE TABLE review_overviews (
 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2905,6 +2915,15 @@ at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 UNIQUE (round_id, hunk_id)
 )
 
+table	review_reviewer_threads
+CREATE TABLE review_reviewer_threads (
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+branch TEXT NOT NULL CHECK (branch != ''),
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+PRIMARY KEY (project_id, branch)
+)
+
 table	review_rounds
 CREATE TABLE review_rounds (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2924,7 +2943,7 @@ active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 sent_at TEXT,
 delivered_at TEXT
-, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), branch TEXT NOT NULL DEFAULT '')
+, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')), branch TEXT NOT NULL DEFAULT '', head_sha TEXT NOT NULL DEFAULT '')
 
 table	review_viewed
 CREATE TABLE review_viewed (
@@ -3756,6 +3775,12 @@ INSERT INTO media_items (kind, parent_kind, parent_key, target_image_id, locator
 media_type, size_bytes, scope, from_owner, content_at)
 VALUES ('image', 'target', 'target:' || NEW.id, NEW.id, NEW.path, NEW.file_name,
 NEW.mime, NEW.size, 'owner', 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
+END
+
+trigger	review_reviewer_threads_ad
+CREATE TRIGGER review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
+BEGIN
+DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
 END
 
 trigger	targets_board_column_check_ai
@@ -6120,6 +6145,13 @@ GROUP BY up.ancestor
 13	why	TEXT	notnull=1	dflt=''	pk=0
 14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
+## review_overview_parts
+0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	part_hash	TEXT	notnull=1	dflt=NULL	pk=2
+2	json	TEXT	notnull=1	dflt=NULL	pk=0
+3	model	TEXT	notnull=1	dflt=''	pk=0
+4	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
 ## review_overviews
 0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
 1	tree_sha	TEXT	notnull=1	dflt=NULL	pk=2
@@ -6137,6 +6169,12 @@ GROUP BY up.ancestor
 4	header	TEXT	notnull=1	dflt=NULL	pk=0
 5	patch	TEXT	notnull=1	dflt=NULL	pk=0
 6	at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## review_reviewer_threads
+0	project_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	branch	TEXT	notnull=1	dflt=NULL	pk=2
+2	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
 ## review_rounds
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6158,6 +6196,7 @@ GROUP BY up.ancestor
 16	delivered_at	TEXT	notnull=0	dflt=NULL	pk=0
 17	outcome	TEXT	notnull=1	dflt=''	pk=0
 18	branch	TEXT	notnull=1	dflt=''	pk=0
+19	head_sha	TEXT	notnull=1	dflt=''	pk=0
 
 ## review_viewed
 0	round_id	INTEGER	notnull=1	dflt=NULL	pk=1

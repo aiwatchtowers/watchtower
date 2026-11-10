@@ -51,6 +51,9 @@ struct ReviewFileHeader: View {
             .font(.caption.monospacedDigit())
         Text("−\(file.deletions)").foregroundStyle(Tone.error)
             .font(.caption.monospacedDigit())
+        if let danger = model.mapFiles[file.path], let badge = ReviewMapPresentation.fileBadge(danger) {
+            ReviewDangerBadge(level: danger.level, text: badge)
+        }
         ReviewRiskBadge(level: risk?.level, why: risk?.why ?? "")
     }
 

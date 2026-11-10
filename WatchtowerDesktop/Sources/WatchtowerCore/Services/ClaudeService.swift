@@ -52,7 +52,8 @@ package protocol AIServiceProtocol: Sendable {
     /// it carries no content). `purpose` is `--purpose`, the usage ledger's
     /// tag for the run's calls (nil = none). `readFolderAskID` is
     /// `--read-folder-ask N`: the CLI reads the folder review ask N's reviewer
-    /// read (never with `readFolder`).
+    /// read; `readFolderRoundID` is `--read-folder-round N`: the folder diff
+    /// review round N was taken from (at most one of the three folder flags).
     func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -64,7 +65,8 @@ package protocol AIServiceProtocol: Sendable {
         readFolder: String?,
         ownerInstructions: Bool,
         purpose: String?,
-        readFolderAskID: Int64?
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -90,11 +92,12 @@ extension AIServiceProtocol {
             readFolder: readFolder,
             ownerInstructions: false,
             purpose: nil,
-            readFolderAskID: nil
+            readFolderAskID: nil,
+            readFolderRoundID: nil
         )
     }
 
-    /// A double that models none of the three flags runs without them.
+    /// A double that models none of these flags runs without them.
     package func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
@@ -106,7 +109,8 @@ extension AIServiceProtocol {
         readFolder: String?,
         ownerInstructions: Bool,
         purpose: String?,
-        readFolderAskID: Int64?
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,

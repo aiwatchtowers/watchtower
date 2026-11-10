@@ -503,6 +503,15 @@ Lines are 1-based, columns UTF-16 (the CLI's convention).
   shell under `--sandbox read-only` with web search off. Without
   `--read-folder` both argvs are byte-identical to before. The follow-up
   spike #341 is dismissed.
+- **Amendment (2026-11-08, board #1025, owner decision in ask #611):**
+  `--read-folder DIR` is unchanged (workbench folders only). Two sibling
+  flags name the folder by a record instead, each exclusive with the others
+  and with `--tools`, every failure exit 2: `--read-folder-ask N` (the
+  folder spec/plan review ask N's reviewer read) and `--read-folder-round N`
+  (the folder diff review round N was taken from, `review_rounds.folder_root`,
+  symlinks resolved), which Branch review's reviewer uses (spec
+  2026-11-07-big-branch-review-technical §6). It replaces a first widening
+  of `--read-folder` itself to recorded session worktrees (ask #560).
 - Model (owner decision 3): the popover and the Questions tab carry the same
   provider/model picker as the main chat composer, preselected to the default
   tier; the choice is kept per conversation (`chat_conversations.provider`/

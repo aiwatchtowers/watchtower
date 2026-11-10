@@ -218,6 +218,57 @@ func (db *DB) GetTargetByID(id int) (*Target, error) {
 	return t, nil
 }
 
+// TargetsByBranches maps each of branches to workbench projectID's target
+// whose branch it is, open or closed; of several targets on one branch the
+// newest wins. Branches with no target (and "") are absent from the map.
+// Names compare trimmed on both sides (an older writer,
+// UpdateTargetGitLinksTx, stores the branch as given) and the map is keyed
+// by the trimmed name.
+func (db *DB) TargetsByBranches(projectID int64, branches []string) (map[string]Target, error) {
+	out := make(map[string]Target, len(branches))
+	const chunk = 500
+	for start := 0; start < len(branches); start += chunk {
+		part := branches[start:min(start+chunk, len(branches))]
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(part)), ",")
+		args := make([]any, 0, len(part)+1)
+		args = append(args, projectID)
+		for _, b := range part {
+			args = append(args, strings.TrimSpace(b))
+		}
+		// Oldest first, so the newest row of a branch is the one left in the map.
+		rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets
+			WHERE project_id = ? AND `+trimmedBranch+` != '' AND `+trimmedBranch+` IN (`+marks+`)
+			ORDER BY created_at, id`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("reading targets by branch: %w", err)
+		}
+		if err := scanTargetsByBranch(rows, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// trimmedBranch is targets.branch without the whitespace strings.TrimSpace
+// drops from an ASCII name (space, tab, newline, carriage return, vertical
+// tab, form feed).
+const trimmedBranch = `trim(branch, ' ' || char(9, 10, 11, 12, 13))`
+
+func scanTargetsByBranch(rows *sql.Rows, out map[string]Target) error {
+	defer rows.Close()
+	for rows.Next() {
+		t, err := scanTarget(rows)
+		if err != nil {
+			return fmt.Errorf("reading targets by branch: %w", err)
+		}
+		out[strings.TrimSpace(t.Branch)] = *t
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reading targets by branch: %w", err)
+	}
+	return nil
+}
+
 // SetTargetNextStep stores an AI-generated next-step suggestion (JSON) and the
 // time it was generated. It deliberately does NOT bump updated_at: staleness is
 // detected by comparing next_step_at against updated_at, so a later user edit

@@ -76,6 +76,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Reviewing a spec or plan](features/workbench/spec-review.md) — an independent reviewer checks the document against your idea, the agent fixes what it finds, and you decide the disputes
 - [Discussing a spec review](features/workbench/spec-review-discuss.md) — read a spec's short version first and ask about any finding in place, with the agent that wrote it a question away
 - [Branch review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
+- [Reviewing a big branch](features/workbench/big-branch-review.md) — chapters at once, danger first, the AI describing each chapter as it goes
+- [Branch reviewer](features/workbench/branch-reviewer.md) — ask an independent, read-only reviewer what breaks on a branch
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
 - [Your instructions](features/workbench/instructions.md) — standing directions for every agent and AI chat (`remember:` adds one from a chat), a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench

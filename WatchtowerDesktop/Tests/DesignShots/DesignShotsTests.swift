@@ -30,6 +30,10 @@ final class DesignShotsTests: XCTestCase {
         try renderShots(DesignShotCatalog.all)
     }
 
+    func testReviewerShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("branch-review-reviewer") })
+    }
+
     func testSpecReviewShotsRender() throws {
         try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("spec-review-") })
     }
@@ -163,5 +167,12 @@ extension DesignShotsTests {
                 }
             }
         }
+    }
+}
+
+extension DesignShotsTests {
+    /// The big-branch review frames only (board #1025), for iterating on them.
+    func testBigBranchReviewShotsRender() throws {
+        try renderShots(DesignShotCatalog.all.filter { $0.name.hasPrefix("big-branch-") })
     }
 }
