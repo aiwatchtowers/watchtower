@@ -536,7 +536,7 @@ enum DesignShotCatalog {
                     .shotFrame()
                     .detailBackground())
             }
-        } + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots
+        } + InboxBuilderAShotFixtures.shots + InboxBuilderBShotFixtures.shots + ClosedAsksShotFixtures.shots
     }
 }
 
