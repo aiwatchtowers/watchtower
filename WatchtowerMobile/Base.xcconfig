@@ -9,7 +9,8 @@ CODE_SIGNING_REQUIRED = NO
 CODE_SIGN_IDENTITY =
 
 // The hosted relay's origin (Info.plist WTRelayOrigin, read by RelayConfig). Empty in every committed
-// build, and project.yml forces it empty for Release, so Release ships dark: no relay object, Keychain item, DeviceCheck call or connection. A Debug stand
+// build, and project.yml forces it empty for Release, so Release ships dark: no relay object, Keychain item, DeviceCheck call or connection. The exception is
+// make mobile-testflight, which passes the staging origin on the command line from a file outside the repo (ask #1156). A Debug stand
 // origin goes into the gitignored Signing.xcconfig only. In an xcconfig `//` starts a comment, so write
 // an origin as `https:/$()/host` (the empty `$()` keeps the slashes apart).
 WATCHTOWER_RELAY_ORIGIN =

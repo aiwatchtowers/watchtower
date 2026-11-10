@@ -365,6 +365,26 @@ func TestProj11_CodexSubagentStopLowersCount(t *testing.T) {
 	assert.True(t, turns.Closed(codexSubagentID))
 }
 
+// Board #1710: the SubagentStart raise is Claude Code's only — over a
+// counted Codex `waiting` a start records its turn and nothing else.
+func TestProj11_CodexSubagentStartNeverRaisesTheCount(t *testing.T) {
+	database, pid, row := codexRowFixture(t, codexExecSession)
+	storeCodexState(t, database, pid, row, codexExecSession, agentStateWorking)
+	stepClock(t)
+	runCodexState(t, string(codexHookFixture(t, "subagent_start")))
+	runCodexStop(t, codexPayload(t, "stop", map[string]any{"session_id": codexExecSession}))
+	runCodexState(t, string(codexHookFixture(t, "subagent_stop")))
+	require.Equal(t, sql.NullInt64{Int64: 0, Valid: true}, codexRow(t, database, row).Background)
+
+	before := rowSnapshot(t, database, row)
+	runCodexState(t, codexPayload(t, "subagent_start", map[string]any{"agent_id": "codex-sub-2"}))
+	after := rowSnapshot(t, database, row)
+	assert.NotEqual(t, before["agent_turns"], after["agent_turns"], "the turn is recorded")
+	delete(before, "agent_turns")
+	delete(after, "agent_turns")
+	assert.Equal(t, before, after, "a Codex SubagentStart wrote more than its turn")
+}
+
 func TestProj11_CodexSubagentWithoutAgentIDWritesNothing(t *testing.T) {
 	database, _, row := codexRowFixture(t, codexExecSession)
 	before := rowSnapshot(t, database, row)
