@@ -22,7 +22,7 @@ During setup, use the **AI agent** section on the first screen: pick **Claude Co
 1. Open **Settings → System → AI** and check the **Preferred provider** (and the **Reserve provider**, if you use one).
 2. Press **Check connection**. It looks at the installed tool and its sign-in without sending an AI prompt.
 3. **Not installed**: install the tool, or type its full path into **Claude CLI path** / **Codex CLI path** (empty means **Auto-detect**). In Terminal, `which claude` (or `which codex`) prints the path.
-4. Not signed in: in Terminal run `claude login` (or `codex login`), or start `claude` and sign in. Use the same macOS user that runs Watchtower.
+4. Not signed in: in Terminal run `claude auth login` (or `codex login`), or start `claude` and sign in. Use the same macOS user that runs Watchtower.
 5. **Not verified** means the sign-in can't be read without asking the provider. Press **Test connection**: it sends one short request with the **Strong model**, which may use paid quota. A failed test names the cause, for example "Provider request failed (auth)." or "(model)".
 6. A model error: empty **Light model** or **Strong model**, or pick **Provider default** in its menu. "Codex needs an update": run `codex update` in Terminal. "Isn't available on your Codex account": type a model your account offers, such as `gpt-5.6-sol`. "Ignored Watchtower's instructions": run `codex update` in Terminal, then **Test connection** again.
 7. Ollama / Local: start the server, check **Server URL** and that the chosen model exists, then **Test connection**.
