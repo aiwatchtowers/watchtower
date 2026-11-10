@@ -22,7 +22,11 @@ struct ReviewChapterRisksView: View {
             Divider()
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text("What to look at in this chapter").font(.caption.weight(.semibold))
-                if let list = model.chapterRiskList(key) {
+                if model.notDescribed(key) {
+                    // A failed or unreached chapter has no description and no risks of its own (board #1025).
+                    Text("The AI overview has no description of this chapter, so no risks to show.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let list = model.chapterRiskList(key) {
                     if list.outOfDate {
                         Text("Out of date — from an earlier AI overview of this branch.")
                             .font(.caption).foregroundStyle(.secondary)

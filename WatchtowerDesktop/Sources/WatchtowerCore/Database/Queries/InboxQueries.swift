@@ -2,11 +2,11 @@ import Foundation
 import GRDB
 
 /// Reads and the one write of `inbox_items` the Desktop does: the Inbox's Messages
-/// filter and badge, a message card's `read_at`, and resolving a recap's
+/// list and badge, a message card's `read_at`, and resolving a recap's
 /// `[inbox#id]` ref back to its item (`CatchUpViewModel`).
 package enum InboxQueries {
 
-    /// The open Slack, Jira, Linear and mail rows the Messages filter lists:
+    /// The open Slack, Jira, Linear and mail rows the Messages list shows:
     /// Home's read (`HomeFeedQueries.openMessageRows`) without its 72-hour
     /// window. An accumulated channel row is one row; snoozed rows are absent
     /// until their time.

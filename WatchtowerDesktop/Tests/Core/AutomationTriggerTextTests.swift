@@ -24,6 +24,7 @@ final class AutomationTriggerTextTests: XCTestCase {
             ("event", #"{"event":{"type":"slack.reaction_added"}}"#, "On a Slack reaction"),
             ("event", #"{"event":{"type":"slack.reaction_added","where":{"emoji":"eyes"}}}"#, "On :eyes: reactions"),
             ("event", #"{"event":{"type":"slack.reaction_added","where":{"emoji":":eyes:"}}}"#, "On :eyes: reactions"),
+            ("event", #"{"event":{"type":"approval"}}"#, "When an action or a reminder needs you"),
             ("manual", #"{"manual":true}"#, "Manual"),
             ("", "{}", "—")
         ]
@@ -92,7 +93,8 @@ final class AutomationTriggerTextTests: XCTestCase {
             "tracks": "After every sync",
             "ideas": "Every few hours",
             "reactions": "When you react in Slack",
-            "custom_tracks": "After every sync"
+            "custom_tracks": "After every sync",
+            "waiting_for_me": "After every sync"
         ]
         for (slot, text) in words {
             let spec = #"{"sync":"\#(slot)"}"#
@@ -110,5 +112,9 @@ final class AutomationTriggerTextTests: XCTestCase {
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:reaction.compose"),
                        "Turn your reactions into proposals")
         XCTAssertEqual(AutomationCardPresentation.permissionLine("track:scan"), "Add events to this watch's track")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:attention.waiting"),
+                       "Read the messages waiting on you")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:approvals.list"),
+                       "Read the actions and reminders that wait for you")
     }
 }

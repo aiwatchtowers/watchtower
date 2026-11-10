@@ -105,14 +105,16 @@ struct GettingReadyZoneView: View {
         return "\(row.source.actionTitle) to get \(joinedNames(titles))"
     }
 
-    /// Jira fills four tabs; an Inbox feature names its filter ("Your day"
-    /// for the brief and the plan); every other feature its Open's tab.
+    /// Jira fills four tabs; an Inbox feature names its Inbox entry ("Your
+    /// day" for the brief and the plan); every other feature its Open's tab.
     private static func featureTabTitles(for feature: ReadinessFeature) -> [String] {
         if feature == .jira {
             return [SidebarDestination.workload, .blockers, .projectMap, .releases].map(\.title)
         }
-        if let route = InboxRoute.forFeature(feature, today: "") {
-            return [route.filter == .day ? "Your day" : route.filter.title]
+        switch InboxRoute.forFeature(feature, today: "")?.entry {
+        case .card?: return ["Your day"]
+        case let .legacy(list)?: return [list.title]
+        case nil: break
         }
         return AppState.homeDestination(for: feature).map { [$0.title] } ?? []
     }

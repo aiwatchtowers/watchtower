@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -544,4 +545,146 @@ func TestDraftAutomation_DryRunsShareTheConversationsReadBudget(t *testing.T) {
 	if want := []string{"tool:ok", "tool:ok", "tool:error", "tool:ok"}; !slices.Equal(statuses, want) {
 		t.Fatalf("dry run steps = %v; want %v (two reads, the cap, then another conversation's own budget)", statuses, want)
 	}
+}
+
+// livingBlocksScript emits one living card with blocks and one more with a
+// markdown body.
+const livingBlocksScript = `output.inbox({title: "Threads", key: "thread:1", blocks: [{type: "heading", text: "Waiting for me"}]});
+output.inbox({title: "Plain", key: "thread:2", body: "colleague A asked"}); return 1`
+
+// TestDraftAutomation_OutputCarriesBlocksAndKey (Inbox builder A, Task 6):
+// a would-be inbox output carries its canonical blocks document (null for a
+// markdown body — never omitted), its living key and its content hash.
+func TestDraftAutomation_OutputCarriesBlocksAndKey(t *testing.T) {
+	f := newDraftFixture(t)
+	text := recipeText(nil, "outputs: [inbox]\nartifacts: living\n", livingBlocksScript)
+	res, raw := f.call(t, map[string]any{"recipe_text": text})
+	if res.DryRun == nil || res.DryRun.Status != db.RunSucceeded || len(res.DryRun.Outputs) != 2 {
+		t.Fatalf("dry run = %+v (errors %v); want two outputs", res.DryRun, res.Errors)
+	}
+	withBlocks, plain := res.DryRun.Outputs[0], res.DryRun.Outputs[1]
+	if withBlocks.Key != "thread:1" || plain.Key != "thread:2" {
+		t.Errorf("keys = %q, %q; want thread:1, thread:2", withBlocks.Key, plain.Key)
+	}
+	if !strings.Contains(string(withBlocks.Blocks), `"heading"`) || withBlocks.Body == "" {
+		t.Errorf("blocks = %s, body %q; want the heading document and its plain text", withBlocks.Blocks, withBlocks.Body)
+	}
+	if string(plain.Blocks) != "null" {
+		t.Errorf("markdown output blocks = %s; want null", plain.Blocks)
+	}
+	if len(withBlocks.ContentHash) != 64 || len(plain.ContentHash) != 64 || withBlocks.ContentHash == plain.ContentHash {
+		t.Errorf("content hashes = %q, %q; want two distinct sha256 hex", withBlocks.ContentHash, plain.ContentHash)
+	}
+	if !strings.Contains(raw, `"blocks":null`) || !strings.Contains(raw, `"key":"thread:2"`) {
+		t.Errorf("JSON %s; want blocks:null and the key", raw)
+	}
+}
+
+// TestDraftAutomation_FeedOutputKeyEmpty: a feed output's key is "" and
+// its blocks null on the wire.
+func TestDraftAutomation_FeedOutputKeyEmpty(t *testing.T) {
+	f := newDraftFixture(t)
+	text := recipeText(nil, "outputs: [inbox]\n", `output.inbox({title: "t", body: "b"}); return 1`)
+	_, raw := f.call(t, map[string]any{"recipe_text": text})
+	for _, want := range []string{`"blocks":null`, `"key":""`, `"content_hash":"`} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("JSON %s; want %s", raw, want)
+		}
+	}
+}
+
+// TestDraftAutomation_OutputCarriesCardActions (Inbox builder A, Task 11):
+// a would-be inbox output carries its own buttons as automation_outputs
+// stores them, and `[]` (never null or absent) when it has none.
+func TestDraftAutomation_OutputCarriesCardActions(t *testing.T) {
+	f := newDraftFixture(t)
+	script := `output.inbox({title: "a", body: "b", actions: [{label: "Ask", chat: "why?"}]});
+output.inbox({title: "c", body: "d"}); return 1`
+	res, raw := f.call(t, map[string]any{"recipe_text": recipeText(nil, "outputs: [inbox]\n", script)})
+	if res.DryRun == nil || len(res.DryRun.Outputs) != 2 {
+		t.Fatalf("dry run = %+v (errors %v); want two outputs", res.DryRun, res.Errors)
+	}
+	stored, err := json.Marshal([]db.InboxAction{{Label: "Ask", Kind: "chat", Chat: "why?", Primary: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(res.DryRun.Outputs[0].Actions); got != string(stored) {
+		t.Errorf("actions = %s; want the stored form %s", got, stored)
+	}
+	if got := string(res.DryRun.Outputs[1].Actions); got != "[]" {
+		t.Errorf("actions without buttons = %s; want []", got)
+	}
+	if !strings.Contains(raw, `"actions":[]`) {
+		t.Errorf("JSON %s; want actions:[] on the wire", raw)
+	}
+}
+
+// TestEvaluateDraft_DryRunsAnUnconfirmedRecipe: the owner's preview shares
+// draft_automation's evaluation without the D16 refusal (chat path only,
+// ask #445) and writes nothing.
+func TestEvaluateDraft_DryRunsAnUnconfirmedRecipe(t *testing.T) {
+	f := newDraftFixture(t)
+	text := recipeText([]string{"llm:light"}, "", `return llm("x")`)
+	automationstest.SeedAutomation(t, f.d, text, automationstest.SeedOptions{Slug: "digest", Now: draftNow, Unconfirmed: true})
+	before := f.counts(t)
+	d := Deps{
+		DB:       f.d,
+		Backends: func() automations.Backends { return automations.Backends{Generator: f.gen, Registry: f.reg} },
+		Clock:    automationstest.NewFakeClock(draftNow),
+	}
+	res, err := EvaluateDraft(context.Background(), d, text, DraftTarget{Slug: "digest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK || res.DryRun == nil || res.DryRun.Status != db.RunSucceeded || res.Manifest.Slug != "digest" {
+		t.Fatalf("result = %+v (dry run %+v); want a succeeded dry run of digest", res, res.DryRun)
+	}
+	f.assertNoRowWritten(t, before)
+}
+
+// TestDraftAutomation_OutputCarriesFolder (Inbox builder B): a would-be inbox
+// output carries the slug output.inbox({folder}) named and that folder's
+// title, read for the preview only; a slug no folder takes has an empty
+// title; nothing is written (no folder, no output, no journal step).
+func TestDraftAutomation_OutputCarriesFolder(t *testing.T) {
+	f := newDraftFixture(t)
+	var root int64
+	if err := f.d.QueryRow(`SELECT id FROM inbox_folders WHERE kind = 'root'`).Scan(&root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO inbox_folders (kind, parent_id, slug, title) VALUES ('owner', ?, 'release', 'Release')`, root); err != nil {
+		t.Fatal(err)
+	}
+	before := draftTableCounts(t, f.d)
+	script := `output.inbox({title: "a", body: "b", folder: "release"});
+output.inbox({title: "c", body: "d", folder: "nope"}); output.inbox({title: "e", body: "f"}); return 1`
+	res, raw := f.call(t, map[string]any{"recipe_text": recipeText(nil, "outputs: [inbox]\n", script)})
+	if res.DryRun == nil || len(res.DryRun.Outputs) != 3 {
+		t.Fatalf("dry run = %+v (errors %v); want three outputs", res.DryRun, res.Errors)
+	}
+	got := [][2]string{}
+	for _, o := range res.DryRun.Outputs {
+		got = append(got, [2]string{o.Folder, o.FolderTitle})
+	}
+	want := [][2]string{{"release", "Release"}, {"nope", ""}, {"", ""}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("folders = %v; want %v", got, want)
+	}
+	if !strings.Contains(raw, `"folder":"release","folder_title":"Release"`) {
+		t.Errorf("JSON %s; want the folder keys", raw)
+	}
+	if after := draftTableCounts(t, f.d); after != before {
+		t.Errorf("table counts %s → %s; a dry run writes nothing", before, after)
+	}
+}
+
+func draftTableCounts(t *testing.T, d *db.DB) string {
+	t.Helper()
+	var folders, outputs, steps, revision int64
+	if err := d.QueryRow(`SELECT (SELECT COUNT(*) FROM inbox_folders), (SELECT COUNT(*) FROM automation_outputs),
+		(SELECT COUNT(*) FROM automation_run_steps), (SELECT revision FROM inbox_folder_state)`).
+		Scan(&folders, &outputs, &steps, &revision); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprint(folders, outputs, steps, revision)
 }

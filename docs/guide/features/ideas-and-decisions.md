@@ -1,10 +1,10 @@
 # Ideas & Decisions
 
-Ideas collects proposals that were floated in Slack threads, meetings, AI chats, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds, in the [Inbox](inbox.md) under its **Ideas** filter. Decisions are mined by the same pipeline but born settled: they are listed there too, never wait for a verdict (except those found only in your AI chats), and also live in Digests → Decisions.
+Ideas collects proposals that were floated in Slack threads, meetings, AI chats, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds, in the [Inbox](inbox.md) under its **Idea finder** entry. Decisions are mined by the same pipeline but born settled: they are listed there too, never wait for a verdict (except those found only in your AI chats), and also live in Digests → Decisions.
 
 ## Why use it
 
-Someone says "we could cache this per tenant" in a thread, and it is buried by lunch. A day later it sits in the Inbox under **Needs your decision** with the quote, the author and a link back to the thread. You approve it, and a month later a second person raises it again and the new mention lands on the same entry instead of creating a duplicate.
+Someone says "we could cache this per tenant" in a thread, and it is buried by lunch. A day later it sits in the Inbox's **Idea finder** under **Needs your decision** with the quote, the author and a link back to the thread. You approve it, and a month later a second person raises it again and the new mention lands on the same entry instead of creating a duplicate.
 
 ## How it works
 
@@ -35,14 +35,16 @@ A mention of something you rejected, dropped or put on **Not now** brings it bac
 ### Review what was found
 
 <!-- learn
-id: ideas-review
+id: ideas-review-finder
 title: Judge the ideas it found
-text: Open the Inbox's **Ideas** filter and **Approve**, **Reject** or **Make a Task** from floated ideas.
+text: Open **Idea finder** in the Inbox and **Approve**, **Reject** or **Make a Task** from floated ideas.
 area: planning
 level: basics
 kind: feature
-since: 0.24.0
+since: next
 action: nav:ideas
+replaces: [ideas-review]
+changed: Ideas moved from the Inbox's Ideas filter to its Idea finder entry.
 -->
 
 <!-- learn
@@ -67,7 +69,7 @@ since: 0.24.0
 action: nav:ideas
 -->
 
-Open the Inbox. Ideas and notes waiting for your verdict (and decisions found only in chats), fresh ones and ones brought up again, sit under **Needs your decision** on **All** and **Ideas**. The **Ideas** filter also lists the rest of the registry, newest update first, each row labelled like "Idea · active" or "Decision · superseded", with "· Chat" added for one found in a chat; only merged items are left out.
+Open the Inbox's **Idea finder**. Ideas and notes waiting for your verdict (and decisions found only in chats), fresh ones and ones brought up again, sit under **Needs your decision** there. It also lists the rest of the registry, newest update first, each row labelled like "Idea · active" or "Decision · superseded", with "· Chat" added for one found in a chat; only merged items are left out.
 
 Click one to see its essence, a thumbs-up and thumbs-down, and every mention with a link back to Slack, the transcript, the mail thread, the Jira issue or the chat (**Open in Chat**; "Chat deleted" once it is gone). The buttons depend on its kind and status:
 
@@ -86,7 +88,7 @@ Open **Discuss with assistant** at the bottom of an item to chat about it. Colla
 
 ### Add one yourself
 
-On the **Ideas** filter, press **+** (**New Idea**), choose **Idea** or **Note**, give a **Title** and an **Essence** and press **Create**. It starts active, with no review. A decision is added from Digests → Decisions.
+In **Idea finder**, press **+** (**New Idea**), choose **Idea** or **Note**, give a **Title** and an **Essence** and press **Create**. It starts active, with no review. A decision is added from Digests → Decisions.
 
 ### Save one from the chat
 
@@ -106,23 +108,25 @@ Start a message to the assistant with **решили:** or **decided:** and it i
 ### Mine an older period
 
 <!-- learn
-id: ideas-past-messages
+id: ideas-past-messages-finder
 title: Find ideas in past messages
-text: Open **⋯** → **Find Ideas in Past Messages…** on the **Ideas** filter and pick a range to mine.
+text: Open **⋯** → **Find Ideas in Past Messages…** on the Inbox's **Idea finder** and pick a range to mine.
 area: planning
 level: power
 kind: feature
-since: 0.24.0
+since: next
 action: nav:ideas
+replaces: [ideas-past-messages]
+changed: The command moved from the Ideas filter's menu to the Idea finder's.
 -->
 
-On the **Ideas** filter, open **⋯** → **Find Ideas in Past Messages…**. Pick **2 weeks**, **Month**, **Quarter** or a range on the calendar, then **Find Ideas**. It keeps running when you close the row or leave the Inbox; a **Mining…** mark next to **+** reopens it, with **Stop**. It ends with a summary or the reason it failed.
+On the Inbox's **Idea finder** entry, open **⋯** → **Find Ideas in Past Messages…**. Pick **2 weeks**, **Month**, **Quarter** or a range on the calendar, then **Find Ideas**. It keeps running when you close the row or leave the Inbox; a **Mining…** mark next to **+** reopens it, with **Stop**. It ends with a summary or the reason it failed.
 
 Running the same or an overlapping range again never creates duplicates, and decisions found this way go straight to the Decisions ledger.
 
 ## When it's empty or wrong
 
-An empty **Ideas** filter says "No ideas yet" and "Ideas and decisions picked up from conversations, every ~6 h", with a status line.
+An empty **Idea finder** says "No ideas yet" and "Ideas and decisions picked up from conversations, every ~6 h", with a status line.
 
 - **Off — Turn on.** Click **Turn on**, or **Turn On** on the Idea finder card.
 - **Connect Slack to get this.** The status line follows Slack, even though mail, Jira and meetings also feed it. Connect Slack, or use **Find Ideas in Past Messages…** over a range.
@@ -134,7 +138,7 @@ An empty **Ideas** filter says "No ideas yet" and "Ideas and decisions picked up
 - **Nothing from mail, Jira or Linear.** Turn on Stream Digests and connect the account.
 - **The badge differs from the list.** It counts ideas and notes waiting for a verdict, and decisions found only in your AI chats; never other decisions or items you already judged.
 
-Filter still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md). A parked idea not returning is a [known issue](../troubleshooting/known-issues.md).
+Still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md). A parked idea not returning is a [known issue](../troubleshooting/known-issues.md).
 
 ## Related
 

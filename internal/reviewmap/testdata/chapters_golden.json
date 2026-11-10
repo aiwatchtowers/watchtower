@@ -1,0 +1,811 @@
+{
+  "comment": "Shared Go-Swift golden: the chapters today's Swift ReviewChapters.resolve(files, agent:, ai: []) builds, in build order (before the reading-order sort). No case has a collapsed chapter (its title differs on purpose: Go's is Can skip).",
+  "cases": [
+    {
+      "name": "by_directory",
+      "agent": [],
+      "files": [
+        {
+          "path": "cmd/a.go",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "internal/x/b.go",
+          "additions": 30,
+          "deletions": 5
+        },
+        {
+          "path": "cmd/c.go",
+          "additions": 3,
+          "deletions": 40
+        },
+        {
+          "path": "README.md",
+          "additions": 2,
+          "deletions": 1
+        },
+        {
+          "path": "internal/x/b_test.go",
+          "additions": 50,
+          "deletions": 0
+        },
+        {
+          "path": "WatchtowerDesktop/Sources/M/Foo.swift",
+          "additions": 12,
+          "deletions": 4
+        },
+        {
+          "path": "WatchtowerDesktop/Tests/FooTests.swift",
+          "additions": 60,
+          "deletions": 0
+        },
+        {
+          "path": "a/Bar.swift",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "b/Bar.swift",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "Tests/BarTests.swift",
+          "additions": 7,
+          "deletions": 0
+        },
+        {
+          "path": "dir with space/ü.go",
+          "additions": 9,
+          "deletions": 0
+        },
+        {
+          "path": "dir with space/ü_test.go",
+          "additions": 11,
+          "deletions": 0
+        },
+        {
+          "path": "Zeta/Upper.go",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "alpha/lower.go",
+          "additions": 10,
+          "deletions": 0
+        }
+      ],
+      "chapters": [
+        {
+          "key": "dir:",
+          "title": "(root)",
+          "paths": [
+            "README.md"
+          ],
+          "changed_lines": 3,
+          "core": false
+        },
+        {
+          "key": "dir:Tests",
+          "title": "Tests",
+          "paths": [
+            "Tests/BarTests.swift"
+          ],
+          "changed_lines": 7,
+          "core": false
+        },
+        {
+          "key": "dir:WatchtowerDesktop/Sources/M",
+          "title": "WatchtowerDesktop/Sources/M",
+          "paths": [
+            "WatchtowerDesktop/Tests/FooTests.swift",
+            "WatchtowerDesktop/Sources/M/Foo.swift"
+          ],
+          "changed_lines": 76,
+          "core": false
+        },
+        {
+          "key": "dir:Zeta",
+          "title": "Zeta",
+          "paths": [
+            "Zeta/Upper.go"
+          ],
+          "changed_lines": 10,
+          "core": false
+        },
+        {
+          "key": "dir:a",
+          "title": "a",
+          "paths": [
+            "a/Bar.swift"
+          ],
+          "changed_lines": 10,
+          "core": false
+        },
+        {
+          "key": "dir:alpha",
+          "title": "alpha",
+          "paths": [
+            "alpha/lower.go"
+          ],
+          "changed_lines": 10,
+          "core": false
+        },
+        {
+          "key": "dir:b",
+          "title": "b",
+          "paths": [
+            "b/Bar.swift"
+          ],
+          "changed_lines": 10,
+          "core": false
+        },
+        {
+          "key": "dir:cmd",
+          "title": "cmd",
+          "paths": [
+            "cmd/a.go",
+            "cmd/c.go"
+          ],
+          "changed_lines": 53,
+          "core": false
+        },
+        {
+          "key": "dir:dir with space",
+          "title": "dir with space",
+          "paths": [
+            "dir with space/ü_test.go",
+            "dir with space/ü.go"
+          ],
+          "changed_lines": 20,
+          "core": false
+        },
+        {
+          "key": "dir:internal/x",
+          "title": "internal/x",
+          "paths": [
+            "internal/x/b_test.go",
+            "internal/x/b.go"
+          ],
+          "changed_lines": 85,
+          "core": false
+        }
+      ]
+    },
+    {
+      "name": "split_over_cap",
+      "agent": [],
+      "files": [
+        {
+          "path": "pkg/f00.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f01.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f02.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f03.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f04.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f05.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f06.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f07.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f08.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f09.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f10.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f11.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f12.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f13.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f14.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f15.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f16.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f17.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f18.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f19.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f20.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f21.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f22.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f23.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f24.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f25.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f26.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f27.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f28.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "pkg/f29.go",
+          "additions": 20,
+          "deletions": 0
+        },
+        {
+          "path": "big/x.go",
+          "additions": 1000,
+          "deletions": 0
+        },
+        {
+          "path": "u/a.go",
+          "additions": 200,
+          "deletions": 0
+        },
+        {
+          "path": "u/a_test.go",
+          "additions": 300,
+          "deletions": 0
+        },
+        {
+          "path": "mix/a.go",
+          "additions": 350,
+          "deletions": 0
+        },
+        {
+          "path": "mix/b.go",
+          "additions": 100,
+          "deletions": 0
+        },
+        {
+          "path": "mix/c.go",
+          "additions": 10,
+          "deletions": 20
+        }
+      ],
+      "chapters": [
+        {
+          "key": "dir:big",
+          "title": "big",
+          "paths": [
+            "big/x.go"
+          ],
+          "changed_lines": 1000,
+          "core": false
+        },
+        {
+          "key": "dir:mix",
+          "title": "mix",
+          "paths": [
+            "mix/a.go"
+          ],
+          "changed_lines": 350,
+          "core": false
+        },
+        {
+          "key": "dir:mix#2",
+          "title": "mix (2)",
+          "paths": [
+            "mix/b.go",
+            "mix/c.go"
+          ],
+          "changed_lines": 130,
+          "core": false
+        },
+        {
+          "key": "dir:pkg",
+          "title": "pkg",
+          "paths": [
+            "pkg/f00.go",
+            "pkg/f01.go",
+            "pkg/f02.go",
+            "pkg/f03.go",
+            "pkg/f04.go",
+            "pkg/f05.go",
+            "pkg/f06.go",
+            "pkg/f07.go",
+            "pkg/f08.go",
+            "pkg/f09.go",
+            "pkg/f10.go",
+            "pkg/f11.go",
+            "pkg/f12.go",
+            "pkg/f13.go",
+            "pkg/f14.go",
+            "pkg/f15.go",
+            "pkg/f16.go",
+            "pkg/f17.go",
+            "pkg/f18.go",
+            "pkg/f19.go"
+          ],
+          "changed_lines": 400,
+          "core": false
+        },
+        {
+          "key": "dir:pkg#2",
+          "title": "pkg (2)",
+          "paths": [
+            "pkg/f20.go",
+            "pkg/f21.go",
+            "pkg/f22.go",
+            "pkg/f23.go",
+            "pkg/f24.go",
+            "pkg/f25.go",
+            "pkg/f26.go",
+            "pkg/f27.go",
+            "pkg/f28.go",
+            "pkg/f29.go"
+          ],
+          "changed_lines": 200,
+          "core": false
+        },
+        {
+          "key": "dir:u",
+          "title": "u",
+          "paths": [
+            "u/a_test.go",
+            "u/a.go"
+          ],
+          "changed_lines": 500,
+          "core": false
+        }
+      ]
+    },
+    {
+      "name": "tests_and_subjects",
+      "agent": [],
+      "files": [
+        {
+          "path": "py/util.py",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "py/test_util.py",
+          "additions": 5,
+          "deletions": 0
+        },
+        {
+          "path": "web/app.ts",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "web/app.spec.ts",
+          "additions": 4,
+          "deletions": 0
+        },
+        {
+          "path": "web/app.test.ts",
+          "additions": 3,
+          "deletions": 0
+        },
+        {
+          "path": "lone/orphan_test.go",
+          "additions": 8,
+          "deletions": 0
+        },
+        {
+          "path": "lone/Test.swift",
+          "additions": 2,
+          "deletions": 0
+        },
+        {
+          "path": "x/Foo.swift",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "y/Foo.swift",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "x/FooTests.swift",
+          "additions": 6,
+          "deletions": 0
+        },
+        {
+          "path": "Sources/Kit/Thing.swift",
+          "additions": 15,
+          "deletions": 0
+        },
+        {
+          "path": "Tests/KitTests/ThingTests.swift",
+          "additions": 25,
+          "deletions": 0
+        },
+        {
+          "path": "Tests/Support/Helper.swift",
+          "additions": 9,
+          "deletions": 0
+        },
+        {
+          "path": ".github/config.yml",
+          "additions": 1,
+          "deletions": 0
+        },
+        {
+          "path": "noext",
+          "additions": 1,
+          "deletions": 0
+        }
+      ],
+      "chapters": [
+        {
+          "key": "dir:.github",
+          "title": ".github",
+          "paths": [
+            ".github/config.yml"
+          ],
+          "changed_lines": 1,
+          "core": false
+        },
+        {
+          "key": "dir:Sources/Kit",
+          "title": "Sources/Kit",
+          "paths": [
+            "Tests/KitTests/ThingTests.swift",
+            "Sources/Kit/Thing.swift"
+          ],
+          "changed_lines": 40,
+          "core": false
+        },
+        {
+          "key": "dir:Tests/Support",
+          "title": "Tests/Support",
+          "paths": [
+            "Tests/Support/Helper.swift"
+          ],
+          "changed_lines": 9,
+          "core": false
+        },
+        {
+          "key": "dir:lone",
+          "title": "lone",
+          "paths": [
+            "lone/Test.swift",
+            "lone/orphan_test.go"
+          ],
+          "changed_lines": 10,
+          "core": false
+        },
+        {
+          "key": "dir:",
+          "title": "(root)",
+          "paths": [
+            "noext"
+          ],
+          "changed_lines": 1,
+          "core": false
+        },
+        {
+          "key": "dir:py",
+          "title": "py",
+          "paths": [
+            "py/test_util.py",
+            "py/util.py"
+          ],
+          "changed_lines": 15,
+          "core": false
+        },
+        {
+          "key": "dir:web",
+          "title": "web",
+          "paths": [
+            "web/app.spec.ts",
+            "web/app.test.ts",
+            "web/app.ts"
+          ],
+          "changed_lines": 17,
+          "core": false
+        },
+        {
+          "key": "dir:x",
+          "title": "x",
+          "paths": [
+            "x/FooTests.swift",
+            "x/Foo.swift"
+          ],
+          "changed_lines": 16,
+          "core": false
+        },
+        {
+          "key": "dir:y",
+          "title": "y",
+          "paths": [
+            "y/Foo.swift"
+          ],
+          "changed_lines": 10,
+          "core": false
+        }
+      ]
+    },
+    {
+      "name": "agent_gaps_core_first",
+      "agent": [
+        {
+          "title": "First",
+          "paths": [
+            "x/a.go",
+            "x/a_test.go"
+          ],
+          "core": false
+        },
+        {
+          "title": "Empty",
+          "paths": [
+            "missing.go"
+          ],
+          "core": false
+        },
+        {
+          "title": "Core one",
+          "paths": [
+            "y/b.go"
+          ],
+          "core": true
+        },
+        {
+          "title": "Duplicate",
+          "paths": [
+            "x/a.go"
+          ],
+          "core": false
+        },
+        {
+          "title": "Fourth",
+          "paths": [
+            "z/c.go",
+            "go.sum",
+            "nope.go"
+          ],
+          "core": false
+        },
+        {
+          "title": "Core two",
+          "paths": [
+            "y/c.go",
+            "y/c_test.go"
+          ],
+          "core": true
+        }
+      ],
+      "files": [
+        {
+          "path": "x/a.go",
+          "additions": 10,
+          "deletions": 2
+        },
+        {
+          "path": "x/a_test.go",
+          "additions": 30,
+          "deletions": 0
+        },
+        {
+          "path": "y/b.go",
+          "additions": 5,
+          "deletions": 0
+        },
+        {
+          "path": "z/c.go",
+          "additions": 8,
+          "deletions": 0
+        },
+        {
+          "path": "go.sum",
+          "additions": 400,
+          "deletions": 0,
+          "collapsed_reason": "lockfile"
+        },
+        {
+          "path": "y/c.go",
+          "additions": 1,
+          "deletions": 0
+        },
+        {
+          "path": "y/c_test.go",
+          "additions": 2,
+          "deletions": 0
+        },
+        {
+          "path": "w/d.go",
+          "additions": 4,
+          "deletions": 0
+        },
+        {
+          "path": "w/d_test.go",
+          "additions": 6,
+          "deletions": 0
+        },
+        {
+          "path": "w/e.go",
+          "additions": 9,
+          "deletions": 0
+        }
+      ],
+      "chapters": [
+        {
+          "key": "agent:3",
+          "title": "Core one",
+          "paths": [
+            "y/b.go"
+          ],
+          "changed_lines": 5,
+          "core": true
+        },
+        {
+          "key": "agent:6",
+          "title": "Core two",
+          "paths": [
+            "y/c_test.go",
+            "y/c.go"
+          ],
+          "changed_lines": 3,
+          "core": true
+        },
+        {
+          "key": "agent:1",
+          "title": "First",
+          "paths": [
+            "x/a_test.go",
+            "x/a.go"
+          ],
+          "changed_lines": 42,
+          "core": false
+        },
+        {
+          "key": "agent:5",
+          "title": "Fourth",
+          "paths": [
+            "z/c.go",
+            "go.sum"
+          ],
+          "changed_lines": 8,
+          "core": false
+        },
+        {
+          "key": "dir:w",
+          "title": "w",
+          "paths": [
+            "w/d_test.go",
+            "w/d.go",
+            "w/e.go"
+          ],
+          "changed_lines": 19,
+          "core": false
+        }
+      ]
+    },
+    {
+      "name": "agent_all_empty",
+      "agent": [
+        {
+          "title": "Gone",
+          "paths": [
+            "missing/a.go"
+          ],
+          "core": true
+        }
+      ],
+      "files": [
+        {
+          "path": "k/a.go",
+          "additions": 10,
+          "deletions": 0
+        },
+        {
+          "path": "k/b.go",
+          "additions": 5,
+          "deletions": 0
+        }
+      ],
+      "chapters": [
+        {
+          "key": "dir:k",
+          "title": "k",
+          "paths": [
+            "k/a.go",
+            "k/b.go"
+          ],
+          "changed_lines": 15,
+          "core": false
+        }
+      ]
+    }
+  ]
+}

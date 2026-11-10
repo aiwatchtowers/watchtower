@@ -70,9 +70,9 @@ since: 0.24.0
 action: nav:automations
 -->
 
-- In the Inbox, today's card is first under **Today** on **All**. The **Day** filter lists one card per date, the last 30 dates, and **Show older** adds 30 more. A briefing notification and Home's **Briefing** link open today's card.
+- In the Inbox, the root lists a **Morning brief** entry for today and for every day you haven't read yet. A day you've read leaves the list; a briefing notification and Home's **Briefing** link still open it.
 - Click an item to jump to its track, digest, target or person. Items that suggest new work show **Make a Task**, which creates the target and opens it.
-- The card's header has **Discuss in Chat** and **Done**.
+- The card's header has **Discuss in Chat**.
 - Change the time with **Time** under **When** on the **Morning brief** card (Automations → **Built in**). To change what the briefing says, use **Edit in Chat** there; see [Built-in automations](automations-built-in.md).
 
 ## When it's empty or wrong

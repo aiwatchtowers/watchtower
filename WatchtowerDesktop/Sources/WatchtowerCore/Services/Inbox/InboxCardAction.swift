@@ -11,6 +11,27 @@ package struct InboxCardAction: Equatable, Sendable {
         case chat(String)
         case agent(task: String, workbench: WorkbenchRef?)
         case reply(value: String)
+        /// Proposes `create_target` (Inbox builder A). Only the Kit's decoder
+        /// makes one: the context names the action's hash, which `decode`
+        /// below cannot compute (WatchtowerCore links no Kit), so it drops
+        /// a target action like an unknown kind.
+        case target(Target)
+    }
+
+    /// A `target` action's task and the hash of the action as drawn (Go
+    /// `blocks.ActionHash`, Swift `ArtifactAction.hash`).
+    package struct Target: Equatable, Sendable {
+        package let title: String
+        package let intent: String?
+        package let parent: Int64?
+        package let hash: String
+
+        package init(title: String, intent: String?, parent: Int64?, hash: String) {
+            self.title = title
+            self.intent = intent
+            self.parent = parent
+            self.hash = hash
+        }
     }
 
     /// An Agent action's workbench: its id, or its name.
@@ -19,8 +40,10 @@ package struct InboxCardAction: Equatable, Sendable {
         case name(String)
     }
 
-    /// The action's position in the stored array: what `automations reply
-    /// --action` takes, which a dropped action before it does not shift.
+    /// The action's press address: its index in the card's flattened action
+    /// list (the card's own actions first, so for those the position in the
+    /// stored array) — what `automations reply --action` takes, which a
+    /// dropped action before it does not shift.
     package let index: Int
     package let label: String
     package let kind: Kind
@@ -101,4 +124,45 @@ package enum InboxReplyState: Equatable, Sendable {
     case unreadable
     /// The recipe's file is gone: nothing to confirm or turn on.
     case removed
+}
+
+/// The press of a `target` button (spec "The press"): `actions propose` of
+/// `create_target` on the `inbox` surface, without `--approve` — one
+/// pending row the owner approves in its approval card. The context names
+/// the output, the button's flattened index and the drawn action's hash,
+/// so a rewritten button is a new context.
+package struct InboxTargetPress: Equatable, Sendable {
+    package static let contextType = AgentActionQueries.buttonContextType
+
+    package let contextID: String
+    /// The `create_target` arguments: the drawn action's title, intent and
+    /// parent, and a reason naming the card and its automation.
+    package let argsJSON: String
+
+    package init(card: AutomationOutputCard, index: Int, target: InboxCardAction.Target) {
+        contextID = Self.contextID(outputID: card.id, index: index, hash: target.hash)
+        let cardTitle = card.title.isEmpty ? "Automation output" : card.title
+        var args: [String: Any] = [
+            "text": target.title,
+            "reason": "From the Inbox card \u{201C}\(cardTitle)\u{201D} of \(card.automationName)"
+        ]
+        if let intent = target.intent, !intent.isEmpty { args["intent"] = intent }
+        if let parent = target.parent { args["parent_id"] = parent }
+        // Strings and integers only: serialization cannot fail.
+        let data = try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys, .withoutEscapingSlashes])
+        argsJSON = data.flatMap { String(bytes: $0, encoding: .utf8) } ?? "{}"
+    }
+
+    /// `<output id>:<flattened index>:<action hash>`.
+    package static func contextID(outputID: Int64, index: Int, hash: String) -> String {
+        "\(outputID):\(index):\(hash)"
+    }
+
+    package var arguments: [String] {
+        [
+            "actions", "propose", "--tool", "create_target", "--surface", "inbox",
+            "--context-type", Self.contextType, "--context-id", contextID,
+            "--args", argsJSON, "--json"
+        ]
+    }
 }

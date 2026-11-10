@@ -2,8 +2,11 @@ import XCTest
 import GRDB
 @testable import WatchtowerCore
 
-/// The Inbox list: proposals first, then today's and older automation cards
-/// and due reminders, newest first, split on the given calendar's day.
+/// A legacy entry's list (inbox builder B: Track my threads, Idea finder,
+/// Messages): Needs your decision, then Today and Earlier, newest first,
+/// split on the given calendar's day. Proposals, reminders and automation
+/// cards are never listed there — they are Needs approval's and the
+/// folders' own entries (`InboxFolderEntries`).
 final class InboxListBuilderTests: XCTestCase {
     private var utc: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -28,64 +31,64 @@ final class InboxListBuilderTests: XCTestCase {
         AgentAction(row: Row(["id": id, "tool": "create_target"]))
     }
 
+    private func message(_ id: Int, at text: String) throws -> HomeFeedInboxRow {
+        let item = InboxItem(row: Row(["id": id, "snippet": "Msg \(id)"]))
+        return HomeFeedInboxRow(item: item, stamp: try date(text), who: "A", whereText: nil)
+    }
+
+    private func idea(_ id: Int, status: String, updated: String) -> Idea {
+        Idea(row: Row(["id": id, "kind": "idea", "status": status, "title": "Idea \(id)", "updated_at": updated]))
+    }
+
+    /// Needs your decision, Today, Earlier — and the gesture-gated kinds
+    /// (proposals, reminders, automation cards; STRIP-01) never in a legacy
+    /// list: since the filters went they are drawn only by Needs approval and
+    /// the folders.
     func testSectionsAreProposalsTodayEarlier() throws {
         let now = try date("2026-10-21T15:00:00Z")
-        let all = InboxListBuilder.sections(
-            proposals: [proposal(1)], reminders: [],
-            outputs: [try output(2, at: "2026-10-21T10:00:00Z"), try output(3, at: "2026-10-19T10:00:00Z")],
-            now: now, calendar: utc
-        )
-        XCTAssertEqual(all.map(\.title), ["Needs your decision", "Today", "Earlier"])
-        XCTAssertEqual(all.map { $0.items.map(\.id) }, [[.proposal(1)], [.output(2)], [.output(3)]])
+        let feed = InboxFeedSnapshot(
+            proposals: [proposal(1)], reminders: [reminder(7, due: "2026-10-21T11:00:00Z")],
+            outputs: [try output(2, at: "2026-10-21T10:00:00Z")],
+            ideas: [idea(5, status: "proposed", updated: "2026-10-21T09:00:00Z"),
+                    idea(6, status: "active", updated: "2026-10-21T10:00:00Z"),
+                    idea(8, status: "active", updated: "2026-10-19T10:00:00Z")])
+        let ideas = InboxListBuilder.sections(feed, list: .ideas, now: now, calendar: utc)
+        XCTAssertEqual(ideas.map(\.title), ["Needs your decision", "Today", "Earlier"])
+        XCTAssertEqual(ideas.map { $0.items.map(\.id) }, [[.idea(5)], [.idea(6)], [.idea(8)]])
 
-        let noProposals = InboxListBuilder.sections(
-            proposals: [], reminders: [], outputs: [try output(3, at: "2026-10-19T10:00:00Z")], now: now, calendar: utc
-        )
-        XCTAssertEqual(noProposals.map(\.title), ["Earlier"])
-        XCTAssertEqual(InboxListBuilder.sections(proposals: [], reminders: [], outputs: [], now: now, calendar: utc),
-                       [])
+        for list in InboxLegacyList.allCases {
+            let ids = InboxListBuilder.sections(feed, list: list, now: now, calendar: utc).flatMap(\.items).map(\.id)
+            for gated in [InboxSelection.proposal(1), .reminder(7), .output(2)] {
+                XCTAssertFalse(ids.contains(gated), "\(list): \(gated)")
+            }
+        }
+        XCTAssertEqual(InboxListBuilder.sections(InboxFeedSnapshot(), list: .messages, now: now, calendar: utc), [])
     }
 
-    func testTodayMixesOutputsAndRemindersByTime() throws {
-        let now = try date("2026-10-21T15:00:00Z")
-        let sections = InboxListBuilder.sections(
-            proposals: [],
-            reminders: [reminder(7, due: "2026-10-21T11:00:00Z"), reminder(8, due: "2026-10-20T09:00:00Z")],
-            outputs: [try output(2, at: "2026-10-21T10:00:00Z"), try output(3, at: "2026-10-20T12:00:00Z")],
-            now: now, calendar: utc
-        )
-        XCTAssertEqual(sections.map(\.title), ["Today", "Earlier"])
-        XCTAssertEqual(sections[0].items.map(\.id), [.reminder(7), .output(2)])
-        XCTAssertEqual(sections[1].items.map(\.id), [.output(3), .reminder(8)])
-    }
-
-    /// Done or Dismiss on the selected row moves to the row below it, or to
+    /// Done or Hide on the selected row moves to the row below it, or to
     /// the one above when it was the last; nothing when it was alone.
     func testSelectionAfterMovesDownThenUp() throws {
         let now = try date("2026-10-21T15:00:00Z")
-        let sections = InboxListBuilder.sections(
-            proposals: [proposal(1)], reminders: [],
-            outputs: [try output(2, at: "2026-10-21T10:00:00Z"), try output(3, at: "2026-10-19T10:00:00Z")],
-            now: now, calendar: utc
-        )
-        XCTAssertEqual(InboxListBuilder.selection(after: .proposal(1), in: sections), .output(2))
-        XCTAssertEqual(InboxListBuilder.selection(after: .output(2), in: sections), .output(3), "across sections")
-        XCTAssertEqual(InboxListBuilder.selection(after: .output(3), in: sections), .output(2), "the last moves up")
-        XCTAssertNil(InboxListBuilder.selection(after: .output(9), in: sections), "not listed")
-        let alone = [InboxSection(title: "Today", items: [.output(try output(2, at: "2026-10-21T10:00:00Z"))])]
-        XCTAssertNil(InboxListBuilder.selection(after: .output(2), in: alone))
+        let feed = InboxFeedSnapshot(messages: [try message(1, at: "2026-10-21T12:00:00Z"),
+                                                try message(2, at: "2026-10-21T10:00:00Z"),
+                                                try message(3, at: "2026-10-19T10:00:00Z")])
+        let sections = InboxListBuilder.sections(feed, list: .messages, now: now, calendar: utc)
+        XCTAssertEqual(InboxListBuilder.selection(after: .message(1), in: sections), .message(2))
+        XCTAssertEqual(InboxListBuilder.selection(after: .message(2), in: sections), .message(3), "across sections")
+        XCTAssertEqual(InboxListBuilder.selection(after: .message(3), in: sections), .message(2), "the last moves up")
+        XCTAssertNil(InboxListBuilder.selection(after: .message(9), in: sections), "not listed")
+        let alone = [InboxSection(title: "Today", items: [.message(try message(2, at: "2026-10-21T10:00:00Z"))])]
+        XCTAssertNil(InboxListBuilder.selection(after: .message(2), in: alone))
     }
 
     func testEqualTimesKeepOneOrder() throws {
         let now = try date("2026-10-21T15:00:00Z")
         let at = "2026-10-21T10:00:00Z"
-        let expected: [InboxSelection] = [.output(2), .output(9), .reminder(3), .reminder(4)]
-        let outputs = [try output(9, at: at), try output(2, at: at)]
-        let reminders = [reminder(4, due: at), reminder(3, due: at)]
-        for (outs, rems) in [(outputs, reminders), (outputs.reversed(), reminders.reversed())] {
-            let sections = InboxListBuilder.sections(proposals: [], reminders: Array(rems), outputs: Array(outs),
+        let messages = [try message(9, at: at), try message(2, at: at), try message(4, at: at)]
+        for order in [messages, messages.reversed()] {
+            let sections = InboxListBuilder.sections(InboxFeedSnapshot(messages: Array(order)), list: .messages,
                                                      now: now, calendar: utc)
-            XCTAssertEqual(sections.first?.items.map(\.id), expected)
+            XCTAssertEqual(sections.first?.items.map(\.id), [.message(2), .message(4), .message(9)])
         }
     }
 
@@ -94,13 +97,11 @@ final class InboxListBuilderTests: XCTestCase {
         tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo") ?? .gmt
         // 10:00 on Oct 21 in Tokyo; 14:59 UTC on Oct 20 is 23:59 on Oct 20 there.
         let now = try date("2026-10-21T01:00:00Z")
-        let sections = InboxListBuilder.sections(
-            proposals: [], reminders: [],
-            outputs: [try output(2, at: "2026-10-20T15:00:00Z"), try output(3, at: "2026-10-20T14:59:00Z")],
-            now: now, calendar: tokyo
-        )
+        let feed = InboxFeedSnapshot(messages: [try message(2, at: "2026-10-20T15:00:00Z"),
+                                                try message(3, at: "2026-10-20T14:59:00Z")])
+        let sections = InboxListBuilder.sections(feed, list: .messages, now: now, calendar: tokyo)
         XCTAssertEqual(sections.map(\.title), ["Today", "Earlier"])
-        XCTAssertEqual(sections.map { $0.items.map(\.id) }, [[.output(2)], [.output(3)]])
+        XCTAssertEqual(sections.map { $0.items.map(\.id) }, [[.message(2)], [.message(3)]])
     }
 }
 

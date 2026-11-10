@@ -77,7 +77,7 @@ package enum HomeFeedBuilder {
                 id: .output(output.id), kind: .automation, chip: "Automation",
                 who: output.title.isEmpty ? "Automation output" : output.title,
                 whereText: output.automationName, text: output.body,
-                stamp: output.createdAt, read: false, actions: [.done, .hide],
+                stamp: output.changedAt, read: false, actions: [.done, .hide],
                 link: .inboxOutput(id: output.id, automationID: output.automationID, runID: output.runID))
         }
         for target in data.targets {

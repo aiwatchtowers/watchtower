@@ -41,7 +41,7 @@ There is one list in the tab, with no switch between sections. The **Built in** 
 
 - **Reactions** is the card behind your reaction commands: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Under **When**, the dictionary lists each emoji with its tool, how much it asks first, an on/off switch and **Remove**. The **+** adds a row; changes apply at once. The card has no **Run Now**, because it works for each reaction you place. **Turn On** and **Turn Off** switch reaction commands.
 - **New reaction automation**, under **When** on the Reactions card, opens a Personal automation from the `on-reaction` template: pick the emoji and it leaves a card in your Inbox when you react. An emoji can be in the dictionary and also trigger a recipe: both happen, once each.
-- **Custom tracks** are watches: one automation per track, listed with your recipes. **+** → **Watch for something** makes a new one; the track and its events are in the Inbox's **Tracks** filter, and its card has **Collecting / Paused** and the instruction (see [Tracks](tracks.md)).
+- **Custom tracks** are watches: one automation per track, listed with your recipes. **+** → **Watch for something** makes a new one; the track and its events are in the Inbox's **Track my threads**, and its card has **Collecting / Paused** and the instruction (see [Tracks](tracks.md)).
 
 ## When it's empty or wrong
 

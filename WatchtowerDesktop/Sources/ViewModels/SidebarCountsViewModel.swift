@@ -7,7 +7,8 @@ import WatchtowerCore
 final class SidebarCountsViewModel {
     /// The owner-gated track counts (OWNER-01's
     /// `testOwner01GoogleOnlyInstallCountsTracks`). No sidebar badge reads
-    /// them since the Tracks tab became an Inbox filter (C1).
+    /// them since the Tracks tab moved into the Inbox (C1; the root's Track
+    /// my threads entry since inbox builder B).
     var updatedTrackCount: Int = 0
     var totalTrackCount: Int = 0
     var unreadDigestCount: Int = 0
@@ -18,9 +19,16 @@ final class SidebarCountsViewModel {
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
-    /// The Inbox badge (R1, `ActionStripViewModel.badgeCount`): Needs your
-    /// decision + unread messages + an unread latest briefing + due reminders.
+    /// The Inbox badge (`ActionStripViewModel.badgeCount`): the sum of the
+    /// counts of every folder the Inbox menu shows.
     var inboxStripCount: Int = 0
+    /// The feature ids the owner turned off (AppState's feature
+    /// visibility): the Inbox badge counts no Waiting for me while
+    /// attention detection is off. A change re-counts — the switch is the
+    /// CLI's config write, which no table observation sees.
+    var disabledFeatures: Set<String> = [] {
+        didSet { if disabledFeatures != oldValue { Task { await refresh() } } }
+    }
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
     var memoryDisputedCount: Int = 0
@@ -68,9 +76,10 @@ final class SidebarCountsViewModel {
     /// A view model with its counts loaded and its observation started;
     /// nil when the calling task is cancelled meanwhile (a test's database
     /// going away, board #526).
-    static func started(dbPool: DatabasePool) async -> SidebarCountsViewModel? {
+    static func started(dbPool: DatabasePool, disabledFeatures: Set<String> = []) async -> SidebarCountsViewModel? {
         guard !Task.isCancelled else { return nil }
         let countsVM = SidebarCountsViewModel(dbPool: dbPool)
+        countsVM.disabledFeatures = disabledFeatures
         await countsVM.loadInitial()
         guard !Task.isCancelled else { return nil }
         countsVM.startObserving()
@@ -154,12 +163,13 @@ final class SidebarCountsViewModel {
             // duplicates, so it still refreshes the badge.
             // inbox_items is the badge's Messages term (C1, a message's
             // read_at re-fires it); day_plans is the Day cards' other half;
-            // builtin_migrations is the built-in upgrade notices' term (C2).
+            // builtin_migrations is the built-in upgrade notices' term (C2);
+            // automations is Waiting for me / Needs approval turned on or off.
             let tables = ["tracks", "briefings", "targets", "digests",
                           "stream_digests", "catchup_recaps",
                           "memory_dispute_flags", "ideas",
                           "agent_actions", "reminders", "automation_outputs",
-                          "inbox_items", "day_plans", "builtin_migrations"]
+                          "inbox_items", "day_plans", "builtin_migrations", "automations"]
             return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
         }
         return AsyncThrowingStream { continuation in
@@ -208,6 +218,7 @@ final class SidebarCountsViewModel {
     }
 
     private func fetch() async -> Counts {
+        let disabledFeatures = disabledFeatures
         do {
             return try await dbPool.read { db -> Counts in
                 // A ready recap still waiting for "I'm caught up". Computed
@@ -216,12 +227,13 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // The Inbox tab's strip: pending/failed proposals + due reminders
-                // + unread automation inbox outputs, user-independent and
-                // tolerant of a schema predating any of them (a missing table
-                // counts 0; any other read error fails the fetch).
+                // The Inbox badge: the visible folders' counts summed,
+                // user-independent and tolerant of a schema predating any of
+                // its sources (a missing table counts 0; any other read error
+                // fails the fetch).
                 let nowUTC = ISO8601DateFormatter().string(from: Date())
-                let stripCount = try ActionStripViewModel.badgeCount(db, nowUTC: nowUTC)
+                let stripCount = try ActionStripViewModel.badgeCount(
+                    db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Digests-tab feed counts, tolerant of a pre-stream/ideas schema.

@@ -180,7 +180,12 @@ func TestJiraWriteTools_ExternalOnMainAndTargetWithReason(t *testing.T) {
 		assert.Equal(t, names[i], tool.Name)
 		assert.Equal(t, AccessWrite, tool.Access)
 		assert.True(t, tool.External, "%s leaves the machine", tool.Name)
-		assert.ElementsMatch(t, []string{"main", "target", AutomationSurface}, tool.Surfaces)
+		want := []string{"main", "target", AutomationSurface}
+		if tool.Name == "add_jira_comment" {
+			// The comment alone answers an Inbox row's Reply (ask #445).
+			want = append(want, InboxSurface)
+		}
+		assert.ElementsMatch(t, want, tool.Surfaces)
 		assert.Contains(t, tool.InputSchema.Required, "reason")
 		assert.Contains(t, tool.InputSchema.Required, "key")
 		require.NoError(t, reg.Register(tool))

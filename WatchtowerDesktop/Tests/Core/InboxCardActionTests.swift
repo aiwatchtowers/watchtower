@@ -69,3 +69,52 @@ final class InboxCardActionTests: XCTestCase {
         XCTAssertEqual(InboxCardAction.replyState(card(.parseError)), .unreadable)
     }
 }
+
+/// A target button's press (Inbox builder A, spec "The press"): the args are
+/// the drawn action's, the reason names the card, the context names the
+/// output, the index and the action's hash, and nothing approves it.
+final class InboxTargetPressTests: XCTestCase {
+    private func card(title: String = "Weekly review") -> AutomationOutputCard {
+        AutomationOutputCard(id: 7, automationID: 2, automationName: "Acme digest", runID: 9, title: title,
+                             body: "", priority: "medium", createdAt: Date(timeIntervalSince1970: 0))
+    }
+
+    private func args(_ press: InboxTargetPress) throws -> [String: Any] {
+        try XCTUnwrap(JSONSerialization.jsonObject(with: Data(press.argsJSON.utf8)) as? [String: Any])
+    }
+
+    func testArgsEqualTheDrawnAction() throws {
+        let target = InboxCardAction.Target(title: "Sign off the checklist", intent: "Release is Friday",
+                                            parent: 12, hash: "0123456789abcdef")
+        let press = InboxTargetPress(card: card(), index: 2, target: target)
+        XCTAssertEqual(press.contextID, "7:2:0123456789abcdef")
+        let object = try args(press)
+        XCTAssertEqual(object["text"] as? String, "Sign off the checklist")
+        XCTAssertEqual(object["intent"] as? String, "Release is Friday")
+        XCTAssertEqual((object["parent_id"] as? NSNumber)?.int64Value, 12)
+        XCTAssertEqual(object["reason"] as? String, "From the Inbox card \u{201C}Weekly review\u{201D} of Acme digest")
+        XCTAssertEqual(press.arguments, [
+            "actions", "propose", "--tool", "create_target", "--surface", "inbox",
+            "--context-type", "automation_output", "--context-id", "7:2:0123456789abcdef",
+            "--args", press.argsJSON, "--json"
+        ])
+        XCTAssertFalse(press.arguments.contains("--approve"))
+    }
+
+    func testOptionalFieldsAreLeftOut() throws {
+        let press = InboxTargetPress(card: card(title: ""), index: 0,
+                                     target: InboxCardAction.Target(title: "Do it", intent: nil, parent: nil, hash: "h"))
+        let object = try args(press)
+        XCTAssertEqual(Set(object.keys), ["text", "reason"])
+        XCTAssertEqual(object["reason"] as? String, "From the Inbox card \u{201C}Automation output\u{201D} of Acme digest")
+    }
+
+    /// Core's tolerant decoder cannot hash, so it drops a target action
+    /// without moving the next one's index.
+    func testCoreDecodeDropsTargetKeepingIndexes() {
+        let actions = InboxCardAction.decode(#"""
+            [{"label":"Task","kind":"target","target":{"title":"Do it"}},{"label":"Ask","kind":"chat","chat":"Hi"}]
+            """#)
+        XCTAssertEqual(actions.map(\.index), [1])
+    }
+}

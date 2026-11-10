@@ -395,6 +395,26 @@ final class HomeFeedQueriesTests: XCTestCase {
         XCTAssertTrue(data.failed.isEmpty)
     }
 
+    /// APPROVAL-01: the `needs-approval` built-in's cards never reach the
+    /// feed as automation notes (the Inbox draws them only through the open
+    /// approvals, which Home lists as proposals). A card left behind by a
+    /// closed approval stays out, and it takes no place under the cap.
+    func testNeedsApprovalBuiltinCardsStayOutOfTheFeed() throws {
+        let shown = try db.write { d -> Int64 in
+            let builtin = try NeedsApprovalFixtures.builtin(d, id: "needs-approval", name: "Needs approval")
+            let builtinRun = try NeedsApprovalFixtures.run(d, builtin)
+            // No open agent action: the approval behind this card is closed.
+            try NeedsApprovalFixtures.card(d, builtin, run: builtinRun, key: "action:1", written: self.hoursAgo(1))
+            let other = try TestDatabase.insertAutomation(d, name: "Mail summary")
+            let run = try TestDatabase.insertAutomationRun(d, automationID: other)
+            return try TestDatabase.insertAutomationOutput(
+                d, automationID: other, runID: run, title: "shown", createdAt: self.hoursAgo(2))
+        }
+        let data = try read()
+        XCTAssertEqual(data.outputs.map(\.id), [shown])
+        XCTAssertTrue(data.failed.isEmpty)
+    }
+
     // MARK: - Failure
 
     /// One source that throws is named in `failed` and hides only itself.

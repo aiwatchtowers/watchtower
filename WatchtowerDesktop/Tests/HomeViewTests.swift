@@ -254,7 +254,7 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(tapped, .connect(.jira))
         // Two features on one tab name it once; the others by their tab.
         let slack = GettingReadySourceRow(source: .slack, features: [.digests, .streamDigests, .tracks])
-        XCTAssertEqual(GettingReadyZoneView.connectLine(slack), "Connect Slack to get Digests and Tracks")
+        XCTAssertEqual(GettingReadyZoneView.connectLine(slack), "Connect Slack to get Digests and Track my threads")
         let calendar = GettingReadySourceRow(source: .calendar, features: [.calendar])
         XCTAssertEqual(GettingReadyZoneView.connectLine(calendar), "Connect a calendar to get Calendar")
     }

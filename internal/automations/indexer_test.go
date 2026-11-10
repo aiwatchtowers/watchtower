@@ -361,6 +361,7 @@ func TestAuto06_ScheduleBudgetEditNeedsConfirmation(t *testing.T) {
 		{"budget minutes", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nbudget: {minutes: 9}", 1), false},
 		{"concurrency", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nconcurrency: 2", 1), false},
 		{"missed", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nmissed: skip", 1), false},
+		{"artifacts", strings.Replace(base, "outputs: [inbox]", "outputs: [inbox]\nartifacts: living", 1), false},
 		{"name", strings.Replace(base, "name: Morning mail", "name: Evening mail", 1), true},
 		{"description", recipeText("other words", `log("hi")`), true},
 	}

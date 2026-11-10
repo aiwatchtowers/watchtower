@@ -66,7 +66,7 @@ const (
 )
 
 // SyncSlots are the daemon sync slots a trigger.sync may name.
-var SyncSlots = []string{"morning_brief", slotCustomTracks, "tracks", "reactions", "ideas"}
+var SyncSlots = []string{"morning_brief", slotCustomTracks, "tracks", "reactions", "ideas", "waiting_for_me"}
 
 // slotCustomTracks is the one sync slot a Personal recipe may use: a watch
 // recipe holding track:scan.
@@ -102,6 +102,7 @@ var EventTypes = []string{
 	"calendar.event_changed",
 	"confluence.page_changed",
 	SlackReactionAdded,
+	ApprovalEvent,
 }
 
 // MissedPolicy is what the scheduler does with a missed schedule.
@@ -111,6 +112,16 @@ type MissedPolicy string
 const (
 	MissedRunOnce MissedPolicy = "run_once"
 	MissedSkip    MissedPolicy = "skip"
+)
+
+// ArtifactLifecycle is how a recipe's Inbox outputs live (`artifacts:`):
+// a feed of one card per output, or living artifacts replaced in place by key.
+type ArtifactLifecycle string
+
+// Artifact lifecycles; the zero value is never stored by the parser.
+const (
+	ArtifactsFeed   ArtifactLifecycle = "feed"
+	ArtifactsLiving ArtifactLifecycle = "living"
 )
 
 // Budget is a run's token and wall-clock budget (spec §7.5, §20 D4).
@@ -128,6 +139,7 @@ type Recipe struct {
 	Trigger           Trigger
 	Missed            MissedPolicy
 	Concurrency       int
+	Artifacts         ArtifactLifecycle // feed (default) or living
 	Permissions       []string
 	Outputs           []string
 	Budget            Budget
@@ -286,7 +298,7 @@ func parseFrontmatter(src string, r *Recipe) error {
 	return applyFields(fields, r)
 }
 
-var topLevelKeys = []string{"name", "summary", "trigger", "missed", "concurrency", "permissions", "outputs", "budget", "pause_timeout_hours"}
+var topLevelKeys = []string{"name", "summary", "trigger", "missed", "concurrency", "artifacts", "permissions", "outputs", "budget", "pause_timeout_hours"}
 
 // mappingFields indexes a mapping's values by key, refusing duplicate and
 // unknown keys (strict, spec §2.2) with the key's line.
@@ -352,14 +364,64 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
 		}
 	}
+	if r.Trigger.Kind == TriggerEvent && r.Trigger.Event.Type == ApprovalEvent {
+		if err = approvalTriggerAllowed(r.Scope); err != nil {
+			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
+		}
+	}
 	if err := applyBudget(f["budget"], r); err != nil {
 		return err
 	}
 	if r.Concurrency, err = boundedInt(f["concurrency"], "concurrency", DefaultConcurrency, 1, MaxConcurrency); err != nil {
 		return err
 	}
+	if err := applyArtifacts(f, r, m); err != nil {
+		return err
+	}
 	r.PauseTimeoutHours, err = boundedInt(f["pause_timeout_hours"], "pause_timeout_hours", DefaultPauseTimeoutHours, 1, MaxPauseTimeoutHours)
 	return err
+}
+
+// applyArtifacts reads `artifacts: feed | living` (default feed). Living
+// artifacts need outputs: [inbox] and, like every serial-run reason, a
+// concurrency of 1. It runs after concurrency is known.
+func applyArtifacts(f map[string]*yaml.Node, r *Recipe, m *Manifest) error {
+	r.Artifacts = ArtifactsFeed
+	if n := f["artifacts"]; n != nil {
+		var s string
+		if n.Kind != yaml.ScalarNode {
+			return &ParseError{Line: fileLine(n), Msg: "artifacts must be feed or living"}
+		}
+		if err := decodeField(n, "artifacts", "feed or living", &s); err != nil {
+			return err
+		}
+		switch ArtifactLifecycle(s) {
+		case ArtifactsFeed, ArtifactsLiving:
+			r.Artifacts = ArtifactLifecycle(s)
+		default:
+			return &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("artifacts must be feed or living, not %q", s)}
+		}
+		if r.Artifacts == ArtifactsLiving && !slices.Contains(m.Outputs(), "inbox") {
+			return &ParseError{Line: fileLine(n), Msg: "artifacts: living needs outputs: [inbox]"}
+		}
+	}
+	reasons := serialRunReasons(r)
+	if len(reasons) == 0 || r.Concurrency == 1 {
+		return nil
+	}
+	// concurrency is set here: an absent key is the default 1, which passed.
+	return &ParseError{Line: fileLine(f["concurrency"]), Msg: "concurrency: an automation with " + reasons[0] + " runs one at a time; set concurrency: 1"}
+}
+
+// serialRunReasons lists why r must run one at a time (concurrency: 1), as
+// the words after "an automation with". It is the one place a new reason is
+// added (sub-project C's raw-window reader joins here).
+func serialRunReasons(r *Recipe) []string {
+	var out []string
+	if r.Artifacts == ArtifactsLiving {
+		out = append(out, "living artifacts")
+	}
+	return out
 }
 
 func applyName(n *yaml.Node, r *Recipe) error {
@@ -637,6 +699,16 @@ func syncTriggerAllowed(scope Scope, slot string, m *Manifest) error {
 		return nil
 	}
 	return errors.New("a sync trigger is only for built-in automations")
+}
+
+// approvalTriggerAllowed is the one rule on who may declare trigger.event
+// approval: a built-in automation only (its runs are queued by the approval
+// hook, builtin.Fire, never by the event bus).
+func approvalTriggerAllowed(scope Scope) error {
+	if scope.IsBuiltin() {
+		return nil
+	}
+	return errors.New("an approval trigger is only for built-in automations")
 }
 
 func parseManual(n *yaml.Node) error {

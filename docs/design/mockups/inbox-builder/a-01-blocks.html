@@ -1,0 +1,49 @@
+<h2>A-1. Every block in one artifact</h2>
+<p class="subtitle">The v1 set: heading, text, list (rows with subtitle, badge, tone dot, link, row actions, ref), table, person, metrics, link, actions. Colours only through the six tones; no separators between rows.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Inbox card · “Weekly acme release review” · Run #42</div>
+  <div class="mockup-body">
+    <div style="max-width:620px">
+      <div class="label">heading (level 1)</div>
+      <h3 style="margin:0 0 8px">Release 4.2 — where we are</h3>
+
+      <div class="label">metrics</div>
+      <div style="display:flex; gap:8px; margin-bottom:12px">
+        <div style="flex:1; background:#8881; border-radius:8px; padding:8px"><small>Open issues</small><br><b style="font-size:18px">12</b></div>
+        <div style="flex:1; background:#8881; border-radius:8px; padding:8px"><small>Blocked</small><br><b style="font-size:18px; color:#d33">3</b><br><small>tone: danger</small></div>
+        <div style="flex:1; background:#8881; border-radius:8px; padding:8px"><small>Done this week</small><br><b style="font-size:18px; color:#2a2">9</b><br><small>tone: success</small></div>
+      </div>
+
+      <div class="label">text (markdown)</div>
+      <p style="margin:0 0 12px">The freeze is on <b>Thursday</b>. Two items need a decision; see the <a href="#">release page</a>.</p>
+
+      <div class="label">heading (level 2) + list</div>
+      <h4 style="margin:0 0 4px">Needs you</h4>
+      <div style="padding:6px 8px; border-radius:8px;"><span style="color:#d33">●</span> <b>Sign off the checklist</b> <span style="border:1px solid #d336; border-radius:9px; padding:0 6px; font-size:11px; color:#d33">2 days</span><br><small>Colleague A in #acme-release</small> <span style="float:right"><button class="mock-button">Open</button> <button class="mock-button">Reply</button></span></div>
+      <div style="padding:6px 8px; border-radius:8px; background:#8881"><span style="color:#c80">●</span> <b>Pick the rollout window</b><br><small>Colleague B · hover fill, no separator</small> <span style="float:right"><button class="mock-button">Chat</button></span></div>
+      <div style="padding:6px 8px; border-radius:8px;"><b>Migration review</b> <small style="color:#888">(row with a ref — B draws its native actions here)</small><br><small>Colleague C in #acme-infra</small></div>
+
+      <div class="label" style="margin-top:12px">table</div>
+      <div style="background:#8881; border-radius:8px; padding:8px; margin-bottom:12px">
+        <table style="width:100%; border-collapse:collapse; font-size:13px">
+          <tr><th style="text-align:left">Service</th><th style="text-align:left">Owner</th><th style="text-align:right">Open</th></tr>
+          <tr><td>api</td><td>Colleague A</td><td style="text-align:right">5</td></tr>
+          <tr><td>web</td><td>Colleague B</td><td style="text-align:right; color:#d33">7</td></tr>
+        </table>
+      </div>
+
+      <div class="label">person</div>
+      <div style="display:flex; gap:10px; background:#8881; border-radius:8px; padding:8px; margin-bottom:12px">
+        <div style="width:36px; height:36px; border-radius:18px; background:#88f4; text-align:center; line-height:36px">CA</div>
+        <div><b>Colleague A</b> · <small>Release manager</small><br><small>Owns the checklist · last reply 2 days ago</small><br><small style="color:#c80">Waiting on you</small></div>
+      </div>
+
+      <div class="label">link</div>
+      <div style="padding:6px 8px; border-radius:8px; margin-bottom:12px">🔗 <b>Release 4.2 plan</b><br><small>https://wiki.example.com/acme/release-4-2</small></div>
+
+      <div class="label">actions</div>
+      <div><button class="mock-button">Open the board</button> <button class="mock-button">Ask the assistant</button></div>
+    </div>
+  </div>
+</div>

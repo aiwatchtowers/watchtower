@@ -318,7 +318,9 @@ final class HomeCenter {
 
     /// Done / Hide on a feed row: the row leaves the feed at once, then the
     /// performer writes it. A failure brings the row back with the error's
-    /// text; a success re-reads now (an inbox write comes from the CLI, which
+    /// text; a write that changed nothing (an automation card rewritten or
+    /// closed since it was drawn) brings it back without one and re-reads;
+    /// a success re-reads now (an inbox write comes from the CLI, which
     /// the observation never sees) and the row's hidden mark goes once that
     /// read no longer returns it. A second press while the write runs, or a
     /// press on a kind without Done / Hide (`FeedRef.hasActions`), does
@@ -329,8 +331,10 @@ final class HomeCenter {
         hiddenRefs.insert(ref)
         feedErrors[ref] = nil
         rebuildSnapshot()
+        let written: Bool
         do {
-            try await performer.perform(action, on: ref, now: environment.now, calendar: environment.calendar)
+            written = try await performer.perform(action, on: ref, contentHash: drawnHash(ref),
+                                                  now: environment.now, calendar: environment.calendar)
         } catch {
             NSLog("HomeCenter: %@ on a feed row: %@", "\(action)", error.localizedDescription)
             acting.remove(ref)
@@ -340,7 +344,20 @@ final class HomeCenter {
             return
         }
         acting.remove(ref)
+        if !written {
+            // The card changed (or closed) under the view: it shows as the
+            // re-read finds it, never hidden on a write that did not land.
+            hiddenRefs.remove(ref)
+            rebuildSnapshot()
+        }
         await rereadNow()
+    }
+
+    /// An automation card's content hash as the feed drew it; `""` for every
+    /// other kind (and a row from before the blocks migration).
+    private func drawnHash(_ ref: FeedRef) -> String {
+        guard case .output(let id) = ref else { return "" }
+        return feedData.outputs.first { $0.id == id }?.contentHash ?? ""
     }
 
     /// "N more" shows the next page of rows above NOW; "Show less" goes back
