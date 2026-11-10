@@ -149,7 +149,7 @@ func readTool[A any](name, desc string, run func(context.Context, *db.DB, tools.
 		Execute: func(ctx context.Context, d *db.DB, call tools.Call) (any, error) {
 			var a A
 			if err := json.Unmarshal(call.Args, &a); err != nil {
-				return nil, &tools.ValidationError{Msg: "invalid arguments"}
+				return nil, &tools.ValidationError{Msg: "invalid arguments: " + err.Error()}
 			}
 			return run(ctx, d, call.Binding, a)
 		},
@@ -173,7 +173,11 @@ func reportScope(d *db.DB, b tools.Binding, a *reportArgs) (int64, error) {
 // context id), checked to exist.
 func workbenchOf(d *db.DB, b tools.Binding, id int64) (int64, error) {
 	if id == 0 && b.ContextType == ContextType {
-		id, _ = strconv.ParseInt(b.ContextID, 10, 64)
+		ctxID, err := strconv.ParseInt(b.ContextID, 10, 64)
+		if err != nil {
+			return 0, &tools.ValidationError{Msg: fmt.Sprintf("the chat's workbench %q is not a workbench id; pass workbench_id", b.ContextID), Err: err}
+		}
+		id = ctxID
 	}
 	if id <= 0 {
 		return 0, &tools.ValidationError{Msg: "workbench_id is required"}
@@ -187,8 +191,9 @@ func workbenchOf(d *db.DB, b tools.Binding, id int64) (int64, error) {
 	return id, nil
 }
 
-// sessionsOf keeps the period, the agent filter and the session list of an
-// agents report.
+// sessionsOf keeps the period, the agent filter, the session list and the
+// analytics state of an agents report (enabled, import: an empty list while
+// analytics is off or the first import runs is not an all-clear).
 func sessionsOf(rep any) (any, error) {
 	raw, err := json.Marshal(rep)
 	if err != nil {
@@ -199,7 +204,7 @@ func sessionsOf(rep any) (any, error) {
 		return nil, fmt.Errorf("reading the agent report: %w", err)
 	}
 	out := map[string]json.RawMessage{}
-	for _, k := range []string{"workbench_id", "since", "until", "agent", "agents", "sessions", "old_format_sessions"} {
+	for _, k := range []string{"workbench_id", "since", "until", "agent", "agents", "sessions", "old_format_sessions", "enabled", "import"} {
 		if v, ok := all[k]; ok {
 			out[k] = v
 		}
@@ -216,6 +221,8 @@ type promptRow struct {
 	Spend30dUSD    float64  `json:"spend_30d_usd"`
 }
 
+// listPrompts is list_prompts. The spend reads llm_calls only: calls still
+// in the spool file (imported once per daemon cycle) are not counted yet.
 func listPrompts(ctx context.Context, d *db.DB, deps Deps) ([]promptRow, error) {
 	usage, err := d.ReadLLMUsage(ctx, deps.Now().AddDate(0, 0, -30), nil)
 	if err != nil {
@@ -228,7 +235,7 @@ func listPrompts(ctx context.Context, d *db.DB, deps Deps) ([]promptRow, error) 
 	store := deps.Store(d)
 	out := make([]promptRow, 0, len(prompts.AllIDs))
 	for _, id := range prompts.AllIDs {
-		_, version, err := store.Get(id)
+		_, version, err := templateOf(store, id)
 		if err != nil {
 			return nil, err
 		}
@@ -265,12 +272,9 @@ func getPrompt(d *db.DB, deps Deps, id string) (*promptDetail, error) {
 		return nil, &tools.ValidationError{Msg: "prompt " + id + " not found"}
 	}
 	store := deps.Store(d)
-	tmpl, version, err := store.Get(id)
+	tmpl, version, err := templateOf(store, id)
 	if err != nil {
 		return nil, err
-	}
-	if tmpl == "" {
-		tmpl, version = prompts.Defaults[id], 0
 	}
 	adds, err := additionsOf(d, id)
 	if err != nil {
@@ -288,6 +292,21 @@ func getPrompt(d *db.DB, deps Deps, id string) (*promptDetail, error) {
 		out.History = append(out.History, promptVersion{Version: h.Version, Reason: h.Reason, CreatedAt: h.CreatedAt, Template: h.Template})
 	}
 	return out, nil
+}
+
+// templateOf is the base template of a prompt as prompts.Resolve loads it
+// without a role and without the additions: the stored row, or the built-in
+// default at version 0 when the row is missing or empty. Role variants are
+// not shown.
+func templateOf(store *prompts.Store, id string) (string, int, error) {
+	tmpl, version, err := store.Get(id)
+	if err != nil {
+		return "", 0, err
+	}
+	if tmpl == "" {
+		return prompts.Defaults[id], 0, nil
+	}
+	return tmpl, version, nil
 }
 
 // additionsOf is the texts of a prompt's stored additions, oldest first; a

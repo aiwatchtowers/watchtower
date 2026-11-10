@@ -148,6 +148,12 @@ func TestGetAgentReport_WorkbenchFromContext(t *testing.T) {
 	_, err = f.reg.CallRead(context.Background(), "get_agent_report", json.RawMessage(`{"days":7}`),
 		tools.Binding{Surface: tools.SurfaceTuning, ConversationID: 1})
 	require.ErrorContains(t, err, "workbench_id is required")
+
+	_, err = f.reg.CallRead(context.Background(), "get_agent_report", json.RawMessage(`{"days":7}`), f.binding("x"))
+	var ve *tools.ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, err.Error(), `"x" is not a workbench id`)
+	assert.Len(t, f.reports, 2, "the report is never read")
 }
 
 func TestGetAgentReport_EmptyPeriodAndOneAgent(t *testing.T) {
@@ -169,11 +175,17 @@ func TestGetAgentReport_CodexWithNoData(t *testing.T) {
 func TestListAgentSessions_KeepsTheSessionList(t *testing.T) {
 	f := newFixture(t)
 	f.report = map[string]any{"since": "2026-11-03", "agent": "all", "sessions": []any{map[string]any{"uuid": "s-1"}},
-		"hints": []any{"h"}, "totals": map[string]any{}}
+		"hints": []any{"h"}, "totals": map[string]any{}, "enabled": true, "import": map[string]any{"state": "done"}}
 	got, err := f.call(t, "list_agent_sessions", `{"days":7}`)
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"since": "2026-11-03", "agent": "all",
-		"sessions": []any{map[string]any{"uuid": "s-1"}}}, got)
+		"sessions": []any{map[string]any{"uuid": "s-1"}}, "enabled": true, "import": map[string]any{"state": "done"}}, got)
+
+	// Analytics off: the empty list says why.
+	f.report = map[string]any{"sessions": []any{}, "enabled": false}
+	got, err = f.call(t, "list_agent_sessions", `{"days":7}`)
+	require.NoError(t, err)
+	assert.Equal(t, false, got["enabled"])
 }
 
 func TestGetAgentSession(t *testing.T) {
@@ -206,6 +218,11 @@ func TestListPrompts_Shape(t *testing.T) {
 	f := newFixture(t)
 	_, err := f.d.AddPromptAddition(prompts.DigestChannel, "x", 0, testNow)
 	require.NoError(t, err)
+	_, err = f.d.AddPromptAddition(prompts.BriefingDaily, "never reaches it", 0, testNow)
+	require.NoError(t, err)
+	store := prompts.New(f.d, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.DigestDaily, "tuned", "manual edit"))
 	cost := 0.25
 	require.NoError(t, f.d.InsertLLMCalls([]llmusage.Call{{
 		CallID: "c1", At: testNow.Add(-24 * time.Hour).Format(time.RFC3339), Surface: "watchtower",
@@ -228,7 +245,9 @@ func TestListPrompts_Shape(t *testing.T) {
 	assert.True(t, dc.TakesAdditions)
 	assert.Equal(t, prompts.Descriptions[prompts.DigestChannel], dc.Description)
 	assert.False(t, by[prompts.BriefingDaily].TakesAdditions)
-	assert.Equal(t, []string{}, by[prompts.BriefingDaily].Additions)
+	assert.Equal(t, []string{}, by[prompts.BriefingDaily].Additions, "a prompt that takes no additions shows none")
+	assert.Equal(t, prompts.DefaultVersions[prompts.DigestChannel], dc.Version)
+	assert.Equal(t, prompts.DefaultVersions[prompts.DigestDaily]+1, by[prompts.DigestDaily].Version)
 }
 
 func TestGetPrompt(t *testing.T) {
@@ -240,6 +259,19 @@ func TestGetPrompt(t *testing.T) {
 	assert.Equal(t, prompts.Defaults[prompts.DigestChannel], got["template"], "the template comes without additions")
 	assert.Equal(t, []any{"x"}, got["additions"])
 	assert.Equal(t, []any{}, got["history"])
+	assert.Equal(t, float64(0), got["version"])
+
+	store := prompts.New(f.d, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.DigestChannel, "tuned text", "manual edit"))
+	got, err = f.call(t, "get_prompt", `{"prompt_id":"`+prompts.DigestChannel+`"}`)
+	require.NoError(t, err)
+	assert.Equal(t, "tuned text", got["template"])
+	assert.Equal(t, float64(prompts.DefaultVersions[prompts.DigestChannel]+1), got["version"])
+	hist, ok := got["history"].([]any)
+	require.True(t, ok)
+	require.NotEmpty(t, hist)
+	assert.Contains(t, fmt.Sprint(hist), "manual edit")
 }
 
 func TestGetPrompt_NotFound(t *testing.T) {
