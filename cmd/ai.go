@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
@@ -24,6 +25,7 @@ import (
 	"watchtower/internal/providerrouting"
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
+	"watchtower/internal/sessionagent"
 	"watchtower/internal/specreview"
 
 	"github.com/spf13/cobra"
@@ -782,40 +784,21 @@ func isExecutableFile(p string) bool {
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
-// overrideTakesPrecedence mirrors claude.FindBinary / codex.FindBinary: a
-// configured path that exists and is not a directory wins over any lookup.
-func overrideTakesPrecedence(p string) bool {
-	info, err := os.Stat(p)
-	return err == nil && !info.IsDir()
-}
-
 // runAIWhich prints the agent binary Go would run. found is false when the
 // lookup returned the bare fallback name, nothing, an error, or a path that
 // is not an executable file — a configured override that is not executable
 // included, since Go would run it rather than fall back; path is then "".
 func runAIWhich(cmd *cobra.Command, _ []string) error {
-	provider := flagProvider
-	if provider != "claude" && provider != "codex" {
-		return &exitCodeError{code: 2, err: fmt.Errorf("ai which: --provider must be claude or codex, got %q", provider)}
+	kind, ok := agentkind.Parse(flagProvider)
+	if !ok {
+		return &exitCodeError{code: 2, err: fmt.Errorf("ai which: --provider must be %s, got %q", agentkind.Choices("or"), flagProvider)}
 	}
+	provider := string(kind)
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
-	override, bare := cfg.ClaudePath, "claude"
-	if provider == "codex" {
-		override, bare = cfg.CodexPath, "codex"
-	}
-	path := ""
-	if override != "" && overrideTakesPrecedence(override) {
-		// FindBinary returns any non-directory override, executable or not:
-		// report what the daemon would run, never a PATH binary instead.
-		path = override
-	} else if provider == "claude" {
-		path = claudeFindBinary()
-	} else if p, ferr := codexFindBinary(); ferr == nil {
-		path = p
-	}
+	path, bare := sessionagent.MustFor(kind).Binary(cfg, sessionagent.Finders{Claude: claudeFindBinary, Codex: codexFindBinary})
 	if path == bare || !isExecutableFile(path) {
 		path = ""
 	}
