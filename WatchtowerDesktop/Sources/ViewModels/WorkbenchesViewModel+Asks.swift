@@ -68,7 +68,7 @@ extension WorkbenchesViewModel {
     @discardableResult
     func answerQuick(_ ask: OwnerAsk, with answer: OwnerAskAnswer) async -> OwnerAsksViewModel.AnswerResult {
         let result = await asks.answerQuick(ask, with: answer)
-        guard result == .notOpen, selectedWorkbenchID == ask.projectID, asks.drawerAskIDs[ask.projectID] == nil,
+        guard result == .notOpen, selectedWorkbenchID == ask.projectID, asks.drawerIsEmpty(projectID: ask.projectID),
               let sessionID = ask.sessionID,
               layout(projectID: ask.projectID).showsSession(sessionID) else { return result }
         if let closed = await asks.lookUp(askID: ask.id, projectID: ask.projectID), !closed.isOpen {
@@ -101,7 +101,7 @@ extension WorkbenchesViewModel {
     /// measured with room for it beside the terminal (the terminal stays
     /// visible and keeps the keyboard), and never moves the keyboard.
     func openNewAsk(projectID: Int64) {
-        guard selectedWorkbenchID == projectID, asks.drawerAskIDs[projectID] == nil else { return }
+        guard selectedWorkbenchID == projectID, asks.drawerIsEmpty(projectID: projectID) else { return }
         let onScreen = Set(layout(projectID: projectID).visiblePanes.compactMap { pane -> Int64? in
             // A terminal or a Workchat (#711).
             WorkspaceLayout.sessionID(of: pane).flatMap { asks.roomySessions.contains($0) ? $0 : nil }

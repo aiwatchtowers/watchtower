@@ -577,6 +577,7 @@ enum DesignShotFixtures {
         InboxFoldersShotFixtures.cleanUp()
         InboxApprovalsShotFixtures.cleanUp()
         ProjectPageShotFixtures.cleanUp()
+        ClosedAsksShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

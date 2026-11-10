@@ -167,7 +167,29 @@ final class OwnerAsksViewModel {
     private(set) var replacements: [Int64: [Int64: Int64]] = [:]
     /// The read-only lists behind "N closed", read when one opens.
     private(set) var closedLists: [ClosedListKey: [OwnerAsk]] = [:]
+    /// Why the last read of a list failed: the first read's error, or a
+    /// reload's over the list kept on screen (`ClosedAskListCopy`). The
+    /// next good read clears it.
     private(set) var closedErrors: [ClosedListKey: String] = [:]
+    /// The rows of a list's last good read that could not be decoded.
+    private(set) var closedUnreadable: [ClosedListKey: String] = [:]
+    /// When each list was last read without an error.
+    private(set) var closedReadAt: [ClosedListKey: Date] = [:]
+    /// Lists being read: the header's spinner.
+    private(set) var closedLoading: Set<ClosedListKey> = []
+    /// A row's ask was gone when clicked; cleared by the next open of the list.
+    var closedListNotices: [ClosedListKey: String] = [:]
+    /// Each list's newest started read; an older read that finishes later is dropped.
+    @ObservationIgnored private var closedGenerations: [ClosedListKey: Int] = [:]
+    /// The closed list each workbench's drawer shows in place of an ask
+    /// (#1713); never set together with `drawerAskIDs`.
+    private(set) var drawerClosedLists: [Int64: ClosedListKey] = [:]
+    /// The list the drawer's ask was opened from: it draws the back row,
+    /// and Esc goes back. Any other way of opening an ask clears it.
+    private(set) var closedListOrigins: [Int64: ClosedListKey] = [:]
+    /// Each list's search text and keyboard cursor, for the app run.
+    var closedListQueries: [ClosedListKey: String] = [:]
+    var closedListCursors: [ClosedListKey: Int64] = [:]
     /// The asks a drawer shows that are no longer open (answered, withdrawn
     /// meanwhile, or picked from a closed list), as last read.
     private(set) var shownAsks: [Int64: OwnerAsk] = [:]
@@ -324,6 +346,10 @@ final class OwnerAsksViewModel {
             // A row it cannot read is left out of the stack and named here.
             loadErrors[projectID] = snapshot.open.problem
             onLoaded?(projectID)
+            // A list on screen follows every change the fingerprint saw (#1713).
+            if let key = drawerClosedLists[projectID] {
+                await loadClosed(projectID: key.projectID, sessionID: key.sessionID, automations: key.automations)
+            }
         } catch {
             // The last list stays beside the error.
             loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
@@ -396,27 +422,76 @@ final class OwnerAsksViewModel {
     /// "N closed" list.
     func loadClosed(projectID: Int64, sessionID: Int64?, automations: Bool = false) async {
         let key = ClosedListKey(projectID: projectID, sessionID: sessionID, automations: automations)
+        let generation = beginClosedRead(key)
         do {
             // The counts come with the list, so "N closed" matches what it opens.
             let read = try await dbPool.read { db in
                 let asks = try OwnerAskQueries.closedAsks(db, projectID: projectID, sessionID: sessionID,
                                                           automations: automations)
-                return (asks: asks,
-                        replaced: try OwnerAskQueries.replacements(db, projectID: projectID),
-                        counts: try OwnerAskQueries.closedCounts(db, projectID: projectID),
-                        automationCount: try OwnerAskQueries.closedAutomationCount(db, projectID: projectID),
-                        labels: try AutomationQueries.askLabels(
-                            db, askIDs: asks.asks.filter { $0.automationRunID != nil }.map(\.id)))
+                return ClosedRead(
+                    asks: asks,
+                    replaced: try OwnerAskQueries.replacements(db, projectID: projectID),
+                    counts: try OwnerAskQueries.closedCounts(db, projectID: projectID),
+                    automationCount: try OwnerAskQueries.closedAutomationCount(db, projectID: projectID),
+                    labels: try AutomationQueries.askLabels(
+                        db, askIDs: asks.asks.filter { $0.automationRunID != nil }.map(\.id)))
             }
+            finishClosedRead(key, generation: generation, result: .success(read))
+        } catch {
+            finishClosedRead(key, generation: generation, result: .failure(error))
+        }
+    }
+
+    /// One read of a closed list, all in one database snapshot.
+    struct ClosedRead {
+        let asks: OwnerAskRows
+        let replaced: [Int64: Int64]
+        let counts: [Int64?: Int]
+        let automationCount: Int
+        let labels: [Int64: String]
+    }
+
+    /// Starts a read of `key`'s list: the spinner, and the number only its
+    /// result may apply under.
+    func beginClosedRead(_ key: ClosedListKey) -> Int {
+        let generation = (closedGenerations[key] ?? 0) + 1
+        closedGenerations[key] = generation
+        closedLoading.insert(key)
+        return generation
+    }
+
+    /// Applies a read of `key`'s list unless a newer one started since. A
+    /// failure keeps the list last read, if any, under a refresh error.
+    func finishClosedRead(_ key: ClosedListKey, generation: Int, result: Result<ClosedRead, Error>, now: Date = Date()) {
+        guard closedGenerations[key] == generation else { return }
+        closedLoading.remove(key)
+        switch result {
+        case let .success(read):
+            let projectID = key.projectID
             closedLists[key] = read.asks.asks
             replacements[projectID] = read.replaced
             closedCounts[projectID] = read.counts
             closedAutomationCounts[projectID] = read.automationCount
             automationLabels[projectID, default: [:]].merge(read.labels) { $1 }
-            closedErrors[key] = read.asks.problem
-        } catch {
-            closedErrors[key] = "Could not load the closed asks: \(error.localizedDescription)"
+            closedUnreadable[key] = read.asks.problem
+            closedErrors[key] = nil
+            closedReadAt[key] = now
+        case let .failure(error):
+            let reason = error.localizedDescription
+            if closedLists[key] != nil, let readAt = closedReadAt[key] {
+                closedErrors[key] = ClosedAskListCopy.refreshFailed(reason, readAt: Self.clockTime(readAt))
+            } else {
+                closedErrors[key] = ClosedAskListCopy.loadFailed(reason)
+            }
         }
+    }
+
+    /// "14:32", in the Mac's time zone.
+    nonisolated static func clockTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     /// Reloads a workbench's asks when anything about them changed since the
@@ -532,12 +607,14 @@ final class OwnerAsksViewModel {
     // MARK: - Drawer
 
     func openDrawer(askID: Int64, projectID: Int64) {
+        leaveClosedList(projectID: projectID)
         drawerAskIDs[projectID] = askID
     }
 
     /// Opens the drawer on `ask`; a closed one shows read-only.
     func openDrawer(_ ask: OwnerAsk) {
         if !ask.isOpen { shownAsks[ask.id] = ask }
+        leaveClosedList(projectID: ask.projectID)
         drawerAskIDs[ask.projectID] = ask.id
     }
 
@@ -558,6 +635,7 @@ final class OwnerAsksViewModel {
     func hideDrawer(projectID: Int64) {
         if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
         drawerAskIDs[projectID] = nil
+        leaveClosedList(projectID: projectID)
         drawerKeysActive.remove(projectID)
         drawerExpanded = false
     }
@@ -889,5 +967,103 @@ final class OwnerAsksViewModel {
 
     private func heldAskIDs(sessionID: Int64) -> Set<Int64> {
         Set(lineDelivery.heldKeys(sessionID: sessionID).compactMap(\.askID))
+    }
+}
+
+// MARK: - Closed asks list
+
+/// The closed asks list in the ask drawer (#1713 spec): "▸ N closed" shows
+/// it in place of an ask, a row opens its ask read-only with a way back.
+extension OwnerAsksViewModel {
+    /// The workbench's drawer shows nothing: no ask and no closed list.
+    func drawerIsEmpty(projectID: Int64) -> Bool {
+        drawerAskIDs[projectID] == nil && drawerClosedLists[projectID] == nil
+    }
+
+    /// The closed list the workbench's drawer shows, if any.
+    func drawerClosedList(projectID: Int64) -> ClosedListKey? {
+        drawerClosedLists[projectID]
+    }
+
+    /// Shows `key`'s list in the drawer in place of whatever it showed (an
+    /// ask's draft stays in `drafts`), then reads it.
+    func openClosedList(_ key: ClosedListKey) async {
+        let projectID = key.projectID
+        if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
+        drawerAskIDs[projectID] = nil
+        closedListOrigins[projectID] = nil
+        closedListNotices[key] = nil
+        drawerClosedLists[projectID] = key
+        await loadClosed(projectID: key.projectID, sessionID: key.sessionID, automations: key.automations)
+    }
+
+    /// The drawer's ask came from `key`'s list (its row was opened): the
+    /// back row shows and the list's cursor sits on it.
+    func noteOpenedFromClosedList(_ key: ClosedListKey, askID: Int64) {
+        guard drawerAskIDs[key.projectID] == askID else { return }
+        closedListOrigins[key.projectID] = key
+        closedListCursors[key] = askID
+    }
+
+    /// A clicked row's ask was gone: the list stays and says so, then reads again.
+    func closedAskGone(_ key: ClosedListKey) async {
+        closedListNotices[key] = ClosedAskListCopy.askGone
+        await loadClosed(projectID: key.projectID, sessionID: key.sessionID, automations: key.automations)
+    }
+
+    /// The back row, or Esc in an ask opened from a list: that list again,
+    /// with its query and cursor. False when the drawer's ask did not come
+    /// from a list.
+    @discardableResult
+    func backToClosedList(projectID: Int64) -> Bool {
+        guard let key = closedListOrigins[projectID] else { return false }
+        if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
+        drawerAskIDs[projectID] = nil
+        closedListOrigins[projectID] = nil
+        drawerClosedLists[projectID] = key
+        return true
+    }
+
+    /// Drops the list from the drawer (another ask opened, or the drawer
+    /// closed); the lists' queries and cursors stay for next time.
+    func leaveClosedList(projectID: Int64) {
+        drawerClosedLists[projectID] = nil
+        closedListOrigins[projectID] = nil
+    }
+
+    /// A deleted workbench: its lists, their state and its drawer go.
+    func forgetClosedLists(projectID: Int64) {
+        hideDrawer(projectID: projectID)
+        var keys = Set(closedLists.keys)
+        keys.formUnion(closedErrors.keys)
+        keys.formUnion(closedListQueries.keys)
+        keys.formUnion(closedListCursors.keys)
+        keys.formUnion(closedReadAt.keys)
+        for key in keys where key.projectID == projectID { dropClosedListState(key) }
+    }
+
+    private func dropClosedListState(_ key: ClosedListKey) {
+        closedLists[key] = nil
+        closedErrors[key] = nil
+        closedUnreadable[key] = nil
+        closedReadAt[key] = nil
+        closedLoading.remove(key)
+        closedListNotices[key] = nil
+        closedListQueries[key] = nil
+        closedListCursors[key] = nil
+        // A read still in flight for it applies nothing.
+        closedGenerations[key, default: 0] += 1
+    }
+
+    /// Moves the list's cursor one row up or down among `ids` (the rows on
+    /// screen, top to bottom); the first press lands on the first row.
+    func moveClosedListCursor(_ key: ClosedListKey, ids: [Int64], forward: Bool) {
+        guard !ids.isEmpty else { return }
+        guard let current = closedListCursors[key], let index = ids.firstIndex(of: current) else {
+            closedListCursors[key] = forward ? ids.first : ids.last
+            return
+        }
+        let next = forward ? min(index + 1, ids.count - 1) : max(index - 1, 0)
+        closedListCursors[key] = ids[next]
     }
 }

@@ -1337,7 +1337,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.asks.loadErrors[p], "1 ask could not be read (#\(bad)).")
 
         await vm.asks.loadClosed(projectID: p, sessionID: nil)
-        XCTAssertNil(vm.asks.closedErrors[.init(projectID: p, sessionID: nil)], "nothing broken among the closed ones")
+        XCTAssertNil(vm.asks.closedUnreadable[.init(projectID: p, sessionID: nil)], "nothing broken among the closed ones")
         try await pool.write { d in
             try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [bad])
         }
@@ -1345,7 +1345,7 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertNil(vm.asks.loadErrors[p], "the broken ask left the open list")
         await vm.asks.loadClosed(projectID: p, sessionID: nil)
         XCTAssertEqual(vm.asks.closedLists[.init(projectID: p, sessionID: nil)], [])
-        XCTAssertEqual(vm.asks.closedErrors[.init(projectID: p, sessionID: nil)], "1 ask could not be read (#\(bad)).")
+        XCTAssertEqual(vm.asks.closedUnreadable[.init(projectID: p, sessionID: nil)], "1 ask could not be read (#\(bad)).")
     }
 
     func testThePollReloadsOnlyWhenTheFingerprintChanges() async throws {

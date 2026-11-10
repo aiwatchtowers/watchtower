@@ -1,6 +1,6 @@
 # Closed asks list — design (target #1713)
 
-Status: design for review. Phase 1 of #1713 (spec + mockups only, no app code).
+Status: approved by the owner (ask #1201, no comments), implemented on `feature/1713-closed-asks-list`.
 
 ## Goal
 
@@ -89,7 +89,7 @@ Detail line after "#id · " (first part that applies; an automation's ask is pre
 | dismissed | the note, else nothing |
 | review | "Approved" / "Changes requested", then " · N comments" when any, then the note in quotes |
 | question | the picked labels and the "Other" text, "; "-joined, in question order |
-| check | `OwnerAskPresentation.checkSummary` ("OK 4 · Broken 1") |
+| check | `OwnerAskPresentation.checkSummary` (its button words: "Works 4 · Doesn't work 1") |
 | no answer stored | nothing |
 
 The drawer footer keeps `askStatusLine` unchanged; only the list uses the short chip words.
@@ -175,25 +175,25 @@ Model tests are listed under Model and strings. Shots cover every state (below).
 
 | # | Decision | Source |
 |---|---|---|
-| 1 | The list opens in the ask drawer (list mode) instead of a popover | decided by the agent (style guide "panels, not pop-ups"); **needs the owner's yes** — behaviour change |
-| 2 | Clicking "▸ N closed" reveals that session's pane first, like a row click does today | decided by the agent; **needs the owner's yes** — behaviour change |
-| 3 | Opening the list replaces whatever ask the drawer showed (its draft is kept by `OwnerAskDrafts`, as on any drawer switch) | decided by the agent; **needs the owner's yes** — behaviour change |
+| 1 | The list opens in the ask drawer (list mode) instead of a popover | ask #1201 (owner approved; proposed by the agent from the style guide "panels, not pop-ups") |
+| 2 | Clicking "▸ N closed" reveals that session's pane first, like a row click does today | ask #1201 |
+| 3 | Opening the list replaces whatever ask the drawer showed (its draft is kept by `OwnerAskDrafts`, as on any drawer switch) | ask #1201 |
 | 4 | "▸ N closed" keeps its label, place and help | decided by the agent (the coordinator's brief for #1713 asked to keep it; the owner only asked for "a normal design") |
 | 5 | Back row "‹ Closed asks N" in an ask opened from the list; back keeps query, cursor and scroll | decided by the agent |
-| 6 | Groups by the day the ask was filed, newest first (the query's order) | decided by the agent; **open question 2** for the owner (filed vs closed day) |
+| 6 | Groups by the day the ask was filed, newest first (the query's order) | ask #1201 (open question 2 answered by approval) |
 | 7 | Two-line titles, status chip, answer preview line, time on the right | decided by the agent (ideas from the coordinator's brief, not the owner's) |
 | 8 | Short chip words (Answered / Delivered / Withdrawn / Replaced / Dismissed) in the list; the drawer footer keeps `askStatusLine` | decided by the agent |
 | 9 | Answered = blue, Delivered = green, the rest gray, through `Tone.status` | decided by the agent |
-| 10 | No status filter control; search also matches the chip word ("withdrawn", "replaced") | decided by the agent (owner prefers simple, memory note); **open question 3** for the owner |
-| 11 | Search shown from 10 asks | decided by the agent; part of open question 3 |
+| 10 | No status filter control; search also matches the chip word ("withdrawn", "replaced") | ask #1201 (open question 3 answered by approval) |
+| 11 | Search shown from 10 asks | ask #1201 |
 | 12 | Query and cursor kept per list for the app run, not persisted | decided by the agent |
 | 13 | Keyboard: ↑/↓, Return, ⌘F, Esc; Esc in an ask opened from the list goes back to the list | decided by the agent |
 | 14 | No paging; lazy rows | decided by the agent |
-| 15 | In-drawer empty/loading/error blocks, not `FeatureEmptyState` / `TabEmptyState` / `ContentAwareEmptyState` — an **exception to the style guide's empty-state rule**: those three are keyed by a sidebar tab (`EmptyStateCopyTable`) and feature readiness, and a sub-list inside a drawer has neither. The blocks use kit tokens, `Tone` and `.kitSecondary` only | decided by the agent; listed as an exception for the owner's review |
+| 15 | In-drawer empty/loading/error blocks, not `FeatureEmptyState` / `TabEmptyState` / `ContentAwareEmptyState` — an **exception to the style guide's empty-state rule**: those three are keyed by a sidebar tab (`EmptyStateCopyTable`) and feature readiness, and a sub-list inside a drawer has neither. The blocks use kit tokens, `Tone` and `.kitSecondary` only | ask #1201 (the exception approved with the spec) |
 | 16 | All strings in `ClosedAskListCopy` with a test; colours only through `Tone`; no row separators; kit components only | owner's workbench rules |
 | 17 | The phone is not changed (it shows the closed count only) | decided by the agent |
 
-Flagged for the owner (not approved yet): decisions 1, 2 and 3 (behaviour changes), and the open questions behind 6 and 10–11. They are asked in this spec's review ask; nothing is built before the answer. If the owner says no to 1, the fallback is the popover fixed (`.frame(width: 400, height: 520)`, same rows, groups, search and states; a row click still closes it), which this spec's model, strings and tests serve unchanged.
+The owner approved the spec as written in ask #1201: decisions 1–3, 6, 10–11 and the decision-15 exception stand; the popover fallback is not built. If the owner says no to 1, the fallback is the popover fixed (`.frame(width: 400, height: 520)`, same rows, groups, search and states; a row click still closes it), which this spec's model, strings and tests serve unchanged.
 
 ## Mockups
 
@@ -226,7 +226,20 @@ Design-only SwiftUI shots in `DesignShotCatalog` (`ClosedAsksShotFixtures`, `Wat
 
 `docs/guide/` workbench asks page: "▸ N closed" opens the list in the ask panel, search, back. `docs/features/workbench.md`: the drawer's list mode.
 
-## Open questions for the owner
+## Implementation notes (deviations from the text above)
+
+- **Drawer state.** `drawerAskIDs` stays (about a hundred readers) and a sibling `drawerClosedLists[projectID]` holds the list key; the two are never set together (`openDrawer` and `hideDrawer` clear the list, `openClosedList` clears the ask). Same behaviour as the `DrawerContent` enum, less churn. `drawerIsEmpty(projectID:)` replaces the `drawerAskIDs[…] == nil` guards of the auto-open paths, so a new ask never opens over a list.
+- **Search field.** A plain `TextField` on the `Fill.card` capsule (the mockup's look) instead of `SearchField`, so ⌘F can focus it through `@FocusState`.
+- **Esc** reaches the drawer through `OwnerAskKeyMap.Press.Key.escape` (new; maps to no drawer or card action) and `WorkbenchesViewModel.escapeInAskDrawer`.
+- **Strings and model** live in `WatchtowerCore/Services/ClosedAskList.swift`; the entry label ("▸ N closed") and its help moved there too.
+- **Shots.** `ClosedAsksShotFixtures` now renders the real `OwnerAskClosedListPane` / `OwnerAskDrawer` over a real view model; the approved mockups stay in `docs/design/mockups/closed-asks-list/`.
+- **Shots of the implementation** are committed under `docs/design/mockups/closed-asks-list/implemented/`; compared with the mockups: same layout, the check preview uses the app's check words ("Works 4 · Doesn't work 1"), the opened ask's header is the real drawer header.
+- **Partial rows.** `closedErrors` now holds read failures only; undecodable rows are `closedUnreadable`.
+
+## Open questions for the owner (answered)
+
+Answered by the approval of ask #1201: drawer instead of popover, group by the day filed, search only.
+
 
 1. Drawer instead of popover (decisions 1–3): OK that "▸ N closed" switches to that session's pane?
 2. Group by the day the ask was filed (as now) or by the day it was closed (answered/withdrawn)?
