@@ -28,6 +28,11 @@ const (
 	// crashHeaderWindow is how many lines after a "panic: "/"fatal error: "
 	// line may hold the goroutine header for it to count as a crash.
 	crashHeaderWindow = 5
+	// runtimeStackWindow is the window after a "runtime stack:" line inside
+	// the header window (an unexpected signal prints the runtime frames
+	// before the goroutine header, ask #1168); capped so a garbage log
+	// cannot keep a candidate open forever.
+	runtimeStackWindow = 200
 	// crashLineBuffer is the reader buffer; a longer line is kept only up
 	// to this size (crash and frame lines are short) and the rest skipped.
 	crashLineBuffer = 1 << 20
@@ -35,7 +40,9 @@ const (
 	logTimeLayout = "2006/01/02 15:04:05"
 )
 
-var goroutineHeader = regexp.MustCompile(`^goroutine \d+ \[`)
+// goroutineHeader matches "goroutine 7 [running]:" and the system-level
+// form a fatal error prints, "goroutine 7 gp=0x… m=5 mp=0x… [syscall]:".
+var goroutineHeader = regexp.MustCompile(`^goroutine \d+ (?:gp=\S+ m=\S+ (?:mp=\S+ )?)?\[`)
 
 type crashHit struct {
 	time      time.Time
@@ -46,7 +53,8 @@ type crashHit struct {
 // ScanCrashes streams files — in the order watchtower.log, watchtower.log.1,
 // daemon.log, which is also the tie order — whole, line by line, and counts
 // Go runtime crashes: a line starting with "panic: " or "fatal error: "
-// followed within 5 lines by a "goroutine N [" header. A crash's time is the
+// followed within 5 lines by a "goroutine N [" header; a "runtime stack:"
+// line inside that window extends it (up to 200 lines). A crash's time is the
 // nearest preceding timestamped line in the same file (parsed in loc,
 // returned in UTC); its place is the first frame of that goroutine trace
 // starting with "watchtower/". The newest crash is chosen by time, ties and
@@ -136,6 +144,8 @@ func scanCrashFile(r io.Reader, deadline time.Time, now func() time.Time, loc *t
 		case pending != nil && goroutineHeader.Match(line):
 			count++
 			last, pending, inTrace = pending, nil, true
+		case pending != nil && bytes.HasPrefix(line, []byte("runtime stack:")):
+			pendingLeft = runtimeStackWindow
 		case pending != nil:
 			if pendingLeft--; pendingLeft == 0 {
 				pending = nil

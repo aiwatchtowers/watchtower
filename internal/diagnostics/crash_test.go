@@ -73,6 +73,64 @@ func TestDiagnostics_CrashRecoveredRepanic(t *testing.T) {
 	}
 }
 
+// unexpectedSignalTrace is the shape of a cgo crash: the signal line and the
+// runtime stack come before the goroutine header (system-level header form).
+func unexpectedSignalTrace(goroutineFrames string) string {
+	return "fatal error: unexpected signal during runtime execution\n" +
+		"[signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x1]\n" +
+		"\n" +
+		"runtime stack:\n" +
+		"runtime.throw({0x1, 0x2})\n" +
+		"\t/usr/local/go/src/runtime/panic.go:1101 +0x38\n" +
+		"runtime.sigpanic()\n" +
+		"\t/usr/local/go/src/runtime/signal_unix.go:939 +0x22c\n" +
+		"runtime.mstart1()\n" +
+		"\t/usr/local/go/src/runtime/proc.go:1910 +0x34\n" +
+		"runtime.mstart0()\n" +
+		"\t/usr/local/go/src/runtime/proc.go:1860 +0x30\n" +
+		"\n" +
+		"goroutine 23 gp=0x14000102a80 m=5 mp=0x14000080808 [syscall]:\n" +
+		"runtime.cgocall(0x1, 0x14000123456)\n" +
+		"\t/usr/local/go/src/runtime/cgocall.go:167 +0x44\n" +
+		goroutineFrames +
+		"\n" +
+		"goroutine 1 gp=0x140000021c0 m=nil [select]:\n" +
+		"watchtower/internal/daemon.(*Daemon).loop(...)\n" +
+		"\t/src/internal/daemon/daemon.go:9\n"
+}
+
+func TestDiagnostics_CrashRuntimeStack(t *testing.T) {
+	frames := "watchtower/internal/sqlcipher._Cfunc_sqlite3_step(0x1)\n" +
+		"\t_cgo_gotypes.go:1 +0x40\n" +
+		"watchtower/internal/sqlcipher.(*SQLiteStmt).execSync(0x14000aa, {0x0, 0x0, 0x0})\n" +
+		"\t/src/internal/sqlcipher/sqlite3.go:2500 +0x60\n"
+	log := "2026/11/04 09:00:00 sync: page\n" + unexpectedSignalTrace(frames)
+	got := scanUTC(crashFiles(t, log, "", ""))
+	if got.Count != 1 || !got.TimeKnown || got.Place != "watchtower/internal/sqlcipher._Cfunc_sqlite3_step" {
+		t.Fatalf("unexpected signal: got %+v, want one crash in the sqlcipher frame", got)
+	}
+
+	// No watchtower/ frame in the crashing goroutine: location unknown (the
+	// other goroutine's watchtower/ frame never counts).
+	got = scanUTC(crashFiles(t, unexpectedSignalTrace("main.main()\n\t/src/main.go:3\n"), "", ""))
+	if got.Count != 1 || got.Place != "" {
+		t.Fatalf("runtime-only: got %+v, want location unknown", got)
+	}
+
+	// The extension is capped: a runtime stack with no header within 200
+	// lines is no crash.
+	garbage := "fatal error: x\nruntime stack:\n" + strings.Repeat("runtime.f()\n", 200) +
+		"goroutine 1 [running]:\n"
+	if got := scanUTC(crashFiles(t, garbage, "", "")); got.Count != 0 {
+		t.Fatalf("capped window: got %+v, want no crash", got)
+	}
+	// A "runtime stack:" line past the 5-line window extends nothing.
+	late := "fatal error: x\n1\n2\n3\n4\n5\nruntime stack:\ngoroutine 1 [running]:\n"
+	if got := scanUTC(crashFiles(t, late, "", "")); got.Count != 0 {
+		t.Fatalf("runtime stack after the window: got %+v, want no crash", got)
+	}
+}
+
 func TestDiagnostics_IgnoresLoggedPanicText(t *testing.T) {
 	logged := "2026/11/04 09:00:00 recovered panic: x\n" +
 		"goroutine 3 [running]:\n"
