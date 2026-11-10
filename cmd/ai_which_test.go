@@ -129,9 +129,9 @@ func TestAIWhich_JSONFlagThroughCobra(t *testing.T) {
 	stubSeams(t, "claude", "", devpack.ErrCodexNotFound)
 
 	buf := &bytes.Buffer{}
-	rootCmd.SetOut(buf)
+	aiWhichCmd.SetOut(buf)
 	rootCmd.SetArgs([]string{"ai", "which", "--provider", "claude", "--json"})
-	defer func() { rootCmd.SetArgs(nil); rootCmd.SetOut(nil); flagProvider = "" }()
+	defer func() { rootCmd.SetArgs(nil); flagProvider = "" }()
 	require.NoError(t, rootCmd.Execute())
 	var o whichOut
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &o))
