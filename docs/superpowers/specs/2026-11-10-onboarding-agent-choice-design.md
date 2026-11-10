@@ -34,10 +34,18 @@ Each tile shows one status, computed per agent:
 | `notInstalled` | no executable at `claude_path`/`codex_path` or in the usual places (`Constants.findInPath`, which includes `~/.local/bin`). Known locally, **no request** | Not installed | neutral |
 | `ready` | `ai test --json --provider <agent>` answered | Ready · signed in | success |
 | `signedOut` | the test failed with `error_code: auth` | Installed · not signed in | warning |
-| `failed(msg)` | any other failed test (transport, timeout, invalid output); `msg` is the CLI's sanitized error | Check failed | error |
-| `forbidden` | `AllowedAIProviders` leaves it out (`ManagedPolicy.providerAllowed`); no test runs | Turned off by your organization | neutral, tile disabled |
+| `failed(msg)` | any other failed test; `msg` is `OnboardingAgentChoice.failureMessage(agent, code, error)` (below) | Check failed | error |
+| `forbidden` | `AllowedAIProviders` leaves it out: the Swift read (`ManagedPolicy.providerAllowed`, no test runs) **or** the test's own `error_code: policy` (Go's `providers.Allowed`), so a disagreement between the two readers still reads as the policy | Turned off by your organization | neutral, tile disabled |
 
-Installed agents are tested **in parallel**. One short request per installed agent, the same `ai test` the step already sends today.
+**Failed line.** `ai test --json` reports a bare category (`Provider request failed (…).`), so the line is chosen by `error_code`:
+
+| `error_code` | Line |
+|---|---|
+| `transport`, `timeout` | Couldn't reach Claude Code's service. Check the network or VPN, then check again. |
+| `invalid_output` | the CLI's own message (it names its next step), else "Claude Code answered but ignored Watchtower's instructions. Update it and check again." |
+| anything else | Claude Code didn't answer (`<error>`). Run it once in Terminal to see what it says, then check again. |
+
+Installed agents are tested **in parallel**: one short request per installed agent, the same `ai test` the step already sends. Today's worst case already sends two (Claude, then the Codex fallback) one after the other. Running them in parallel caps the wait at one test's timeout, and the owner sees both statuses before choosing. A missing or forbidden agent costs nothing.
 
 ### Which tile is selected
 
@@ -55,11 +63,23 @@ A tap on a tile is the owner's pick. Later checks never move it.
 The setup panel shows only while the picked agent is not ready.
 
 - **Not installed:** "Install Claude Code" with 1. the installer and 2. the sign-in command, each with a copy button. The installers need no Node.js:
-  - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (the official native installer), sign in with `claude`;
+  - Claude Code: `curl -fsSL https://claude.ai/install.sh | bash` (the official native installer), sign in with `claude auth login`;
   - Codex CLI: `curl -fsSL https://chatgpt.com/codex/install.sh | sh` (README of `openai/codex`), sign in with `codex login`.
-- **Signed out:** "Sign in to Claude Code" and the sign-in command.
-- **Failed:** "Claude Code didn't answer" and the CLI's message.
+  - On a Mac where piping a script into the shell is not allowed, the **Other ways to install** link opens the vendor's install page (Homebrew, npm and the rest): `code.claude.com/docs/en/setup`, `github.com/openai/codex`.
+- **Signed out:** see "Sign in right here" below.
+- **Failed:** "Claude Code didn't answer" and the Failed line.
 - Buttons: **Check again** (`kitSecondary`) and, for not installed or failed, **Choose the executable…**. The second opens an `NSOpenPanel` and saves the picked agent's `claude_path`/`codex_path`, as today's manual-path row does for Claude. A line under them says: "Watchtower checks again when you come back to this window." (`NSApplication.didBecomeActiveNotification` while the step is up and the picked agent is not ready; no polling).
+
+### Sign in right here (owner, ask #1157)
+
+When the picked agent is signed out, the panel runs its sign-in in an embedded terminal, **opened by itself** the first time that agent shows as signed out:
+
+- The command is the CLI's own login, which exits when it is done: `claude auth login` (Claude Code 2.1+) or `codex login`. It opens the browser. The terminal shows the CLI's prompts and the fallback URL.
+- Above the terminal: "Your browser opens to sign in. When it's done, this closes and Watchtower checks again." Under it: **Stop**.
+- Exit 0 means the terminal closes and the agents are checked again: the tile turns Ready and Continue unlocks. A non-zero exit or Stop closes it, and the note becomes "Sign-in stopped before it finished (exit code N)." in `Tone.warning`, with **Sign in again**. A stopped sign-in never reopens by itself (`signInOpened`).
+- Under it as a fallback: "Or run it in your own Terminal:" and the command with a copy button.
+- Picking the other tile stops a running sign-in.
+- The terminal is SwiftTerm's `LocalProcessTerminalView` (as in the Workbench), started in the login-shell environment (`Constants.resolvedEnvironmentAsync`) with the agent's resolved executable. It is not a Workbench session: no session host, nothing stored, about ten rows (`OnboardingAgentSection.terminalHeight`).
 
 ### No agent at all
 
@@ -67,7 +87,9 @@ The section caption becomes "Watchtower needs Claude Code or Codex CLI on this M
 
 ### Provider set elsewhere
 
-If the configured provider is neither claude nor codex (Ollama set in Settings), the section shows one line, "Watchtower runs on Ollama, set in Settings → AI.". There are no tiles, the check is the existing `ai test` with no provider, and Continue follows it.
+If the configured provider is neither claude nor codex (Ollama set in Settings; owner, ask #1157: Ollama stays in Settings), the section shows one line, "Watchtower runs on Ollama, set in Settings → AI.". There are no tiles; the check is the existing `ai test` with no provider. If it answers, Continue is enabled.
+
+If that test fails, the tiles come back (and the two agents are checked) under the caption "Ollama, set in Settings → AI, didn't answer: `<line>` Pick Claude Code or Codex CLI instead, or fix it in Settings and check again.". Picking a ready agent and pressing Continue writes it over `ai.provider`. Check again retests Ollama too.
 
 ### Continue
 
@@ -85,11 +107,18 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 
 ### Components
 
-- `WatchtowerCore/Services/OnboardingAgentChoice.swift`: pure state and **every line of copy** above. Tests: `Tests/Core/OnboardingAgentChoiceTests.swift` (19 tests: default selection, pick, policy, Continue, save, all copy).
+- `WatchtowerCore/Services/OnboardingAgentChoice.swift`: pure state and **every line of copy** above. Tests: `Tests/Core/OnboardingAgentChoiceTests.swift` (25 tests: default selection, pick, policy, Continue, save, sign-in terminal, failure lines, all copy).
 - `Views/Onboarding/OnboardingAgentSection.swift`: tiles plus the setup panel (`card(selected:)`, `Fill`, `Tone.success/warning/error`, `kitSecondary`/`kitQuiet`, no dividers); `OnboardingCommandLine` (the copyable command).
 - `OnboardingGoalCards` and `OnboardingGoalsFooter` are extracted from `OnboardingGoalsStepView`, so the mockups render the step's own parts.
 - `OnboardingCLIProbe` is replaced by a per-agent check that returns `[Agent: Status]`. `OnboardingGoalsModel` keeps an `OnboardingAgentChoice` in place of `OnboardingCLICheck`. `onProviderSwitched` fires after the Continue write instead of after the check.
-- Mockups: `OnboardingAgentShotFixtures` in `DesignShotCatalog`, 13 scenes × light/dark.
+- `OnboardingSignInTerminal` (Views/Onboarding): the PTY host for the sign-in. It reports start/exit to the model; quitting, leaving the step or picking the other tile sends SIGTERM to its process group.
+- Mockups: `OnboardingAgentShotFixtures` in `DesignShotCatalog`, 16 scenes × light/dark (the sign-in terminal as a still).
+
+### Docs updated in the same PR
+
+- `docs/onboarding-flow.md`: the Goals box ("Continue blocked until `watchtower ai test` passes … `OnboardingCLIProbe`") is rewritten for the per-agent check, the pick and the write at Continue.
+- `docs/features/onboarding-v2.md`: the CLI check paragraph.
+- Guide: `docs/guide/start/setup.md` (the first step) and `docs/guide/troubleshooting/ai-tool-not-found-or-not-signed-in.md` (the curl installers, signing in from the step).
 
 ## Failures
 
@@ -101,6 +130,10 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 | Owner installs while on the step | coming back to the window rechecks; Check again does it by hand | model: reactivation triggers a check only when the pick is not ready |
 | Installer put the binary outside the usual places | Not installed stays; **Choose the executable…** saves the path and rechecks | model: path save → recheck |
 | Policy forbids both | both tiles disabled, no tests, Continue disabled with "Continue unlocks once an AI agent is ready" | choice: no selection, hint |
+| Swift and Go policy readers disagree | `error_code: policy` from the test maps to `forbidden` too | check mapping test |
+| Sign-in terminal: host closes or the app quits mid-login | SIGTERM to the process group (as `CodeCLIProcess` groups are reaped); the CLI's own credential store is its business; the next check reports what is true | terminal: process group gone after stop |
+| Sign-in exits 0 but the test still fails | the tile shows the real status (signed out again → the terminal does not reopen by itself; Sign in again is there) | choice: `signInOpened` keeps it closed |
+| Sign-in can't start (executable vanished) | note "Sign-in stopped before it finished." plus the Terminal fallback command | choice: ended copy |
 
 ## Writers of `ai.provider` / `workbench.default_agent`
 
@@ -109,11 +142,12 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 - **CLI** `watchtower config set` (owner or an agent).
 - The daemon and the phone never write them.
 
-Every writer goes through `config set` (an atomic file replace). The last write wins. Onboarding writes once, at Continue, from the owner's pick at that moment, so a Settings change made in another window before Continue is overwritten by the pick. That is acceptable: the owner just chose on screen. Removing the check-time write removes today's race, where a background check could overwrite a provider the owner had just saved in Settings.
+Onboarding writing only at Continue is the owner's decision (ask #1157). Every writer goes through `config set` (an atomic file replace). The last write wins. Onboarding writes once, at Continue, from the owner's pick at that moment, so a Settings change made in another window before Continue is overwritten by the pick. That is acceptable: the owner just chose on screen. Removing the check-time write removes today's race, where a background check could overwrite a provider the owner had just saved in Settings.
 
 ## Out of scope
 
-- Ollama or an API key as an onboarding option (stays in Settings → AI). See the open question.
+- Ollama or an API key as an onboarding option: stays in Settings → AI (owner, ask #1157).
+- Continuing without an AI agent (owner, ask #1157: blocked until one is ready).
 - Changing Settings → AI.
 
 ## Decisions
@@ -121,8 +155,12 @@ Every writer goes through `config set` (an atomic file replace). The last write 
 - Explicit Claude Code / Codex choice on the Goals step, with handling for "no agent installed": owner (conversation, 2026-11-10).
 - Status per agent, both installed agents tested in parallel, policy respected: agent decided.
 - Default selection order (configured → ready → installed → Claude); a tap is sticky: agent decided.
-- The provider is written at Continue, not during the check: agent decided (behaviour change, raised in the ask below).
-- Installers via `curl` (no Node.js), npm commands dropped: agent decided.
+- The provider is written only at Continue; the check never writes: owner, ask #1157.
+- Installers via `curl` (no Node.js), npm dropped from the panel, **Other ways to install** link for Macs that forbid it: agent decided.
+- Signed out → the sign-in terminal opens right in the step: owner, ask #1157 (note). Auto-open once, `claude auth login`/`codex login`, recheck on exit 0: agent decided.
+- Ollama failing its check brings the tiles back: agent decided.
+- Failed line chosen by `error_code`: agent decided.
 - Goal cards stay cards in the no-agent case (no chips): agent decided.
 - Recheck when the window becomes active: agent decided.
-- No agent: Continue stays blocked; no "continue without AI" and no Ollama here: agent decided, **open: owner's ask**.
+- No agent: Continue stays blocked until one is ready; no "continue without AI": owner, ask #1157.
+- Ollama only in Settings → AI, not a tile: owner, ask #1157.

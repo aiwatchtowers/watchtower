@@ -128,9 +128,11 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertEqual(claude.title, "Install Claude Code")
         XCTAssertEqual(claude.steps, [
             .init(label: "Install it in Terminal:", command: "curl -fsSL https://claude.ai/install.sh | bash"),
-            .init(label: "Sign in:", command: "claude")
+            .init(label: "Sign in:", command: "claude auth login")
         ])
         XCTAssertTrue(claude.showsManualPath)
+        XCTAssertEqual(claude.docsURL, "https://code.claude.com/docs/en/setup")
+        XCTAssertFalse(claude.runsSignIn)
         none.pick(.codex)
         let codex = try XCTUnwrap(none.setup)
         XCTAssertEqual(codex.title, "Install Codex CLI")
@@ -140,8 +142,10 @@ final class OnboardingAgentChoiceTests: XCTestCase {
     func testSetupWhenSignedOutOrFailed() throws {
         let signedOut = try XCTUnwrap(choice(.signedOut, .notInstalled).setup)
         XCTAssertEqual(signedOut.title, "Sign in to Claude Code")
-        XCTAssertEqual(signedOut.steps, [.init(label: "Run in Terminal and follow the prompts:", command: "claude")])
+        XCTAssertEqual(signedOut.steps, [.init(label: "Or run it in your own Terminal:", command: "claude auth login")])
         XCTAssertFalse(signedOut.showsManualPath)
+        XCTAssertTrue(signedOut.runsSignIn)
+        XCTAssertNil(signedOut.docsURL)
 
         let failed = try XCTUnwrap(choice(.failed("timed out"), .notInstalled).setup)
         XCTAssertEqual(failed.title, "Claude Code didn’t answer")
@@ -175,5 +179,100 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         both.pick(.codex)
         XCTAssertEqual(both.developmentPitch, "Codex CLI works your folder’s board. No connections needed")
         XCTAssertEqual(Choice().developmentPitch, "Your AI agent works your folder’s board. No connections needed")
+    }
+
+    // MARK: Sign-in terminal (ask #1157)
+
+    func testSignInOpensOnceForTheSignedOutPick() {
+        var signedOut = choice(.signedOut, .notInstalled)
+        XCTAssertEqual(signedOut.signInToOpen, .claude)
+        signedOut.signInStarted()
+        XCTAssertEqual(signedOut.signIn, .running)
+        XCTAssertNil(signedOut.signInToOpen)
+        signedOut.signInStopped()
+        XCTAssertEqual(signedOut.signIn, .ended(nil))
+        // Never reopens by itself after a Stop.
+        XCTAssertNil(signedOut.signInToOpen)
+        XCTAssertNil(choice(.ready, .signedOut).signInToOpen)
+    }
+
+    func testSignInEndCopy() throws {
+        var signedOut = choice(.signedOut, .notInstalled)
+        signedOut.signInStarted()
+        let running = try XCTUnwrap(signedOut.setup)
+        XCTAssertEqual(
+            running.signInNote,
+            "Your browser opens to sign in. When it’s done, this closes and Watchtower checks again."
+        )
+        XCTAssertFalse(running.signInNoteWarns)
+        signedOut.signInEnded(exitCode: 1)
+        let failed = try XCTUnwrap(signedOut.setup)
+        XCTAssertEqual(failed.signInNote, "Sign-in stopped before it finished (exit code 1).")
+        XCTAssertTrue(failed.signInNoteWarns)
+        signedOut.signInStopped()
+        XCTAssertEqual(signedOut.setup?.signInNote, "Sign-in stopped before it finished.")
+        signedOut.signInEnded(exitCode: 0)
+        XCTAssertEqual(signedOut.signIn, .idle)
+        XCTAssertEqual(Choice.signInAgain, "Sign in again")
+        XCTAssertEqual(Choice.stopSignIn, "Stop")
+    }
+
+    func testPickingAnotherAgentResetsSignIn() {
+        var signedOut = choice(.signedOut, .ready)
+        signedOut.pick(.claude)
+        signedOut.signInStarted()
+        signedOut.pick(.codex)
+        XCTAssertEqual(signedOut.signIn, .idle)
+    }
+
+    func testFailureMessages() {
+        XCTAssertEqual(
+            Choice.failureMessage(.claude, code: "timeout", error: "x"),
+            "Couldn’t reach Claude Code’s service. Check the network or VPN, then check again."
+        )
+        XCTAssertEqual(
+            Choice.failureMessage(.codex, code: "transport", error: nil),
+            "Couldn’t reach Codex CLI’s service. Check the network or VPN, then check again."
+        )
+        XCTAssertEqual(Choice.failureMessage(.codex, code: "invalid_output", error: "Update the Codex CLI."), "Update the Codex CLI.")
+        XCTAssertEqual(
+            Choice.failureMessage(.codex, code: "invalid_output", error: nil),
+            "Codex CLI answered but ignored Watchtower’s instructions. Update it and check again."
+        )
+        XCTAssertEqual(
+            Choice.failureMessage(.claude, code: nil, error: "Provider request failed (unknown)."),
+            "Claude Code didn’t answer (Provider request failed (unknown).). Run it once in Terminal to see what it says, then check again."
+        )
+        XCTAssertEqual(
+            Choice.failureMessage(.claude, code: "x", error: ""),
+            "Claude Code didn’t answer. Run it once in Terminal to see what it says, then check again."
+        )
+    }
+
+    func testOtherProviderFailureBringsTilesBack() {
+        var failed = Choice(
+            statuses: [.claude: .ready, .codex: .notInstalled],
+            otherProvider: "Ollama",
+            otherProviderFailure: "Couldn’t reach the server."
+        )
+        failed.applyDefault(configured: "ollama")
+        XCTAssertTrue(failed.showsTiles)
+        XCTAssertEqual(failed.selected, .claude)
+        XCTAssertTrue(failed.canContinue)
+        XCTAssertEqual(failed.providerToSave(configured: "ollama"), "claude")
+        XCTAssertEqual(
+            failed.caption,
+            "Ollama, set in Settings → AI, didn’t answer: Couldn’t reach the server. "
+                + "Pick Claude Code or Codex CLI instead, or fix it in Settings and check again."
+        )
+        XCTAssertEqual(Choice.Setup.docsLink, "Other ways to install")
+    }
+
+    func testPolicyForbidsBoth() {
+        let both = choice(.forbidden, .forbidden)
+        XCTAssertNil(both.selected)
+        XCTAssertFalse(both.canContinue)
+        XCTAssertFalse(both.noneInstalled)
+        XCTAssertEqual(both.continueHint, "Continue unlocks once an AI agent is ready")
     }
 }

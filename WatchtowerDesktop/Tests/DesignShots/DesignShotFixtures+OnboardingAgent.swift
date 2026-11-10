@@ -39,20 +39,33 @@ enum OnboardingAgentShotFixtures {
         let bothReady = choice(.ready, .ready)
         var other = OnboardingAgentChoice(statuses: [.claude: .ready, .codex: .notInstalled], otherProvider: "Ollama")
         other.applyDefault(configured: "ollama")
+        var otherFailed = OnboardingAgentChoice(
+            statuses: [.claude: .ready, .codex: .notInstalled],
+            otherProvider: "Ollama",
+            otherProviderFailure: "Couldn’t reach the server at http://localhost:11434."
+        )
+        otherFailed.applyDefault(configured: "ollama")
+        var signingIn = choice(.signedOut, .notInstalled)
+        signingIn.signInStarted()
+        var signInStopped = signingIn
+        signInStopped.signInStopped()
         return [
             Scene(name: "checking", choice: OnboardingAgentChoice()),
             Scene(name: "both-ready", choice: bothReady),
             Scene(name: "both-ready-codex", choice: choice(.ready, .ready, pick: .codex)),
             Scene(name: "only-codex", choice: choice(.notInstalled, .ready)),
-            Scene(name: "signed-out", choice: choice(.signedOut, .notInstalled)),
+            Scene(name: "signed-out", choice: signingIn),
+            Scene(name: "signed-out-stopped", choice: signInStopped),
             Scene(name: "none", choice: choice(.notInstalled, .notInstalled)),
             Scene(name: "none-codex", choice: choice(.notInstalled, .notInstalled, pick: .codex)),
             Scene(name: "failed", choice: choice(
-                .failed("Couldn’t reach the provider: the request timed out. Check your network and try again."),
+                .failed(OnboardingAgentChoice.failureMessage(.claude, code: "timeout", error: nil)),
                 .notInstalled
             )),
             Scene(name: "policy", choice: choice(.forbidden, .ready)),
+            Scene(name: "policy-both", choice: choice(.forbidden, .forbidden)),
             Scene(name: "other-provider", choice: other),
+            Scene(name: "other-provider-failed", choice: otherFailed),
             Scene(name: "continuing", choice: bothReady, continuing: true),
             Scene(name: "save-error", choice: bothReady,
                   error: OnboardingAgentChoice.saveFailure + " config set ai.provider: permission denied"),
@@ -74,7 +87,10 @@ enum OnboardingAgentShotFixtures {
                     developmentPitch: scene.choice.developmentPitch
                 ) { _ in }
                 AssistantLanguageRow(selection: .constant("English"))
-                OnboardingAgentSection(choice: scene.choice, onPick: { _ in }, onCheckAgain: {}, onChoosePath: { _ in })
+                OnboardingAgentSection(
+                    choice: scene.choice, onPick: { _ in }, onCheckAgain: {}, onChoosePath: { _ in },
+                    signInTerminal: { AnyView(TerminalStill(command: scene.choice.selected?.signInCommand ?? "")) }
+                )
                 OnboardingGoalsFooter(
                     hint: scene.choice.continueHint,
                     error: scene.error,
@@ -87,6 +103,26 @@ enum OnboardingAgentShotFixtures {
             .padding(Spacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(Surface.window)
+        }
+    }
+
+    /// A still of the sign-in terminal: what `claude auth login` prints
+    /// while it waits for the browser. Sample text only.
+    private struct TerminalStill: View {
+        let command: String
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text("$ \(command)")
+                Text("Opening your browser to sign in…")
+                Text("If it didn’t open, visit: https://example.com/oauth/authorize?code=…")
+                Text("Waiting for the browser… ▍")
+            }
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(.primary)
+            .padding(Spacing.cozy)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Fill.card)
         }
     }
 }

@@ -10,6 +10,11 @@ struct OnboardingAgentSection: View {
     let onPick: (OnboardingAgentChoice.Agent) -> Void
     let onCheckAgain: () -> Void
     let onChoosePath: (OnboardingAgentChoice.Agent) -> Void
+    var onSignIn: () -> Void = {}
+    var onStopSignIn: () -> Void = {}
+    /// The live sign-in terminal (`<agent> auth login` in a PTY); the
+    /// mockups pass a still of one.
+    var signInTerminal: () -> AnyView = { AnyView(EmptyView()) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
@@ -26,7 +31,7 @@ struct OnboardingAgentSection: View {
                 }
                 Spacer(minLength: 0)
             }
-            if choice.otherProvider == nil {
+            if choice.showsTiles {
                 HStack(spacing: Spacing.medium) {
                     ForEach(OnboardingAgentChoice.Agent.allCases, id: \.self) { agent in
                         tile(choice.tile(agent))
@@ -77,9 +82,10 @@ struct OnboardingAgentSection: View {
     private func setupPanel(_ setup: OnboardingAgentChoice.Setup) -> some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(setup.title).font(.callout.weight(.semibold))
+            if setup.runsSignIn { signInBlock(setup) }
             ForEach(Array(setup.steps.enumerated()), id: \.offset) { index, step in
                 VStack(alignment: .leading, spacing: Spacing.small) {
-                    Text("\(index + 1). \(step.label)").font(.caption).foregroundStyle(.secondary)
+                    Text(setup.steps.count > 1 ? "\(index + 1). \(step.label)" : step.label).font(.caption).foregroundStyle(.secondary)
                     if let command = step.command { OnboardingCommandLine(command: command) }
                 }
             }
@@ -93,6 +99,10 @@ struct OnboardingAgentSection: View {
             HStack(spacing: Spacing.medium) {
                 Button(OnboardingAgentChoice.Setup.checkAgain, action: onCheckAgain)
                     .buttonStyle(.kitSecondary)
+                if let docsURL = setup.docsURL, let url = URL(string: docsURL) {
+                    Link(OnboardingAgentChoice.Setup.docsLink, destination: url)
+                        .font(.caption)
+                }
                 if setup.showsManualPath {
                     Button(OnboardingAgentChoice.Setup.manualPath) { onChoosePath(setup.agent) }
                         .buttonStyle(.kitQuiet)
@@ -106,6 +116,31 @@ struct OnboardingAgentSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Surface.text, in: RoundedRectangle(cornerRadius: Radius.row))
     }
+
+    @ViewBuilder
+    private func signInBlock(_ setup: OnboardingAgentChoice.Setup) -> some View {
+        if let note = setup.signInNote {
+            Text(note)
+                .font(.caption)
+                .foregroundStyle(setup.signInNoteWarns ? Tone.warning : .secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if choice.signIn == .running {
+            signInTerminal()
+                .frame(height: Self.terminalHeight)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.control))
+            Button(OnboardingAgentChoice.stopSignIn, action: onStopSignIn)
+                .buttonStyle(.kitSecondary)
+                .controlSize(.small)
+        } else {
+            Button(OnboardingAgentChoice.signInAgain, action: onSignIn)
+                .buttonStyle(.kitSecondary)
+                .controlSize(.small)
+        }
+    }
+
+    /// About ten terminal rows: the login flow's URL and prompts fit.
+    static let terminalHeight: CGFloat = 180
 
     private func color(_ tone: OnboardingAgentChoice.Tone) -> Color {
         switch tone {

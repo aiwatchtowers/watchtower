@@ -24,8 +24,17 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
         package var signInCommand: String {
             switch self {
-            case .claude: "claude"
+            case .claude: "claude auth login"
             case .codex: "codex login"
+            }
+        }
+
+        /// The vendor's install page: Homebrew, npm and the rest, for a Mac
+        /// where piping a script into the shell is not allowed.
+        package var installDocsURL: String {
+            switch self {
+            case .claude: "https://code.claude.com/docs/en/setup"
+            case .codex: "https://github.com/openai/codex"
             }
         }
 
@@ -46,10 +55,21 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case notInstalled
         /// The test failed with `error_code: auth`.
         case signedOut
-        /// Any other failed test; the CLI's sanitized message.
+        /// Any other failed test; the line `failureMessage` built.
         case failed(String)
-        /// `AllowedAIProviders` leaves this agent out.
+        /// `AllowedAIProviders` leaves this agent out (the Swift policy
+        /// read, or the test's `error_code: policy`).
         case forbidden
+    }
+
+    /// The embedded sign-in terminal of the picked agent (owner, ask #1157:
+    /// "if not signed in, open the console right there").
+    package enum SignIn: Equatable, Sendable {
+        case idle
+        /// `<agent> auth login` / `codex login` runs in the panel.
+        case running
+        /// It ended without signing in (non-zero exit, or stopped).
+        case ended(Int32?)
     }
 
     /// The status line's colour, mapped to `Tone` by the view.
@@ -78,23 +98,39 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         /// A CLI's message, shown under the steps.
         package var detail: String?
         package var showsManualPath: Bool
+        package var docsURL: String?
+        /// The panel hosts the sign-in terminal (signed out).
+        package var runsSignIn: Bool
+        /// The line above that terminal; `signInNoteWarns` when it ended badly.
+        package var signInNote: String?
+        package var signInNoteWarns = false
+        package static let docsLink = "Other ways to install"
         package static let checkAgain = "Check again"
         package static let manualPath = "Choose the executable…"
         package static let autoCheck = "Watchtower checks again when you come back to this window."
     }
 
     package var statuses: [Agent: Status]
+    package private(set) var signIn: SignIn = .idle
+    /// Agents whose sign-in already started once: the terminal opens by
+    /// itself only the first time, never again after a Stop.
+    package private(set) var signInOpened: Set<Agent> = []
     package private(set) var selected: Agent?
     /// The owner tapped a tile: later checks never move the selection.
     package private(set) var picked = false
     /// The config's `ai.provider` when it is neither claude nor codex (an
     /// owner who set up Ollama in Settings): no tiles, one line.
     package var otherProvider: String?
+    /// That provider's test failed: the tiles come back so the owner can
+    /// pick Claude Code or Codex instead.
+    package var otherProviderFailure: String?
 
     package init(
         statuses: [Agent: Status] = [.claude: .checking, .codex: .checking],
-        otherProvider: String? = nil
+        otherProvider: String? = nil,
+        otherProviderFailure: String? = nil
     ) {
+        self.otherProviderFailure = otherProviderFailure
         self.statuses = statuses
         self.otherProvider = otherProvider
     }
@@ -120,12 +156,39 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     package mutating func pick(_ agent: Agent) {
         guard status(agent) != .forbidden else { return }
+        if selected != agent { signIn = .idle }
         selected = agent
         picked = true
     }
 
+    // MARK: Sign-in terminal
+
+    /// The agent whose sign-in should open now by itself: the picked one,
+    /// signed out, not opened before.
+    package var signInToOpen: Agent? {
+        guard let agent = selected, status(agent) == .signedOut, signIn == .idle,
+              !signInOpened.contains(agent) else { return nil }
+        return agent
+    }
+
+    package mutating func signInStarted() {
+        guard let selected else { return }
+        signIn = .running
+        signInOpened.insert(selected)
+    }
+
+    /// The process ended; `0` means signed in — the caller checks again.
+    package mutating func signInEnded(exitCode: Int32) {
+        signIn = exitCode == 0 ? .idle : .ended(exitCode)
+    }
+
+    package mutating func signInStopped() { signIn = .ended(nil) }
+
+    /// The tiles show unless a working provider was set elsewhere.
+    package var showsTiles: Bool { otherProvider == nil || otherProviderFailure != nil }
+
     package var canContinue: Bool {
-        if otherProvider != nil { return true }
+        if otherProvider != nil, otherProviderFailure == nil { return true }
         guard let selected else { return false }
         return status(selected) == .ready
     }
@@ -146,6 +209,10 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     package var caption: String {
         if let otherProvider {
+            if let otherProviderFailure {
+                return "\(otherProvider), set in Settings → AI, didn’t answer: \(otherProviderFailure) "
+                    + "Pick Claude Code or Codex CLI instead, or fix it in Settings and check again."
+            }
             return "Watchtower runs on \(otherProvider), set in Settings → AI."
         }
         if noneInstalled {
@@ -176,7 +243,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package var setup: Setup? {
-        guard otherProvider == nil, let agent = selected else { return nil }
+        guard showsTiles, let agent = selected else { return nil }
         switch status(agent) {
         case .checking, .ready, .forbidden:
             return nil
@@ -189,15 +256,21 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                     Step(label: "Sign in:", command: agent.signInCommand)
                 ],
                 detail: nil,
-                showsManualPath: true
+                showsManualPath: true,
+                docsURL: agent.installDocsURL,
+                runsSignIn: false
             )
         case .signedOut:
             return Setup(
                 agent: agent,
                 title: "Sign in to \(agent.name)",
-                steps: [Step(label: "Run in Terminal and follow the prompts:", command: agent.signInCommand)],
+                steps: [Step(label: "Or run it in your own Terminal:", command: agent.signInCommand)],
                 detail: nil,
-                showsManualPath: false
+                showsManualPath: false,
+                docsURL: nil,
+                runsSignIn: true,
+                signInNote: signInLine,
+                signInNoteWarns: signIn != .idle && signIn != .running
             )
         case .failed(let message):
             return Setup(
@@ -205,10 +278,27 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                 title: "\(agent.name) didn’t answer",
                 steps: [],
                 detail: message,
-                showsManualPath: true
+                showsManualPath: true,
+                docsURL: nil,
+                runsSignIn: false
             )
         }
     }
+
+    /// The line above the sign-in terminal.
+    private var signInLine: String {
+        switch signIn {
+        case .idle, .running:
+            return "Your browser opens to sign in. When it’s done, this closes and Watchtower checks again."
+        case .ended(let code?):
+            return "Sign-in stopped before it finished (exit code \(code))."
+        case .ended(nil):
+            return "Sign-in stopped before it finished."
+        }
+    }
+
+    package static let signInAgain = "Sign in again"
+    package static let stopSignIn = "Stop"
 
     /// The footer line beside a disabled Continue.
     package var continueHint: String? {
@@ -220,16 +310,31 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     /// The Development goal's pitch names the agent that will work the board.
     package var developmentPitch: String {
-        let name = (otherProvider == nil ? selected?.name : nil) ?? "Your AI agent"
+        let name = (showsTiles ? selected?.name : nil) ?? "Your AI agent"
         return "\(name) works your folder’s board. No connections needed"
     }
 
     /// The `ai.provider` to write on Continue, nil when nothing changes.
     package func providerToSave(configured: String?) -> String? {
-        guard otherProvider == nil, let selected, canContinue else { return nil }
+        guard showsTiles, let selected, canContinue else { return nil }
         // An unset provider is written too: the choice is explicit from now on.
         let current = configured?.trimmingCharacters(in: .whitespaces) ?? ""
         return current == selected.rawValue ? nil : selected.rawValue
+    }
+
+    /// The Failed line from `ai test --json`'s `error_code`: the CLI's own
+    /// message is a bare category, so the code picks the words.
+    package static func failureMessage(_ agent: Agent, code: String?, error: String?) -> String {
+        switch code {
+        case "transport", "timeout":
+            return "Couldn’t reach \(agent.name)’s service. Check the network or VPN, then check again."
+        case "invalid_output":
+            if let error, !error.isEmpty { return error }
+            return "\(agent.name) answered but ignored Watchtower’s instructions. Update it and check again."
+        default:
+            let tail = error.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""
+            return "\(agent.name) didn’t answer\(tail). Run it once in Terminal to see what it says, then check again."
+        }
     }
 
     package static let saveFailure = "Couldn’t save the AI agent."
