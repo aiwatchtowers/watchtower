@@ -68,10 +68,10 @@ var guardedSingleFiles = []string{
 }
 
 // chatTableReader is a reviewed Go reader of the chat tables: its source
-// filters `code_question` and `spec_review_thread` conversations out, and
-// test and threadTest (funcs in testFile) prove it behaviourally.
+// filters `code_question`, `spec_review_thread` and `analytics_tuning`
+// conversations out, and test, threadTest and tuningTest (funcs in testFile) prove it behaviourally.
 type chatTableReader struct {
-	testFile, test, threadTest string
+	testFile, test, threadTest, tuningTest string
 }
 
 // chatTableReaders are the Go files let through the guard, each with the
@@ -82,17 +82,19 @@ var chatTableReaders = map[string]chatTableReader{
 		testFile:   filepath.Join("..", "kb", "source_chat_artifact_test.go"),
 		test:       "TestChatArtifactSource_SkipsCodeQuestionChats",
 		threadTest: "TestChatArtifactSource_SkipsSpecReviewThreads",
+		tuningTest: "TestChatArtifactSource_SkipsTuningChats",
 	},
 	// The ideas consolidator's chat turns (chat knowledge, 2026-10-24).
 	filepath.Join("..", "db", "chat_knowledge.go"): {
 		testFile:   filepath.Join("..", "db", "chat_knowledge_test.go"),
 		test:       "TestListChatTurnsForIdeas",
 		threadTest: "TestListChatTurnsForIdeas_SkipsSpecReviewThreads",
+		tuningTest: "TestListChatTurnsForIdeas_SkipsTuningChats",
 	},
 }
 
 // checkChatTableReader: a listed reader still names the code_question,
-// spec_review_thread and review_reviewer filters in its SQL, and its
+// spec_review_thread, analytics_tuning and review_reviewer filters in its SQL, and its
 // behavioural tests still exist.
 func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTableReader) {
 	t.Helper()
@@ -102,6 +104,9 @@ func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTabl
 	if !strings.Contains(string(src), "'spec_review_thread'") {
 		t.Errorf("%s reads the chat tables but does not filter 'spec_review_thread' conversations", file)
 	}
+	if !strings.Contains(string(src), "'analytics_tuning'") {
+		t.Errorf("%s reads the chat tables but does not filter 'analytics_tuning' conversations", file)
+	}
 	if !strings.Contains(string(src), "'review_reviewer'") {
 		t.Errorf("%s reads the chat tables but does not filter 'review_reviewer' conversations", file)
 	}
@@ -110,7 +115,7 @@ func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTabl
 		t.Errorf("%s: its behavioural test file: %v", file, err)
 		return
 	}
-	for _, test := range []string{reader.test, reader.threadTest} {
+	for _, test := range []string{reader.test, reader.threadTest, reader.tuningTest} {
 		if !strings.Contains(string(testSrc), "func "+test+"(t *testing.T)") {
 			t.Errorf("%s: behavioural test %s is missing from %s", file, test, reader.testFile)
 		}
