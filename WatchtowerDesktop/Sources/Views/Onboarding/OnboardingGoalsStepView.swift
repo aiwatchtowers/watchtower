@@ -119,44 +119,7 @@ struct OnboardingGoalsStepView: View {
     }
 
     private var goalCards: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-            ForEach(OnboardingGoal.allCases, id: \.self) { goal in
-                goalCard(goal)
-            }
-        }
-    }
-
-    private func goalCard(_ goal: OnboardingGoal) -> some View {
-        let checked = model.selection.goals.contains(goal)
-        return Button {
-            model.toggleGoal(goal)
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: checked ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(checked ? Color.accentColor : .secondary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(goal.title).fontWeight(.semibold)
-                    Text(goal.pitch)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(checked ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(checked ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: checked ? 1.5 : 1)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(checked ? .isSelected : [])
+        OnboardingGoalCards(goals: model.selection.goals) { model.toggleGoal($0) }
     }
 
     /// The goals while the CLI box takes the room: one chip per goal.
@@ -314,5 +277,96 @@ struct OnboardingGoalsStepView: View {
         }
         .padding(8)
         .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// The four goal cards, two per row.
+struct OnboardingGoalCards: View {
+    let goals: Set<OnboardingGoal>
+    /// Replaces the Development card's pitch with the picked agent's name.
+    var developmentPitch: String?
+    let toggle: (OnboardingGoal) -> Void
+
+    private func pitch(_ goal: OnboardingGoal) -> String {
+        goal == .development ? (developmentPitch ?? goal.pitch) : goal.pitch
+    }
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+            ForEach(OnboardingGoal.allCases, id: \.self) { goal in
+                goalCard(goal)
+            }
+        }
+    }
+
+    private func goalCard(_ goal: OnboardingGoal) -> some View {
+        let checked = goals.contains(goal)
+        return Button {
+            toggle(goal)
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: checked ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(checked ? Color.accentColor : .secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(goal.title).fontWeight(.semibold)
+                    Text(pitch(goal))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(checked ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(checked ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: checked ? 1.5 : 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(checked ? .isSelected : [])
+    }
+}
+
+/// The step's bottom row: why Continue waits (or the save error above it)
+/// and the one prominent button.
+struct OnboardingGoalsFooter: View {
+    let hint: String?
+    let error: String?
+    let canContinue: Bool
+    let isContinuing: Bool
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: Spacing.regular) {
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Tone.error)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(alignment: .center) {
+                if let hint {
+                    Text(hint).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onContinue) {
+                    if isContinuing {
+                        ProgressView().controlSize(.small).frame(minWidth: 120)
+                    } else {
+                        Text("Continue").fontWeight(.semibold).frame(minWidth: 120)
+                    }
+                }
+                .onboardingPrimaryButton()
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canContinue || isContinuing)
+            }
+        }
     }
 }
