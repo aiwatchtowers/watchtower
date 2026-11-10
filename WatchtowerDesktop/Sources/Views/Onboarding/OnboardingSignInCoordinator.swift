@@ -91,7 +91,7 @@ final class OnboardingSignInCoordinator {
         model.signInStarted()
         generation += 1
         let run = generation
-        let env = await resolvedEnvironment()
+        let env = await loginEnvironment()
         guard run == generation, model.agentChoice.signIn == .running else { return }
         session?.stop()
         sessionRun = run
@@ -164,7 +164,7 @@ final class OnboardingSignInCoordinator {
         closeIfSettled()
     }
 
-    private func resolvedEnvironment() async -> [String: String] {
+    private func loginEnvironment() async -> [String: String] {
         if let resolvedEnv { return resolvedEnv }
         let env = await environment()
         resolvedEnv = env
