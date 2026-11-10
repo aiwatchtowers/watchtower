@@ -119,7 +119,7 @@ enum TuningChatShotFixtures {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
         XCTAssertNotNil(coach.proposals?.value, "the coach proposals loaded")
-        let id = TuningChatTexts.proposalID
+        let id = TuningShotTexts.proposalID
         if variant == "stale" || variant == "accepting" {
             Task { await coach.accept(id, editedText: nil) }
             while Date() < deadline,
@@ -204,26 +204,19 @@ enum TuningChatShotFixtures {
 
 // MARK: - Texts
 
-/// Every visible string of the mockups, as `TuningChatTexts` will own them.
-enum TuningChatTexts {
+/// Fixture-only text of the mockups; the panel's own strings live in `TuningChatTexts`.
+enum TuningShotTexts {
+    static let figuresText = TuningChatTexts.figures(
+        .init(days: 7, sessions: 23, tasks: 7, costUSD: 41.2, perTaskUSD: 2.94, previousPerTaskUSD: 2.31)
+    )
+    static let starterTitles = starterPrompts.map(\.title)
+    private static let starterPrompts = TuningChatTexts.starters(
+        .init(costPerTaskGrew: true, topHintFinding: "Sessions re-read the same files: 41 times in 9 sessions")
+    )
     static let proposalID: Int64 = 21
-    static let title = "Tuning"
-    static let newChat = "New tuning chat"
-    static let figures = "7 days · 23 sessions · 7 tasks · $41.20 · $2.94 per task (was $2.31)"
-    static let starters = [
-        "Why did cost per task grow?",
-        "Sessions re-read the same files: 41 times in 9 sessions",
-        "Which prompt costs the most?",
-        "Tune a skill"
-    ]
-    static let loading = "Reading this workbench's analytics…"
-    static let placeholder = "Ask about cost, prompts, skills or instructions…"
-    static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → System → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
-    static let accepted = "Accepted · measuring for 14 days"
     /// The folded line of an accepted workbench repository file (§4.3a).
     static let acceptedRepo = "Accepted · wrote CLAUDE.md on main — commit it yourself"
-    static let showAccepted = "Show in Accepted edits"
     static let skillAsk = "The review-pr skill makes the agent read every changed file. Can we fix that?"
     static let skillAnswer = "In 9 of 12 review sessions the agent opened every changed file in full before "
         + "looking at the diff. Step 2 of your review-pr skill asks for exactly that. Here is a smaller step 2:"
@@ -449,10 +442,10 @@ private struct TuningFeed: View {
     }
 
     @ViewBuilder private func fresh(starters: Bool) -> some View {
-        Text(TuningChatTexts.figures).font(.caption).foregroundStyle(.secondary)
+        Text(TuningShotTexts.figuresText).font(.caption).foregroundStyle(.secondary)
         if starters {
             VStack(alignment: .leading, spacing: Spacing.compact) {
-                ForEach(TuningChatTexts.starters, id: \.self) { starter in
+                ForEach(TuningShotTexts.starterTitles, id: \.self) { starter in
                     Button {} label: {
                         HStack(spacing: Spacing.regular) {
                             Image(systemName: "text.bubble").foregroundStyle(.secondary)
@@ -485,17 +478,17 @@ private struct TuningFeed: View {
     }
 
     @ViewBuilder private var streaming: some View {
-        UserMessageBubble(text: TuningChatTexts.costAsk)
-        TuningToolLines(lines: [("Read the 7-day LLM usage", false), ("Reading prompt digest.channel…", true)])
-        MarkdownView(text: TuningChatTexts.costPartial)
+        UserMessageBubble(text: TuningShotTexts.costAsk)
+        TuningToolLines(lines: [tool("get_llm_usage", #"{"days":7}"#), ("Reading prompt digest.channel…", true)])
+        MarkdownView(text: TuningShotTexts.costPartial)
         StreamingIndicator()
     }
 
     @ViewBuilder private var turnError: some View {
-        UserMessageBubble(text: TuningChatTexts.costAsk)
-        TuningToolLines(lines: [("Read the 7-day LLM usage", false)])
+        UserMessageBubble(text: TuningShotTexts.costAsk)
+        TuningToolLines(lines: [tool("get_llm_usage", #"{"days":7}"#)])
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Label(TuningChatTexts.turnError, systemImage: "exclamationmark.triangle")
+            Label(TuningShotTexts.turnError, systemImage: "exclamationmark.triangle")
                 .font(.callout)
                 .foregroundStyle(Tone.error)
             Spacer(minLength: Spacing.regular)
@@ -504,13 +497,13 @@ private struct TuningFeed: View {
     }
 
     @ViewBuilder private func skillTurn(folded: Bool) -> some View {
-        UserMessageBubble(text: TuningChatTexts.skillAsk)
-        TuningToolLines(lines: [("Read skill review-pr", false), ("Read 12 sessions of the last 7 days", false),
-                                ("Read the coach's proposals", false), ("Proposed an edit to review-pr", false)])
-        Text(TuningChatTexts.skillAnswer)
+        UserMessageBubble(text: TuningShotTexts.skillAsk)
+        TuningToolLines(lines: [tool("get_skill", #"{"name":"review-pr"}"#), tool("list_agent_sessions", "{}"),
+                                tool("list_coach_proposals", "{}"), tool("propose_tuning_edit", #"{"skill":"review-pr"}"#)])
+        Text(TuningShotTexts.skillAnswer)
         if folded {
             acceptedLine(TuningChatTexts.accepted)
-        } else if let proposal = coach.proposals?.value?.first(where: { $0.id == TuningChatTexts.proposalID }) {
+        } else if let proposal = coach.proposals?.value?.first(where: { $0.id == TuningShotTexts.proposalID }) {
             CoachProposalCardView(proposal: proposal, isFirst: false, coach: coach, actions: Self.noActions) {}
         }
     }
@@ -518,11 +511,11 @@ private struct TuningFeed: View {
     /// A chat edit of the workbench folder's CLAUDE.md, accepted (§4.3a): the
     /// file is written and the owner commits it; Watchtower runs no git write.
     @ViewBuilder private var repoTurn: some View {
-        UserMessageBubble(text: TuningChatTexts.repoAsk)
-        TuningToolLines(lines: [("Read your agent instructions", false), ("Read 9 sessions of the last 7 days", false),
-                                ("Read the coach's proposals", false), ("Proposed an edit to CLAUDE.md", false)])
-        MarkdownView(text: TuningChatTexts.repoAnswer)
-        acceptedLine(TuningChatTexts.acceptedRepo)
+        UserMessageBubble(text: TuningShotTexts.repoAsk)
+        TuningToolLines(lines: [tool("get_agent_instructions", "{}"), tool("list_agent_sessions", "{}"),
+                                tool("list_coach_proposals", "{}"), tool("propose_tuning_edit", #"{"name":"CLAUDE.md"}"#)])
+        MarkdownView(text: TuningShotTexts.repoAnswer)
+        acceptedLine(TuningShotTexts.acceptedRepo)
     }
 
     /// An accepted proposal folds to one line; the pane's Accepted edits holds the rest.
@@ -537,6 +530,11 @@ private struct TuningFeed: View {
         .padding(.vertical, Spacing.regular)
         .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
     }
+}
+
+/// One finished tool line, worded by the app's own `TuningChatTexts.toolLine`.
+private func tool(_ name: String, _ args: String) -> (String, Bool) {
+    (TuningChatTexts.toolLine(name: name, args: args) ?? name, false)
 }
 
 /// Quiet tool-activity lines (§3.4): a check when done, a spinner on the live one.
