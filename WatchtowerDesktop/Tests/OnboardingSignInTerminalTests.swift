@@ -70,7 +70,10 @@ final class OnboardingSignInTerminalTests: XCTestCase {
         session.start(command: "sleep 60 & sleep 60; wait")
         let group = session.view.process.shellPid
         XCTAssertGreaterThan(group, 0)
-        XCTAssertEqual(getpgid(group), group, "the shell leads its own group")
+        // forkpty returns before the child's login_tty → setsid: until then
+        // the child is still in the test runner's group.
+        let leads = await Self.poll(timeout: 10) { getpgid(group) == group }
+        XCTAssertTrue(leads, "the shell leads its own group")
         // The shell and both sleeps.
         let started = await Self.poll(timeout: 10) { Self.groupMembers(group) >= 3 }
         XCTAssertTrue(started, "the command's children run in the shell's group")
@@ -91,13 +94,32 @@ final class OnboardingSignInTerminalTests: XCTestCase {
         XCTAssertEqual(log.codes, [127])
     }
 
-    func testRestartReportsOnlyTheNewRun() async {
-        let exited = expectation(description: "exit")
+    /// One session runs one command: a second start changes nothing.
+    func testSecondStartIsIgnored() async {
+        let exited = expectation(description: "no exit from the ignored start")
+        exited.isInverted = true
         let (session, log) = makeSession(exited: exited)
         session.start(command: "sleep 60")
+        let first = session.view.process.shellPid
+        XCTAssertGreaterThan(first, 0)
         session.start(command: "exit 4")
+        XCTAssertTrue(session.isRunning)
+        XCTAssertEqual(session.view.process.shellPid, first)
+        await fulfillment(of: [exited], timeout: 1)
+        XCTAssertEqual(log.codes, [])
+    }
+
+    func testStartAfterExitIsIgnored() async {
+        let exited = expectation(description: "exit")
+        let (session, log) = makeSession(exited: exited)
+        session.start(command: "exit 3")
+        let first = session.view.process.shellPid
         await fulfillment(of: [exited], timeout: 10)
-        XCTAssertEqual(log.codes, [4])
+        session.start(command: "exit 5")
+        XCTAssertFalse(session.isRunning)
+        XCTAssertEqual(session.view.process.shellPid, first)
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(log.codes, [3], "no second run, no second exit")
     }
 
     func testExitCodeDecoding() {

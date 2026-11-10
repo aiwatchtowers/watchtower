@@ -12,6 +12,12 @@ import SwiftUI
 /// runs without job control, so everything the command spawns (an update's
 /// `npm`/`brew` children, a background job) stays in that group, and
 /// `stop()` reaches all of it with one `killpg`.
+///
+/// One session runs one command: a second `start` is ignored. SwiftTerm's
+/// `LocalProcess` cannot be restarted safely — the previous run's PTY reader
+/// delivers its end-of-file on SwiftTerm's read queue after the next run has
+/// started and marks that run stopped (`running = false`, `childfd = -1`).
+/// The Goals step makes a fresh session for every run.
 @MainActor
 final class OnboardingSignInSession {
     private let environment: [String: String]
@@ -24,8 +30,10 @@ final class OnboardingSignInSession {
     /// `nonisolated(unsafe)`: touched on the main actor and by deinit,
     /// which runs when nothing else holds the session.
     nonisolated(unsafe) private var pid: pid_t = 0
-    /// Bumped by every start and stop: an exit that belongs to an older
-    /// run (or to a stopped one) is dropped, so `onExit` fires once per start.
+    /// Set by the first `start`; every later `start` is a no-op.
+    private var started = false
+    /// Bumped when the run stops or finishes: an exit that arrives after
+    /// that is dropped, so `onExit` fires at most once.
     private var generation = 0
 
     /// `shell` is a test seam; the app always runs the login zsh.
@@ -47,12 +55,12 @@ final class OnboardingSignInSession {
 
     var isRunning: Bool { pid != 0 }
 
-    /// Runs `<shell> -lc <command>` in the terminal. A run already going is
-    /// stopped first (its `onExit` is not called). A start that cannot fork
-    /// reports `onExit(127)`, as a shell that cannot exec does.
+    /// Runs `<shell> -lc <command>` in the terminal, once per session: a
+    /// second call (running or finished) does nothing. A start that cannot
+    /// fork reports `onExit(127)`, as a shell that cannot exec does.
     func start(command: String) {
-        if isRunning { stop() }
-        generation += 1
+        guard !started else { return }
+        started = true
         let run = generation
         var env = environment
         if env["TERM"] == nil { env["TERM"] = "xterm-256color" }
@@ -61,11 +69,17 @@ final class OnboardingSignInSession {
             args: ["-lc", command],
             environment: env.map { "\($0.key)=\($0.value)" }
         )
-        guard terminal.process.running, terminal.process.shellPid > 0 else {
+        // `shellPid` is written on this thread by `startProcess`, and only
+        // when the fork succeeded (the session's process is fresh, so 0
+        // before). SwiftTerm's `running` is not read: its reader clears it
+        // on its own queue at the PTY's end-of-file, so a child that exits
+        // at once would look like a failed start and lose its real exit.
+        let forked = terminal.process.shellPid
+        guard forked > 0 else {
             Task { @MainActor [weak self] in self?.finish(run: run, code: 127) }
             return
         }
-        pid = terminal.process.shellPid
+        pid = forked
     }
 
     /// SIGTERM to the whole group, SIGKILL to what is left a second later;
