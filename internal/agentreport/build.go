@@ -32,7 +32,7 @@ func ValidAgent(agent string) bool {
 func agentsOf(sessions []agentlogdb.AgentReportSession, keep func(agentlogdb.AgentReportSession) bool) []string {
 	out := []string{}
 	for _, s := range sessions {
-		if s.Agent != "" && (keep == nil || keep(s)) && !slices.Contains(out, s.Agent) {
+		if (keep == nil || keep(s)) && !slices.Contains(out, s.Agent) {
 			out = append(out, s.Agent)
 		}
 	}
@@ -235,9 +235,8 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	if !ValidAgent(agent) {
 		return nil, ErrUnknownAgent
 	}
-	filter := agent // the sessions query's agent: "" = every agent
-	if agent == "" || agent == AgentAll {
-		agent, filter = AgentAll, ""
+	if agent == "" {
+		agent = AgentAll
 	}
 	enabled, err := main.WorkbenchAgentAnalytics(workbenchID)
 	if err != nil {
@@ -264,23 +263,18 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	}
 	// Nothing after now: a session that starts later is not part of this period.
 	nowStr := now.UTC().Format(tsLayout)
-	periodSessions := func(agent string) ([]agentlogdb.AgentReportSession, error) {
-		s, err := al.AgentReportSessions(workbenchID, sinceStr, agent)
-		return slices.DeleteFunc(s, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr }), err
-	}
-	sessions, err := periodSessions(filter)
+	// The unfiltered period's sessions decide agent_filter; a filter then
+	// keeps its agent's.
+	sessions, err := al.AgentReportSessions(workbenchID, sinceStr, "")
 	if err != nil {
 		return nil, err
 	}
-	ov.Agents = agentsOf(sessions, nil)
-	present := ov.Agents
-	if filter != "" {
-		unfiltered, err := periodSessions("")
-		if err != nil {
-			return nil, err
-		}
-		present = agentsOf(unfiltered, nil)
+	sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr })
+	present := agentsOf(sessions, nil)
+	if agent != AgentAll {
+		sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.Agent != agent })
 	}
+	ov.Agents = agentsOf(sessions, nil)
 	if len(present) > 1 {
 		ov.AgentFilter = present
 	}

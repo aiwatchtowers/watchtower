@@ -418,6 +418,8 @@ func TestBuildOverview_AgentFilter(t *testing.T) {
 	require.Len(t, cl.Sessions, 1)
 	assert.Equal(t, "claude-1", cl.Sessions[0].UUID)
 	assert.Equal(t, []string{"claude"}, cl.Agents)
+	assert.Equal(t, []string{"claude"}, cl.Context.Agents)
+	assert.Equal(t, []string{"claude"}, cl.Trouble.Agents)
 }
 
 func TestBuildOverview_SingleAgentNoFilter(t *testing.T) {
