@@ -2,14 +2,17 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/gitcmdparse"
 	"watchtower/internal/gitdir"
 	"watchtower/internal/terminal"
 )
@@ -148,4 +151,121 @@ func resolvedDir(dir string) string {
 		}
 		rest = filepath.Join(filepath.Base(cur), rest)
 	}
+}
+
+// recordCommandLedger records, on the session of row rowID, the worktrees
+// and branches a successful Bash call of the event asked git to create
+// (board #1716, spec 2026-11-10-auto-cleanup §2a) as source='command' rows —
+// for any agent of the session: a subagent's PostToolUse reaches the hook
+// like the main agent's. Claude Code sends a failed call as
+// PostToolUseFailure, which records nothing; Codex names its shell tool Bash
+// and has no failure event, so its worktrees rest on the stat below alone.
+// The command text is parsed (gitcmdparse) and a worktree kept only when
+// <path>/.git is a regular file after the call; git is never run. Like
+// recordSessionLedger it runs after the event's state write and never
+// changes it: a failure is one stderr line, and the "session full" line is
+// printed at most once per run.
+func recordCommandLedger(database *db.DB, stderr io.Writer, rowID, workbenchID int64, ev hookEvent, at time.Time,
+	lock hookLockWait) {
+	rows := commandLedgerRows(ev)
+	if len(rows) == 0 {
+		return
+	}
+	err := writeCommandLedger(database, rowID, workbenchID, ev.SessionID, rows, at, lock)
+	switch {
+	case errors.Is(err, errCommandLedgerFull):
+		if !commandLedgerFullReported.Swap(true) {
+			fmt.Fprintf(stderr, "watchtower: session command row not recorded: %v\n", err)
+		}
+	case err != nil:
+		fmt.Fprintf(stderr, "watchtower: session command row not recorded: %v\n", err)
+	}
+}
+
+// errCommandLedgerFull is a new command row past db.MaxSessionCommandRows.
+var errCommandLedgerFull = fmt.Errorf("the session already records %d command rows", db.MaxSessionCommandRows)
+
+// commandLedgerFullReported keeps the command rows' "session full" stderr
+// line to one per run.
+var commandLedgerFullReported atomic.Bool
+
+// commandRow is one terminal_session_worktrees row a command names.
+type commandRow struct{ root, branch, kind string }
+
+// commandLedgerRows is what ev's command created, deduplicated: nothing
+// unless ev is a PostToolUse of Bash run in an absolute cwd. A worktree's
+// root is its path symlink-resolved, kept only when <path>/.git is a
+// regular file (a linked worktree's pointer; a typo or a failed add leaves
+// none); a branch's root is the work tree holding the directory git ran in,
+// found from files (sessionWorktreeAt), nothing outside one. Stats only.
+func commandLedgerRows(ev hookEvent) []commandRow {
+	if ev.Event != "PostToolUse" || ev.ToolName != "Bash" {
+		return nil
+	}
+	cwd := hookPath(ev.Cwd)
+	var input struct {
+		Command string `json:"command"`
+	}
+	if cwd == "" || json.Unmarshal(ev.ToolInput, &input) != nil || input.Command == "" {
+		return nil
+	}
+	var out []commandRow
+	seen := map[commandRow]bool{}
+	for _, c := range gitcmdparse.Parse(input.Command, cwd) {
+		var r commandRow
+		switch c.Kind {
+		case gitcmdparse.KindWorktree:
+			path := hookPath(c.Path)
+			if path == "" {
+				continue
+			}
+			if fi, err := os.Lstat(filepath.Join(path, ".git")); err != nil || !fi.Mode().IsRegular() {
+				continue
+			}
+			r = commandRow{resolvedDir(path), c.Branch, gitcmdparse.KindWorktree}
+		case gitcmdparse.KindBranch:
+			root, _, ok := sessionWorktreeAt(hookPath(c.Dir))
+			if !ok || c.Branch == "" {
+				continue
+			}
+			r = commandRow{root, c.Branch, gitcmdparse.KindBranch}
+		default:
+			continue
+		}
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// writeCommandLedger is recordCommandLedger's database part: the row's
+// guards (the hook's conversation, workbench and kind) once, then one short
+// write transaction per row. It stops at the first error; a row past the
+// cap is errCommandLedgerFull after the rest are tried (a pair already held
+// still moves its last sighting).
+func writeCommandLedger(database *db.DB, rowID, workbenchID int64, sessionID string, rows []commandRow, at time.Time,
+	lock hookLockWait) error {
+	row, err := hookSessionRow(database, rowID, workbenchID, sessionID)
+	if row == nil || err != nil {
+		return err
+	}
+	stamp := db.AgentStateStamp(at)
+	full := false
+	for _, r := range rows {
+		var rowFull bool
+		if err := lock.write(database, func() error {
+			var err error
+			_, rowFull, err = database.RecordSessionCommandRow(context.Background(), rowID, r.root, r.branch, r.kind, stamp)
+			return err
+		}); err != nil {
+			return err
+		}
+		full = full || rowFull
+	}
+	if full {
+		return errCommandLedgerFull
+	}
+	return nil
 }

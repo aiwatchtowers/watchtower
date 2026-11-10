@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -420,4 +421,142 @@ func TestSessionStateLedger_TouchFailureHasItsOwnLabel(t *testing.T) {
 	assert.Contains(t, errOut, "watchtower: session worktree sighting not moved: ")
 	assert.NotContains(t, errOut, "not recorded")
 	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write ran")
+}
+
+// Board #1716 (spec 2026-11-10-auto-cleanup §2a): the state hook also
+// records, as source='command' rows, the worktrees and branches a successful
+// Bash call (Codex: its shell tool) asked git to create — parsed from the
+// command text, with a stat and no git run.
+
+// commandPayload is a Claude Code tool event of the row's conversation that
+// ran command in cwd; extra fields are set as is.
+func commandPayload(t *testing.T, event, cwd, command string, extra map[string]any) string {
+	t.Helper()
+	m := map[string]any{
+		"session_id": briefLaunchID, "transcript_path": "/tmp/x.jsonl", "hook_event_name": event,
+		"cwd": cwd, "tool_name": "Bash", "tool_input": map[string]any{"command": command},
+		"tool_use_id": "toolu_0000000000000000000000000a",
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	b, err := json.Marshal(m)
+	require.NoError(t, err)
+	return string(b)
+}
+
+// commandRows is the row's source='command' rows as "kind root@branch".
+func commandRows(t *testing.T, database *db.DB, row int64) []string {
+	t.Helper()
+	out := []string{}
+	for _, r := range ledgerRows(t, database, row) {
+		if r.Source == "command" {
+			out = append(out, r.Kind+" "+r.Root+"@"+r.Branch)
+		}
+	}
+	return out
+}
+
+func TestCommandLedger_RecordsWorktreeOnlyWhenDotGitFileExists(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	main := ledgerRepo(t)
+	made := ledgerWorktree(t, main, "wt-a", "ref: refs/heads/feat/a")
+	require.NoError(t, os.MkdirAll(filepath.Join(main, "wt-dir", ".git"), 0o755)) // a .git dir is no linked worktree
+	// The cwd reached through a symlink: the root is stored resolved.
+	link := filepath.Join(t.TempDir(), "acme-link")
+	require.NoError(t, os.Symlink(main, link))
+
+	runLedgerEvent(t, pid, commandPayload(t, "PostToolUse", link,
+		`git worktree add wt-a -b feat/a && git worktree add ../typo -b feat/b; git worktree add wt-dir`, nil))
+	assert.Equal(t, []string{"worktree " + made + "@feat/a"}, commandRows(t, database, row))
+}
+
+func TestCommandLedger_BranchRowUsesRepoTopLevel(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	main := ledgerRepo(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(main, "src", "pkg"), 0o755))
+	wt := ledgerWorktree(t, main, "wt", "ref: refs/heads/feat/w")
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+
+	runLedgerEvent(t, pid, commandPayload(t, "PostToolUse", filepath.Join(main, "src", "pkg"),
+		`git checkout -b feat/z && git -C `+wt+` branch feat/q && git -C `+outside+` switch -c feat/none`, nil))
+	assert.ElementsMatch(t, []string{"branch " + main + "@feat/z", "branch " + wt + "@feat/q"},
+		commandRows(t, database, row), "a branch row's root is the work tree top level; outside any repository nothing")
+}
+
+func TestCommandLedger_SkipsFailedToolCalls(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	main := ledgerRepo(t)
+	ledgerWorktree(t, main, "wt-a", "ref: refs/heads/feat/a")
+	const command = `git worktree add wt-a -b feat/a && git checkout -b feat/z`
+
+	runLedgerEvent(t, pid, commandPayload(t, "PostToolUseFailure", main, command, nil))
+	runLedgerEvent(t, pid, commandPayload(t, "PreToolUse", main, command, nil))
+	runLedgerEvent(t, pid, commandPayload(t, "PostToolUse", main, command, map[string]any{"tool_name": "Edit"}))
+	runLedgerEvent(t, pid, commandPayload(t, "PostToolUse", main, command, map[string]any{"session_id": nestedSessionID}))
+	assert.Empty(t, commandRows(t, database, row),
+		"a failed call, a call not yet run, another tool and another conversation record nothing")
+}
+
+// The cwd ledger skips a subagent's PreToolUse only; its PostToolUse — a
+// Bash call a subagent ran — records the command rows too.
+func TestCommandLedger_SubagentEventsCount(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	main := ledgerRepo(t)
+	made := ledgerWorktree(t, main, ".claude/worktrees/lane-1", "ref: refs/heads/lane-1")
+
+	runLedgerEvent(t, pid, commandPayload(t, "PostToolUse", main,
+		`git worktree add .claude/worktrees/lane-1 -b lane-1`,
+		map[string]any{"agent_id": "a0000000000000001", "agent_type": "general-purpose"}))
+	assert.Equal(t, []string{"worktree " + made + "@lane-1"}, commandRows(t, database, row))
+}
+
+// Codex names its shell tool Bash, with the command as a string
+// (testdata/codex_hooks/post_tool_use.json); it has no PostToolUseFailure.
+func TestCommandLedger_CodexShellTool(t *testing.T) {
+	const codexID = "01a10000-0000-7000-8000-000000000001"
+	database, _, row := codexRowFixture(t, codexID)
+	main := ledgerRepo(t)
+	made := ledgerWorktree(t, main, "wt-c", "ref: refs/heads/feat/c")
+
+	runCodexState(t, codexPayload(t, "post_tool_use", map[string]any{
+		"cwd": main, "tool_input": map[string]any{"command": "git worktree add wt-c -b feat/c && git branch feat/d"},
+	}))
+	assert.ElementsMatch(t, []string{"worktree " + made + "@feat/c", "branch " + main + "@feat/d"},
+		commandRows(t, database, row))
+}
+
+func TestCommandLedger_FullCapPrintsOneLine(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	main := ledgerRepo(t)
+	for i := range db.MaxSessionCommandRows {
+		_, _, err := database.RecordSessionCommandRow(context.Background(), row,
+			fmt.Sprintf("/tmp/acme/wt-%d", i), "b", "worktree", db.AgentStateStamp(hookNow()))
+		require.NoError(t, err)
+	}
+	commandLedgerFullReported.Store(false)
+	t.Cleanup(func() { commandLedgerFullReported.Store(false) })
+
+	out, errOut, err := runSessionState(t, pid, strings.NewReader(commandPayload(t, "PostToolUse", main,
+		`git checkout -b feat/one && git checkout -b feat/two`, nil)))
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Equal(t, 1, strings.Count(errOut, "\n"), "one stderr line: %q", errOut)
+	assert.Contains(t, errOut, "already records")
+	assert.Equal(t, "working", storedAgentState(t, database, row), "the state write is unaffected")
+
+	out, errOut, err = runSessionState(t, pid, strings.NewReader(commandPayload(t, "PostToolUse", main,
+		`git checkout -b feat/three`, nil)))
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Empty(t, errOut, "the full line is printed once per run")
+	assert.Len(t, commandRows(t, database, row), db.MaxSessionCommandRows)
 }
