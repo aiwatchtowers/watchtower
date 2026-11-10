@@ -8,7 +8,7 @@ import Observation
 /// The app writes nothing on its own: the pasteboard only on Copy Report /
 /// Copy Link, a file only on Save, the browser only on Open GitHub Issue.
 @MainActor @Observable
-package final class ReportProblemModel {
+package final class ReportProblemModel: Identifiable {
     package enum Phase: Equatable {
         case collecting
         case ready(DiagnosticsAnswer)
@@ -58,7 +58,8 @@ package final class ReportProblemModel {
     @ObservationIgnored private let appVersion: String
     @ObservationIgnored private let macOS: String
     @ObservationIgnored private let iPhoneOn: Bool
-    @ObservationIgnored private let isCorp: Bool
+    /// A corporate build: Save Diagnostics… only, no GitHub, no Discussions.
+    @ObservationIgnored package let isCorp: Bool
     @ObservationIgnored private let openURL: (URL) -> Bool
     @ObservationIgnored private let writePasteboard: (String) -> Void
     @ObservationIgnored private let writeFile: (String, URL) throws -> Void
@@ -106,6 +107,23 @@ package final class ReportProblemModel {
 
     /// Save Diagnostics…: in every state but collecting.
     package var canSave: Bool { !isCollecting }
+
+    /// "Describe the problem to continue." under the field: the diagnostics
+    /// are in but Open waits for text. A corporate build has no Open.
+    package var showsFieldRequired: Bool {
+        !isCorp && !isCollecting && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Save Diagnostics…'s suggested name, `watchtower-diagnostics-<yyyy-MM-dd>.txt`
+    /// on the owner's calendar day.
+    package nonisolated static func saveFileName(on date: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return "watchtower-diagnostics-\(formatter.string(from: date)).txt"
+    }
 
     /// The diagnostics block exactly as it will be sent.
     package var diagnosticsText: String {

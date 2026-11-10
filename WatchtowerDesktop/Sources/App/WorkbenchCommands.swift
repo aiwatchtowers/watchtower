@@ -123,6 +123,7 @@ struct HelpCommands: Commands {
             Button("Ask Watchtower…") { appState.askWatchtower() }
                 .keyboardShortcut("/", modifiers: .command)
             Button("Watchtower User Guide") { NSWorkspace.shared.open(GuideLinks.readme) }
+            Button(ReportProblemCopy.menu) { appState.reportProblem() }
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
         }
     }
