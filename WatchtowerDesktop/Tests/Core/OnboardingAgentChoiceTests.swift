@@ -332,6 +332,11 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertEqual(Kind.of(.codex, resolvedPath: "/opt/homebrew/Caskroom/codex/0.166.0/codex", home: home), .homebrew)
         XCTAssertEqual(Kind.of(.codex, resolvedPath: "/Users/owner/.local/bin/codex", home: home), .native)
         XCTAssertEqual(Kind.of(.claude, resolvedPath: "/usr/local/bin/claude", home: home), .unknown)
+        // The old local install is not a global npm one: `claude update`, never `npm install -g`.
+        XCTAssertEqual(
+            Kind.of(.claude, resolvedPath: "/Users/owner/.claude/local/node_modules/@anthropic-ai/claude-code/cli.js", home: home),
+            .native
+        )
     }
 
     func testUpdateCommandPerInstallKind() {

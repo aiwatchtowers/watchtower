@@ -113,6 +113,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case unknown
 
         package static func of(_ agent: Agent, resolvedPath path: String, home: String) -> Self {
+            // Claude Code's old local install keeps npm's folder under
+            // ~/.claude/local; `claude update` updates it in place.
+            if agent == .claude, path.hasPrefix(home + "/.claude/local/") { return .native }
             if path.contains("/node_modules/") { return .npm }
             if path.contains("/Caskroom/") || path.contains("/Cellar/") { return .homebrew }
             let nativeRoots = switch agent {
