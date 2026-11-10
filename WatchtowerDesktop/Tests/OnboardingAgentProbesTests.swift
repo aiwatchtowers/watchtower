@@ -103,17 +103,21 @@ final class OnboardingAgentProbesTests: XCTestCase {
     }
 
     func testHelpProbeTimesOutAndReapsItsGroup() async throws {
-        let pidFile = dir.appendingPathComponent("pid").path
+        let leaderFile = dir.appendingPathComponent("leader").path
+        let childFile = dir.appendingPathComponent("grandchild").path
         // The grandchild sleeps too: the group, not just the child, must die.
-        let slow = try script("agent", "sleep 30 &\necho $! > \"\(pidFile)\"\nsleep 30")
+        let slow = try script("agent", "echo $$ > \"\(leaderFile)\"\nsleep 30 &\necho $! > \"\(childFile)\"\nsleep 30")
         let started = Date()
         // Teardown reaps the group even when the code under test regressed.
-        let pgidFile = pidFile
         addTeardownBlock {
-            if let raw = try? String(contentsOfFile: pgidFile, encoding: .utf8),
-               let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            for (file, group) in [(leaderFile, true), (childFile, false)] {
+                guard let raw = try? String(contentsOfFile: file, encoding: .utf8),
+                      let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                    XCTFail("the stub never recorded \(file)")
+                    continue
+                }
+                if group { _ = killpg(pid, SIGKILL) }
                 _ = kill(pid, SIGKILL)
-                _ = killpg(pid, SIGKILL)
             }
         }
 
@@ -121,7 +125,7 @@ final class OnboardingAgentProbesTests: XCTestCase {
 
         XCTAssertNil(text)
         XCTAssertLessThan(Date().timeIntervalSince(started), 5)
-        let pid = try XCTUnwrap(Int32(String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let pid = try XCTUnwrap(Int32(String(contentsOfFile: childFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
         var gone = false
         for _ in 0..<50 where !gone {
             if kill(pid, 0) != 0 { gone = true } else { try await Task.sleep(for: .milliseconds(100)) }
@@ -129,29 +133,25 @@ final class OnboardingAgentProbesTests: XCTestCase {
         XCTAssertTrue(gone, "the grandchild is gone with its group")
     }
 
-    /// Parallel probes must not inherit each other's pipe write ends: the fast
-    /// one sees EOF at its own child's exit, not when the hung one dies.
-    func testConcurrentProbesDoNotShareDescriptors() async throws {
-        let pidFile = dir.appendingPathComponent("slowpid").path
-        let slow = try script("slow", "echo $$ > \"\(pidFile)\"\nsleep 30")
-        let fast = try script("fast", "echo fast-text")
+    /// The probed child inherits only 0, 1, 2: a descriptor the app has open
+    /// (no FD_CLOEXEC, like another probe's pipe end) must not reach it.
+    func testChildDoesNotInheritOtherDescriptors() async throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(pipe(&fds), 0)
+        let high = fcntl(fds[0], F_DUPFD, 200)  // not close-on-exec
+        XCTAssertGreaterThanOrEqual(high, 200)
         addTeardownBlock {
-            if let raw = try? String(contentsOfFile: pidFile, encoding: .utf8),
-               let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                _ = killpg(pid, SIGKILL)
-            }
+            close(fds[0]); close(fds[1]); close(high)
         }
-        let probes = probes(helpTimeout: 4)
-        let started = Date()
+        let lister = try script("lister", "ls /dev/fd")
 
-        async let slowText = probes.help(.claude, slow)
-        try await Task.sleep(for: .milliseconds(100))
-        let fastText = await probes.help(.codex, fast)
-        let fastElapsed = Date().timeIntervalSince(started)
-        _ = await slowText
+        let helped = await probes().help(.claude, lister)
+        let text = try XCTUnwrap(helped)
 
-        XCTAssertEqual(fastText?.contains("fast-text"), true)
-        XCTAssertLessThan(fastElapsed, 2, "the fast probe does not wait for the hung one")
+        let listed = Set(text.split(whereSeparator: \.isWhitespace).compactMap { Int32($0) })
+        XCTAssertTrue(listed.isSuperset(of: [0, 1, 2]), "the capture fds are there: \(listed)")
+        XCTAssertFalse(listed.contains(high), "the app's descriptor \(high) leaked into the child: \(listed)")
+        XCTAssertTrue(listed.filter { $0 > 10 }.isEmpty, "unexpected descriptors: \(listed)")
     }
 
     func testAllowedFollowsThePolicy() {
