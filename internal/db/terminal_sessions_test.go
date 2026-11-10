@@ -846,6 +846,97 @@ func TestProj11_LowerTerminalBackgroundOnlyLowers(t *testing.T) {
 	}
 }
 
+// Board #1710 (db half): a SubagentStart's report raises a count the Stop
+// started — to the higher of the two, from 0 too — and stamps its time; it
+// never lowers, never starts a count, and holds back over another state, an
+// equal or older stamp, another conversation or workbench; no other column
+// changes.
+func TestProj11_RaiseTerminalBackgroundOnlyRaises(t *testing.T) {
+	const otherUUID = "1b6c1f7e-3c2a-4d5e-9f10-2a3b4c5d6e7f"
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	w := writeResult(t)
+
+	counted := func(n int64) int64 {
+		id := newAgentStateRow(t, d, pid, "claude", agentStateUUID)
+		if !w(d.SetTerminalAgentState(id, pid, agentStateUUID, "waiting", t0, "", nil, false, stopWith(3))) {
+			t.Fatal("the Stop did not write")
+		}
+		// The count a SubagentStop lowered it to.
+		if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background = ? WHERE id = ?`, n, id); err != nil {
+			t.Fatal(err)
+		}
+		requireBackground(t, d, id, n, t0, "setup")
+		return id
+	}
+
+	for _, tc := range []struct {
+		name          string
+		stored, count int64
+		wantN         int64
+		garbledStamp  bool
+	}{
+		{"a higher count", 3, 5, 5, false},
+		{"a lower count keeps it", 3, 1, 3, false},
+		{"from zero", 0, 2, 2, false},
+		{"zero over zero still reports", 0, 0, 0, false},
+		{"an unreadable report stamp never blocks", 3, 2, 3, true},
+	} {
+		id := counted(tc.stored)
+		if tc.garbledStamp {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background_at = 'garbage' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		others := otherAgentColumns(t, d, id)
+		at := t0.Add(time.Second)
+		if !w(d.RaiseTerminalBackground(id, pid, agentStateUUID, at, tc.count)) {
+			t.Fatalf("%s: did not write", tc.name)
+		}
+		requireBackground(t, d, id, tc.wantN, at, tc.name)
+		if got := otherAgentColumns(t, d, id); got != others {
+			t.Fatalf("%s: other columns changed:\nbefore %s\nafter  %s", tc.name, others, got)
+		}
+	}
+
+	for _, tc := range []struct {
+		name      string
+		setup     func(id int64)
+		workbench int64
+		uuid      string
+		at        time.Time
+	}{
+		{"an equal stamp", nil, pid, agentStateUUID, t0},
+		{"an older stamp", nil, pid, agentStateUUID, t0.Add(-time.Second)},
+		{"another conversation", nil, pid, otherUUID, t0.Add(time.Second)},
+		{"another workbench", nil, other, agentStateUUID, t0.Add(time.Second)},
+		{"no count", func(id int64) {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_background = NULL, agent_background_at = NULL WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID, t0.Add(time.Second)},
+		{"over working", func(id int64) {
+			if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state = 'working' WHERE id = ?`, id); err != nil {
+				t.Fatal(err)
+			}
+		}, pid, agentStateUUID, t0.Add(2 * time.Second)},
+	} {
+		id := counted(1)
+		if tc.setup != nil {
+			tc.setup(id)
+		}
+		before := terminalRowSnapshot(t, d, id)
+		if w(d.RaiseTerminalBackground(id, tc.workbench, tc.uuid, tc.at, 4)) {
+			t.Fatalf("%s: wrote", tc.name)
+		}
+		if after := terminalRowSnapshot(t, d, id); after != before {
+			t.Fatalf("%s: the row changed:\nbefore %s\nafter  %s", tc.name, before, after)
+		}
+	}
+}
+
 // Board #411 (db half): a Stop whose count differs from the stored
 // `waiting`'s is a change — it writes and advances agent_state_at; a failed
 // `waiting` keeps its error through a counted Stop and an idle notice.
