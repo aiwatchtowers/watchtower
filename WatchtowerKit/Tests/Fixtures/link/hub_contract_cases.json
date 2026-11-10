@@ -602,23 +602,7 @@
         "epoch": 2,
         "by": "BBBBBBBB-0000-4000-8000-000000000002",
         "at": 1730000000.5,
-        "keybox": {
-          "grant": {
-            "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
-            "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
-            "name": "Test Phone",
-            "scope": "private",
-            "linked": true,
-            "typing_allowed": false,
-            "start_sessions_allowed": true
-          },
-          "keys": {
-            "epoch": 2,
-            "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
-            "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
-            "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
-          }
-        }
+        "keybox": "AQIDBAUGBwg"
       },
       "expect": {
         "id": "DDDDDDDD-0000-4000-8000-000000000004",
@@ -629,23 +613,7 @@
         "epoch": 2,
         "by": "BBBBBBBB-0000-4000-8000-000000000002",
         "at": 1730000000.5,
-        "keybox": {
-          "grant": {
-            "device_id": "BBBBBBBB-0000-4000-8000-000000000002",
-            "hub_id": "AAAAAAAA-0000-4000-8000-000000000001",
-            "linked": true,
-            "name": "Test Phone",
-            "scope": "private",
-            "start_sessions_allowed": true,
-            "typing_allowed": false
-          },
-          "keys": {
-            "alert_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
-            "data_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA",
-            "epoch": 2,
-            "meta_key": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA"
-          }
-        }
+        "keybox": "AQIDBAUGBwg"
       },
       "kit": {
         "kind": "transport_switched",
@@ -658,10 +626,7 @@
         "at": 1730000000.5,
         "reason": null,
         "retry_after_s": null,
-        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004",
-        "ignored_keys": [
-          "keybox"
-        ]
+        "record_name": "c-DDDDDDDD-0000-4000-8000-000000000004"
       }
     },
     {
