@@ -37,12 +37,12 @@ enum OnboardingAgentShotFixtures {
 
     private static var scenes: [Scene] {
         let bothReady = choice(.ready, .ready)
-        var other = OnboardingAgentChoice(statuses: [.claude: .ready, .codex: .notInstalled], otherProvider: "Ollama")
+        var other = OnboardingAgentChoice(statuses: [.claude: .ready, .codex: .notInstalled], otherProvider: OnboardingAgentChoice.providerName("ollama"))
         other.applyDefault(configured: "ollama")
         var otherFailed = OnboardingAgentChoice(
             statuses: [.claude: .ready, .codex: .notInstalled],
-            otherProvider: "Ollama",
-            otherProviderFailure: "Couldn’t reach the server at http://localhost:11434."
+            otherProvider: OnboardingAgentChoice.providerName("ollama"),
+            otherProviderFailure: OnboardingAgentChoice.otherFailureLine(code: "transport", error: nil)
         )
         otherFailed.applyDefault(configured: "ollama")
         var signingIn = choice(.signedOut, .notInstalled)
