@@ -585,6 +585,8 @@ No row is marked or removed with its source (spec D62); Accept, Decline and Roll
 
 ### Task 2.10: `writeCut` — weekly count only, no Codex rules or repository cut
 
+**From Task 2.5 (PR #768):** `writeCut` must also treat Task 2.4's two-folders refusal (`errCodexSkillTwice`) as "no cut", like the other unreadable-file errors.
+
 **From Task 2.3 (PR #762):** `writeCut` must count only weekly proposals against the slot limit (`weeklyOpen`), else three open chat proposals stop a cut of an ineffective weekly edit for good (its verdict is stored once). Test it here.
 
 **Depends on:** Task 2.7, Task 2.1 (`Origin`), Task 2.3 (`weeklyOpen`); the `repo_*` skip lands with Task 2.13's consts (if 2.13 is not in yet, 2.13 adds that case and its test)
