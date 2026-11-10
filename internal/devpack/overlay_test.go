@@ -338,3 +338,31 @@ func TestOverlay_PlainCopyWithoutSidecarIsAdopted(t *testing.T) {
 		t.Fatalf("workbench overlay: %+v %v", rep.Skill, err)
 	}
 }
+
+// An un-edited pre-v10 core kept by an unread install gets no preset beside it.
+func TestInstallWorkbench_OverlaysUnreadKeepsASingleFileCoreAlone(t *testing.T) {
+	folder := fakeRepo(t)
+	v8, err := os.ReadFile(filepath.Join("testdata", "watchtower-workbench-v8.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(workbenchSkillFile(folder))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workbenchSkillFile(folder), v8, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	o := workbenchOpts(folder, newFakeClaude())
+	o.OverlaysUnread = true
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !rep.SingleFileLayout || rep.Flow.State != StateMissing {
+		t.Fatalf("no preset beside a kept single-file core: %+v single=%v", rep.Flow, rep.SingleFileLayout)
+	}
+	if readTestFile(t, workbenchSkillFile(folder)) != string(v8) {
+		t.Fatal("the kept core must stay as it is")
+	}
+}
