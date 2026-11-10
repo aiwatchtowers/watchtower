@@ -153,6 +153,15 @@ the repo — never commit them):
 - `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8` and
   `~/.appstoreconnect/watchtower.mk` with `ASC_KEY_ID` / `ASC_ISSUER_ID`
 - a CloudKit management token (`xcrun cktool save-token --type management`)
+- the staging relay's origin in `~/.config/watchtower/relay-testflight-origin`
+  (one `https://host[:port]` line; `RELAY_TESTFLIGHT_ORIGIN_FILE=<path>`
+  points elsewhere). Every TestFlight build talks to the staging relay
+  (ask #1156); a missing file fails the upload. Never pass
+  `RELAY_TESTFLIGHT_DARK=1` without the user's go-ahead.
+
+**A TestFlight build is never the App Store build.** It carries the staging
+relay origin, so never promote it to App Store review: a submission for review
+gets its own, dark `make mobile-archive` build.
 
 If a prerequisite is missing, or `cloudkit-check` reports a schema gap
 (deploy it to Production by hand in the CloudKit Console), stop this step and
