@@ -445,7 +445,7 @@ FROM (
     SELECT session_id, target_id FROM terminal_session_targets
 ) AS link
 JOIN terminal_sessions s ON s.id = link.session_id
-WHERE s.kind IN ('claude','codex') AND s.project_id IS NOT NULL
+WHERE s.kind IN ('claude','codex') AND s.project_id IS NOT NULL AND s.`+db.NotDeletingSQL+`
 ORDER BY link.target_id, s.last_active_at DESC, s.id DESC`, nil, func(r *sql.Rows) error {
 		var target, session int64
 		if err := r.Scan(&target, &session); err != nil {

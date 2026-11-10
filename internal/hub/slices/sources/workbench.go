@@ -237,7 +237,7 @@ SELECT p.id, p.name, p.description, p.folder_path, p.archive_after_days,
        (SELECT COUNT(*) FROM targets t WHERE t.project_id = p.id AND t.status IN ('todo','in_progress','in_review','blocked')),
        (SELECT COUNT(*) FROM targets t WHERE t.project_id = p.id AND t.status = 'in_progress'),
        (SELECT COUNT(*) FROM targets t WHERE t.project_id = p.id AND t.status = 'blocked'),
-       COALESCE((SELECT MAX(s.last_active_at) FROM terminal_sessions s WHERE s.project_id = p.id), '')
+       COALESCE((SELECT MAX(s.last_active_at) FROM terminal_sessions s WHERE s.project_id = p.id AND s.`+db.NotDeletingSQL+`), '')
 FROM projects p
 ORDER BY p.name COLLATE NOCASE, p.id`)
 	if err != nil {
@@ -268,7 +268,7 @@ SELECT p.id, p.name, COALESCE(s.last, '')
 FROM projects p
 LEFT JOIN (
     SELECT project_id, MAX(last_active_at) AS last FROM terminal_sessions
-    WHERE project_id IS NOT NULL GROUP BY project_id
+    WHERE project_id IS NOT NULL AND `+db.NotDeletingSQL+` GROUP BY project_id
 ) s ON s.project_id = p.id
 ORDER BY p.name COLLATE NOCASE, p.id`)
 	if err != nil {

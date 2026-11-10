@@ -448,7 +448,7 @@ WHERE l.session_id = ? ORDER BY l.first_at, l.target_id`, []any{w.id}, func(r *s
 SELECT h.target_id, COALESCE(h.from_status, 'new'), h.to_status, h.actor, h.changed_at FROM target_status_history h
 WHERE h.target_id IN (
     SELECT target_id FROM terminal_session_targets WHERE session_id = ?1
-    UNION SELECT target_id FROM terminal_sessions WHERE id = ?1 AND target_id IS NOT NULL
+    UNION SELECT target_id FROM terminal_sessions WHERE id = ?1 AND target_id IS NOT NULL AND `+db.NotDeletingSQL+`
 )
 ORDER BY h.changed_at, h.id`, []any{w.id}, func(r *sql.Rows) error {
 			var (
@@ -469,8 +469,8 @@ ORDER BY h.changed_at, h.id`, []any{w.id}, func(r *sql.Rows) error {
 	}
 	var finishedAt sql.NullString
 	var summary string
-	if err := tx.QueryRowContext(ctx, `SELECT finished_at, finish_summary FROM terminal_sessions WHERE id = ?`, w.id).
-		Scan(&finishedAt, &summary); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT finished_at, finish_summary FROM terminal_sessions WHERE id = ? AND `+db.NotDeletingSQL, w.id).
+		Scan(&finishedAt, &summary); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("reading the session finish: %w", err)
 	}
 	if t := parseDate(finishedAt.String); finishedAt.Valid && t != nil {
