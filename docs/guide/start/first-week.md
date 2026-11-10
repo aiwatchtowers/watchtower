@@ -54,7 +54,7 @@ Stuck at any point? Press **⌘/** on any tab to ask the assistant, or use **Hel
 Now start your own list.
 
 - **Try:** in **Targets**, press **⌘N**, write a promise you made and press **Enter**. Then react with :white_check_mark: to a Slack message you owe a reply on.
-- **See:** your target with a suggested **NEXT STEP**. The reaction arrives as a proposal under **Needs your decision** in **Inbox**, and the target appears in Targets after you click **Approve**.
+- **See:** your target with a suggested **NEXT STEP**. The reaction arrives as a proposal in the Inbox's **Needs approval**, and the target appears in Targets after you click **Approve**.
 - **Needs:** the daemon running for next steps; Slack and **Reaction Commands** (on by default) for the reaction.
 
 Details: [Targets](../features/targets.md) and [Inbox](../features/inbox.md).

@@ -24,10 +24,12 @@ const (
 // P1's tool path: a later Define of the same path replaces the earlier one),
 // then P6's mcp and agent, then P5's ask, shell and session, then C2's
 // built-in SDK (installed per declared builtin: capability). The output module carries P1's inbox and report plus P2's briefing, target
-// and slack (registered with closures over b). Later phases append their
+// and slack (registered with closures over b), and output.inbox's folder field
+// (Inbox builder B). Later phases append their
 // modules here and register further output kinds on the *OutputMod.
 func DefaultModules(b Backends) []Module {
 	out := OutputModule()
+	out.RegisterInboxField("folder", inboxFolderField)
 	registerP2OutputKinds(out, b)
 	return []Module{LLMModule(b), ToolModule(b), StateModule(), out, LogModule(), ToolWriteModule(b), MCPModule(b), AgentModule(b),
 		AskModule(b), ShellModule(b), SessionModule(b), BuiltinModule(b)}

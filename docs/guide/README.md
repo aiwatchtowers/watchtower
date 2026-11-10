@@ -42,7 +42,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Catch Up](features/catch-up.md) — a recap of a stretch of time you were away: what happened and what needs you
 - [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people, on the Inbox's Your day card
 - [Day Plan](features/day-plan.md) — today as time blocks plus a backlog on the Inbox's Your day card, with calendar conflicts flagged
-- [Inbox](features/inbox.md) — one list of your day, messages, tracks, ideas, proposals, reminders and automation cards, plus Slack reaction commands
+- [Inbox](features/inbox.md) — folders you arrange, Needs approval, Waiting for me with Reply, your day, tracks and ideas, plus Slack reaction commands
 - [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage in the Inbox
 - [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas
 
@@ -95,7 +95,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
 - [Built-in automations](features/automations-built-in.md) — Morning brief, Track my threads, Idea finder and Reactions: when they run, on and off, editing and reset
 - [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
-- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent and Reply buttons on an automation's Inbox card, and what a press does
+- [How an automation's card looks](features/automations-card-look.md) — the editor's Look step, laid-out Inbox cards drawn from a dry run, and cards that stay current
+- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent, Task and Reply buttons on an automation's Inbox card, and what a press does
 - [Reactions and tracks in Automations](features/automations-rules.md) — the Reactions card and its dictionary, reaction-triggered recipes, and custom tracks as watches
 - [Automations: confirmation, budgets and writes](features/automations-safety.md) — what you confirm, the per-run budget, how writes wait for you and auto grants
 

@@ -220,7 +220,8 @@ func NewAddJiraComment(factory JiraWriteClientFactory) *Tool {
 		InputSchema: mustWriteSchema[addJiraCommentArgs]("add_jira_comment"),
 		Access:      AccessWrite,
 		External:    true,
-		Surfaces:    []string{"main", "target", AutomationSurface},
+		// inbox: a Reply from an Inbox row (ask #445), proposed only.
+		Surfaces: []string{"main", "target", AutomationSurface, InboxSurface},
 		Validate: func(_ context.Context, d *db.DB, raw json.RawMessage) error {
 			var a addJiraCommentArgs
 			if err := decodeStrict(raw, &a); err != nil {

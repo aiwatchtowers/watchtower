@@ -122,4 +122,46 @@ final class AutomationDraftFooterTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - Look step (Inbox builder A)
+
+    /// The AI-step line shows whenever the change adds an `llm()` step (the
+    /// footer is the same on every step); the tokens only with a dry run of
+    /// these bytes; no line when it adds none.
+    func testAIStepWarning() {
+        XCTAssertNil(Footer.aiStepWarning(addsLLM: false, dryRunTokens: nil))
+        XCTAssertNil(Footer.aiStepWarning(addsLLM: false, dryRunTokens: 5800))
+        XCTAssertEqual(Footer.aiStepWarning(addsLLM: true, dryRunTokens: nil),
+                       "This change adds an AI step: every run will use the model.")
+        XCTAssertEqual(Footer.aiStepWarning(addsLLM: true, dryRunTokens: 5800),
+                       "This change adds an AI step: every run will use the model. This dry run used 5,800 tokens.")
+        XCTAssertEqual(Footer.aiStepWarning(addsLLM: true, dryRunTokens: 0),
+                       "This change adds an AI step: every run will use the model. This dry run used 0 tokens.")
+    }
+
+    /// Under Look the primary save reads **Save Look**; a confirm keeps its
+    /// title, and the other steps keep every title.
+    func testSaveLookOnTheLookStepOnly() {
+        let save = Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false)
+        XCTAssertEqual(save.primaryTitle(on: .look), "Save Look")
+        XCTAssertEqual(save.primaryTitle(on: .collects), "Save and Confirm")
+        XCTAssertEqual(save.primaryTitle(on: .schedule), "Save and Confirm")
+        XCTAssertEqual(save.secondary?.title, "Save Turned Off")
+
+        let new = Footer.make(isNew: true, bytesChanged: true, enabled: false, needsConfirmation: true)
+        XCTAssertEqual(new.primaryTitle(on: .look), "Save Look")
+
+        let builtin = Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
+                                  isBuiltin: true)
+        XCTAssertEqual(builtin.primaryTitle(on: .look), "Save Look")
+
+        let confirm = Footer.make(isNew: false, bytesChanged: false, enabled: true, needsConfirmation: true)
+        XCTAssertEqual(confirm.primaryTitle(on: .look), "Confirm")
+
+        // Disabled stays disabled: the title changes, never the verdict.
+        let off = Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
+                              showsAllFields: false)
+        XCTAssertEqual(off.primaryTitle(on: .look), "Save Look")
+        XCTAssertFalse(off.primaryEnabled)
+    }
 }

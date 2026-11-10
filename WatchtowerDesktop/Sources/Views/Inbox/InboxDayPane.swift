@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The Inbox's Your day card (spec §6.3, R3, R10): the day's plan on top,
 /// its briefing below, either half alone when the day has only that one.
-/// Header: **Discuss in Chat** and **Done** (Done unpins today's card, R3).
+/// Header: **Discuss in Chat** only: in the folder model nothing pins a day
+/// card, so it has no Done (ask #607).
 /// Opening the card marks its briefing read (`ActionStripViewModel.select`),
 /// not this view.
 /// Today with nothing yet (the list's placeholder card) says when the brief
@@ -20,12 +21,10 @@ struct InboxDayPane: View {
     @Bindable var plan: DayPlanViewModel
     /// Regenerate runs the `day-plan` CLI, which needs the owner (OWNER-02).
     let owner: Owner
-    let onDone: () -> Void
     /// The header's Discuss in Chat; the pane takes no environment, so
     /// tests drive it with a closure.
     let onCommand: (InboxCardCommand) -> Void
     let onOpenSource: (DayPlanItem) -> Void
-    var isWriting = false
     var onOpenBriefingLink: (BriefingLink) -> Void = { _ in }
     /// Returns the failure to show, or nil.
     var onMakeTask: (BriefingTaskSource) async -> String? = { _ in nil }
@@ -126,24 +125,20 @@ struct InboxDayPane: View {
                 }
             }
             Spacer()
-            // Today's placeholder has nothing to discuss or finish yet.
+            // Today's placeholder has nothing to discuss yet.
             if !card.isEmpty {
                 headerActions
             }
         }
     }
 
-    /// Discuss in Chat beside Done, trailing in the header. The day card has
-    /// no source link and no Hand to Agent…, so it needs none of
-    /// `InboxCommonRow`'s wrapping row (which stretches to the pane's width).
+    /// Discuss in Chat, trailing in the header. The day card has no source
+    /// link and no Hand to Agent…, so it needs none of `InboxCommonRow`'s
+    /// wrapping row (which stretches to the pane's width).
     private var headerActions: some View {
-        HStack(spacing: Spacing.regular) {
-            Button("Discuss in Chat") {
-                let subject = InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : [])
-                onCommand(.chat(subject, message: InboxCardTexts.discussMessage(subject)))
-            }
-            Button("Done", action: onDone)
-                .disabled(isWriting)
+        Button("Discuss in Chat") {
+            let subject = InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : [])
+            onCommand(.chat(subject, message: InboxCardTexts.discussMessage(subject)))
         }
         .buttonStyle(.kitQuiet)
         .controlSize(.small)
@@ -171,7 +166,7 @@ struct InboxDayPane: View {
 }
 
 /// Today's card before its brief and plan exist. Per half: a fresh install
-/// (the feature not ready yet) gets the Day filter's first-run copy and its
+/// (the feature not ready yet) gets the briefing's first-run copy and its
 /// readiness line; an established one only says when today's comes (owner,
 /// ask #299, from the old Day Plan screen). Then **Make today's brief and
 /// plan**, its progress and any CLI refusal. With no owner, the OWNER-02
@@ -208,7 +203,7 @@ struct InboxDayNothingReady: View {
             Text("Nothing is ready for today yet.")
                 .font(.headline)
             if briefingOn {
-                half(.briefing, copyKey: InboxFilter.day.emptyCopyKey,
+                half(.briefing, copyKey: "briefings",
                      established: Self.todaysBriefLine(hour: emptyState.briefingHour))
             }
             if dayPlanOn {

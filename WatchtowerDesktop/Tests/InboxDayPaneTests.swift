@@ -61,7 +61,6 @@ final class InboxDayPaneTests: XCTestCase {
     private func pane(
         date: String,
         owner: Owner = InboxDayPaneTests.owner,
-        onDone: @escaping () -> Void = {},
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in },
         briefingVM: BriefingViewModel? = nil,
         emptyState: EmptyStateContext = .neutral,
@@ -75,7 +74,7 @@ final class InboxDayPaneTests: XCTestCase {
                                 planDone: 0, planTotal: plan.items.count, stamp: Date())
         let ignoreSource: (DayPlanItem) -> Void = { _ in }
         var sut = InboxDayPane(card: card, today: Self.today, plan: plan, owner: owner,
-                               onDone: onDone, onCommand: onCommand, onOpenSource: ignoreSource)
+                               onCommand: onCommand, onOpenSource: ignoreSource)
         sut.briefing = briefingVM
         sut.emptyState = emptyState
         sut.onMade = onMade
@@ -115,12 +114,10 @@ final class InboxDayPaneTests: XCTestCase {
 
     func testHeaderButtons() async throws {
         try await insertPlan(date: Self.today)
-        var done = 0
         var commands: [InboxCardCommand] = []
-        let sut = try await pane(date: Self.today, onDone: { done += 1 }, onCommand: { commands.append($0) })
+        let sut = try await pane(date: Self.today) { commands.append($0) }
 
         try sut.inspect().find(button: "Discuss in Chat").tap()
-        try sut.inspect().find(button: "Done").tap()
 
         guard case .chat(let subject, _)? = commands.first, commands.count == 1 else {
             return XCTFail("Discuss in Chat emits one chat command, got \(commands)")
@@ -128,7 +125,8 @@ final class InboxDayPaneTests: XCTestCase {
         XCTAssertEqual(subject.selection, .day(Self.today))
         XCTAssertThrowsError(try sut.inspect().find(button: "Hand to Agent…"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Open source"))
-        XCTAssertEqual(done, 1)
+        XCTAssertThrowsError(try sut.inspect().find(button: "Done"),
+                             "nothing pins a day card, so it has no Done (ask #607)")
     }
 
     func testAddAndRegenerateOnlyOnToday() async throws {
@@ -332,7 +330,7 @@ final class InboxDayPaneTests: XCTestCase {
 
         let yesterdayCard = InboxDayCard(date: Self.yesterday, briefing: nil, plan: nil, planDone: 0, planTotal: 1, stamp: Date())
         let sut = InboxDayPane(card: yesterdayCard, today: Self.today, plan: plan, owner: Self.owner,
-                               onDone: {}, onCommand: { _ in }, onOpenSource: { _ in })
+                               onCommand: { _ in }, onOpenSource: { _ in })
         XCTAssertThrowsError(try sut.inspect().find(text: "Item of \(Self.today)"), "today's items never show on yesterday's card")
     }
 

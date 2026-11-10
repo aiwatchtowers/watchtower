@@ -32,6 +32,7 @@ var (
 	actionsProposeFlagSurface     string
 	actionsProposeFlagContextType string
 	actionsProposeFlagContextID   string
+	actionsProposeFlagContext     string
 	actionsProposeFlagArgs        string
 	actionsProposeFlagApprove     bool
 )
@@ -80,10 +81,28 @@ var actionsProposeCmd = &cobra.Command{
 	Use:   "propose",
 	Short: "Propose an owner tool's action from the Inbox (and, with --approve, approve and apply it)",
 	Long: `The owner's own press in the Desktop's Inbox: only a tool on the inbox
-surface (apply_track_action) is accepted, and only with --surface inbox. The
-call goes through the registry like any proposal (one agent_actions row);
-with --approve the same press approves and applies it, exactly as
-'actions approve' does, and prints the same envelope.
+surface (apply_track_action, create_target, send_slack_message,
+add_jira_comment, add_linear_comment) is accepted, and only with --surface
+inbox. The call goes through the registry like any proposal (one
+agent_actions row); with --approve the same press approves and applies it,
+exactly as 'actions approve' does, and prints the same envelope.
+
+A row's Reply proposes send_slack_message, add_jira_comment or
+add_linear_comment with --context inbox_item:<id>: one pending row the owner
+approves in Needs approval. --approve is refused for these three tools ("a
+reply is approved in Needs approval").
+
+An Inbox card's target button proposes create_target without --approve
+(--approve is refused for that context: the owner approves the row in its
+approval card),
+with --context-type automation_output --context-id <output>:<index>:<action
+hash>: one pending row the owner approves in its approval card. A button
+with an open proposal, or whose applied task still exists, is refused with
+exit code 3 ("This button already has a proposal (#N)", "This button's task
+already exists (task #T)"); 'actions apply' of an older row while a newer
+proposal of the button is open exits 3 too ("A newer proposal for this
+button is open (#N)"). Exit 3 means the button's state moved; every other
+refusal exits 1.
 
 Outcomes (the Desktop's TrackActionPress reads all three):
   - exit non-zero, the reason on stderr, nothing written: an AI-agent
@@ -119,6 +138,8 @@ func init() {
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextType, "context-type", "",
 		"what the press acts on (e.g. track_event), stored on the row; args naming an event_id override a mismatch")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextID, "context-id", "", "its id, stored on the row")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContext, "context", "",
+		"a row's Reply: inbox_item:<id>, stored on the row as its context (instead of --context-type/--context-id)")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagArgs, "args", "", "the tool's arguments as a JSON object")
 	actionsProposeCmd.Flags().BoolVar(&actionsProposeFlagApprove, "approve", false,
 		"approve and apply the proposal in the same press")
@@ -286,6 +307,16 @@ func prepareApply(database *db.DB, id int64) (string, error) {
 	if row == nil {
 		return "", fmt.Errorf("no action #%d", id)
 	}
+	// An Inbox button's older row is never retried while a newer proposal of
+	// the button is open (AGENT-05): refused before any state change,
+	// --force included.
+	newer, err := database.NewerOpenButtonProposal(row)
+	if err != nil {
+		return "", err
+	}
+	if newer != 0 {
+		return "", &exitCodeError{code: buttonStateExitCode, err: &db.ErrButtonNewerProposalOpen{ID: newer}}
+	}
 	if row.Status == "executing" {
 		if !actionsFlagForce {
 			return "", fmt.Errorf("action #%d is executing; pass --force to reclaim an interrupted apply", id)
@@ -309,6 +340,28 @@ func prepareApply(database *db.DB, id int64) (string, error) {
 		return externalRetryWarning, nil
 	}
 	return "", nil
+}
+
+// buttonStateExitCode is the exit of an Inbox button refusal: the button's
+// state moved (an open proposal, its task, a newer proposal), so the Desktop
+// re-reads its proposals and shows no error banner. Other refusals exit 1.
+const buttonStateExitCode = 3
+
+// buttonStateExit returns err as exit code 3 with the typed error's own text
+// on stderr when it is an Inbox button refusal (AGENT-05), else unchanged.
+func buttonStateExit(err error) error {
+	var open *db.ErrButtonHasOpenProposal
+	var exists *db.ErrButtonTaskExists
+	var newer *db.ErrButtonNewerProposalOpen
+	switch {
+	case errors.As(err, &open):
+		return &exitCodeError{code: buttonStateExitCode, err: open}
+	case errors.As(err, &exists):
+		return &exitCodeError{code: buttonStateExitCode, err: exists}
+	case errors.As(err, &newer):
+		return &exitCodeError{code: buttonStateExitCode, err: newer}
+	}
+	return err
 }
 
 // decideOrExplain moves the row from one of from to to; a row in another
@@ -367,7 +420,7 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 		case err != nil && to == "":
 			// Nothing persisted on the bare `apply` path, so the failure IS
 			// the outcome: exit non-zero, no envelope.
-			return err
+			return buttonStateExit(err)
 		case err != nil:
 			// The decision above COMMITTED. Reporting a failed process for it
 			// would tell the Desktop the approve never happened (spec §8).
@@ -443,7 +496,8 @@ var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX",
 // enable` and `automations delete` (D24, ask #293); `automations auto …
 // on` (spec §6.4, P2); `automations session-launched` and `session-ended`
 // (P5); `actions dismiss` (#737, ask #342); `automations reply`, an Inbox
-// card's Reply press (ask #475); `actions propose`, an Inbox card's
+// card's Reply press (ask #475); `automations preview`, the Look step's
+// Dry run (ask #445); `actions propose`, an Inbox card's
 // track-action press (with --approve it is the approve); `workbench
 // session-target`, the Desktop's session-to-target binding (the agent has
 // the set_session_target tool). The Desktop's buttons are the path.
@@ -632,8 +686,15 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 		// Never nil, so JSON carries []; the automation surface is listed with
-		// its trust level like any other (spec §6.2).
-		surfaces := append(make([]string, 0, len(t.Surfaces)), t.Surfaces...)
+		// its trust level like any other (spec §6.2). The inbox is left out:
+		// it is the owner's press, no assistant surface and no trust place
+		// (create_target's target button), so Settings draws no switch for it.
+		surfaces := make([]string, 0, len(t.Surfaces))
+		for _, s := range t.Surfaces {
+			if s != tools.InboxSurface {
+				surfaces = append(surfaces, s)
+			}
+		}
 		trustSurfaces := tools.TrustSurfaces(t)
 		bySurface := make(map[string]string, len(trustSurfaces))
 		for _, s := range trustSurfaces {

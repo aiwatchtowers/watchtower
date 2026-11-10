@@ -15,10 +15,11 @@ package enum TrackQueries {
     }
 
     /// Every non-dismissed track — or, `stopped`, every dismissed one — with
-    /// its latest activity (the Inbox's Tracks filter; no limit, F1): `lastEventAt` is the later of the track's
+    /// its latest activity (the Inbox root's Track my threads list; no limit,
+    /// F1): `lastEventAt` is the later of the track's
     /// `updated_at` and its newest event, `newEventCount` its unread events.
     package static func fetchInboxCards(_ db: Database, stopped: Bool = false) throws -> [InboxTrackCard] {
-        // Stopped = dismissed (TRACKS-07): listed only in the Tracks filter's
+        // Stopped = dismissed (TRACKS-07): listed only in Track my threads'
         // Stopped fold, so the owner can restore one; newest stop first.
         let filter = stopped ? "t.dismissed_at != ''" : "t.dismissed_at = ''"
         let order = stopped ? "t.dismissed_at DESC, t.id DESC" : "t.has_updates DESC, t.updated_at DESC, t.id DESC"

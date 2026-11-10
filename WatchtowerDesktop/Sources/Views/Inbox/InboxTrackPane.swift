@@ -7,7 +7,7 @@ import WatchtowerCore
 /// (a custom track's collection also stops, through `controls`). A custom
 /// track's Collecting toggle, instruction and scans go only through
 /// `controls`, the seam C3 swaps for the track's watch recipe. A stopped
-/// track's card (the Tracks filter's Stopped fold) offers **Restore**.
+/// track's card (Track my threads' Stopped fold) offers **Restore**.
 struct InboxTrackPane: View {
     let card: InboxTrackCard
     let tracks: TracksViewModel

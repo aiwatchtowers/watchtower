@@ -159,23 +159,31 @@ final class IdeasViewModel {
 
     // MARK: - Actions
 
-    func approve(_ idea: Idea) async {
+    // The verdicts return whether the write landed (a failure's reason is
+    // in `errorMessage`): the Inbox's row actions keep it on the row.
+
+    @discardableResult
+    func approve(_ idea: Idea) async -> Bool {
         await write("approve idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
     }
 
-    func reject(_ idea: Idea) async {
+    @discardableResult
+    func reject(_ idea: Idea) async -> Bool {
         await write("reject idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "rejected") }
     }
 
-    func activate(_ idea: Idea) async {
+    @discardableResult
+    func activate(_ idea: Idea) async -> Bool {
         await write("activate idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
     }
 
-    func notNow(_ idea: Idea, until: String = "") async {
+    @discardableResult
+    func notNow(_ idea: Idea, until: String = "") async -> Bool {
         await write("snooze idea") { db in try IdeaQueries.snooze(db, id: idea.id, until: until.isEmpty ? nil : until) }
     }
 
-    func drop(_ idea: Idea) async {
+    @discardableResult
+    func drop(_ idea: Idea) async -> Bool {
         await write("drop idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "dropped") }
     }
 

@@ -33,24 +33,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 
 // CreateTarget inserts a new target and returns its ID.
 func (db *DB) CreateTarget(t Target) (int64, error) {
-	if t.Tags == "" {
-		t.Tags = "[]"
-	}
-	if t.SubItems == "" {
-		t.SubItems = "[]"
-	}
-	if t.Notes == "" {
-		t.Notes = "[]"
-	}
-	if t.Level == "" {
-		t.Level = "day"
-	}
-	if t.PeriodStart == "" {
-		t.PeriodStart = time.Now().UTC().Format("2006-01-02")
-	}
-	if t.PeriodEnd == "" {
-		t.PeriodEnd = t.PeriodStart
-	}
+	t = withTargetDefaults(t)
 
 	if err := checkParentBoard(db, t.ParentID, t.WorkbenchID); err != nil {
 		return 0, err
@@ -84,6 +67,30 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 		}
 	}
 	return id, nil
+}
+
+// withTargetDefaults fills the columns CreateTarget defaults: empty JSON
+// lists, level day, a period of today.
+func withTargetDefaults(t Target) Target {
+	if t.Tags == "" {
+		t.Tags = "[]"
+	}
+	if t.SubItems == "" {
+		t.SubItems = "[]"
+	}
+	if t.Notes == "" {
+		t.Notes = "[]"
+	}
+	if t.Level == "" {
+		t.Level = "day"
+	}
+	if t.PeriodStart == "" {
+		t.PeriodStart = time.Now().UTC().Format("2006-01-02")
+	}
+	if t.PeriodEnd == "" {
+		t.PeriodEnd = t.PeriodStart
+	}
+	return t
 }
 
 // UpdateTargetText updates only a target's text and intent, touching nothing
