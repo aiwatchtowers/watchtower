@@ -122,3 +122,18 @@ func TestAIWhich_UnknownProvider(t *testing.T) {
 	require.ErrorAs(t, err, &ec)
 	assert.Equal(t, 2, ec.code)
 }
+
+func TestAIWhich_JSONFlagThroughCobra(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	stubSeams(t, "claude", "", devpack.ErrCodexNotFound)
+
+	buf := &bytes.Buffer{}
+	rootCmd.SetOut(buf)
+	rootCmd.SetArgs([]string{"ai", "which", "--provider", "claude", "--json"})
+	defer func() { rootCmd.SetArgs(nil); rootCmd.SetOut(nil); flagProvider = "" }()
+	require.NoError(t, rootCmd.Execute())
+	var o whichOut
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &o))
+	assert.Equal(t, whichOut{Provider: "claude"}, o)
+}

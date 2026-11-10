@@ -84,6 +84,10 @@ var aiQueryCmd = &cobra.Command{
 var aiModelsFlagJSON bool
 var aiTestCLIPath string
 
+// aiWhichFlagJSON is accepted for the documented spelling; the output is one
+// JSON line either way.
+var aiWhichFlagJSON bool
+
 // Catalog reads must not inherit the database/config schema upgrade hook:
 // Settings uses saved file identity to confirm daemon application.
 var aiModelsCmd = &cobra.Command{
@@ -134,6 +138,7 @@ func init() {
 	aiCmd.AddCommand(aiModelsCmd)
 	aiCmd.AddCommand(aiWhichCmd)
 
+	aiWhichCmd.Flags().BoolVar(&aiWhichFlagJSON, "json", false, "output JSON (always on)")
 	aiModelsCmd.Flags().BoolVar(&aiModelsFlagJSON, "json", false, "output JSON")
 	aiTestCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	aiTestCmd.Flags().StringVar(&aiTestCLIPath, "cli-path", "", "test this CLI path without saving it")
