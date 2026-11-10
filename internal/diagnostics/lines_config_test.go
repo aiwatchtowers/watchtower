@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"watchtower/internal/config"
 )
 
 // canary stands in for a raw value that must never reach the report.
@@ -388,6 +390,102 @@ func TestDiagnostics_FeaturesConfigGoneUnreadable(t *testing.T) {
 	unreadable(t, cfgPath)
 	if got := FeaturesLine(r, env); got != UnknownNoConfig {
 		t.Errorf("features %q, want %q", got, UnknownNoConfig)
+	}
+}
+
+func TestDiagnostics_ConfigWrongType(t *testing.T) {
+	cfgPath, _ := testInstall(t)
+	writeFile(t, cfgPath, "ai: 5\n")
+	env := Env{ConfigPath: cfgPath}
+	r := Resolve(env)
+	if r.ConfigLine != ConfigUnreadableOther || r.ConfigState != ConfigStateUnreadable {
+		t.Fatalf("config line %q state %v", r.ConfigLine, r.ConfigState)
+	}
+	if text, js := AILine(env, r); text != UnknownNoConfig || js != "" {
+		t.Errorf("AI line %q / %q", text, js)
+	}
+}
+
+// TestDiagnostics_WorkspaceStatFailed: a data root without search
+// permission makes the workspace folder's stat fail with EACCES, not
+// "not exist" → lookup failed.
+func TestDiagnostics_WorkspaceStatFailed(t *testing.T) {
+	cfgPath, root := testInstall(t)
+	writeFile(t, cfgPath, "active_workspace: alpha\n")
+	addWorkspace(t, root, "alpha", true)
+	skipIfRoot(t)
+	if err := os.Chmod(root, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+	r := Resolve(Env{ConfigPath: cfgPath})
+	if r.WorkspaceLine != WorkspaceLookupFailed || r.WorkspaceReason != UnknownNoWorkspace {
+		t.Errorf("workspace line %q reason %q", r.WorkspaceLine, r.WorkspaceReason)
+	}
+}
+
+func TestDiagnostics_AILineRawReadFails(t *testing.T) {
+	t.Run("config_ok", func(t *testing.T) {
+		cfgPath, _ := testInstall(t)
+		writeFile(t, cfgPath, "digest:\n  enabled: true\n")
+		env := Env{ConfigPath: cfgPath}
+		r := Resolve(env)
+		unreadable(t, cfgPath)
+		// The origin note is dropped rather than guessed.
+		if text, js := AILine(env, r); text != ProviderClaude || js != ProviderClaude {
+			t.Errorf("AI line %q / %q", text, js)
+		}
+	})
+	t.Run("config_invalid", func(t *testing.T) {
+		cfgPath, _ := testInstall(t)
+		writeFile(t, cfgPath, "ai:\n  provider: codex\n  fallback:\n    provider: codex\n")
+		env := Env{ConfigPath: cfgPath}
+		r := Resolve(env)
+		if r.ConfigState != ConfigStateInvalid {
+			t.Fatalf("state %v", r.ConfigState)
+		}
+		unreadable(t, cfgPath)
+		if text, js := AILine(env, r); text != UnknownNoConfig || js != "" {
+			t.Errorf("AI line %q / %q", text, js)
+		}
+	})
+}
+
+func TestDiagnostics_FeaturesNone(t *testing.T) {
+	cases := []struct{ name, yaml, want string }{
+		{"migrated", "features:\n  migrated: true\n", FeaturesNone},
+		{"legacy", "digest:\n  enabled: false\n", FeaturesNone + FeaturesNotMigrated},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfgPath, _ := testInstall(t)
+			writeFile(t, cfgPath, c.yaml)
+			// A zero Config has every gate off.
+			r := Resolved{Cfg: &config.Config{}, ConfigState: ConfigStateOK, ConfigLine: ConfigOK}
+			if got := FeaturesLine(r, Env{ConfigPath: cfgPath}); got != c.want {
+				t.Errorf("features %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestDiagnostics_FeaturesWithoutConfig(t *testing.T) {
+	cases := []struct{ name, yaml string }{
+		{"none", ""},
+		{"invalid", "ai:\n  provider: " + canary + "\n"},
+		{"unreadable", "ai: [unclosed\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfgPath, _ := testInstall(t)
+			if c.yaml != "" {
+				writeFile(t, cfgPath, c.yaml)
+			}
+			env := Env{ConfigPath: cfgPath}
+			if got := FeaturesLine(Resolve(env), env); got != UnknownNoConfig {
+				t.Errorf("features %q, want %q", got, UnknownNoConfig)
+			}
+		})
 	}
 }
 

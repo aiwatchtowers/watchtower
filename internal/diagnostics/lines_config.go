@@ -24,6 +24,10 @@ const envAIProvider = "WATCHTOWER_AI_PROVIDER"
 // directory and no WATCHTOWER_CONFIG_PATH), the global --workspace flag, an
 // environment reader and the data-root resolver. Nil Getenv / DataRoot use
 // os.Getenv / config.DataRoot.
+//
+// Production always passes os.Getenv (or nil). Getenv only drives the
+// "(from environment)" label of the AI line: config.Load and the raw AI read
+// go through viper, which reads the real process environment.
 type Env struct {
 	ConfigPath    string
 	WorkspaceFlag string
@@ -274,7 +278,8 @@ func invalidAILine(env Env) (string, string) {
 
 // reserveInvalid applies AIConfig.Validate's fallback rules on their own,
 // so a bad reserve is reported even when the preferred provider is also
-// unknown.
+// unknown. config.AIConfig.Validate (internal/config/ai_routing.go) is the
+// source of truth: a change to its fallback rules must be mirrored here.
 func reserveInvalid(preferred, reserve string, enabled bool) bool {
 	if reserve != "" {
 		if !config.KnownAIProvider(reserve) || reserve == preferred {
