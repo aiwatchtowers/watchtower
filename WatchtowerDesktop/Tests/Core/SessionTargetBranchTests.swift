@@ -234,4 +234,33 @@ final class SessionTargetBranchTests: XCTestCase {
         ) { _ in true }
         XCTAssertEqual(roots, [reused])
     }
+
+    /// Board #1716: a `command` row means "the session created this", not
+    /// "an agent worked here" — it gives the session no lane and no
+    /// `hasWorktree`; a `cwd` row of the same root still does.
+    func testCommandRowsGiveNoLaneAndNoHasWorktree() throws {
+        let db = try TestDatabase.create()
+        let projectID = try db.write { try TestDatabase.insertWorkbench($0, folder: "/repo") }
+        let ctl = try db.write { db in
+            try TerminalSessionQueries.create(db, .init(
+                projectID: projectID, kind: .claude, title: "t", folderPath: "/repo",
+                claudeSessionID: UUID().uuidString)).id
+        }
+        let made = "/repo/.claude/worktrees/made", worked = "/repo/.claude/worktrees/worked"
+        try db.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET agent_turns = ? WHERE id = ?",
+                           arguments: ["{\"since\":\"\(runStart)\"}", ctl])
+            try db.execute(sql: """
+                INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at, source, kind)
+                VALUES (?, ?, 'lane', ?, 'command', 'worktree'), (?, '/repo', 'lane', ?, 'command', 'branch'),
+                       (?, ?, 'lane', ?, 'cwd', 'worktree')
+                """, arguments: [ctl, made, after, ctl, after, ctl, worked, after])
+        }
+        let links = try XCTUnwrap(db.read { try TerminalSessionQueries.fetchWorkLinks($0, projectID: projectID) }[ctl])
+        XCTAssertEqual(links.worktrees, [record(worked, after)])
+        for (root, want) in [(made, false), ("/repo", false), (worked, true)] {
+            let has = try db.read { try TerminalSessionQueries.hasWorktree($0, sessionID: ctl, roots: [root], branch: "lane") }
+            XCTAssertEqual(has, want, root)
+        }
+    }
 }

@@ -29,11 +29,14 @@ type SessionWorktree struct {
 }
 
 // HasSessionWorktree reports whether session sessionID already recorded
-// (root, branch); stale, whether that pair's last sighting (last_at, else
+// (root, branch) as a source='cwd' row — an agent worked there; a pair that
+// so far is only a command row (board #1716) is not, and the next
+// RecordSessionWorktree upgrades it; stale, whether that pair's last sighting (last_at, else
 // first_at) is older than the session's run mark (agent_turns' since; never
 // without a readable one), so this run has not seen it yet (board #1018);
 // and whether the session is full — already at MaxSessionWorktrees cwd rows,
-// so a new pair would not be recorded. It is one read in a read-only
+// so a new pair would not be recorded (never for a command row of the pair:
+// its upgrade has no cap). It is one read in a read-only
 // transaction, so it works on a query_only handle and never takes the write
 // lock: the hook learns a pair is known in this run, or the session full,
 // without one.
@@ -44,17 +47,20 @@ func (db *DB) HasSessionWorktree(ctx context.Context, sessionID int64, root, bra
 	}
 	defer func() { _ = tx.Rollback() }()
 	var n int
+	var command bool
 	var seen, since sql.NullString
 	err = tx.QueryRowContext(ctx, `SELECT
 		(SELECT COALESCE(last_at, first_at) FROM terminal_session_worktrees
-			WHERE session_id = ? AND root = ? AND branch = ?),
+			WHERE session_id = ? AND root = ? AND branch = ? AND source = 'cwd'),
+		EXISTS (SELECT 1 FROM terminal_session_worktrees
+			WHERE session_id = ? AND root = ? AND branch = ? AND source = 'command'),
 		(SELECT `+runStartExpr+` FROM terminal_sessions WHERE id = ?),
 		(SELECT COUNT(*) FROM terminal_session_worktrees WHERE session_id = ? AND source = 'cwd')`,
-		sessionID, root, branch, sessionID, sessionID).Scan(&seen, &since, &n)
+		sessionID, root, branch, sessionID, root, branch, sessionID, sessionID).Scan(&seen, &command, &since, &n)
 	if err != nil {
 		return false, false, false, fmt.Errorf("reading terminal session %d worktrees: %w", sessionID, err)
 	}
-	return seen.Valid, seen.Valid && seenBeforeRun(seen.String, since), n >= MaxSessionWorktrees, nil
+	return seen.Valid, seen.Valid && seenBeforeRun(seen.String, since), !command && n >= MaxSessionWorktrees, nil
 }
 
 // seenBeforeRun reports whether a ledger stamp is older than the run mark
@@ -73,15 +79,16 @@ func seenBeforeRun(seen string, since sql.NullString) bool {
 }
 
 // TouchSessionWorktree moves the last sighting (last_at) of session
-// sessionID's recorded (root, branch) to at (agent_state_at format) when the
+// sessionID's recorded source='cwd' (root, branch) to at (agent_state_at format) when the
 // stored one (last_at, else first_at) is older; first_at never changes.
-// touched is false, with no error, when there is no such pair or it was seen
-// at or after at already. last_at only moves forward; concurrent hooks of one
+// touched is false, with no error, when there is no such cwd pair (a
+// command-only pair goes through RecordSessionWorktree) or it was seen at or
+// after at already. last_at only moves forward; concurrent hooks of one
 // run may both write it (the later stamp wins), which costs a write, not a
 // wrong value.
 func (db *DB) TouchSessionWorktree(ctx context.Context, sessionID int64, root, branch, at string) (touched bool, err error) {
 	res, err := db.ExecContext(ctx, `UPDATE terminal_session_worktrees SET last_at = ?
-		WHERE session_id = ? AND root = ? AND branch = ? AND COALESCE(last_at, first_at) < ?`,
+		WHERE session_id = ? AND root = ? AND branch = ? AND source = 'cwd' AND COALESCE(last_at, first_at) < ?`,
 		at, sessionID, root, branch, at)
 	if err != nil {
 		return false, fmt.Errorf("touching terminal session %d worktree: %w", sessionID, err)
@@ -95,9 +102,12 @@ func (db *DB) TouchSessionWorktree(ctx context.Context, sessionID int64, root, b
 
 // RecordSessionWorktree records (root, branch) for session sessionID at time
 // `at` (agent_state_at format) inside tx, or in its own transaction when tx is
-// nil, as a source='cwd' row. A pair already recorded is left as it is.
-// recorded is false, with no error, when the pair was already there or the
-// session already holds MaxSessionWorktrees cwd rows.
+// nil, as a source='cwd' row. A pair recorded only as a command row (board
+// #1716) is upgraded in place — source becomes cwd, kind stays, last_at moves
+// forward to at — with no cap check, and counts as recorded. A cwd pair
+// already recorded is left as it is. recorded is false, with no error, when
+// the cwd pair was already there or the session already holds
+// MaxSessionWorktrees cwd rows.
 func (db *DB) RecordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, root, branch, at string) (recorded bool, err error) {
 	if tx != nil {
 		return recordSessionWorktree(ctx, tx, sessionID, root, branch, at)
@@ -118,6 +128,19 @@ func (db *DB) RecordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID i
 }
 
 func recordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, root, branch, at string) (bool, error) {
+	res, err := tx.ExecContext(ctx, `UPDATE terminal_session_worktrees SET source = 'cwd',
+		last_at = CASE WHEN COALESCE(last_at, first_at) < ? THEN ? ELSE last_at END
+		WHERE session_id = ? AND root = ? AND branch = ? AND source = 'command'`, at, at, sessionID, root, branch)
+	if err != nil {
+		return false, fmt.Errorf("recording terminal session %d worktree: %w", sessionID, err)
+	}
+	upgraded, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("recording terminal session %d worktree: %w", sessionID, err)
+	}
+	if upgraded > 0 {
+		return true, nil
+	}
 	var n int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM terminal_session_worktrees
 		WHERE session_id = ? AND source = 'cwd'`, sessionID).Scan(&n); err != nil {
@@ -126,7 +149,7 @@ func recordSessionWorktree(ctx context.Context, tx *sql.Tx, sessionID int64, roo
 	if n >= MaxSessionWorktrees {
 		return false, nil
 	}
-	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO terminal_session_worktrees (session_id, root, branch, first_at, last_at)
+	res, err = tx.ExecContext(ctx, `INSERT OR IGNORE INTO terminal_session_worktrees (session_id, root, branch, first_at, last_at)
 		VALUES (?, ?, ?, ?, ?)`, sessionID, root, branch, at, at)
 	if err != nil {
 		return false, fmt.Errorf("recording terminal session %d worktree: %w", sessionID, err)
@@ -205,12 +228,14 @@ func (db *DB) SessionWorktrees(ctx context.Context, sessionID int64) ([]SessionW
 }
 
 // WorkbenchSessionWorktrees maps each worktree root any session of workbench
-// workbenchID recorded to those sessions' ids, ascending; never nil. The
-// sweep uses it for its owner hint.
+// workbenchID recorded to those sessions' ids, ascending; never nil. Only
+// kind='worktree' rows, of either source: a branch row's root is the
+// repository's top level, never a worktree (board #1716). The sweep uses it
+// for its owner hint, agentlog for its worktree roots.
 func (db *DB) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error) {
 	rows, err := db.QueryContext(ctx, `SELECT DISTINCT w.root, w.session_id
 		FROM terminal_session_worktrees w JOIN terminal_sessions s ON s.id = w.session_id
-		WHERE s.project_id = ? ORDER BY w.root, w.session_id`, workbenchID)
+		WHERE s.project_id = ? AND w.kind = 'worktree' ORDER BY w.root, w.session_id`, workbenchID)
 	if err != nil {
 		return nil, fmt.Errorf("reading workbench %d session worktrees: %w", workbenchID, err)
 	}
