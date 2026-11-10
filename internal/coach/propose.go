@@ -460,7 +460,8 @@ func kindFits(kind, before, after string) bool {
 // safe Bash rules (SafeAllowRule).
 func ValidateAfter(t CurrentText, after string) error {
 	switch t.Destination {
-	case DestSession, DestProcedure, DestChat, DestClaudeMDUser:
+	case DestSession, DestProcedure, DestChat, DestClaudeMDUser,
+		DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
 		if t.Budget > 0 && utf8.RuneCountInString(strings.TrimSpace(after)) > t.Budget {
 			return fmt.Errorf("the text is over its budget of %d characters", t.Budget)
 		}

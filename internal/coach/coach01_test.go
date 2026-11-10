@@ -131,4 +131,37 @@ func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
 		assert.False(t, textDestinations[dest], "%s is not a weekly destination", dest)
 		assert.False(t, strings.HasPrefix(dest, "repo_"), dest)
 	}
+
+	// The file destinations resolve under <Home>/.claude/, <Home>/.agents/ or
+	// <CodexHome>/, with and without an own CODEX_HOME.
+	hdir := t.TempDir()
+	under := func(path string, roots ...string) bool {
+		for _, r := range roots {
+			if strings.HasPrefix(path, r+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range []Env{{Home: hdir}, {Home: hdir, CodexHome: t.TempDir()}} {
+		roots := []string{filepath.Join(hdir, ".claude"), filepath.Join(hdir, ".agents"), e.codexHome()}
+		assert.True(t, under(ClaudeSkillPath(e, "x"), filepath.Join(hdir, ".claude")))
+		assert.True(t, under(codexAgentsMDPath(e), e.codexHome()))
+		_, ok := CodexSkillPath(e, "x")
+		assert.False(t, ok)
+		for _, p := range []string{filepath.Join(e.codexHome(), "skills", "x", "SKILL.md"),
+			filepath.Join(hdir, ".agents", "skills", "x", "SKILL.md")} {
+			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o700))
+			require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
+			got, ok := CodexSkillPath(e, "x")
+			require.True(t, ok)
+			assert.True(t, under(got, roots...), got)
+		}
+		require.NoError(t, os.RemoveAll(filepath.Join(hdir, ".agents")))
+	}
+	// A skill name never leaves its skills folder.
+	for _, dest := range []string{DestClaudeSkillUser, DestCodexSkillUser} {
+		_, err := userFileOf(Env{Home: hdir}, dest, "../../x")
+		require.ErrorIs(t, err, errBadSkillName)
+	}
 }

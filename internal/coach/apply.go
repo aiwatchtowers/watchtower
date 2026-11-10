@@ -38,8 +38,14 @@ type Applier struct {
 	// Home is the home folder ~/.claude/settings.json lives in (a seam:
 	// os.UserHomeDir in production, a temp dir in tests).
 	Home string
-	Now  func() time.Time
+	// CodexHome is Codex's home ($CODEX_HOME when the owner set one); ""
+	// means <Home>/.codex.
+	CodexHome string
+	Now       func() time.Time
 }
+
+// env is where a's file destinations live.
+func (a *Applier) env() Env { return Env{Home: a.Home, CodexHome: a.CodexHome} }
 
 func (a *Applier) now() time.Time {
 	if a.Now != nil {
@@ -259,7 +265,7 @@ func (a *Applier) claudeMDPath() (string, error) {
 // rule per line — except that a settings file the coach cannot write safely
 // (a symlink, invalid JSON) is an error here, not an empty list.
 func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
-	t := CurrentText{Destination: p.Destination, WorkbenchID: p.WorkbenchID, PromptID: p.PromptID}
+	t := CurrentText{Destination: p.Destination, WorkbenchID: p.WorkbenchID, PromptID: p.PromptID, Skill: p.Skill}
 	if globalDestinations[p.Destination] && p.WorkbenchID != 0 {
 		return CurrentText{}, errors.New("this destination has no per-workbench text")
 	}
@@ -310,6 +316,15 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 			return CurrentText{}, err
 		}
 		t.WorkbenchID, t.PromptID = p.WorkbenchID, p.PromptID
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+		u, err := userFileOf(a.env(), p.Destination, p.Skill)
+		if err != nil {
+			return CurrentText{}, err
+		}
+		if t.Text, err = u.readText(); err != nil {
+			return CurrentText{}, err
+		}
+		t.Budget = BudgetOf(p.Destination, t.Text)
 	default:
 		return CurrentText{}, errors.New("unknown destination")
 	}
@@ -357,6 +372,8 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		return a.writeAllow(p, cur, after)
 	case DestClaudeMDUser:
 		return a.writeClaudeMD(cur, after)
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+		return a.writeUserFile(p, cur, after)
 	}
 	return written{}, errNotSupported
 }
@@ -476,6 +493,25 @@ func (a *Applier) writeClaudeMD(cur CurrentText, after string) (written, error) 
 	}}, nil
 }
 
+// writeUserFile replaces a skill's or AGENTS.md's text cur.Text by after,
+// refused with ErrStale when the file is no longer cur.Text. The undo puts
+// cur.Text back only while the file still holds after; an AGENTS.md this write
+// created is written back empty, never removed.
+func (a *Applier) writeUserFile(p db.CoachProposal, cur CurrentText, after string) (written, error) {
+	u, err := userFileOf(a.env(), p.Destination, p.Skill)
+	if err != nil {
+		return written{}, err
+	}
+	err = u.replaceText(cur.Text, after)
+	if errors.Is(err, u.kind.changed) {
+		return written{}, ErrStale
+	}
+	if err != nil {
+		return written{}, err
+	}
+	return written{result: after, undo: func() error { return u.replaceText(after, cur.Text) }}, nil
+}
+
 // restoreDestination puts p's before-state back (see Rollback).
 func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now time.Time) error {
 	switch p.Destination {
@@ -535,6 +571,20 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 		}
 		if _, err := replaceClaudeMD(path, cur.Text, p.BeforeText); err != nil {
 			if errors.Is(err, errClaudeMDChanged) {
+				return ErrChangedSince
+			}
+			return err
+		}
+		return nil
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+		// Like CLAUDE.md: the file must still be what Rollback read. A created
+		// AGENTS.md goes back to its empty before-text and stays.
+		u, err := userFileOf(a.env(), p.Destination, p.Skill)
+		if err != nil {
+			return err
+		}
+		if err := u.replaceText(cur.Text, p.BeforeText); err != nil {
+			if errors.Is(err, u.kind.changed) {
 				return ErrChangedSince
 			}
 			return err

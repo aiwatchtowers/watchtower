@@ -128,7 +128,8 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	if err != nil {
 		// A destination the coach cannot read safely is not cut.
 		if errors.Is(err, errNotSupported) || errors.Is(err, errClaudeMDNotRegular) ||
-			errors.Is(err, errClaudeMDTooBig) {
+			errors.Is(err, errClaudeMDTooBig) || errors.Is(err, errUnsafeFile) ||
+			errors.Is(err, errSkillNotFound) || errors.Is(err, errBadSkillName) || errors.Is(err, errPackSkill) {
 			return false, nil
 		}
 		return false, err

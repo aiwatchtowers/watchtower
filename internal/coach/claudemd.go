@@ -3,9 +3,7 @@ package coach
 import (
 	"errors"
 	"io/fs"
-	"os"
 	"path/filepath"
-	"unicode/utf8"
 )
 
 // The coach may edit the owner's ~/.claude/CLAUDE.md, a file the owner also
@@ -32,6 +30,12 @@ var (
 	errClaudeMDChanged    = errors.New("CLAUDE.md changed while it was being written")
 )
 
+// claudeMDFile is CLAUDE.md's textFile kind. Only the file itself is checked
+// (root = its own folder): a symlinked ~/.claude keeps working as it did
+// before the other file destinations existed.
+var claudeMDFile = textFile{label: "CLAUDE.md", tmp: ".CLAUDE.md.coach-*",
+	notRegular: errClaudeMDNotRegular, tooBig: errClaudeMDTooBig, changed: errClaudeMDChanged}
+
 var claudeMDKind = atomicKind{label: "CLAUDE.md", tmp: ".CLAUDE.md.coach-*",
 	read: readClaudeMDFile, changed: errClaudeMDChanged}
 
@@ -41,27 +45,7 @@ func claudeMDPath(home string) string { return filepath.Join(home, ".claude", "C
 // readClaudeMDFile returns the file's bytes and permission bits; exists is
 // false (and err nil) when there is no file.
 func readClaudeMDFile(path string) (raw []byte, mode fs.FileMode, exists bool, err error) {
-	fi, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, 0, false, nil
-	}
-	if err != nil {
-		return nil, 0, false, settingsErr("reading CLAUDE.md", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, 0, false, errClaudeMDNotRegular
-	}
-	if fi.Size() > claudeMDMaxBytes {
-		return nil, 0, false, errClaudeMDTooBig
-	}
-	raw, err = os.ReadFile(path)
-	if err != nil {
-		return nil, 0, false, settingsErr("reading CLAUDE.md", err)
-	}
-	if len(raw) > claudeMDMaxBytes || !utf8.Valid(raw) {
-		return nil, 0, false, errClaudeMDTooBig
-	}
-	return raw, fi.Mode().Perm(), true, nil
+	return claudeMDFile.read(filepath.Dir(path), path)
 }
 
 // readClaudeMD is the file's text as a CurrentText: a missing file is an empty
@@ -90,18 +74,5 @@ func claudeMDBudget(n int) int {
 // missing file and its folder are created (0600, 0700); an existing file keeps
 // its mode. It returns whether the file existed.
 func replaceClaudeMD(path, from, to string) (existed bool, err error) {
-	raw, mode, exists, err := readClaudeMDFile(path)
-	if err != nil {
-		return false, err
-	}
-	if string(raw) != from {
-		return exists, errClaudeMDChanged
-	}
-	if !exists {
-		mode = 0o600
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return false, settingsErr("creating the CLAUDE.md folder", err)
-		}
-	}
-	return exists, writeAtomic(claudeMDKind, path, []byte(to), mode, raw, exists)
+	return claudeMDFile.replace(filepath.Dir(path), path, from, to)
 }
