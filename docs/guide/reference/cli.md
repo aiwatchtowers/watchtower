@@ -92,6 +92,7 @@ This keeps an agent that was talked into running such a command from going ahead
 | Command | What it does |
 |---|---|
 | `watchtower ai models` | Models per provider and tier |
+| `watchtower ai which --provider claude\|codex --json` | The claude or codex executable Watchtower would run (`provider`, `path`, `found`); the Desktop app asks it |
 | `watchtower usage plan` | Claude plan limits (5-hour, weekly) |
 | `watchtower usage plans --json [--now] [--provider all\|claude\|codex]` | Separate subscription snapshots; `--now` refreshes selected sources, with partial results on failure |
 | `watchtower usage llm [--since today\|7d\|30d] [--json]` | AI calls, tokens and cost: Watchtower, your automations, chats, workbenches ([AI providers, models and cost](../concepts/ai-providers-and-cost.md)) |
