@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session ETA mockup</title>
+<style>
+  :root { --bg:#ffffff; --panel:#f5f5f7; --text:#1d1d1f; --secondary:#6e6e73; --line:#d2d2d7;
+          --green:#28a745; --orange:#e67e00; --blue:#0a64d6; }
+  .dark { --bg:#1e1e1e; --panel:#2a2a2c; --text:#f5f5f7; --secondary:#98989d; --line:#3a3a3c;
+          --green:#32d74b; --orange:#ff9f0a; --blue:#0a84ff; }
+  body { margin:0; font:13px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; background:#e8e8ed; }
+  h1 { font-size:16px; margin:16px; }
+  .themes { display:flex; flex-wrap:wrap; gap:16px; padding:0 16px 16px; }
+  .theme { background:var(--bg); color:var(--text); border-radius:10px; padding:12px; flex:1 1 420px; min-width:0; }
+  .theme h2 { font-size:12px; color:var(--secondary); margin:0 0 8px; text-transform:uppercase; }
+  .state { border-top:1px solid var(--line); padding:10px 0; }
+  .label { font-size:11px; color:var(--secondary); margin-bottom:6px; }
+  .row { display:flex; gap:6px; background:var(--panel); border-radius:6px; padding:6px 8px; width:280px; max-width:100%; box-sizing:border-box; }
+  .dot { width:8px; height:8px; border-radius:50%; margin-top:5px; flex:none; }
+  .title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cap { font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sec { color:var(--secondary); } .ora { color:var(--orange); } .grn { color:var(--green); }
+  .bar { display:inline-block; width:32px; height:3px; background:var(--line); border-radius:2px; vertical-align:middle; margin-right:4px; position:relative; }
+  .bar i { position:absolute; left:0; top:0; bottom:0; background:var(--blue); border-radius:2px; }
+  .strip { display:flex; align-items:center; gap:6px; margin-top:6px; background:var(--panel); border-radius:6px; padding:4px 8px; font-size:12px; max-width:100%; box-sizing:border-box; width:420px; }
+  .strip .spacer { flex:1; }
+  .strip .btn { border:1px solid var(--line); border-radius:5px; padding:1px 6px; font-size:11px; }
+</style>
+</head>
+<body>
+<h1>Session ETA — sessions-panel row and session strip, every state (synthetic data)</h1>
+<div class="themes" id="themes"></div>
+<script>
+const states = [
+  { name:"No estimate yet (no_plan)", dot:"green", stateText:"Working", report:"#120 · 0/0", eta:"Estimate after the plan", tone:"sec", p:0 },
+  { name:"No history (no_history)", dot:"green", stateText:"Working", report:"#120 · 0/6", eta:"Estimate after the first task", tone:"sec", p:0 },
+  { name:"Early, wide range", dot:"green", stateText:"Working", report:"#120 · 0/6", eta:"≈ 18:40 (17:20–21:30)", tone:"sec", p:0 },
+  { name:"Converged", dot:"green", stateText:"Working", report:"#120 · 5/6", eta:"≈ 18:40 (18:25–19:00)", tone:"sec", p:0.83 },
+  { name:"Running long", dot:"green", stateText:"Working", report:"#120 · 4/6", eta:"≈ 18:40 (18:25–19:30) · running long", tone:"ora", p:0.66 },
+  { name:"Later day", dot:"green", stateText:"Working", report:"#120 · 2/40", eta:"≈ Thu 11:20 (Wed 22:10–Thu 15:00)", tone:"sec", p:0.05 },
+  { name:"Waiting on you (paused)", dot:"orange", stateText:"Waiting for your answer", report:"#120 · 3/6", eta:"Paused — about 1 h 40 m of work left", tone:"ora", p:0.5 },
+  { name:"Hidden (not live, finished, or stale > 5 min)", dot:"blue", stateText:"Finished", report:"#120 · 6/6", eta:null, tone:"sec", p:1 },
+];
+function render(theme) {
+  const t = document.createElement("div");
+  t.className = "theme" + (theme === "dark" ? " dark" : "");
+  t.innerHTML = `<h2>${theme}</h2>`;
+  for (const s of states) {
+    const etaLine = s.eta ? `<div class="cap ${s.tone}" title="Finish estimate from task sizes and this workbench's pace. Time waiting for you is not counted.">${s.eta}</div>` : "";
+    const stripEta = s.eta ? `<span class="cap ${s.tone}">${s.eta}</span>` : "";
+    t.insertAdjacentHTML("beforeend", `
+      <div class="state">
+        <div class="label">${s.name}</div>
+        <div class="row">
+          <span class="dot" style="background:var(--${s.dot})"></span>
+          <div style="min-width:0">
+            <div class="title">Session ETA spec</div>
+            <div class="cap ${s.dot === "orange" ? "ora" : "sec"}">${s.stateText}</div>
+            <div class="cap sec"><span class="bar"><i style="width:${Math.round(s.p*100)}%"></i></span>${s.report}</div>
+            ${etaLine}
+          </div>
+        </div>
+        <div class="strip">
+          <span class="dot" style="background:var(--${s.dot});margin-top:0"></span>
+          <span class="title">Session ETA spec</span>
+          <span class="cap ${s.dot === "orange" ? "ora" : "sec"}">${s.stateText}</span>
+          ${stripEta}
+          <span>▾</span><span class="spacer"></span><span class="btn">Terminal</span><span class="btn">Review</span>
+        </div>
+      </div>`);
+  }
+  document.getElementById("themes").appendChild(t);
+}
+render("light"); render("dark");
+</script>
+</body>
+</html>
