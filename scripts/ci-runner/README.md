@@ -14,7 +14,7 @@ exactly as before. Nothing else changes for contributors.
 - Some jobs always run in the cloud:
   - **Swift Test** and **Mobile App** (`macos-26`): they need a window
     server, and the runners have none (see *Why not Swift Test* below);
-  - **Go Test (race 1..3/3)** (`ubuntu-24.04`, main pushes and
+  - **Go Test (race 1..3/3)** (`ubuntu-24.04`, nightly on main and on
     `workflow_dispatch` only): three race shards beside the other jobs and
     the owner's own work oversubscribed the Mac, and timing-bound tests
     failed;
