@@ -2,13 +2,43 @@ package agentreport
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
 )
+
+// AgentAll is the report's filter for every agent's sessions.
+const AgentAll = "all"
+
+// ErrUnknownAgent refuses an agent filter other than all, claude or codex.
+var ErrUnknownAgent = errors.New("agent must be all, claude or codex")
+
+// ValidAgent says whether agent is a filter BuildOverview takes ("" = all).
+func ValidAgent(agent string) bool {
+	switch agent {
+	case "", AgentAll, string(agentkind.Claude), string(agentkind.Codex):
+		return true
+	}
+	return false
+}
+
+// agentsOf is the sorted agents of sessions that keep accepts (nil = every
+// one); never nil.
+func agentsOf(sessions []agentlogdb.AgentReportSession, keep func(agentlogdb.AgentReportSession) bool) []string {
+	out := []string{}
+	for _, s := range sessions {
+		if s.Agent != "" && (keep == nil || keep(s)) && !slices.Contains(out, s.Agent) {
+			out = append(out, s.Agent)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
 
 // Totals sums the whole window, old-format sessions included for cost and
 // tokens; ActiveMS and AwayMS cover the sessions with a time model.
@@ -40,10 +70,16 @@ type SessionRow struct {
 
 // Overview is the report of one workbench over a period (`agents report --json`).
 type Overview struct {
-	WorkbenchID int64         `json:"workbench_id"`
-	Enabled     bool          `json:"enabled"`
-	Since       string        `json:"since"`
-	Until       string        `json:"until"`
+	WorkbenchID int64  `json:"workbench_id"`
+	Enabled     bool   `json:"enabled"`
+	Since       string `json:"since"`
+	Until       string `json:"until"`
+	// Agent is the filter applied (all, claude or codex); Agents the agents
+	// with sessions in the filtered period; AgentFilter the agents to pick
+	// from, present only when both have sessions in the unfiltered period.
+	Agent       string        `json:"agent"`
+	Agents      []string      `json:"agents"`
+	AgentFilter []string      `json:"agent_filter,omitempty"`
 	Totals      Totals        `json:"totals"`
 	Time        TimeSplit     `json:"time"`
 	Subagents   Subagents     `json:"subagents"`
@@ -189,18 +225,26 @@ func flatten(by map[string][]agentlogdb.AgentReportEvent) []agentlogdb.AgentRepo
 	return out
 }
 
-// BuildOverview reports a workbench's sessions that started or ended at or
+// BuildOverview reports a workbench's sessions of agent (all, claude or codex;
+// "" = all, anything else is ErrUnknownAgent) that started or ended at or
 // after since (zero = all) up to now, with the hints written in lang. It
 // answers whatever the analytics switch: an off workbench shows the rows it
 // has. main (watchtower.db: the switch, the board) and al (agentlog.db) are
 // only read.
-func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time, lang Lang) (*Overview, error) {
+func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time, lang Lang, agent string) (*Overview, error) {
+	if !ValidAgent(agent) {
+		return nil, ErrUnknownAgent
+	}
+	filter := agent // the sessions query's agent: "" = every agent
+	if agent == "" || agent == AgentAll {
+		agent, filter = AgentAll, ""
+	}
 	enabled, err := main.WorkbenchAgentAnalytics(workbenchID)
 	if err != nil {
 		return nil, err
 	}
 	sinceStr := ""
-	ov := &Overview{WorkbenchID: workbenchID, Enabled: enabled, Until: now.UTC().Format(time.RFC3339)}
+	ov := &Overview{WorkbenchID: workbenchID, Enabled: enabled, Until: now.UTC().Format(time.RFC3339), Agent: agent}
 	if !since.IsZero() {
 		sinceStr = since.UTC().Format(tsLayout)
 		ov.Since = since.UTC().Format(time.RFC3339)
@@ -218,13 +262,28 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 		// Durable, unlike a failed Turn On's error: the pane says why nothing loads.
 		ov.Import = ImportState{State: "waiting_for_move"}
 	}
-	sessions, err := al.AgentReportSessions(workbenchID, sinceStr)
+	// Nothing after now: a session that starts later is not part of this period.
+	nowStr := now.UTC().Format(tsLayout)
+	periodSessions := func(agent string) ([]agentlogdb.AgentReportSession, error) {
+		s, err := al.AgentReportSessions(workbenchID, sinceStr, agent)
+		return slices.DeleteFunc(s, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr }), err
+	}
+	sessions, err := periodSessions(filter)
 	if err != nil {
 		return nil, err
 	}
-	// Nothing after now: a session that starts later is not part of this period.
-	nowStr := now.UTC().Format(tsLayout)
-	sessions = slices.DeleteFunc(sessions, func(s agentlogdb.AgentReportSession) bool { return s.StartedAt > nowStr })
+	ov.Agents = agentsOf(sessions, nil)
+	present := ov.Agents
+	if filter != "" {
+		unfiltered, err := periodSessions("")
+		if err != nil {
+			return nil, err
+		}
+		present = agentsOf(unfiltered, nil)
+	}
+	if len(present) > 1 {
+		ov.AgentFilter = present
+	}
 	uuids := make([]string, len(sessions))
 	for i, s := range sessions {
 		uuids[i] = s.SessionUUID
@@ -356,7 +415,7 @@ func capTasks(rows []TaskRow) ([]TaskRow, int) {
 // hints written in lang. Its lanes start with the main agent's (AgentID "")
 // unless the session is old-format.
 func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID string, now time.Time, lang Lang) (*SessionDetail, error) {
-	all, err := al.AgentReportSessions(workbenchID, "")
+	all, err := al.AgentReportSessions(workbenchID, "", "")
 	if err != nil {
 		return nil, err
 	}

@@ -142,7 +142,7 @@ func TestMeasure_PerTask(t *testing.T) {
 	assert.Equal(t, Value{V: 0.5, N: 2, Known: true}, mb.Corrections)
 	assert.InDelta(t, 1.5, mb.TaskCostUSD.V, 0.01, "3.0 across two tasks")
 
-	ov, err := agentreport.BuildOverview(d.DB, d.al, a, time.Time{}, t0.Add(time.Hour), agentreport.English)
+	ov, err := agentreport.BuildOverview(d.DB, d.al, a, time.Time{}, t0.Add(time.Hour), agentreport.English, agentreport.AgentAll)
 	require.NoError(t, err)
 	assert.InDelta(t, float64(ov.Time.OwnerMS)/float64(ov.Time.ActiveMS), ma.OwnerLoop.V, 1e-9)
 	assert.True(t, ma.OwnerLoop.Known)

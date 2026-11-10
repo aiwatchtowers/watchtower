@@ -40,7 +40,8 @@ const (
 // compactions and the sizes on disk now. Only the sessions with the v2 facts
 // (FactsSessions of Sessions) are measured.
 type ContextReport struct {
-	Lead             string          `json:"lead"` // one plain sentence; "" without v2 facts
+	Lead             string          `json:"lead"`   // one plain sentence; "" without v2 facts
+	Agents           []string        `json:"agents"` // the agents whose sessions were measured, sorted
 	FactsSessions    int             `json:"facts_sessions"`
 	Sessions         int             `json:"sessions"`
 	Baseline         BaselineSplit   `json:"baseline"`
@@ -208,7 +209,7 @@ func contextMeasured(s agentlogdb.AgentReportSession) bool {
 // what is left is the owner's turn when one came in between, else reminders.
 func Context(sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
 	parts []agentlogdb.AgentContextPart, folder string) ContextReport {
-	r := ContextReport{Sessions: len(sessions), Growth: []GrowthRow{}, TopSources: []SourceRow{}, RepeatedReads: []RepeatRow{},
+	r := ContextReport{Sessions: len(sessions), Agents: agentsOf(sessions, contextMeasured), Growth: []GrowthRow{}, TopSources: []SourceRow{}, RepeatedReads: []RepeatRow{},
 		Baseline: BaselineSplit{Parts: []PartShare{}}, SubagentBaseline: BaselineSplit{Parts: []PartShare{}}, Disk: diskSizes(folder)}
 	a := &contextAcc{growth: map[string]int64{}, srcIdx: map[srcKey]int{}, readIdx: map[string]int{}, repeats: map[string]*RepeatRow{},
 		main: newBaseAgg(), sub: newBaseAgg(), partsFor: groupParts(parts)}
