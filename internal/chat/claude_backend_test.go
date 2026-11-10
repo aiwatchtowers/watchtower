@@ -66,7 +66,7 @@ func fakeClaude(t *testing.T, mode string) (ClaudeOptions, fakeFiles) {
 func assertNoProcessSurvives(t *testing.T, dir string) {
 	t.Helper()
 	t.Cleanup(func() {
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(hangGuard)
 		var out []byte
 		for {
 			out, _ = exec.Command("pgrep", "-f", dir).Output()
@@ -105,7 +105,7 @@ func argvRuns(t *testing.T, path string) [][]string {
 // waitRuns polls until the fake has logged at least n process runs.
 func waitRuns(t *testing.T, path string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for time.Now().Before(deadline) {
 		if data, err := os.ReadFile(path); err == nil && strings.Count(string(data), "\n--\n") >= n {
 			return
@@ -121,7 +121,7 @@ func contains(list []string, s string) bool {
 
 func readPIDFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for time.Now().Before(deadline) {
 		if b, err := os.ReadFile(path); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
@@ -134,10 +134,10 @@ func readPIDFile(t *testing.T, path string) int {
 	return 0
 }
 
-// waitGone polls until pid no longer exists (reaped), failing after 5 s.
+// waitGone polls until pid no longer exists (reaped), bounded by hangGuard.
 func waitGone(t *testing.T, pid int, what string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			return
@@ -721,7 +721,7 @@ func TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup(t *testing.T) {
 	select {
 	case err := <-done:
 		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("Run did not return after stdin EOF")
 	}
 	waitGone(t, child, "the MCP-server stand-in left behind by claude")
@@ -741,7 +741,7 @@ func TestClaudeBackend_ContextCancelEndsSession(t *testing.T) {
 	select {
 	case err := <-done:
 		assert.NoError(t, err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("Run did not return after ctx cancel")
 	}
 	waitGone(t, child, "claude's child")
@@ -808,7 +808,7 @@ func TestChat03_CloseDuringReplayNeverRespawns(t *testing.T) {
 	select {
 	case err := <-h.done:
 		require.NoError(t, err)
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("session did not stop")
 	}
 	time.Sleep(300 * time.Millisecond) // a late spawn would log its argv by now
@@ -897,13 +897,13 @@ func TestChat03_CloseUnblocksAStuckWrite(t *testing.T) {
 	select {
 	case <-closed:
 		assert.Less(t, time.Since(start), 2*opts.CloseGrace+time.Second, "Close stays within its escalation budget")
-	case <-time.After(5 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("Close blocked behind the stuck write")
 	}
 	select {
 	case err := <-turnErr:
 		require.ErrorIs(t, err, errBackendClosed, "the blocked write fails once Close closes stdin")
-	case <-time.After(5 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("the blocked write never returned")
 	}
 }

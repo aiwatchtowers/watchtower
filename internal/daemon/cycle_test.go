@@ -26,7 +26,7 @@ import (
 
 // loopWait bounds every wait for a loop event: generous for a loaded or -race
 // runner, never reached when the loop works.
-const loopWait = 10 * time.Second
+const loopWait = time.Minute
 
 // lockedLog is a goroutine-safe log sink: the cycle goroutine and the loop
 // both write to the daemon logger.

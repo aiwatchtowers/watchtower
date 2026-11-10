@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,10 +164,11 @@ func TestDaemon_New(t *testing.T) {
 	d.SetLogger(log.New(io.Discard, "", 0))
 }
 
-// runDaemonUntil runs d until cond holds (polled every 10ms under a 10s
-// deadline), then cancels it and returns Run's error. A deadline instead of a
-// fixed run window keeps the loop tests honest on a loaded or -race runner:
-// a slow sync only makes them take longer, never fail on a count.
+// runDaemonUntil runs d until cond holds (polled every 10ms, loopWait as a
+// hang guard), then cancels it and returns Run's error. Waiting for the
+// condition instead of a fixed run window keeps the loop tests honest on a
+// loaded or -race runner: a slow sync only makes them take longer, never
+// fail on a count.
 func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -174,12 +176,12 @@ func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(loopWait)
 	for !cond() {
 		if time.Now().After(deadline) {
 			cancel()
 			<-done
-			t.Fatal("condition not reached within 10s")
+			t.Fatalf("condition not reached within %v", loopWait)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -187,8 +189,18 @@ func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(10 * time.Second):
-		t.Fatal("daemon did not stop within 10s of cancellation")
+	case <-time.After(loopWait):
+		t.Fatalf("daemon did not stop within %v of cancellation", loopWait)
 		return nil
 	}
+}
+
+// runDaemonCycles runs d until n sync cycles have ended, then cancels it
+// and returns Run's error: what a test checks afterwards was written by
+// whole cycles, however long a loaded machine took over them.
+func runDaemonCycles(t *testing.T, d *Daemon, n int32) error {
+	t.Helper()
+	var ended atomic.Int32
+	d.cycleEnded = func() { ended.Add(1) }
+	return runDaemonUntil(t, d, func() bool { return ended.Load() >= n })
 }

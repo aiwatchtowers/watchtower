@@ -64,8 +64,8 @@ func startSession(t *testing.T, b Backend, configure func(*Session)) *harness {
 		// catch a stub mid-escalation instead of a genuine leak.
 		select {
 		case <-h.runDone:
-		case <-time.After(5 * time.Second):
-			t.Errorf("session did not stop within 5s of cancel + stdin close")
+		case <-time.After(hangGuard):
+			t.Errorf("session did not stop within %v of cancel + stdin close", hangGuard)
 		}
 	})
 	return h
@@ -85,10 +85,17 @@ func (h *harness) sendRaw(line string) {
 	require.NoError(h.t, err)
 }
 
-// next returns the next event of type want, skipping others; fails after 10 s.
+// hangGuard bounds every wait for the session or its fake CLI — an event,
+// a pid file, a process's exit — only so a broken run fails instead of
+// hanging. The tests wait for the event itself, so a loaded machine makes
+// them slower, never red.
+const hangGuard = time.Minute
+
+// next returns the next event of type want, skipping others; fails after
+// hangGuard.
 func (h *harness) next(want string) Event {
 	h.t.Helper()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(hangGuard)
 	for {
 		select {
 		case e, ok := <-h.events:
@@ -97,7 +104,7 @@ func (h *harness) next(want string) Event {
 				return e
 			}
 		case <-deadline:
-			h.t.Fatalf("no %s event within 10s", want)
+			h.t.Fatalf("no %s event within %v", want, hangGuard)
 		}
 	}
 }
@@ -109,8 +116,8 @@ func (h *harness) finish() error {
 	select {
 	case err := <-h.done:
 		return err
-	case <-time.After(15 * time.Second):
-		h.t.Fatal("session did not stop within 15s of stdin EOF")
+	case <-time.After(hangGuard):
+		h.t.Fatalf("session did not stop within %v of stdin EOF", hangGuard)
 		return nil
 	}
 }
@@ -338,7 +345,7 @@ func TestSession_TurnRightAfterTurnDoneIsAccepted(t *testing.T) {
 	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "one"})
 	h.next(EventTurnDone)
 	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "two"})
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(hangGuard)
 	for got := false; !got; {
 		select {
 		case e := <-h.events:

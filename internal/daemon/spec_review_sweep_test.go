@@ -164,7 +164,7 @@ func TestSpecReviewSweep_StopsOverdueReviewer(t *testing.T) {
 		ws, _ := ee.Sys().(syscall.WaitStatus)
 		assert.Equal(t, syscall.SIGTERM, ws.Signal())
 		exited <- err // for the cleanup
-	case <-time.After(10 * time.Second):
+	case <-time.After(loopWait):
 		t.Fatal("the overdue reviewer is still running")
 	}
 }

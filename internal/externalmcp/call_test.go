@@ -27,7 +27,7 @@ func fakeStdioSpec(t *testing.T, env map[string]string) ServerSpec {
 }
 
 func TestCallTool_StdioStructuredResult(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	out, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{}), "get_thing", json.RawMessage(`{"id":"PAY-1"}`))
 	require.NoError(t, err)
@@ -39,7 +39,7 @@ func TestCallTool_StdioStructuredResult(t *testing.T) {
 }
 
 func TestCallTool_TextResultWrapped(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	out, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{}), "text_thing", nil)
 	require.NoError(t, err)
@@ -47,7 +47,7 @@ func TestCallTool_TextResultWrapped(t *testing.T) {
 }
 
 func TestCallTool_IsErrorIsToolError(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	_, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{}), "fail_thing", nil)
 	var toolErr *ToolError
@@ -55,31 +55,53 @@ func TestCallTool_IsErrorIsToolError(t *testing.T) {
 	assert.Equal(t, "rate limited", toolErr.Message)
 }
 
-// TestCallTool_ContextDeadlineStopsServer: a tool that never answers ends
-// with the context's error, and the server process is gone afterwards.
-func TestCallTool_ContextDeadlineStopsServer(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "pid")
-	spec := fakeStdioSpec(t, map[string]string{"WT_FAKE_PIDFILE": pidFile})
+// TestCallTool_ContextEndStopsServer: a tool that never answers ends with
+// the context's error, and the server process is gone afterwards. The
+// context ends once the slow tool has started — the server writes its pid
+// into a FIFO the test reads — not after a fixed time a loaded machine may
+// spend on starting the server.
+func TestCallTool_ContextEndStopsServer(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "pid")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
+	spec := fakeStdioSpec(t, map[string]string{"WT_FAKE_PIDFILE": fifo})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan string, 1)
+	go func() {
+		raw, _ := os.ReadFile(fifo) // blocks until the slow tool writes
+		started <- string(raw)
+		cancel()
+	}()
 	var pid int
 	t.Cleanup(func() {
 		if pid > 0 {
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
 		}
+		// A server that never got to the tool leaves the reader blocked:
+		// a writer that opens and closes ends its read.
+		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = w.Close()
+		}
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-	defer cancel()
 	_, err := CallTool(ctx, spec, "slow_thing", nil)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.ErrorIs(t, err, context.Canceled)
 
-	raw, rerr := os.ReadFile(pidFile)
-	require.NoError(t, rerr, "the slow tool must have started")
-	pid, rerr = strconv.Atoi(string(raw))
-	require.NoError(t, rerr)
+	var raw string
+	select {
+	case raw = <-started:
+	default:
+		t.Fatal("the call ended before the slow tool started")
+	}
+	pid, err = strconv.Atoi(raw)
+	require.NoError(t, err)
+	// The server is not this process's child: its end is observed by
+	// polling, bounded only by a hang guard.
 	assert.Eventually(t, func() bool { return syscall.Kill(pid, 0) != nil },
-		5*time.Second, 20*time.Millisecond, "server process must be gone")
+		hangGuard, 20*time.Millisecond, "server process must be gone")
 	assert.Eventually(t, func() bool { return syscall.Kill(-pid, 0) != nil },
-		5*time.Second, 20*time.Millisecond, "server process group must be gone")
+		hangGuard, 20*time.Millisecond, "server process group must be gone")
 }
 
 // A stdio server that starts but fails the handshake is still stopped as a
@@ -106,7 +128,7 @@ func TestCallTool_FailedHandshakeStopsServerGroup(t *testing.T) {
 					_ = syscall.Kill(-pid, syscall.SIGKILL)
 				}
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 			defer cancel()
 			require.Error(t, call(ctx, spec))
 			require.NoError(t, ctx.Err(), "the handshake failed, the context did not end")
@@ -116,7 +138,7 @@ func TestCallTool_FailedHandshakeStopsServerGroup(t *testing.T) {
 			pid, rerr = strconv.Atoi(string(raw))
 			require.NoError(t, rerr)
 			assert.Eventually(t, func() bool { return syscall.Kill(-pid, 0) != nil },
-				2*time.Second, 20*time.Millisecond, "the server's process group must be gone")
+				hangGuard, 20*time.Millisecond, "the server's process group must be gone")
 		})
 	}
 }
@@ -137,7 +159,7 @@ func TestCallTool_HTTPHeaders(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	out, err := CallTool(ctx, ServerSpec{Kind: "http", URL: srv.URL,
 		Headers: map[string]string{"Authorization": "Bearer tok"}}, "get_thing", nil)
@@ -150,7 +172,7 @@ func TestCallTool_HTTPHeaders(t *testing.T) {
 // the server through its environment and never through its command line.
 func TestCallTool_SecretsTravelInEnvNotArgv(t *testing.T) {
 	const secret = "s3cr3t-token-value"
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	out, err := CallTool(ctx, fakeStdioSpec(t, map[string]string{"WT_FAKE_SECRET": secret}), "get_thing", nil)
 	require.NoError(t, err)

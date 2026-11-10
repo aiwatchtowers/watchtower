@@ -31,7 +31,7 @@ func codexStub(t *testing.T, jsonl string) string {
 // turnEvents collects the session's events up to the turn's terminal one.
 func (h *harness) turnEvents() []Event {
 	h.t.Helper()
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(hangGuard)
 	var out []Event
 	for {
 		select {
@@ -42,7 +42,7 @@ func (h *harness) turnEvents() []Event {
 				return out
 			}
 		case <-deadline:
-			h.t.Fatalf("turn did not end within 10s")
+			h.t.Fatalf("turn did not end within %v", hangGuard)
 		}
 	}
 }

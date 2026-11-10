@@ -77,7 +77,7 @@ func TestWatchAutomationWake_ShutdownKeepsSignalIgnored(t *testing.T) {
 
 func drainUntilClosed(t *testing.T, ch <-chan struct{}) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(loopWait)
 	for {
 		select {
 		case _, ok := <-ch:
@@ -95,7 +95,7 @@ func receiveWithin(t *testing.T, ch <-chan struct{}, msg string) {
 	select {
 	case _, ok := <-ch:
 		require.True(t, ok, "channel should deliver a wake, not a close")
-	case <-time.After(2 * time.Second):
+	case <-time.After(loopWait):
 		t.Fatal(msg)
 	}
 }

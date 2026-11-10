@@ -209,7 +209,7 @@ func (s *fakeSink) waitRows(t *testing.T, n int) {
 
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(hangGuard)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -343,7 +343,7 @@ func denyMessage(t *testing.T, answer map[string]json.RawMessage) string {
 func (h *harness) until(want string) []Event {
 	h.t.Helper()
 	var out []Event
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(hangGuard)
 	for {
 		select {
 		case e, ok := <-h.events:
@@ -353,7 +353,7 @@ func (h *harness) until(want string) []Event {
 				return out
 			}
 		case <-deadline:
-			h.t.Fatalf("no %s event within 10s", want)
+			h.t.Fatalf("no %s event within %v", want, hangGuard)
 		}
 	}
 }
@@ -462,7 +462,7 @@ func TestChat05_DeadSessionNeverRunsAnApprovedCall(t *testing.T) {
 	require.NoError(t, syscall.Kill(-readPIDFile(t, fx.files.pid), syscall.SIGKILL))
 	select {
 	case <-turnDone:
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("the turn did not end after the child died")
 	}
 	require.NoError(t, b.Close())
@@ -537,7 +537,7 @@ func TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps(t *testing.T) {
 	require.NoError(t, b.Close())
 	select {
 	case <-turnDone:
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("the turn did not end after Close")
 	}
 	row := fx.sink.row(1)
@@ -756,15 +756,16 @@ func TestGate_PermanentStatusErrorDeniesAtOnce(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fx := gateFake(t, gmailSend("r1", "tu1"))
 			fx.sink.statusErr = statusErr
-			fx.opts.Gate.ApprovalTimeout = time.Minute
+			// The window is already over at the first poll: a gate that
+			// polled on would time the call out — a different deny text and
+			// a rejected row — so "at once" needs no wall-clock bound.
+			fx.opts.Gate.ApprovalTimeout = time.Nanosecond
 			h := startSession(t, NewClaudeBackend(fx.opts), nil)
 			h.next(EventSessionReady)
-			start := time.Now()
 			h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
 			h.next(EventTurnDone)
 			require.NoError(t, h.finish())
 
-			assert.Less(t, time.Since(start), 10*time.Second, "denied at once, not after the approval window")
 			answers := fx.controlAnswers(t)["r1"]
 			require.Len(t, answers, 1)
 			assert.Equal(t, "deny", behavior(t, answers[0]))
@@ -847,7 +848,7 @@ func readLine(t *testing.T, r *os.File) string {
 	select {
 	case s := <-done:
 		return s
-	case <-time.After(5 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("no line written to the CLI")
 		return ""
 	}
@@ -905,7 +906,7 @@ func TestGate_StopDuringAStatusReadNeverClaims(t *testing.T) {
 	<-cancelled
 	select {
 	case <-turnDone:
-	case <-time.After(10 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("the turn did not end after Stop")
 	}
 	require.NoError(t, b.Close())

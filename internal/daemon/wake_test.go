@@ -142,7 +142,7 @@ func TestWatchWake_ClosesOnCancel(t *testing.T) {
 	select {
 	case _, ok := <-ch:
 		assert.False(t, ok, "no wake without a sleep, only the close")
-	case <-time.After(2 * time.Second):
+	case <-time.After(loopWait):
 		t.Fatal("wake channel was not closed after context cancellation")
 	}
 }

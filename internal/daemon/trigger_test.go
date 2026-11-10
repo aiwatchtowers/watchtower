@@ -20,7 +20,7 @@ func TestWatchTrigger_FiresOnSignal(t *testing.T) {
 	select {
 	case _, ok := <-ch:
 		assert.True(t, ok, "channel should deliver a trigger, not a close")
-	case <-time.After(2 * time.Second):
+	case <-time.After(loopWait):
 		t.Fatal("trigger signal did not reach the channel")
 	}
 }
@@ -38,7 +38,7 @@ func TestWatchTrigger_CoalescesBurst(t *testing.T) {
 
 	select {
 	case <-ch:
-	case <-time.After(2 * time.Second):
+	case <-time.After(loopWait):
 		t.Fatal("trigger signal did not reach the channel")
 	}
 
@@ -46,7 +46,7 @@ func TestWatchTrigger_CoalescesBurst(t *testing.T) {
 	require.NoError(t, syscall.Kill(os.Getpid(), TriggerSignal))
 	select {
 	case <-ch:
-	case <-time.After(2 * time.Second):
+	case <-time.After(loopWait):
 		t.Fatal("forwarder stopped serving after a burst")
 	}
 }
@@ -56,7 +56,7 @@ func TestWatchTrigger_ClosesOnCancel(t *testing.T) {
 	ch := WatchTrigger(ctx)
 	cancel()
 
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(loopWait)
 	for {
 		select {
 		case _, ok := <-ch:

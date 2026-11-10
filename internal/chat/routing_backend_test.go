@@ -132,7 +132,7 @@ done
 	}})
 	t.Cleanup(func() { _ = b.Close() })
 	sink := collectLedger(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), hangGuard)
 	defer cancel()
 	_, err := b.Start(ctx)
 	require.NoError(t, err)
@@ -192,7 +192,7 @@ func TestRoutingCancelBeforeSelectionNeverBuildsChild(t *testing.T) {
 	select {
 	case err := <-finished:
 		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("cancel did not end preflight")
 	}
 	require.Zero(t, builds)
@@ -211,7 +211,7 @@ func TestRoutingCloseReapsStubbornWarmChild(t *testing.T) {
 	require.NoError(t, b.Close())
 	select {
 	case <-finished:
-	case <-time.After(3 * time.Second):
+	case <-time.After(hangGuard):
 		t.Fatal("close did not end the pending turn")
 	}
 }

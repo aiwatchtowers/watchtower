@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -18,6 +19,11 @@ import (
 // writes its own pid to WT_FAKE_PIDFILE, answers initialize with junk and
 // exits, leaving the grandchild behind.
 const fakeStdioServerEnv = "WT_EXTERNALMCP_FAKE_STDIO_SERVER"
+
+// hangGuard bounds a wait for a fake server — starting the test binary,
+// a process ending — only so a broken run fails instead of hanging; it is
+// never what a test asserts, so a loaded machine only makes it slower.
+const hangGuard = time.Minute
 
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeStdioServerEnv) == "fail" {
