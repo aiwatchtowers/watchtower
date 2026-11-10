@@ -46,6 +46,7 @@ final class ReportProblemCopyTests: XCTestCase {
         XCTAssertEqual(Copy.saveFailed("Disk full."), "Could not save the file: Disk full.")
         XCTAssertEqual(Copy.logsPlaceholder, "Paste the report from Watchtower here.")
         XCTAssertEqual(Copy.truncatedSuffix, "… (full text in the pasted report)")
+        XCTAssertEqual(Copy.partialLines(appVersion: "0.27.0", macOS: "15.5"), "Watchtower app 0.27.0\nmacOS 15.5")
     }
 
     func testFailureReasonsArePinned() {
