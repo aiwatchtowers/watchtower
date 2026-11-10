@@ -182,7 +182,11 @@ func insertCoachProposal(x interface {
 // ErrCoachTextBusy while another proposal is open for the same destination
 // text (destination, workbench, prompt, skill), and with
 // ErrConversationRemoved when convID names a deleted conversation. A
-// fingerprint that already exists returns 0, nil like InsertCoachProposal.
+// fingerprint that already exists returns 0, nil like InsertCoachProposal,
+// before the busy check, so a retry of the open proposal itself is not busy.
+// The busy check compares p's fields as given: callers pass them normalised
+// to the destination's key (coach keyOf), e.g. Skill only for a skill
+// destination.
 func (db *DB) InsertChatCoachProposal(p CoachProposal, convID *int64, now time.Time) (int64, error) {
 	p.Origin = "chat"
 	p.ConversationID = convID
@@ -191,6 +195,16 @@ func (db *DB) InsertChatCoachProposal(p CoachProposal, convID *int64, now time.T
 		return 0, fmt.Errorf("inserting chat coach proposal: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// A retry of an existing proposal is a fingerprint conflict (0, nil),
+	// even while that proposal is still the open one for its text.
+	var exists int
+	err = tx.QueryRow(`SELECT 1 FROM coach_proposals WHERE fingerprint = ?`, p.Fingerprint).Scan(&exists)
+	switch {
+	case err == nil:
+		return 0, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return 0, fmt.Errorf("checking coach fingerprint: %w", err)
+	}
 	var open int64
 	err = tx.QueryRow(`SELECT id FROM coach_proposals WHERE status = 'open' AND destination = ?
 		AND COALESCE(workbench_id, 0) = ? AND prompt_id = ? AND skill = ? LIMIT 1`,
@@ -201,11 +215,19 @@ func (db *DB) InsertChatCoachProposal(p CoachProposal, convID *int64, now time.T
 	case !errors.Is(err, sql.ErrNoRows):
 		return 0, fmt.Errorf("checking open coach proposals: %w", err)
 	}
+	if convID != nil {
+		// Checked under the write lock rather than read off a foreign-key
+		// failure: the row has other parents (workbench, reverts_id).
+		err = tx.QueryRow(`SELECT 1 FROM chat_conversations WHERE id = ?`, *convID).Scan(&exists)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return 0, ErrConversationRemoved
+		case err != nil:
+			return 0, fmt.Errorf("checking chat conversation: %w", err)
+		}
+	}
 	id, err := insertCoachProposal(tx, p, now)
 	if err != nil {
-		if IsForeignKeyViolation(err) {
-			return 0, ErrConversationRemoved
-		}
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {

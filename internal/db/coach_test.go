@@ -350,6 +350,18 @@ func TestInsertChatCoachProposal_ConversationRemoved(t *testing.T) {
 	assert.Zero(t, n, "nothing filed")
 }
 
+func TestInsertChatCoachProposal_DeletedWorkbenchIsNotConversationRemoved(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	conv := newTuningConversation(t, d)
+	p := chatSkillFixture("fp1", "a")
+	p.WorkbenchID = 999_999 // no such workbench
+	_, err := d.InsertChatCoachProposal(p, &conv, now)
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, ErrConversationRemoved), "got %v", err)
+	assert.True(t, IsForeignKeyViolation(err), "got %v", err)
+}
+
 func TestInsertChatCoachProposal_TextBusy(t *testing.T) {
 	d := openTestDB(t)
 	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
@@ -377,8 +389,11 @@ func TestInsertChatCoachProposal_FingerprintConflictIsZero(t *testing.T) {
 	first, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), nil, now)
 	require.NoError(t, err)
 	require.NotZero(t, first)
-	require.NoError(t, d.DecideCoachProposal(first, "open", "declined", now))
 	id, err := d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), nil, now)
+	require.NoError(t, err, "a retry of the open proposal is a conflict, not busy")
+	assert.Zero(t, id)
+	require.NoError(t, d.DecideCoachProposal(first, "open", "declined", now))
+	id, err = d.InsertChatCoachProposal(chatSkillFixture("fp1", "a"), nil, now)
 	require.NoError(t, err)
 	assert.Zero(t, id)
 }
