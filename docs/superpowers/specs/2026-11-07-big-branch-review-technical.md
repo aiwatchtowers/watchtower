@@ -357,9 +357,9 @@ the model and never waits (§3.7).
 ## 6. The reviewer (phase 3)
 
 - An embedded chat surface `ReviewerSurface` (`ChatSurfaceSpec`), reading the folder
-  the round was snapshotted from (`--read-folder-round`, amendment below) (the session's worktree when it has one — see the open
-  question on `--read-folder` below), `toolAccess` `.draftOnly` (no Watchtower tools;
-  `--read-folder` refuses tools).
+  the round was snapshotted from (the session's worktree when it has one) through
+  `--read-folder-round` — see the amendment below —, `toolAccess` `.draftOnly` (no Watchtower tools;
+  `--read-folder-round` refuses tools).
 - One thread per branch: a table `review_reviewer_threads(project_id, branch, conversation_id,
   created_at)`, PK `(project_id, branch)`, Desktop writer (migration in phase 3). The branch
   is the round's `branch` column (#1012) when set, else the folder's checked-out branch; a detached HEAD keys by `session:<id>`. Two sessions on the same
