@@ -97,6 +97,8 @@ func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
 		if err := writeShippedDigest(dir, s.SHA256); err != nil {
 			return "", err
 		}
+	case StateUnchanged, StateDrifted, StateForeign, StateMissing, StateRemoved:
+		// Nothing to write: current already, or not ours to touch (DEV-04).
 	}
 	return state, nil
 }
