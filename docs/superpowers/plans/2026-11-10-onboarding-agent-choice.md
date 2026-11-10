@@ -253,5 +253,17 @@
 ### Gate (controller, once)
 
 - [ ] `make test-swift` and `make lint-all` green; `go test ./docs/guide/...` green.
-- [ ] By hand on this Mac (spec Acceptance H items 4, 5, 6, and the four scenes without a live shot): start the step with Claude signed out (`claude auth logout` in a throwaway `HOME`/`CLAUDE_CONFIG_DIR`); watch the terminal open (`signed-out`), Stop it, Sign in again, and see the tile turn Ready; hold Continue on a slow `config set` (`continuing`); quit the app with the terminal open and confirm `pgrep -f "auth login"` is empty. For `signed-out-outdated` and `signed-out-update-failed`: a stub `claude` script in a temp folder (its `auth --help` prints a general help without `login`, `ai test` through `--cli-path` fails with `auth`, and `update` sleeps 3 s then exits 1), picked with **Choose the executable…**; see the update terminal run (`signed-out-outdated`), then "Update stopped before it finished (exit code 1)." with **Update again** (`signed-out-update-failed`); compare both with their mockups.
+- [ ] By hand on this Mac (spec Acceptance H items 4, 5, 6, and the four scenes without a live shot). Every run uses a **throwaway environment**, so the owner's live config, database and Claude sign-in are never touched and a fresh onboarding starts:
+  ```sh
+  T=$(mktemp -d); mkdir -p "$T/home" "$T/claude"
+  run() { HOME="$T/home" CLAUDE_CONFIG_DIR="$T/claude" CODEX_HOME="$T/codex" "$@"; }
+  APP=build/Watchtower.app/Contents/MacOS/Watchtower   # `make app-dev`
+  WT=build/Watchtower.app/Contents/Resources/watchtower # the bundled CLI
+  ```
+  1. **Signed out** (`signed-out`, `signed-out-stopped`): `run "$APP"`. The real `claude` has no credentials under `$T/claude`, so the tile reads Installed · not signed in, and the terminal opens with `'<path>' auth login`. Stop it; see "Sign-in stopped before it finished." and **Sign in again**; sign in; the tile turns Ready.
+  2. **Continue held** (`continuing`): in the same run, press Continue; the spinner shows while `config set` writes (compare with the mockup).
+  3. **Quit**: start the sign-in again, quit the app, then `pgrep -f "auth login"` is empty.
+  4. **Outdated and failed update** (`signed-out-outdated`, `signed-out-update-failed`): write a stub `claude` in `$T/bin`. Its `auth --help` prints a general help without a `login` row; its `update` sleeps 3 s and exits 1; anything else prints `auth error` and exits 1 (so `ai test --cli-path` reports `auth`). Make it executable. Point the config at it **before** launching, since Choose the executable… is not shown for a signed-out agent: `run "$WT" config set claude_path "$T/bin/claude"`, then `run "$APP"`. See the update terminal run, then "Update stopped before it finished (exit code 1)." with **Update again**; compare both with their mockups.
+  5. `rm -rf "$T"`.
+
 - [ ] Umbrella PR `feature/onboarding-agent-choice` → `main` with `/local-review` (debate-review on the final PR).
