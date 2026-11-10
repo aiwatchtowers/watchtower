@@ -234,7 +234,7 @@ func (a *Applier) baseline(p db.CoachProposal, now time.Time) (*float64, int, er
 	if a.AgentLog == nil {
 		return nil, 0, errors.New("no agent log database")
 	}
-	m, err := Measure(a.DB, a.AgentLog, p.WorkbenchID, now.Add(-baselineWindow), now)
+	m, err := Measure(a.DB, a.AgentLog, p.WorkbenchID, now.Add(-baselineWindow), now, AgentFor(p.Destination))
 	if err != nil {
 		return nil, 0, err
 	}

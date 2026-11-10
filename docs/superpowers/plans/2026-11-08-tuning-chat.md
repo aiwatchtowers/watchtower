@@ -380,7 +380,7 @@ No proposal is blanked or marked: the chat reads no company source text (spec D6
   var errBadSkillName  = errors.New("not a skill name")
   ```
   `validSkillName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)`.
-- `CodexSkillPath` pins the precedence in one function: `<Home>/.agents/skills/<name>/SKILL.md` when that is a regular file, else `<codexHome>/skills/<name>/SKILL.md` when that is one; else `"", false` (the builder confirms Codex's order against the Codex docs/source before merging and notes the source in the doc comment — see Open points).
+- `CodexSkillPath` (as shipped after ask #1202): a skill in exactly one of `<Home>/.agents/skills/<name>/SKILL.md` and `<codexHome>/skills/<name>/SKILL.md` resolves to that file; in both → the refusal "Codex sees this skill in two folders (~/.agents/skills and ~/.codex/skills) — remove one copy first." (real Codex home path); in neither → `"", false`. The home folders (`~/.claude`, `~/.agents`, the Codex home) may be symlinks to a real directory; every component below and the file may not (D71).
 - Budgets: skills `skillBudget(n)` = `n` when `n >= 20000`, else `min(n+2000, 20000)`; AGENTS.md = `claudeMDBudget(n)` (400 / 4000).
 - File rules (spec §4.3, same as `writeClaudeMD`): read only a regular UTF-8 file ≤ 256 KB (`claudeMDMaxBytes`); no symlink at the file **or at any folder between the home root and the file** (lstat each component below `Home`/`codexHome`); atomic write through `writeAtomic` (re-reads just before the rename). A skill file must exist (`errSkillNotFound`, never created; a skill file with the devpack marker `devpack.HasMarker` is refused as a pack copy). `AGENTS.md` missing reads as `""` and is created by Accept (folder 0700, file 0600); the Accept undo and the Rollback of a created file write it back **empty** — never `os.Remove`.
 - Applier cases: the three behave like `DestClaudeMDUser` (stillHolds = `cur.Text == p.AfterText`; restore = replace `cur.Text → p.BeforeText`, `errChanged → ErrChangedSince`); `p.Skill` selects the file.
@@ -584,6 +584,10 @@ No row is marked or removed with its source (spec D62); Accept, Decline and Roll
 ---
 
 ### Task 2.10: `writeCut` — weekly count only, no Codex rules or repository cut
+
+**From Task 2.5 (PR #768):** `writeCut` must also treat Task 2.4's two-folders refusal (`errCodexSkillTwice`) as "no cut", like the other unreadable-file errors.
+
+**From Task 2.3 (PR #762):** `writeCut` must count only weekly proposals against the slot limit (`weeklyOpen`), else three open chat proposals stop a cut of an ineffective weekly edit for good (its verdict is stored once). Test it here.
 
 **Depends on:** Task 2.7, Task 2.1 (`Origin`), Task 2.3 (`weeklyOpen`); the `repo_*` skip lands with Task 2.13's consts (if 2.13 is not in yet, 2.13 adds that case and its test)
 **Files:**
@@ -1553,6 +1557,8 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
   Without tools: `You are Watchtower's tuning assistant for one workbench. This provider has no tools: you can talk tuning through, but you cannot read the report, prompts or skills, or propose an edit. Tell the owner tuning tools need Claude or Codex.` `onWillSend` is the spec's `willSend` hook (returns true) — the controller re-reads the provider there (Task 5.8).
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(desktop): tuning chat surface (#1517)"`.
+
+**As shipped (PR #759, controller decision after review):** the rules text differs from the draft above in three places, and the code is the source of truth: (1) with tools on, the surface's own rules no longer repeat lines the tuning contract block (Task 3.2) carries — the stale-CLI line, the `list_coach_proposals` rule, the propose-tool line, the never-writes line; (2) the draft-only rules name no cause ("Tuning tools are not available for this turn — say so in one line and answer from what the owner pastes. You cannot read the report, prompts or skills, or propose an edit."); the panel's `unavailableHelp()` stays the one place that names it; (3) `turnContext(workbenchID:period:tools:)` leaves out the `pass workbench_id` / `pass days` hints when draft-only. Tests: `testToolsOnSaysTheContractRulesOnce`, `testCatalogNotReadYetIsDraftOnly`, `testDraftOnlyTurnContextHasNoToolHint`, `testRulesSayAcceptWritesTheFolderFile` (replaces `testRulesSayChatNeverWrites`; `testRulesPinStaleCLILine` moved to the contract's own test).
 
 ### Task 5.8: `TuningChat` controller
 

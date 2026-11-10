@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/agentreport"
 	"watchtower/internal/db"
@@ -46,8 +47,11 @@ func ratio(num, den float64, n int) Value {
 // and divided once, so a busy workbench weighs more than an idle one. With
 // workbench 0 the agent metrics cover the analytics-on workbenches only, while
 // the spec-review and review-comment counts cover every workbench. Sessions
-// that start at or after until are left out.
-func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until time.Time) (Metrics, error) {
+// that start at or after until are left out. agent keeps one agent's sessions
+// (agentreport.AgentAll, "claude" or "codex"; see AgentFor): it filters the
+// four agent metrics only, the spec-review and review-comment counts belong to
+// no agent.
+func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until time.Time, agent string) (Metrics, error) {
 	ids := []int64{workbenchID}
 	if workbenchID == 0 {
 		var err error
@@ -59,7 +63,7 @@ func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until tim
 	var tasks int
 	var corrections, agentMS, costUSD, ownerMS, activeMS float64
 	for _, id := range ids {
-		ov, err := agentreport.BuildOverview(main, al, id, since, until, agentreport.English, agentreport.AgentAll)
+		ov, err := agentreport.BuildOverview(main, al, id, since, until, agentreport.English, agent)
 		if err != nil {
 			return Metrics{}, fmt.Errorf("building overview of workbench %d: %w", id, err)
 		}
@@ -103,4 +107,23 @@ func (m Metrics) Of(metric string) Value {
 		return m.SpecFindings
 	}
 	return Value{}
+}
+
+// AgentFor names the agent whose sessions measure a proposal of destination,
+// baseline and verdict alike: a Codex text (the owner's Codex skills,
+// AGENTS.md and rules, the workbench's AGENTS.md and .agents/skills) on Codex
+// sessions; the texts both agents read — the session instructions and the
+// target procedure (both agents' briefs, update_target), the skill pack
+// overlay and the workbench's workflow.md — on every session (owner, ask
+// #1196); every other destination on Claude sessions. The chat instructions
+// stay on Claude: they reach the AI chats, not an agent session.
+func AgentFor(destination string) string {
+	// The repo_* names stay literals until Task 2.13 adds their consts.
+	switch destination {
+	case DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow, "repo_agents_md", "repo_codex_skill":
+		return string(agentkind.Codex)
+	case DestSession, DestProcedure, DestPackOverlay, "repo_workflow":
+		return agentreport.AgentAll
+	}
+	return string(agentkind.Claude)
 }

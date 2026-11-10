@@ -633,3 +633,17 @@ func (a *Applier) acceptErr(id int64, edited string) error {
 	_, err := a.Accept(id, edited)
 	return err
 }
+
+func TestApplier_PackOverlayBaselineUsesAll(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.sessionOf(t, "claude", wb, "sc", ids, 2, 1.0)
+	d.sessionOf(t, "codex", wb, "sx", ids, 4, 1.0)
+	for dest, want := range map[string]float64{"pack_overlay": 6, "repo_workflow": 6, DestSession: 6, DestProcedure: 6, DestChat: 2, DestClaudeMDUser: 2, "codex_skill_user": 4} {
+		b, n, err := newApplier(t, d).baseline(db.CoachProposal{Destination: dest, Metric: "corrections"}, applyNow)
+		require.NoError(t, err, dest)
+		require.NotNil(t, b, dest)
+		assert.InDelta(t, want, *b, 1e-9, dest)
+		assert.Equal(t, 1, n, dest)
+	}
+}

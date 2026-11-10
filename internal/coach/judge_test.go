@@ -264,3 +264,70 @@ func TestJudge_RestoredTextOverBudgetNoCut(t *testing.T) {
 	_, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
 	assert.Zero(t, c)
 }
+
+// agentSessions stores n sessions of agent on the workbench's tasks, each
+// with interrupts interrupts.
+func (d dbs) agentSessions(t *testing.T, agent string, wb int64, ids []int64, n, interrupts int) {
+	t.Helper()
+	for i := range n {
+		d.sessionOf(t, agent, wb, fmt.Sprintf("%s-%d-%d", agent, wb, i), ids, interrupts, 1.0)
+	}
+}
+
+// acceptedFor files dest's accepted proposal on wb with baseline, decided at judgeDecided.
+func acceptedFor(t *testing.T, d dbs, dest string, wb int64, baseline float64) int64 {
+	t.Helper()
+	id := propose(t, d, db.CoachProposal{Destination: dest, WorkbenchID: wb, AfterText: "Keep diffs small."})
+	require.NoError(t, d.MarkCoachAccepted(id, "Keep diffs small.", fl(baseline), 3, judgeDecided))
+	return id
+}
+
+func TestJudge_ClaudeDestinationIgnoresCodexRows(t *testing.T) {
+	for _, dest := range []string{DestClaudeMDUser, "claude_skill_user"} {
+		judged := func(withCodex bool) db.CoachProposal {
+			d := openDBs(t)
+			wb, ids := d.workbench(t, "a", 1)
+			d.agentSessions(t, "claude", wb, ids, 5, 1) // 5 corrections on the one task
+			if withCodex {
+				d.agentSessions(t, "codex", wb, ids, 5, 4) // all agents: 25
+			}
+			id := acceptedFor(t, d, dest, 0, 10)
+			runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+			return proposal(t, d, id)
+		}
+		without, with := judged(false), judged(true)
+		assert.Equal(t, "works", without.Verdict, dest)
+		assert.Equal(t, without.Verdict, with.Verdict, dest)
+		require.NotNil(t, with.VerdictValue, dest)
+		assert.InDelta(t, *without.VerdictValue, *with.VerdictValue, 1e-9, dest)
+		assert.InDelta(t, 5.0, *with.VerdictValue, 1e-9, dest)
+	}
+}
+
+func TestJudge_CodexDestinationOnCodexRows(t *testing.T) {
+	d := openDBs(t)
+	wb, ids := d.workbench(t, "a", 1)
+	d.agentSessions(t, "claude", wb, ids, 5, 1)
+	d.agentSessions(t, "codex", wb, ids, 5, 4)
+	id := acceptedFor(t, d, "codex_skill_user", 0, 100)
+	runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	p := proposal(t, d, id)
+	assert.Equal(t, "works", p.Verdict)
+	require.NotNil(t, p.VerdictValue)
+	assert.InDelta(t, 20.0, *p.VerdictValue, 1e-9, "Codex rows only: 20, not 25 (all) or 5 (Claude)")
+}
+
+func TestJudge_RepoFileOnItsWorkbenchAndAgent(t *testing.T) {
+	d := openDBs(t)
+	a, aIDs := d.workbench(t, "a", 1)
+	b, bIDs := d.workbench(t, "b", 1)
+	d.agentSessions(t, "codex", a, aIDs, 5, 4)
+	d.agentSessions(t, "claude", a, aIDs, 5, 1)
+	d.agentSessions(t, "codex", b, bIDs, 5, 2)
+	id := acceptedFor(t, d, "repo_agents_md", a, 100)
+	runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	p := proposal(t, d, id)
+	assert.Equal(t, "works", p.Verdict)
+	require.NotNil(t, p.VerdictValue)
+	assert.InDelta(t, 20.0, *p.VerdictValue, 1e-9, "workbench a's Codex rows only")
+}

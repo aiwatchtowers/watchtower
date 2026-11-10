@@ -87,11 +87,13 @@ final class EmbeddedChatEngineFactory {
     /// never leaves its Questions tab (spec 2026-10-02 §9.4) and a spec
     /// review Discuss thread stays out of the ideas registry (spec
     /// 2026-11-08 §3), nor does Branch review's reviewer thread, which
-    /// quotes the folder's code as a code question does (board #1025), like
-    /// the Go filters: there it saves nothing. Remember
+    /// quotes the folder's code as a code question does (board #1025), nor
+    /// does the tuning chat (spec 2026-11-03 §4.1), like the Go filters:
+    /// there it saves nothing. Remember
     /// still applies, as in every chat with the owner's instructions.
     static func savesKnowledge(contextType: String) -> Bool {
-        ![CodeQuestionList.contextType, SpecReviewThreadKey.contextType, ReviewerSurface.contextType].contains(contextType)
+        ![CodeQuestionList.contextType, SpecReviewThreadKey.contextType, ReviewerSurface.contextType,
+          TuningChatSurface.contextType].contains(contextType)
     }
 
     @MainActor
