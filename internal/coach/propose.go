@@ -476,11 +476,8 @@ func ValidateAfter(t CurrentText, after string) error {
 		}
 		return nil
 	case DestPromptAdd:
-		if _, ok := prompts.Defaults[t.PromptID]; !ok {
-			return fmt.Errorf("unknown prompt %q", t.PromptID)
-		}
-		if _, moved := prompts.MovedToBuiltin[t.PromptID]; moved {
-			return fmt.Errorf("prompt %q belongs to a built-in automation", t.PromptID)
+		if err := PromptAdditionRefusal(t.PromptID); err != nil {
+			return err
 		}
 		total := 0
 		for _, line := range nonEmptyLines(after) {
