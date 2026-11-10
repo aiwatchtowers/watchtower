@@ -944,6 +944,7 @@ No A/B replay (spec D61).
       LLMUsage      func(ctx context.Context, period string) (any, error)                               // usage llm JSON
       Home          func() (string, error)
       Now           func() time.Time
+      CoachEnv      func() coach.Env // Home, CodexHome and the RepoState seam (Task 2.13); the proposal tool passes it to ValidateChatProposal
   }
   func ReadTools(deps Deps) []*tools.Tool // get_agent_report, list_agent_sessions, get_agent_session, get_llm_usage, list_prompts, get_prompt
   ```
@@ -1037,7 +1038,7 @@ No A/B replay (spec D61).
 **Depends on:** Task 3.1, Task 3.9, Task 3.10
 **Files:**
 - Modify: `cmd/actions_registry.go` (`regTools = append(regTools, tuning.ReadTools(tuningDeps(cfg))...)`, `tuning.ProposalTools(...)`)
-- Create: `cmd/tuning_deps.go` (`tuningDeps(cfg) tuning.Deps`: `AgentReport` / `AgentSession` over `agentreport.BuildOverview` / `BuildSession` through `openAgentsDBs` (lift the body of `runAgentsReport` into `agentsReportValue(cfg, wb, since, session, agent) (any, error)` and call it from both); `LLMUsage` over `buildUsageLLMReport(cfg, period, usageLLMSince(period, now))`; `Home` = `coachHome`)
+- Create: `cmd/tuning_deps.go` (`tuningDeps(cfg) tuning.Deps`: `AgentReport` / `AgentSession` over `agentreport.BuildOverview` / `BuildSession` through `openAgentsDBs` (lift the body of `runAgentsReport` into `agentsReportValue(cfg, wb, since, session, agent) (any, error)` and call it from both); `LLMUsage` over `buildUsageLLMReport(cfg, period, usageLLMSince(period, now))`; `Home` = `coachHome`; `CoachEnv` = `coach.Env{Home, CodexHome: $CODEX_HOME, RepoState: <the same workbenchgit.PathStatus adapter cmd/coach.go gives the Applier>}` — one shared constructor `coachRepoState()` in `cmd`, so the MCP child and the CLI Accept use the same read)
 - Modify: `cmd/mcp.go` (use `tuning.ContextType` in the Task 3.1 check), `cmd/ai.go` (`queryPurposes` key `tuning.ChatPurpose` instead of the Task 3.1 literal)
 - Test: `cmd/actions_registry_test.go`, `cmd/tuning_surface_test.go`
 
@@ -1045,6 +1046,7 @@ No A/B replay (spec D61).
 
 - [ ] **Step 1: Write the failing tests**
   - `TestBuildToolRegistry_TuningSurfaceTools`: `reg.List("tuning")` names are exactly the 10 read tools + `propose_tuning_edit`; `reg.List("main")` contains none of them; the existing `assert.Empty(t, tools.UndecidedReadTools(all))` stays green.
+  - `TestTuningSurface_RepoProposalThroughRealRegistry`: a temporary git repository as the workbench folder, `buildToolRegistry` with the real `tuningDeps` → `propose_tuning_edit` with `destination: repo_claude_md` files an open proposal; the same call with the folder's `CLAUDE.md` modified-but-uncommitted is refused with the uncommitted-changes line; with a non-git folder the not-a-git-repository line (proves `CoachEnv.RepoState` is wired, never nil, in the built registry)
   - `TestTuningSurface_OnlyWriteToolIsTheProposal`: every tool `reg.List("tuning")` returns that is not `AccessRead` is `propose_tuning_edit` — a tool with no named surface (listed on every surface today, refused by `directApplyGate`) must not appear as a write tool on `tuning` (recon of Task 3.1, PR #739)
   - `TestTuningSurface_ChildKilledAfterProposalCommit`: registry A proposes an edit (row #N committed); mark that `agent_actions` row `executing` as a killed child leaves it; a fresh `buildToolRegistry` (registry B, a new process's) proposes the same args → `ValidationError` containing `"already proposed as #N"`; exactly one `coach_proposals` row.
   - `TestTuningSurface_ReadLimitResetsOnNewConversation`: `reg.SetReadLimits(tools.ReadLimits{Calls: 1, Rows: 5000, ResponseRows: 200, ResponseBytes: 1 << 20})`; two `get_prompt` calls on conversation 1 → the second `errors.Is(err, tools.ErrReadLimit)`; a call on conversation 2 succeeds.
