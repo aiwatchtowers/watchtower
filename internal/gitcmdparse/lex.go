@@ -244,7 +244,7 @@ func (l *lexer) doubleQuoted(b *strings.Builder) bool {
 // unread: $(…), $((…)), ${…}, `…`, or a bare $ (the variable name that follows
 // stays in the word, which is tainted anyway).
 func (l *lexer) expansion() bool {
-	end := -1
+	var end int
 	switch {
 	case l.s[l.i] == '`':
 		end = closing(l.s, l.i, '`', '`')
