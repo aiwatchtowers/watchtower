@@ -40,7 +40,7 @@ final class InboxReadingPaneTests: XCTestCase {
         navScreens: Set<String> = [],
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in }
     ) -> PlaceholderPane {
-        InboxReadingPane(item: .output(card), navScreens: navScreens, onCommand: onCommand)
+        InboxReadingPane(item: .output(card), navScreens: navScreens, targets: InboxTargetButtonSource(), onCommand: onCommand)
     }
 
     private func buttonLabels(_ view: PlaceholderPane) throws -> [String] {
@@ -54,6 +54,18 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "ACME-482: crash when importing CSV"))
         XCTAssertEqual(try buttonLabels(sut), [
             "Move to Backlog", "Draft a Reply", "Open source", "Discuss in Chat", "Hand to Agent…", "Done", "Dismiss"
+        ])
+    }
+
+    /// Needs approval's stack (B Task 12): an automation card there is the
+    /// recipe's look of an approval, whose Done would close the artifact,
+    /// not the approval. Until Task 13 wires the row actions it offers no
+    /// Done or Dismiss; its own actions and the common row stay.
+    func testInApprovalsAnOutputCardHasNoDoneOrDismiss() throws {
+        let sut = pane(card(actions: twoActions, link: "https://example.com/issue/482")).stackedInApprovals()
+
+        XCTAssertEqual(try buttonLabels(sut), [
+            "Move to Backlog", "Draft a Reply", "Open source", "Discuss in Chat", "Hand to Agent…"
         ])
     }
 
@@ -93,7 +105,7 @@ final class InboxReadingPaneTests: XCTestCase {
 
         XCTAssertEqual(commands, [.agent(InboxCardSubject(shown), task: InboxCardTexts.agentActionTask(shown, task: "Fix it"),
                                          workbench: .id(3)),
-                                  .reply(outputID: 5, action: 2)])
+                                  .reply(outputID: 5, action: 2, contentHash: shown.contentHash)])
     }
 
     func testReplyButtonStates() throws {
@@ -142,7 +154,7 @@ final class InboxReadingPaneTests: XCTestCase {
     }
 
     func testNothingSelectedSaysSo() throws {
-        let sut = InboxReadingPane(item: nil, navScreens: []) { _ in }
+        let sut = InboxReadingPane(item: nil, navScreens: [], targets: InboxTargetButtonSource()) { _ in }
         XCTAssertNoThrow(try sut.inspect().find(text: "Select a card"))
     }
 
@@ -210,7 +222,7 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertEqual(kinds.count, 7, "every InboxListItem case")
         for (item, texts) in kinds {
             let sut = InboxReadingPane(
-                item: item, navScreens: [], now: try local(10, 30), onCommand: { _ in },
+                item: item, navScreens: [], targets: InboxTargetButtonSource(), now: try local(10, 30), onCommand: { _ in },
                 proposalCard: { action in
                     AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
                 })
@@ -242,9 +254,9 @@ final class InboxReadingPaneTests: XCTestCase {
         let owner = Owner(id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "",
                           displayName: "Me")
         let sut = InboxReadingPane(
-            item: .day(card), navScreens: [], onCommand: { _ in },
+            item: .day(card), navScreens: [], targets: InboxTargetButtonSource(), onCommand: { _ in },
             dayCard: { card in
-                InboxDayPane(card: card, today: date, plan: plan, owner: owner, onDone: {},
+                InboxDayPane(card: card, today: date, plan: plan, owner: owner,
                              onCommand: { _ in }, onOpenSource: { _ in })
             },
             trackCard: { InboxCardPlaceholder(track: $0, now: Date()) },
@@ -306,29 +318,46 @@ final class InboxReadingPaneTests: XCTestCase {
 
     // MARK: - The header
 
-    func testHeaderMoreMenuOffersLearnedRulesAndProfile() throws {
+    /// Learned Rules (INBOX-05) and Assistant Profile open from the root's
+    /// ⋯ in the folder menu, into the reading pane (the strip's ⋯ is gone
+    /// with the filter bar).
+    func testRootMenuOffersLearnedRulesAndProfile() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
         var opened: [InboxAuxPane] = []
-        let sut = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true,
-                                 onOpenAux: { opened.append($0) }) // swiftlint:disable:this trailing_closure
+        let model = InboxFolderMenuModel(dbPool: pool) { FakeCLIRunner() }
+        await model.reload()
+        let sut = InboxFolderMenuColumn(model: model) { opened.append($0) }
 
         try sut.inspect().find(button: "Learned Rules").tap()
         try sut.inspect().find(button: "Assistant Profile").tap()
 
         XCTAssertEqual(opened, [.learnedRules, .profile])
-        for filter in InboxFilter.allCases {
-            XCTAssertNoThrow(try sut.inspect().find(text: filter.title), filter.title)
-        }
     }
 
-    /// The `?` opens the cheat sheet in the reading pane; the header has no pop-up.
-    func testCheatSheetButtonOpensTheReadingPane() throws {
-        var opened: [InboxAuxPane] = []
-        let sut = InboxFilterBar(filter: .constant(.messages), showsCheatSheetButton: true,
-                                 onOpenAux: { opened.append($0) }) // swiftlint:disable:this trailing_closure
+    /// The Inbox's header, above the menu, the list and the reading pane
+    /// (b-01): its title and the `?`, which opens the cheat sheet in the
+    /// reading pane; the header has no pop-up and no filter segments.
+    func testHeaderShowsTheTitleAndTheCheatSheetButton() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await pool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+        await vm.refresh()
+        let sut = ActionStripActionsView(
+            vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
+            onEnable: {}, onOpenSettings: {}, onOpen: { _ in })
 
-        try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton").button().tap()
-
-        XCTAssertEqual(opened, [.reactionCommands])
+        XCTAssertNoThrow(try sut.inspect().find(text: "Inbox"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        for gone in ["All", "Day", "Automations"] {
+            XCTAssertThrowsError(try sut.inspect().find(button: gone), gone)
+        }
         XCTAssertThrowsError(try sut.inspect().find(ViewType.Popover.self))
     }
 
@@ -369,35 +398,6 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "Nothing here"), "the empty list stays on the left")
     }
 
-    /// The Day filter ends with Show older while older dates exist; each
-    /// press reads 30 more, and the row goes once nothing older is left.
-    func testDayFilterShowOlderReadsAnotherPage() async throws {
-        let (pool, path) = try TestDatabase.createPool()
-        defer { TestDatabase.cleanup(path: path) }
-        let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        try await pool.write { db in
-            for day in 1...31 {
-                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
-            }
-        }
-        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
-        vm.filter = .day
-        await vm.refresh()
-        func split() -> some View {
-            InboxSplitView(vm: vm, proposalCard: Self.proposalCard, onCardAction: { _ in },
-                           emptyList: { Text("Nothing here") })
-        }
-
-        try split().inspect().find(button: "Show older").tap()
-        await vm.refresh()
-
-        XCTAssertEqual(vm.dayLimit, 60)
-        XCTAssertEqual(vm.feed.days.count, 31)
-        XCTAssertThrowsError(try split().inspect().find(button: "Show older"), "nothing older left")
-    }
-
     /// Learned Rules adds a rule inline under its `+`, never in a sheet.
     func testLearnedRulesAddsInline() throws {
         let (pool, path) = try TestDatabase.createPool()
@@ -435,17 +435,6 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertEqual(AppState.inboxTargetFallbackTitle(InboxCardSubject(output)), "Inbox card #5")
         XCTAssertEqual(AppState.inboxTargetFallbackTitle(message), "Inbox card")
     }
-
-    func testIdeasHeaderShowsOnlyOnTheIdeasFilter() throws {
-        let ideas = InboxFilterBar(filter: .constant(.ideas), showsCheatSheetButton: false,
-                                   onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
-        XCTAssertNoThrow(try ideas.inspect().find(text: "New idea slot"))
-        XCTAssertThrowsError(try ideas.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
-
-        let all = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true,
-                                 onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
-        XCTAssertThrowsError(try all.inspect().find(text: "New idea slot"))
-    }
 }
 
 /// A due reminder in the reading pane links the Slack message it was set
@@ -456,7 +445,7 @@ final class InboxReminderPaneTests: XCTestCase {
     private func reminderPane(messageRef: String) -> PlaceholderPane {
         let reminder = Reminder(row: Row(["id": 1, "message_ref": messageRef, "note": "Ping Ann",
                                           "remind_at": "2000-01-01T00:00:00Z", "status": "pending"]))
-        return InboxReadingPane(item: .reminder(reminder), navScreens: []) { _ in }
+        return InboxReadingPane(item: .reminder(reminder), navScreens: [], targets: InboxTargetButtonSource()) { _ in }
     }
 
     func testReminderWithAMessageRefLinksTheSlackMessage() throws {
@@ -464,6 +453,13 @@ final class InboxReminderPaneTests: XCTestCase {
         let link = try sut.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.url().absoluteString, "https://slack.com/archives/C0ABC/p17400000005")
         XCTAssertThrowsError(try sut.inspect().find(text: "1:C0ABC@1740000000.5"), "the raw ref is not shown")
+    }
+
+    /// A reminder's Done is today's reminder Done: it stays in Needs approval.
+    func testReminderInApprovalsKeepsDoneAndSnooze() throws {
+        let sut = reminderPane(messageRef: "").stackedInApprovals()
+        XCTAssertNoThrow(try sut.inspect().find(button: "Done"))
+        XCTAssertNoThrow(try sut.inspect().find(button: "Snooze 1h"))
     }
 
     func testReminderWithAnEmptyMessageRefShowsNoLink() throws {
@@ -491,7 +487,8 @@ final class InboxAgentPressTests: XCTestCase {
 
     private func buttons(_ card: AutomationOutputCard, onCommand: @escaping (InboxCardCommand) -> Void)
         -> InboxCardButtons {
-        InboxCardButtons(card: card, navScreens: [], onCommand: onCommand, workbenches: workbenches)
+        InboxCardButtons(card: card, navScreens: [], onCommand: onCommand, workbenches: workbenches,
+                         targets: InboxTargetButtonSource())
     }
 
     func testResolvedWorkbenchGoesOutAsItsID() throws {
@@ -555,11 +552,11 @@ final class SaveAutomationProposalPaneTests: XCTestCase {
         let pane: (AgentAction) -> SaveAutomationProposalPane = { action in
             SaveAutomationProposalPane(action: action, workbenchName: { _ in nil }, onOpenDraft: { _ in }, onReject: {})
         }
-        let pending = InboxReadingPane(item: .proposal(try proposal()), navScreens: [], onCommand: { _ in },
+        let pending = InboxReadingPane(item: .proposal(try proposal()), navScreens: [], targets: InboxTargetButtonSource(), onCommand: { _ in },
                                        saveProposal: pane)
         XCTAssertNoThrow(try pending.inspect().find(SaveAutomationProposalPane.self))
 
-        let decided = InboxReadingPane(item: .proposal(try proposal(status: "rejected")), navScreens: [],
+        let decided = InboxReadingPane(item: .proposal(try proposal(status: "rejected")), navScreens: [], targets: InboxTargetButtonSource(),
                                        onCommand: { _ in }, saveProposal: pane)
         XCTAssertThrowsError(try decided.inspect().find(SaveAutomationProposalPane.self),
                              "a decided proposal shows its card and result")

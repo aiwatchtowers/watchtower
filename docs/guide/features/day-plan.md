@@ -27,7 +27,7 @@ Every sync cycle after that, calendar events are synced into today's plan and co
 
 ### Find the plan
 
-In the Inbox, today's **Your day** card is first under **Today** until you press **Done**, which only lets it sort by time. The **Day** filter lists one card per date, the last 30 dates, and **Show older** at the end adds 30 more; Home's **Day plan** link opens today's card. The plan lists all-day events, then time blocks in time order ("09:00–09:30"), then the backlog, with "3/5" done in the **Plan** header.
+In the Inbox, today's plan is on the **Morning brief** entry in the root, listed with every day you haven't read yet; Home's **Day plan** link opens today's. The plan lists all-day events, then time blocks in time order ("09:00–09:30"), then the backlog, with "3/5" done in the **Plan** header.
 
 ### Work the plan
 

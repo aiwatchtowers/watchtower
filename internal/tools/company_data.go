@@ -24,6 +24,7 @@ var unmarkedReadTools = map[string]string{
 	"list_jira_projects":   "project names only, no issue content",
 	"list_linear_teams":    "team names only, no issue content",
 	"list_slack_channels":  "channel names only, no message content",
+	"list_inbox_folders":   "the owner's own Inbox menu: folder titles only",
 	"get_track_counts":     "counts only, no track content",
 	"draft_automation":     "the owner's own recipe draft",
 	"list_automations":     "the owner's own recipes",

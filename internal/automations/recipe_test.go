@@ -58,7 +58,8 @@ func TestRecipe_ParsesFrontmatterDescriptionAndOneJSBlock(t *testing.T) {
 
 	// Every field but the description, compared whole: slug, name, a schedule
 	// trigger with no button/event, permissions, outputs, the defaults
-	// (tokens 50000, minutes 5, concurrency 1, missed run_once, pause 72),
+	// (tokens 50000, minutes 5, concurrency 1, missed run_once, pause 72,
+	// artifacts feed),
 	// ScriptLine = the line after the fence, the exact script and the scope.
 	want := Recipe{
 		Slug:              "ok",
@@ -66,6 +67,7 @@ func TestRecipe_ParsesFrontmatterDescriptionAndOneJSBlock(t *testing.T) {
 		Trigger:           Trigger{Kind: TriggerSchedule, Schedule: "0 9 * * 1-5"},
 		Missed:            MissedRunOnce,
 		Concurrency:       1,
+		Artifacts:         ArtifactsFeed,
 		Permissions:       []string{"gmail:read@work", "llm:light"},
 		Outputs:           []string{"inbox"},
 		Budget:            Budget{Tokens: 50000, Minutes: 5},
@@ -272,6 +274,9 @@ func TestRecipe_TriggerExactlyOne(t *testing.T) {
 		{"80-rune multibyte name", "name: " + strings.Repeat("я", 80) + "\ntrigger:\n  manual: true\n", strings.Repeat("я", 80), Trigger{Kind: TriggerManual}},
 	}
 	for _, typ := range EventTypes {
+		if typ == ApprovalEvent {
+			continue // built-in only and no where fields: TestRecipe_ApprovalTrigger*
+		}
 		key := EventFields[typ][len(EventFields[typ])-1]
 		good = append(good, acceptedTrigger{"event " + typ, "name: T\ntrigger:\n  event:\n    type: " + typ + "\n    where: {" + key + ": \"rel*\"}\n", "T",
 			Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: typ, Where: map[string]string{key: "rel*"}}}})
@@ -580,12 +585,12 @@ func TestApprovalFields_OrderAndCanonicalValues(t *testing.T) {
 		names = append(names, f.Name)
 		values[f.Name] = f.Value
 	}
-	want := []string{"trigger", "missed", "budget_tokens", "budget_minutes", "concurrency", "outputs", "permissions", "scope", "script"}
+	want := []string{"trigger", "missed", "budget_tokens", "budget_minutes", "concurrency", "artifacts", "outputs", "permissions", "scope", "script"}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("names = %v, want %v", names, want)
 	}
 	for name, v := range map[string]string{
-		"trigger": `{"button":{"confirm":false}}`, "budget_tokens": "1000", "budget_minutes": "2",
+		"trigger": `{"button":{"confirm":false}}`, "budget_tokens": "1000", "budget_minutes": "2", "artifacts": "feed",
 		"outputs": `["inbox","report"]`, "permissions": `["jira:read@PAY","llm:light"]`, "scope": "personal", "script": "log(1);\n",
 	} {
 		if values[name] != v {
@@ -817,5 +822,132 @@ func TestFallbackSummary(t *testing.T) {
 		if got := FallbackSummary(c.in); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// livingRecipe is a manual recipe with the given extra frontmatter lines.
+func livingRecipe(extra string) []byte {
+	return recipeWith(baseFrontmatter+extra, "log(1);\n")
+}
+
+func TestParseRecipe_ArtifactsDefaultsToFeed(t *testing.T) {
+	r := mustParse(t, livingRecipe("outputs: [inbox]\n"), Scope{Kind: ScopePersonal})
+	if r.Artifacts != ArtifactsFeed {
+		t.Fatalf("Artifacts = %q, want feed", r.Artifacts)
+	}
+	r = mustParse(t, livingRecipe("outputs: [inbox]\nartifacts: feed\nconcurrency: 3\n"), Scope{Kind: ScopePersonal})
+	if r.Artifacts != ArtifactsFeed || r.Concurrency != 3 {
+		t.Fatalf("Artifacts = %q concurrency = %d", r.Artifacts, r.Concurrency)
+	}
+}
+
+func TestParseRecipe_ArtifactsLiving(t *testing.T) {
+	for _, extra := range []string{
+		"outputs: [inbox]\nartifacts: living\n",
+		"outputs: [report, inbox]\nartifacts: living\nconcurrency: 1\n",
+	} {
+		r := mustParse(t, livingRecipe(extra), Scope{Kind: ScopePersonal})
+		if r.Artifacts != ArtifactsLiving || r.Concurrency != 1 {
+			t.Errorf("%q: Artifacts = %q concurrency = %d", extra, r.Artifacts, r.Concurrency)
+		}
+	}
+}
+
+// TestAuto05_LivingArtifactsNeedConcurrencyOne: a recipe keeping living
+// artifacts runs one at a time; any other concurrency is a parse error on
+// the concurrency line.
+func TestAuto05_LivingArtifactsNeedConcurrencyOne(t *testing.T) {
+	for _, n := range []string{"2", "4"} {
+		_, err := ParseRecipe("ok", livingRecipe("outputs: [inbox]\nartifacts: living\nconcurrency: "+n+"\n"), Scope{Kind: ScopePersonal})
+		var pe *ParseError
+		if !errors.As(err, &pe) {
+			t.Fatalf("concurrency %s: err = %v, want *ParseError", n, err)
+		}
+		want := "concurrency: an automation with living artifacts runs one at a time; set concurrency: 1"
+		if pe.Msg != want || pe.Line != 7 {
+			t.Errorf("concurrency %s: line %d %q, want line 7 %q", n, pe.Line, pe.Msg, want)
+		}
+	}
+}
+
+func TestParseRecipe_ArtifactsRefusals(t *testing.T) {
+	cases := []struct{ name, extra, want string }{
+		{"living without outputs", "artifacts: living\n", "artifacts: living needs outputs: [inbox]"},
+		{"living with report only", "outputs: [report]\nartifacts: living\n", "artifacts: living needs outputs: [inbox]"},
+		{"unknown value", "outputs: [inbox]\nartifacts: forever\n", `artifacts must be feed or living, not "forever"`},
+		{"not a string", "outputs: [inbox]\nartifacts: [living]\n", "artifacts must be feed or living"},
+	}
+	for _, c := range cases {
+		_, err := ParseRecipe("ok", livingRecipe(c.extra), Scope{Kind: ScopePersonal})
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, c.want) || pe.Line == 0 {
+			t.Errorf("%s: want a lined *ParseError containing %q, got %v", c.name, c.want, err)
+		}
+	}
+}
+
+func TestParseRecipe_BuiltinWithArtifactsLiving(t *testing.T) {
+	data := recipeWith("name: Morning brief\ntrigger:\n  sync: morning_brief\npermissions: [builtin:brief.compose]\n"+
+		"outputs: [inbox]\nartifacts: living\n", "log(1);\n")
+	if r := mustParse(t, data, builtinScope); r.Artifacts != ArtifactsLiving {
+		t.Fatalf("Artifacts = %q", r.Artifacts)
+	}
+}
+
+// TestApprovalHash_ArtifactsIsHashed: feed → living changes the approval
+// hash (so it waits for the owner again, AUTO-06), while an explicit
+// "artifacts: feed" hashes like no key at all, and the Changed block lists it.
+func TestApprovalHash_ArtifactsIsHashed(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	absent := mustParse(t, livingRecipe("outputs: [inbox]\n"), personal)
+	feed := mustParse(t, livingRecipe("outputs: [inbox]\nartifacts: feed\n"), personal)
+	living := mustParse(t, livingRecipe("outputs: [inbox]\nartifacts: living\n"), personal)
+	if ApprovalHash(absent) != ApprovalHash(feed) {
+		t.Error("an explicit artifacts: feed changed the hash")
+	}
+	if ApprovalHash(feed) == ApprovalHash(living) {
+		t.Error("feed → living kept the hash")
+	}
+	if c := string(approvalCanonical(feed)); strings.Contains(c, "artifacts") {
+		t.Errorf("feed canonical form names artifacts: %s", c)
+	}
+	if c := string(approvalCanonical(living)); !strings.HasSuffix(c, `,"concurrency":1,"artifacts":"living"}`) {
+		t.Errorf("living canonical form: %s", c)
+	}
+	fields := func(r *Recipe) map[string]string {
+		m := map[string]string{}
+		for _, f := range ApprovalFields(r) {
+			m[f.Name] = f.Value
+		}
+		return m
+	}
+	if fields(feed)["artifacts"] != "feed" || fields(living)["artifacts"] != "living" {
+		t.Errorf("fields artifacts feed=%q living=%q", fields(feed)["artifacts"], fields(living)["artifacts"])
+	}
+}
+
+func approvalRecipe(where string) []byte {
+	return recipeWith("name: A\ntrigger:\n  event:\n    type: approval\n"+where, "log(1);\n")
+}
+
+func TestRecipe_ApprovalTriggerBuiltinOnly(t *testing.T) {
+	r := mustParse(t, approvalRecipe(""), builtinScope)
+	if r.Trigger.Kind != TriggerEvent || r.Trigger.Event == nil || r.Trigger.Event.Type != ApprovalEvent {
+		t.Errorf("trigger = %+v", r.Trigger)
+	}
+	for _, s := range []Scope{{Kind: ScopePersonal}, {Kind: ScopeWorkbench, WorkbenchID: 1}} {
+		_, err := ParseRecipe("ok", approvalRecipe(""), s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "an approval trigger is only for built-in automations") {
+			t.Errorf("scope %s: want the built-in-only refusal, got %v", s, err)
+		}
+	}
+}
+
+func TestRecipe_ApprovalTriggerRefusesWhere(t *testing.T) {
+	_, err := ParseRecipe("ok", approvalRecipe("    where: {ref: \"action:*\"}\n"), builtinScope)
+	var pe *ParseError
+	if !errors.As(err, &pe) || !strings.Contains(pe.Msg, `trigger.event.where key "ref" is not a matchable approval field`) {
+		t.Errorf("want the where refusal, got %v", err)
 	}
 }

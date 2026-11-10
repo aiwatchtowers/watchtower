@@ -480,7 +480,8 @@ package final class EmbeddedChatEngine {
             readFolder: options.readFolder,
             ownerInstructions: spec.ownerInstructions,
             purpose: options.purpose,
-            readFolderAskID: options.readFolderAskID
+            readFolderAskID: options.readFolderAskID,
+            readFolderRoundID: options.readFolderRoundID
         )
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)

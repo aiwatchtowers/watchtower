@@ -58,6 +58,8 @@ const (
 	ChatTitle                  = "chat.title"
 	TerminalTitle              = "terminal.title"
 	ReviewOverview             = "review.overview"
+	ReviewChapters             = "review.chapters"
+	ReviewSummary              = "review.summary"
 	ReviewLessons              = "review.lessons"
 	SpecReview                 = "review.spec"
 	InstructionSuggestions     = "instructions.suggest"

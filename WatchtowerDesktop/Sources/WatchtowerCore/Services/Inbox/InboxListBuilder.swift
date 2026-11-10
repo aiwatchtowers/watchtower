@@ -25,11 +25,11 @@ package enum InboxListItem: Identifiable, Equatable, Sendable {
     }
 }
 
-/// One titled block of the Inbox list.
+/// One titled block of a legacy entry's list.
 package struct InboxSection: Equatable, Sendable {
     package let title: String
     package let items: [InboxListItem]
-    /// A fold the owner opens on demand (the Tracks filter's Stopped): its
+    /// A fold the owner opens on demand (Track my threads' Stopped): its
     /// title shows even while `items` is empty (folded).
     package let foldable: Bool
 
@@ -39,105 +39,49 @@ package struct InboxSection: Equatable, Sendable {
         self.foldable = foldable
     }
 
-    /// The Tracks filter's fold of stopped (dismissed) tracks.
+    /// Track my threads' fold of stopped (dismissed) tracks.
     package static func stoppedTitle(_ count: Int) -> String { "Stopped · \(count)" }
 }
 
-/// The Inbox list (spec B1, C1 §5): items that wait on the owner first, then
-/// the dated cards of today and of earlier days, newest first. A reminder
-/// sorts by its due time. An empty section is left out. A built-in's failed
-/// move to Automations (C2) heads Needs your decision under All and
-/// Automations.
+/// The lists the root's legacy entries open (ask #445) and the root's day
+/// cards. Since the filters went (inbox builder B), proposals, reminders and
+/// automation cards are never listed here: they are Needs approval's and the
+/// folders' own entries (`InboxFolderEntries`).
 package enum InboxListBuilder {
-    package static func sections(
-        proposals: [AgentAction],
-        reminders: [Reminder],
-        outputs: [AutomationOutputCard],
-        now: Date,
-        calendar: Calendar
-    ) -> [InboxSection] {
-        sections(
-            InboxFeedSnapshot(proposals: proposals, reminders: reminders, outputs: outputs),
-            filter: .all, dayDone: nil, today: "", now: now, calendar: calendar
-        )
-    }
-
-    /// `today` is the "YYYY-MM-DD" of `now`; `dayDone` the date whose day card
-    /// the owner finished (it then sorts by time instead of staying pinned).
-    /// With `placeholdsToday`, today with neither a briefing nor a plan gets a
-    /// placeholder day card (`InboxDayCard.placeholder`) in Day, and in All
-    /// while the owner is known (`feed.ownerKnown`; else All's empty state
-    /// carries OWNER-02) — never while the briefing and day-plan features
-    /// are both off (`feed.briefingOn`, `feed.dayPlanOn`).
-    /// The Tracks filter ends with a `Stopped · N` fold of the stopped tracks,
-    /// listed only while `showsStopped`; no other filter shows them.
+    /// A legacy entry's list, newest first: ideas awaiting a verdict under
+    /// Needs your decision (Idea finder), then Today and Earlier. An empty
+    /// section is left out. Track my threads ends with a `Stopped · N` fold
+    /// of the stopped tracks, listed only while `showsStopped`.
     package static func sections(
         _ feed: InboxFeedSnapshot,
-        filter: InboxFilter,
-        dayDone: String?,
-        today: String,
+        list: InboxLegacyList,
         now: Date,
         calendar: Calendar,
-        showsStopped: Bool = false,
-        placeholdsToday: Bool = false
+        showsStopped: Bool = false
     ) -> [InboxSection] {
-        let showsAll = filter == .all
-        let showsProposals = showsAll || filter == .automations
-        let showsAutomationCards = showsProposals
-        let showsIdeas = showsAll || filter == .ideas
-
-        let notices = showsProposals ? feed.builtinNotices.map(InboxListItem.builtinNotice) : []
-        let awaiting = showsProposals ? feed.proposals.map(InboxListItem.proposal) : []
-        let awaitingIdeas = showsIdeas ? feed.ideas.filter(\.awaitsVerdict).map(InboxListItem.idea) : []
-
+        var decisions: [InboxListItem] = []
         var rows: [(at: Date, item: InboxListItem)] = []
-        if showsAutomationCards {
-            rows += feed.outputs.map { (at: $0.createdAt, item: .output($0)) }
-            rows += feed.reminders.map { (at: AutomationDates.parse($0.remindAt) ?? .distantPast, item: .reminder($0)) }
-        }
-        let startOfToday = calendar.startOfDay(for: now)
-        if showsAll || filter == .day {
-            var days = showsAll ? feed.days.filter { $0.date == today || $0.isUnread } : feed.days
-            // Today without a briefing or a plan yet still has its card.
-            if placeholdsToday, feed.briefingOn || feed.dayPlanOn, filter == .day || feed.ownerKnown,
-               !feed.days.contains(where: { $0.date == today }) {
-                days.append(.placeholder(date: today, stamp: startOfToday))
-            }
-            rows += days.map { (at: $0.stamp, item: .day($0)) }
-        }
-        if showsAll || filter == .tracks {
-            let tracks = showsAll ? feed.tracks.filter(\.isUnread) : feed.tracks
-            rows += tracks.map { (at: $0.lastEventAt, item: .track($0)) }
-        }
-        if showsAll || filter == .messages {
-            rows += feed.messages.map { (at: $0.stamp, item: .message($0)) }
-        }
-        if filter == .ideas {
-            rows += feed.ideas.filter { !$0.awaitsVerdict }
+        switch list {
+        case .tracks:
+            rows = feed.tracks.map { (at: $0.lastEventAt, item: .track($0)) }
+        case .ideas:
+            decisions = feed.ideas.filter(\.awaitsVerdict).map(InboxListItem.idea)
+            rows = feed.ideas.filter { !$0.awaitsVerdict }
                 .map { (at: AutomationDates.parse($0.updatedAt) ?? .distantPast, item: .idea($0)) }
+        case .messages:
+            rows = feed.messages.map { (at: $0.stamp, item: .message($0)) }
         }
         rows.sort { lhs, rhs in
             lhs.at != rhs.at ? lhs.at > rhs.at : tieOrder(lhs.item) < tieOrder(rhs.item)
         }
-
-        // Today's day card stays on top until the owner marks it done.
-        func isPinned(_ item: InboxListItem) -> Bool {
-            guard case let .day(card) = item else { return false }
-            return card.date == today && dayDone != today
-        }
-        func isToday(_ row: (at: Date, item: InboxListItem)) -> Bool {
-            row.at >= startOfToday || isPinned(row.item)
-        }
-        let todayRows = rows.filter(isToday)
-        let pinned = todayRows.filter { isPinned($0.item) }
-        let rest = todayRows.filter { !isPinned($0.item) }
+        let startOfToday = calendar.startOfDay(for: now)
         let sections = [
-            InboxSection(title: "Needs your decision", items: notices + awaiting + awaitingIdeas),
-            InboxSection(title: "Today", items: (pinned + rest).map(\.item)),
-            InboxSection(title: "Earlier", items: rows.filter { !isToday($0) }.map(\.item))
+            InboxSection(title: "Needs your decision", items: decisions),
+            InboxSection(title: "Today", items: rows.filter { $0.at >= startOfToday }.map(\.item)),
+            InboxSection(title: "Earlier", items: rows.filter { $0.at < startOfToday }.map(\.item))
         ]
         var listed = sections.filter { !$0.items.isEmpty }
-        if filter == .tracks, !feed.stoppedTracks.isEmpty {
+        if list == .tracks, !feed.stoppedTracks.isEmpty {
             listed.append(InboxSection(
                 title: InboxSection.stoppedTitle(feed.stoppedTracks.count),
                 items: showsStopped ? feed.stoppedTracks.map(InboxListItem.track) : [],
@@ -146,8 +90,23 @@ package enum InboxListBuilder {
         return listed
     }
 
-    /// Equal times keep one order across refreshes: outputs, reminders, day
-    /// cards, tracks, messages, ideas, then by id.
+    /// The root's day cards (the Morning brief entries): today's and every
+    /// unread one, newest first. Today with neither a briefing nor a plan
+    /// gets a placeholder card (`InboxDayCard.placeholder`) while the owner
+    /// is known (`feed.ownerKnown`; else the empty root carries OWNER-02) —
+    /// never while the briefing and day-plan features are both off
+    /// (`feed.briefingOn`, `feed.dayPlanOn`). `today` is the "YYYY-MM-DD" of `now`.
+    package static func rootDays(_ feed: InboxFeedSnapshot, today: String, now: Date, calendar: Calendar) -> [InboxDayCard] {
+        var days = feed.days.filter { $0.date == today || $0.isUnread }
+        if feed.briefingOn || feed.dayPlanOn, feed.ownerKnown, !feed.days.contains(where: { $0.date == today }) {
+            days.append(.placeholder(date: today, stamp: calendar.startOfDay(for: now)))
+        }
+        return days.sorted { $0.stamp > $1.stamp }
+    }
+
+    /// Equal times keep one order across refreshes: tracks, messages, ideas,
+    /// then by id (the other kinds are never among a legacy list's rows; their
+    /// ranks only keep the switch exhaustive).
     private static func tieOrder(_ item: InboxListItem) -> TieKey {
         switch item {
         case let .output(card): TieKey(rank: 0, number: card.id)
@@ -157,8 +116,6 @@ package enum InboxListBuilder {
         case let .message(row): TieKey(rank: 4, number: Int64(row.item.id))
         case let .idea(idea): TieKey(rank: 5, number: Int64(idea.id))
         case let .proposal(action): TieKey(rank: 6, number: action.id)
-        // Unused: a notice is never among the dated rows (it heads Needs
-        // your decision); the case only keeps the switch exhaustive.
         case let .builtinNotice(notice): TieKey(rank: 7, text: notice.builtinID)
         }
     }

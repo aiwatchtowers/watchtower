@@ -15,6 +15,10 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var heldSubcommand: String?
     private var gate: CheckedContinuation<Void, Never>?
     private var gateOpened = false
+    /// A subcommand that waits until its task is cancelled, then throws.
+    private var cancelHeldSubcommand: String?
+    private var cancelWaiter: CheckedContinuation<Void, Never>?
+    private var cancelSeen = false
 
     var invocations: [[String]] { lock.withLock { recorded } }
     /// Subcommand → the recipe text it was sent on stdin.
@@ -27,6 +31,36 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     func hold(_ subcommand: String) {
         lock.withLock { heldSubcommand = subcommand }
+    }
+
+    /// `subcommand` waits until its task is cancelled (the CLI terminated).
+    func holdUntilCancelled(_ subcommand: String) {
+        lock.withLock { cancelHeldSubcommand = subcommand }
+    }
+
+    /// Whether a `holdUntilCancelled` call saw its task cancelled.
+    var sawCancel: Bool { lock.withLock { cancelSeen } }
+    var isWaitingForCancel: Bool { lock.withLock { cancelWaiter != nil } }
+
+    private func waitForCancel() async throws {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeNow = lock.withLock {
+                    if cancelSeen { return true }
+                    cancelWaiter = continuation
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        } onCancel: {
+            let waiting: CheckedContinuation<Void, Never>? = lock.withLock {
+                cancelSeen = true
+                defer { cancelWaiter = nil }
+                return cancelWaiter
+            }
+            waiting?.resume()
+        }
+        throw CancellationError()
     }
 
     func release() {
@@ -49,11 +83,12 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     private func run(args: [String], text: String?) async throws -> Data {
         let sub = args.count > 1 ? args[1] : ""
-        let (handler, held) = lock.withLock {
+        let (handler, held, cancelHeld) = lock.withLock {
             recorded.append(args)
             if let text { files[sub] = text }
-            return (handlers[sub], heldSubcommand == sub)
+            return (handlers[sub], heldSubcommand == sub, cancelHeldSubcommand == sub)
         }
+        if cancelHeld { try await waitForCancel() }
         if held {
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 let resumeNow = lock.withLock {
@@ -1039,10 +1074,217 @@ final class AutomationEditorCenterTests: XCTestCase {
         )
     }
 
+    /// `artifacts` is hashed (AUTO-06): a feed ↔ living switch reads in words.
+    func testConfirmSheetNamesTheArtifactsChange() {
+        XCTAssertEqual(
+            AutomationChangePresentation.lines([AutomationChange(field: "artifacts", old: "feed", new: "living")],
+                                               known: true, confirmedBefore: true),
+            ["Cards new each run → kept current"])
+    }
+
     func testConfirmSheetUnknownChangesSaysSo() {
         XCTAssertEqual(AutomationChangePresentation.lines([], known: false, confirmedBefore: true),
                        ["What changed is not known — review the whole recipe"])
         XCTAssertEqual(AutomationChangePresentation.lines([], known: false, confirmedBefore: false),
                        ["First confirmation"])
+    }
+
+    // MARK: - Look step (Inbox builder A, Task 11)
+
+    nonisolated private static func previewJSON(title: String) -> Data {
+        Data((#"{"ok":true,"errors":[],"manifest":{"name":"Digest","slug":"digest","trigger_kind":"manual","trigger":"manual","#
+            + #""permissions":[],"outputs":["inbox"],"budget_tokens":5000,"budget_minutes":5},"widening":[],"#
+            + #""dry_run":{"steps":[],"outputs":[{"kind":"inbox","title":"\#(title)","body":"b","priority":"normal","#
+            + #""blocks":{"v":1,"blocks":[{"type":"heading","text":"Hi"}]},"key":"","content_hash":"h"}],"#
+            + #""tokens":120,"status":"succeeded","error":""}}"#).utf8)
+    }
+
+    private func lookState(_ center: AutomationEditorCenter, _ key: Int64) -> AutomationLookPaneContent {
+        let text = center.drafts[key]?.renderedText() ?? ""
+        return AutomationLookPreviewModel.state(
+            text: text,
+            outputs: ["inbox"],
+            chatEntry: AutomationDraftEntry.Newest.none,
+            ownerResult: center.previewResults[key],
+            running: center.isPreviewRunning(key)
+        )
+    }
+
+    func testPreviewSendsTheTextOnStdinAndKeepsTheResult() async throws {
+        runner.on("preview") { _ in Self.previewJSON(title: "Waiting") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        let text = try XCTUnwrap(center.drafts[7]).renderedText()
+
+        center.runPreview(7)
+        XCTAssertTrue(center.isPreviewRunning(7))
+        await waitUntil { !center.isPreviewRunning(7) }
+
+        XCTAssertEqual(runner.invocations.last, ["automations", "preview", "--stdin", "--json", "--slug", "digest"])
+        XCTAssertEqual(runner.fileTexts["preview"], text, "the bytes on screen go on stdin")
+        let result = try XCTUnwrap(center.previewResults[7])
+        XCTAssertEqual(result.text, text)
+        guard case let .preview(shown, tokens, _) = lookState(center, 7) else {
+            return XCTFail("expected a preview, got \(lookState(center, 7))")
+        }
+        XCTAssertEqual(shown.cards.map(\.title), ["Waiting"])
+        XCTAssertEqual(tokens, 120)
+    }
+
+    func testPreviewFlagsForAWorkbenchRecipeAndANewWorkbenchDraft() async throws {
+        runner.on("show") { _ in try Fixtures.showJSON(scope: "workbench") }
+        runner.on("preview") { _ in Self.previewJSON(title: "A") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        center.runPreview(7)
+        await waitUntil { !center.isPreviewRunning(7) }
+        XCTAssertEqual(runner.invocations.last?.suffix(4), ["--slug", "digest", "--workbench", "3"])
+
+        let key = AutomationEditorCenter.newDraftKey(conversationID: 40)
+        center.beginNew(key: key, scope: .workbench(id: 5, name: "Acme", folder: "/acme"),
+                        recipeDir: "/acme/.watchtower/automations", startText: nil)
+        center.runPreview(key)
+        await waitUntil { !center.isPreviewRunning(key) }
+        XCTAssertEqual(runner.invocations.last, ["automations", "preview", "--stdin", "--json", "--workbench", "5"])
+    }
+
+    /// Lifecycle rule: the run belongs to the center, so the panel that
+    /// pressed Dry run going away loses neither the run nor its result. The
+    /// panel is a stand-in owner dropped mid-run; every state after that is
+    /// rebuilt from a fresh read of the center alone, as a reopened panel
+    /// would.
+    func testPreviewOutlivesThePressingView() async throws {
+        runner.on("preview") { _ in Self.previewJSON(title: "Kept") }
+        runner.hold("preview")
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        var panel: LookPanelStandIn? = LookPanelStandIn(center: center)
+        panel?.pressDryRun(7)
+        await waitUntil { self.runner.isHolding }
+        panel = nil // the panel is gone while the CLI works
+
+        guard case .running = lookState(center, 7) else {
+            return XCTFail("a reopened panel sees the run, got \(lookState(center, 7))")
+        }
+        runner.release()
+        await waitUntil { !center.isPreviewRunning(7) }
+        guard case let .preview(shown, _, _) = lookState(center, 7) else {
+            return XCTFail("a reopened panel sees the result, got \(lookState(center, 7))")
+        }
+        XCTAssertEqual(shown.cards.map(\.title), ["Kept"])
+    }
+
+    func testCancelPreviewTerminatesTheCLIAndKeepsThePreviousState() async throws {
+        runner.on("preview") { _ in Self.previewJSON(title: "First") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        center.runPreview(7)
+        await waitUntil { !center.isPreviewRunning(7) }
+        let before = lookState(center, 7)
+        let firstResult = center.previewResults[7]
+
+        runner.holdUntilCancelled("preview")
+        center.runPreview(7)
+        await waitUntil { self.runner.isWaitingForCancel }
+        guard case let .running(previous) = lookState(center, 7) else { return XCTFail("running") }
+        XCTAssertEqual(previous?.cards.map(\.title), ["First"], "the last preview, dimmed")
+
+        center.cancelPreview(7)
+        XCTAssertFalse(center.isPreviewRunning(7))
+        await waitUntil { self.runner.sawCancel }
+        XCTAssertEqual(lookState(center, 7), before)
+        XCTAssertEqual(center.previewResults[7], firstResult, "a cancelled run records nothing")
+    }
+
+    func testPreviewCLIFailureIsFailedNeverEmpty() async throws {
+        runner.on("preview") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "refusing to dry-run a recipe preview") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        center.runPreview(7)
+        await waitUntil { !center.isPreviewRunning(7) }
+        XCTAssertEqual(lookState(center, 7), .failed(message: "refusing to dry-run a recipe preview", steps: []))
+
+        runner.on("preview") { _ in Data("not json".utf8) }
+        center.runPreview(7)
+        await waitUntil { !center.isPreviewRunning(7) }
+        guard case let .failed(message, _) = lookState(center, 7) else {
+            return XCTFail("undecodable output is a failure, got \(lookState(center, 7))")
+        }
+        XCTAssertFalse(message.isEmpty)
+    }
+
+    func testPreviewPressWhileRunningIsIgnored() async throws {
+        runner.on("preview") { _ in Self.previewJSON(title: "A") }
+        runner.hold("preview")
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        center.runPreview(7)
+        center.runPreview(7)
+        await waitUntil { self.runner.isHolding }
+        runner.release()
+        await waitUntil { !center.isPreviewRunning(7) }
+        XCTAssertEqual(runner.invocations.filter { $0[1] == "preview" }.count, 1)
+    }
+
+    func testStepIsKeptPerEditorKey() async throws {
+        let center = makeCenter()
+        XCTAssertEqual(center.step(for: 7), .collects)
+        center.setStep(.look, for: 7)
+        XCTAssertEqual(center.step(for: 7), .look)
+        XCTAssertEqual(center.step(for: 8), .collects)
+        await center.beginEdit(7, chatNewestText: nil)
+        center.discard(7)
+        XCTAssertEqual(center.step(for: 7), .look, "the step outlives closing the panel")
+    }
+
+    /// `openAutomationEditor(_:step: .look)`: a saved automation opens on
+    /// Look at once; a new draft's step waits for its key (its chat opens
+    /// first) and is claimed once.
+    func testOpenAtStep() async throws {
+        let center = makeCenter()
+        center.setStep(.look, for: .existing(7))
+        XCTAssertEqual(center.step(for: 7), .look)
+        center.setStep(.schedule, for: .existing(7, startText: "RECIPE"))
+        XCTAssertEqual(center.step(for: 7), .schedule)
+
+        let draft = AutomationEditorTarget.newDraft(contextID: "automation-draft:acme", scope: .personal, startText: nil)
+        center.setStep(.look, for: draft)
+        let key = AutomationEditorCenter.newDraftKey(conversationID: 42)
+        XCTAssertEqual(center.step(for: key), .collects, "not applied before the key is known")
+        center.claimPendingStep(contextID: "automation-draft:other", key: key)
+        XCTAssertEqual(center.step(for: key), .collects, "another draft's step is not taken")
+        center.claimPendingStep(contextID: "automation-draft:acme", key: key)
+        XCTAssertEqual(center.step(for: key), .look)
+        center.setStep(.collects, for: key)
+        center.claimPendingStep(contextID: "automation-draft:acme", key: key)
+        XCTAssertEqual(center.step(for: key), .collects, "claimed once: the owner's later choice stays")
+    }
+
+    /// The Look step's card picker is kept per key across navigation, and
+    /// starts over with a discarded draft.
+    func testCardChoiceIsKeptPerKey() async throws {
+        let center = makeCenter()
+        XCTAssertEqual(center.selectedCard(for: 7), 0)
+        center.selectCard(3, for: 7)
+        XCTAssertEqual(center.selectedCard(for: 7), 3)
+        XCTAssertEqual(center.selectedCard(for: 8), 0)
+        await center.beginEdit(7, chatNewestText: nil)
+        center.discard(7)
+        XCTAssertEqual(center.selectedCard(for: 7), 0)
+    }
+}
+
+/// A panel's only part in a Dry run: the press. Dropped by the test to
+/// model navigating away.
+@MainActor
+private final class LookPanelStandIn {
+    let center: AutomationEditorCenter
+
+    init(center: AutomationEditorCenter) {
+        self.center = center
+    }
+
+    func pressDryRun(_ key: Int64) {
+        center.runPreview(key)
     }
 }

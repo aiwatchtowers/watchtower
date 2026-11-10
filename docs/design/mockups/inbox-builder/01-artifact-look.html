@@ -1,0 +1,53 @@
+<h2>1. Дизайн артефакта внутри автоматизации</h2>
+<p class="subtitle">Ты говоришь агенту, что собирать и как это выглядит. Справа живое превью на данных из пробного запуска.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Автоматизация «Треды, где ждут меня» · вкладки: Что делает | <b>Как выглядит</b> | Когда запускать</div>
+  <div class="mockup-body">
+    <div style="display:flex; gap:16px;">
+      <div style="flex:1; border-right:1px solid #8884; padding-right:16px;">
+        <div class="label">Чат с агентом</div>
+        <p><b>Ты:</b> покажи списком, сверху самые старые, у каждого кто ждёт и сколько. Кнопка «Ответить» прямо в карточке.</p>
+        <p><b>Агент:</b> сделал. Группирую по каналу? Сейчас 7 тредов, 3 из #acme-release.</p>
+        <p><b>Ты:</b> нет, без групп. И красным, если ждут больше суток.</p>
+        <p><b>Агент:</b> готово, смотри справа. Сохранить вид?</p>
+        <input class="mock-input" placeholder="Что поменять в виде…" style="width:100%">
+        <div style="margin-top:8px"><button class="mock-button">Пробный запуск</button> <button class="mock-button">Сохранить вид</button></div>
+      </div>
+      <div style="flex:1;">
+        <div class="label">Превью артефакта (данные пробного запуска)</div>
+        <div style="border:1px solid #8886; border-radius:8px; padding:10px;">
+          <h3 style="margin:0 0 8px">Ждут тебя · 7</h3>
+          <div style="padding:6px 0; border-bottom:1px solid #8883;"><span style="color:#d33">● 2 дня</span> · Colleague A в #acme-release<br><small>«Глянешь чеклист релиза до пятницы?»</small> <button class="mock-button" style="float:right">Ответить</button></div>
+          <div style="padding:6px 0; border-bottom:1px solid #8883;"><span style="color:#d33">● 26 ч</span> · Colleague B в DM<br><small>«Согласуешь бюджет на Q4?»</small> <button class="mock-button" style="float:right">Ответить</button></div>
+          <div style="padding:6px 0;"><span>● 3 ч</span> · Colleague C в #acme-infra<br><small>«Кто ревьюит миграцию?»</small> <button class="mock-button" style="float:right">Ответить</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top:28px">Из чего агент собирает вид?</h3>
+<div class="options">
+  <div class="option" data-choice="blocks" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Из готовых блоков</h3>
+      <p>Список, таблица, карточка человека, цифра, текст, кнопки действий, цвет по условию. Агент только комбинирует и настраивает. Выглядит нативно, кнопки сразу работают (ответить, открыть, в таргет), на телефоне рисуется тем же набором.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="html" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Свободная вёрстка</h3>
+      <p>Агент пишет HTML-страницу, как артефакт в чате. Можно что угодно: графики, раскладки. Но выглядит не как приложение, кнопки действий надо прокидывать отдельно, на телефоне сложнее.</p>
+    </div>
+  </div>
+  <div class="option" data-choice="mix" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Блоки + один блок «свободная вёрстка»</h3>
+      <p>По умолчанию блоки, а где их мало — вставка HTML внутри карточки (например, график).</p>
+    </div>
+  </div>
+</div>

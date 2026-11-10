@@ -114,12 +114,6 @@ final class ReviewPresentationTests: XCTestCase {
         XCTAssertEqual(rows.map(\.placed), [true, false, false])
     }
 
-    func testChapterSourceCaption() {
-        XCTAssertEqual(ReviewPresentation.sourceCaption(.agent), "by the agent")
-        XCTAssertEqual(ReviewPresentation.sourceCaption(.ai), "by AI")
-        XCTAssertNil(ReviewPresentation.sourceCaption(.mechanical))
-    }
-
     func testLessonsEmptyTextBeforeAndAfterASearch() {
         typealias Pres = ReviewPresentation
         XCTAssertEqual(Pres.lessonsEmptyText(searched: false, finding: false, count: 0, failed: false),

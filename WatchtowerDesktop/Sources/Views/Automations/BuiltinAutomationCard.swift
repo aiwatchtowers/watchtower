@@ -12,8 +12,9 @@ struct BuiltinCardActions {
     var setEnabled: (_ featureIDs: [String], _ on: Bool) async -> String? = { _, _ in nil }
     /// The When fields' **Save**: config keys → text, then one daemon restart.
     var saveParameters: (_ values: [String: String]) async -> String? = { _ in nil }
-    /// The Result box's **Show in Inbox**: the Inbox on that filter. Nil hides the link.
-    var openInbox: ((InboxFilter) -> Void)?
+    /// The Result box's **Show in Inbox**: the Inbox on the folder the
+    /// built-in's artifacts land in. Nil hides the link.
+    var openInbox: ((_ automationID: Int64, _ defaultFolder: String) -> Void)?
 }
 
 /// A built-in automation's card (spec §5, C2 Task 10): the name with
@@ -231,8 +232,8 @@ struct BuiltinAutomationCard: View {
                 }
                 box(title: "Result", systemImage: "tray.and.arrow.down") {
                     lines(detail.sends)
-                    if let filter = detail.resultFilter, let openInbox = actions.openInbox {
-                        Button("Show in Inbox") { openInbox(filter) }
+                    if !detail.defaultFolder.isEmpty, let openInbox = actions.openInbox {
+                        Button("Show in Inbox") { openInbox(automation.id, detail.defaultFolder) }
                             .buttonStyle(.kitQuiet)
                             .controlSize(.small)
                     }

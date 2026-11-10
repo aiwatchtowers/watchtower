@@ -27,9 +27,12 @@ extension AppState {
     }
 
     /// Opens the Automations tab's editor panel on `target` (an edit, or a
-    /// new draft with its start text).
-    func openAutomationEditor(_ target: AutomationEditorTarget) {
+    /// new draft with its start text), at `step` of the draft column when
+    /// given (B's "Edit the look…" passes `.look`); nil keeps the step the
+    /// owner last chose for it.
+    func openAutomationEditor(_ target: AutomationEditorTarget, step: AutomationEditorStep? = nil) {
         guard let automationsViewModel else { return }
+        if let step { automationEditorCenter?.setStep(step, for: target) }
         automationsViewModel.showEditor(target)
         navigateToAutomations()
     }
@@ -224,8 +227,9 @@ extension AppState {
         vm.refresh()
         guard let savedID else { return }
         Task {
-            await vm.draftSaved(contextID: contextID, conversationID: conversationID, automationID: savedID)
-            if case let .editor(.newDraft(current, _, _)) = vm.panel, current == contextID { vm.showCard(savedID) }
+            await vm.draftSaved(contextID: contextID, conversationID: conversationID, automationID: savedID) {
+                if case let .editor(.newDraft(current, _, _)) = vm.panel, current == contextID { vm.showCard(savedID) }
+            }
         }
     }
 }

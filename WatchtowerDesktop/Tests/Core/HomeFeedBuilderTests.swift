@@ -114,6 +114,24 @@ final class HomeFeedBuilderTests: XCTestCase {
         XCTAssertTrue(FeedRef.output(6).hasActions)
     }
 
+    /// A card with blocks: Home's line is the plain-text body Go stored,
+    /// unchanged, and the row is stamped with `changed_at` (a living card
+    /// created long ago that changed now sits by its change).
+    func testAutomationOutputWithBlocksUsesPlainBodyAndChangedAt() throws {
+        let plain = "Threads\n- Thread A — colleague A [2 h]\nOpen: 3"
+        let changed = now.addingTimeInterval(-5 * 60)
+        var data = HomeFeedData()
+        data.outputs = [AutomationOutputCard(
+            id: 8, automationID: 1, automationName: "Threads waiting for me", runID: 4, title: "Threads",
+            body: plain, priority: "medium", createdAt: now.addingTimeInterval(-3 * 86_400),
+            blocksJSON: #"{"v":1,"blocks":[{"type":"heading","text":"Threads","level":1}]}"#,
+            outputKey: "threads", contentHash: "h2", writtenAt: changed, changedAt: changed)]
+        let row = try XCTUnwrap(build(data).waiting.first)
+        XCTAssertEqual(row.id, .output(8))
+        XCTAssertEqual(row.text, plain)
+        XCTAssertEqual(row.stamp, changed)
+    }
+
     func testCapAtSevenAndNMore() {
         var data = HomeFeedData()
         data.inbox = (1...10).map { inbox($0, minutesAgo: Double($0)) }

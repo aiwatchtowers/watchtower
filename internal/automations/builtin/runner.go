@@ -215,6 +215,11 @@ func (r *Runner) cancelQueued(id string) error {
 // (Entry.RunNow false); nothing is queued.
 var ErrNoRunNow = errors.New("the built-in offers no Run Now")
 
+// ErrNoSlot is RunNow's refusal of a built-in with no slot (Needs
+// approval): the runner executes inline at a slot, while such a built-in's
+// run is taken by the executor's poll; nothing is queued.
+var ErrNoSlot = errors.New("the built-in runs at no slot")
+
 // ErrRunNowQueued is RunNow's refusal (it also wraps
 // automations.ErrRunNotClaimed) when a manual run of the built-in with other
 // input is already queued for its next slot.
@@ -239,6 +244,11 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 	}
 	if !e.RunNow {
 		return nil, fmt.Errorf("built-in %s has no Run Now: %s: %w", id, e.NoRunNowNote, ErrNoRunNow)
+	}
+	if e.Slot == "" {
+		// Executed inline here means at a slot; a built-in with none runs on
+		// the executor's poll (`automations run` queues it and wakes it).
+		return nil, fmt.Errorf("built-in %s has no slot; queue its run for the executor instead: %w", id, ErrNoSlot)
 	}
 	r.endStaleRuns()
 	a, err := r.db.GetBuiltinAutomation(id)
