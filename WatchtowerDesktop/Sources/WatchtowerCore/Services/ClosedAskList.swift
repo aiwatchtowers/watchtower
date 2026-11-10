@@ -34,6 +34,8 @@ package enum ClosedAskListCopy {
         let reason = reason.hasSuffix(".") ? String(reason.dropLast()) : reason
         return "Could not refresh the list: \(reason). It shows what was read at \(readAt)."
     }
+    /// A clicked row's ask could not be read (not the same as gone).
+    package static func openFailed(_ reason: String) -> String { "Could not open the ask: \(reason)" }
     package static func noMatch(_ query: String) -> String { "No closed asks match “\(query)”." }
     package static func matches(_ shown: Int, of total: Int) -> String { "\(shown) of \(total)" }
     package static func comments(_ count: Int) -> String { count == 1 ? "1 comment" : "\(count) comments" }
@@ -164,11 +166,10 @@ package enum ClosedAskListModel {
         calendar: Calendar
     ) -> [Section] {
         let needle = fold(query.trimmingCharacters(in: .whitespacesAndNewlines))
-        let times = DateFormatter()
-        times.calendar = calendar
-        times.timeZone = calendar.timeZone
-        times.locale = Locale(identifier: "en_US_POSIX")
-        times.dateFormat = "HH:mm"
+        // One formatter per call for every row and group, not one each.
+        let times = formatter("HH:mm", calendar: calendar)
+        let days = formatter("EEEE, d MMMM", calendar: calendar)
+        let otherYears = formatter("EEEE, d MMMM yyyy", calendar: calendar)
         var dated: [(day: Date, rows: [Row])] = []
         var undated: [Row] = []
         for ask in asks {
@@ -194,24 +195,36 @@ package enum ClosedAskListModel {
                 dated.append((day, [row]))
             }
         }
-        var out = dated.sorted { $0.day > $1.day }.map { Section(title: dayTitle($0.day, now: now, calendar: calendar), rows: $0.rows) }
+        var out = dated.sorted { $0.day > $1.day }.map {
+            Section(title: dayTitle($0.day, now: now, calendar: calendar, days: days, otherYears: otherYears), rows: $0.rows)
+        }
         if !undated.isEmpty { out.append(Section(title: ClosedAskListCopy.unknownDate, rows: undated)) }
         return out
     }
 
     /// "Today", "Yesterday", "Saturday, 7 November", with the year when it is not this one.
-    package static func dayTitle(_ day: Date, now: Date, calendar: Calendar) -> String {
+    private static func dayTitle(
+        _ day: Date,
+        now: Date,
+        calendar: Calendar,
+        days: DateFormatter,
+        otherYears: DateFormatter
+    ) -> String {
         if calendar.isDate(day, inSameDayAs: now) { return ClosedAskListCopy.today }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(day, inSameDayAs: yesterday) {
             return ClosedAskListCopy.yesterday
         }
+        let sameYear = calendar.component(.year, from: day) == calendar.component(.year, from: now)
+        return (sameYear ? days : otherYears).string(from: day)
+    }
+
+    private static func formatter(_ format: String, calendar: Calendar) -> DateFormatter {
         let formatter = DateFormatter()
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        let sameYear = calendar.component(.year, from: day) == calendar.component(.year, from: now)
-        formatter.dateFormat = sameYear ? "EEEE, d MMMM" : "EEEE, d MMMM yyyy"
-        return formatter.string(from: day)
+        formatter.dateFormat = format
+        return formatter
     }
 
     private static func fold(_ text: String) -> String {

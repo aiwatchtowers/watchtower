@@ -30,19 +30,20 @@ extension WorkbenchesViewModel {
 
     /// A row of `key`'s list opened: its ask read-only in the same drawer,
     /// with the back row. A row whose ask is gone keeps the list, says so
-    /// and reads it again.
+    /// and reads it again; a read that fails says that instead — an error
+    /// is never "gone".
     func openClosedAsk(_ askID: Int64, from key: OwnerAsksViewModel.ClosedListKey) async {
         asks.closedListCursors[key] = askID
-        guard await showAsk(askID, projectID: key.projectID) else {
-            await asks.closedAskGone(key)
+        do {
+            guard try await asks.linkedAsk(askID: askID, projectID: key.projectID) != nil else {
+                await asks.closedAskGone(key)
+                return
+            }
+        } catch {
+            asks.closedListNotices[key] = ClosedAskListCopy.openFailed(error.localizedDescription)
             return
         }
+        guard await showAsk(askID, projectID: key.projectID) else { return }
         asks.noteOpenedFromClosedList(key, askID: askID)
-    }
-
-    /// Esc in the drawer with no field focused: back to the list the ask
-    /// was opened from. False (nothing done) for an ask opened any other way.
-    func escapeInAskDrawer(projectID: Int64) -> Bool {
-        asks.backToClosedList(projectID: projectID)
     }
 }

@@ -44,6 +44,7 @@ final class ClosedAskListCopyTests: XCTestCase {
         XCTAssertEqual(Copy.loadFailed("the database is busy"), "Could not load the closed asks: the database is busy")
         XCTAssertEqual(Copy.refreshFailed("the database is busy", readAt: "14:32"),
                        "Could not refresh the list: the database is busy. It shows what was read at 14:32.")
+        XCTAssertEqual(Copy.openFailed("disk I/O error"), "Could not open the ask: disk I/O error")
         XCTAssertEqual(Copy.noMatch("postgres"), "No closed asks match “postgres”.")
         XCTAssertEqual(Copy.matches(4, of: 84), "4 of 84")
         XCTAssertEqual(Copy.comments(1), "1 comment")

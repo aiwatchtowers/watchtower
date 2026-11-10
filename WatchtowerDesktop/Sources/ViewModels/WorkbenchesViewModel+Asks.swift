@@ -139,8 +139,13 @@ extension WorkbenchesViewModel {
         // A page screen (Clean Up, Agent Settings) covers the whole
         // workspace: no terminal behind it takes the keyboard.
         if pageCovered(projectID: projectID) { return true }
-        guard asks.drawerExpanded, let ask = asks.drawerAsk(projectID: projectID) else { return false }
-        return ask.sessionID == nil || ask.sessionID == sessionID
+        guard asks.drawerExpanded else { return false }
+        // The drawer shows an ask, or a closed list in its place (#1713).
+        if let ask = asks.drawerAsk(projectID: projectID) {
+            return ask.sessionID == nil || ask.sessionID == sessionID
+        }
+        guard let list = asks.drawerClosedList(projectID: projectID) else { return false }
+        return list.sessionID == nil || list.sessionID == sessionID
     }
 
     /// The workbench whose stack A / ⌃⌘A would go to: the one on the page,

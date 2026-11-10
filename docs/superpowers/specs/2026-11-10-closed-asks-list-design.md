@@ -112,7 +112,7 @@ The drawer footer keeps `askStatusLine` unchanged; only the list uses the short 
 
 ### Keyboard
 
-With the list focused (a click in it, or opened by its button): ↑/↓ move the cursor (selection fill, scrolled into view), Return opens the ask, ⌘F focuses the search, Esc clears a non-empty search, else closes the drawer. The list does not use `OwnerAskDrawerKeys`: those keys write an open ask's draft and do not apply.
+With the list focused (a click in it; opening the list leaves the keyboard where it was, and closing it hands a borrowed keyboard back, as the ask drawer does, board #536): ↑/↓ move the cursor (selection fill, scrolled into view), Return opens the ask, ⌘F focuses the search, Esc clears a non-empty search, else closes the drawer. The list does not use `OwnerAskDrawerKeys`: those keys write an open ask's draft and do not apply.
 
 In an ask opened from the list (the back row is shown): the back row is a button, and Esc — with the drawer's keys active and no text field focused — goes **back to the list**, never closes the drawer; a second Esc, now on the list, follows the list's rule above. The ask drawer has no Esc today (`OwnerAskDrawerKeys` handles none), so this adds Esc only while the back row is shown; an ask opened any other way is unchanged. ✕ always closes the drawer. Test: `testEscInOpenedAskGoesBackToList` (and `testEscWithoutListOriginDoesNothing`).
 
@@ -234,6 +234,7 @@ Design-only SwiftUI shots in `DesignShotCatalog` (`ClosedAsksShotFixtures`, `Wat
 - **Strings and model** live in `WatchtowerCore/Services/ClosedAskList.swift`; the entry label ("▸ N closed") and its help moved there too.
 - **Shots.** `ClosedAsksShotFixtures` now renders the real `OwnerAskClosedListPane` / `OwnerAskDrawer` over a real view model; the approved mockups stay in `docs/design/mockups/closed-asks-list/`.
 - **Shots of the implementation** are committed under `docs/design/mockups/closed-asks-list/implemented/`; compared with the mockups: same layout, the check preview uses the app's check words ("Works 4 · Doesn't work 1"), the opened ask's header is the real drawer header.
+- **Review fixes (debate review, 2026-11-10).** An expanded list counts in `isObscured` (a covered terminal takes no keyboard) and its Expand drops the terminal's focus (shared `OwnerAskDrawerExpandButton`); Return opens the cursor only while its row is on screen; Esc goes back only with the drawer's keys active, bare and not repeated (`OwnerAsksViewModel.escapeInDrawer`); a row whose read fails says "Could not open the ask: …", never "gone"; the list takes the keyboard only on a click, through the drawer's keyboard loan; a workbench delete drops every list key, a first read in flight included; a list put in place of an open ask counts as closing that ask (it does not reopen by itself) — decided by the agent, the judge's one "needs human" item.
 - **Partial rows.** `closedErrors` now holds read failures only; undecodable rows are `closedUnreadable`.
 
 ## Open questions for the owner (answered)

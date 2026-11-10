@@ -65,14 +65,22 @@ struct OwnerAskClosedListPane: View {
         .focusEffectDisabled()
         .onKeyPress(.downArrow) { move(ids, forward: true) }
         .onKeyPress(.upArrow) { move(ids, forward: false) }
-        .onKeyPress(.return) { openCursor() }
+        .onKeyPress(.return) { openCursor(ids) }
         .onKeyPress(.escape) { escape() }
         .onKeyPress(keys: ["f"], phases: .down) { press in
             guard press.modifiers.contains(.command) else { return .ignored }
             searchFocused = true
             return .handled
         }
-        .onAppear { listFocused = true }
+        // A click in the list borrows the keyboard and its close hands it
+        // back, as the ask drawer does (board #536); opening the list
+        // leaves the keyboard where it was.
+        .background(OwnerAskKeyCatcher(
+            onMouseDown: { [asks, projectID = key.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
+            resizeEdge: asks.drawerExpanded ? 0 : PanelResizeHandle.thickness,
+            canHandBack: { [asks, projectID = key.projectID] in asks.drawerIsEmpty(projectID: projectID) },
+            loan: asks.keyboardLoan(projectID: key.projectID)
+        ))
     }
 
     // MARK: Header, search, banners
@@ -98,15 +106,8 @@ struct OwnerAskClosedListPane: View {
                 Text(scope).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: Spacing.regular)
-            Button {
-                asks.drawerExpanded.toggle()
-            } label: {
-                Image(systemName: asks.drawerExpanded
-                      ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.kitIcon(isOn: false))
-            .help(asks.drawerExpanded ? "Back beside the terminal" : "Expand")
-            .accessibilityLabel(asks.drawerExpanded ? "Collapse" : "Expand")
+            OwnerAskDrawerExpandButton(asks: asks)
+                .buttonStyle(.kitIcon(isOn: false))
             Button {
                 asks.closeDrawer(projectID: key.projectID)
             } label: {
@@ -197,13 +198,14 @@ struct OwnerAskClosedListPane: View {
     @ViewBuilder
     private func content(list: [OwnerAsk]?, sections: [Model.Section], ids: [Int64], searching: Bool) -> some View {
         if list == nil, let error = asks.closedErrors[key] {
-            stateBlock(icon: "exclamationmark.triangle", text: error, hint: nil, action: (Copy.retry, reload))
+            stateBlock(icon: "exclamationmark.triangle", tone: Tone.warning, text: error, hint: nil, action: (Copy.retry, reload))
         } else if list == nil {
-            stateBlock(icon: nil, text: Copy.loading, hint: nil, action: nil)
+            stateBlock(icon: nil, tone: .secondary, text: Copy.loading, hint: nil, action: nil)
         } else if list?.isEmpty == true {
-            stateBlock(icon: "tray", text: Copy.empty, hint: Copy.emptyHint, action: nil)
+            stateBlock(icon: "tray", tone: .secondary, text: Copy.empty, hint: Copy.emptyHint, action: nil)
         } else if sections.isEmpty, searching {
-            stateBlock(icon: "magnifyingglass", text: Copy.noMatch(query.wrappedValue.trimmingCharacters(in: .whitespaces)),
+            stateBlock(icon: "magnifyingglass", tone: .secondary,
+                       text: Copy.noMatch(query.wrappedValue.trimmingCharacters(in: .whitespaces)),
                        hint: nil, action: (Copy.clearSearch, clearSearch))
         } else {
             rows(sections)
@@ -245,12 +247,12 @@ struct OwnerAskClosedListPane: View {
         }
     }
 
-    private func stateBlock(icon: String?, text: String, hint: String?, action: (String, () -> Void)?) -> some View {
+    private func stateBlock(icon: String?, tone: Color, text: String, hint: String?, action: (String, () -> Void)?) -> some View {
         VStack(spacing: Spacing.regular) {
             if let icon {
                 Image(systemName: icon)
                     .font(.title2)
-                    .foregroundStyle(icon == "exclamationmark.triangle" ? Tone.warning : Color.secondary)
+                    .foregroundStyle(tone)
                     .accessibilityHidden(true)
             } else {
                 ProgressView().controlSize(.small)
@@ -289,8 +291,10 @@ struct OwnerAskClosedListPane: View {
         return .handled
     }
 
-    private func openCursor() -> KeyPress.Result {
-        guard !searchFocused, let id = asks.closedListCursors[key] else { return .ignored }
+    /// Return opens the cursor's row only while it is on screen: a row the
+    /// search hid is never opened blind.
+    private func openCursor(_ ids: [Int64]) -> KeyPress.Result {
+        guard !searchFocused, let id = asks.closedListCursors[key], ids.contains(id) else { return .ignored }
         open(id)
         return .handled
     }

@@ -190,14 +190,18 @@ struct OwnerAskDrawer: View {
         ScrollViewReader { proxy in
             content
                 .background(OwnerAskKeyCatcher(
-                    onPress: { [vm, projectID = ask.projectID] press in
+                    onPress: { [asks, projectID = ask.projectID] press in
                         // Esc in an ask opened from a closed list: back to it (#1713).
-                        if press.key == .escape { return vm.escapeInAskDrawer(projectID: projectID) }
+                        if press.key == .escape {
+                            return asks.escapeInDrawer(projectID: projectID, otherModifiers: press.otherModifiers,
+                                                       isRepeat: press.isRepeat)
+                        }
                         return keys.press(press)
                     },
                     onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
                     resizeEdge: asks.drawerExpanded ? 0 : PanelResizeHandle.thickness,
-                    canHandBack: { [asks, projectID = ask.projectID] in asks.drawerAskIDs[projectID] == nil },
+                    // Back to a closed list keeps the keyboard in the drawer (#1713).
+                    canHandBack: { [asks, projectID = ask.projectID] in asks.drawerIsEmpty(projectID: projectID) },
                     loan: asks.keyboardLoan(projectID: ask.projectID),
                     onKey: pressAnswerKey
                 ))

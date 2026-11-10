@@ -622,12 +622,18 @@ final class OwnerAsksViewModel {
     /// The drawer's session's open asks count as seen — none of them opens
     /// the drawer by itself again (board #364).
     func closeDrawer(projectID: Int64) {
-        // A closed ask looked at from a closed list dismisses nothing.
+        dismissShownOpenAsk(projectID: projectID)
+        hideDrawer(projectID: projectID)
+    }
+
+    /// The owner moved off the drawer's open ask (closed it, or put a
+    /// closed list in its place): its session's open asks count as seen.
+    /// A closed ask looked at from a closed list dismisses nothing.
+    private func dismissShownOpenAsk(projectID: Int64) {
         if let shown = drawerAsk(projectID: projectID), shown.isOpen, let session = shown.sessionID {
             let seen = (openAsks[projectID] ?? []).filter { $0.sessionID == session }.map(\.id)
             dismissedAskIDs[projectID, default: []].formUnion(seen)
         }
-        hideDrawer(projectID: projectID)
     }
 
     /// The drawer's session left the screen: the drawer goes, and opens
@@ -989,6 +995,8 @@ extension OwnerAsksViewModel {
     /// ask's draft stays in `drafts`), then reads it.
     func openClosedList(_ key: ClosedListKey) async {
         let projectID = key.projectID
+        // Like a close: the open ask it replaces does not come back by itself.
+        dismissShownOpenAsk(projectID: projectID)
         if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
         drawerAskIDs[projectID] = nil
         closedListOrigins[projectID] = nil
@@ -1009,6 +1017,14 @@ extension OwnerAsksViewModel {
     func closedAskGone(_ key: ClosedListKey) async {
         closedListNotices[key] = ClosedAskListCopy.askGone
         await loadClosed(projectID: key.projectID, sessionID: key.sessionID, automations: key.automations)
+    }
+
+    /// Esc in the drawer (#1713): back to the list its ask came from — only
+    /// with the drawer's keys active, a bare Esc, not a held key's repeat
+    /// (whose next press would reach the list and close the drawer).
+    func escapeInDrawer(projectID: Int64, otherModifiers: Bool, isRepeat: Bool) -> Bool {
+        guard drawerKeysActive.contains(projectID), !otherModifiers, !isRepeat else { return false }
+        return backToClosedList(projectID: projectID)
     }
 
     /// The back row, or Esc in an ask opened from a list: that list again,
@@ -1034,11 +1050,16 @@ extension OwnerAsksViewModel {
     /// A deleted workbench: its lists, their state and its drawer go.
     func forgetClosedLists(projectID: Int64) {
         hideDrawer(projectID: projectID)
+        // Every key any list state holds, a first read still running included.
         var keys = Set(closedLists.keys)
         keys.formUnion(closedErrors.keys)
+        keys.formUnion(closedUnreadable.keys)
+        keys.formUnion(closedReadAt.keys)
+        keys.formUnion(closedLoading)
+        keys.formUnion(closedListNotices.keys)
+        keys.formUnion(closedGenerations.keys)
         keys.formUnion(closedListQueries.keys)
         keys.formUnion(closedListCursors.keys)
-        keys.formUnion(closedReadAt.keys)
         for key in keys where key.projectID == projectID { dropClosedListState(key) }
     }
 

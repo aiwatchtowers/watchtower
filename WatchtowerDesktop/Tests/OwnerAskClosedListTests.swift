@@ -265,7 +265,14 @@ final class OwnerAskClosedListTests: XCTestCase {
         let vm = await page(s)
         await vm.showClosedList(projectID: s.project, sessionID: s.session)
         await vm.openClosedAsk(s.closed[1], from: key(s))
-        XCTAssertTrue(vm.escapeInAskDrawer(projectID: s.project))
+        XCTAssertFalse(vm.asks.escapeInDrawer(projectID: s.project, otherModifiers: false, isRepeat: false),
+                       "the drawer's keys are not active: Esc is left alone")
+        vm.asks.setDrawerKeysActive(true, projectID: s.project)
+        XCTAssertFalse(vm.asks.escapeInDrawer(projectID: s.project, otherModifiers: true, isRepeat: false), "⌘Esc")
+        XCTAssertFalse(vm.asks.escapeInDrawer(projectID: s.project, otherModifiers: false, isRepeat: true),
+                       "a held key's repeat never goes back (its next press would close the list)")
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.closed[1])
+        XCTAssertTrue(vm.asks.escapeInDrawer(projectID: s.project, otherModifiers: false, isRepeat: false))
         XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s), "back, not closed")
     }
 
@@ -273,7 +280,8 @@ final class OwnerAskClosedListTests: XCTestCase {
         let s = try await seed()
         let vm = await page(s)
         await vm.showAsk(s.open, projectID: s.project)
-        XCTAssertFalse(vm.escapeInAskDrawer(projectID: s.project))
+        vm.asks.setDrawerKeysActive(true, projectID: s.project)
+        XCTAssertFalse(vm.asks.escapeInDrawer(projectID: s.project, otherModifiers: false, isRepeat: false))
         XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.open, "the drawer is left alone")
     }
 
@@ -342,10 +350,68 @@ final class OwnerAskClosedListTests: XCTestCase {
         let other = try await pool.write { try TestDatabase.insertWorkbench($0, folder: "/tmp/other") }
         let vm = await page(s)
         await vm.showClosedList(projectID: s.project, sessionID: s.session)
-        vm.selectedWorkbenchID = other
-        vm.selectedWorkbenchID = s.project
-        XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s), "kept per workbench")
+        vm.drill(into: other)
         XCTAssertNil(vm.asks.drawerClosedList(projectID: other))
+        // Changed while the owner was on the other workbench.
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET status = 'delivered', delivered_at = '2026-11-10T10:00:00Z' WHERE id = ?",
+                          arguments: [s.closed[0]])
+        }
+        vm.drill(into: s.project)
+        XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s), "kept per workbench")
+        await vm.asks.refreshIfChanged(projectID: s.project)
+        XCTAssertEqual(vm.asks.closedLists[key(s)]?.first { $0.id == s.closed[0] }?.status, .delivered,
+                       "re-read once the fingerprint changed")
+    }
+
+    func testAnInFlightReadOfADeletedWorkbenchAppliesNothing() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        let generation = vm.asks.beginClosedRead(key(s))
+        vm.asks.forgetClosedLists(projectID: s.project)
+        XCTAssertFalse(vm.asks.closedLoading.contains(key(s)))
+        let rows = try await pool.read { try OwnerAskQueries.closedAsks($0, projectID: s.project, sessionID: s.session) }
+        let read = OwnerAsksViewModel.ClosedRead(asks: rows, replaced: [:], counts: [:], automationCount: 0, labels: [:])
+        vm.asks.finishClosedRead(key(s), generation: generation, result: .success(read))
+        XCTAssertNil(vm.asks.closedLists[key(s)], "the read started before the delete is dropped")
+    }
+
+    func testAnExpandedListHidesItsSessionsTerminal() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        await vm.showClosedList(projectID: s.project, sessionID: s.session)
+        XCTAssertFalse(vm.isObscured(sessionID: s.session, projectID: s.project), "beside the terminal")
+        vm.asks.drawerExpanded = true
+        XCTAssertTrue(vm.isObscured(sessionID: s.session, projectID: s.project), "a covered terminal takes no keyboard")
+        XCTAssertFalse(vm.isObscured(sessionID: s.other, projectID: s.project))
+
+        await vm.showClosedList(projectID: s.project, sessionID: nil)
+        vm.asks.drawerExpanded = true
+        XCTAssertTrue(vm.isObscured(sessionID: s.other, projectID: s.project), "a session-less list covers every terminal")
+    }
+
+    func testTheListReplacingAnOpenAskCountsAsClosingIt() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        await vm.showAsk(s.open, projectID: s.project)
+        // The session-less list: no other session revealed, the drawer's ask is replaced in place.
+        await vm.showClosedList(projectID: s.project, sessionID: nil)
+        XCTAssertNil(vm.asks.drawerAskIDs[s.project])
+        vm.asks.closeDrawer(projectID: s.project)
+        XCTAssertTrue(vm.asks.dismissedAskIDs[s.project]?.contains(s.open) == true,
+                      "the open ask does not reopen by itself right after")
+    }
+
+    func testARowWhoseReadFailsSaysSoNotGone() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        await vm.showClosedList(projectID: s.project, sessionID: s.session)
+        try await breakTable()
+        await vm.openClosedAsk(s.closed[0], from: key(s))
+        let notice = try XCTUnwrap(vm.asks.closedListNotices[key(s)])
+        XCTAssertTrue(notice.hasPrefix("Could not open the ask: "), notice)
+        XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s), "the list stays")
+        try await mendTable()
     }
 
     func testClosedListStateDroppedWithWorkbench() async throws {
