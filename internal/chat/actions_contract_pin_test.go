@@ -14,7 +14,7 @@ import (
 // chat. Both sides compare against the SAME fixture files, so an edit to one
 // copy without the other fails on the side that drifted.
 func TestActionsContract_MatchesSharedFixtures(t *testing.T) {
-	for _, surface := range []string{"main", "target", "automation_editor"} {
+	for _, surface := range []string{"main", "target", "automation_editor", "tuning"} {
 		raw, err := os.ReadFile("testdata/actions_contract_" + surface + ".txt")
 		require.NoError(t, err)
 		want := strings.TrimSuffix(string(raw), "\n")
@@ -78,4 +78,19 @@ func TestActionsContract_AutomationEditorNamesOnlyDraftAndSave(t *testing.T) {
 	target := ActionsContract("target")
 	assert.NotContains(t, target, "draft_automation")
 	assert.NotContains(t, target, "save_automation")
+}
+
+// The tuning chat's rules block (spec 2026-11-03 §4.1): one proposal tool,
+// the receipt and duplicate rules, the old-build line, and nothing from the
+// action surfaces. The A/B replay and captured inputs are out of v1 (ask #1164).
+func TestActionsContract_TuningPinnedLines(t *testing.T) {
+	block := ActionsContract("tuning")
+	assert.True(t, strings.HasPrefix(block, "=== TUNING TOOLS ===\n"))
+	assert.Contains(t, block, "- propose_tuning_edit — ")
+	assert.Contains(t, block, "Call list_coach_proposals before you propose")
+	assert.Contains(t, block, `answer only "Tuning tools are not available in this Watchtower build — update Watchtower." and propose nothing.`)
+	for _, absent := range []string{"send_slack_message", "create_target", "watchtower-action", "get_action",
+		"propose_prompt_replay", "get_prompt_replay", "A/B", "replay", "captured", "prompt_input"} {
+		assert.NotContains(t, block, absent)
+	}
 }

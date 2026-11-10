@@ -1,21 +1,24 @@
 import Foundation
 
-package enum AgentSurface: String, Sendable {
+package enum AgentSurface: String, Sendable, CaseIterable {
     case main
     case target
     /// `tools.AutomationEditorSurface`: the "change it in words" chat bound to
     /// one automation (spec 2026-10-14 §14.5).
     case automationEditor = "automation_editor"
+    /// `tools.SurfaceTuning`: Analytics' tuning chat (spec 2026-11-03 §4.1).
+    case tuning
 }
 
 /// The system-prompt block that teaches an action surface how write tools
 /// work: they create PROPOSALS the owner approves in the chat, unless the
 /// owner pre-approved the tool. Shared by the main AI Chat, the target chat
-/// and the automation editor chat (the action surfaces, AGENT-04).
+/// and the automation editor chat (the action surfaces, AGENT-04); the tuning
+/// chat's block is its own rules block.
 package enum AgentToolsContract {
     /// Byte-identical to Go `chat.ActionsContract` (`internal/chat/actions_contract.go`),
     /// pinned on both sides by
-    /// `internal/chat/testdata/actions_contract_{main,target,automation_editor}.txt`.
+    /// `internal/chat/testdata/actions_contract_{main,target,automation_editor,tuning}.txt`.
     /// Change both copies and the fixture together.
     package static func promptBlock(surface: AgentSurface) -> String {
         let lines: [String]
@@ -27,6 +30,8 @@ package enum AgentToolsContract {
         case .automationEditor:
             lines = header + automationEditorTools + Array(rules.prefix(3)) + [draftFirstRule]
                 + [rules[rules.count - 1]]
+        case .tuning:
+            lines = tuningLines
         }
         var text = lines.joined(separator: "\n")
         if surface == .target {
@@ -126,6 +131,27 @@ package enum AgentToolsContract {
             + "mean to delete, verbatim. After a \"page changed\" error, read the page again and propose again.",
         "- get_action <id> answers what happened to a proposal; an ACTIONS SINCE YOUR LAST MESSAGE block at the "
             + "top of the owner's message reports outcomes since your last turn."
+    ]
+
+    /// The tuning chat's rules block (spec 2026-11-03 §4.1); the A/B replay and
+    /// captured-input tools are not in v1 (ask #1164).
+    private static let tuningLines = [
+        "=== TUNING TOOLS ===",
+        "You help the owner tune Watchtower's prompts and their Claude Code and Codex setup. You read with the read "
+            + "tools and never change anything yourself: the proposal tool below files a card, and nothing changes "
+            + "until the owner presses a button on it.",
+        "Proposal tools on this surface:",
+        "- propose_tuning_edit — propose one edit to a prompt's additions, a global Claude or Codex skill, a "
+            + "Watchtower skill's owner additions, ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, the Claude allow list or "
+            + "the Codex rules. Nothing changes until the owner presses Accept on the card.",
+        "Rules:",
+        "- The receipt gives the proposal id. Tell the owner a card is waiting for them; never say an edit is made.",
+        "- Call list_coach_proposals before you propose, and never propose an edit that is already open, accepted or "
+            + "declined.",
+        "- One proposal per destination text. When propose_tuning_edit refuses, read its reason, fix the arguments "
+            + "and try again, or tell the owner why it cannot be done.",
+        "- If no tuning tool is in your tool list, answer only \"Tuning tools are not available in this Watchtower "
+            + "build — update Watchtower.\" and propose nothing."
     ]
 
     private static let targetCoexistence = "Changes to THIS task and its vertical line still go through "

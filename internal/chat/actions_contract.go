@@ -9,9 +9,10 @@ import (
 // ActionsContract is the system-prompt block that teaches an action surface
 // how write tools work. The Swift twin is
 // WatchtowerCore/Services/Actions/AgentToolsContract.swift — byte-identical,
-// pinned on both sides by testdata/actions_contract_{main,target,automation_editor}.txt.
-// Any surface other than main, target and automation_editor is draft-only
-// (AGENT-04) and gets "".
+// pinned on both sides by testdata/actions_contract_{main,target,automation_editor,tuning}.txt.
+// Any surface other than main, target, automation_editor and tuning is
+// draft-only (AGENT-04) and gets "". The tuning block is the tuning chat's
+// own rules block (spec 2026-11-03 §4.1), not the shared header and rules.
 func ActionsContract(surface string) string {
 	var lines []string
 	switch surface {
@@ -21,6 +22,8 @@ func ActionsContract(surface string) string {
 		lines = concat(actionsHeader, targetActionTools, actionsRules)
 	case tools.AutomationEditorSurface:
 		lines = concat(actionsHeader, automationEditorTools, automationEditorRules)
+	case tools.SurfaceTuning:
+		lines = concat(tuningHeader, tuningTools, tuningRules)
 	default:
 		return ""
 	}
@@ -119,6 +122,28 @@ var automationEditorRules = concat(actionsRules[:3], []string{
 
 // mainActionsRules adds the Slack send rule before the closing get_action line.
 var mainActionsRules = concat(actionsRules[:len(actionsRules)-1], []string{slackSendRule}, actionsRules[len(actionsRules)-1:])
+
+// tuningHeader, tuningTools and tuningRules are the tuning chat's block
+// (spec 2026-11-03 §4.1): reads are free, the one proposal tool files a coach
+// card, and the build check line keeps an old build honest. The A/B replay
+// and captured-input tools are not in v1 (ask #1164).
+var tuningHeader = []string{
+	"=== TUNING TOOLS ===",
+	"You help the owner tune Watchtower's prompts and their Claude Code and Codex setup. You read with the read tools and never change anything yourself: the proposal tool below files a card, and nothing changes until the owner presses a button on it.",
+	"Proposal tools on this surface:",
+}
+
+var tuningTools = []string{
+	"- propose_tuning_edit — propose one edit to a prompt's additions, a global Claude or Codex skill, a Watchtower skill's owner additions, ~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, the Claude allow list or the Codex rules. Nothing changes until the owner presses Accept on the card.",
+}
+
+var tuningRules = []string{
+	"Rules:",
+	"- The receipt gives the proposal id. Tell the owner a card is waiting for them; never say an edit is made.",
+	"- Call list_coach_proposals before you propose, and never propose an edit that is already open, accepted or declined.",
+	"- One proposal per destination text. When propose_tuning_edit refuses, read its reason, fix the arguments and try again, or tell the owner why it cannot be done.",
+	`- If no tuning tool is in your tool list, answer only "Tuning tools are not available in this Watchtower build — update Watchtower." and propose nothing.`,
+}
 
 func concat(parts ...[]string) []string {
 	var out []string
