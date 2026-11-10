@@ -113,7 +113,7 @@ func noCheckpointOnClose(ctx context.Context, conn *SQLiteConn) error {
 		return fmt.Errorf("%w (sqlite reported %d)", ErrNoCheckpointGuard, out)
 	}
 	if _, err := conn.exec(ctx, "PRAGMA wal_autocheckpoint = 0", nil); err != nil {
-		return fmt.Errorf("turning off wal_autocheckpoint: %w", err)
+		return fmt.Errorf("%w (wal_autocheckpoint: %w)", ErrNoCheckpointGuard, err)
 	}
 	return nil
 }
