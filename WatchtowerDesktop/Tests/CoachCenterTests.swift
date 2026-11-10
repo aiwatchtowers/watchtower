@@ -103,6 +103,15 @@ final class CoachCenterTests: XCTestCase {
         XCTAssertTrue(calls.contains(["coach", "proposals", "--status", "all", "--json"]))
     }
 
+    func testRefreshProposalsAsksTheCLI() async {
+        let runner = ScriptedCoachRunner(Self.standard())
+        let center = makeCenter(runner)
+        center.refreshProposals()
+        await waitUntil { center.proposals?.value != nil }
+        XCTAssertEqual(runner.invocations, [["coach", "proposals", "--status", "all", "--json"]])
+        XCTAssertEqual(center.proposals?.value?.map(\.id), [7, 5])
+    }
+
     func testPeriodChangeDropsStaleStatus() async {
         let runner = ScriptedCoachRunner(Self.standard())
         runner.hold()

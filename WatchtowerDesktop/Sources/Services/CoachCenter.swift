@@ -173,6 +173,12 @@ final class CoachCenter {
 
     // MARK: - Reads
 
+    /// Reloads the proposal list now (the tuning panel, after the chat
+    /// proposed an edit); the one-in-flight-plus-one-queued rule applies.
+    func refreshProposals() {
+        request(.proposals)
+    }
+
     private func tick() {
         guard isTabOnScreen() else { return }
         for workbench in shown.keys { request(.status(workbench: workbench)) }

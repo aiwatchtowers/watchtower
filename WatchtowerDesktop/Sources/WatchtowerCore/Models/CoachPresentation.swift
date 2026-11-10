@@ -49,6 +49,13 @@ extension CoachProposal {
         return (open, accepted)
     }
 
+    /// The tuning chat's own proposals: origin `chat`, that conversation,
+    /// oldest first (the order they were proposed in the chat).
+    package static func forChat(_ all: [CoachProposal], conversationID: Int64) -> [CoachProposal] {
+        all.filter { $0.origin == "chat" && $0.conversationID == conversationID }
+            .sorted { $0.id < $1.id }
+    }
+
     package func verdictLine(hasCut: Bool, now: Date) -> String {
         if status == "rolled_back" { return "rolled back" }
         switch verdict {

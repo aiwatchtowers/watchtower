@@ -20,7 +20,9 @@ final class CoachPresentationTests: XCTestCase {
         baseline: Double? = nil,
         verdictValue: Double? = nil,
         metricName: String = "corrections",
-        promptID: String = ""
+        promptID: String = "",
+        origin: String? = nil,
+        conversation: Int64? = nil
     ) -> CoachProposal {
         var obj: [String: Any] = [
             "id": id, "title": "t", "why": "w", "destination": destination, "workbench_id": workbench,
@@ -32,6 +34,8 @@ final class CoachPresentationTests: XCTestCase {
         obj["baseline"] = baseline ?? NSNull()
         obj["verdict_value"] = verdictValue ?? NSNull()
         obj["verdict_at"] = NSNull()
+        if let origin { obj["origin"] = origin }
+        if let conversation { obj["conversation_id"] = conversation }
         let data = try! JSONSerialization.data(withJSONObject: obj)  // swiftlint:disable:this force_try
         return try! JSONDecoder().decode(CoachProposal.self, from: data)  // swiftlint:disable:this force_try
     }
@@ -45,6 +49,18 @@ final class CoachPresentationTests: XCTestCase {
         XCTAssertEqual(CoachTrend.of(metric(0.22, prev: 0.31), points: true), .better("↓ 9 pts · was 31%"))
         XCTAssertEqual(CoachTrend.of(metric(3.9, prev: 3.0), points: false), .worse("↑ 30% · was 3.0"))
         XCTAssertEqual(CoachTrend.of(metric(0.4, prev: 0.31), points: true), .worse("↑ 9 pts · was 31%"))
+    }
+
+    func testForChatKeepsOnlyThisConversation() {
+        let all = [
+            proposal(id: 4, origin: "chat", conversation: 12),
+            proposal(id: 2, origin: "chat", conversation: 13),
+            proposal(id: 3, origin: "weekly", conversation: 12),
+            proposal(id: 5),
+            proposal(id: 1, origin: "chat", conversation: 12)
+        ]
+        XCTAssertEqual(CoachProposal.forChat(all, conversationID: 12).map(\.id), [1, 4])
+        XCTAssertEqual(CoachProposal.forChat(all, conversationID: 99).map(\.id), [])
     }
 
     func testForPane() {
