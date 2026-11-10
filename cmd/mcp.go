@@ -193,8 +193,8 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // (spec 2026-11-03-tuning-chat-design §4.1).
 const tuningContextType = "analytics_tuning"
 
-// mcpChatBinding is the binding `mcp --chat` gives a chat surface (every
-// surface but automation, which mcpAutomationOptions binds). The tuning chat
+// mcpChatBinding is the binding `mcp --chat` gives one of
+// tools.ChatSurfaces. The tuning chat
 // is bound to its own conversation (so READ-01's session key is
 // conversation:<id>) and applies directly: its proposal tools only file a
 // card the owner presses.
@@ -213,15 +213,25 @@ func mcpChatBinding(turn string, turnFunc func() string) (tools.Binding, error) 
 		ContextType: mcpFlagContextType, ContextID: mcpFlagContextID, ChatProjectID: mcpFlagChatProject,
 	}
 	if mcpFlagSurface == tools.SurfaceTuning {
-		if mcpFlagConversation <= 0 {
-			return tools.Binding{}, errors.New("--surface tuning needs --conversation N")
-		}
-		if mcpFlagContextType != tuningContextType {
-			return tools.Binding{}, fmt.Errorf("--surface tuning needs --context-type %s", tuningContextType)
+		if err := checkTuningBinding(mcpFlagConversation, mcpFlagContextType); err != nil {
+			return tools.Binding{}, err
 		}
 		b.DirectApply = true
 	}
 	return b, nil
+}
+
+// checkTuningBinding is what a tuning chat must name: its conversation and
+// its context type. `ai query` checks it too, so a turn missing either fails
+// before the provider starts instead of running without its MCP child.
+func checkTuningBinding(conversation int64, contextType string) error {
+	if conversation <= 0 {
+		return errors.New("--surface tuning needs --conversation N")
+	}
+	if contextType != tuningContextType {
+		return fmt.Errorf("--surface tuning needs --context-type %s", tuningContextType)
+	}
+	return nil
 }
 
 // mcpAutomationOptions is `watchtower mcp --chat --surface automation

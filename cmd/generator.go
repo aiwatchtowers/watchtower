@@ -164,8 +164,9 @@ func buildQuerier(cfg *config.Config, opts transport.Options) ai.Provider {
 // ways: a provider with an MCP child gets the MCP args on its client; one
 // without (ollama) gets the runtime-B in-process tool loop (agentloop)
 // instead. All get the owner's Quick Connections except on the automation
-// editor and the tuning chat; runtime B refuses the tuning surface. It returns a cleanup to run after the query drains (closing the
-// tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
+// editor and the tuning chat; runtime B refuses the tuning surface. It
+// returns a cleanup to run after the query drains (closing the tool-loop's
+// DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (ai.Provider, func(), error) {
 	if toolRoutingEnabled(cfg, aiFlagModel) {
 		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath, opts) })

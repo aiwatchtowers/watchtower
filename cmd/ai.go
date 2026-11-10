@@ -273,6 +273,12 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 		emitError(enc, fmt.Sprintf("unknown chat surface %q", aiFlagSurface))
 		return nil
 	}
+	if aiFlagTools == "chat" && aiFlagSurface == tools.SurfaceTuning {
+		if err := checkTuningBinding(aiFlagConversation, aiFlagContextType); err != nil {
+			emitError(enc, err.Error())
+			return nil
+		}
+	}
 	// Before the config/DB work below, so a writer feeding a large prompt on
 	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
 	// before reading — see WatchtowerAIService.feedStdin).
