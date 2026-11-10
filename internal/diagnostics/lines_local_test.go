@@ -103,13 +103,6 @@ func TestDiagnostics_SysctlFailure(t *testing.T) {
 	}
 }
 
-func writeFile(t *testing.T, path, body string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func lastSyncJSON(t *testing.T, finished time.Time, errText string) string {
 	t.Helper()
 	b, err := json.Marshal(map[string]any{"started_at": finished.Add(-time.Minute), "finished_at": finished, "error": errText})
@@ -410,14 +403,6 @@ func TestDiagnosticsText_LocalHelpers(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
-
-// skipIfRoot skips a mode-000 case: root reads the file anyway.
-func skipIfRoot(t *testing.T) {
-	t.Helper()
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: mode 000 does not block reads")
-	}
-}
 
 // TestDiagnostics_CrashPartSkipsNonRegular: a directory or a FIFO where a
 // log should be is skipped before it is opened (a FIFO would block open).
