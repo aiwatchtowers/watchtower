@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 (cobra, viper, the in-repo SQLCipher driver, cgo), SwiftUI + WatchtowerCore + DesignKit.
 
-**Spec:** `docs/superpowers/specs/2026-11-04-report-a-problem-design.md` (owner-approved in ask #1141, including decisions 27/28/31 that were open in ask #1043). Read with it: `docs/review/review-rules.md` ("Swift / Desktop conventions"), `docs/design/desktop-style-guide.md`, `docs/inventory/files.md` (FILES-01), `docs/inventory/agent-actions.md` (READ-02), `docs/inventory/features.md` (FEAT-01), `.claude/skills/add-desktop-feature`. Mockups: `docs/design/mockups/report-a-problem/`.
+**Spec:** `docs/superpowers/specs/2026-11-04-report-a-problem-design.md` (owner-approved in ask #1141; decisions 27/28/31 approved in ask #1043). Read with it: `docs/review/review-rules.md` ("Swift / Desktop conventions"), `docs/design/desktop-style-guide.md`, `docs/inventory/files.md` (FILES-01), `docs/inventory/agent-actions.md` (READ-02), `docs/inventory/features.md` (FEAT-01), `.claude/skills/add-desktop-feature`. Mockups: `docs/design/mockups/report-a-problem/`.
 
 ## Global Constraints
 
