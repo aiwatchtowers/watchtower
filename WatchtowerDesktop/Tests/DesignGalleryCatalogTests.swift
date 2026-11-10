@@ -44,7 +44,8 @@ final class DesignGalleryCatalogTests: XCTestCase {
             "KitFieldStyle": "shown as kit",
             "PanelTab": "the modifier behind panelTab(isSelected:)",
             "followSelection": "a ScrollViewProxy helper: scrolling, nothing drawn",
-            "onPopoverSurface": "an environment flag set by popoverSurface(), nothing drawn"
+            "onPopoverSurface": "an environment flag set by popoverSurface(), nothing drawn",
+            "hash": "ArtifactAction's press address (inbox builder A), nothing drawn"
         ]
         let shown = Set(CatalogPage.componentsShown)
         XCTAssertEqual(CatalogPage.componentsShown.count, shown.count, "a component is listed on two pages")
