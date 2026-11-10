@@ -16,7 +16,7 @@ extension WorkbenchesViewModel {
         case quick
         /// Its agent may be working: the page asks first.
         case confirm(TerminalSession)
-        /// A Delete and Clean Up runs on it (board #535): nothing happens.
+        /// A cleanup apply runs on it (board #535): nothing happens.
         case busy
     }
 

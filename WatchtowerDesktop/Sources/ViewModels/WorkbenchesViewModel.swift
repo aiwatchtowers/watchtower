@@ -141,38 +141,53 @@ final class WorkbenchesViewModel {
     /// The session (its uuid) whose detail the Analytics pane shows per
     /// workbench; none = the overview.
     var analyticsSession: [Int64: String] = [:]
-    /// Session cleanup (board #535): the Delete dialog's plan and apply, the
-    /// Clean Up screen. Held here, on the AppState-owned view model, so a
-    /// run survives navigating away. AppState wires its own; nil = Delete
-    /// Only.
+    /// Session cleanup (board #535): the Clean Up screen, the placed
+    /// sessions' cleanup and every delete's background cleanup (#1716).
+    /// Held here, on the AppState-owned view model, so a run survives
+    /// navigating away. AppState wires its own; nil = a deleted session's
+    /// cleanup cannot run (it stays Not fully cleaned).
     @ObservationIgnored var sessionCleanup: SessionCleanupCenter?
     /// The sessions' stored cleanup results (`cleanup_result`), for the
     /// report's Cleanup line; a session without one has no entry.
     var cleanupRecords: [Int64: SessionCleanupRecord] = [:]
-    /// The sessions a cleanup runs on (board #535) — Delete and Clean Up,
-    /// or the Clean Up screen's apply in a session's scope: the row is busy, it does not delete (✕, ⌘⌫,
-    /// Delete, Delete and Clean Up) or start fresh, and shows "Cleaning
-    /// up…".
+    /// The sessions a cleanup apply runs on (board #535) — the Clean Up
+    /// screen's in a session's scope, a placed session's: the row is busy,
+    /// it does not delete (✕, ⌘⌫, Delete) or start fresh, and shows
+    /// "Cleaning up…".
     var cleaningUpSessions: Set<Int64> = []
-    /// The subset whose terminal Delete and Clean Up closed: the row does
-    /// not resume either, until it is deleted or kept. A Clean Up… apply
-    /// leaves a live session's terminal reachable.
-    var closedForCleanup: Set<Int64> = []
-    /// The Delete and Clean Up runs this view model owns, per session: a
-    /// view going away never cancels one.
-    @ObservationIgnored var cleanupRuns: [Int64: Task<Bool, Never>] = [:]
-    /// Each Delete and Clean Up run's workbench, per session: the run
-    /// counts as that workbench's cleanup apply from its start, before the
-    /// terminal closed and any re-plan (one apply per workbench, spec
-    /// 2026-10-26 §3.2).
-    var cleanupRunWorkbenches: [Int64: Int64] = [:]
     /// The automatic cleanups of finished placed sessions whose agent
     /// exited (session worktrees spec §9), per session; gone when done.
     @ObservationIgnored var placedCleanupRuns: [Int64: Task<Void, Never>] = [:]
-    /// Per deleted session, what its Delete and Clean Up kept of the items
-    /// the dialog showed: told on the Undo bar while the row waits there,
-    /// dropped once it leaves the batch (Undo or the commit).
-    var cleanupKeptNotices: [Int64: String] = [:]
+    /// The deleted sessions waiting for their background cleanup, per
+    /// workbench, in request order (board #1716, spec 2026-11-10 §1); the
+    /// first one runs. A row here is hidden, its terminal closed, and it
+    /// does not resume (`closedForCleanup`).
+    var autoCleanupQueue: [Int64: [Int64]] = [:]
+    /// A deleted session whose background cleanup could not remove
+    /// everything: its "Not fully cleaned: …" line (`SessionAutoCleanupOutcome`).
+    /// In memory: the next launch cleans the row up again.
+    var notFullyCleaned: [Int64: String] = [:]
+    /// Per workbench, the Not fully cleaned rows (`fetchDeleting`, marked
+    /// and not queued) for the finished group.
+    var notFullyCleanedRows: [Int64: [TerminalSession]] = [:]
+    /// The quiet notice of the background cleanups that ended clean, on the
+    /// Undo bar's place for `cleanupNoticeDuration`; deletes in a row join
+    /// into one.
+    var cleanupNotice: SessionCleanupNotice?
+    /// Each queued row's title, for the notice.
+    @ObservationIgnored var autoCleanupTitles: [Int64: String] = [:]
+    /// The queue's runner per workbench while it has work.
+    @ObservationIgnored var autoCleanupWorkers: [Int64: Task<Void, Never>] = [:]
+    /// What the shown notice joins.
+    @ObservationIgnored var cleanupNoticeEntries: [(title: String, result: SessionCleanupPlan)] = []
+    @ObservationIgnored var cleanupNoticeTask: Task<Void, Never>?
+    /// The notice's wait. A seam for tests.
+    @ObservationIgnored var cleanupNoticeSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    /// Set by the quit: no further background cleanup starts, and an
+    /// outcome that arrives is dropped (the row keeps `delete_requested_at`).
+    @ObservationIgnored var autoCleanupStopped = false
+    /// The launch's re-queue ran (once per view model).
+    @ObservationIgnored var requeuedAtLaunch = false
     /// The Clean Up screen's applies this view model owns, per workbench
     /// (either scope): closing the screen or leaving the page cancels none.
     var sweepRuns: [Int64: Task<Bool, Never>] = [:]
@@ -368,7 +383,6 @@ final class WorkbenchesViewModel {
             if oldValue.ids != pendingDeletes.ids {
                 onPendingDeletesChanged?(pendingDeletes.ids)
                 onHiddenSessionsChanged?(pendingDeletes.ids)
-                cleanupKeptNotices = cleanupKeptNotices.filter { pendingDeletes.ids.contains($0.key) }
             }
         }
     }
@@ -405,6 +419,13 @@ final class WorkbenchesViewModel {
         try await dbPool.write { db in
             for id in ids { try TerminalSessionQueries.delete(db, id: id) }
         }
+    }
+    /// Marks workbench rows deleted in one write when the Undo window ends
+    /// or the app quits (`delete_requested_at`, board #1716): they leave
+    /// every list and wait for their background cleanup. Off the main actor.
+    /// A seam for tests.
+    @ObservationIgnored lazy var commitDeleteRequests: @Sendable ([Int64], Date) async throws -> Void = { [dbPool] ids, at in
+        try await dbPool.write { db in try TerminalSessionQueries.markDeleteRequested(db, ids: ids, at: at) }
     }
 
     /// The owner changed something in a project (a comment, a status): the

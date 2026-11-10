@@ -136,14 +136,14 @@ extension WorkbenchesViewModel {
     }
 
     /// False while any cleanup apply of the workbench runs — the screen's,
-    /// of either scope, or Delete and Clean Up's: Refresh and Clean Up…
+    /// of either scope, or a placed session's: Refresh and Clean Up…
     /// are disabled then ("Another cleanup is running").
     func canRefreshCleanup(projectID: Int64) -> Bool {
         sessionCleanup != nil && !cleanupApplyRuns(projectID: projectID)
     }
 
     /// Clean Up… and Refresh wait for a cleanup apply that is not the
-    /// screen's own on the scope it shows — a Delete and Clean Up, or the
+    /// screen's own on the scope it shows — a placed session's, or the
     /// screen's apply of the other scope: the footer says "Another cleanup
     /// is running" then.
     func cleanupBlockedByAnotherRun(projectID: Int64) -> Bool {
@@ -151,18 +151,12 @@ extension WorkbenchesViewModel {
         return sweepRunScopes[projectID] != cleanupScreens[projectID]?.scope
     }
 
-    /// True while a cleanup apply of workbench `projectID` runs: the Delete
-    /// dialog's **Delete and Clean Up** waits (Delete Only does not).
-    func deleteAndCleanUpBlocked(projectID: Int64) -> Bool {
-        cleanupApplyRuns(projectID: projectID)
-    }
-
-    /// Whether a cleanup apply of workbench `projectID` runs: the center's,
-    /// the screen's, or a Delete and Clean Up still closing its terminal or
-    /// re-planning before its apply starts.
+    /// Whether a cleanup apply of workbench `projectID` runs: the center's
+    /// (a placed session's) or the screen's. A background cleanup of a
+    /// deleted session (board #1716) is not one: the screen's apply waits
+    /// for its slot instead of being refused.
     func cleanupApplyRuns(projectID: Int64) -> Bool {
         sessionCleanup?.isApplying(workbenchID: projectID) == true || sweepRuns[projectID] != nil
-            || cleanupRunWorkbenches.values.contains(projectID)
     }
 
     /// True while a row of the screen's plan still waits for its check:

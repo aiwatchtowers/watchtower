@@ -272,6 +272,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                     sessions: { await Self.finishPendingDeletes(app.workbenchesViewModel) }
                 )
             },
+            stopBackgroundCleanups: { await app.workbenchesViewModel?.stopAutoCleanupForQuit() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
     }
@@ -331,6 +332,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         finishPendingDeletes: @escaping () async -> Void = {},
+        stopBackgroundCleanups: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         guard managesLifecycle else { return .terminateNow }
@@ -343,6 +345,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             detachTerminals: detachTerminals,
             stopDaemon: stopDaemon,
             finishPendingDeletes: finishPendingDeletes,
+            stopBackgroundCleanups: stopBackgroundCleanups,
             reply: reply
         )
     }

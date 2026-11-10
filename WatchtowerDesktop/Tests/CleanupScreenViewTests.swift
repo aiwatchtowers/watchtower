@@ -266,11 +266,14 @@ final class CleanupScreenViewTests: XCTestCase {
         XCTAssertNoThrow(try footer().inspect().find(button: "Clear"))
         XCTAssertThrowsError(try footer().inspect().find(text: CleanupFooter.anotherRunning))
 
-        vm.cleanupRunWorkbenches[99] = projectID
+        // Another cleanup apply of the workbench: the screen's of another scope.
+        vm.sweepRuns[projectID] = Task { true }
+        vm.sweepRunScopes[projectID] = .session(99)
         XCTAssertTrue(try footer().inspect().find(button: "Clean Up…").isDisabled(), "one cleanup per workbench")
         XCTAssertNoThrow(try footer().inspect().find(text: "Another cleanup is running"))
         XCTAssertFalse(try footer().inspect().find(button: "Select All That Can Go").isDisabled(), "ticking stays")
-        vm.cleanupRunWorkbenches[99] = nil
+        vm.sweepRuns[projectID] = nil
+        vm.sweepRunScopes[projectID] = nil
     }
 
     /// Clean Up… waits while a row of the plan is still being checked (an

@@ -66,8 +66,8 @@ extension WorkbenchesViewModel {
         /// newer Mac or CLI wrote it): it is never started (A7b; Go's
         /// session_start refuses it `not_supported`).
         case unsupportedAgent(String)
-        /// Delete and Clean Up closed the session's terminal and is removing
-        /// its worktree (board #535): it does not resume. Callers drop it
+        /// The session was deleted and its background cleanup is queued or
+        /// runs (board #1716): it does not resume. Callers drop it
         /// silently, as `inProgress`; the phone is told why.
         case cleaningUp
     }
@@ -554,10 +554,13 @@ extension WorkbenchesViewModel {
         _ session: TerminalSession, placement: Placement, ticket: Int?, checkLaunch: Bool
     ) async throws -> TerminalSession {
         // Every resume of an existing row comes here (a click, ⌘N, Work on
-        // It, the phone's open_existing): a row whose terminal Delete and
-        // Clean Up closed — its worktree being removed — is refused
-        // (board #535). A Clean Up… apply does not stop a resume.
-        guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
+        // It, the phone's open_existing): a deleted row whose background
+        // cleanup is queued or runs is refused (board #1716). A Clean Up…
+        // apply does not stop a resume.
+        guard canResume(session.id) else { throw TargetStartError.cleaningUp }
+        // A Not fully cleaned row is an ordinary finished session again:
+        // its delete request is cleared in a write of its own first.
+        guard await clearDeleteRequestForResume(session) else { throw TargetStartError.failed("Could not reopen the session.") }
         // A kind this build has no adapter for is refused before anything
         // runs (A7b): never a shell, never Claude Code in its place. Its pane
         // opens on the not-supported line. A run the session host holds for

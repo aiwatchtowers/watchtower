@@ -14,14 +14,21 @@ import WatchtowerCore
 /// it was armed for (`expiredBatch(now: deadline)`); a later delete moved
 /// the deadline and cancelled it. A row whose process is still closing is
 /// never committed: the window's end then waits for the last close.
+///
+/// Every delete cleans up (board #1716, PROJ-17/18 amended): when the window
+/// ends, a workbench row is not deleted but marked (`delete_requested_at`)
+/// and handed to its workbench's background cleanup
+/// (`WorkbenchesViewModel+AutoCleanup.swift`), which deletes it on a clean
+/// outcome. A standalone terminal has nothing to clean up and is deleted
+/// as before.
 extension WorkbenchesViewModel {
     /// Hides the row at once — from the lists, the layout and the
     /// selection — restarts the Undo window, then stops its process; it
     /// writes nothing: the row joins the Undo batch (`pendingDeletes`) and
-    /// its DELETE (with its cascades) runs when the window ends or the app
+    /// is marked for its background cleanup when the window ends or the app
     /// quits (`commitPendingDeletesForQuit`). Claude Code's transcript is
     /// left alone. The panel cursor moves to the row's neighbour. A row a
-    /// Delete and Clean Up runs on is busy: nothing happens (board #535).
+    /// cleanup apply runs on is busy: nothing happens (board #535).
     func delete(_ session: TerminalSession) async {
         guard !cleaningUpSessions.contains(session.id) else { return }
         setSessionError(nil, projectID: session.projectID)
@@ -62,16 +69,24 @@ extension WorkbenchesViewModel {
         for list in Self.sessionLists(of: restored) { await loadSessions(projectID: list) }
     }
 
-    /// Runs the batch's DELETEs in one write. A failed write never keeps a
-    /// row hidden: the batch has left `pendingDeletes`, so the reload brings
-    /// the rows back, with the error on their list. The workbenches' asks
-    /// are read again at once: the deletes unbound their sessions' asks
-    /// (board #542).
+    /// The window ended: the batch's workbench rows are marked deleted in
+    /// one write and queued for their background cleanup, which deletes
+    /// each row on a clean outcome (board #1716); standalone rows are
+    /// deleted in one write. A failed write never keeps a row hidden: the
+    /// batch has left `pendingDeletes`, so the reload brings the rows back,
+    /// with the error on their list, and nothing is queued. The
+    /// workbenches' asks are read again at once: a standalone delete
+    /// unbound its asks (board #542).
     func commitPendingDeletes(_ entries: [PendingSessionDeletes.Entry]) async {
         guard !entries.isEmpty else { return }
         let lists = Self.sessionLists(of: entries)
+        let (rows, standalone) = Self.split(entries)
         do {
-            try await startSessionDeletes(entries.map(\.sessionID)).value
+            if !standalone.isEmpty { try await startSessionDeletes(standalone).value }
+            if !rows.isEmpty {
+                try await startDeleteRequests(rows.map(\.sessionID)).value
+                enqueueAutoCleanup(rows)
+            }
         } catch {
             for list in lists {
                 setSessionError("Could not delete the session: \(error.localizedDescription)", projectID: list)
@@ -83,21 +98,25 @@ extension WorkbenchesViewModel {
 
     /// The quit path (`QuitCoordinator`'s async phase, started at its
     /// beginning, alongside the chat, terminal and daemon steps; board
-    /// #588): the batch is committed now, through the same write as the
-    /// window's, and the quit waits — never holding the main thread — for
-    /// every delete write in flight (`deleteWrites`: this batch and a commit
-    /// the window's timer already started), bounded by `quitDeleteWait` for
-    /// the whole set. The bound outlasts the write's busy budget, so a
-    /// briefly locked database no longer loses the delete. A row still
-    /// closing is committed too: the quit closes every terminal anyway. A
-    /// timeout or an error is logged; the row then survives and is listed
-    /// again on the next launch — the safe side. Whether every write
-    /// finished within the bound.
+    /// #588): the batch is committed now — its workbench rows marked
+    /// deleted (`delete_requested_at`, board #1716: the next launch cleans
+    /// them up), its standalone rows deleted — and no background cleanup
+    /// starts any more. The quit waits — never holding the main thread —
+    /// for every delete write in flight (`deleteWrites`: this batch and a
+    /// commit the window's timer already started), bounded by
+    /// `quitDeleteWait` for the whole set. The bound outlasts the write's
+    /// busy budget, so a briefly locked database no longer loses the
+    /// delete. A row still closing is committed too: the quit closes every
+    /// terminal anyway. A timeout or an error is logged; the row then
+    /// survives and is listed again on the next launch — the safe side.
+    /// Whether every write finished within the bound.
     @discardableResult
     func commitPendingDeletesForQuit() async -> Bool {
         cancelPendingDeleteWindow()
-        let ids = pendingDeletes.takeBatch().map(\.sessionID)
-        if !ids.isEmpty { startSessionDeletes(ids) }
+        autoCleanupStopped = true
+        let (rows, standalone) = Self.split(pendingDeletes.takeBatch())
+        if !standalone.isEmpty { startSessionDeletes(standalone) }
+        if !rows.isEmpty { startDeleteRequests(rows.map(\.sessionID)) }
         let writes = deleteWrites
         let bound = quitDeleteWait
         let finished = await withCheckedContinuation { continuation in
@@ -112,10 +131,12 @@ extension WorkbenchesViewModel {
     }
 
     /// The workbench is gone and its delete cascaded its hidden sessions:
-    /// they leave the batch (nothing to commit, nothing to restore).
+    /// they leave the batch (nothing to commit, nothing to restore) and its
+    /// background cleanup queue, but for the run in flight.
     func discardPendingDeletes(workbenchID: Int64) {
         pendingDeletes.discardBatch(workbenchID: workbenchID)
         if pendingDeletes.batch.isEmpty { cancelPendingDeleteWindow() }
+        discardAutoCleanup(workbenchID: workbenchID)
     }
 
     /// `rows` without the sessions waiting in the Undo batch.
@@ -166,7 +187,7 @@ extension WorkbenchesViewModel {
     /// Starts the DELETE of `ids` off the main actor, tracked by
     /// `deleteWrites`. A failure is logged here and rethrown.
     @discardableResult
-    private func startSessionDeletes(_ ids: [Int64]) -> Task<Void, any Error> {
+    func startSessionDeletes(_ ids: [Int64]) -> Task<Void, any Error> {
         let write = commitSessionDeletes
         let writes = deleteWrites
         writes.enter()
@@ -179,6 +200,33 @@ extension WorkbenchesViewModel {
                 throw error
             }
         }
+    }
+
+    /// Starts marking `ids` deleted off the main actor, tracked by
+    /// `deleteWrites` like a DELETE. A failure is logged here and rethrown.
+    @discardableResult
+    private func startDeleteRequests(_ ids: [Int64]) -> Task<Void, any Error> {
+        let write = commitDeleteRequests
+        let writes = deleteWrites
+        let at = now()
+        writes.enter()
+        return Task.detached {
+            defer { writes.leave() }
+            do {
+                try await write(ids, at)
+            } catch {
+                NSLog("WorkbenchesViewModel: marking %d session(s) deleted failed: %@", ids.count, error.localizedDescription)
+                throw error
+            }
+        }
+    }
+
+    /// `entries`' workbench rows (cleaned up in the background) and the
+    /// standalone rows' ids (deleted at once).
+    private static func split(
+        _ entries: [PendingSessionDeletes.Entry]
+    ) -> (rows: [PendingSessionDeletes.Entry], standalone: [Int64]) {
+        (entries.filter { $0.workbenchID != nil }, entries.filter { $0.workbenchID == nil }.map(\.sessionID))
     }
 
     /// The session lists (workbench id, nil = standalone) `entries` touch,
