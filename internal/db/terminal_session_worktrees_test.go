@@ -455,7 +455,7 @@ func TestSessionCommandRows_ExistingCwdRowKeepsSource(t *testing.T) {
 	const later = "2026-10-12T13:00:00.000Z"
 	recorded, full, err := d.RecordSessionCommandRow(ctx, id, "/tmp/example/wt", "feat/x", "branch", later)
 	if err != nil || recorded || full {
-		t.Fatalf("command record of a cwd pair = %v, %v, %v; want false, false, nil", recorded, full, err)
+		t.Fatalf("command record of a cwd pair = %v, %v, %v; want not recorded, not full, nil", recorded, full, err)
 	}
 	var source, kind, lastAt string
 	if err := d.QueryRow(`SELECT source, kind, last_at FROM terminal_session_worktrees WHERE session_id = ?`, id).
