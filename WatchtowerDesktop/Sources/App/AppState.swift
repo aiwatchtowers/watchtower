@@ -1282,6 +1282,8 @@ final class AppState {
             sidebarCountsSetup = Task {
                 sidebarCountsViewModel = await SidebarCountsViewModel.started(
                     dbPool: pool, disabledFeatures: featureVisibility.disabledFeatureIDs)
+                // A feature load that landed during `started` found no view model.
+                sidebarCountsViewModel?.disabledFeatures = featureVisibility.disabledFeatureIDs
             }
         }
         if let pool = databaseManager?.dbPool {

@@ -6,6 +6,7 @@ extension AppState {
             featureVisibility.disabledFeatureIDs = ids
             featureVisibility.isLoaded = true
             self?.sidebarCountsViewModel?.disabledFeatures = ids
+            self?.actionStripViewModel?.disabledFeatures = ids
             self?.syncAutomationSessionCenter()
             self?.syncPlanUsageFeatureState()
         }
