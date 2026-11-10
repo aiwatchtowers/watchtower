@@ -2,7 +2,7 @@
 
 Target #1521. **Spec:** [onboarding-agent-choice-design](../../../superpowers/specs/2026-11-10-onboarding-agent-choice-design.md).
 
-16 scenes rendered from the step's own views (`OnboardingGoalCards`, `AssistantLanguageRow`, `OnboardingAgentSection`, `OnboardingGoalsFooter`) through `OnboardingAgentShotFixtures` in `DesignShotCatalog`; copy from `OnboardingAgentChoice`. Reproduce: `make desktop-shots DESKTOP_SHOTS=docs/design/mockups/onboarding-agent` (or `swift test --filter DesignShotsTests/testOnboardingAgentShotsRender` with `DESKTOP_SHOTS_DIR`).
+17 scenes rendered from the step's own views (`OnboardingGoalCards`, `AssistantLanguageRow`, `OnboardingAgentSection`, `OnboardingGoalsFooter`) through `OnboardingAgentShotFixtures` in `DesignShotCatalog`; copy from `OnboardingAgentChoice`. Reproduce: `make desktop-shots DESKTOP_SHOTS=docs/design/mockups/onboarding-agent` (or `swift test --filter DesignShotsTests/testOnboardingAgentShotsRender` with `DESKTOP_SHOTS_DIR`).
 
 | Scene | What it shows | Light | Dark |
 |---|---|---|---|
@@ -11,6 +11,7 @@ Target #1521. **Spec:** [onboarding-agent-choice-design](../../../superpowers/sp
 | `both-ready-codex` | Both ready, owner picked Codex | [light](onboarding-agent-both-ready-codex-light.png) | [dark](onboarding-agent-both-ready-codex-dark.png) |
 | `only-codex` | Claude missing, Codex ready and preselected | [light](onboarding-agent-only-codex-light.png) | [dark](onboarding-agent-only-codex-dark.png) |
 | `signed-out` | Claude signed out: the sign-in terminal runs right in the step (still) | [light](onboarding-agent-signed-out-light.png) | [dark](onboarding-agent-signed-out-dark.png) |
+| `signed-out-outdated` | Claude Code too old for `auth login`: updates first in the same terminal | [light](onboarding-agent-signed-out-outdated-light.png) | [dark](onboarding-agent-signed-out-outdated-dark.png) |
 | `signed-out-stopped` | Sign-in stopped: warning note, Sign in again | [light](onboarding-agent-signed-out-stopped-light.png) | [dark](onboarding-agent-signed-out-stopped-dark.png) |
 | `none` | No agent on the Mac, Claude's install steps | [light](onboarding-agent-none-light.png) | [dark](onboarding-agent-none-dark.png) |
 | `none-codex` | No agent, owner picked Codex | [light](onboarding-agent-none-codex-light.png) | [dark](onboarding-agent-none-codex-dark.png) |

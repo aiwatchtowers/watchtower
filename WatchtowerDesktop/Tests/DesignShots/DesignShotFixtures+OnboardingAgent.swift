@@ -47,6 +47,9 @@ enum OnboardingAgentShotFixtures {
         otherFailed.applyDefault(configured: "ollama")
         var signingIn = choice(.signedOut, .notInstalled)
         signingIn.signInStarted()
+        var updating = choice(.signedOut, .notInstalled)
+        updating.outdated = [.claude]
+        updating.signInStarted()
         var signInStopped = signingIn
         signInStopped.signInStopped()
         return [
@@ -56,6 +59,7 @@ enum OnboardingAgentShotFixtures {
             Scene(name: "only-codex", choice: choice(.notInstalled, .ready)),
             Scene(name: "signed-out", choice: signingIn),
             Scene(name: "signed-out-stopped", choice: signInStopped),
+            Scene(name: "signed-out-outdated", choice: updating),
             Scene(name: "none", choice: choice(.notInstalled, .notInstalled)),
             Scene(name: "none-codex", choice: choice(.notInstalled, .notInstalled, pick: .codex)),
             Scene(name: "failed", choice: choice(
@@ -89,7 +93,7 @@ enum OnboardingAgentShotFixtures {
                 AssistantLanguageRow(selection: .constant("English"))
                 OnboardingAgentSection(
                     choice: scene.choice, onPick: { _ in }, onCheckAgain: {}, onChoosePath: { _ in },
-                    signInTerminal: { AnyView(TerminalStill(command: scene.choice.selected?.signInCommand ?? "")) }
+                    signInTerminal: { AnyView(TerminalStill(command: scene.choice.terminalCommand ?? "")) }
                 )
                 OnboardingGoalsFooter(
                     hint: scene.choice.continueHint,
@@ -114,9 +118,14 @@ enum OnboardingAgentShotFixtures {
         var body: some View {
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text("$ \(command)")
-                Text("Opening your browser to sign in…")
-                Text("If it didn’t open, visit: https://example.com/oauth/authorize?code=…")
-                Text("Waiting for the browser… ▍")
+                if command.hasSuffix("update") {
+                    Text("Current version: 1.0.88")
+                    Text("Checking for updates… ▍")
+                } else {
+                    Text("Opening your browser to sign in…")
+                    Text("If it didn’t open, visit: https://example.com/oauth/authorize?code=…")
+                    Text("Waiting for the browser… ▍")
+                }
             }
             .font(.system(.caption, design: .monospaced))
             .foregroundStyle(.primary)

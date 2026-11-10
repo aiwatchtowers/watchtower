@@ -133,7 +133,7 @@ struct OnboardingAgentSection: View {
                 .buttonStyle(.kitSecondary)
                 .controlSize(.small)
         } else {
-            Button(OnboardingAgentChoice.signInAgain, action: onSignIn)
+            Button(choice.retryLabel, action: onSignIn)
                 .buttonStyle(.kitSecondary)
                 .controlSize(.small)
         }

@@ -234,7 +234,11 @@ final class OnboardingAgentChoiceTests: XCTestCase {
             Choice.failureMessage(.codex, code: "transport", error: nil),
             "Couldn’t reach Codex CLI’s service. Check the network or VPN, then check again."
         )
-        XCTAssertEqual(Choice.failureMessage(.codex, code: "invalid_output", error: "Update the Codex CLI."), "Update the Codex CLI.")
+        // Go's message names Codex even for Claude: never shown.
+        XCTAssertEqual(
+            Choice.failureMessage(.claude, code: "invalid_output", error: "Codex answered but ignored Watchtower's instructions."),
+            "Claude Code answered but ignored Watchtower’s instructions. Update it and check again."
+        )
         XCTAssertEqual(
             Choice.failureMessage(.codex, code: "invalid_output", error: nil),
             "Codex CLI answered but ignored Watchtower’s instructions. Update it and check again."
@@ -274,5 +278,31 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         XCTAssertFalse(both.canContinue)
         XCTAssertFalse(both.noneInstalled)
         XCTAssertEqual(both.continueHint, "Continue unlocks once an AI agent is ready")
+    }
+
+    func testOutdatedCLIUpdatesThenSignsIn() throws {
+        var old = choice(.signedOut, .notInstalled)
+        old.outdated = [.claude]
+        XCTAssertEqual(old.terminalCommand, "claude update")
+        let setup = try XCTUnwrap(old.setup)
+        XCTAssertEqual(setup.title, "Update Claude Code to sign in")
+        XCTAssertEqual(setup.steps.map(\.command), ["claude update"])
+        XCTAssertEqual(
+            setup.signInNote,
+            "This Claude Code is too old to sign in from here. It updates first; sign-in starts right after."
+        )
+        XCTAssertEqual(old.signInToOpen, .claude)
+        old.signInStarted()
+        old.signInEnded(exitCode: 1)
+        XCTAssertEqual(old.retryLabel, "Update again")
+        XCTAssertEqual(old.setup?.signInNote, "Sign-in stopped before it finished (exit code 1).")
+        old.signInStarted()
+        old.signInEnded(exitCode: 0)
+        // Updated: the sign-in command opens by itself next.
+        XCTAssertTrue(old.outdated.isEmpty)
+        XCTAssertEqual(old.terminalCommand, "claude auth login")
+        XCTAssertEqual(old.signInToOpen, .claude)
+        XCTAssertEqual(old.retryLabel, "Sign in again")
+        XCTAssertEqual(Choice.Agent.codex.updateCommand, "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
     }
 }

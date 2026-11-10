@@ -29,6 +29,16 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
             }
         }
 
+        /// Updates an install too old for `signInCommand` (`<cli> login
+        /// --help` / `claude auth --help` failed): `claude update` exists in
+        /// every Claude Code that predates `auth login`; Codex reinstalls.
+        package var updateCommand: String {
+            switch self {
+            case .claude: "claude update"
+            case .codex: "curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+            }
+        }
+
         /// The vendor's install page: Homebrew, npm and the rest, for a Mac
         /// where piping a script into the shell is not allowed.
         package var installDocsURL: String {
@@ -115,6 +125,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     /// Agents whose sign-in already started once: the terminal opens by
     /// itself only the first time, never again after a Stop.
     package private(set) var signInOpened: Set<Agent> = []
+    /// Signed-out agents whose CLI has no login command yet: the terminal
+    /// runs `updateCommand` first, then the sign-in opens by itself.
+    package var outdated: Set<Agent> = []
     package private(set) var selected: Agent?
     /// The owner tapped a tile: later checks never move the selection.
     package private(set) var picked = false
@@ -171,6 +184,12 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         return agent
     }
 
+    /// What the panel's terminal runs for the picked agent.
+    package var terminalCommand: String? {
+        guard let agent = selected, status(agent) == .signedOut else { return nil }
+        return outdated.contains(agent) ? agent.updateCommand : agent.signInCommand
+    }
+
     package mutating func signInStarted() {
         guard let selected else { return }
         signIn = .running
@@ -180,6 +199,10 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     /// The process ended; `0` means signed in — the caller checks again.
     package mutating func signInEnded(exitCode: Int32) {
         signIn = exitCode == 0 ? .idle : .ended(exitCode)
+        // A finished update hands over to the sign-in, which opens by itself.
+        if exitCode == 0, let agent = selected, outdated.remove(agent) != nil {
+            signInOpened.remove(agent)
+        }
     }
 
     package mutating func signInStopped() { signIn = .ended(nil) }
@@ -261,10 +284,14 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
                 runsSignIn: false
             )
         case .signedOut:
+            let updating = outdated.contains(agent)
             return Setup(
                 agent: agent,
-                title: "Sign in to \(agent.name)",
-                steps: [Step(label: "Or run it in your own Terminal:", command: agent.signInCommand)],
+                title: updating ? "Update \(agent.name) to sign in" : "Sign in to \(agent.name)",
+                steps: [Step(
+                    label: "Or run it in your own Terminal:",
+                    command: updating ? agent.updateCommand : agent.signInCommand
+                )],
                 detail: nil,
                 showsManualPath: false,
                 docsURL: nil,
@@ -287,6 +314,9 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     /// The line above the sign-in terminal.
     private var signInLine: String {
+        if let agent = selected, outdated.contains(agent), !isEnded {
+            return "This \(agent.name) is too old to sign in from here. It updates first; sign-in starts right after."
+        }
         switch signIn {
         case .idle, .running:
             return "Your browser opens to sign in. When it’s done, this closes and Watchtower checks again."
@@ -297,7 +327,19 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         }
     }
 
+    private var isEnded: Bool {
+        if case .ended = signIn { return true }
+        return false
+    }
+
     package static let signInAgain = "Sign in again"
+    package static let updateAgain = "Update again"
+
+    /// The button that reruns the terminal after it ended.
+    package var retryLabel: String {
+        guard let agent = selected, outdated.contains(agent) else { return Self.signInAgain }
+        return Self.updateAgain
+    }
     package static let stopSignIn = "Stop"
 
     /// The footer line beside a disabled Continue.
@@ -329,7 +371,7 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         case "transport", "timeout":
             return "Couldn’t reach \(agent.name)’s service. Check the network or VPN, then check again."
         case "invalid_output":
-            if let error, !error.isEmpty { return error }
+            // Go's text names Codex even for Claude: always our own words.
             return "\(agent.name) answered but ignored Watchtower’s instructions. Update it and check again."
         default:
             let tail = error.flatMap { $0.isEmpty ? nil : " (\($0))" } ?? ""

@@ -42,7 +42,7 @@ Each tile shows one status, computed per agent:
 | `error_code` | Line |
 |---|---|
 | `transport`, `timeout` | Couldn't reach Claude Code's service. Check the network or VPN, then check again. |
-| `invalid_output` | the CLI's own message (it names its next step), else "Claude Code answered but ignored Watchtower's instructions. Update it and check again." |
+| `invalid_output` | always "Claude Code answered but ignored Watchtower's instructions. Update it and check again." (Go's message for this code names Codex even for Claude, so it is never shown) |
 | anything else | Claude Code didn't answer (`<error>`). Run it once in Terminal to see what it says, then check again. |
 
 Installed agents are tested **in parallel**: one short request per installed agent, the same `ai test` the step already sends. Today's worst case already sends two (Claude, then the Codex fallback) one after the other. Running them in parallel caps the wait at one test's timeout, and the owner sees both statuses before choosing. A missing or forbidden agent costs nothing.
@@ -79,6 +79,7 @@ When the picked agent is signed out, the panel runs its sign-in in an embedded t
 - Exit 0 means the terminal closes and the agents are checked again: the tile turns Ready and Continue unlocks. A non-zero exit or Stop closes it, and the note becomes "Sign-in stopped before it finished (exit code N)." in `Tone.warning`, with **Sign in again**. A stopped sign-in never reopens by itself (`signInOpened`).
 - Under it as a fallback: "Or run it in your own Terminal:" and the command with a copy button.
 - Picking the other tile stops a running sign-in.
+- **A CLI too old for the login command.** `claude auth login` arrived in Claude Code 2.1. Before the terminal opens, a local probe with no request and no network runs `claude auth --help` (or `codex login --help`). If it fails, the agent is `outdated`. The panel title becomes "Update Claude Code to sign in", the note "This Claude Code is too old to sign in from here. It updates first; sign-in starts right after.". The terminal runs `claude update`, which every older Claude Code has; for Codex it reruns the install script. On exit 0 the sign-in command opens by itself. On failure the button reads **Update again**, and the Terminal fallback shows the update command, never the unsupported login.
 - The terminal is SwiftTerm's `LocalProcessTerminalView` (as in the Workbench), started in the login-shell environment (`Constants.resolvedEnvironmentAsync`) with the agent's resolved executable. It is not a Workbench session: no session host, nothing stored, about ten rows (`OnboardingAgentSection.terminalHeight`).
 
 ### No agent at all
@@ -107,12 +108,12 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 
 ### Components
 
-- `WatchtowerCore/Services/OnboardingAgentChoice.swift`: pure state and **every line of copy** above. Tests: `Tests/Core/OnboardingAgentChoiceTests.swift` (25 tests: default selection, pick, policy, Continue, save, sign-in terminal, failure lines, all copy).
+- `WatchtowerCore/Services/OnboardingAgentChoice.swift`: pure state and **every line of copy** above. Tests: `Tests/Core/OnboardingAgentChoiceTests.swift` (27 tests: default selection, pick, policy, Continue, save, sign-in terminal, failure lines, all copy).
 - `Views/Onboarding/OnboardingAgentSection.swift`: tiles plus the setup panel (`card(selected:)`, `Fill`, `Tone.success/warning/error`, `kitSecondary`/`kitQuiet`, no dividers); `OnboardingCommandLine` (the copyable command).
 - `OnboardingGoalCards` and `OnboardingGoalsFooter` are extracted from `OnboardingGoalsStepView`, so the mockups render the step's own parts.
 - `OnboardingCLIProbe` is replaced by a per-agent check that returns `[Agent: Status]`. `OnboardingGoalsModel` keeps an `OnboardingAgentChoice` in place of `OnboardingCLICheck`. `onProviderSwitched` fires after the Continue write instead of after the check.
 - `OnboardingSignInTerminal` (Views/Onboarding): the PTY host for the sign-in. It reports start/exit to the model; quitting, leaving the step or picking the other tile sends SIGTERM to its process group.
-- Mockups: `OnboardingAgentShotFixtures` in `DesignShotCatalog`, 16 scenes × light/dark (the sign-in terminal as a still).
+- Mockups: `OnboardingAgentShotFixtures` in `DesignShotCatalog`, 17 scenes × light/dark (the sign-in terminal as a still).
 
 ### Docs updated in the same PR
 
@@ -133,6 +134,7 @@ The Development goal's pitch names the picked agent: "Codex CLI works your folde
 | Swift and Go policy readers disagree | `error_code: policy` from the test maps to `forbidden` too | check mapping test |
 | Sign-in terminal: host closes or the app quits mid-login | SIGTERM to the process group (as `CodeCLIProcess` groups are reaped); the CLI's own credential store is its business; the next check reports what is true | terminal: process group gone after stop |
 | Sign-in exits 0 but the test still fails | the tile shows the real status (signed out again → the terminal does not reopen by itself; Sign in again is there) | choice: `signInOpened` keeps it closed |
+| CLI too old for `auth login` | the `--help` probe marks it `outdated`; the terminal runs the update, then the sign-in; a failed update offers Update again and the update command for Terminal (never the login that can't work) | choice: `testOutdatedCLIUpdatesThenSignsIn` |
 | Sign-in can't start (executable vanished) | note "Sign-in stopped before it finished." plus the Terminal fallback command | choice: ended copy |
 
 ## Writers of `ai.provider` / `workbench.default_agent`
@@ -158,7 +160,8 @@ Onboarding writing only at Continue is the owner's decision (ask #1157). Every w
 - The provider is written only at Continue; the check never writes: owner, ask #1157.
 - Installers via `curl` (no Node.js), npm dropped from the panel, **Other ways to install** link for Macs that forbid it: agent decided.
 - Signed out → the sign-in terminal opens right in the step: owner, ask #1157 (note). Auto-open once, `claude auth login`/`codex login`, recheck on exit 0: agent decided.
-- Ollama failing its check brings the tiles back: agent decided.
+- Ollama failing its check brings the tiles back; only the owner's pick plus Continue replaces `ai.provider`, Check again keeps Ollama: agent decided (shown to the owner in this review).
+- An outdated CLI updates in the same terminal before signing in: agent decided.
 - Failed line chosen by `error_code`: agent decided.
 - Goal cards stay cards in the no-agent case (no chips): agent decided.
 - Recheck when the window becomes active: agent decided.
