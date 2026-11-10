@@ -33,14 +33,15 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 2. Accept racing a source trigger — the file is restored and the card says "This proposal was removed with its source data" (Task 2.9; Desktop code `source_removed`, Task 5.1).
 3. A replay's "With"/"Without" text that is not byte-identical to the real pipeline render for some family (people + Jira tail, `ideas.digest_email` with a `gmail:` candidate) — golden tests in Tasks 3.6/3.7 against the capture side of Tasks 1.8–1.13.
 4. A Codex file read past its header when no analytics-on workbench owns it — the counting-opener guards in Tasks 4.9/4.11.
-5. The Desktop quitting during **Run** — the CLI child must survive (spawned in its own session, not killed at quit), else the daemon sweep marks it `stopped` and **Retry** resumes only the missing inputs (Tasks 3.12, 3.14, 5.8).
+5. The Desktop quitting during **Run** — the CLI child must survive (started by the CLI's `--detach` in its own session, not killed at quit), else the daemon sweep marks it `stopped` and **Retry** resumes only the missing inputs (Tasks 3.12, 3.13, 3.14, 5.8).
 
 ## Cross-phase resolutions (these override any task text that disagrees)
 
 - **`ValidateChatProposal`** is Phase 2's: `ValidateChatProposal(ctx, d, e coach.ChatEdit, env coach.Env) (db.CoachProposal, error)`; it reads the destination text, applies the edit and refuses with `errors.Is(err, coach.ErrRefused)` — including `already proposed as #N (<status>)`. There is no separate builder. The tool's `after` argument maps to `ChatEdit.Replace` (Task 3.10).
 - **`InsertCoachProposalWithSources(p, convID, replayID *int64, now time.Time) (int64, error)`** (Task 2.1) also sets `prompt_replays.proposal_id` when `replayID` is given and returns the existing id on a second press.
 - **`skill_pack_overlays`** is one row per overlay line: `(id, skill, text, proposal_id → coach_proposals ON DELETE SET NULL, created_at)` + index `(skill, id)` (Task 1.1, used by Task 2.6). `keyOf` keeps `skill` for `claude_skill_user`, `codex_skill_user` and `pack_overlay`.
-- **`prompt_replays.updated_at`** is added by Task 1.1 and set on every replay write (Tasks 3.3, 3.12); the stale sweep (Task 3.14) reads it. Each result also stores `cost_usd`; the done card shows the actual total (Task 3.12, Task 5.5).
+- **`prompt_replays.updated_at`** is added by Task 1.1 and set on every replay write (Tasks 3.3, 3.12); the stale sweep (Task 3.14) reads it.
+- **`prompt_replays.results` JSON** is one shape in every phase: `{"<input id>":{"without":{"out":"…","error":"","cost_usd":0.012},"with":{…}}}` (an object keyed by input id, default `'{}'`; a side absent = not run). Task 1.1 creates the column, Task 3.3 writes it (`SetPromptReplayResult`/`SetPromptReplayError` with `costUSD`) and the shared fixture `internal/db/testdata/prompt_replay_results.json`, Task 3.12 fills `cost_usd` from `replayCost`, Task 5.5 decodes it and the done card shows the sum of `cost_usd`.
 - **CLI error code** for a proposal or edit removed with its source is `source_removed` (Tasks 2.9/2.11 → Desktop Task 5.1). Desktop lines: Accept → "This proposal was removed with its source data"; Roll Back → "This edit was removed with its source data".
 - **CompanyData:** every tuning read tool that returns content is marked (spec §4.2); only `list_prompt_inputs` (metadata) is not (Tasks 3.8, 3.9).
 - **Too few inputs:** `propose_prompt_replay` fails in `Execute`, so its `agent_actions` row is `failed` with `error` = the "Only N past calls…" line, which the Desktop shows as the quiet line (Tasks 3.10, 5.6). **Run** refuses under 3 eligible inputs and runs only the eligible ones otherwise (spec §4.6, Task 3.12).
@@ -49,7 +50,7 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 - **Per-agent measurement** (Task 4.16) edits `internal/coach` after Phase 2's coach tasks (rebase on them) and uses Phase 2's `Dest…` consts.
 - **IMAP item key** is `<uidvalidity>:<uid>` under the account (there is no mailbox column; each account syncs one folder); Jira keys are `issue:<KEY>` and `comment:<id>` (Task 1.2). The trigger and Go builders are the dual path `TestSRCDEL03`-shape test pins.
 - **Pack re-render points:** Accept/Rollback, `integrate`, and every `workbenchSetupOptions` path (workbench open / resync, new worktrees). There is no daemon pack drift pass today and none is added (the spec's "daemon drift check" maps to these paths).
-- **Run launch:** the Desktop starts `prompts replay <id> --json` as a detached child (its own session / process group, not in the quit kill list), polls the row every 2 s, and reads the outcome from the row, not from the child's exit (Task 5.8).
+- **Run launch:** the Desktop never spawns the run itself. Run and Retry call `prompts replay <id> [--retry] --detach --json` with the ordinary short timeout; that CLI verb checks the state and the agent marker and starts the real run through `LaunchReplay` (`Setsid`, its own session and process group, so a Desktop quit does not stop it; Task 3.13), then returns `{"ok":true,"id":N,"started":true}`. The Desktop polls the row every 2 s and reads the outcome from the row, not from any child's exit (Task 5.8).
 - **Chats panel and the settings path** (owner, ask #1123, spec D48): tuning conversations are shown only in the tuning panel, never in the Chats panel; the no-tools line reads "Tuning tools need Claude or Codex — pick one in Settings → System → AI". The `…-conversation-removed-in-chats` mockup and `ChatsRemovedShot` are gone; no task shows the removed line outside the tuning panel.
 
 ## Owner decisions found in recon (all answered: asks #1123, #1125)
@@ -186,7 +187,7 @@ CREATE TABLE prompt_replays (
     run_additions_hash TEXT NOT NULL DEFAULT '',
     est_cost_usd       REAL NOT NULL DEFAULT 0,
     calls_done         INTEGER NOT NULL DEFAULT 0,
-    results            TEXT NOT NULL DEFAULT '[]',
+    results            TEXT NOT NULL DEFAULT '{}',      -- {"<input id>":{"without":{"out","error","cost_usd"},"with":{…}}} (Cross-phase resolutions; written by Task 3.3)
     error              TEXT NOT NULL DEFAULT '',
     proposal_id        INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
     created_at         TEXT NOT NULL,
@@ -1312,7 +1313,7 @@ Rules:
       ProposalID int64               // 0 = none
       CreatedAt, UpdatedAt, FinishedAt string
   }
-  type ReplaySide struct{ Out, Error string }
+  type ReplaySide struct{ Out, Error string; CostUSD float64 } // JSON out, error, cost_usd
   type ReplayResult struct{ Without, With *ReplaySide } // nil = not run yet
   func (db *DB) InsertPromptReplay(r PromptReplay, now time.Time) (int64, error)       // state proposed; FK failure on a gone conversation → ErrConversationRemoved
   func (db *DB) GetPromptReplay(id int64) (PromptReplay, error)                          // ErrNotFound
@@ -1326,7 +1327,7 @@ Rules:
   func (db *DB) SweepStalePromptReplays(cutoff, now time.Time) (int64, error)
   func (db *DB) MedianLLMOutputTokens(purpose string, since time.Time) (int64, bool, error)
   ```
-  `results` JSON shape (pinned, read by the Desktop in Phase 5): `{"<input id>":{"without":{"out":"…","error":"","cost_usd":0.012},"with":{"out":"…","error":"","cost_usd":0.013}}}`; a side absent = not run; `cost_usd` is the call's cost from the leaf's usage (0 when the provider reports none; estimated like `llm_calls`). `ReplaySide` gains `CostUSD float64`. The fixture `internal/db/testdata/prompt_replay_results.json` (read by Task 5.5) is written by this task with these keys.
+  `results` JSON shape (pinned, read by the Desktop in Phase 5): `{"<input id>":{"without":{"out":"…","error":"","cost_usd":0.012},"with":{"out":"…","error":"","cost_usd":0.013}}}`; a side absent = not run; `cost_usd` is the call's cost from the leaf's usage (0 when the provider reports none; estimated like `llm_calls`).  The fixture `internal/db/testdata/prompt_replay_results.json` (read by Task 5.5) is written by this task with these keys.
 
 - [ ] **Step 1: Write the failing tests** (seed a conversation and inputs with Phase 1's `InsertPromptInputTrimmed`)
   - `TestPromptReplay_InsertGetRoundTrip`: every field round-trips; `InputIDs` stored as a JSON array; state `proposed`.
@@ -2996,8 +2997,8 @@ action: nav:projects
 1. **Tuning chats in the Chats panel.** (Decided by the owner in ask #1123: not listed; spec D48.) The spec says they "appear in the Chats panel under the workbench project, as embedded chats do today", but no embedded chat is listed there: the panel reads `context_type IS NULL` only, and `chat_projects` are not workbenches. The plan ships the removed line generically in `EmbeddedChatView` (5.11) and the `conversation-removed-in-chats` shot renders it, but does not add a Chats-panel listing. Needs an owner call: drop that sentence, or add a listing (a new query branch + opening an embedded engine from the Chats panel — its own task).
 2. **Cross-phase contracts this plan assumes** (pin them in Phases 2–4 or adjust 5.x): `coach proposals --json` keys `origin`/`conversation_id`/`source_removed_at` and a CLI error code `source_removed` for Accept losing the trigger race (5.1); Go testdata `internal/chat/testdata/actions_contract_tuning.txt` (5.2); tool argument keys `days`, `prompt_id`, `skill`, `name` (5.4); `agent_actions.result_json` keys `proposal_id` / `replay_id`, and a refused `propose_prompt_replay` recorded as a `failed` row with the refusal text in `error` (5.6 — if Phase 3 writes no row on refusal, the too-few line needs another source); a shared fixture `internal/db/testdata/prompt_replay_results.json` for the `results` JSON shape (5.5); report keys `agents` (top level = agents with sessions in the period, per block = agents the block reads) and `codex_unread` (5.10).
 3. **Swift twin ownership.** 5.1 (Swift `CoachProposal`/`+Row`) and 5.2 (`AgentToolsContract`/`AssistantToolSurface`) are Swift and placed here; Phases 2/3 must not also do them.
-4. **Done-card cost.** (Resolved: actual cost stored per side, Tasks 3.3, 3.12, 5.4, 5.5.) `db.SetPromptReplayResult` stores text only, so the Desktop has no actual cost per replay; the plan shows the estimate (`"10 calls · ≈ $0.14 · …"`) where the mockup shows `"$0.12"`. Either Phase 3 stores per-call cost in `results`, or the mockup difference is accepted.
-5. **"Detached" Run.** The Desktop has no detached CLI launcher; (Resolved: Run and Retry use `--detach`, Tasks 3.13 and 5.8.) Earlier draft: Run uses an unstructured task like `CoachCenter.runNow`. If `ProcessCLIRunner` kills children on quit, the run stops and the daemon sweep offers **Retry** (spec allows it), but "keeps going after the Desktop quits" holds only if the child survives — confirm or add a detached spawn.
+4. **Done-card cost.** Resolved: each side stores `cost_usd` (Cross-phase resolutions, Tasks 1.1, 3.3, 3.12, 5.5).
+5. **"Detached" Run.** Resolved: Run and Retry call the CLI with `--detach`; `LaunchReplay` starts the run in its own session (Cross-phase resolutions, Tasks 3.13 and 5.8).
 6. **Coach tiles and the agent filter.** (Resolved: `coach status --agent`, Task 5.10.) "The Analytics tiles keep the owner's chosen filter" — the tiles are `coach status`, which gets no `--agent` flag in Phase 4's list; 5.10 leaves the coach tiles unfiltered.
 7. **Claude-hint notes.** (Resolved: `hints[].agents`, Tasks 4.15 and 5.10.) §4.7 names "Claude hints" among the Claude-only blocks; the plan puts `scopeNote` on the Context, Skills and Trouble blocks only (the mockup shows Context and Skills). Hints need a per-hint `agents` key to do the same.
 8. **No-tools text.** (Decided by the owner in ask #1123: "Settings → System → AI".) "pick one in Settings → System → AI": the AI section is under Settings → **System**; **Open Settings** opens `.system`. Wording kept from the mockup; change to "Settings → System → AI" if wanted.
