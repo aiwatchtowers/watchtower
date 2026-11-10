@@ -354,25 +354,40 @@ func TestJudge_CutWrittenWhileThreeChatProposalsOpen(t *testing.T) {
 			cut = o
 		}
 	}
+	require.NotZero(t, cut.ID, "the cut of the weekly edit")
 	assert.Equal(t, "weekly", cut.Origin)
 }
 
 // The Codex rules may only grow (like the Claude allow list): the verdict is
 // stored, no cut is filed.
 func TestJudge_NoCutForCodexRulesAllow(t *testing.T) {
+	t.Setenv("CODEX_HOME", "")
 	d := openDBs(t)
 	wb, ids := d.workbench(t, "a", 1)
 	d.agentSessions(t, "codex", wb, ids, 5, 1)
-	id := propose(t, d, db.CoachProposal{Destination: DestCodexRulesAllow, BeforeText: "",
-		AfterText: `prefix_rule(pattern=["ls"], decision="allow")`})
-	require.NoError(t, d.MarkCoachAccepted(id, `prefix_rule(pattern=["ls"], decision="allow")`, fl(5), 3, judgeDecided))
-	j, c := runJudge(t, d, judgeDecided.Add(15*24*time.Hour))
+	rule := CodexRuleLine([]string{"ls"})
+	// The rules file is there and holds the added line: still no cut.
+	home := t.TempDir()
+	writeFile(t, filepath.Join(home, ".codex", codexRulesRel), rule+"\n")
+	id := propose(t, d, db.CoachProposal{Destination: DestCodexRulesAllow, BeforeText: "", AfterText: rule + "\n"})
+	require.NoError(t, d.MarkCoachAccepted(id, rule+"\n", fl(5), 3, judgeDecided))
+	j, c, err := judge(d.DB, d.al, home, judgeDecided.Add(15*24*time.Hour))
+	require.NoError(t, err)
 	assert.Equal(t, 1, j)
 	assert.Zero(t, c)
 	assert.Equal(t, "no_effect", proposal(t, d, id).Verdict)
 	n, err := d.CountOpenCoachProposals()
 	require.NoError(t, err)
 	assert.Zero(t, n)
+}
+
+func TestIsRepoDestination(t *testing.T) {
+	for _, dest := range repoDestinationsForTest {
+		assert.True(t, isRepoDestination(dest), dest)
+	}
+	for _, dest := range []string{DestClaudeMDUser, DestCodexAgentsMDUser, DestProcedure, DestPackOverlay} {
+		assert.False(t, isRepoDestination(dest), dest)
+	}
 }
 
 // A workbench repository file is the owner's to commit: never a judge's cut
