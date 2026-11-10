@@ -124,7 +124,7 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 			return false, nil
 		}
 	}
-	cur, err := (&Applier{DB: d, AgentLog: al, Home: home}).readCurrent(p)
+	cur, err := (&Applier{DB: d, AgentLog: al, Home: home, CodexHome: CodexHomeFromEnv()}).readCurrent(p)
 	if err != nil {
 		// A destination the coach cannot read safely is not cut.
 		if errors.Is(err, errNotSupported) || errors.Is(err, errClaudeMDNotRegular) ||

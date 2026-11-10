@@ -72,27 +72,27 @@ func TestUserFile_RefusesSymlinkFile(t *testing.T) {
 
 func TestUserFile_RefusesSymlinkedSkillFolder(t *testing.T) {
 	d := openDBs(t)
-	real := t.TempDir()
-	writeFile(t, filepath.Join(real, "SKILL.md"), "X")
+	realDir := t.TempDir()
+	writeFile(t, filepath.Join(realDir, "SKILL.md"), "X")
 	for _, f := range fileDests()[:2] {
 		a := fileApplier(t, d)
 		link := filepath.Dir(f.path(a)) // skills/a
 		require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o700))
-		require.NoError(t, os.Symlink(real, link))
+		require.NoError(t, os.Symlink(realDir, link))
 		_, err := a.readCurrent(f.proposal("X", "XY"))
 		require.ErrorIs(t, err, errUnsafeFile, f.dest)
 	}
 
 	// A symlinked ~/.claude, and a symlinked ~/.codex when no CODEX_HOME is set.
 	a := newApplier(t, d)
-	writeFile(t, filepath.Join(real, "skills", "a", "SKILL.md"), "X")
-	require.NoError(t, os.Symlink(real, filepath.Join(a.Home, ".claude")))
+	writeFile(t, filepath.Join(realDir, "skills", "a", "SKILL.md"), "X")
+	require.NoError(t, os.Symlink(realDir, filepath.Join(a.Home, ".claude")))
 	_, err := a.readCurrent(fileDests()[0].proposal("X", "XY"))
 	require.ErrorIs(t, err, errUnsafeFile)
 
 	a = newApplier(t, d)
-	writeFile(t, filepath.Join(real, "AGENTS.md"), "X")
-	require.NoError(t, os.Symlink(real, filepath.Join(a.Home, ".codex")))
+	writeFile(t, filepath.Join(realDir, "AGENTS.md"), "X")
+	require.NoError(t, os.Symlink(realDir, filepath.Join(a.Home, ".codex")))
 	_, err = a.readCurrent(fileDests()[2].proposal("X", "XY"))
 	require.ErrorIs(t, err, errUnsafeFile)
 	_, err = a.readCurrent(db.CoachProposal{Destination: DestCodexSkillUser, Skill: "a"})
@@ -301,4 +301,21 @@ func TestAccept_CreatedAgentsMDStatusFailureLeavesEmpty(t *testing.T) {
 	fi, err := os.Stat(path)
 	require.NoError(t, err, "never removed")
 	assert.Zero(t, fi.Size())
+}
+
+func TestWriteCut_CodexDestinationReadsCodexHome(t *testing.T) {
+	d := openDBs(t)
+	home, ch := t.TempDir(), t.TempDir()
+	t.Setenv("CODEX_HOME", ch)
+	writeFile(t, filepath.Join(ch, "AGENTS.md"), "Be brief.\nRun tests.\n")
+	p := db.CoachProposal{ID: 1, Destination: DestCodexAgentsMDUser, BeforeText: "Be brief.\n",
+		AfterText: "Be brief.\nRun tests.\n", Title: "t", Metric: "corrections"}
+	wrote, err := writeCut(d.DB, d.al, home, p, applyNow)
+	require.NoError(t, err)
+	require.True(t, wrote, "the cut reads $CODEX_HOME/AGENTS.md, not <home>/.codex")
+	open, err := d.ListCoachProposals("open")
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.NotContains(t, open[0].AfterText, "Run tests.")
+	assert.Contains(t, open[0].AfterText, "Be brief.")
 }

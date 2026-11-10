@@ -146,16 +146,7 @@ type coachEnv struct {
 
 func (e *coachEnv) applier() *coach.Applier {
 	home, _ := coachHome() // empty: only a settings.json destination fails, with its own error
-	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coachCodexHome()}
-}
-
-// coachCodexHome is $CODEX_HOME when it is an absolute path, else "" (the
-// coach then uses <home>/.codex, Codex's own default).
-func coachCodexHome() string {
-	if dir := os.Getenv("CODEX_HOME"); filepath.IsAbs(dir) {
-		return dir
-	}
-	return ""
+	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv()}
 }
 
 // coachCodedError carries the machine-readable "code" (and a diff) of a failure object.

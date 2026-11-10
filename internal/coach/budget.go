@@ -31,3 +31,23 @@ func BudgetOf(destination, before string) int {
 	}
 	return 0
 }
+
+const (
+	// skillGrowth is how many runes one edit may add to a skill file.
+	skillGrowth = 2000
+	// skillMaxRunes is the ceiling the coach's edits never push a skill past;
+	// a skill at or over it may only stay the same size or shrink.
+	skillMaxRunes = 20000
+	// packOverlayMaxRunes is the most runes one pack skill's overlay may hold.
+	packOverlayMaxRunes = 1000
+)
+
+// skillBudget is the most runes an edit may leave in a skill of n runes:
+// n + skillGrowth, capped at skillMaxRunes; a skill at or over the ceiling
+// keeps n.
+func skillBudget(n int) int {
+	if n >= skillMaxRunes {
+		return n
+	}
+	return min(n+skillGrowth, skillMaxRunes)
+}

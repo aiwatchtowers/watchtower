@@ -74,5 +74,5 @@ func claudeMDBudget(n int) int {
 // missing file and its folder are created (0600, 0700); an existing file keeps
 // its mode. It returns whether the file existed.
 func replaceClaudeMD(path, from, to string) (existed bool, err error) {
-	return claudeMDFile.replace(filepath.Dir(path), path, from, to)
+	return claudeMDFile.replace(filepath.Dir(path), path, from, to, true)
 }

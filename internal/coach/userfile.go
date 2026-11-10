@@ -21,16 +21,6 @@ import (
 // home root and the file. Errors name the destination label, never the path
 // or the text (FILES-01).
 
-const (
-	// skillGrowth is how many runes one edit may add to a skill file.
-	skillGrowth = 2000
-	// skillMaxRunes is the ceiling the coach's edits never push a skill past;
-	// a skill at or over it may only stay the same size or shrink.
-	skillMaxRunes = 20000
-	// packOverlayMaxRunes is the most runes one pack skill's overlay may hold.
-	packOverlayMaxRunes = 1000
-)
-
 var (
 	errUnsafeFile    = errors.New("is a symlink, not a regular file, too large or not text")
 	errSkillNotFound = errors.New("skill not found")
@@ -57,6 +47,15 @@ type Env struct {
 	Home string
 	// CodexHome is Codex's home ($CODEX_HOME); "" = <Home>/.codex.
 	CodexHome string
+}
+
+// CodexHomeFromEnv is $CODEX_HOME when it is an absolute path, else "" (the
+// coach then uses <Home>/.codex, Codex's own default).
+func CodexHomeFromEnv() string {
+	if dir := os.Getenv("CODEX_HOME"); filepath.IsAbs(dir) {
+		return dir
+	}
+	return ""
 }
 
 func (e Env) codexHome() string {
@@ -95,15 +94,22 @@ func ClaudeSkillPath(e Env, name string) string {
 // are not merged ("both can appear in skill selectors"). The documented
 // location is therefore the one the coach treats as the copy Codex reads.
 func CodexSkillPath(e Env, name string) (path string, ok bool) {
-	for _, p := range []string{
-		filepath.Join(e.Home, ".agents", "skills", name, "SKILL.md"),
-		filepath.Join(e.codexHome(), "skills", name, "SKILL.md"),
+	path, _, ok = codexSkill(e, name)
+	return path, ok
+}
+
+// codexSkill is CodexSkillPath plus the root below which no folder on the
+// way to that copy may be a symlink.
+func codexSkill(e Env, name string) (path, root string, ok bool) {
+	for _, c := range []struct{ path, root string }{
+		{filepath.Join(e.Home, ".agents", "skills", name, "SKILL.md"), e.Home},
+		{filepath.Join(e.codexHome(), "skills", name, "SKILL.md"), e.codexRoot()},
 	} {
-		if _, err := os.Lstat(p); err == nil {
-			return p, true
+		if _, err := os.Lstat(c.path); err == nil {
+			return c.path, c.root, true
 		}
 	}
-	return "", false
+	return "", "", false
 }
 
 // codexAgentsMDPath is <codexHome>/AGENTS.md.
@@ -190,13 +196,16 @@ func (f textFile) read(root, path string) (raw []byte, mode fs.FileMode, exists 
 }
 
 // replace makes the file hold to, only while it still holds from (an empty
-// from also matches a missing file); otherwise f.changed. A missing file and
-// its folders are created (0600, 0700); an existing file keeps its mode. It
-// returns whether the file existed.
-func (f textFile) replace(root, path, from, to string) (existed bool, err error) {
+// from also matches a missing file); otherwise f.changed. A missing file is
+// errSkillNotFound unless create, when it and its folders are created (0600,
+// 0700); an existing file keeps its mode. It returns whether the file existed.
+func (f textFile) replace(root, path, from, to string, create bool) (existed bool, err error) {
 	raw, mode, exists, err := f.read(root, path)
 	if err != nil {
 		return false, err
+	}
+	if !exists && !create {
+		return false, errSkillNotFound
 	}
 	if string(raw) != from {
 		return exists, f.changed
@@ -208,16 +217,6 @@ func (f textFile) replace(root, path, from, to string) (existed bool, err error)
 		}
 	}
 	return exists, writeAtomic(f.atomic(root), path, []byte(to), mode, raw, exists)
-}
-
-// skillBudget is the most runes an edit may leave in a skill of n runes:
-// n + skillGrowth, capped at skillMaxRunes; a skill at or over the ceiling
-// keeps n.
-func skillBudget(n int) int {
-	if n >= skillMaxRunes {
-		return n
-	}
-	return min(n+skillGrowth, skillMaxRunes)
 }
 
 // userFile is where a file destination lives: its kind, the root below which
@@ -235,23 +234,18 @@ func userFileOf(e Env, dest, skill string) (userFile, error) {
 	if e.Home == "" {
 		return userFile{}, errors.New("no home folder")
 	}
+	if skillDestinations[dest] {
+		if err := checkSkillName(skill); err != nil {
+			return userFile{}, err
+		}
+	}
 	switch dest {
 	case DestClaudeSkillUser:
-		if err := checkSkillName(skill); err != nil {
-			return userFile{}, err
-		}
 		return userFile{kind: skillFileKind, root: e.Home, path: ClaudeSkillPath(e, skill)}, nil
 	case DestCodexSkillUser:
-		if err := checkSkillName(skill); err != nil {
-			return userFile{}, err
-		}
-		path, ok := CodexSkillPath(e, skill)
+		path, root, ok := codexSkill(e, skill)
 		if !ok {
 			return userFile{}, errSkillNotFound
-		}
-		root := e.Home
-		if !strings.HasPrefix(path, filepath.Join(e.Home, ".agents")+string(filepath.Separator)) {
-			root = e.codexRoot()
 		}
 		return userFile{kind: skillFileKind, root: root, path: path}, nil
 	case DestCodexAgentsMDUser:
@@ -280,19 +274,10 @@ func (u userFile) readText() (string, error) {
 	return string(raw), nil
 }
 
-// replaceText is replace over u, with the kind's changed error as errChanged
-// so callers map it to ErrStale or ErrChangedSince. A skill that went missing
-// is never created again.
+// replaceText is replace over u: the kind's changed error means the file no
+// longer holds from (callers map it to ErrStale or ErrChangedSince), and a
+// skill that went missing is never created again.
 func (u userFile) replaceText(from, to string) error {
-	if !u.create {
-		_, _, exists, err := u.kind.read(u.root, u.path)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			return errSkillNotFound
-		}
-	}
-	_, err := u.kind.replace(u.root, u.path, from, to)
+	_, err := u.kind.replace(u.root, u.path, from, to, u.create)
 	return err
 }
