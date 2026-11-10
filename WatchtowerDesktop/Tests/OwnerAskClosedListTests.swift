@@ -298,6 +298,41 @@ final class OwnerAskClosedListTests: XCTestCase {
         XCTAssertEqual(vm.asks.closedListQueries[key(s)], "newer", "the list's query stays for next time")
     }
 
+    func testTheListsKeys() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        await vm.showClosedList(projectID: s.project, sessionID: s.session)
+        let visible = [s.closed[1]]
+        XCTAssertTrue(vm.pressInClosedList(.down, key: key(s), visibleIDs: visible))
+        XCTAssertEqual(vm.asks.closedListCursors[key(s)], s.closed[1])
+        // The search hid the cursor's row: Return opens nothing blind.
+        vm.asks.closedListCursors[key(s)] = s.closed[0]
+        XCTAssertFalse(vm.pressInClosedList(.open, key: key(s), visibleIDs: visible))
+        XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s))
+        // Esc clears a search first, then closes.
+        vm.asks.closedListQueries[key(s)] = "newer"
+        XCTAssertTrue(vm.pressInClosedList(.escape, key: key(s), visibleIDs: visible))
+        XCTAssertNil(vm.asks.closedListQueries[key(s)])
+        XCTAssertEqual(vm.asks.drawerClosedList(projectID: s.project), key(s))
+        XCTAssertTrue(vm.pressInClosedList(.escape, key: key(s), visibleIDs: visible))
+        XCTAssertTrue(vm.asks.drawerIsEmpty(projectID: s.project))
+        XCTAssertFalse(vm.pressInClosedList(.search, key: key(s), visibleIDs: visible), "the view's")
+    }
+
+    func testReturnOpensTheCursorsVisibleRow() async throws {
+        let s = try await seed()
+        let vm = await page(s)
+        await vm.showClosedList(projectID: s.project, sessionID: s.session)
+        vm.asks.closedListCursors[key(s)] = s.closed[0]
+        XCTAssertTrue(vm.pressInClosedList(.open, key: key(s), visibleIDs: s.closed))
+        let deadline = Date().addingTimeInterval(5)
+        while vm.asks.drawerAskIDs[s.project] != s.closed[0], Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.asks.drawerAskIDs[s.project], s.closed[0])
+        XCTAssertEqual(vm.asks.closedListOrigins[s.project], key(s))
+    }
+
     func testTheCursorMovesWithinTheRows() async throws {
         let s = try await seed()
         let vm = await page(s)

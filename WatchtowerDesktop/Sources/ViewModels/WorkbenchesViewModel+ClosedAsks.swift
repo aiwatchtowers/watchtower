@@ -34,16 +34,54 @@ extension WorkbenchesViewModel {
     /// is never "gone".
     func openClosedAsk(_ askID: Int64, from key: OwnerAsksViewModel.ClosedListKey) async {
         asks.closedListCursors[key] = askID
+        // A switch like any other (board #187): of two quick clicks the
+        // later one wins, whichever read finishes first.
+        let ticket = beginSwitch(projectID: key.projectID)
+        let found: OwnerAsk?
         do {
-            guard try await asks.linkedAsk(askID: askID, projectID: key.projectID) != nil else {
-                await asks.closedAskGone(key)
-                return
-            }
+            found = try await asks.linkedAsk(askID: askID, projectID: key.projectID)
         } catch {
+            guard isLatestSwitch(ticket, projectID: key.projectID) else { return }
             asks.closedListNotices[key] = ClosedAskListCopy.openFailed(error.localizedDescription)
+            return
+        }
+        guard isLatestSwitch(ticket, projectID: key.projectID) else { return }
+        guard found != nil else {
+            await asks.closedAskGone(key)
             return
         }
         guard await showAsk(askID, projectID: key.projectID) else { return }
         asks.noteOpenedFromClosedList(key, askID: askID)
+    }
+
+    /// A key in a closed list with nothing focused (the drawer's key
+    /// catcher): ↑/↓ move the cursor among `visibleIDs`, Return opens the
+    /// cursor's row only while it is on screen (a row the search hid is
+    /// never opened blind), Esc clears the search, else closes the drawer.
+    /// False when it did nothing; `.search` is the view's (its field).
+    @discardableResult
+    func pressInClosedList(
+        _ action: ClosedAskListModel.KeyAction,
+        key: OwnerAsksViewModel.ClosedListKey,
+        visibleIDs ids: [Int64]
+    ) -> Bool {
+        switch action {
+        case .up, .down:
+            asks.moveClosedListCursor(key, ids: ids, forward: action == .down)
+            return true
+        case .open:
+            guard let id = asks.closedListCursors[key], ids.contains(id) else { return false }
+            Task { await openClosedAsk(id, from: key) }
+            return true
+        case .escape:
+            if (asks.closedListQueries[key] ?? "").isEmpty {
+                asks.closeDrawer(projectID: key.projectID)
+            } else {
+                asks.closedListQueries[key] = nil
+            }
+            return true
+        case .search:
+            return false
+        }
     }
 }

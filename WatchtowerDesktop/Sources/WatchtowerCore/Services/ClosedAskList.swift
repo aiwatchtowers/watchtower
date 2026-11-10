@@ -91,6 +91,24 @@ package enum ClosedAskListModel {
 
     package static func showsSearch(total: Int) -> Bool { total >= searchThreshold }
 
+    /// What a key does in the list with nothing focused (the drawer's key
+    /// catcher, as in the ask drawer): ↑/↓ move, Return opens, Esc clears
+    /// the search or closes, ⌘F finds. A held Esc's repeat does nothing.
+    package enum KeyAction: Equatable, Sendable {
+        case up, down, open, escape, search
+    }
+
+    package static func keyAction(for press: OwnerAskKeyMap.Press) -> KeyAction? {
+        switch press.key {
+        case .upArrow where !press.otherModifiers: .up
+        case .downArrow where !press.otherModifiers: .down
+        case .returnKey where !press.otherModifiers: .open
+        case .escape where !press.otherModifiers && !press.isRepeat: .escape
+        case .character("f") where press.otherModifiers: .search
+        default: nil
+        }
+    }
+
     /// The header's count: "84", or "4 of 84" while searching.
     package static func countText(shown: Int, total: Int, searching: Bool) -> String {
         searching ? ClosedAskListCopy.matches(shown, of: total) : "\(total)"

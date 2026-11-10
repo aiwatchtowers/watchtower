@@ -211,6 +211,20 @@ final class ClosedAskListModelTests: XCTestCase {
         XCTAssertTrue(Model.showsSearch(total: 10))
     }
 
+    func testKeyActions() {
+        typealias Press = OwnerAskKeyMap.Press
+        XCTAssertEqual(Model.keyAction(for: Press(key: .upArrow)), .up)
+        XCTAssertEqual(Model.keyAction(for: Press(key: .downArrow)), .down)
+        XCTAssertEqual(Model.keyAction(for: Press(key: .returnKey)), .open)
+        XCTAssertEqual(Model.keyAction(for: Press(key: .escape)), .escape)
+        XCTAssertNil(Model.keyAction(for: Press(key: .escape, isRepeat: true)), "a held Esc closes nothing")
+        XCTAssertNil(Model.keyAction(for: Press(key: .escape, otherModifiers: true)))
+        XCTAssertEqual(Model.keyAction(for: Press(key: .character("f"), otherModifiers: true)), .search, "⌘F")
+        XCTAssertNil(Model.keyAction(for: Press(key: .character("f"))), "a bare F types nothing here")
+        XCTAssertNil(Model.keyAction(for: Press(key: .returnKey, otherModifiers: true)))
+        XCTAssertNil(Model.keyAction(for: Press(key: .tab)))
+    }
+
     func testCountText() {
         XCTAssertEqual(Model.countText(shown: 84, total: 84, searching: false), "84")
         XCTAssertEqual(Model.countText(shown: 4, total: 84, searching: true), "4 of 84")

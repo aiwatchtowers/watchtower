@@ -31,7 +31,6 @@ struct OwnerAskClosedListPane: View {
     let vm: WorkbenchesViewModel
     let key: OwnerAsksViewModel.ClosedListKey
     @FocusState private var searchFocused: Bool
-    @FocusState private var listFocused: Bool
 
     private typealias Copy = ClosedAskListCopy
     private typealias Model = ClosedAskListModel
@@ -60,22 +59,19 @@ struct OwnerAskClosedListPane: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Surface.text)
         .controlSize(.small)
-        .focusable()
-        .focused($listFocused)
-        .focusEffectDisabled()
-        .onKeyPress(.downArrow) { move(ids, forward: true) }
-        .onKeyPress(.upArrow) { move(ids, forward: false) }
-        .onKeyPress(.return) { openCursor(ids) }
-        .onKeyPress(.escape) { escape() }
-        .onKeyPress(keys: ["f"], phases: .down) { press in
-            guard press.modifiers.contains(.command) else { return .ignored }
-            searchFocused = true
-            return .handled
-        }
-        // A click in the list borrows the keyboard and its close hands it
-        // back, as the ask drawer does (board #536); opening the list
-        // leaves the keyboard where it was.
+        // The keys go through the drawer's catcher, as in the ask drawer: a
+        // click in the list lets go of the keyboard (borrowed, handed back
+        // on close, board #536) and the bare keys work with nothing
+        // focused. Opening the list leaves the keyboard where it was.
         .background(OwnerAskKeyCatcher(
+            onPress: { [vm, key] press in
+                guard let action = Model.keyAction(for: press) else { return false }
+                if action == .search {
+                    searchFocused = true
+                    return true
+                }
+                return vm.pressInClosedList(action, key: key, visibleIDs: ids)
+            },
             onMouseDown: { [asks, projectID = key.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
             resizeEdge: asks.drawerExpanded ? 0 : PanelResizeHandle.thickness,
             canHandBack: { [asks, projectID = key.projectID] in asks.drawerIsEmpty(projectID: projectID) },
@@ -141,7 +137,8 @@ struct OwnerAskClosedListPane: View {
                     }
                 }
                 .focused($searchFocused)
-                .onSubmit { listFocused = true }
+                // Return leaves the field: ↑/↓ and Return then work in the list.
+                .onSubmit { searchFocused = false }
                 .onKeyPress(.escape) {
                     clearSearch()
                     return .handled
@@ -280,32 +277,10 @@ struct OwnerAskClosedListPane: View {
         Task { await asks.loadClosed(projectID: key.projectID, sessionID: key.sessionID, automations: key.automations) }
     }
 
+    /// Clears the search and lets go of the field, so the list's keys work.
     private func clearSearch() {
         asks.closedListQueries[key] = nil
-        listFocused = true
-    }
-
-    private func move(_ ids: [Int64], forward: Bool) -> KeyPress.Result {
-        guard !searchFocused else { return .ignored }
-        asks.moveClosedListCursor(key, ids: ids, forward: forward)
-        return .handled
-    }
-
-    /// Return opens the cursor's row only while it is on screen: a row the
-    /// search hid is never opened blind.
-    private func openCursor(_ ids: [Int64]) -> KeyPress.Result {
-        guard !searchFocused, let id = asks.closedListCursors[key], ids.contains(id) else { return .ignored }
-        open(id)
-        return .handled
-    }
-
-    private func escape() -> KeyPress.Result {
-        if !(asks.closedListQueries[key] ?? "").isEmpty {
-            clearSearch()
-        } else {
-            asks.closeDrawer(projectID: key.projectID)
-        }
-        return .handled
+        searchFocused = false
     }
 }
 
