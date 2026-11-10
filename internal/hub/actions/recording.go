@@ -4,7 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
+	"strings"
+	"time"
 
 	"watchtower/internal/hub/secure"
 	"watchtower/internal/hub/state"
@@ -23,7 +27,8 @@ const kindRecordingUpload = "recording_upload"
 // authenticated: the phone's device, its upload id, the hub it addressed (nil
 // = unchecked), the asset's descriptor (from the sealed frame; nil = the
 // record carried no asset) and Download, which writes the sealed attachment
-// to the given path.
+// to the given path; Origin the upload's event_id and started_at (never its
+// title_hint: content).
 type RecordingIntake struct {
 	Device     secure.ID
 	UploadID   string
@@ -31,6 +36,20 @@ type RecordingIntake struct {
 	ThisHub    secure.ID
 	Descriptor *secure.AssetDescriptor
 	Download   func(ctx context.Context, dst string) error
+	Origin     state.RecordingOrigin
+}
+
+// recordingOrigin reads an upload payload's event_id and started_at; a
+// malformed time reads as none.
+func recordingOrigin(payload map[string]json.RawMessage) state.RecordingOrigin {
+	o := state.RecordingOrigin{EventID: strField(payload, "event_id")}
+	if raw, ok := payload["started_at"]; ok {
+		var t wire.Time
+		if json.Unmarshal(raw, &t) == nil {
+			o.StartedAt = t.Time
+		}
+	}
+	return o
 }
 
 // RecordingOutcome is the upload's echo: Status received, held (non-final:
@@ -42,9 +61,16 @@ type RecordingOutcome struct {
 // RecordingIntaker opens one upload (handlers.Handlers.IntakeRecording).
 type RecordingIntaker func(ctx context.Context, in RecordingIntake) RecordingOutcome
 
+// expiredUploadMessage answers an upload held HeldUploadMaxAge (protocol
+// §7.7): the phone keeps its audio on every failed.
+const expiredUploadMessage = "Your Mac's transcriber did not run for 7 days. Your recording stays on your phone."
+
 // heldUpload is an upload answered held, kept in memory to be tried again
-// every pass. A restart forgets it: the phone's record then reads as held
-// (pending to the phone) and the owner sends it again.
+// every pass. Its hold is also a held_uploads row (ids and the first hold's
+// time), so a restarted hub still expires it, or fails it when the switch
+// goes off: it then reads the upload back from its own held echo
+// (recoverHeld). A restart otherwise leaves it held until the phone sends it
+// again.
 type heldUpload struct {
 	b          mailbox
 	r          record
@@ -83,7 +109,8 @@ func (p *Processor) recordingUpload(ctx context.Context, b mailbox, r record, o 
 	return p.settleUpload(ctx, h, ps, false)
 }
 
-// retryUploads tries b's held uploads again.
+// retryUploads tries b's held uploads again, then settles the held_uploads
+// rows a restart left without a memory entry once they are due.
 func (p *Processor) retryUploads(ctx context.Context, b mailbox, ps *pass) error {
 	for _, h := range p.held {
 		if h.b.id != b.id || h.b.link != b.link {
@@ -93,7 +120,170 @@ func (p *Processor) retryUploads(ctx context.Context, b mailbox, ps *pass) error
 			return err
 		}
 	}
-	return nil
+	return p.recoverHeld(ctx, b, ps)
+}
+
+// recoverHeld finds b's held uploads with no memory entry (the hub restarted
+// since it held them) that are due: held HeldUploadMaxAge, or the recording
+// switch is off. It reads each one's record back, the hub's own held echo
+// (it carries the phone's payload), and settles it like a retry: the final
+// failed echo. The echo has to be read back, not built from the row: the
+// phone decodes started_at, ended_at, duration_sec and sample_format as
+// required keys, and the sidecar keeps ids only. It counts against the
+// pass's budget (errBudget past it; the rest is settled next pass). A due upload whose record is gone is settled without an
+// echo; one the phone wrote again is left to the mailbox read.
+func (p *Processor) recoverHeld(ctx context.Context, b mailbox, ps *pass) error {
+	rows, err := p.cfg.Store.HeldUploads()
+	if err != nil || len(rows) == 0 {
+		return err
+	}
+	on, _, err := p.cfg.Store.Recordings()
+	if err != nil {
+		return err
+	}
+	inMemory := map[string]bool{}
+	for _, h := range p.held {
+		if h.b.id == b.id {
+			inMemory[strField(h.payload, "id")] = true
+		}
+	}
+	now := p.cfg.Clock()
+	due := map[string]string{} // wire name -> upload id
+	outcome := map[string]string{}
+	for _, r := range rows {
+		if !strings.EqualFold(r.DeviceID, b.id.String()) || inMemory[r.UploadID] {
+			continue
+		}
+		switch {
+		case now.Sub(r.HeldAt) >= state.HeldUploadMaxAge:
+			outcome[r.UploadID] = state.HeldExpired
+		case !on:
+			outcome[r.UploadID] = state.HeldNotSupported
+		default:
+			continue
+		}
+		name, err := p.cfg.Sealer.WireName(secure.ZoneRelay, "recupload-"+r.UploadID)
+		if err != nil {
+			return err
+		}
+		due[name] = r.UploadID
+	}
+	if len(due) == 0 {
+		return nil
+	}
+	if ps.budget <= 0 {
+		ps.report.Remaining += len(due)
+		return errBudget
+	}
+	found, rewritten, err := p.readHeldEchoes(ctx, b, due)
+	if err != nil {
+		return err
+	}
+	left := len(found)
+	for _, h := range found {
+		if ps.budget <= 0 {
+			// The rest stay held rows: the next pass settles them.
+			ps.report.Remaining += left
+			return errBudget
+		}
+		if err := p.settleUpload(ctx, h, ps, true); err != nil {
+			return err
+		}
+		left--
+	}
+	gone := 0
+	err = p.cfg.Store.WithTx(ctx, func(tx *sql.Tx) error {
+		for name, id := range due {
+			if _, ok := found[name]; ok || rewritten[name] {
+				continue
+			}
+			gone++
+			if err := state.SettleHeldUpload(tx, id, outcome[id], now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if gone > 0 {
+		log.Printf("hub: %d held recording uploads of device %s settled without their record", gone, b.id)
+	}
+	return err
+}
+
+// readHeldEchoes reads b's mailbox from the start (the stored token stays)
+// for the records named in due: found is each one still the hub's own held
+// echo, rewritten each one the phone wrote again.
+func (p *Processor) readHeldEchoes(ctx context.Context, b mailbox, due map[string]string) (map[string]*heldUpload, map[string]bool, error) {
+	found, rewritten := map[string]*heldUpload{}, map[string]bool{}
+	var since uint64
+	for {
+		batch, err := p.cfg.Transport.Changes(ctx, b.zone, since)
+		if err != nil {
+			return nil, nil, fmt.Errorf("actions: reading held uploads back: %w", err)
+		}
+		for _, rec := range batch.Changed {
+			id, ok := due[rec.Name]
+			if !ok {
+				continue
+			}
+			delete(found, rec.Name) // a later change of the same record wins
+			delete(rewritten, rec.Name)
+			o, err := p.ownEcho(b, rec.Name, rec.Envelope)
+			if errors.Is(err, secure.ErrWrongClass) || errors.Is(err, secure.ErrWrongSender) {
+				rewritten[rec.Name] = true // the phone's own record: the mailbox read answers it
+				continue
+			}
+			if err != nil {
+				if droppable(err) {
+					continue
+				}
+				return nil, nil, err
+			}
+			var payload map[string]json.RawMessage
+			if o.Frame.Kind != kindRecordingUpload || o.Frame.ID != "recupload-"+id || !decodes(o.Frame.Payload, &payload) ||
+				strField(payload, "status") != wire.StatusHeld {
+				continue
+			}
+			found[rec.Name] = &heldUpload{b: b, r: record{name: rec.Name, env: rec.Envelope, expect: expectAbsent}, o: o, payload: payload}
+		}
+		for _, name := range batch.Deleted {
+			delete(found, name)
+			delete(rewritten, name)
+		}
+		since = batch.NewSeq
+		if !batch.More {
+			return found, rewritten, nil
+		}
+	}
+}
+
+// uploadNotDelivered: b's phone is lapsed on this transport, or the upload
+// (stamped at, zero for a held retry) was sent before its last lapse (sim
+// rule 16). A switcher read that fails counts as not lapsed: the intake
+// then answers as usual.
+func (p *Processor) uploadNotDelivered(b mailbox, at time.Time) bool {
+	if p.cfg.Switch == nil {
+		return false
+	}
+	k, device := p.cfg.Transport.Kind(), b.id.String()
+	if lapsed, err := p.cfg.Switch.Lapsed(k, device, 0); err == nil && lapsed {
+		return true
+	}
+	skipped, err := p.cfg.Switch.Skipped(k, device, 0, at)
+	return err == nil && skipped
+}
+
+// heldOutcome is held_uploads.outcome for a final answer.
+func heldOutcome(o Outcome) string {
+	switch {
+	case o.Status == wire.StatusReceived:
+		return state.HeldReceived
+	case o.Reason == ReasonNotSupported:
+		return state.HeldNotSupported
+	case o.Reason == reasonExpired:
+		return state.HeldExpired
+	}
+	return state.HeldFailed
 }
 
 // settleUpload decides one upload: the device gate, a stored received
@@ -130,6 +320,10 @@ func (p *Processor) settleUpload(ctx context.Context, h *heldUpload, ps *pass, r
 			target = &secure.ID{}
 		}
 	}
+	heldAt, held, err := p.cfg.Store.HeldAt(id)
+	if err != nil {
+		return err
+	}
 	switch {
 	case hasPrev && prev.Status == wire.StatusReceived:
 		out = prev
@@ -137,6 +331,13 @@ func (p *Processor) settleUpload(ctx context.Context, h *heldUpload, ps *pass, r
 		out = failed(reasonDeviceNotLinked, notLinkedMessage)
 	case target != nil && *target != hub:
 		out = failed(reasonWrongHub, wrongHubMessage)
+	case held && p.cfg.Clock().Sub(heldAt) >= state.HeldUploadMaxAge:
+		out = failed(reasonExpired, expiredUploadMessage)
+	case p.uploadNotDelivered(b, h.r.at):
+		// Sim rule 16: never left unanswered. A failed echo keeps the
+		// phone's audio, and Retry sends it again (protocol §7.7); over
+		// CloudKit when the relay refuses the echo (the switcher owes it).
+		out = failed(reasonNotDelivered, notDeliveredUploadMessage)
 	default:
 		var desc *secure.AssetDescriptor
 		if d := h.o.Frame.Asset; d != nil {
@@ -144,7 +345,8 @@ func (p *Processor) settleUpload(ctx context.Context, h *heldUpload, ps *pass, r
 			desc = &c
 			defer clear(c.Key[:])
 		}
-		in := RecordingIntake{Device: b.id, UploadID: id, TargetHub: target, ThisHub: hub, Descriptor: desc}
+		in := RecordingIntake{Device: b.id, UploadID: id, TargetHub: target, ThisHub: hub, Descriptor: desc,
+			Origin: recordingOrigin(h.payload)}
 		if h.attachment != "" {
 			zone, att := b.zone, h.attachment
 			in.Download = func(ctx context.Context, dst string) error {
@@ -189,6 +391,12 @@ func (p *Processor) echoUpload(ctx context.Context, h *heldUpload, plain string,
 		m, _ := json.Marshal(out.Message)
 		payload["error_message"] = m
 	}
+	// The class of a failure (protocol §9): received and held carry none.
+	delete(payload, "reason")
+	if out.Status == wire.StatusFailed && out.Reason != "" {
+		r, _ := json.Marshal(out.Reason)
+		payload["reason"] = r
+	}
 	body, err := wire.Marshal(payload)
 	if err != nil {
 		return err
@@ -205,16 +413,22 @@ func (p *Processor) echoUpload(ctx context.Context, h *heldUpload, plain string,
 			return err
 		}
 	}
+	uploadID, now := strField(h.payload, "id"), p.cfg.Clock()
 	if err := p.decide(ctx, b, func(tx *sql.Tx) error {
 		if final {
-			if err := state.MarkDone(tx, plain, ledgerOutcome(out), echo, nil, p.cfg.Clock()); err != nil {
+			if err := state.MarkDone(tx, plain, ledgerOutcome(out), echo, nil, now); err != nil {
 				return err
 			}
+			if err := state.SettleHeldUpload(tx, uploadID, heldOutcome(out), now); err != nil {
+				return err
+			}
+		} else if err := state.HoldUpload(tx, uploadID, b.id.String(), now); err != nil {
+			return err
 		}
 		if err := mark(tx, b, r.name, h.o); err != nil {
 			return err
 		}
-		return state.Enqueue(tx, q.control(b.zone))
+		return state.Enqueue(tx, q.control(b.queue))
 	}); err != nil {
 		return err
 	}

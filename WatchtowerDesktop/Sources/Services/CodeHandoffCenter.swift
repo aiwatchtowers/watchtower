@@ -160,9 +160,9 @@ final class CodeHandoffCenter {
                 self?.requests[workbenchID]?.id == request.id && vm.isSessionAtPrompt(session)
             }
             guard let center = terminalCenter,
-                  await center.submitPrompt(request.text, sessionID: id,
-                                            refresh: { await vm.agentStates?.poll() ?? false },
-                                            submitIf: canSubmit) != .noSession else {
+                  await center.deliver(request.text, sessionID: id,
+                                       refresh: { await vm.agentStates?.poll() ?? false },
+                                       submitIf: canSubmit) != .noSession else {
                 errors[workbenchID] = "That session is no longer running. Pick another or start a new one."
                 return false
             }

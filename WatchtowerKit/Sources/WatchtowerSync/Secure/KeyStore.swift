@@ -11,6 +11,8 @@ public enum KeyStoreError: Error, Equatable {
     case missingEntitlement
     case corrupt(String)
     case unexpected(Int32)
+    /// A write to the store from inside an `updateHubLink` closure: refused, because the outer write would undo it.
+    case reentrantWrite
 }
 
 public protocol KeychainBackend: Sendable {
@@ -42,12 +44,92 @@ public struct EpochKeys: Codable, Equatable, Sendable {
     /// epoch stored before the stamp existed (an absent key: such items decode, and an unstamped epoch encodes as
     /// they did).
     public var supersededAt: Date?
+    /// This epoch's `wt/relay/v2/` relay keys, derived from the keybox's `relay_kx` (relay client Phase 5); nil
+    /// means the static `wt/relay/v1/` keys. Kept and dropped with the epoch; absent in an item from an older build.
+    public var relayKeys: EpochRelayKeys?
+    /// Set when a static keybox first covered this epoch on a link with ephemeral state (the hub keys an epoch at
+    /// rotation and never again after a clear): no pair is ever derived for it after that. Kept and dropped with the
+    /// epoch, so at most `maxEpochs` marks. nil (absent) otherwise.
+    public var relayKeysCleared: RelayKeysCleared?
 
-    public init(epoch: UInt32, dataKey: Data, alertKey: Data, supersededAt: Date? = nil) {
+    public init(
+        epoch: UInt32,
+        dataKey: Data,
+        alertKey: Data,
+        supersededAt: Date? = nil,
+        relayKeys: EpochRelayKeys? = nil,
+        relayKeysCleared: RelayKeysCleared? = nil
+    ) {
         self.epoch = epoch
         self.dataKey = dataKey
         self.alertKey = alertKey
         self.supersededAt = supersededAt
+        self.relayKeys = relayKeys
+        self.relayKeysCleared = relayKeysCleared
+    }
+}
+
+/// The mark a static keybox leaves on an epoch of an ephemeral link. `hubPub`/`devicePub` are the publics of the
+/// pair it dropped: a keyed keybox naming that pair again is an older one read late (skipped), any other pair is
+/// refused (F17). Both nil when the epoch held no pair, and then every keyed keybox for it is refused.
+public struct RelayKeysCleared: Codable, Equatable, Sendable {
+    public let at: Date
+    public let hubPub: Data?
+    public let devicePub: Data?
+
+    public init(at: Date, hubPub: Data? = nil, devicePub: Data? = nil) {
+        self.at = at
+        self.hubPub = hubPub
+        self.devicePub = devicePub
+    }
+}
+
+/// One epoch's stored ephemeral relay keys, one per direction, 32 bytes each, with the two non-secret publics of
+/// the keybox's `relay_kx` they were derived from: a keybox naming another pair for the same epoch is refused.
+public struct EpochRelayKeys: Codable, Equatable, Sendable {
+    public let p2h: Data
+    public let h2p: Data
+    public let hubPub: Data
+    public let devicePub: Data
+
+    public init(p2h: Data, h2p: Data, hubPub: Data, devicePub: Data) {
+        self.p2h = p2h
+        self.h2p = h2p
+        self.hubPub = hubPub
+        self.devicePub = devicePub
+    }
+
+    public func key(_ direction: RelayDirection) -> Data {
+        switch direction {
+        case .phoneToHub: return p2h
+        case .hubToPhone: return h2p
+        }
+    }
+}
+
+/// An X25519 pair the phone draws for the weekly relay keys (relay client Phase 5), raw 32 bytes each: the
+/// offered one goes out on `epoch_ack.next_kx`, and becomes the current one when a keybox answers it.
+public struct EphemeralKey: Codable, Equatable, Sendable {
+    public let publicKey: Data
+    public let privateKey: Data
+
+    public init(publicKey: Data, privateKey: Data) {
+        self.publicKey = publicKey
+        self.privateKey = privateKey
+    }
+
+    public static func generate() -> Self {
+        let key = Curve25519.KeyAgreement.PrivateKey()
+        return Self(publicKey: key.publicKey.rawRepresentation, privateKey: key.rawRepresentation)
+    }
+
+    /// The private key, checked against `publicKey`: whoever uses the key also puts `publicKey` in a transcript,
+    /// so halves that disagree are corrupt, never used.
+    public func agreementKey() throws -> Curve25519.KeyAgreement.PrivateKey {
+        guard let key = try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privateKey),
+              key.publicKey.rawRepresentation == publicKey
+        else { throw KeyStoreError.corrupt("an ephemeral key's halves do not match") }
+        return key
     }
 }
 
@@ -59,6 +141,10 @@ public struct HubLinkKeys: Codable, Equatable, Sendable {
     public var metaKey: Data?
     /// Newest last; `saveHubLink` keeps `retained(now:)`.
     public var epochs: [EpochKeys]
+    /// The ephemeral key the hub's newest keybox answered (relay client Phase 5); nil before the first answer.
+    public var currentKX: EphemeralKey?
+    /// The ephemeral key offered on the last `epoch_ack` and not answered yet; a keybox naming it promotes it.
+    public var offeredKX: EphemeralKey?
 
     /// The most epochs kept, whatever their age (relay client Phase 3: three switches in a week keep four).
     public static let maxEpochs = 8
@@ -72,7 +158,9 @@ public struct HubLinkKeys: Codable, Equatable, Sendable {
         hubAgreementKey: Data,
         linkNonce: Data,
         metaKey: Data? = nil,
-        epochs: [EpochKeys] = []
+        epochs: [EpochKeys] = [],
+        currentKX: EphemeralKey? = nil,
+        offeredKX: EphemeralKey? = nil
     ) {
         self.hubID = hubID
         self.hubSigningKey = hubSigningKey
@@ -80,6 +168,8 @@ public struct HubLinkKeys: Codable, Equatable, Sendable {
         self.linkNonce = linkNonce
         self.metaKey = metaKey
         self.epochs = epochs
+        self.currentKX = currentKX
+        self.offeredKX = offeredKX
     }
 }
 
@@ -142,6 +232,12 @@ public protocol PhoneKeyStore: Sendable {
     func hubLink(_ hubID: String) throws -> HubLinkKeys?
     /// Also refreshes the two afterFirstUnlock copies (public signing key, alert material).
     func saveHubLink(_ keys: HubLinkKeys) throws
+    /// Reads `hubID`'s link, applies `change` and saves the result as `saveHubLink` does, all under the store's
+    /// lock, so concurrent writers lose nothing. Returns the stored link; nil, with `change` never called and
+    /// nothing written, when there is no link (an unlink is never undone). `change` may read the identity on the
+    /// same thread (the Keychain store's lock is recursive); a write to the store from it throws
+    /// `KeyStoreError.reentrantWrite`.
+    func updateHubLink(_ hubID: String, _ change: (HubLinkKeys) throws -> HubLinkKeys) throws -> HubLinkKeys?
     func removeHubLink(_ hubID: String) throws
     /// afterFirstUnlock copy of the hub's public signing key: the replica verifies signatures while locked.
     func hubSigningKey(_ hubID: String) throws -> Curve25519.Signing.PublicKey?
@@ -166,5 +262,8 @@ public struct HubIdentityKeys: Sendable {
 public protocol HubKeyStore: Sendable {
     /// Loads the hub's identity; creates all three items when none exists. `created` is true when it did.
     func hubIdentity(hubID: String) throws -> (keys: HubIdentityKeys, created: Bool)
+    /// The hub's identity when all three items exist, nil when none does; never creates anything. A partial or
+    /// unparsable identity throws `.corrupt`, a locked keychain `.locked`.
+    func existingHubIdentity(hubID: String) throws -> HubIdentityKeys?
     func deleteHubIdentity(hubID: String) throws
 }

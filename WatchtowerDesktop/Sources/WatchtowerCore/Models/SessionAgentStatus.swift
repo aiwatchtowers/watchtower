@@ -48,7 +48,7 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     /// When that count was reported (same format as `agentStateAt`).
     package var agentBackgroundAt: String?
     /// The background shells (`run_in_background` Bash) the same Stop
-    /// counted beside `agentBackground` (migration 00184, board #1712),
+    /// counted beside `agentBackground` (migration 00186, board #1712),
     /// stamped by `agentBackgroundAt`; nil = none, unknown, or a database
     /// without the column.
     package var agentBackgroundShells: Int?

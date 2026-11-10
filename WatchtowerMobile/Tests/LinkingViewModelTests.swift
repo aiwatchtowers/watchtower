@@ -29,11 +29,11 @@ final class LinkingViewModelTests: XCTestCase {
 
     private var log: LinkEventLog!
     private var container: FakeLinkAccess!
-    private var host: FakeLinkHost!
+    private(set) var host: FakeLinkHost!
     private var clock: FakeLinkClock!
     private var defaults: UserDefaults!
     /// The phone's Keychain stand-in: the test pairing's identity, no hub linked yet.
-    private var keyStore: InMemoryPhoneKeyStore!
+    private(set) var keyStore: InMemoryPhoneKeyStore!
 
     override func setUp() async throws {
         keyStore = try InMemoryPhoneKeyStore(identity: TestE2E.deviceIdentity)
@@ -55,7 +55,7 @@ final class LinkingViewModelTests: XCTestCase {
     }
 
     /// A code issued `issuedAgo` seconds before the fake clock's now, with the test hub's keys.
-    private func code(
+    func code(
         hubID: String = acme,
         macName: String = "Acme Mac",
         issuedAgo: TimeInterval = 10,
@@ -106,14 +106,14 @@ final class LinkingViewModelTests: XCTestCase {
 
     /// The Mac links any device record carrying `nonce` (the hub's valid-code
     /// path), for its hub id.
-    private func macLinks(_ payload: LinkPayload) {
+    func macLinks(_ payload: LinkPayload) {
         let hubID = payload.hubID
         host.mac = { [grant = grantMaker] writes in
             writes.contains { $0.linkNonce == payload.nonce } ? grant(hubID, true, nil) : nil
         }
     }
 
-    private func linkedModel(_ payload: LinkPayload) async throws -> LinkingViewModel {
+    func linkedModel(_ payload: LinkPayload) async throws -> LinkingViewModel {
         macLinks(payload)
         let model = makeModel()
         await model.open(payload.url())

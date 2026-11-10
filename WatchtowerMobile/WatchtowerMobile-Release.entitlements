@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Release entitlements (project.yml configs.Release): WatchtowerMobile.entitlements without the App Attest
-	     key. Phase 4 adds the App Attest environment key (production) here; enabling App Attest
-	     on the App ID is the owner's portal step then. Keep every other key in step with the Debug file. -->
+	<!-- Release entitlements (project.yml configs.Release): WatchtowerMobile.entitlements with the App Attest
+	     environment fixed to production. Enabling App Attest on the App ID is the owner's portal step; a signed
+	     archive fails until then. Keep every other key in step with the Debug file. -->
 	<!-- Must match WatchtowerCloud.containerID exactly: the phone syncs this container. -->
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
@@ -31,5 +31,8 @@
 		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile</string>
 		<string>$(AppIdentifierPrefix)com.aiwatchtowers.watchtower.mobile.alerts</string>
 	</array>
+	<!-- App Attest for the hosted relay's device registration (unused while the relay is dark). -->
+	<key>com.apple.developer.devicecheck.appattest-environment</key>
+	<string>production</string>
 </dict>
 </plist>

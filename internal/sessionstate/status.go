@@ -44,6 +44,11 @@ type Row struct {
 	// stamp layout; "" = the session is not live. Load leaves it empty: only
 	// the host knows the run.
 	RunStartedAt string
+	// DisplayOver is the Desktop's "shown over" background count (#411: two
+	// failed staleness probes in a row), which only the Desktop knows and
+	// reports to the hub (desktop_view); Load leaves it false. A count shown
+	// over is no longer agents working.
+	DisplayOver bool
 }
 
 // State is a session's effective status.
@@ -75,11 +80,9 @@ const BackgroundShellCap = 2 * time.Hour
 
 // Resolve is SessionAgentStatus.effective: the hook states count only for a
 // live session and only when written during the current run; finished and the
-// open asks are not run-scoped.
-//
-// Known divergence: the Desktop can show a background count as over after two
-// failed staleness probes (displayOver, kept in memory); Go has no such input
-// and may still report agents_working then.
+// open asks are not run-scoped. A count the Desktop shows over
+// (Row.DisplayOver) is not agents working, as SessionAgentStatus.effective's
+// displayOver.
 func Resolve(r Row, now time.Time) State {
 	live := r.RunStartedAt != ""
 	hook := trustedHook(r)
@@ -91,7 +94,7 @@ func Resolve(r Row, now time.Time) State {
 		return StateError
 	case hook == "working":
 		return StateWorking
-	case hook == "waiting" && backgroundRuns(r, now):
+	case hook == "waiting" && !r.DisplayOver && backgroundRuns(r, now):
 		return StateAgentsWorking
 	}
 	switch {

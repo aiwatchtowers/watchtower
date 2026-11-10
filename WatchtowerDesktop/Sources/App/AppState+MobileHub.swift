@@ -1,84 +1,49 @@
 import AppKit
-import GRDB
 import WatchtowerCore
-
-/// Settings → Mobile drives the toggle and reads the hub through these.
-extension AppState: MobileSettingsHost {}
+import WatchtowerSync
 
 extension AppState {
-    /// "Keep this Mac awake for the iPhone": on unless the owner turned it off (ask #614).
-    var isMobileKeepAwakeEnabled: Bool {
-        get { mobileSyncDefaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true }
-        set { mobileSyncDefaults.set(newValue, forKey: Constants.mobileKeepAwakeKey) }
+    /// Starts the one-time hand-over of Mobile to the Go hub (go hub plan 3
+    /// Task 22), once per app run, in its own task: it first waits for the
+    /// v1-host restart, and neither the launch nor the UI waits for it.
+    /// Under XCTest nothing starts unless the test injected
+    /// `hubAdoptionDeps`: a unit test never runs the live CLI, Keychain or
+    /// data root (as `startHostRestart` does nothing under XCTest).
+    func startHubAdoption() {
+        guard hubAdoption == nil else { return }
+        guard hubAdoptionDeps != nil || !Self.runsUnderXCTest else { return }
+        let driver = liveHubAdoptionDriver()
+        hubAdoption = driver
+        Task { _ = await driver.run() }
     }
 
-    /// The owner's toggle, outvoted by the organization's `MobileSync = off`
-    /// (#608); the stored toggle itself is never rewritten by the policy.
-    var isMobileSyncEnabled: Bool {
-        mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey) && managedPolicy.policy.mobileSyncMode != "off"
+    /// This process is a test run (`startHostRestart`'s check, plus XCTest
+    /// being loaded, as the retired Swift hub's gate had it).
+    nonisolated static var runsUnderXCTest: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil || NSClassFromString("XCTestCase") != nil
     }
 
-    /// The Settings → Mobile toggle: on starts the hub (building it on first
-    /// use), off stops it. The hub object is kept, so toggling never opens a
-    /// second transport.
-    func setMobileSyncEnabled(_ enabled: Bool) {
-        // MobileSync = off (#608) cannot be turned on from here, whatever
-        // the view shows; the stored toggle is left as it was.
-        if enabled, mobileSyncLockedByPolicy { return }
-        mobileSyncDefaults.set(enabled, forKey: Constants.mobileSyncEnabledKey)
-        guard enabled else {
-            mobileHub?.disable()
-            return
-        }
-        if let hub = mobileHub {
-            Task { await hub.start() }
-        } else if let pool = mobileHubPool {
-            initMobileHub(dbPool: pool)
-        }
+    /// A phone asks to type into sessions (PROJ-16, spec §10, OD-2): Settings
+    /// → Mobile shows the request, and while the app is in the background a
+    /// macOS notice asks the owner. The hub sends one event per request.
+    func hubTypingRequested(deviceID: String, name: String) {
+        guard !appIsActive() else { return }
+        postTypingRequestNotice(deviceID, name)
     }
 
-    var mobileSyncLockedByPolicy: Bool { managedPolicy.policy.mobileSyncMode == "off" }
-
-    /// Every policy tick: a wipe under `MobileSync = off` whose hub could not
-    /// be built (no storage yet) is tried again (`wipeHubForPolicyOff` runs
-    /// once per run).
-    func retryPolicyOffWipe() {
-        guard mobileSyncPolicy.current == "off", mobileHub == nil, let pool = mobileHubPool else { return }
-        wipeHubForPolicyOff(dbPool: pool)
-    }
-
-    /// Follows a changed policy on the hub: `off` stops it and removes what
-    /// it published (`disable`); leaving `off` starts it again only when the
-    /// owner's toggle is on; `workbench_only` empties the other kinds at the
-    /// next cycle (`mobileSyncPolicy`). Nothing is turned on by itself.
-    func managedPolicyChanged(_ policy: ManagedPolicy) {
-        let previous = mobileSyncPolicy.current
-        let mode = policy.mobileSyncMode
-        mobileSyncPolicy.store(mode)
-        guard mode != previous else { return }
-        if mode == "off" {
-            if let hub = mobileHub {
-                hub.disable()
-            } else if let pool = mobileHubPool {
-                wipeHubForPolicyOff(dbPool: pool)
-            }
-        } else if previous == "off", isMobileSyncEnabled {
-            if let hub = mobileHub {
-                Task { await hub.start() }
-            } else if let pool = mobileHubPool {
-                initMobileHub(dbPool: pool)
-            }
-        }
-    }
-}
-
-extension AppState {
     /// A phone start with "Bring the window forward" (mobile POC spec §6.5):
-    /// the workbench's page on the main window, the app in front — before
-    /// the start, so its Work on it placement lands on that page.
-    func bringWorkbenchForward(projectID: Int64) {
+    /// the workbench's page on the main window, the app in front, and the
+    /// session the phone started shown there as Work on it shows one, the
+    /// board kept (`showPhoneStartedSession`).
+    func bringWorkbenchForward(projectID: Int64, sessionID: Int64) async {
         selectedDestination = .workbench
         workbenchesViewModel?.drill(into: projectID)
+        frontMainWindow(self)
+        await workbenchesViewModel?.showPhoneStartedSession(sessionID, projectID: projectID)
+    }
+
+    /// The app in front with its main window shown (the live `frontMainWindow`).
+    func frontLiveMainWindow() {
         (NSApp.delegate as? TrayAppDelegate)?.endLoginLaunchClosing()
         ActivationPolicyDecision.becomeRegularAndActivate()
         let shown = NSApp.windows.first { TrayAppDelegate.isMainWindow($0) && ($0.isVisible || $0.isMiniaturized) }
@@ -90,223 +55,44 @@ extension AppState {
         }
     }
 
-    /// B registers its slice sources and dispatcher handlers here.
-    func buildMobileHub(storage: MobileHubStorage, dbPool: DatabasePool) throws -> MobileHubService {
-        let dispatcher = MobileHubCommandDispatcher()
-        registerWorkbenchHandlers(on: dispatcher, storage: storage, dbPool: dbPool)
-        // Without a linked phone only the link flow's answer is published,
-        // and the CLI companions run nothing (board #724).
-        let sidecar = storage.sidecar
-        let hasPhone: @Sendable () -> Bool = { MobileLinkCenter.hasLinkedPhone(sidecar) }
-        let inputs = makeSessionInputs(storage: storage, dbPool: dbPool)
-        inputs?.register(on: dispatcher)
-        // The folder's git status goes through the CLI (PROJ-10's git); no
-        // CLI, no refresher, and the workbench records carry no branch.
-        let gitRefresher = workbenchesViewModel?.cli.map { WorkbenchGitRefresher.live(cli: $0, dbPool: dbPool, isActive: hasPhone) }
-        // The terminals' liveness, copied by the fast lane for the session
-        // projection's off-main resolution.
-        let liveness = SessionLivenessBox()
-        let summaries = workbenchesViewModel?.cli.map {
-            SessionReportSummaryRunner.live($0.runner, dbPool: dbPool, liveness: liveness, isActive: hasPhone)
-        }
-        let recordings = try PhoneRecordingJobs.live(sidecar: storage.sidecar, dbPool: dbPool, recorder: meetingRecorderCenter)
-        let phoneUpload: @Sendable (Int64) -> String? = { [recordings] in recordings.uploadID(forTranscript: $0) }
-        let hidden = HiddenSessionIDsBox()
-        let sessions = TerminalSessionSlice(
-            liveness: { liveness.current },
-            reportSummary: { summaries?.summary(workbenchID: $0, sessionID: $1) },
-            hiddenIDs: { hidden.current }
+    /// Settings → Mobile's **Retry** after a failed hand-over.
+    func retryHubAdoption() {
+        guard let driver = hubAdoption else { return }
+        Task { _ = await driver.retry() }
+    }
+
+    /// Settings → Mobile's **Set up Mobile again**, once the owner confirmed.
+    func setUpMobileAgain() {
+        guard let driver = hubAdoption else { return }
+        Task { _ = await driver.setUpAgain() }
+    }
+
+    private func liveHubAdoptionDriver() -> HubAdoptionDriver {
+        let deps = hubAdoptionDeps ?? HubAdoptionDeps(
+            runner: Constants.findCLIPath().map { ProcessHubAdoptRunner(binaryPath: $0) },
+            keyStore: KeychainHubKeyStore(backend: SecItemKeychainBackend())
         )
-        // Each session's own report (`--session S --json`, scoped by the CLI,
-        // PROJ-14) and the timeline's state milestones; no CLI, no reports.
-        let reports = workbenchesViewModel?.cli.map {
-            SessionReportRunner.live($0.runner, dbPool: dbPool, sessions: sessions, sidecar: sidecar, isActive: hasPhone)
-        }
-        if let reports { SessionReportRequestHandler(dbPool: dbPool, runner: reports, sessions: sessions).register(on: dispatcher) }
-        // The chat of a session the phone watches (`session-feed --json`);
-        // no CLI, no chat.
-        let chats = workbenchesViewModel?.cli.map {
-            SessionChatRunner.live($0.runner, isLive: { liveness.current.liveIDs.contains($0) }, isActive: hasPhone)
-        }
-        if let chats { SessionChatRequestHandler(dbPool: dbPool, runner: chats, sessions: sessions).register(on: dispatcher) }
-        let sources: [any SliceSource] = [
-            WorkbenchSlice(
-                gitStatus: { gitRefresher?.status(for: $0) }, sessionCounts: { try sessions.sessionCounts($0) },
-                defaultAgent: { ConfigService.readWorkbenchDefaultAgent() }
-            ),
-            WorkbenchTargetSlice(),
-            WorkbenchCommentSlice(),
-            sessions,
-            OwnerAskSlice(),
-            WorkAlertSlice(
-                sidecar: storage.sidecar, isAway: { [box = ownerAwayBox] in box.read() }, liveness: { liveness.current },
-                hiddenIDs: { hidden.current }
-            ),
-            PermissionRequestSlice { liveness.current },
-            CalendarEventSlice(),
-            MeetingTranscriptSlice(phoneRecordingID: phoneUpload),
-            RecordingJobSlice(sidecar: storage.sidecar),
-            SessionTimelineSlice(sessions: sessions, sidecar: sidecar),
-            DeviceGrantSlice(sidecar: sidecar, hubID: try sidecar.ensureHubID(), keyring: storage.keyring)
-        ] + (reports == nil ? [] : [SessionReportSlice(sessions: sessions, sidecar: sidecar)])
-            + (chats.map { [SessionChatSlice(runner: $0)] } ?? [])
-        let transport = storage.transport
-        // The publisher seals through the storage's secure transport; without hub keys (nil) it publishes nothing.
-        let publisher = SlicePublisher(
-            dbPool: dbPool, state: storage.sidecar, transport: storage.secure, sources: sources, assets: storage.sliceAssets,
-            isLinked: hasPhone,
-            allowedKinds: { [mobileSyncPolicy] in mobileSyncPolicy.allowedKinds },
-            // Labelled: a trailing closure would bind to `clock`, the first
-            // closure parameter.
-            sendNow: { await transport.sendNow() }
-        )
-        followPendingDeletes(into: hidden)
-        // The companions' changes (git status, summaries, reports, phone
-        // recording jobs) are normal kinds: the next full tick diffs them.
-        let fastLane = FastLane(
-            dbPool: dbPool, agentStates: sessionAgentStateCenter, terminalCenter: terminalCenter, liveness: liveness,
-            ownerAway: ownerAwayCenter,
-            nudge: { [weak publisher] in publisher?.nudge(kinds: $0) },
-            sessionStateChanged: { [weak gitRefresher, weak summaries] workbench in
-                gitRefresher?.sessionStateChanged(workbenchID: workbench)
-                summaries?.sessionStateChanged(workbenchID: workbench)
+        let recorder = meetingRecorderCenter
+        return HubAdoptionDriver(seams: .init(
+            waitForHostRestart: { [weak self] in await self?.hostRestart?.waitUntilSettled() },
+            cancelPhoneRecordings: { await recorder.cancelPhoneRecordingJobs(audioNames: $0) },
+            phoneRecordingsAdopted: { await recorder.forgetPhoneRecordings(audioNames: $0) },
+            releasePhoneRecordings: { await recorder.releasePhoneRecordings(audioNames: $0) },
+            deps: deps,
+            settings: { [weak self] in
+                self?.hubAdoptSettings() ?? HubAdoptSettings(enabled: false, startSessionAllows: [:])
             },
-            sessionStatesChanged: { [weak reports] in reports?.sessionStatesChanged() }
-        )
-        // A changed watched chat goes out within seconds, not on the next tick.
-        chats?.onChange = { [weak publisher] in publisher?.nudge(kinds: [.sessionChat]) }
-        let keepAwake = makeKeepAwake(dbPool: dbPool, sidecar: sidecar, liveness: liveness, hasPhone: hasPhone)
-        let optional: [(any HubCompanion)?] = [gitRefresher, summaries, reports, chats, inputs]
-        let companions: [any HubCompanion] = optional.compactMap { $0 } + [fastLane, recordings, keepAwake]
-        let hub = try assembleMobileHub(
-            storage: storage, dbPool: dbPool, dispatcher: dispatcher, publisher: publisher, companions: companions,
-            recordingUploads: .init { [recordings, mobileSyncPolicy] upload, audio in
-                try mobileSyncPolicy.checkRecordingAllowed() // #608: not workbench data
-                try await recordings.ingest(upload, audio: audio)
+            settingsDelivered: { [weak self] in
+                self?.mobileSyncDefaults.removeObject(forKey: Constants.mobileSyncEnabledKey)
             }
-        )
-        wireTyping(hub.linkCenter, inputs: inputs)
-        return hub
+        ))
     }
 
-    /// The Mac stays awake while a session runs and the phone has been in touch (ask #614).
-    private func makeKeepAwake(
-        dbPool: DatabasePool, sidecar: HubSyncState, liveness: SessionLivenessBox, hasPhone: @escaping @Sendable () -> Bool
-    ) -> KeepAwakeCompanion {
-        let defaults = mobileSyncDefaults
-        return KeepAwakeCompanion(
-            assertion: MacAwakeAssertion(),
-            enabled: { defaults.object(forKey: Constants.mobileKeepAwakeKey) as? Bool ?? true },
-            liveBoardSessions: { KeepAwakeCompanion.liveBoardSessions(dbPool, liveIDs: liveness.current.liveIDs) },
-            lastPhoneContact: { hasPhone() ? sidecar.lastPhoneContact() : nil }
-        )
-    }
-
-    /// The Undo batch's sessions (PROJ-17) into `hidden` now and on every
-    /// change. Session and workbench records are normal kinds (board #724):
-    /// the next full tick drops the hidden sessions, no nudge.
-    private func followPendingDeletes(into hidden: HiddenSessionIDsBox) {
-        hidden.store(workbenchesViewModel?.pendingDeletes.ids ?? [])
-        workbenchesViewModel?.onPendingDeletesChanged = { ids in hidden.store(ids) }
-    }
-
-    /// The asks', board writes' and session starts' handlers (spec §6).
-    private func registerWorkbenchHandlers(
-        on dispatcher: MobileHubCommandDispatcher, storage: MobileHubStorage, dbPool: DatabasePool
-    ) {
-        if let asks = workbenchesViewModel?.asks {
-            let askAnswers = AskAnswerHandler(dbPool: dbPool, sidecar: storage.sidecar) { [weak asks] ask, answer in
-                // A rebuilt workbench state rebuilds the hub too; until then
-                // nothing is written.
-                await asks?.answer(ask, with: answer) ?? .failed("The workbench is reloading on the Mac")
-            }
-            dispatcher.register(.askAnswer) { try await askAnswers.handle($0) }
-        }
-        // Board writes report through the board's own onOwnerWrite, so the
-        // Mac never announces the owner's phone edit (spec §6.1).
-        BoardHandlers(
-            dbPool: dbPool, cli: workbenchesViewModel?.cli,
-            isReporting: { [weak vm = workbenchesViewModel] in vm?.onOwnerWrite != nil },
-            publishSoon: { [weak self] in self?.mobileHub?.publishSoon(kinds: $0) },
-            onOwnerWrite: { [weak vm = workbenchesViewModel] projectID, subject in
-                vm?.onOwnerWrite?(projectID, subject)
-            }
-        ).register(on: dispatcher)
-        // Starts take the Desktop's own start (Work on it's path) and stops
-        // `TerminalCenter.close` (spec §6.5), under the linked phone's own
-        // grants (`devices`, A8).
-        SessionStartStopHandlers(
-            dbPool: dbPool, workbenches: workbenchesViewModel, terminalCenter: terminalCenter,
-            deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-            bringForward: { [weak self] in self?.bringWorkbenchForward(projectID: $0) }
-        ).register(on: dispatcher)
-        // Automation runs take quick run's path under the start-sessions grant (ask #692).
-        AutomationRunHandler(
-            dbPool: dbPool, quickRun: { [weak self] in self?.quickRunCenter },
-            deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-            publishSoon: { [weak self] in self?.mobileHub?.publishSoon(kinds: $0) }
-        ).register(on: dispatcher)
-        // Permission answers decide the waiting hook's row (its own grant)
-        // and interrupts send one Esc (the typing grant), #517.
-        PermissionAnswerHandlers(
-            dbPool: dbPool, terminalCenter: terminalCenter,
-            status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
-            deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-            deviceName: { [sidecar = storage.sidecar] in MobileLinkCenter.deviceName(sidecar, deviceID: $0) },
-            control: workbenchesViewModel?.sessionControl
-        ).register(on: dispatcher)
-    }
-
-    /// A line from the phone goes through the asks' own delivery
-    /// (`SessionLineDelivery`, PROJ-12) under PROJ-16's gate; no workbench
-    /// state, no session input.
-    private func makeSessionInputs(storage: MobileHubStorage, dbPool: DatabasePool) -> SessionInputHandlers? {
-        workbenchesViewModel.map { vm in
-            SessionInputHandlers(
-                dbPool: dbPool, sidecar: storage.sidecar, lineDelivery: vm.lineDelivery, terminalCenter: terminalCenter,
-                status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
-                deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar),
-                control: vm.sessionControl
-            )
-        }
-    }
-
-    /// The phones' typing grants (spec §10): a revoke fails the phone's held
-    /// lines; a request asks the owner — Settings → Mobile shows it, and a
-    /// macOS notice asks while the app is in the background (OD-2).
-    private func wireTyping(_ linkCenter: MobileLinkCenter?, inputs: SessionInputHandlers?) {
-        linkCenter?.onTypingRevoked = { [weak inputs] in inputs?.revoked(deviceID: $0) }
-        linkCenter?.onTypingRequested = { device in
-            guard NSApp?.isActive == false else { return }
-            NotificationService.shared.sendMobileTypingRequestNotification(deviceID: device.deviceID, name: device.name)
-        }
-    }
-
-    /// The last step of `buildMobileHub`: the run's link center (when the
-    /// storage has a share service), the relay processor that hands it the
-    /// phones' `device` records, and the hub it hangs on.
-    func assembleMobileHub(
-        storage: MobileHubStorage,
-        dbPool: DatabasePool,
-        dispatcher: MobileHubCommandDispatcher,
-        publisher: SlicePublisher,
-        companions: [any HubCompanion],
-        recordingUploads: RelayProcessor.RecordingUploads
-    ) throws -> MobileHubService {
-        let hostInfo = HubHostInfo.live(dbPool: dbPool, ownerUser: storage.ownerUser)
-        let linkCenter = mobileLinkCenter ?? MobileLinkCenter.forRun(storage: storage, macName: hostInfo.macName)
-        mobileLinkCenter = linkCenter
-        let processor = RelayProcessor(
-            transport: storage.secure, sidecar: storage.sidecar, dispatcher: dispatcher,
-            hubID: try storage.sidecar.ensureHubID(), recordingUploads: recordingUploads,
-            deviceRecords: linkCenter?.relayRoute
-        )
-        let hub = MobileHubService(
-            transport: storage.transport, publisher: publisher, processor: processor, sidecar: storage.sidecar,
-            hostInfo: hostInfo, keyring: storage.keyring, companions: companions
-        ) { [weak self] in self?.isMobileSyncEnabled ?? false }
-        linkCenter?.attach(to: hub)
-        return hub
+    /// The owner's settings the Go hub takes at the hand-over: the stored
+    /// toggle as the owner left it (the Go hub applies `MobileSync` itself),
+    /// read once. The phones' start-sessions grants live in the Swift hub's
+    /// own state, which the Go hub copies, so Desktop adds none.
+    func hubAdoptSettings() -> HubAdoptSettings {
+        HubAdoptSettings(enabled: mobileSyncDefaults.bool(forKey: Constants.mobileSyncEnabledKey), startSessionAllows: [:])
     }
 }

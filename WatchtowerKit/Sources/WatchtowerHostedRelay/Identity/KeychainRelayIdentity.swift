@@ -4,8 +4,9 @@ import os
 import WatchtowerSync
 
 /// The phone's relay identity in the Keychain: the `relay_auth` Ed25519 private
-/// key (`relay.auth`, raw 32 bytes) and the App Attest key id (`relay.attestkey`,
-/// UTF-8). Both items are `afterFirstUnlock` (`ThisDeviceOnly`), data-protection
+/// key (`relay.auth`, raw 32 bytes), the App Attest key id (`relay.attestkey`,
+/// UTF-8) and the relay account id (`relay.account`, the UUID string, which
+/// StoreKit's `appAccountToken` carries). All three items are `afterFirstUnlock` (`ThisDeviceOnly`), data-protection
 /// keychain, never synchronizable, in the app's private access group — never the
 /// alerts group the NotifyService extension reads. Nothing is ever logged but op
 /// names and error codes.
@@ -13,6 +14,7 @@ public final class KeychainRelayIdentity: AppAttestKeyStore, @unchecked Sendable
     private static let logger = Logger(subsystem: "WatchtowerKit", category: "HostedRelay")
     static let authAccount = "relay.auth"
     static let attestKeyAccount = "relay.attestkey"
+    static let accountAccount = "relay.account"
 
     private let backend: any KeychainBackend
     private let group: String?
@@ -89,6 +91,37 @@ public final class KeychainRelayIdentity: AppAttestKeyStore, @unchecked Sendable
             let op = id == nil ? "delete" : "write"
             Self.logger.error("relay attest key id \(op, privacy: .public) failed: \(Self.code(error), privacy: .public)")
         }
+    }
+
+    /// The stored relay account id; nil when none exists. A locked device throws
+    /// `KeyStoreError.locked`; a stored value that is no UUID throws `KeyStoreError.corrupt` and is kept.
+    public func accountID() throws -> UUID? {
+        try lock.withLock {
+            guard let raw = try backend.read(account: Self.accountAccount, group: group) else { return nil }
+            return try Self.parseAccount(raw)
+        }
+    }
+
+    /// Keeps `id` as the relay account id (`add`, never `write`: a lost race reads the winner's, which
+    /// is returned; the winner is the same account when the relay registered the same key twice).
+    public func keepAccountID(_ id: UUID) throws -> UUID {
+        try lock.withLock {
+            let added = try backend.add(
+                Data(id.uuidString.lowercased().utf8), account: Self.accountAccount, access: .afterFirstUnlock,
+                group: group, dataProtection: true)
+            if added { return id }
+            guard let winner = try backend.read(account: Self.accountAccount, group: group) else {
+                throw KeyStoreError.corrupt("relay account id vanished after a lost create race")
+            }
+            return try Self.parseAccount(winner)
+        }
+    }
+
+    private static func parseAccount(_ raw: Data) throws -> UUID {
+        guard let text = String(data: raw, encoding: .utf8), let id = UUID(uuidString: text) else {
+            throw KeyStoreError.corrupt("relay account id is not a UUID")
+        }
+        return id
     }
 
     private static func parse(_ raw: Data) throws -> any RelaySigner {

@@ -165,6 +165,13 @@ func (c *Client) dialOnce(ctx context.Context) (*websocket.Conn, string, error) 
 	}
 }
 
+// Connected reports whether the WebSocket is up now: false while it reconnects and after Close.
+func (k *Conn) Connected() bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return k.ws != nil && k.ctx.Err() == nil
+}
+
 // Events delivers zone events, control events (SESSION_EXPIRED is handled internally) and zone
 // errors. It is closed after Close or when the server rejects the protocol version.
 func (k *Conn) Events() <-chan Event { return k.events }

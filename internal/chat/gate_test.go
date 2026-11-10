@@ -676,6 +676,14 @@ func TestGate_StopDeniesWaitingCall(t *testing.T) {
 		h.next(EventSessionReady)
 		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "send"})
 		h.next(EventToolWait)
+		// tool_wait goes out before the gate's first status read: wait for
+		// that read (pending) so the gate sleeps on its hour-long poll — an
+		// Approve before it would be claimed and run before Stop.
+		waitUntil(t, "the gate's first status read", func() bool {
+			fx.sink.mu.Lock()
+			defer fx.sink.mu.Unlock()
+			return fx.sink.statusReads >= 1
+		})
 		require.True(t, fx.sink.approve(1, ""))
 		h.send(Command{Type: CommandCancel})
 		h.next(EventTurnDone)

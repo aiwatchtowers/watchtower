@@ -35,6 +35,10 @@ struct E2EFixtureKeys {
     let hubSig: Curve25519.Signing.PrivateKey
     let devSig: Curve25519.Signing.PrivateKey
     let deviceID: UUID
+    /// The ephemeral relay keys of the `wt/relay/v2/` vector: the hub's drawn `hub_eph` and the phone's offered
+    /// `dev_eph`.
+    let hubEph: Curve25519.KeyAgreement.PrivateKey
+    let devEph: Curve25519.KeyAgreement.PrivateKey
 
     init() throws {
         hubID = try XCTUnwrap(UUID(uuidString: Self.hubIDString))
@@ -44,6 +48,25 @@ struct E2EFixtureKeys {
         hubSig = try .init(rawRepresentation: Self.sequence(0x41, 0x60))
         devSig = try .init(rawRepresentation: Self.sequence(0x61, 0x80))
         deviceID = KeyDerivation.deviceID(signingPublicKey: devSig.publicKey)
+        hubEph = try .init(rawRepresentation: Self.sequence(0x81, 0xA0))
+        devEph = try .init(rawRepresentation: Self.sequence(0x91, 0xB0))
+    }
+
+    /// `K_relay[dir, epoch]` of `wt/relay/v2/`, derived on the hub's side (or the phone's with `phoneSide`).
+    func ephemeralRelayKey(
+        _ direction: RelayDirection,
+        _ epoch: UInt32,
+        hubEph: Curve25519.KeyAgreement.PrivateKey? = nil,
+        devEph: Curve25519.KeyAgreement.PrivateKey? = nil,
+        phoneSide: Bool = false
+    ) throws -> SymmetricKey {
+        let hubE = hubEph ?? self.hubEph
+        let devE = devEph ?? self.devEph
+        return try KeyDerivation.ephemeralRelayKey(
+            ownEphemeral: phoneSide ? devE : hubE, peerEphemeral: phoneSide ? hubE.publicKey : devE.publicKey,
+            ownStatic: phoneSide ? devKX : hubKX, peerStatic: phoneSide ? hubKX.publicKey : devKX.publicKey,
+            hubEphemeralPublic: hubE.publicKey.rawRepresentation, deviceEphemeralPublic: devE.publicKey.rawRepresentation,
+            linkNonce: linkNonce, hubID: hubID, deviceID: deviceID, epoch: epoch, direction: direction)
     }
 
     static func sequence(_ from: UInt8, _ through: UInt8) -> Data {

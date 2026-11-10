@@ -2573,7 +2573,7 @@ transcript TEXT,
 meta_json TEXT,
 started_at REAL NOT NULL,
 transcribed_at REAL
-, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)))
+, private INTEGER NOT NULL DEFAULT 0 CHECK (private IN (0, 1)), upload_id TEXT)
 
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
@@ -3242,7 +3242,7 @@ chat_question TEXT,
 chat_question_at TEXT,
 agent_turns TEXT,
 agent_transcript_path TEXT, agent_cwd TEXT, agent_cwd_at TEXT, cleanup_result TEXT, cleanup_at TEXT, worktree_branch TEXT, worktree_base TEXT, automation_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, target_bound_at TEXT, agent_watch_issue TEXT
-CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, agent_background_shells INTEGER
+CHECK(agent_watch_issue IN ('missing','permission','compressed','unreadable')), agent_watch_issue_at TEXT, start_notice TEXT, agent_background_shells INTEGER
 CHECK (agent_background_shells IS NULL OR agent_background_shells >= 0),
 CHECK (title != '' AND folder_path != ''),
 CHECK (kind <> 'claude' OR claude_session_id IS NOT NULL)
@@ -5924,6 +5924,7 @@ GROUP BY up.ancestor
 5	started_at	REAL	notnull=1	dflt=NULL	pk=0
 6	transcribed_at	REAL	notnull=0	dflt=NULL	pk=0
 7	private	INTEGER	notnull=1	dflt=0	pk=0
+8	upload_id	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -6508,7 +6509,8 @@ GROUP BY up.ancestor
 32	target_bound_at	TEXT	notnull=0	dflt=NULL	pk=0
 33	agent_watch_issue	TEXT	notnull=0	dflt=NULL	pk=0
 34	agent_watch_issue_at	TEXT	notnull=0	dflt=NULL	pk=0
-35	agent_background_shells	INTEGER	notnull=0	dflt=NULL	pk=0
+35	start_notice	TEXT	notnull=0	dflt=NULL	pk=0
+36	agent_background_shells	INTEGER	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=1	dflt=NULL	pk=1

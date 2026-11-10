@@ -269,6 +269,46 @@ func TestBadParamsFailInvalidParams(t *testing.T) {
 	wantStarts(t, le)
 }
 
+// twin of SessionStartHandlerTests.testBringForwardOnBringsTheWorkbenchForwardAndKeepsTheBoard:
+// bring_forward true, once the start is applied, tells Desktop the workbench
+// and the new session (it shows them in front, Work on it's focus).
+func TestBringForwardOnBringsTheWorkbenchForwardAndKeepsTheBoard(t *testing.T) {
+	le := startEnv(t)
+	type forward struct{ wb, session int64 }
+	var got []forward
+	le.h.d.BringForward = func(wb, session int64) { got = append(got, forward{wb, session}) }
+	target := le.target(le.wb, 0, "Ship it")
+	params := startParams(le.wb, "new", false, nil)
+	params["bring_forward"] = true
+
+	out := le.startOutcome(&target, params)
+
+	if out.Status != wire.StatusApplied || !slices.Equal(got, []forward{{le.wb, 42}}) {
+		t.Fatalf("outcome %+v, brought forward %v", out, got)
+	}
+	// A start that fails brings nothing forward.
+	got = nil
+	le.setStartGrants(false, false)
+	if out := le.startOutcome(&target, params); out.Status != wire.StatusFailed || len(got) != 0 {
+		t.Fatalf("refused start: outcome %+v, brought forward %v", out, got)
+	}
+}
+
+// twin of SessionStartHandlerTests.testBringForwardOffStartsInTheBackground:
+// nothing on the owner's screen moves.
+func TestBringForwardOffStartsInTheBackground(t *testing.T) {
+	le := startEnv(t)
+	called := false
+	le.h.d.BringForward = func(int64, int64) { called = true }
+	target := le.target(le.wb, 0, "Ship it")
+
+	out := le.startOutcome(&target, startParams(le.wb, "new", false, nil))
+
+	if out.Status != wire.StatusApplied || called {
+		t.Fatalf("outcome %+v, brought forward %v", out, called)
+	}
+}
+
 // MARK: - Stop
 
 func TestStopOnAStoppedSessionIsAppliedWithNoRequest(t *testing.T) {

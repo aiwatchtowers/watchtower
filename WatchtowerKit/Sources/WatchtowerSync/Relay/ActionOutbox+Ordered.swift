@@ -142,8 +142,9 @@ extension ActionOutbox {
     // MARK: resend_from
 
     /// The hub asked for every action from `seq` on (sim rules 5–6), run on the chain after any flush in flight:
-    /// `sent` rows at or above it go back to `queued` and are written again as new versions (never listed); when
-    /// the first row still held is past `seq`, a `skip_to(first)` is queued ahead of them. Then a flush.
+    /// `sent` rows at or above it go back to `queued` and are written again as new versions (never listed), then a
+    /// flush. The ask is kept until it is answered (`closeAskedGap`), so a row refused for good on the way gets its
+    /// `skip_to` too, after a kill as well: the hub asks once per gap.
     public func resendFrom(_ seq: UInt64) async throws {
         _ = try await onChain { try await self.performResend(from: seq) }.value
     }
@@ -152,21 +153,38 @@ extension ActionOutbox {
         // Checked before anything moves: a lost skip would stall the order (the hub asks once per gap).
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        try store.raiseResendFloor(seq)
         _ = try store.requeue(fromSeq: seq)
-        // Before `first` is read: a row of an older epoch that does not open is listed here, so the skip covers it.
+        // A rewrite is not a first save: the rows put back leave no timing, whatever the pass ends in.
+        for row in try store.outboxRows([.queued]) where row.actionSeq >= seq {
+            stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
+        }
+        // Before the flush: a row of an older epoch that does not open is listed here, so the skip covers it.
         try await resealOlderEpochs(from: seq)
-        // Seqs in [seq, first) are settled, already Not delivered (each keeps its first reason) or gone (an
-        // `applied` echo or the owner's Dismiss): nothing to list (Ruling 1).
-        let first = try store.outboxRows([.queued]).first { $0.actionSeq >= seq }?.actionSeq ?? store.nextActionSeq()
-        if first > seq {
+        return try await reportedFlush()
+    }
+
+    /// Answers the ask the store still holds once its first seq has no row left to send: `skip_to(first)`, where
+    /// `first` is the lowest row at or above the ask still `queued` or `sent`, else the next seq, so nothing live is
+    /// ever passed. Seqs below `first` are settled, Not delivered (each keeps its first reason) or gone (an `applied`
+    /// echo or the owner's Dismiss): nothing to list (Ruling 1). A failure leaves the ask for the next pass: a locked
+    /// keychain must not stop rows that are already sealed.
+    private func closeAskedGap() async {
+        do {
+            guard let asked = try store.resendFloor() else { return }
+            let first = try store.outboxRows([.queued, .sent]).first { $0.actionSeq >= asked }?.actionSeq
+                ?? store.nextActionSeq()
+            guard first > asked else { return }
+            guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
+            guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
             let control = ControlPayload.skipTo(first, deviceID: device, hubID: hub)
             let at = now()
             let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
-            try store.enqueueControl(QueuedControl(
-                id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload,
-                queuedAt: at))
+            try store.queueSkip(QueuedControl(
+                id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at))
+        } catch {
+            logger.error("skip_to not queued, next pass: \(String(describing: type(of: error)), privacy: .public)")
         }
-        return try await reportedFlush()
     }
 
     /// Sim rule 14 (the hub asks again for what it can no longer open), after the requeue and before the skip is
@@ -194,29 +212,119 @@ extension ActionOutbox {
 
     // MARK: epoch_ack
 
-    /// Confirms the phone's newest epoch to an ordered hub (sim rule 13): an `epoch_ack{epoch}` queued once per
-    /// raise, never for an epoch at or below one already acknowledged, in place of an unsent ack for a lower one,
-    /// then a flush. A hub on today's path gets none. Returns whether an ack was queued.
+    /// Confirms the phone's newest epoch to an ordered hub (sim rule 13): an `epoch_ack{epoch, next_kx}` queued once
+    /// per raise, never for an epoch below one already acknowledged, in place of an unsent ack, then a flush.
+    /// `nextKX` is the phone's offered ephemeral public key (relay client Phase 5; nil off the relay route), carried
+    /// as base64url: the same epoch is due again with an offer it has not carried (`epochAckDue`). The ack is sealed
+    /// like any phone record, under the newest epoch's key; the hub retains that epoch. A hub on today's path gets
+    /// none. Returns whether an ack was queued.
     @discardableResult
-    public func enqueueEpochAck(epoch: UInt32) async throws -> Bool {
-        let queued = try await onChain { try await self.queueEpochAck(epoch) }.value
+    public func enqueueEpochAck(epoch: UInt32, nextKX: Data?) async throws -> Bool {
+        let queued = try await onChain { try await self.queueEpochAck(epoch, nextKX: nextKX) }.value
         if queued { requestFlush() }
         return queued
     }
 
-    private func queueEpochAck(_ epoch: UInt32) async throws -> Bool {
-        guard try orderedPath(), try store.epochAckDue(epoch) else { return false }
+    /// A keybox dropped this phone's stored pair for its newest epoch (the hub cleared its offer): the offer the last
+    /// ack carried is forgotten, so the next `enqueueEpochAck` sends it once more for the same epoch.
+    public func offerAgain() async throws {
+        try await onChain { try await self.forgetAckedOffer() }.value
+    }
+
+    private func forgetAckedOffer() throws {
+        try store.clearEpochAckOffer()
+    }
+
+    private func queueEpochAck(_ epoch: UInt32, nextKX: Data?) async throws -> Bool {
+        guard try orderedPath(), try store.epochAckDue(epoch, nextKX: nextKX) else { return false }
         guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
         guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
         let control = ControlPayload(
-            id: UUID().uuidString, kind: .epochAck, deviceID: device.uuidString, hubID: hub.uuidString, epoch: epoch)
+            id: UUID().uuidString, kind: .epochAck, deviceID: device.uuidString, hubID: hub.uuidString, epoch: epoch,
+            nextKX: nextKX.map(WireBytes.base64URL))
         let at = now()
         let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
         let queued = try store.queueEpochAck(
             QueuedControl(id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at),
-            epoch: epoch)
-        if queued { logger.notice("epoch_ack for epoch \(epoch, privacy: .public) queued") }
+            epoch: epoch, nextKX: nextKX)
+        if queued {
+            logger.notice("epoch_ack for epoch \(epoch, privacy: .public) queued, offer: \(nextKX != nil, privacy: .public)")
+        }
         return queued
+    }
+
+    // MARK: A record dropped in a gone epoch (relay client Phase 5)
+
+    /// The feed dropped a hub record sealed in an epoch whose keys this phone will never hold (an echo, a
+    /// `resend_from`, a control): every ordered action without a final echo (`queued` or `sent`) is queued again, in
+    /// order, on the chain after any flush in flight, then a flush. Each goes out as a new version of its record
+    /// (sim rule 3); the hub applies a missing seq and answers the rest as repeats (rule 4), so a lost echo or a lost
+    /// `resend_from` is recovered with no hub write. The feed calls it once per batch. Legacy rows are not touched.
+    /// Returns how many rows are queued.
+    @discardableResult
+    public func requeueUnechoedAfterDrop() async throws -> Int {
+        let count = try await onChain { try await self.requeueUnechoed() }.value
+        if count > 0 {
+            logger.notice("\(count, privacy: .public) unechoed actions queued again after a dropped record")
+            requestFlush()
+        }
+        return count
+    }
+
+    private func requeueUnechoed() throws -> Int {
+        guard try orderedPath() else { return 0 }
+        let rows = try store.outboxRows([.queued, .sent])
+        guard let first = rows.first?.actionSeq else { return 0 }
+        // A rewrite is not a first save: the rows put back leave no timing.
+        for row in rows { stampLatency { try self.store.latencyDrop(actionID: row.actionID) } }
+        _ = try store.requeue(fromSeq: first)
+        return rows.count
+    }
+
+    // MARK: transport_switch (relay client Phase 3b Task 19)
+
+    /// Asks the ordered hub to move to `target`: a `transport_switch{target}` control queued behind the others, then
+    /// a flush. Returns the control id (`id`, minted by the caller so it can name the request before it leaves), which
+    /// the caller writes into the other transport's mailbox too (rule 9's initiator write); an id already queued is a
+    /// no-op. A hub on today's path reads no controls: `ActionOutboxError.legacyPath`, nothing queued.
+    @discardableResult
+    public func enqueueSwitchRequest(
+        target: TransportKind, id: String = UUID().uuidString, reason: String? = nil
+    ) async throws -> String {
+        let id = try await onChain { try await self.queueSwitchRequest(target, id: id, reason: reason) }.value
+        requestFlush()
+        return id
+    }
+
+    private func queueSwitchRequest(_ target: TransportKind, id: String, reason: String?) async throws -> String {
+        guard try orderedPath() else { throw ActionOutboxError.legacyPath }
+        let control = try switchRequest(target: target, id: id, reason: reason)
+        let at = now()
+        let sealed = try await transport.seal(try CloudRecordFactory.record(for: control, modifiedAt: at))
+        try store.enqueueControl(QueuedControl(
+            id: control.id, kind: control.kind, wireName: sealed.recordName, envelope: sealed.payload, queuedAt: at))
+        logger.notice("transport_switch to \(target.rawValue, privacy: .public) queued")
+        return control.id
+    }
+
+    /// The `transport_switch{target}` control with id `id`, for this phone and hub.
+    /// `reason` (the hub's own word for a move that spares its other phones) is absent on the wire when nil.
+    public func switchRequest(target: TransportKind, id: String, reason: String? = nil) throws -> ControlPayload {
+        guard let device = deviceID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.notLinked }
+        guard let hub = hubID.flatMap(UUID.init(uuidString:)) else { throw ActionOutboxError.noHubID }
+        return ControlPayload(
+            id: id, kind: .transportSwitch, deviceID: device.uuidString, hubID: hub.uuidString, target: target.rawValue,
+            reason: reason)
+    }
+
+    /// Takes the queued control `id` out of the queue (a request the owner's side gave up on); one already written is
+    /// not touched. No-op for an id not queued.
+    public func withdrawControl(id: String) async throws {
+        try await onChain { try await self.dropControl(id) }.value
+    }
+
+    private func dropControl(_ id: String) throws {
+        try store.controlWritten(id: id)
     }
 
     // MARK: A transport switch (relay client Phase 3)
@@ -262,16 +370,20 @@ extension ActionOutbox {
     }
 
     private func requeueForNewTransport() throws -> Int {
-        try store.requeueForNewTransport()
+        for row in try store.outboxRows([.queued, .sent]) {
+            stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
+        }
+        return try store.requeueForNewTransport()
     }
 
     private func listUnechoed(reason: UndeliveredReason) throws -> Int {
         let ids = try store.outboxRows([.queued, .sent]).map(\.actionID)
+        for id in ids { stampLatency { try self.store.latencyDrop(actionID: id) } }
         try store.markUndelivered(actionIDs: ids, reason: reason, message: Self.message(for: reason))
         return ids.count
     }
 
-    private static func message(for reason: UndeliveredReason) -> String {
+    static func message(for reason: UndeliveredReason) -> String {
         switch reason {
         case .refused: refusedMessage
         case .noAnswer: noAnswerMessage
@@ -312,6 +424,7 @@ extension ActionOutbox {
     @discardableResult
     func applyOrderedEcho(_ action: ActionRequestPayload) throws -> Bool {
         guard action.status != .pending else { return false }
+        if action.status.isFinal, let seq = action.actionSeq { try store.closeResendFloor(atOrBelow: seq) }
         // Only a `queued` row moves; the echo carries no version of the phone's write, so none is kept.
         try store.markSent(actionID: action.id, recordSeq: nil, at: now())
         switch action.status {
@@ -326,11 +439,13 @@ extension ActionOutbox {
             if try store.removeAppliedAction(id: action.id) {
                 appliedObserver?(action)
             }
+            stampLatency { try self.store.latencyAnswered(actionID: action.id, applied: true, at: self.now()) }
             return true
         case .failed, .expired, .cancelled:
             try store.settleFailedAction(
                 id: action.id, errorMessage: action.errorMessage ?? Self.noMessageFallback, reason: action.reason,
                 result: action.result)
+            stampLatency { try self.store.latencyAnswered(actionID: action.id, applied: false, at: self.now()) }
             return true
         }
     }
@@ -355,14 +470,39 @@ extension ActionOutbox {
 
     /// One pass (sim rules 1, 3, 7a): queued controls in order, then queued actions by seq, one record per call.
     /// The first non-permanent refusal stops the pass. A permanent refusal never does: the control stays queued for
-    /// the next pass, the action is listed as Not delivered, and the records after it go on.
+    /// the next pass, the action is listed as Not delivered, and the records after it go on. A row listed in a gap the
+    /// hub asked for gets its `skip_to` in the same pass.
     func performFlush() async throws -> OutboxFlushReport {
         var report = OutboxFlushReport()
         guard transport.isConditional, !flushesHeld else { return report }
+        await closeAskedGap()
+        guard try await writeQueuedControls(&report) else { return report }
+        for row in try store.outboxRows([.queued]) {
+            switch try await deliver(row) {
+            case .written:
+                report.written += 1
+            case .undelivered:
+                report.undelivered += 1
+            case .left:
+                break
+            case .stopped(let refusal):
+                report.stoppedOn = refusal
+                return report
+            }
+        }
+        if report.undelivered > 0 {
+            await closeAskedGap()
+            _ = try await writeQueuedControls(&report)
+        }
+        return report
+    }
+
+    /// Writes the queued controls in order; false when a non-permanent refusal stopped the pass.
+    private func writeQueuedControls(_ report: inout OutboxFlushReport) async throws -> Bool {
         for control in try store.queuedControls() {
             if case .hostedRelay = route, now().timeIntervalSince(control.queuedAt) >= Self.hostedRelayControlTTL {
                 // The relay would have purged any copy by now. On CloudKit there is no such TTL and a control is
-                // never dropped: a lost `skip_to` could stall every later action.
+                // never dropped. A `skip_to` dropped here is the hub's to ask for again (`ResendAskAgainAfter`).
                 try store.controlWritten(id: control.id)
                 logger.error(
                     "control \(control.id, privacy: .public) (\(control.kind.rawValue, privacy: .public)) unwritten for 14 days, dropped")
@@ -380,23 +520,10 @@ extension ActionOutbox {
                 logger.warning("control \(control.id, privacy: .public) refused for good, kept for the next pass")
             case .refused(let refusal):
                 report.stoppedOn = refusal
-                return report
+                return false
             }
         }
-        for row in try store.outboxRows([.queued]) {
-            switch try await deliver(row) {
-            case .written:
-                report.written += 1
-            case .undelivered:
-                report.undelivered += 1
-            case .left:
-                break
-            case .stopped(let refusal):
-                report.stoppedOn = refusal
-                return report
-            }
-        }
-        return report
+        return true
     }
 
     private enum Delivered {
@@ -423,15 +550,18 @@ extension ActionOutbox {
         var rewritingEcho = false
         for attempt in 0..<2 {
             let canWriteAgain = attempt == 0
+            let started = now()
             switch try await saveOne(record, expect: expect) {
             case .saved(let version):
                 try written(row, version: version, rewritingEcho: rewritingEcho)
+                stampWritten(row, isResend: isResend, at: started)
                 return .written
             case .refused(.permanent(let code)) where code == Self.goneCode && canWriteAgain && expect != .absent:
                 // The record is gone (the hub or hygiene deleted it, the TTL purged it): written again as new.
                 expect = .absent
             case .refused(let refusal) where refusal.isPermanent:
-                // This record alone: the hub's gap rule asks for it and `resend_from` skips it.
+                // This record alone: the hub's gap rule asks for it and `closeAskedGap` skips it.
+                stampLatency { try self.store.latencyDrop(actionID: row.actionID) }
                 try store.markUndelivered(actionIDs: [row.actionID], reason: .refused, message: Self.refusedMessage)
                 return .undelivered
             case .refused(let refusal):
@@ -447,9 +577,10 @@ extension ActionOutbox {
                     try written(row, version: current.recordSeq, rewritingEcho: rewritingEcho)
                     return .written
                 }
-                // nil = cannot tell what is there (rolled back, garbage, not a RelayZone record): never written over.
-                guard let opened = try await transport.openConflict(current) else { return .left }
-                if let echo = hubEcho(opened, of: row) {
+                // Cannot tell what is there (rolled back, garbage, not a RelayZone record): never written over.
+                let read = try await readConflict(current)
+                guard read.overwritable else { return .left }
+                if let opened = read.opened, let echo = hubEcho(opened, of: row) {
                     if echo.status.isFinal {
                         if !rewritingEcho { try store.markSent(actionID: row.actionID, recordSeq: current.recordSeq, at: now()) }
                         try applyOrderedEcho(echo)
@@ -476,12 +607,48 @@ extension ActionOutbox {
         return .left
     }
 
+    /// A conflict's current record, opened when it opens; `overwritable` when it opened, or when it is the hub's or
+    /// this phone's own older copy in an epoch this phone will never hold (relay client Phase 5: nothing can read it
+    /// again, so it is written over as sim rule 3 writes over anything else; the hub answers the action as a repeat).
+    private func readConflict(_ current: CloudRecord) async throws -> (opened: CloudRecord?, overwritable: Bool) {
+        if let opened = try await transport.openConflict(current) { return (opened, true) }
+        return (nil, try await transport.isRecordInGoneEpoch(current))
+    }
+
     /// The row's write landed (or its own bytes were found) at `version`.
     private func written(_ row: OutboxRow, version: UInt64?, rewritingEcho: Bool) throws {
         if rewritingEcho, let version {
             try store.markRewritten(actionID: row.actionID, recordSeq: version, at: now())
         } else {
             try store.markSent(actionID: row.actionID, recordSeq: version, at: now())
+        }
+    }
+
+    // MARK: Timing stamps (relay client Phase 4)
+
+    /// The save that landed started at `started`. A rewrite (`resend_from`, a new transport) is not a first save:
+    /// its row is dropped, and the legacy path never gets here.
+    private func stampWritten(_ row: OutboxRow, isResend: Bool, at started: Date) {
+        let transport: TransportKind
+        switch route {
+        case .cloudKit: transport = .cloudKit
+        case .hostedRelay: transport = .relay
+        }
+        stampLatency {
+            if isResend {
+                try self.store.latencyDrop(actionID: row.actionID)
+            } else if let kind = try self.store.actionKindForLatency(id: row.actionID) {
+                try self.store.latencyWritten(actionID: row.actionID, kind: kind, transport: transport, at: started)
+            }
+        }
+    }
+
+    /// A failed stamp logs its error type and never fails the action: the timing sits outside the action's path.
+    func stampLatency(_ body: () throws -> Void) {
+        do {
+            try body()
+        } catch {
+            logger.error("latency stamp failed: \(String(describing: type(of: error)), privacy: .public)")
         }
     }
 
@@ -493,18 +660,30 @@ extension ActionOutbox {
 
     // MARK: 24 h without an answer (Ruling 5)
 
-    /// Every ordered row `queued` or `sent` since before `cutoff` (by `sent_at`, else `created_at`) is withdrawn and
-    /// listed as Not delivered with `no_answer`. A never-written row is listed at once; a written one first has its
-    /// own record deleted under the version it wrote, so a later Retry cannot apply the action twice. An echo met
-    /// on the way is applied instead (not listed); a refusal leaves the row for the next sweep.
-    func withdrawUnanswered(before cutoff: Date) async throws -> [String] {
+    /// Every ordered row `queued` or `sent` since before `cutoff` (by its first write's `sent_at`, else `created_at`) is withdrawn and
+    /// listed as Not delivered with `reason` (the 24 h sweep's `no_answer`). A never-written row is listed at once; a
+    /// written one first has its own record deleted under the version it wrote, so a later Retry cannot apply the
+    /// action twice. An echo met on the way is applied instead (not listed); a refusal leaves the row for the next
+    /// sweep or event.
+    func withdrawUnanswered(before cutoff: Date, reason: UndeliveredReason = .noAnswer) async throws -> [String] {
         var listed: [String] = []
         for row in try store.outboxRows([.queued, .sent]) where (row.sentAt ?? row.createdAt) < cutoff {
             guard try await withdraw(row) else { continue }
-            try store.markUndelivered(actionIDs: [row.actionID], reason: .noAnswer, message: Self.noAnswerMessage)
+            try store.markUndelivered(actionIDs: [row.actionID], reason: reason, message: Self.message(for: reason))
             listed.append(row.actionID)
         }
         return listed
+    }
+
+    /// Relay client Phase 5: the relay refused this phone (a lapse with no other route, its Mac gone from its
+    /// slots): every unechoed ordered row is withdrawn now and listed with `refused`, on the chain after any flush
+    /// in flight (`withdrawUnanswered`). Returns the listed ids. A conditional transport only (the relay route).
+    @discardableResult
+    public func withdrawUnechoed() async throws -> [String] {
+        try await onChain {
+            guard self.transport.isConditional else { return [] }
+            return try await self.withdrawUnanswered(before: .distantFuture, reason: .refused)
+        }.value
     }
 
     /// true once the row's record is gone (or was never written).

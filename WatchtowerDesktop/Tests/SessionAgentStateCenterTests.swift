@@ -215,7 +215,11 @@ final class SessionAgentStateCenterTests: XCTestCase {
                            arguments: [row.id])
         }
         activations.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        await eventually("app activation reads") { log.reads == [[]] }
+        // The log records when a read STARTS; the statuses land when it ends.
+        await eventually("app activation reads") {
+            log.reads == [[]]
+                && center.statuses[row.id]?.state == SessionSwitcherPresentation.State(kind: .finished, live: false)
+        }
         XCTAssertEqual(center.statuses[row.id]?.state, SessionSwitcherPresentation.State(kind: .finished, live: false),
                        "a closed finished session: a blue ring")
         XCTAssertFalse(center.isPolling, "a refresh starts no loop")
