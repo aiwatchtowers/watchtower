@@ -129,6 +129,22 @@ final class TuningChatTests: XCTestCase {
         XCTAssertTrue(both)
     }
 
+    /// AGENT-04 holds after the panel whose spec the engine carries closed:
+    /// the other panel on the conversation still decides before the turn.
+    func testProviderSwitchAfterTheLastPanelClosed() async throws {
+        let ai = ScriptedAIService()
+        let center = center(ai)
+        var provider = "claude"
+        let decide = { @MainActor in TuningChatSurface.toolsAvailable(provider: provider) }
+        let first = try await chat(center, decideTools: decide)
+        let second = try await chat(center, conversationID: first.conversationID, decideTools: decide)
+        second.close()
+        provider = "ollama"
+        try await turn(first, ai, "hello")
+        XCTAssertNil(ai.calls.first?.toolMode)
+        XCTAssertFalse(first.toolsAvailable)
+    }
+
     /// The title is the engine's, not the panel's: a panel closed and gone
     /// mid-turn still leaves a titled conversation.
     func testTitleWrittenWhenThePanelWentMidTurn() async throws {

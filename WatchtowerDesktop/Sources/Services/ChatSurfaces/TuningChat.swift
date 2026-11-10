@@ -39,9 +39,6 @@ final class TuningChat {
     @ObservationIgnored private let coach: CoachCenter?
     @ObservationIgnored private let decideTools: @MainActor () -> Bool
     @ObservationIgnored private let period: @MainActor () -> AgentAnalyticsCenter.Period
-    /// The spec's `onWillSend` is built before `self` exists; it reaches the
-    /// controller through this.
-    @ObservationIgnored private let hook: WillSendHook
     @ObservationIgnored private var closed = false
     @ObservationIgnored private var catalogObserver: NSObjectProtocol?
 
@@ -61,14 +58,11 @@ final class TuningChat {
         self.coach = coach
         self.decideTools = decideTools
         self.period = period
-        let hook = WillSendHook()
-        self.hook = hook
         let tools = decideTools()
         toolsAvailable = tools
         let spec = Self.makeSpec(workbenchID: workbenchID, conversationID: conversationID, tools: tools,
-                                 period: period, hook: hook)
+                                 period: period, center: center)
         engine = center.engine(for: spec)
-        hook.chat = self
         center.markShown(spec.key)
         attach(engine)
         catalogObserver = NotificationCenter.default.addObserver(
@@ -159,12 +153,9 @@ final class TuningChat {
         decideToolAccess()
     }
 
-    /// A turn of `conversationID` is about to start: only the shown
-    /// conversation's spec is this controller's to rebuild (an engine the
-    /// panel left keeps the spec it has).
-    private func willSend(conversationID: Int64) {
-        guard conversationID == self.conversationID else { return }
-        refreshToolAccess()
+    /// Whether this panel is open on `conversationID`.
+    fileprivate func isShowing(_ conversationID: Int64) -> Bool {
+        !closed && conversationID == self.conversationID
     }
 
     private func decideToolAccess() {
@@ -178,7 +169,7 @@ final class TuningChat {
 
     private func currentSpec() -> ChatSurfaceSpec {
         Self.makeSpec(workbenchID: workbenchID, conversationID: conversationID, tools: toolsAvailable,
-                      period: period, hook: hook)
+                      period: period, center: center)
     }
 
     private static func makeSpec(
@@ -186,10 +177,18 @@ final class TuningChat {
         conversationID: Int64,
         tools: Bool,
         period: @escaping @MainActor () -> AgentAnalyticsCenter.Period,
-        hook: WillSendHook
+        center: EmbeddedChatCenter
     ) -> ChatSurfaceSpec {
-        TuningChatSurface.spec(workbenchID: workbenchID, conversationID: conversationID, tools: tools,
-                               period: period) { [weak hook] in hook?.chat?.willSend(conversationID: conversationID) }
+        // Before a turn, every panel open on the engine decides the tool
+        // access again — not only the one whose spec the engine holds,
+        // which may have closed meanwhile.
+        let key = EmbeddedChatKey(contextType: TuningChatSurface.contextType, contextID: String(workbenchID),
+                                  conversationID: conversationID)
+        return TuningChatSurface.spec(workbenchID: workbenchID, conversationID: conversationID, tools: tools,
+                                      period: period) { [weak center] in
+            guard let engine = center?.loaded(key) else { return }
+            TuningTurnFanOut.existing(for: engine)?.willSend()
+        }
     }
 
     /// Every panel on the engine hears its turn end: the engine has one
@@ -233,6 +232,19 @@ private final class TuningTurnFanOut {
         return fanOut
     }
 
+    static func existing(for engine: EmbeddedChatEngine) -> TuningTurnFanOut? {
+        byEngine.object(forKey: engine)
+    }
+
+    /// A turn is about to start: each panel open on this conversation
+    /// decides the tool access again (the first change rebuilds the spec).
+    func willSend() {
+        for panel in panels {
+            guard let chat = panel.chat, chat.isShowing(conversationID) else { continue }
+            chat.refreshToolAccess()
+        }
+    }
+
     func add(_ chat: TuningChat) {
         panels.removeAll { $0.chat == nil || $0.chat === chat }
         panels.append(WeakPanel(chat: chat))
@@ -253,11 +265,4 @@ private final class TuningTurnFanOut {
             await panel.chat?.turnFinished(conversationID: conversationID)
         }
     }
-}
-
-/// The spec's `onWillSend` → the controller, which does not exist yet when
-/// its first spec is built.
-@MainActor
-private final class WillSendHook {
-    weak var chat: TuningChat?
 }
