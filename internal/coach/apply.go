@@ -171,8 +171,8 @@ func (a *Applier) Rollback(id int64, force bool) (string, error) {
 
 // stillHolds is whether the destination still contains p's accepted edit: an
 // owner text is exactly the after-text; a prompt still has every row this
-// proposal added, with the same text; the allow list still has every rule the
-// proposal added. Later additions and rules of others do not count.
+// proposal added, with the same text; the allow list or the Codex rules still
+// have every rule the proposal added. Later additions and rules of others do not count.
 func (a *Applier) stillHolds(p db.CoachProposal, cur CurrentText) (bool, error) {
 	switch p.Destination {
 	case DestPromptAdd:
@@ -195,7 +195,7 @@ func (a *Applier) stillHolds(p db.CoachProposal, cur CurrentText) (bool, error) 
 			return false, nil
 		}
 		return tagged == len(added), nil
-	case DestSettingsAllow:
+	case DestSettingsAllow, DestCodexRulesAllow:
 		have := countLines(nonEmptyLines(cur.Text))
 		for _, r := range linesAdded(p.BeforeText, p.AfterText) {
 			if have[r] == 0 {
@@ -316,7 +316,7 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 			return CurrentText{}, err
 		}
 		t.WorkbenchID, t.PromptID = p.WorkbenchID, p.PromptID
-	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow:
 		u, err := userFileOf(a.env(), p.Destination, p.Skill)
 		if err != nil {
 			return CurrentText{}, err
@@ -372,7 +372,9 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		return a.writeAllow(p, cur, after)
 	case DestClaudeMDUser:
 		return a.writeClaudeMD(cur, after)
-	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+	case DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser, DestCodexRulesAllow:
+		// The Codex rules too: after is the whole file, its old text plus the
+		// added lines (ValidateAfter).
 		return a.writeUserFile(p, cur, after)
 	}
 	return written{}, errNotSupported
@@ -584,6 +586,21 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 			return err
 		}
 		if err := u.replaceText(cur.Text, p.BeforeText); err != nil {
+			if errors.Is(err, u.kind.changed) {
+				return ErrChangedSince
+			}
+			return err
+		}
+		return nil
+	case DestCodexRulesAllow:
+		// Only the lines this proposal added go, from the text Rollback read;
+		// the owner's own lines and bytes stay.
+		u, err := userFileOf(a.env(), p.Destination, p.Skill)
+		if err != nil {
+			return err
+		}
+		to := removeCodexRules(cur.Text, linesAdded(p.BeforeText, p.AfterText))
+		if err := u.replaceText(cur.Text, to); err != nil {
 			if errors.Is(err, u.kind.changed) {
 				return ErrChangedSince
 			}

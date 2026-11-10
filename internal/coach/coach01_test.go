@@ -147,6 +147,7 @@ func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
 		roots := []string{filepath.Join(hdir, ".claude"), filepath.Join(hdir, ".agents"), e.codexHome()}
 		assert.True(t, under(ClaudeSkillPath(e, "x"), filepath.Join(hdir, ".claude")))
 		assert.True(t, under(codexAgentsMDPath(e), e.codexHome()))
+		assert.True(t, under(codexRulesPath(e), e.codexHome()))
 		_, ok := CodexSkillPath(e, "x")
 		assert.False(t, ok)
 		for _, p := range []string{filepath.Join(e.codexHome(), "skills", "x", "SKILL.md"),

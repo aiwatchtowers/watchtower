@@ -160,16 +160,18 @@ func (f textFile) resolveTop(top string) (string, error) {
 func codexAgentsMDPath(e Env) string { return filepath.Join(e.codexHome(), "AGENTS.md") }
 
 // textFile is one kind of owner text file: its label for errors, its temp-file
-// pattern and its errors.
+// pattern and its errors (missing: the file does not exist and may not be
+// created), and whether a copy with the devpack marker is refused.
 type textFile struct {
-	label, tmp                  string
-	notRegular, tooBig, changed error
+	label, tmp                           string
+	notRegular, tooBig, changed, missing error
+	packCheck                            bool
 }
 
 var (
 	skillFileKind = textFile{label: "SKILL.md", tmp: ".SKILL.md.coach-*",
 		notRegular: fmt.Errorf("SKILL.md %w", errUnsafeFile), tooBig: fmt.Errorf("SKILL.md %w", errUnsafeFile),
-		changed: errors.New("SKILL.md changed while it was being written")}
+		changed: errors.New("SKILL.md changed while it was being written"), missing: errSkillNotFound, packCheck: true}
 	agentsMDKind = textFile{label: "AGENTS.md", tmp: ".AGENTS.md.coach-*",
 		notRegular: fmt.Errorf("AGENTS.md %w", errUnsafeFile), tooBig: fmt.Errorf("AGENTS.md %w", errUnsafeFile),
 		changed: errors.New("AGENTS.md changed while it was being written")}
@@ -241,7 +243,7 @@ func (f textFile) read(root, path string) (raw []byte, mode fs.FileMode, exists 
 
 // replace makes the file hold to, only while it still holds from (an empty
 // from also matches a missing file); otherwise f.changed. A missing file is
-// errSkillNotFound unless create, when it and its folders are created (0600,
+// f.missing unless create, when it and its folders are created (0600,
 // 0700); an existing file keeps its mode. It returns whether the file existed.
 func (f textFile) replace(root, path, from, to string, create bool) (existed bool, err error) {
 	raw, mode, exists, err := f.read(root, path)
@@ -249,7 +251,7 @@ func (f textFile) replace(root, path, from, to string, create bool) (existed boo
 		return false, err
 	}
 	if !exists && !create {
-		return false, errSkillNotFound
+		return false, f.missing
 	}
 	if string(raw) != from {
 		return exists, f.changed
@@ -310,12 +312,14 @@ func userFileOf(e Env, dest, skill string) (userFile, error) {
 		return under(skillFileKind, e.codexHome(), rel, false)
 	case DestCodexAgentsMDUser:
 		return under(agentsMDKind, e.codexHome(), "AGENTS.md", true)
+	case DestCodexRulesAllow:
+		return under(codexRulesKind, e.codexHome(), filepath.Join("rules", "default.rules"), false)
 	}
 	return userFile{}, errNotSupported
 }
 
 // readText reads the destination's text: a missing file is "" when it may be
-// created, else errSkillNotFound; a skill holding the devpack marker is an
+// created, else the kind's missing error; a skill holding the devpack marker is an
 // installed pack copy and refused.
 func (u userFile) readText() (string, error) {
 	raw, _, exists, err := u.kind.read(u.root, u.path)
@@ -326,9 +330,9 @@ func (u userFile) readText() (string, error) {
 		if u.create {
 			return "", nil
 		}
-		return "", errSkillNotFound
+		return "", u.kind.missing
 	}
-	if !u.create && devpack.HasMarker(string(raw)) {
+	if u.kind.packCheck && devpack.HasMarker(string(raw)) {
 		return "", errPackSkill
 	}
 	return string(raw), nil

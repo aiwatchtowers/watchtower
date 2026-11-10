@@ -398,9 +398,11 @@ func signalSources(sigs []Signal) int {
 // applyEdit returns the text with find replaced by replace (find "" appends
 // replace as a new line). find must occur exactly once. For a prompt's
 // additions find must be whole lines, and the result is normalised to one
-// trimmed addition per line. The allow list only grows: find must be "".
+// trimmed addition per line. The allow list and the Codex rules only grow:
+// find must be ""; the Codex rules get replace appended as newline-terminated
+// lines, the rest of the file untouched.
 func applyEdit(t CurrentText, find, replace string) (string, bool) {
-	if t.Destination == DestSettingsAllow && find != "" {
+	if (t.Destination == DestSettingsAllow || t.Destination == DestCodexRulesAllow) && find != "" {
 		return "", false
 	}
 	var after string
@@ -410,6 +412,8 @@ func applyEdit(t CurrentText, find, replace string) (string, bool) {
 			return "", false
 		}
 		switch {
+		case t.Destination == DestCodexRulesAllow:
+			after = appendCodexRules(t.Text, replace)
 		case t.Text == "":
 			after = replace
 		case strings.HasSuffix(t.Text, "\n"):
@@ -457,7 +461,8 @@ func kindFits(kind, before, after string) bool {
 // prompt's additions one per line, each passing prompts.ValidateAddition, with
 // at most prompts.MaxAdditionRunes in all, for a prompt the store tunes; an
 // allow list that keeps every rule it had and adds at least one rule, only
-// safe Bash rules (SafeAllowRule).
+// safe Bash rules (SafeAllowRule); the Codex rules file kept byte for byte
+// with whole lines appended, each a new CodexSafeAllowRule.
 func ValidateAfter(t CurrentText, after string) error {
 	switch t.Destination {
 	case DestSession, DestProcedure, DestChat, DestClaudeMDUser,
@@ -505,6 +510,8 @@ func ValidateAfter(t CurrentText, after string) error {
 			return errors.New("the allow list already has every rule")
 		}
 		return nil
+	case DestCodexRulesAllow:
+		return validateCodexRules(t.Text, after)
 	}
 	return fmt.Errorf("unknown destination %q", t.Destination)
 }
