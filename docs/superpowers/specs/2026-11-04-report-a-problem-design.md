@@ -161,18 +161,6 @@ Every line is built by its own function run through `safeLine`, which recovers a
 | Workspace | `config.DataRoot()`, `--workspace` / `active_workspace` / `resolveActiveWorkspace`, `config.ValidWorkspaceRe`, `config.WorkspaceDirsWithDatabase(root)` (see "Paths without a fatal helper") | `Workspace: not chosen (<n> found)` / `none yet` / `unknown (invalid name\|not found\|lookup failed\|no home directory)`, replacing the workspace lines; no line when a workspace resolves | `TestDiagnostics_InputFailures` cases `workspace_not_chosen`, `workspace_none_yet`, `workspace_lookup_failed`, `workspace_flag_wins`, `workspace_flag_invalid`, `workspace_flag_not_found`, `workspace_config_invalid_name`, `workspace_config_not_found`, `no_home_dir_config_path_set` |
 | AI provider | The same resolution the app uses: `config.Load` reads `ai.provider` through viper with `SetEnvPrefix("WATCHTOWER")` + `AutomaticEnv()` + the `.`→`_` replacer (`config.go:603–605`), so `WATCHTOWER_AI_PROVIDER` overrides the file, which overrides the `claude` default (`SetDefault`, `config.go:479`); `Load` snapshots that into `AI.ConfiguredProvider` (`config.go:617`), and `ConfiguredProviderID()` (`config.go:81`) is what `Validate` and routing read. Empty (`ai.provider: ""` or an empty env var) is `claude` (`ai_routing.go:13`, `internal/providers/config.go:22`). `--provider` is not applied. Origin: `os.Getenv("WATCHTOWER_AI_PROVIDER") != ""` → environment; else a fresh viper read of the file with `v.InConfig("ai.provider")` and a non-empty value → chosen; else default. Mapped to `claude`/`codex`/`ollama`/`unknown` before printing | per table **AI line by config state** | `TestDiagnostics_AILine` cases `provider_absent_default`, `provider_empty_string`, `provider_claude_set`, `provider_codex`, `provider_ollama`, `provider_env_only`, `provider_env_overrides_file`, `provider_unknown_value` |
 | AI fallback and buckets | `cfg.AI.Fallback.Enabled`, `cfg.AI.Fallback.Provider` (`config.go:36`), the keys of `cfg.AI.Providers`; on a config `Validate` rejected, the same keys from the raw read | the reserve part: `reserve <Name>, automatic` / `reserve <Name>, off` / no reserve → part left out; an invalid reserve or bucket per table **AI line by config state** | `TestDiagnostics_AILine` cases `reserve_automatic`, `reserve_off`, `reserve_none`, `fallback_unknown`, `fallback_same_as_preferred`, `fallback_not_a_pair` (ollama reserve), `fallback_enabled_without_pair`, `bucket_unknown` |
-
-**AI line by config state** (the one definition; the partial-output table, the Failure modes table and the Inputs rows point here):
-
-| Config line | AI line | JSON `provider` |
-|---|---|---|
-| `Config: ok` | `AI: <Claude Code\|Codex\|Ollama>` (chosen in the file), `… (from environment)`, or `AI: Claude Code (default, not chosen)`; then the reserve part | the form option of the effective provider (`Claude Code` for the default) |
-| `Config: none (not set up)` | `AI: not set up (no config)` | `Not set up yet` |
-| `Config: unreadable (invalid value)` — `Validate` rejected the AI section | from the raw read (fresh viper, same env rules), mapped: a known preferred provider prints as in the first row; an unknown one prints `AI: unknown (not a known provider)`. Then the part `Validate` rejected: `· reserve invalid` (unknown fallback, equal to the preferred, outside a Claude/Codex pair, or enabled without a pair) and/or `· provider settings invalid` (unknown bucket). No raw value is printed | a known preferred provider → its form option; an unknown one → `""` (dropdown left unset) |
-| `Config: unreadable (parse\|permission\|other)` | `AI: unknown (no config)` | `""` |
-| `Config: unknown (no home directory)` | `AI: unknown (no home directory)` | `""` |
-
-Tests: the `TestDiagnostics_AILine` cases above plus `config_missing`, `config_parse_error`, `config_permission`, `no_home_dir`, each asserting the AI line and the JSON `provider` together.
 | Features | `features.All()` + config, as `features list` does (no database, no migration; legacy view in memory) | cannot block; a panic → `unknown (internal error)`; legacy unmigrated → `(not yet migrated)` suffix | `TestDiagnostics_FeaturesLine`, `TestDiagnostics_FeaturesLegacyNotMigrated` |
 | Accounts | own `QueryContext` aggregates over the account tables in the Sources mapping | no database / deadline / not readable → the parts in the partial-output table; a missing table (older schema) → that kind `unknown` while the others print; unknown status → `<k> unknown state` | `TestDiagnostics_SourcesLine`, `TestDiagnostics_SourcesMissingTable`, `TestDiagnostics_AccountTablesMapped` |
 | Quick Connections | own `QueryContext`: `SELECT count(*) FROM external_connections WHERE enabled = 1` | `Quick Connections <n>`; table missing (older schema) → `Quick Connections unknown`; no database / deadline → covered by the Sources part (`unknown (no database)` / `unknown (database busy)`) | `TestDiagnostics_InputFailures` cases `quick_connections_count`, `quick_connections_missing_table` |
@@ -187,6 +175,18 @@ Tests: the `TestDiagnostics_AILine` cases above plus `config_missing`, `config_p
 | Crash | streamed reads of `watchtower.log.1`, `watchtower.log`, `daemon.log` | file missing/unreadable → skipped; all three → `Crash: unknown (no logs)`; 2 s budget hit → `(scan stopped after <N> MB)` | crash tests in Failure modes |
 | Any input | — | panic → `unknown (internal error)`; still running at the 8 s hard stop → `unknown (timed out)` | `TestDiagnostics_LinePanicIsContained`, `TestDiagnostics_HardStop` |
 | `last_sync.json` (Recent errors sync row) | the same file as Daemon | missing → no sync row; unparsable → `  sync result unknown` | `TestDiagnostics_InputFailures` (`sync_row_*`) |
+
+**AI line by config state** (the one definition; the partial-output table, the Failure modes table and the Inputs rows point here):
+
+| Config line | AI line | JSON `provider` |
+|---|---|---|
+| `Config: ok` | `AI: <Claude Code\|Codex\|Ollama>` (chosen in the file), `… (from environment)`, or `AI: Claude Code (default, not chosen)`; then the reserve part | the form option of the effective provider (`Claude Code` for the default) |
+| `Config: none (not set up)` | `AI: not set up (no config)` | `Not set up yet` |
+| `Config: unreadable (invalid value)` — `Validate` rejected the AI section | from the raw read (fresh viper, same env rules), mapped: a known preferred provider prints as in the first row; an unknown one prints `AI: unknown (not a known provider)`. Then the part `Validate` rejected: `· reserve invalid` (unknown fallback, equal to the preferred, outside a Claude/Codex pair, or enabled without a pair) and/or `· provider settings invalid` (unknown bucket). No raw value is printed | a known preferred provider → its form option; an unknown one → `""` (dropdown left unset) |
+| `Config: unreadable (parse\|permission\|other)` | `AI: unknown (no config)` | `""` |
+| `Config: unknown (no home directory)` | `AI: unknown (no home directory)` | `""` |
+
+Tests: the `TestDiagnostics_AILine` cases above plus `config_missing`, `config_parse_error`, `config_permission`, `no_home_dir`, each asserting the AI line and the JSON `provider` together.
 
 ### Time budget
 
