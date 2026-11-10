@@ -189,7 +189,8 @@ jobs:
   # SHARD=K/3`: packages dealt by measured weight — the split lives in
   # scripts/coverage-gate.sh). Unsharded the suite took 7-13 min on one
   # 4-vCPU runner (2026-11-10), CPU-bound. Every threshold is per package, so
-  # each shard checks the packages it ran and no merge job is needed.
+  # each shard checks the packages it ran; internal/db (~600 CPU-s) runs a
+  # third on each shard and go-coverage checks it on the merged profiles.
   go-test:
     name: Go Test (${{ matrix.shard }}/3)
     needs: gate
@@ -233,6 +234,38 @@ jobs:
       - name: Test + coverage gate
         timeout-minutes: 25
         run: make test-cover SHARD=${{ matrix.shard }}/3
+
+      # This shard's internal/db profile, for go-coverage.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-coverage-${{ matrix.shard }}
+          path: coverage-out/
+          if-no-files-found: error
+          retention-days: 1
+
+  # internal/db's coverage threshold over the three shards' profiles
+  # (`coverage-gate.sh --merge`: awk over the files, no Go, no build).
+  go-coverage:
+    name: Go Coverage (merged)
+    needs: go-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/coverage-gate.sh
+            coverage.thresholds
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: go-coverage-*
+          path: coverage-in
+          merge-multiple: true
+
+      - name: Coverage gate (merged)
+        run: ./scripts/coverage-gate.sh --merge coverage-in
 
   # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step

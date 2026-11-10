@@ -70,3 +70,6 @@ xcuserdata/
 
 # TextMate tokenizer + grammars, fetched by scripts/fetch-textmate.sh (code viewer, board #738)
 WatchtowerDesktop/Sources/CodeEditorWeb/textmate/
+
+# scripts/coverage-gate.sh SHARD=K/N hands internal/db profiles to --merge here.
+/coverage-out/
