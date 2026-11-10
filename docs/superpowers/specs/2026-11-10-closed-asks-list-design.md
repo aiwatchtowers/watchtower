@@ -42,6 +42,17 @@ The cost: clicking "▸ N closed" now navigates (reveals that session's pane) in
 - a session list: the same reveal path as `showAsk` (drill into the workbench, reveal the session's pane — terminal or Workchat, whichever mode it is in — skip a session waiting in the Undo batch with the existing "That session no longer exists."), then the drawer shows the list;
 - a session-less list (outside the app, automations): the workspace-level drawer host shows it.
 
+Every drawer host learns the list mode, each a task of the plan:
+
+| Host | Shows the list for | Task |
+|---|---|---|
+| `WorkbenchSessionView` (session pane, terminal mode) | that session's list | pass the drawer content, not only the ask |
+| `WorkchatAskDrawerHost` (session pane, Workchat mode) | that session's list | the same; a test opens the list with the session in Workchat |
+| `WorkbenchCoveredWorkspace` (whole workspace) | the outside-the-app and automations lists | today it filters `drawerAsk` to session-less asks; it filters the list key to `sessionID == nil` the same way |
+| `ReviewChangesPaneView` (review chat) | never | unchanged; the list never targets it |
+
+`OwnerAskDrawerHost` takes a `content` (ask or list) instead of `ask: OwnerAsk?`; it draws `OwnerAskDrawer` or the new `OwnerAskClosedListPane` in the same frame, resize handle and Expand.
+
 Clicking the button while its list is already shown keeps it shown (no toggle; Esc or ✕ closes).
 
 ### The list (drawer list mode)
@@ -94,17 +105,20 @@ The drawer footer keeps `askStatusLine` unchanged; only the list uses the short 
 | Big | 10+ asks | search field, groups, rows |
 | Busy | a reload runs with a list on screen | the list stays, mini spinner in the header |
 | Stale error | a reload failed with a list on screen | the old list stays under the warning banner with **Retry** |
-| Partial | some rows could not be decoded | the readable rows + the `problem` banner |
+| Partial | some rows could not be decoded | the readable rows + the `problem` banner; the count is the rows shown |
 | No match | the query matches nothing | "No closed asks match “<query>”." + **Clear Search** |
+| Ask gone | a clicked row's ask no longer exists | the list (re-read) under the banner "That ask no longer exists. The list was read again." |
 | Opened ask | a row was opened | the ask's read-only drawer, unchanged, with the **‹ Closed asks N** back row above its header |
 
 ### Keyboard
 
-With the list focused (a click in it, or opened by its button): ↑/↓ move the cursor (selection fill, scrolled into view), Return opens the ask, ⌘F focuses the search, Esc clears a non-empty search, else closes the drawer. In an opened ask the back row is a button (no new shortcut; the ask drawer's own keys are unchanged). The list does not use `OwnerAskDrawerKeys`: those keys write an open ask's draft and do not apply.
+With the list focused (a click in it, or opened by its button): ↑/↓ move the cursor (selection fill, scrolled into view), Return opens the ask, ⌘F focuses the search, Esc clears a non-empty search, else closes the drawer. The list does not use `OwnerAskDrawerKeys`: those keys write an open ask's draft and do not apply.
+
+In an ask opened from the list (the back row is shown): the back row is a button, and Esc — with the drawer's keys active and no text field focused — goes **back to the list**, never closes the drawer; a second Esc, now on the list, follows the list's rule above. The ask drawer has no Esc today (`OwnerAskDrawerKeys` handles none), so this adds Esc only while the back row is shown; an ask opened any other way is unchanged. ✕ always closes the drawer. Test: `testEscInOpenedAskGoesBackToList` (and `testEscWithoutListOriginDoesNothing`).
 
 ### Model and strings (WatchtowerCore, pure, tested)
 
-- `ClosedAskListCopy` — every string above (title, scope captions, placeholder, loading, empty + hint, load-failed prefix, refresh-failed with time, ask gone, retry, clear search, back, busy help, no-match, "N of M", chip words, review verdict words, comment count). Pinned one by one in `ClosedAskListCopyTests`. The design-only `ClosedAsksMockCopy` in the shots fixture is replaced by it in the implementation.
+- `ClosedAskListCopy` — every string above (title, scope captions, placeholder, loading, empty + hint, load-failed prefix, refresh-failed with time, ask gone ("That ask no longer exists. The list was read again."), retry, clear search, back, busy help, no-match, "N of M", chip words, review verdict words, comment count). Pinned one by one in `ClosedAskListCopyTests`. The design-only `ClosedAsksMockCopy` in the shots fixture is replaced by it in the implementation.
 - `ClosedAskListModel.sections(asks:replacements:labels:query:now:calendar:) -> [Section]` — filters by the query, groups by local day of `created_at`, titles the groups, builds each `Row` (id, kind icon, title, chip text + tone name, detail, time). A `created_at` that does not parse goes to a last "Unknown date" group rather than being dropped.
 - `ClosedAskListModel.searchThreshold = 10`.
 - `ClosedAskListModelTests`: grouping across midnight and in another time zone, Today/Yesterday/weekday/date titles and the year rule, every chip row of the table, every detail row of the table, the automation prefix, search over title / #id / chip / detail / diacritics, threshold 9 vs 10, unparseable date group, "N of M".
@@ -147,7 +161,7 @@ Who wins: every status change leaves `open` or goes answered → delivered, each
 | Rows undecodable mid-read | The read is one transaction: readable rows shown, `problem` banner names the rest | existing `OwnerAskRows` tests + `testClosedListPartialRowsBanner` |
 | Two reads overlap (open + poll) | Only the newest started read applies | `testClosedListOlderReadIsDropped` (generation applied out of order) |
 | A status changes while the list is open | Within one poll the row's chip changes (Answered → Delivered) or a newly closed ask appears | `testClosedListFollowsStatusChange` (Go-side write simulated with SQL, then `refreshIfChanged`) |
-| The clicked ask was deleted | `lookUp` finds nothing: the list stays, banner "That ask no longer exists.", the list reloads | `testClosedListRowOfDeletedAsk` |
+| The clicked ask was deleted | `lookUp` finds nothing: the list stays, banner "That ask no longer exists. The list was read again.", the list reloads | `testClosedListRowOfDeletedAsk` |
 | The session is deleted while its list is shown | The drawer closes (its pane is gone); the asks now count under "outside the app" | `testClosedListClosesWhenSessionDeleted` |
 | The session waits in the Undo batch | "That session no longer exists." (the `showAsk` path), no drawer | `testClosedListOfPendingDeleteSession` |
 | Workbench switched while the list is shown | The drawer content is per workbench: switching away and back shows the list again, re-read if the fingerprint changed | `testClosedListSurvivesWorkbenchSwitch` |
@@ -164,26 +178,26 @@ Model tests are listed under Model and strings. Shots cover every state (below).
 | 1 | The list opens in the ask drawer (list mode) instead of a popover | decided by the agent (style guide "panels, not pop-ups"); **needs the owner's yes** — behaviour change |
 | 2 | Clicking "▸ N closed" reveals that session's pane first, like a row click does today | decided by the agent; **needs the owner's yes** — behaviour change |
 | 3 | Opening the list replaces whatever ask the drawer showed (its draft is kept by `OwnerAskDrafts`, as on any drawer switch) | decided by the agent; **needs the owner's yes** — behaviour change |
-| 4 | "▸ N closed" keeps its label, place and help | owner (brief: keep the entry point) |
+| 4 | "▸ N closed" keeps its label, place and help | decided by the agent (the coordinator's brief for #1713 asked to keep it; the owner only asked for "a normal design") |
 | 5 | Back row "‹ Closed asks N" in an ask opened from the list; back keeps query, cursor and scroll | decided by the agent |
-| 6 | Groups by the day the ask was filed, newest first (the query's order) | decided by the agent |
-| 7 | Two-line titles, status chip, answer preview line, time on the right | owner's brief (ideas list), shaped by the agent |
+| 6 | Groups by the day the ask was filed, newest first (the query's order) | decided by the agent; **open question 2** for the owner (filed vs closed day) |
+| 7 | Two-line titles, status chip, answer preview line, time on the right | decided by the agent (ideas from the coordinator's brief, not the owner's) |
 | 8 | Short chip words (Answered / Delivered / Withdrawn / Replaced / Dismissed) in the list; the drawer footer keeps `askStatusLine` | decided by the agent |
 | 9 | Answered = blue, Delivered = green, the rest gray, through `Tone.status` | decided by the agent |
-| 10 | No status filter control; search also matches the chip word ("withdrawn", "replaced") | decided by the agent (owner prefers simple) |
-| 11 | Search shown from 10 asks | decided by the agent |
+| 10 | No status filter control; search also matches the chip word ("withdrawn", "replaced") | decided by the agent (owner prefers simple, memory note); **open question 3** for the owner |
+| 11 | Search shown from 10 asks | decided by the agent; part of open question 3 |
 | 12 | Query and cursor kept per list for the app run, not persisted | decided by the agent |
-| 13 | Keyboard: ↑/↓, Return, ⌘F, Esc; no new shortcut in an opened ask | decided by the agent |
+| 13 | Keyboard: ↑/↓, Return, ⌘F, Esc; Esc in an ask opened from the list goes back to the list | decided by the agent |
 | 14 | No paging; lazy rows | decided by the agent |
-| 15 | In-drawer empty/loading/error blocks, not `TabEmptyState` (that one is keyed by a sidebar tab and feature readiness) | decided by the agent |
+| 15 | In-drawer empty/loading/error blocks, not `FeatureEmptyState` / `TabEmptyState` / `ContentAwareEmptyState` — an **exception to the style guide's empty-state rule**: those three are keyed by a sidebar tab (`EmptyStateCopyTable`) and feature readiness, and a sub-list inside a drawer has neither. The blocks use kit tokens, `Tone` and `.kitSecondary` only | decided by the agent; listed as an exception for the owner's review |
 | 16 | All strings in `ClosedAskListCopy` with a test; colours only through `Tone`; no row separators; kit components only | owner's workbench rules |
 | 17 | The phone is not changed (it shows the closed count only) | decided by the agent |
 
-Flagged for a separate ask (owner did not approve them yet): decisions 1, 2 and 3. If the owner says no to 1, the fallback is the popover fixed (`.frame(width: 400, height: 520)`, same rows, groups, search and states; a row click still closes it), which this spec's model, strings and tests serve unchanged.
+Flagged for the owner (not approved yet): decisions 1, 2 and 3 (behaviour changes), and the open questions behind 6 and 10–11. They are asked in this spec's review ask; nothing is built before the answer. If the owner says no to 1, the fallback is the popover fixed (`.frame(width: 400, height: 520)`, same rows, groups, search and states; a row click still closes it), which this spec's model, strings and tests serve unchanged.
 
 ## Mockups
 
-Design-only SwiftUI shots in `DesignShotCatalog` (`ClosedAsksShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+ClosedAsks.swift`, sample data only), rendered by `DesignShotsTests.testClosedAsksShotsRender`, light and dark, committed under `docs/design/mockups/closed-asks-list/`:
+Design-only SwiftUI shots in `DesignShotCatalog` (`ClosedAsksShotFixtures`, `WatchtowerDesktop/Tests/DesignShots/DesignShotFixtures+ClosedAsks.swift`, sample data only), rendered by `DesignShotsTests.testClosedAsksShotsRender`, light and dark (`<shot>-light.png`, `<shot>-dark.png`). They are committed on branch `feature/1713-closed-asks-list` under `docs/design/mockups/closed-asks-list/` (next to this spec on that branch; a checkout of another branch does not have the folder — `git show feature/1713-closed-asks-list:docs/design/mockups/closed-asks-list/closed-asks-big-light.png` or open the branch's worktree). Every row of the States table has a shot:
 
 | Shot | State |
 |---|---|
@@ -197,6 +211,8 @@ Design-only SwiftUI shots in `DesignShotCatalog` (`ClosedAsksShotFixtures`, `Wat
 | `closed-asks-error` | first read failed, Retry |
 | `closed-asks-busy` | reload running with the list on screen |
 | `closed-asks-staleError` | reload failed, old list kept under the banner |
+| `closed-asks-partial` | 2 rows unreadable: banner, count 82 |
+| `closed-asks-askGone` | a clicked ask was deleted: banner over the re-read list |
 | `closed-asks-opened` | an ask opened from the list: back row over the unchanged read-only drawer |
 
 ## Out of scope / v1 limits

@@ -10,12 +10,12 @@ import SwiftUI
 @MainActor
 enum ClosedAsksShotFixtures {
     enum Frame: String, CaseIterable {
-        case big, search, noMatch, narrow, empty, loading, error, busy, staleError, opened
+        case big, search, noMatch, narrow, empty, loading, error, busy, staleError, partial, askGone, opened
 
         var height: CGFloat {
             switch self {
             case .big, .busy, .staleError: 720
-            case .search, .opened: 420
+            case .search, .opened, .partial, .askGone: 420
             default: 0
             }
         }
@@ -47,6 +47,7 @@ enum ClosedAsksMockCopy {
     static let loadFailed = "Could not load the closed asks: the database is busy."
     static let refreshFailed = "Could not refresh the list: the database is busy. It shows what was read at 14:32."
     static let unreadable = "2 asks could not be read (#212, #219)."
+    static let askGone = "That ask no longer exists. The list was read again."
     static let retry = "Retry"
     static let clearSearch = "Clear Search"
     static let back = "Closed asks"
@@ -159,7 +160,7 @@ private struct ClosedAsksDrawerMock: View {
 
     private var sections: [ClosedAskMockSection] {
         switch frame {
-        case .big, .busy, .staleError: ClosedAsksMockData.big
+        case .big, .busy, .staleError, .partial, .askGone: ClosedAsksMockData.big
         case .search: ClosedAsksMockData.search
         case .narrow: ClosedAsksMockData.narrow
         default: []
@@ -171,6 +172,7 @@ private struct ClosedAsksDrawerMock: View {
         case .loading, .error: nil
         case .narrow: 2
         case .empty: 0
+        case .partial: 82
         default: 84
         }
     }
@@ -205,8 +207,11 @@ private struct ClosedAsksDrawerMock: View {
             header
             Divider()
             if (total ?? 0) >= 10 { searchRow }
-            if frame == .staleError {
-                banner(Copy.refreshFailed, retry: true)
+            switch frame {
+            case .staleError: banner(Copy.refreshFailed, retry: true)
+            case .partial: banner(Copy.unreadable, retry: false)
+            case .askGone: banner(Copy.askGone, retry: false)
+            default: EmptyView()
             }
             content
         }
