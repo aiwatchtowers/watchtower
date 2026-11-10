@@ -38,9 +38,11 @@ Every Desktop session delete (✕, ⌘⌫ and the dialog) goes through `Workbenc
    - **clean**: the row is deleted (`TerminalSessionQueries.delete`; the cascades of today), and a quiet notice appears;
    - **not fully cleaned**: the row comes back into the list with the mark and stays until the owner acts.
 
+**Time limit.** A background run is stopped after 10 minutes: its process group gets SIGTERM, then SIGKILL after 5 s, and the outcome is **could not** ("the cleanup took longer than 10 minutes"). The workbench slot is freed when the process has been reaped. Items removed before the stop stay removed. The next run re-plans, as in §4.
+
 **One at a time per workbench.** Background cleanups of one workbench run one after another, in the order they were requested. They share the existing per-workbench slot, so a Clean Up screen apply or a placed-session cleanup waits for the slot and is not refused. Different workbenches run in parallel.
 
-**The delete dialog** (for a live row) loses its cleanup plan and its **Delete Only** / **Delete and Clean Up** choice. It becomes a plain confirmation: "Delete “T”? Its terminal stops. Worktrees and branches it created that are merged or pushed are removed in the background." The buttons are **Delete** and **Cancel**. The dialog no longer starts a plan on open.
+**The delete dialog** (for a live row) loses its cleanup plan and its **Delete Only** / **Delete and Clean Up** choice. It becomes a plain confirmation: "Delete “T”? Its terminal stops. Worktrees and branches it created that are merged or pushed are removed in the background." The buttons are **Delete** (destructive, `kitDestructive`) and **Cancel**. The dialog no longer starts a plan on open.
 
 **The natural-exit cleanup of a placed session** (#229) stays as it is. It runs earlier, while the row is still in the list, and only for the row's own worktree.
 
@@ -68,7 +70,7 @@ The session-state hook already gets `tool_name` and `tool_input` on PostToolUse,
 
 ### 2b. The session's Claude scratchpad
 
-A linked worktree whose root lies under `<TMPDIR>/claude-<uid>/<any slug>/<claude-session-uuid>/` belongs to the session, if the uuid is one of the row's agent session ids (`terminal_session_agent_sessions`, migration 00127, every id the row has had). This catches lanes made before the hook change shipped and commands the parser missed. The `TMPDIR` root is read from the environment of the process that plans (`os.TempDir()`, symlink-resolved, since `/tmp` → `/private/tmp`). Codex rows have no such directory; this rule does not apply to them.
+A linked worktree whose root lies under `<TMPDIR>/claude-<uid>/<any slug>/<claude-session-uuid>/` belongs to the session, if the uuid is one of the row's agent session ids (`terminal_session_agent_sessions`, migration 00127, every id the row has had) **and no other `terminal_sessions` row has that uuid**. A uuid shared by two rows (a conversation resumed in another tab) adopts nothing for either of them, which is fail-closed; the ledger and command sources still apply. This catches lanes made before the hook change shipped and commands the parser missed. The `TMPDIR` root is read from the environment of the process that plans (`os.TempDir()`, symlink-resolved, since `/tmp` → `/private/tmp`). Codex rows have no such directory; this rule does not apply to them.
 
 ### What stays unseen
 
@@ -94,7 +96,7 @@ The table is one pure function in WatchtowerCore (`SessionAutoCleanupOutcome`). 
 
 Several deletes in a row join into one notice: `Cleaned up 4 sessions: removed …`.
 
-**Not fully cleaned**: the row comes back into the finished group with a warning line instead of its summary: `Not fully cleaned: 1 worktree — a process is running in it.` It has three actions:
+**Not fully cleaned**: the row comes back into the finished group with a warning line instead of its summary: `Not fully cleaned: 1 worktree — a process is running in it.` It has three actions, shown on hover as plain row buttons, none of them prominent (style guide: one prominent action per screen):
 - **Clean Up Again**: the same background cleanup; on success the row goes.
 - **Delete Anyway**: deletes the row now. The files stay on disk, and the Clean Up screen still lists them in a sweep.
 - **Show in Clean Up**: opens the Clean Up screen scoped to this session.
@@ -119,7 +121,18 @@ While a background cleanup runs, the row is hidden (it is still in the deleting 
 - `terminal_session_worktrees`: the Go hooks only (both sources). The row delete cascades it.
 - `cleanup_result`/`cleanup_at`: the Go apply only, as today.
 - **Removing the files**: the background cleanup, the agent's own `workbench cleanup --apply` before `finish_session`, the placed natural-exit cleanup, and a Clean Up screen apply. They do not race on one item: every apply re-plans, checks each tip just before it deletes (compare-and-delete, `moved`), and git's own refusals stop a double removal. A loser sees the item gone, and a gone item is not listed, so it is not a failure. The Desktop runs at most one apply per workbench at a time (§1). The agent's own apply is the one writer outside that slot: its race ends in `moved` or a gone item, never in a wrong removal.
-- **The phone** has no session delete, so nothing changes there.
+- **The phone** has no session delete. What it sees is covered under readers below.
+
+**Readers of a row being deleted.** A row with `delete_requested_at` set is deleted as far as the owner is concerned. It is visible only in the Desktop's finished group, and only once it is **Not fully cleaned**. The readers split in two:
+- **Lists hide it** (`AND delete_requested_at IS NULL`):
+  - Desktop: the workbench session list queries (`TerminalSessionQueries` list reads), except the read that loads Not-fully-cleaned rows for the finished group;
+  - the Swift mobile hub slices that list sessions;
+  - Go: `internal/hub/slices/sources/terminal_session.go`, `timeline.go`, `workbench.go`, `target.go`, `internal/hub/lane.go`, `db/terminal_sessions_recent.go`, `sessionstate/status.go` (the workbench status rollup);
+  - the brief's session lines (`cmd/workbench_session.go`).
+  The phone therefore drops the session when the Undo window ends, as if it were deleted, and never shows the mark. Its actions (input, interrupt) on such a row are refused as for a missing row (`hub/actions/handlers/session_input.go`).
+- **Lookups by id are unchanged**: session report, `owner_asks` joins, `review_agent`, agent analytics, automation session steps, `session_ticket`, `terminal_agent_turns`, the spec-review sweep. A deleting row behaves there as a finished session, and the cascade removes its rows when the row goes. No hook writes to it, because its terminal is closed.
+
+A Go guard test (`TestProj17_DeletingRowsLeaveEveryList`) lists every `FROM terminal_sessions` read outside `_test.go` and fails when a new one is neither filtered nor on the lookup allowlist.
 
 ## 5. Contracts touched
 
@@ -170,10 +183,10 @@ There is no empty state: a workbench with no deletes looks as today.
 - Every delete cleans in the background, with no question and no switch — ask #1205.
 - If something could not be removed, the session stays in the list marked "not fully cleaned" — ask #1205.
 - The existing pile is cleared once by hand on the Clean Up screen, with no periodic sweep — ask #1205.
-- No LLM decides what to remove; rules only — agent's call (stated in ask #1205, no objection).
+- No LLM decides what to remove; rules only — agent's call, put to the owner before review (ask #1210).
 - New ownership sources: parsed agent commands + the Claude scratchpad uuid — agent's call (proposed in ask #1205).
-- Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — agent's call, put to the owner before review (ask #1208).
-- The Delete dialog loses **Delete Only** / **Delete and Clean Up** — agent's call, put to the owner before review (ask #1208).
-- Quit inside the Undo window defers the delete to the next launch instead of deleting — agent's call, put to the owner before review (ask #1208).
-- Guard test replacements in §5 — put to the owner before review (ask #1208).
+- Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — agent's call, put to the owner before review (ask #1210).
+- The Delete dialog loses **Delete Only** / **Delete and Clean Up** — agent's call, put to the owner before review (ask #1210).
+- Quit inside the Undo window defers the delete to the next launch instead of deleting — agent's call, put to the owner before review (ask #1210).
+- Guard test replacements in §5 — put to the owner before review (ask #1210).
 - Workbench delete unchanged; remote branches never touched — agent's call.
