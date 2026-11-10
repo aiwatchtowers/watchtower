@@ -277,4 +277,34 @@ extension WatchtowerAIServiceTests {
         XCTAssertEqual(model, "actual-model")
         XCTAssertEqual(routing?.preferredProvider, "claude")
     }
+
+    // MARK: - testResult / which decoding (#1521)
+
+    private func out(_ stdout: String, exit: Int32 = 0, stderr: String = "") -> ProcessOutput {
+        ProcessOutput(exitCode: exit, stdout: stdout, stderr: stderr)
+    }
+
+    func testTestResultDecodesErrorCode() {
+        let result = WatchtowerAIService.decodeTestResult(out(
+            #"{"ok":false,"provider":"claude","model":"m","error":"x","error_code":"auth"}"#, exit: 1
+        ))
+        XCTAssertEqual(result, OnboardingAgentTestResult(ok: false, errorCode: "auth", error: "x"))
+    }
+
+    func testTestResultOk() {
+        let result = WatchtowerAIService.decodeTestResult(out(#"{"ok":true,"provider":"codex","model":"m"}"#))
+        XCTAssertEqual(result, OnboardingAgentTestResult(ok: true))
+    }
+
+    func testTestResultLaunchFailure() {
+        let result = WatchtowerAIService.decodeTestResult(out("", exit: -1, stderr: "no such file"))
+        XCTAssertEqual(result.errorCode, "launch")
+        XCTAssertFalse(result.ok)
+    }
+
+    func testWhichDecodes() {
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(#"{"provider":"codex","path":"/x/codex","found":true}"#), "/x/codex")
+        XCTAssertNil(WatchtowerAIService.decodeWhich(#"{"provider":"codex","path":"","found":false}"#))
+        XCTAssertNil(WatchtowerAIService.decodeWhich("not json"))
+    }
 }

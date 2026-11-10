@@ -2,10 +2,13 @@ import Foundation
 import WatchtowerCore
 
 extension OnboardingGoalsModel {
-    /// The Goals step wired to the real CLI: `ai test` for the check (the
-    /// old Claude step's health check, with the Codex fallback), `workspace init` / `config set` /
+    /// The Goals step wired to the real CLI: the per-agent check (`ai which` + `ai test`), `workspace init` / `config set` /
     /// the Feature Manager for Continue.
-    static func production(defaults: UserDefaults, featureManager: FeatureManagerService) -> OnboardingGoalsModel {
+    static func production(
+        defaults: UserDefaults,
+        featureManager: FeatureManagerService,
+        policy: @escaping @MainActor () -> ManagedPolicy
+    ) -> OnboardingGoalsModel {
         // Resolved per call, not once here: AppState is built before the CLI
         // binary store sync, which may still move the binary.
         func run(_ args: [String]) async throws {
@@ -15,8 +18,12 @@ extension OnboardingGoalsModel {
         return OnboardingGoalsModel(
             defaults: defaults,
             checkAgents: {
-                // Task 3 wires the real probes
-                OnboardingAgentCheckResult(statuses: [.claude: .notInstalled, .codex: .notInstalled])
+                // Config and policy are read per check, so a Re-check sees a
+                // Choose-the-executable save and a changed profile.
+                let probes = await MainActor.run {
+                    OnboardingAgentProbes.production(config: ConfigService(), policy: policy())
+                }
+                return await OnboardingAgentCheck.run(probes)
             },
             configuredProvider: { ConfigService().aiProvider },
             actions: OnboardingGoalsActions(

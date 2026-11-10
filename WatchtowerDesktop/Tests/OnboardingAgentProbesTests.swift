@@ -1,0 +1,132 @@
+import Darwin
+import XCTest
+@testable import WatchtowerCore
+@testable import WatchtowerDesktop
+
+/// #1521: the production probes — one lookup through `ai which`, the
+/// login-help probe in its own process group, `ai test --json` decoding.
+@MainActor
+final class OnboardingAgentProbesTests: XCTestCase {
+    private var dir: URL!
+
+    override func setUp() async throws {
+        dir = FileManager.default.temporaryDirectory.appendingPathComponent("agent-probes-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    }
+
+    override func tearDown() async throws {
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    private func script(_ name: String, _ body: String) throws -> String {
+        let url = dir.appendingPathComponent(name)
+        try "#!/bin/sh\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        return url.path
+    }
+
+    private func probes(watchtower: String? = nil, helpTimeout: TimeInterval = 5) -> OnboardingAgentProbes {
+        .production(
+            config: ConfigService(configPath: dir.appendingPathComponent("config.yaml").path),
+            policy: .none,
+            watchtower: watchtower,
+            helpTimeout: helpTimeout
+        )
+    }
+
+    func testResolveFollowsSymlinks() throws {
+        let pkg = dir.appendingPathComponent("pkg")
+        let bin = dir.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: pkg, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let target = pkg.appendingPathComponent("codex.js")
+        try "x".write(to: target, atomically: true, encoding: .utf8)
+        let link = bin.appendingPathComponent("codex")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let resolved = probes().resolve(link.path)
+
+        XCTAssertEqual(resolved, target.resolvingSymlinksInPath().path)
+    }
+
+    /// Nothing is cached in Swift: the stub answers not found, then found.
+    func testLocateIsFreshEachCall() async throws {
+        let counter = dir.appendingPathComponent("count").path
+        let stub = try script("watchtower", """
+        n=$(cat "\(counter)" 2>/dev/null || echo 0)
+        echo $((n+1)) > "\(counter)"
+        if [ "$n" = "0" ]; then
+          echo '{"provider":"codex","path":"","found":false}'
+        else
+          echo '{"provider":"codex","path":"/x/codex","found":true}'
+        fi
+        """)
+        let probes = probes(watchtower: stub)
+
+        let first = await probes.locate(.codex)
+        let second = await probes.locate(.codex)
+
+        XCTAssertNil(first)
+        XCTAssertEqual(second, "/x/codex")
+    }
+
+    func testLocateAsksForTheAgentJSON() async throws {
+        let argvFile = dir.appendingPathComponent("argv").path
+        let stub = try script("watchtower", "echo \"$@\" > \"\(argvFile)\"; echo '{\"provider\":\"claude\",\"path\":\"/x/claude\",\"found\":true}'")
+
+        let path = await probes(watchtower: stub).locate(.claude)
+
+        XCTAssertEqual(path, "/x/claude")
+        XCTAssertEqual(try String(contentsOfFile: argvFile, encoding: .utf8), "ai which --provider claude --json\n")
+    }
+
+    func testTestPassesProviderAndCliPath() async throws {
+        let argvFile = dir.appendingPathComponent("argv").path
+        let stub = try script("watchtower", "echo \"$@\" > \"\(argvFile)\"; echo '{\"ok\":true,\"provider\":\"codex\",\"model\":\"m\"}'")
+
+        let result = await probes(watchtower: stub).test("codex", "/x/codex")
+
+        XCTAssertTrue(result.ok)
+        XCTAssertEqual(try String(contentsOfFile: argvFile, encoding: .utf8), "ai test --json --provider codex --cli-path /x/codex\n")
+    }
+
+    func testHelpRunsTheRightArguments() async throws {
+        let echo = try script("agent", "echo \"args: $@\"; echo err >&2")
+        let probes = probes()
+
+        let claude = await probes.help(.claude, echo)
+        let codex = await probes.help(.codex, echo)
+
+        XCTAssertEqual(claude?.contains("args: auth --help"), true)
+        XCTAssertEqual(claude?.contains("err"), true, "stderr is captured too")
+        XCTAssertEqual(codex?.contains("args: login --help"), true)
+    }
+
+    func testHelpProbeTimesOutAndReapsItsGroup() async throws {
+        let pidFile = dir.appendingPathComponent("pid").path
+        // The grandchild sleeps too: the group, not just the child, must die.
+        let slow = try script("agent", "sleep 30 &\necho $! > \"\(pidFile)\"\nsleep 30")
+        let started = Date()
+
+        let text = await probes(helpTimeout: 1).help(.claude, slow)
+
+        XCTAssertNil(text)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        let pid = try XCTUnwrap(Int32(String(contentsOfFile: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+        var gone = false
+        for _ in 0..<50 where !gone {
+            if kill(pid, 0) != 0 { gone = true } else { try await Task.sleep(for: .milliseconds(100)) }
+        }
+        XCTAssertTrue(gone, "the grandchild is gone with its group")
+    }
+
+    func testAllowedFollowsThePolicy() {
+        let policy = ManagedPolicy.normalize(["AllowedAIProviders": ["codex"]])
+        let probes = OnboardingAgentProbes.production(
+            config: ConfigService(configPath: dir.appendingPathComponent("config.yaml").path),
+            policy: policy
+        )
+        XCTAssertFalse(probes.allowed(.claude))
+        XCTAssertTrue(probes.allowed(.codex))
+    }
+}
