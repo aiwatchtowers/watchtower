@@ -1221,8 +1221,9 @@ shows as Agents working's kind with the caption **Background task running** /
 both run). The resting state's caption **Stopped** reads **Idle** since the
 same change; its kind id stays `stopped`.
 Ask #1217 (owner: notify at once): shells never hold the turn-end notice
-back — a shells-only background with no open asks is announced as the kind it
-rests in without them (finished when `finished_at` is set, else stopped, "<title>
+back — a shells-only background is announced as the kind it rests in without
+them (none while only checks/reviews are open, then finished when
+`finished_at` is set, none while a question is open, else stopped, "<title>
 is idle") at its `agent_state_at`, which nothing about the shells moves, so
 their end is no second notice; background agents still hold it.
 

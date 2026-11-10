@@ -294,6 +294,16 @@ final class SessionAgentNoticePolicyTests: XCTestCase {
         var asks = SessionAgentNoticePolicy()
         let withAsk = SessionSwitcherPresentation.State.live(.background, openAsks: 1, backgroundShells: 1)
         XCTAssertEqual(asks.update(statusMap(agentStatus(1, withAsk, at: "t1")), canPost: true), [])
+        let withCheck = SessionSwitcherPresentation.State.live(.background, openAsks: 1, backgroundShells: 1,
+                                                               openQuestionAsks: 0)
+        var checks = SessionAgentNoticePolicy()
+        XCTAssertEqual(checks.update(statusMap(agentStatus(4, withCheck, at: "t1", finishedAt: "t1")),
+                                     canPost: true), [], "ready to check outranks finished: the check announced")
+
+        var questionDone = SessionAgentNoticePolicy()
+        XCTAssertEqual(postedNotices(questionDone.update(statusMap(agentStatus(5, withAsk, at: "t1", finishedAt: "t1")),
+                                                         canPost: true)).map(\.body),
+                       ["1 ask waiting for you"], "finished outranks a question ask: finished, with its asks")
 
         var finished = SessionAgentNoticePolicy()
         let shells = SessionSwitcherPresentation.State.live(.background, backgroundShells: 2)

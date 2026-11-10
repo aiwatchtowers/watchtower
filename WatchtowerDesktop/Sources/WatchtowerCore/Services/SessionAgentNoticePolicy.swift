@@ -85,15 +85,16 @@ package struct SessionAgentNoticePolicy: Sendable {
     /// The kind a live status is announced as, nil when it is not: a
     /// shells-only background reads as its resting kind without the shells
     /// (the resting order of `SessionAgentStatus.effective`, turn ended; ask #1217) —
-    /// open asks (ready to check, waiting on an ask: the ask was announced),
-    /// else finished, else stopped.
+    /// only checks or reviews open (ready to check: the ask was announced),
+    /// else finished, else any ask open (waiting on it), else stopped.
     private static func announcedKind(_ status: SessionAgentStatus) -> SessionSwitcherPresentation.State.Kind? {
         guard status.state.live else { return nil }
         switch status.state.kind {
         case .needsApproval, .failed, .stopped, .finished: return status.state.kind
         case .background where status.state.shellsOnly:
-            if status.state.openAsks > 0 { return nil }
-            return status.finishedAt != nil ? .finished : .stopped
+            if status.state.asksAreOnlyChecks { return nil }
+            if status.finishedAt != nil { return .finished }
+            return status.state.openAsks > 0 ? nil : .stopped
         case .notStarted, .running, .working, .waitingOnAsk, .readyToCheck, .background: return nil
         }
     }
