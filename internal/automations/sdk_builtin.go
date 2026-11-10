@@ -379,6 +379,9 @@ func (a primitiveArgs) stepArgs(name string) map[string]any {
 // dry run, which calls nothing (a capture dry run reports the prompt first,
 // DryRunOptions.CapturePrompts) — the primitive under the run's meter.
 func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, error) {
+	if slices.Contains(ReadPrimitiveNames, name) {
+		return s.callRead(env, name, raw, argErr)
+	}
 	var args primitiveArgs
 	if argErr == nil {
 		args, argErr = parsePrimitiveArgs(name, raw)
@@ -476,4 +479,43 @@ func primitiveOutcome(step *Step, res PrimitiveResult) map[string]any {
 		step.Finish(db.StepFinish{Status: StepOK, ResultSummary: marshalForStep(summary)})
 	}
 	return out
+}
+
+// callRead runs a read primitive (ReadPrimitiveNames) as one tool step: the
+// permission first, then the argument (none, or an empty object), then the
+// primitive — in a dry run too, as a read tool is — with no model call and
+// nothing debited from the run's budget. Its error fails the call as
+// PrimitiveFailed; the script sees {status, ...Fields}.
+func (s *builtinSDK) callRead(env *Env, name string, raw any, argErr error) (any, error) {
+	if argErr == nil && raw != nil {
+		if obj, ok := raw.(map[string]any); !ok || len(obj) > 0 {
+			argErr = validationf("%s() takes no arguments", name)
+		}
+	}
+	return env.Call(StepKindTool, name, map[string]any{}, func(step *Step) (any, error) {
+		m, err := manifestOf(env)
+		if err != nil {
+			return nil, err
+		}
+		entry, err := m.AllowPrimitive(name)
+		if err != nil {
+			return nil, err
+		}
+		step.SetPermission(entry)
+		if argErr != nil {
+			return nil, argErr
+		}
+		fn := s.b.Primitives[name]
+		if fn == nil {
+			return nil, notAvailable(name + " is not available")
+		}
+		res, err := fn(env.Ctx, PrimitiveCall{Name: name, BuiltinID: builtinIDOf(env), Trigger: env.Trigger, Input: env.Trigger.Builtin})
+		if err == nil && res.Status != primitiveDone && res.Status != primitiveSkipped {
+			err = fmt.Errorf("%s returned status %q (want %q or %q)", name, res.Status, primitiveDone, primitiveSkipped)
+		}
+		if err != nil {
+			return nil, modelCallError(err, ErrNamePrimitiveFailed, "")
+		}
+		return primitiveOutcome(step, res), nil
+	})
 }

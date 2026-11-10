@@ -275,8 +275,10 @@ func TestNavScreensMatchDesktop(t *testing.T) {
 		}
 	}
 	route := readRepoFile(t, "WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxRoute.swift")
+	// aliasHosts is a Set<String> literal (`= ["briefings", …]`) since the
+	// Inbox's filters went (inbox builder B); every quoted string is a host.
 	decl, _, _ := strings.Cut(route[strings.Index(route, "aliasHosts"):], "]\n")
-	for _, m := range regexp.MustCompile(`"([^"]+)":`).FindAllStringSubmatch(decl, -1) {
+	for _, m := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(decl, -1) {
 		want = append(want, m[1])
 	}
 	got := slices.Clone(navScreens)

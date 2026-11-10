@@ -5,6 +5,8 @@ package automations
 import (
 	"time"
 
+	"watchtower/internal/automations/blocks"
+	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
 
@@ -39,6 +41,9 @@ const (
 	// MaxOutputTitleChars caps the title of one output.* call, in characters
 	// (Task 7 review decision; not in the spec's list — Task 13 docs).
 	MaxOutputTitleChars = 200
+	// MaxOutputKeyChars caps a living artifact's key (output.inbox and
+	// output.remove), in characters.
+	MaxOutputKeyChars = 200
 	// MaxLogBytes caps one log() call.
 	MaxLogBytes = 4 * 1024
 	// MaxLogCalls caps log() calls per run.
@@ -56,29 +61,31 @@ const (
 	// MaxOutputsPerRun caps the outputs a run buffers (output.inbox,
 	// output.report, output.briefing); the next one is a ValidationError.
 	MaxOutputsPerRun = 50
-	// StepClipBytes clips a step's args_json and result_summary.
-	StepClipBytes = 4 * 1024
+	// StepClipBytes clips a step's args_json and result_summary (the db
+	// clips the steps a commit writes itself to the same size).
+	StepClipBytes = db.StepClipBytes
 	// SummaryClipBytes clips a run's summary.
 	SummaryClipBytes = 1024
 	// MaxEventsPerRun caps the events carried by one event run (spec §8).
 	MaxEventsPerRun = 100
 )
 
-// Inbox card fields of output.inbox (panel and Inbox spec B2).
+// Inbox card fields of output.inbox (panel and Inbox spec B2); the action
+// grammar and its limits live in internal/automations/blocks.
 const (
 	// MaxInboxActions caps a card's actions.
-	MaxInboxActions = 4
+	MaxInboxActions = blocks.MaxCardActions
 	// MaxInboxActionLabelChars caps an action's label, in characters.
-	MaxInboxActionLabelChars = 40
+	MaxInboxActionLabelChars = blocks.MaxActionLabelChars
 	// MaxInboxActionTextBytes caps a chat action's first message and an
 	// agent action's task.
-	MaxInboxActionTextBytes = 4 * 1024
+	MaxInboxActionTextBytes = blocks.MaxActionTextBytes
 	// MaxInboxActionDataBytes caps a reply action's data, as canonical JSON.
-	MaxInboxActionDataBytes = 8 * 1024
+	MaxInboxActionDataBytes = blocks.MaxActionDataBytes
 	// MaxInboxLinkBytes caps a card's link and a link action's open.
-	MaxInboxLinkBytes = 2048
+	MaxInboxLinkBytes = blocks.MaxLinkBytes
 	// MaxInboxReplyValueChars caps a reply action's value, in characters.
-	MaxInboxReplyValueChars = 100
+	MaxInboxReplyValueChars = blocks.MaxReplyValueChars
 )
 
 // Executor and scheduler (spec §7).

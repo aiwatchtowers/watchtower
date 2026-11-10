@@ -39,6 +39,19 @@ protocol RelayLinkOps: Sendable {
     func close(slot: String) async
     /// `remove_slot` (`NOT_FOUND` counts as done).
     func removeSlot(mac: String) async throws
+    /// `add_slot` (an iCloud link upgraded to the relay, Phase 3b Task 19); `HostedRelayPairing.Refusal`, or the
+    /// client's error (`HUB_NOT_VOUCHED`, `NOT_FOUND`).
+    func addSlot(mac: String) async throws
+    /// The three relay fields of this phone's `device` record for `hubID` (`RelayIDProof`, R22): its relay id, its
+    /// `relay_auth` key and that key's signature, by the phone's relay identity.
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim
+}
+
+/// A phone's claim of its relay id in its `device` record (`RelayIDProof.sign`).
+struct RelayIDClaim: Equatable, Sendable {
+    let relayDeviceID: String
+    let authPub: String
+    let sig: String
 }
 
 /// The relay while it is off: never asked, since nothing routes to it.
@@ -52,6 +65,8 @@ struct OffRelayLinkOps: RelayLinkOps {
     func promote(slot: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
     func close(slot: String) async {}
     func removeSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
+    func addSlot(mac: String) async throws { throw HostedRelayPairing.Refusal.unreachable }
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim { throw HostedRelayPairing.Refusal.unreachable }
 }
 
 /// The link flow's clock: the grant wait and the expiry check run on it.
@@ -108,10 +123,17 @@ protocol LinkHost: AnyObject {
     func fetchKeybox(hubID: String, deviceID: String) async -> Keybox?
     /// `hubID`'s keybox as its replica holds it, without a fetch.
     func storedKeybox(hubID: String, deviceID: String) async -> Keybox?
+    /// Merges a keybox's `keys` into `hubID`'s stored link through its session (`HubSession.mergeKeybox`: one
+    /// `updateHubLink`, and on a link that reseals across epochs the outbox's merge, which keeps this phone's own rows
+    /// readable). nil when no link is stored or no session runs: nothing written. Throws as the merge does (a locked
+    /// keychain, a refused keybox), with nothing written. `now` stamps the epoch it supersedes. `reseal`: a fetched
+    /// keybox moves every own row below the newest, a switch's only the rows of an epoch it drops (sim rule 13).
+    func mergeKeybox(_ keys: KeyboxKeys, hubID: String, now: Date, reseal: KeyboxMergeReseal) async throws -> KeyboxMerge?
     /// Epoch keys of `hubID` joined the Keychain: the rows its replica
-    /// stored but could not open yet are opened now. `newestEpochRaised`:
-    /// the newest epoch went up, so an ordered hub gets `epoch_ack`.
-    func keysMerged(hubID: String, newestEpochRaised: Bool)
+    /// stored but could not open yet are opened now, and a parked relay feed reads again. `newestEpochRaised`:
+    /// the newest epoch went up, so an ordered hub gets `epoch_ack`. `droppedNewestPair`: the hub cleared this
+    /// phone's relay keys, so the offer goes out again.
+    func keysMerged(hubID: String, newestEpochRaised: Bool, droppedNewestPair: Bool) async
     /// The link completed: adds or updates the row, sets the device on the
     /// session (writes on) and activates it. Throws `HubRegistryError.full`
     /// for a new hub when every slot is taken.
@@ -178,4 +200,6 @@ struct LocalWipe: Equatable {
     /// sent again later (`LinkHost.resendFarewell`), so a `shared` link
     /// keeps its shares until then.
     var farewellKept = false
+    /// The unlink's farewell left the send queue: the hub can read it now.
+    var farewellOut = false
 }

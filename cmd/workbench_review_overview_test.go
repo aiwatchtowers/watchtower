@@ -45,7 +45,9 @@ func useReviewGenerator(t *testing.T, g digest.Generator) {
 	t.Cleanup(func() { reviewAIGeneratorFactory = old })
 }
 
-const overviewReply = `{"summary":"Edits the readme.","coverage":[],"out_of_scope":[],"risk":[{"path":"README.md","level":"low","why":"docs"}],"chapters":[{"title":"Readme","paths":["README.md"],"core":true,"lenses":["correctness"]}]}`
+// overviewReply is a review.overview v3 reply for the fixture's one root
+// chapter ("dir:").
+const overviewReply = `{"summary":"Edits the readme.","coverage":[],"out_of_scope":[],"chapters":[{"key":"dir:","what":"The readme.","risks":[{"path":"README.md","level":"low","why":"docs"}]}]}`
 
 // overviewRound: a changed README and an open round on the fixture session.
 func overviewRound(t *testing.T) (database *db.DB, wb, session int64, round string) {
@@ -96,7 +98,9 @@ func TestWorkbenchReviewOverview_FailureIsAnEnvelopeAndNotCached(t *testing.T) {
 	useReviewGen(t, g)
 	out := reviewJSON(t, wb, "overview", "--round", round)
 	assert.Equal(t, false, out["ok"])
-	assert.Equal(t, "AI overview unavailable: boom", out["error"])
+	assert.Equal(t, "The AI provider failed on the overview.", out["error"], "the owner's sentence, not the provider's words")
+	assert.Equal(t, "provider", out["error_class"])
+	assert.Equal(t, "boom", out["detail"])
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_overviews`).Scan(&n))
 	assert.Zero(t, n)
@@ -111,7 +115,8 @@ func TestWorkbenchReviewOverview_InvalidReplyNotCached(t *testing.T) {
 	useReviewGen(t, g)
 	out := reviewJSON(t, wb, "overview", "--round", round)
 	assert.Equal(t, false, out["ok"])
-	assert.Contains(t, out["error"], "AI overview unavailable:")
+	assert.Equal(t, "The AI answer for the overview could not be read.", out["error"])
+	assert.Equal(t, "parse", out["error_class"])
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_overviews`).Scan(&n))
 	assert.Zero(t, n)
@@ -203,6 +208,7 @@ func TestWorkbenchReviewOverview_CancelEndsTheModelCall(t *testing.T) {
 			return runReviewWithContext(t, ctx, workbenchReviewOverviewCmd, "overview", "--workbench", itoa(wb), "--round", round, "--json")
 		})
 		assert.Equal(t, false, out["ok"])
+		assert.Equal(t, "cancelled", out["error_class"])
 		var n int
 		require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_overviews`).Scan(&n))
 		assert.Zero(t, n)
@@ -217,6 +223,7 @@ func TestWorkbenchReviewOverview_CancelEndsTheModelCall(t *testing.T) {
 			return runReviewWithContext(t, context.Background(), workbenchReviewOverviewCmd, "overview", "--workbench", itoa(wb), "--round", round, "--json")
 		})
 		assert.Equal(t, false, out["ok"])
+		assert.Equal(t, "cancelled", out["error_class"])
 	})
 }
 
@@ -243,21 +250,21 @@ func TestWorkbenchReviewOverview_ContextReadFailureIsAnError(t *testing.T) {
 	assert.Zero(t, n)
 }
 
-func TestWorkbenchReviewOverview_CacheHitReadsNoDiff(t *testing.T) {
+// A Refresh to a new tree asks the model again; the same tree reads the
+// cache. (The cache key now carries the lane items, so a cache hit builds
+// the map first: it reads the diff.)
+func TestWorkbenchReviewOverview_NewTreeAsksAgain(t *testing.T) {
 	database, wb, s, round, repo := overviewRoundIn(t)
 	g := &fakeReviewGen{out: overviewReply}
 	useReviewGen(t, g)
 	first := reviewJSON(t, wb, "overview", "--round", round)
 	require.Equal(t, true, first["ok"], first)
+	assert.Equal(t, []any{}, first["incomplete"])
 	tree := roundTree(t, database, round)
-	// The tree object is gone: a diff now fails, a cache hit does not care.
-	obj := filepath.Join(repo, ".git", "objects", tree[:2], tree[2:])
-	require.NoError(t, os.Rename(obj, obj+".moved"))
 	second := reviewJSON(t, wb, "overview", "--round", round)
-	assert.Equal(t, true, second["ok"], second)
 	assert.Equal(t, true, second["overview_cached"])
+	assert.Equal(t, []any{}, second["incomplete"])
 	assert.Equal(t, 1, g.calls)
-	require.NoError(t, os.Rename(obj+".moved", obj))
 
 	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed again\n"), 0o644))
 	reviewJSON(t, wb, "start", "--session", itoa(s), "--refresh")

@@ -41,6 +41,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower briefing` | Today's [briefing](../features/briefings.md); `briefing generate` makes today's now, if there is none yet, through the Morning brief's current recipe, even with the feature off |
 | `watchtower day-plan` | The [day plan](../features/day-plan.md); `day-plan generate [--feedback <text>]` makes or redoes it the same way |
 | `watchtower inbox`, `remind <text>` | [Inbox](../features/inbox.md) and reminders |
+| `watchtower inbox folders` | The Inbox menu: `list`, and `create`, `update`, `move`, `delete`, `route <automation-id>`, each with `--expect-revision` from `list`; a stale one changes nothing ("the Inbox menu changed"). Refused in a coding agent's shell |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
 | `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md); `tracks start <id>` makes a track's watch, `tracks instruction <id> --text <t>` edits it |
 | `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
@@ -59,7 +60,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower automations reset <id>` | Put a built-in back on its shipped version, deleting your edited copy (asks you to confirm) |
 | `watchtower automations upgrade-builtins` | Retry moving your old settings and prompt edits into the built-ins and watches (the Inbox's **Retry**); refused in a coding agent's shell. Restart the daemon after "moved" |
 | `watchtower automations reply --output <id> --action <n>` | An Inbox card's Reply press: records it and queues one run; [Buttons on automation cards](../features/automations-inbox-buttons.md) |
-| `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change |
+| `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change; a row's **Reply…** proposes without it, into Needs approval |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
 
 ### Why the app asks you to confirm a command
@@ -85,6 +86,29 @@ This keeps an agent that was talked into running such a command from going ahead
 | `watchtower agents enable\|disable\|scan\|stats` | [Agent analytics](../features/agent-analytics.md) |
 | `watchtower coach status\|proposals\|accept\|decline\|rollback\|run` | [Agent coach](../features/agent-coach.md) |
 | `watchtower code index\|search` | Symbol index and text search for a workbench folder |
+
+## Headless host
+
+Commands for a [headless host](../features/headless-host.md): a Linux box or a Mac without the app. On a Mac with the Watchtower app the `hub` commands work on the app's hub too; while an older version's iPhone sync still waits to be moved over, the ones that change something refuse with **Mobile on this Mac is run by the Watchtower app.** Add `--json` for scripts.
+
+| Command | What it does |
+|---|---|
+| `watchtower workspace init --headless` | Create the workspace with every non-core feature off, so only the workbenches run. An existing config keeps its features (**Kept your feature settings.**) |
+| `watchtower service install` | Create the workspace (as `--headless`), turn the hub on and install and start the daemon as a systemd user unit (`watchtower.service`) or a LaunchAgent; prints the linger hint when needed. Safe to run again |
+| `watchtower service uninstall` | Stop and remove the service; your data and running sessions stay |
+| `watchtower service status` | Whether the service is installed and running, and on Linux whether linger is on |
+| `watchtower hub status` | The hub's state and reason, its host kind and mode, and the number of phones |
+| `watchtower hub pair` | Link a phone from this terminal: a QR code, a link, then **Confirm code 1234 on your phone? [y/N]**. Scripts use `--json --stream` |
+| `watchtower hub phones` | Linked phones with their device ids and grants |
+| `watchtower hub diagnostics [--days N]` | How long the hub took to apply phone actions and save what they changed, p50 and p90 per step and transport over the last 1–7 days (7 by default), and how many alerts were dropped because too many were waiting. Timings only, kept on this machine; works without a running hub |
+| `watchtower hub allow <device> typing\|permissions\|start_sessions` | Let a phone type into sessions, answer permission prompts or start sessions; `--revoke` takes it back |
+| `watchtower hub unlink <device>` | Unlink a phone |
+| `watchtower hub name <name>` | The name phones show for this host (the hostname by default) |
+| `watchtower hub enable\|disable` | Turn the hub on or off |
+| `watchtower hub recordings on\|off` | Phone recordings for this hub; `on` is refused with **this host has no transcriber** where no Watchtower app ever ran, so a Linux host stays off |
+| `watchtower config set hub.relay_origin <origin>` | Point the hub at another relay (`https://host[:port]`); empty goes back to the build's own |
+
+`service install|uninstall` and the `hub` commands that change something are yours alone: a coding agent's shell is refused, and the terminal is the confirmation. The Desktop's **Confirm in Watchtower** commands above stay refused on Linux, where there is no app to confirm them.
 
 ## AI and usage
 

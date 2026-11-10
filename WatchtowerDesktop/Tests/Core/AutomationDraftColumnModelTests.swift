@@ -42,7 +42,10 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         changesKnown: Bool = true,
         feeds: Bool = false,
         fields: String? = fullFields,
-        permissions: [String] = ["gmail:read@work", "llm:light"]
+        permissions: [String] = ["gmail:read@work", "llm:light"],
+        outputs: String = #"["inbox"]"#,
+        addsLLM: String = "",
+        scope: String = "personal"
     ) throws -> AutomationsCLI.ValidateResult {
         let errorsJSON = String(data: try JSONSerialization.data(withJSONObject: errors), encoding: .utf8) ?? "[]"
         let wideningJSON = String(data: try JSONSerialization.data(withJSONObject: widening), encoding: .utf8) ?? "[]"
@@ -51,10 +54,11 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         let fieldsJSON = fields.map { #","fields":\#($0)"# } ?? ""
         let hash = AutomationDraftColumnModel.contentHash(text)
         let json = #"{"ok":\#(ok),"errors":\#(errorsJSON),"slug":"acme-digest","name":"acme digest","#
-            + #""scope":"personal","approval_hash":"h2","content_hash":"\#(hash)","#
-            + #""permissions":\#(permissionsJSON),"outputs":["inbox"],"#
+            + #""scope":"\#(scope)","approval_hash":"h2","content_hash":"\#(hash)","#
+            + #""permissions":\#(permissionsJSON),"outputs":\#(outputs),"#
             + #""widening":\#(wideningJSON),"feeds_sources_to_llm":\#(feeds),"#
-            + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)}"#
+            + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)"#
+            + (addsLLM.isEmpty ? "" : #","adds_llm":\#(addsLLM)"#) + "}"
         return try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
     }
 
@@ -87,10 +91,12 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         isNew: Bool = true,
         plan: AutomationSavePlan? = nil,
         saved: AutomationDraftColumnModel.Saved? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        workbenchName: (Int64) -> String? = { _ in nil }
     ) -> AutomationDraftColumnModel {
         AutomationDraftColumnModel(text: text, validated: validated, isChecking: isChecking, newestChatEntry: entry,
-                                   confirmedText: confirmedText, isNew: isNew, plan: plan, saved: saved, now: now)
+                                   confirmedText: confirmedText, isNew: isNew, plan: plan, saved: saved, now: now,
+                                   workbenchName: workbenchName)
     }
 
     func testNewRecipeShowsNoNewMarksAndHasNoChanges() throws {
@@ -321,5 +327,195 @@ final class AutomationDraftColumnModelTests: XCTestCase {
                        "Changed outside Watchtower · 10 min ago")
         XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "", changedAt: nil, now: now),
                        "Changed outside Watchtower")
+    }
+
+    // MARK: - Inbox builder A: the AI-step flag and the Inbox cards box
+
+    /// `adds_llm` of the bytes on screen drives the footer's AI-step line;
+    /// an older CLI without it, a check of other bytes or a recipe that does
+    /// not validate says nothing.
+    func testAddsLLMFromTheCheckOfTheseBytes() throws {
+        XCTAssertTrue(model(validated: try validated(addsLLM: "true")).addsLLM)
+        XCTAssertFalse(model(validated: try validated(addsLLM: "false")).addsLLM)
+        XCTAssertFalse(model(validated: try validated()).addsLLM, "older CLI: no adds_llm key")
+        XCTAssertFalse(model(text: Self.confirmed, validated: try validated(addsLLM: "true")).addsLLM, "other bytes")
+        XCTAssertFalse(model(validated: try validated(addsLLM: "true"), isChecking: true).addsLLM)
+        XCTAssertFalse(model(validated: try validated(ok: false, errors: ["bad"], fields: "{}", addsLLM: "true")).addsLLM)
+    }
+
+    /// `fields.artifacts` (hashed, AUTO-06) is shown on **When it runs**:
+    /// living as kept current, feed — and an older CLI's missing key — as a
+    /// new card each run; a recipe with no Inbox card has no box.
+    func testArtifactsLine() throws {
+        let living = #"{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","artifacts":"living","#
+            + #""budget":{"tokens":40000,"minutes":5}}"#
+        let feed = living.replacingOccurrences(of: "living", with: "feed")
+        XCTAssertEqual(model(validated: try validated(fields: living)).artifacts, "One card per key, kept current")
+        XCTAssertEqual(model(validated: try validated(fields: feed)).artifacts, "A new card each run")
+        XCTAssertEqual(model(validated: try validated()).artifacts, "A new card each run", "older CLI: feed")
+        XCTAssertNil(model(validated: try validated(fields: feed, outputs: #"["report"]"#)).artifacts)
+        XCTAssertNil(model(validated: nil, isChecking: true).artifacts)
+        // Artifacts is not needed to show every field: an older CLI still saves.
+        XCTAssertTrue(model(validated: try validated()).showsAllFields)
+    }
+
+    /// The editor's footer carries the shell (#560), #559 and AI-step
+    /// warnings: `Warnings` is built from the column alone, so the footer
+    /// drawn under every step shows the same lines; in the steps view the
+    /// column's boxes no longer show the first two.
+    func testFooterWarningsComeFromTheColumn() throws {
+        let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: nil, needsConfirmation: false,
+                                                     llmAutoWrites: ["send_slack_message"])
+        let all = model(validated: try validated(feeds: true, permissions: ["shell:\"make test\"", "llm:light"],
+                                                 addsLLM: "true"),
+                        isNew: false, saved: saved)
+        let warnings = AutomationDraftFooter.Warnings(column: all, dryRunTokens: 5800)
+        XCTAssertEqual(warnings.shell, AutomationCardPresentation.shellWarning(permissions: ["shell:\"make test\""]))
+        XCTAssertEqual(warnings.llm, AutomationLLMWarning.line(feedsSourcesToLLM: true, tools: ["send_slack_message"]))
+        XCTAssertNotNil(warnings.llm)
+        XCTAssertEqual(warnings.aiStep,
+                       "This change adds an AI step: every run will use the model. This dry run used 5,800 tokens.")
+
+        let none = AutomationDraftFooter.Warnings(column: model(validated: try validated()), dryRunTokens: 5800)
+        XCTAssertNil(none.shell)
+        XCTAssertNil(none.llm)
+        XCTAssertNil(none.aiStep)
+    }
+
+    // MARK: - AUTO-06: the pinned Changed row (ask #486)
+
+    private static let livingFields = #"{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","#
+        + #""artifacts":"living","budget":{"tokens":40000,"minutes":5}}"#
+
+    /// One change of each hashed field as Go writes it.
+    private static let oneChange: [AutomationHashedField: String] = [
+        .script: #"{"field":"script","old":"","new":""}"#,
+        .permissions: #"{"field":"permissions","old":"[\"llm:light\"]","new":"[\"gmail:read@work\",\"llm:light\"]"}"#,
+        .outputs: #"{"field":"outputs","old":"[\"report\"]","new":"[\"inbox\"]"}"#,
+        .scope: #"{"field":"scope","old":"personal","new":"workbench:3"}"#,
+        .trigger: #"{"field":"trigger","old":"{\"schedule\":\"0 8 * * 1-5\"}","new":"{\"schedule\":\"0 9 * * 1-5\"}"}"#,
+        .missed: #"{"field":"missed","old":"run_once","new":"skip"}"#,
+        .budget: #"{"field":"budget_tokens","old":"20000","new":"40000"}"#,
+        .concurrency: #"{"field":"concurrency","old":"2","new":"1"}"#,
+        .artifacts: #"{"field":"artifacts","old":"feed","new":"living"}"#
+    ]
+
+    private func edit(changing fields: [AutomationHashedField], known: Bool = true) throws -> AutomationDraftColumnModel {
+        let changes = "[" + fields.compactMap { Self.oneChange[$0] }.joined(separator: ",") + "]"
+        return model(validated: try validated(changes: changes, changesKnown: known, fields: Self.livingFields),
+                     confirmedText: Self.confirmed, isNew: false) { $0 == 3 ? "acme-app" : nil }
+    }
+
+    /// AUTO-06 guard: whatever step the owner is on, every hashed field a
+    /// save or confirm press there confirms is on screen — in the step's
+    /// boxes or in the pinned row. Each step × each changed field (artifacts
+    /// included), all at once, an unknown diff, a new recipe.
+    func testAuto06_EveryHashedFieldVisibleWhereverAPressLands() throws {
+        XCTAssertEqual(Set(Self.oneChange.keys), Set(AutomationHashedField.allCases), "a case per hashed field")
+        for step in AutomationEditorStep.allCases {
+            for field in AutomationHashedField.allCases {
+                let m = try edit(changing: [field])
+                XCTAssertTrue(m.showsAllFields)
+                XCTAssertTrue(m.visibleFields(on: step).contains(field), "\(field) changed, press on \(step)")
+            }
+            let all = try edit(changing: AutomationHashedField.allCases)
+            XCTAssertEqual(all.visibleFields(on: step), Set(AutomationHashedField.allCases), "all changed, \(step)")
+            let unknown = try edit(changing: [], known: false)
+            XCTAssertEqual(unknown.visibleFields(on: step), Set(AutomationHashedField.allCases), "unknown, \(step)")
+            let new = model(validated: try validated(fields: Self.livingFields))
+            XCTAssertEqual(new.visibleFields(on: step), Set(AutomationHashedField.allCases), "new, \(step)")
+        }
+        // The text, not only the field: an event trigger's `where` filter is
+        // hashed, so it is on screen with the trigger at a press on any step.
+        let event = Self.livingFields.replacingOccurrences(
+            of: #""trigger":"schedule: 0 9 * * 1-5""#,
+            with: #""trigger":"event: slack.new_messages where account=\"acme\"""#
+        )
+        XCTAssertNotEqual(event, Self.livingFields, "the fixture's trigger was replaced")
+        let new = model(validated: try validated(fields: event))
+        let filter = #"Where account="acme""#
+        XCTAssertEqual(new.whenDetail, filter, "When it runs shows it in the When box")
+        for step in AutomationEditorStep.allCases where !step.shownFields.contains(.trigger) {
+            let row = try XCTUnwrap(new.confirmationRow(on: step), "\(step)")
+            let trigger = try XCTUnwrap(row.items.first { $0.field == .trigger }, "\(step)")
+            XCTAssertEqual(trigger.text, "When: \(new.when) · \(filter)", "\(step)")
+        }
+    }
+
+    /// The row lists only what the step does not show, in the Changed box's
+    /// words; absent where the step shows everything changed or nothing
+    /// changed.
+    func testConfirmationRowPerStep() throws {
+        let m = try edit(changing: [.scope, .script, .budget])
+        XCTAssertNil(m.confirmationRow(on: .collects), "the Changed box is on What it collects")
+        let look = try XCTUnwrap(m.confirmationRow(on: .look))
+        XCTAssertEqual(look.title, "Changed")
+        XCTAssertEqual(look.items.map(\.text), [
+            "Scope Personal → Workbench “acme-app”", "Script changed", "Budget per run 20,000 tokens → 40,000 tokens"
+        ])
+        // The box is only on What it collects: When it runs lists every
+        // change too, its own fields included (old → new, not just the value).
+        let schedule = try XCTUnwrap(m.confirmationRow(on: .schedule))
+        XCTAssertEqual(schedule.items, look.items)
+        XCTAssertNil(look.note)
+
+        let timing = try edit(changing: [.trigger, .missed])
+        XCTAssertEqual(timing.confirmationRow(on: .schedule)?.items.map(\.text),
+                       ["Schedule Weekdays 08:00 → Weekdays 09:00", "Missed while asleep run once → skip"])
+
+        let none = try edit(changing: [])
+        for step in AutomationEditorStep.allCases { XCTAssertNil(none.confirmationRow(on: step)) }
+
+        // While checking, nothing: every button is off anyway.
+        XCTAssertNil(model(validated: nil, isChecking: true).confirmationRow(on: .look))
+    }
+
+    /// A new workbench draft: every field with its value, the scope named by
+    /// its workbench; a change of a field this build does not know is never
+    /// taken as shown.
+    func testConfirmationRowForANewDraftNamesTheWorkbench() throws {
+        let new = model(validated: try validated(fields: Self.livingFields, scope: "workbench:3")) {
+            $0 == 3 ? "acme-app" : nil
+        }
+        let look = try XCTUnwrap(new.confirmationRow(on: .look))
+        XCTAssertEqual(look.title, "Also confirms")
+        XCTAssertEqual(look.items.first?.text, "Scope: Workbench “acme-app”")
+        XCTAssertEqual(Set(look.items.compactMap(\.field)), Set(AutomationHashedField.allCases))
+        XCTAssertTrue(look.items.contains { $0.text == AutomationDraftColumnModel.scriptLine })
+        XCTAssertEqual(new.confirmationRow(on: .schedule)?.items.compactMap(\.field),
+                       [.scope, .permissions, .outputs, .script])
+        XCTAssertEqual(new.confirmationRow(on: .collects)?.items.compactMap(\.field),
+                       [.scope, .trigger, .missed, .budget, .concurrency, .artifacts])
+
+        let odd = model(validated: try validated(changes: #"[{"field":"retention","old":"1","new":"2"}]"#,
+                                                 fields: Self.livingFields),
+                        confirmedText: Self.confirmed, isNew: false)
+        XCTAssertEqual(odd.confirmationRow(on: .schedule)?.items.map(\.text), ["retention 1 → 2"])
+    }
+
+    /// AUTO-06/D26 guard: at a press on any step, the screen says *which*
+    /// hashed fields changed — each changed field's Changed-box line — or
+    /// that the change is unknown, or that this is the first confirmation;
+    /// a value alone is not enough.
+    func testAuto06_ChangeMarkOnEveryStep() throws {
+        for step in AutomationEditorStep.allCases {
+            for field in AutomationHashedField.allCases {
+                let m = try edit(changing: [field])
+                let change = try JSONDecoder().decode(AutomationChange.self,
+                                                      from: Data(try XCTUnwrap(Self.oneChange[field]).utf8))
+                let line = AutomationChangePresentation.line(change) { $0 == 3 ? "acme-app" : nil }
+                XCTAssertTrue(m.changeMarks(on: step).contains(line), "\(field) changed, press on \(step)")
+            }
+            let unknown = try edit(changing: [], known: false)
+            XCTAssertEqual(unknown.changeMarks(on: step), [AutomationChangePresentation.unknownChanges], "\(step)")
+            let first = model(validated: try validated(fields: Self.livingFields), confirmedText: nil, isNew: false)
+            XCTAssertEqual(first.changeMarks(on: step), [AutomationChangePresentation.firstConfirmation], "\(step)")
+            XCTAssertTrue(first.visibleFields(on: step) == Set(AutomationHashedField.allCases), "\(step)")
+        }
+        // The notes sit in the row off What it collects, never on a new draft.
+        let unknown = try edit(changing: [], known: false)
+        XCTAssertNil(unknown.confirmationRow(on: .collects)?.note)
+        XCTAssertEqual(unknown.confirmationRow(on: .look)?.note, AutomationChangePresentation.unknownChanges)
+        XCTAssertNil(model(validated: try validated(fields: Self.livingFields)).confirmationRow(on: .look)?.note)
     }
 }

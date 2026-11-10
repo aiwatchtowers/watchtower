@@ -17,12 +17,37 @@ const (
 	maxRecordingError     = 300
 )
 
+// HubMovedText is a failed job's error for class hub_moved (ask #843): a
+// phone recording that was being transcribed when the Go hub took over the
+// Swift hub's state. Pinned verbatim by TestHubMovedTextPinned.
+const HubMovedText = "Watchtower was updated while this recording was being transcribed. " +
+	"The audio is kept on your Mac; send it again if you still have it on this iPhone."
+
+// failureTexts is what a failed job's class reads as on the phone: hub_moved,
+// and the classes Desktop finishes with (state.ClassNoSpeech …). On this path
+// the phone already deleted its copy when the upload was received, so no
+// text asks it to send the recording again: the audio is on the Mac, which
+// retries on its own (unreadable, ingest_failed) or keeps it for the owner.
+// Pinned by TestRecordingFailureTextsPinned.
+var failureTexts = map[string]string{
+	state.ClassHubMoved:            HubMovedText,
+	state.ClassNoSpeech:            "No speech recognized",
+	state.ClassTranscriptionFailed: "Your Mac could not transcribe this recording. It keeps the audio; you can retry it in Watchtower on the Mac.",
+	state.ClassNotAudio:            "Your Mac could not open this recording as audio. It keeps the file on the Mac.",
+	state.ClassUnreadable:          "Your Mac could not read this recording yet. It keeps the audio and will try again.",
+	state.ClassIngestFailed:        "Your Mac could not save this recording yet. It keeps the audio and will try again.",
+	state.ClassMissingAudio:        "Your Mac no longer has this recording's audio.",
+}
+
 // RecordingJob is the recording_job slice (RecordingJobSlice, mobile POC spec
 // §4.12), record recording_job-<upload id>: the hub-side progress of one phone
 // upload, read from the sidecar's recording_jobs queue (ids, statuses and
 // error classes; Task 5). The queue has four states, the wire more: queued is
-// queued, claimed (Desktop took it) is transcribing without a percent, done
-// carries the transcript id, failed carries the error class as its error. A
+// queued, claimed (Desktop took it) is Desktop's reported phase —
+// transcribing (with its percent when reported), diarizing or summarizing,
+// as RecordingJobSlice, and queued before any report —, done carries the
+// transcript id, failed carries its class's text as its error
+// (failureTexts; an unknown class reads as itself). A
 // job is published until 7 days after it ended; an unfinished one stays. At
 // most 100, the latest updated first. now nil is time.Now.
 func RecordingJob(st *state.Store, now func() time.Time) (hubslices.Source, error) {
@@ -74,12 +99,25 @@ func (s *recordingJobSource) Items(ctx context.Context) ([]hubslices.Item, error
 		}
 		switch j.Status {
 		case state.RecordingClaimed:
-			p.Status = "transcribing"
+			// Desktop's phase; a claim it has not reported on yet waits in the
+			// Mac's transcriber queue, read queued as the Swift hub's job did.
+			switch j.Phase {
+			case state.PhaseDiarizing, state.PhaseSummarizing:
+				p.Status = j.Phase
+			case state.PhaseTranscribing:
+				p.Status, p.Percent = state.PhaseTranscribing, j.Percent
+			default:
+				p.Status = "queued"
+			}
 		case state.RecordingDone:
 			p.Status, p.TranscriptID = "done", j.TranscriptID
 		case state.RecordingFailed:
 			p.Status = "failed"
-			p.Error, _ = clipText(state.ErrorClass(j.ErrorClass), maxRecordingError)
+			if text, ok := failureTexts[j.ErrorClass]; ok {
+				p.Error = text
+			} else {
+				p.Error, _ = clipText(state.ErrorClass(j.ErrorClass), maxRecordingError)
+			}
 		default:
 			p.Status = "queued"
 		}

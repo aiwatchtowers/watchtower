@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
+	"watchtower/internal/reviewmap"
 	"watchtower/internal/tools"
 )
 
@@ -105,8 +106,16 @@ type reviewEnvelope struct {
 	Revert           *reviewRevertJSON         `json:"revert,omitempty"`
 	Overview         json.RawMessage           `json:"overview,omitempty"`
 	OverviewCached   bool                      `json:"overview_cached,omitempty"`
-	Lessons          *[]reviewLessonJSON       `json:"lessons,omitempty"`
-	Written          string                    `json:"written,omitempty"`
+	// Incomplete (overview): the chapters the overview could not see, with
+	// every overview answered (tech spec §3.4).
+	Incomplete *[]string `json:"incomplete,omitempty"`
+	// ErrorClass and Detail (overview): the failure's class (tech spec
+	// §3.6) and the provider's own text, which Error never repeats.
+	ErrorClass string              `json:"error_class,omitempty"`
+	Detail     string              `json:"detail,omitempty"`
+	Lessons    *[]reviewLessonJSON `json:"lessons,omitempty"`
+	Written    string              `json:"written,omitempty"`
+	Map        *reviewmap.Map      `json:"map,omitempty"`
 	// PlaceMissing (start): the session's worktree no longer exists; the
 	// open round stayed on the folder it was opened on (board #1012).
 	PlaceMissing bool `json:"place_missing,omitempty"`
@@ -143,6 +152,9 @@ func reviewTarget() (*db.DB, *db.Workbench, error) {
 }
 
 func writeReview(cmd *cobra.Command, env reviewEnvelope) error {
+	if reviewFlagJSON && reviewFlagStream {
+		return writeStreamEnvelope(cmd.OutOrStdout(), env)
+	}
 	if reviewFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), env)
 	}
@@ -242,9 +254,16 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
+	// Read after the snapshot, so a commit made in between still names the
+	// tree's committed files; it may also hold edits made after the
+	// snapshot, harmless as lanes only label files already in the diff.
+	head, err := src.Head(ctx, repo)
+	if err != nil {
+		return failReview(cmd, err)
+	}
 	switch {
 	case open == nil:
-		created, err := createReviewRound(database, p, src, tree, base)
+		created, err := createReviewRound(database, p, src, tree, base, head)
 		if err != nil {
 			return failReview(cmd, err)
 		}
@@ -256,7 +275,7 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 		// reads it as lost when it is of another place (roundRange).
 		from, placeMoved := open.Source, !atPlace(open, src)
 		open.FolderRoot, open.Source, open.Branch = src.Folder, src.Source(), src.Branch()
-		open.BaseSHA, open.BaseLabel, open.TreeSHA = base.SHA, base.Label, tree
+		open.BaseSHA, open.BaseLabel, open.TreeSHA, open.HeadSHA = base.SHA, base.Label, tree, head
 		if err := database.RepointReviewRound(*open); err != nil {
 			return failReview(cmd, err)
 		}
@@ -268,10 +287,10 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "review round %d base changed (%s)\n", open.ID, open.Source)
 		}
 	default:
-		if err := database.UpdateReviewRoundTree(open.ID, tree); err != nil {
+		if err := database.UpdateReviewRoundTree(open.ID, tree, head); err != nil {
 			return failReview(cmd, err)
 		}
-		open.TreeSHA = tree
+		open.TreeSHA, open.HeadSHA = tree, head
 	}
 	return writeRound(ctx, cmd, repo, database, open)
 }
@@ -304,12 +323,13 @@ func atPlace(r *db.ReviewRound, src tools.ReviewSource) bool {
 	return r.FolderRoot == src.Folder && r.Source == src.Source() && r.Branch == src.Branch()
 }
 
-// createReviewRound opens a new round on the place's tree, linked to the
-// session's last sent round (whatever its place: its unresolved comments
-// carry, REVIEW-03).
-func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base) (*db.ReviewRound, error) {
+// createReviewRound opens a new round on the place's tree taken at commit
+// head, linked to the session's last sent round (whatever its place: its
+// unresolved comments carry, REVIEW-03).
+func createReviewRound(database *db.DB, p *db.Workbench, src tools.ReviewSource, tree string, base reviewdiff.Base, head string) (*db.ReviewRound, error) {
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
-		Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
+		Source: src.Source(), Branch: src.Branch(), FolderRoot: src.Folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree,
+		HeadSHA: head}
 	last, err := database.LastSentReviewRound(p.ID, reviewFlagSession)
 	if err != nil {
 		return nil, fmt.Errorf("last sent review round: %w", err)

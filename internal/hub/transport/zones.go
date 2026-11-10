@@ -13,3 +13,8 @@ func MailboxZone(hub, phone string) string { return "relay/" + hub + "/" + phone
 
 // PairZone is a pairing slot's zone, pair/<slot>.
 func PairZone(slot string) string { return "pair/" + slot }
+
+// SharedMailboxZone is the one mailbox every phone of hub shares where the
+// transport has one (CloudKit's RelayZone): relay/<hub>/*. It starts like
+// every MailboxZone(hub, …), so a mailbox event under it reads as one.
+func SharedMailboxZone(hub string) string { return MailboxZone(hub, "*") }

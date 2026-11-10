@@ -326,6 +326,11 @@ struct RecordingsFormat {
         return formatter
     }
 
+    /// "10:00".
+    func clock(_ date: Date) -> String {
+        clock.string(from: date)
+    }
+
     /// "Today 10:00", "Yesterday 10:00", or "Mon, Oct 5".
     func when(_ date: Date) -> String {
         if calendar.isDate(date, inSameDayAs: now) { return "Today \(clock.string(from: date))" }
@@ -333,6 +338,15 @@ struct RecordingsFormat {
             return "Yesterday \(clock.string(from: date))"
         }
         return day.string(from: date)
+    }
+
+    /// A moment inside a sentence: "at 10:00", "yesterday at 10:00", or "on Mon, Oct 5".
+    func inSentence(_ date: Date) -> String {
+        if calendar.isDate(date, inSameDayAs: now) { return "at \(clock.string(from: date))" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) {
+            return "yesterday at \(clock.string(from: date))"
+        }
+        return "on \(day.string(from: date))"
     }
 
     /// "14:32", or "1:02:10".

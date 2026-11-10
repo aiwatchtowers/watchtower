@@ -11,6 +11,11 @@
 # stdout, once, on success and failure), exit 1 when no test passed or failed,
 # and the refusal of a bad checkout. Those cases run the whole script against
 # stubs that fake the stand (see setup_run).
+#
+# Phase 3b Task 24 adds RELAY_INTEROP_DESKTOP: 1 passes the desktop run through
+# to both halves (the Go -run pattern and -kit-desktop, the Kit's
+# WT_GO_HUB_INTEROP_DESKTOP=1), the default stays the relay-only run, and any
+# other value is refused before anything is built.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -113,6 +118,10 @@ expect held-port 1 "port 18998 is held by workerd (pid 4242)"
 setup answering-port
 run_sut CURL_ANSWERS=1 RELAY_INTEROP_PORT=18998 -- "$C/relay"
 expect answering-port 1 "something already answers on http://127.0.0.1:18998"
+
+setup bad-desktop
+run_sut RELAY_INTEROP_DESKTOP=yes -- "$C/relay"
+expect bad-desktop 2 "RELAY_INTEROP_DESKTOP is 1 or 0"
 
 # ---- CI mode (Task 14) ----
 
@@ -227,6 +236,54 @@ OUT="$(env PATH="$C/stub:$PATH" WATCHTOWER_CHECKOUT="$C/wt" RELAY_INTEROP_PORT=1
 RC=$?
 [ "$RC" -eq 0 ] || note_fail "no-ci: exit $RC, want 0"
 case "$OUT" in *"relay-interop: passed="*) note_fail "no-ci: printed a summary: $OUT" ;; esac
+
+# ---- the desktop run (Phase 3b Task 24) ----
+
+# setup_args <case>: setup_run, with go and make stubs that record what the
+# test runs got: go's arguments (the -v run only) and the Kit run's
+# WT_GO_HUB_INTEROP_DESKTOP.
+setup_args() {
+	setup_run "$1"
+	printf '#!/bin/bash
+case " $* " in *" -v "*) printf "%%s\n" "$@" > "%s/go.args" ;; esac
+exit 0
+' "$C" >"$C/stub/go"
+	printf '#!/bin/bash
+[ -n "${WATCHTOWER_RELAY_INTEROP_URL:-}" ] || exit 0
+echo "desktop=${WT_GO_HUB_INTEROP_DESKTOP-unset} dir=${WT_GO_HUB_INTEROP_DIR:+set}" > "%s/kit.env"
+exit 0
+' "$C" >"$C/stub/make"
+}
+
+# run_args [env...]: a non-CI run of the whole script with the stubs; sets RC.
+run_args() {
+	env PATH="$C/stub:$PATH" WATCHTOWER_CHECKOUT="$C/wt" RELAY_INTEROP_PORT=18997 "$@" \
+		bash "$SUT" "$C/relay" >/dev/null 2>"$C/err" </dev/null
+	RC=$?
+}
+
+setup_args desktop-run
+run_args RELAY_INTEROP_DESKTOP=1
+[ "$RC" -eq 0 ] || note_fail "desktop-run: exit $RC ($(cat "$C/err"))"
+grep -qxF '^TestInterop_KitPhoneFollowsASwitch$' "$C/go.args" 2>/dev/null ||
+	note_fail "desktop-run: go did not run the desktop pattern: $(tr '\n' ' ' <"$C/go.args" 2>/dev/null)"
+grep -qxF -- '-kit-desktop' "$C/go.args" 2>/dev/null || note_fail "desktop-run: go got no -kit-desktop"
+[ "$(cat "$C/kit.env" 2>/dev/null)" = "desktop=1 dir=set" ] || note_fail "desktop-run: Kit env $(cat "$C/kit.env" 2>/dev/null)"
+
+# The default is the relay-only run, even with a stray WT_GO_HUB_INTEROP_DESKTOP.
+for value in "" 0; do
+	setup_args "relay-only-$value"
+	if [ -n "$value" ]; then
+		run_args RELAY_INTEROP_DESKTOP="$value" WT_GO_HUB_INTEROP_DESKTOP=1
+	else
+		run_args WT_GO_HUB_INTEROP_DESKTOP=1
+	fi
+	[ "$RC" -eq 0 ] || note_fail "relay-only-$value: exit $RC ($(cat "$C/err"))"
+	grep -qxF '^TestInterop_KitPhone$' "$C/go.args" 2>/dev/null ||
+		note_fail "relay-only-$value: go did not run the relay-only pattern: $(tr '\n' ' ' <"$C/go.args" 2>/dev/null)"
+	! grep -qxF -- '-kit-desktop' "$C/go.args" 2>/dev/null || note_fail "relay-only-$value: go got -kit-desktop"
+	[ "$(cat "$C/kit.env" 2>/dev/null)" = "desktop=unset dir=set" ] || note_fail "relay-only-$value: Kit env $(cat "$C/kit.env" 2>/dev/null)"
+done
 
 # A TERM while the run hangs (a cancelled or timed-out CI job): the stand and the
 # run are killed, the partial output reaches stderr, and the summary is still

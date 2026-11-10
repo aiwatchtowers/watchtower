@@ -195,6 +195,10 @@ type Daemon struct {
 	lastStreamsLockSkip time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
 	lastReactionCmd     time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate     string    // YYYY-MM-DD of last generation, for dedup
+	// waitingShown is the fingerprint Waiting for me's last succeeded slot
+	// run showed, waitingSeen the one its gate read this cycle (both ""
+	// until known); phaseWaitingForMe's goroutine only.
+	waitingShown, waitingSeen string
 
 	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
 	// finder's gate reads them on the slot's goroutine and its primitive
@@ -497,6 +501,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// Before the PID file exists: a process that finds the daemon through it
 	// may send AutomationWakeSignal at once.
 	d.watchAutomationWake(ctx)
+	d.installApprovalHook()
 	if d.pidPath != "" {
 		if err := WritePID(d.pidPath); err != nil {
 			return fmt.Errorf("writing pid file: %w", err)
@@ -673,6 +678,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 
 	d.phaseChannelDigests(ctx)
 	d.phaseUnsnooze()
+	d.phaseApprovalSweep(ctx)
 	d.phaseTranscriptAudioCleanup()
 	// Before the index, so this cycle's descriptions are searchable now.
 	d.phaseMediaDescribe(ctx)
@@ -710,6 +716,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 		d.inboxPipe.SetSyncResult(syncStart, inboxSyncErr)
 	}
 	d.phaseInbox(ctx)
+	d.phaseWaitingForMe(ctx)
 	d.phaseStreamDigests(ctx)
 	d.phaseIdeaFinder(ctx)
 	d.phaseMemory(ctx)

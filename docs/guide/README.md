@@ -42,7 +42,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Catch Up](features/catch-up.md) — a recap of a stretch of time you were away: what happened and what needs you
 - [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people, on the Inbox's Your day card
 - [Day Plan](features/day-plan.md) — today as time blocks plus a backlog on the Inbox's Your day card, with calendar conflicts flagged
-- [Inbox](features/inbox.md) — one list of your day, messages, tracks, ideas, proposals, reminders and automation cards, plus Slack reaction commands
+- [Inbox](features/inbox.md) — folders you arrange, Needs approval, Waiting for me with Reply, your day, tracks and ideas, plus Slack reaction commands
 - [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage in the Inbox
 - [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas
 
@@ -76,6 +76,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Reviewing a spec or plan](features/workbench/spec-review.md) — an independent reviewer checks the document against your idea, the agent fixes what it finds, and you decide the disputes
 - [Discussing a spec review](features/workbench/spec-review-discuss.md) — read a spec's short version first and ask about any finding in place, with the agent that wrote it a question away
 - [Branch review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
+- [Reviewing a big branch](features/workbench/big-branch-review.md) — chapters at once, danger first, the AI describing each chapter as it goes
+- [Branch reviewer](features/workbench/branch-reviewer.md) — ask an independent, read-only reviewer what breaks on a branch
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
 - [Your instructions](features/workbench/instructions.md) — standing directions for every agent and AI chat (`remember:` adds one from a chat), a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
@@ -93,7 +95,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
 - [Built-in automations](features/automations-built-in.md) — Morning brief, Track my threads, Idea finder and Reactions: when they run, on and off, editing and reset
 - [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
-- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent and Reply buttons on an automation's Inbox card, and what a press does
+- [How an automation's card looks](features/automations-card-look.md) — the editor's Look step, laid-out Inbox cards drawn from a dry run, and cards that stay current
+- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent, Task and Reply buttons on an automation's Inbox card, and what a press does
 - [Reactions and tracks in Automations](features/automations-rules.md) — the Reactions card and its dictionary, reaction-triggered recipes, and custom tracks as watches
 - [Automations: confirmation, budgets and writes](features/automations-safety.md) — what you confirm, the per-run budget, how writes wait for you and auto grants
 
@@ -111,6 +114,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [iPhone: the workchat](features/iphone-workbench.md) — follow a session's chat, answer what waits on you and write to the agent from your phone, even while it works
 - [iPhone: changes that are not delivered](features/iphone-not-delivered.md) — what Waiting to send and Not delivered mean on the phone, Retry and Dismiss All
 - [iPhone: work alerts](features/iphone-alerts.md) — alerts when work stops while you are away from your Mac; tap one to open its ask or session
+- [iPhone: Relay](features/iphone-relay.md) — Relay isn't in the current version of Watchtower for iPhone.
+- [Headless host](features/headless-host.md) — run your workbenches on a Linux box or a Mac without the app, as a service. Relay isn't in the current version of Watchtower for iPhone, and a host links a phone only over Relay
 - [Menu bar and updates](features/menu-bar-and-updates.md) — what the menu shows, what closing and quitting do, and how updates arrive
 - [Claude Code integration](features/claude-code-integration.md) — let your coding agent query Watchtower through a read-only MCP server and three skills
 

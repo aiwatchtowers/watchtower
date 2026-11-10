@@ -9,8 +9,9 @@ import (
 var lockfiles = []string{"go.sum", "package-lock.json", "yarn.lock", "pnpm-lock.yaml", "Package.resolved",
 	"Cargo.lock", "Gemfile.lock", "poetry.lock", "composer.lock"}
 
-// collapsedReason: lockfiles and generated files are folded by default.
-func collapsedReason(p string) string {
+// CollapsedReason names why a path is folded by default ("lockfile" or
+// "generated"), or "" for a path that is shown.
+func CollapsedReason(p string) string {
 	base := path.Base(p)
 	switch {
 	case slices.Contains(lockfiles, base):

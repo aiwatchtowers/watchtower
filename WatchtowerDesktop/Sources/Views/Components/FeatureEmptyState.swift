@@ -47,10 +47,14 @@ struct FeatureEmptyState<Extra: View>: View {
                 .foregroundStyle(.secondary)
             Text(copy.title)
                 .font(.headline)
-            Text(copy.landsHere)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+            // A title alone ("Nothing waits for your approval") draws no
+            // empty line under it.
+            if !copy.landsHere.isEmpty {
+                Text(copy.landsHere)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 420)
+            }
             if let line = Self.readinessLine(readiness) {
                 Text(line)
                     .font(.callout)

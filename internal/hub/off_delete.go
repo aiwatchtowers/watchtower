@@ -1,0 +1,185 @@
+package hub
+
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/slices"
+	"watchtower/internal/hub/state"
+)
+
+// The owner's off (go hub plan 3 Task 23 review, ask #956): turning Mobile
+// off deletes the records the hub published, as POLICY-03's wipe does —
+// through the running transports before the hub stops (the bridge still
+// up), and while the hub stays off, retried from the stopped wipe until
+// nothing published is left — and unlinks every phone, as the Swift hub's
+// off did (its zones deleted, then the link center forgot the phones and
+// reset the group keys). Each linked phone goes through `hub unlink`'s
+// offline path (its row and grants go, its keybox reads revoked, the epoch
+// rotates) and a phone waiting for the owner is refused, so turning on again
+// needs a fresh pairing. The hub's own identity key stays, as the Swift
+// hub's Keychain identity did. The policy's off (POLICY-03) never unlinks:
+// only the owner's switch does.
+
+// OffDelete* are `hub status --json`'s off_delete.state values while the
+// owner's switch is off ("" while it is on).
+const (
+	OffDeleteOK      = "ok"      // nothing the hub published is left
+	OffDeletePending = "pending" // published records left, not tried yet
+	OffDeleteFailed  = "failed"  // the last try left published records; retried
+)
+
+// OffDeleteStatus is `hub status --json`'s "off_delete" block (pinned keys):
+// State (OffDelete*, "" while on) and At, the last try (RFC 3339, "" = none
+// in this run).
+type OffDeleteStatus struct {
+	State string `json:"state"`
+	At    string `json:"at"`
+}
+
+// offWipeRetry spaces the stopped retries of the owner's off wipe; a try
+// that leaves records doubles the wait up to offWipeMaxBackoff, so a
+// permanently refused record does not start a desktop host's bridge every
+// minute (test seams).
+var (
+	offWipeRetry      = wipeRetry
+	offWipeMaxBackoff = time.Hour
+)
+
+// ownerOff is what the owner's off does to a running hub: stop it after
+// deleting what it published (keepNothing); reconcile then unlinks the
+// phones (unlinkForOff).
+func (s *supervisor) ownerOff() {
+	s.stopHub(keepNothing)
+	now := time.Now()
+	s.noteOffDelete(now)
+	s.offWipeBackoff = offWipeRetry
+	s.nextOffWipe = now.Add(offWipeRetry)
+}
+
+// unlinkForOff removes the staged assets (removeStagedAssets), unlinks every
+// linked phone and refuses every phone waiting for the owner while the
+// owner's switch is off (ask #956), through
+// `hub unlink`'s offline path on the supervisor's store. Run at every
+// reconcile while no hub runs: a no-op once nothing is linked, and it also
+// covers an off taken while the hub was not running. Only a switch written
+// off counts ("0": `hub disable`, or an adoption of a Swift hub left off); a
+// sidecar whose switch was never written is not an off. The switch is read
+// again under offlineMu, which setEnabled also holds, so an enable that
+// lands after reconcile's read never loses its phones. A phone that fails is
+// skipped and the rest are still unlinked; the failures are logged once per
+// streak and retried at the next reconcile.
+func (s *supervisor) unlinkForOff() {
+	s.offlineMu.Lock()
+	defer s.offlineMu.Unlock()
+	if v, _, err := s.st.Meta(state.MetaEnabled); err != nil || v != "0" {
+		return
+	}
+	// The staged assets and their keys go with the phones (the Swift hub's
+	// off removed its asset store); no hub runs, so nothing stages meanwhile.
+	if aerr := removeStagedAssets(s.o.Dir, s.st); aerr != nil {
+		log.Printf("hub: off: removing the staged assets failed (%s): retried", errClass(aerr))
+	}
+	devices, err := s.st.Devices()
+	var pending []link.Pending
+	if err == nil {
+		pending, err = link.NewCenter(link.Config{Store: s.st, Clock: s.o.Clock}).PendingLinks()
+	}
+	ids := make([]string, 0, len(devices)+len(pending))
+	for _, d := range devices {
+		ids = append(ids, d.ID)
+	}
+	for _, p := range pending {
+		ids = append(ids, p.DeviceID)
+	}
+	unlinked := 0
+	for _, id := range ids {
+		// ErrNoDevice: already gone (a waiting phone refused or expired meanwhile).
+		switch uerr := UnlinkOffline(s.o.Dir, s.st, id, s.o.Clock); {
+		case uerr == nil:
+			unlinked++
+		case !errors.Is(uerr, state.ErrNoDevice):
+			err = errors.Join(err, uerr)
+		}
+	}
+	if unlinked > 0 {
+		log.Printf("hub: off: %d phone(s) unlinked or refused", unlinked)
+	}
+	if err != nil {
+		if !s.offUnlinkLogged {
+			s.offUnlinkLogged = true
+			log.Printf("hub: off: unlinking the phones failed (%s): retried", errClass(err))
+		}
+		return
+	}
+	s.offUnlinkLogged = false
+}
+
+// retryOffWipe is the stopped retry while the owner's switch is off: what
+// the off (or an earlier run) left published is wiped again, the wait
+// doubling while records stay; a failed read is logged once per streak.
+func (s *supervisor) retryOffWipe(ctx context.Context) {
+	n, err := s.publishedLeft()
+	switch {
+	case err != nil:
+		if !s.offWipeReadLogged {
+			s.offWipeReadLogged = true
+			log.Printf("hub: off: reading what is left published failed (%s): retried", errClass(err))
+		}
+	case n > 0:
+		s.offWipeReadLogged = false
+		s.nextWipe = time.Time{}
+		s.wipeStopped(ctx)
+		s.noteOffDelete(time.Now())
+	default:
+		s.offWipeReadLogged = false
+	}
+	switch {
+	case err == nil && n > 0 && s.offDeleteFailed:
+		s.offWipeBackoff = min(max(2*s.offWipeBackoff, offWipeRetry), offWipeMaxBackoff)
+	default:
+		s.offWipeBackoff = offWipeRetry
+	}
+	s.nextOffWipe = time.Now().Add(s.offWipeBackoff)
+}
+
+// keepNothing is the wipe's filter: every published kind goes.
+func keepNothing(slices.Kind) bool { return false }
+
+// publishedLeft counts the records the hub has published and not deleted.
+func (s *supervisor) publishedLeft() (int, error) {
+	recs, err := publishedRecords(s.st, keepNothing)
+	return len(recs), err
+}
+
+// noteOffDelete records a try of the off wipe at now: whether it left
+// anything published.
+func (s *supervisor) noteOffDelete(now time.Time) {
+	s.offDeleteAt = now
+	n, err := s.publishedLeft()
+	s.offDeleteFailed = err != nil || n > 0
+	if s.offDeleteFailed {
+		log.Printf("hub: off: %d published records left: retried while off", n)
+	}
+}
+
+// offDeleteStatus is the off_delete block for the owner's off.
+func (s *supervisor) offDeleteStatus() OffDeleteStatus {
+	var st OffDeleteStatus
+	if !s.offDeleteAt.IsZero() {
+		st.At = s.offDeleteAt.UTC().Format(time.RFC3339)
+	}
+	n, err := s.publishedLeft()
+	switch {
+	case err == nil && n == 0:
+		st.State = OffDeleteOK
+	case s.offDeleteFailed:
+		st.State = OffDeleteFailed
+	default:
+		st.State = OffDeletePending
+	}
+	return st
+}

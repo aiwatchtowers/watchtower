@@ -9,7 +9,9 @@
 #     both ICU notices (ICU 58+ and IBM's ICU 1.8.1–57.1);
 #   - the SQLite engine section names every tag in internal/sqlcipher/VERSION
 #     (mattn, SQLCipher, SQLite) and the GRDB fork's pin from
-#     WatchtowerDesktop/Package.swift, and carries the SQLCipher licence.
+#     WatchtowerDesktop/Package.swift, and carries the SQLCipher licence;
+#   - the "Other Go modules" table lists go-qrcode at the version go.mod
+#     requires, with its copyright line.
 #
 # Reads files only — never builds.
 set -euo pipefail
@@ -68,4 +70,16 @@ else
 fi
 grep -qF 'Neither the name of the ZETETIC LLC nor the' "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks the SQLCipher licence"
 [ "$rc" -eq 0 ] && echo "ok: SQLite engine versions and licence present"
+
+# go-qrcode, carried by owner ruling (go-hub plan 2 Task 6, ask #881): listed
+# under Other Go modules at the version go.mod requires, with its copyright.
+qr_ver=$(awk '$1 == "github.com/skip2/go-qrcode" { print $2 }' "$ROOT/go.mod")
+if [ -z "$qr_ver" ]; then
+    fail "go.mod does not require github.com/skip2/go-qrcode"
+else
+    grep -qF "| \`github.com/skip2/go-qrcode\` | $qr_ver | MIT |" "$NOTICES" \
+        || fail "THIRD_PARTY_NOTICES.md does not list github.com/skip2/go-qrcode at $qr_ver (go.mod)"
+fi
+grep -qF 'Copyright (c) 2014 Tom Harwood' "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks go-qrcode's copyright line"
+[ "$rc" -eq 0 ] && echo "ok: go-qrcode listed at its go.mod version"
 exit $rc

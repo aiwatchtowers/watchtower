@@ -76,7 +76,7 @@ package enum WorkbenchAutomationButtonsModel {
         case .confirmThenRun:
             break
         case .run:
-            return await vm.runNow(button.automationID)
+            return await vm.runNow(button.automationID) == .done
         case let .openRun(runID):
             open(button.automationID, runID)
         case .openConfirmSheet:

@@ -2,9 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Inbox's reading pane (spec B1, C1 §6.2): the selected row read in
-/// full. An automation card shows where it came from (a link to its run),
-/// its title, its body as markdown under the chat's link rules, and its
-/// buttons; a reminder its note, its Slack message and Done / Snooze 1h; a
+/// full. An automation card shows where it came from (a link to its run, or
+/// "Updated …" on a living card), its title, its body — markdown under the
+/// chat's link rules, or its blocks (`InboxCardLayout`) — and its buttons; a reminder its note, its Slack message and Done / Snooze 1h; a
 /// pending `save_automation` proposal its summary (`SaveAutomationProposalPane`),
 /// any other proposal its `AgentActionCardView`; a message its
 /// `InboxMessagePane`. The day, track and idea cards come from `dayCard`,
@@ -36,13 +36,28 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let onRetryBuiltin: ((String) -> Void)?
     /// The workbenches a card's agent press can go to.
     let workbenches: [Workbench]
+    /// `users` id → best name for a card's `person` blocks.
+    let artifactPeople: [String: String]
+    /// The target buttons' state, from the Inbox center (Inbox builder A).
+    let targets: InboxTargetButtonSource
     let dayCard: (InboxDayCard) -> DayCard
     let trackCard: (InboxTrackCard) -> TrackCard
     let ideaCard: (Idea) -> IdeaCard
+    /// Drawn as one card of Needs approval's stack (`stackedInApprovals()`).
+    private(set) var inApprovals = false
+    /// The native row actions of an artifact's rows with a `ref`
+    /// (`refHooks(_:)`, `InboxRefHooks`); the default draws none.
+    private(set) var rowHooks = ArtifactRefHooks()
+    /// An automation card's ⋯ on its title row (`withArtifactMenu(_:)`).
+    private(set) var artifactMenu: InboxArtifactMenuState?
+    /// A message card's Reply (`messageReply(_:onPress:)`); nil draws none.
+    private(set) var messageReplyContent: (HomeFeedInboxRow) -> InboxRowActionsContent? = { _ in nil }
+    private(set) var onMessageReplyPress: (Int, InboxRowPress) -> Void = { _, _ in }
 
     init(
         item: InboxListItem?,
         navScreens: Set<String>,
+        targets: InboxTargetButtonSource,
         now: Date = Date(),
         isWriting: Bool = false,
         onCommand: @escaping (InboxCardCommand) -> Void,
@@ -54,6 +69,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
+        artifactPeople: [String: String] = [:],
         @ViewBuilder dayCard: @escaping (InboxDayCard) -> DayCard,
         @ViewBuilder trackCard: @escaping (InboxTrackCard) -> TrackCard,
         @ViewBuilder ideaCard: @escaping (Idea) -> IdeaCard
@@ -71,9 +87,52 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.saveProposal = saveProposal
         self.onRetryBuiltin = onRetryBuiltin
         self.workbenches = workbenches
+        self.artifactPeople = artifactPeople
+        self.targets = targets
         self.dayCard = dayCard
         self.trackCard = trackCard
         self.ideaCard = ideaCard
+    }
+
+    /// This pane as one card of Needs approval's stack: no scrolling column
+    /// of its own (the stack scrolls). An automation card
+    /// there is the `needs-approval` recipe's look of an approval: its Done
+    /// and Dismiss would close the artifact, not the approval, so they are
+    /// left out; the approval's own presses (Approve, Reject, Edit…; Retry
+    /// and Dismiss after a failed apply; a reminder's Done and Snooze 1h)
+    /// are its row's native actions (`refHooks(_:)`). A native reminder card
+    /// keeps its Done and Snooze (today's reminder functions).
+    func stackedInApprovals() -> Self {
+        var pane = self
+        pane.inApprovals = true
+        return pane
+    }
+
+    /// This pane with Reply on a message card: `content` (nil: none) and
+    /// its presses by `inbox_items` id.
+    func messageReply(
+        _ content: @escaping (HomeFeedInboxRow) -> InboxRowActionsContent?,
+        onPress: @escaping (Int, InboxRowPress) -> Void
+    ) -> Self {
+        var pane = self
+        pane.messageReplyContent = content
+        pane.onMessageReplyPress = onPress
+        return pane
+    }
+
+    /// This pane with `hooks` on an artifact's rows with a `ref`.
+    func refHooks(_ hooks: ArtifactRefHooks) -> Self {
+        var pane = self
+        pane.rowHooks = hooks
+        return pane
+    }
+
+    /// This pane with the artifact ⋯ on an automation card's title row, and
+    /// a failed press's text under it.
+    func withArtifactMenu(_ menu: InboxArtifactMenuState?) -> Self {
+        var pane = self
+        pane.artifactMenu = menu
+        return pane
     }
 
     /// The pane's one readable column (style guide: "one readable column").
@@ -106,7 +165,9 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
             column {
                 InboxMessagePane(row: row, isWriting: isWriting, onDone: onDone, onHide: onDismiss,
                                  onSnooze: onSnooze, onCommand: onCommand, workbenches: workbenches,
-                                 navScreens: navScreens, now: now)
+                                 navScreens: navScreens, now: now, reply: messageReplyContent(row)) {
+                    onMessageReplyPress(row.item.id, $0)
+                }
             }
         case .builtinNotice(let notice):
             column { builtinNotice(notice) }
@@ -115,8 +176,15 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         }
     }
 
+    /// The card in the pane's scrolling column; in Needs approval's stack,
+    /// the card alone: the stack scrolls and pads its cards itself.
+    @ViewBuilder
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
-        InboxCardColumn(content: content)
+        if inApprovals {
+            content()
+        } else {
+            InboxCardColumn(content: content)
+        }
     }
 
     private var nothingSelected: some View {
@@ -139,19 +207,40 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                 if card.priority == "high" {
                     Chip(text: "High", color: Tone.priority("high"))
                 }
+                if let artifactMenu, !inApprovals {
+                    Spacer(minLength: Spacing.regular)
+                    InboxArtifactMenuButton(menu: artifactMenu)
+                }
             }
-            if !card.body.isEmpty {
-                MarkdownView(text: card.body)
+            if let error = artifactMenu?.error, !inApprovals {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(Tone.error)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("inbox.artifactMenuError")
             }
-            InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                             onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
-                .padding(.top, Spacing.small)
+            switch InboxCardLayout.of(card) {
+            case .markdown:
+                if !card.body.isEmpty {
+                    MarkdownView(text: card.body)
+                }
+                InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
+                                 onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
+                                 showsDoneDismiss: !inApprovals)
+                    .padding(.top, Spacing.small)
+            case let .artifact(result, cardActions):
+                InboxArtifactCard(card: card, result: result, cardActions: cardActions, people: artifactPeople,
+                                  navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
+                                  onDone: onDone, onDismiss: onDismiss, workbenches: workbenches, targets: targets,
+                                  showsDoneDismiss: !inApprovals, refHooks: rowHooks)
+            }
         }
     }
 
     @ViewBuilder
     private func source(_ card: AutomationOutputCard) -> some View {
-        let line = InboxCardTexts.readingSourceLine(card)
+        let line = InboxCardTexts.readingSourceLine(card, now: now)
         if let onOpenAutomationRun {
             Button(line) { onOpenAutomationRun(card.runID) }
                 .buttonStyle(.kitQuiet)
@@ -229,6 +318,7 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
     init(
         item: InboxListItem?,
         navScreens: Set<String>,
+        targets: InboxTargetButtonSource,
         now: Date = Date(),
         isWriting: Bool = false,
         onCommand: @escaping (InboxCardCommand) -> Void,
@@ -239,13 +329,14 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
         proposalCard: ((AgentAction) -> AgentActionCardView)? = nil,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         onRetryBuiltin: ((String) -> Void)? = nil,
-        workbenches: [Workbench] = []
+        workbenches: [Workbench] = [],
+        artifactPeople: [String: String] = [:]
     ) {
         self.init(
-            item: item, navScreens: navScreens, now: now, isWriting: isWriting, onCommand: onCommand,
+            item: item, navScreens: navScreens, targets: targets, now: now, isWriting: isWriting, onCommand: onCommand,
             onOpenAutomationRun: onOpenAutomationRun, onDone: onDone, onDismiss: onDismiss, onSnooze: onSnooze,
             proposalCard: proposalCard, saveProposal: saveProposal, onRetryBuiltin: onRetryBuiltin,
-            workbenches: workbenches,
+            workbenches: workbenches, artifactPeople: artifactPeople,
             dayCard: { InboxCardPlaceholder(day: $0) },
             trackCard: { card in InboxCardColumn { InboxCardPlaceholder(track: card, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0) }

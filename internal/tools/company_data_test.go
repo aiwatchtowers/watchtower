@@ -23,6 +23,7 @@ func allReadCandidates() []*tools.Tool {
 		tools.NewListEmails(),
 		tools.NewGetEmail(),
 		tools.NewListSlackChannels(),
+		tools.NewListInboxFolders(),
 		tools.NewClaudeAIConnectorCall(),
 		tools.NewApplyTrackAction(),
 		authoring.NewDraftAutomation(deps),

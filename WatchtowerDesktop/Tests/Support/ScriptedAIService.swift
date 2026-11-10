@@ -17,6 +17,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         package let ownerInstructions: Bool
         package let purpose: String?
         package let readFolderAskID: Int64?
+        package let readFolderRoundID: Int64?
     }
 
     private let lock = NSLock()
@@ -41,7 +42,7 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID, dbPath: dbPath,
                model: model, provider: provider, toolMode: toolMode, readFolder: nil,
-               ownerInstructions: false, purpose: nil, readFolderAskID: nil)
+               ownerInstructions: false, purpose: nil, readFolderAskID: nil, readFolderRoundID: nil)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -56,14 +57,16 @@ package final class ScriptedAIService: AIServiceProtocol, @unchecked Sendable {
         readFolder: String?,
         ownerInstructions: Bool,
         purpose: String?,
-        readFolderAskID: Int64?
+        readFolderAskID: Int64?,
+        readFolderRoundID: Int64?
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         let (stream, continuation) = AsyncThrowingStream<StreamEvent, Error>.makeStream()
         let index: Int = lock.withLock {
             _calls.append(Call(prompt: prompt, systemPrompt: systemPrompt, sessionID: sessionID,
                                dbPath: dbPath, toolMode: toolMode, model: model, provider: provider,
                                readFolder: readFolder, ownerInstructions: ownerInstructions,
-                               purpose: purpose, readFolderAskID: readFolderAskID))
+                               purpose: purpose, readFolderAskID: readFolderAskID,
+                               readFolderRoundID: readFolderRoundID))
             _continuations.append(continuation)
             _terminated.append(false)
             return _continuations.count - 1

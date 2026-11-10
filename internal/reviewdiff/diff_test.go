@@ -211,7 +211,8 @@ func TestDiff_SuppressBlankEmptyKeepsBlankContext(t *testing.T) {
 }
 
 // TestDiff_NewBlobAndMode: each file carries its new side's blob id and
-// mode; a deleted file carries neither.
+// mode; a deleted file carries neither. The old side's blob is set on a
+// file that existed at base and empty on an added one.
 func TestDiff_NewBlobAndMode(t *testing.T) {
 	dir := newRepo(t)
 	writeFile(t, dir, "gone.txt", "bye\n")
@@ -239,6 +240,17 @@ func TestDiff_NewBlobAndMode(t *testing.T) {
 		case "gone.txt":
 			if f.NewBlob != "" || f.NewMode != "" {
 				t.Fatalf("deleted file = %+v", f)
+			}
+		}
+		switch f.Path {
+		case "a.go", "gone.txt":
+			want := strings.TrimSpace(gitIn(t, dir, "rev-parse", base+":"+f.Path))
+			if f.OldBlob != want {
+				t.Fatalf("%s old blob = %q, want %q", f.Path, f.OldBlob, want)
+			}
+		case "img.bin":
+			if f.OldBlob != "" {
+				t.Fatalf("added file old blob = %q", f.OldBlob)
 			}
 		}
 	}

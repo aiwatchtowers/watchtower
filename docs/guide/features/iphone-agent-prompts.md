@@ -53,6 +53,8 @@ since: 0.24.0
 
 - **Only Deny is offered.** The prompt is too long to show, or the edit changes Watchtower or shell settings; answer it on the Mac to allow.
 - **Answered on the Mac.** Someone answered on the Mac first; the first answer wins.
+- **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
+- **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
 - **No Interrupt in the menu.** Turn on **Type into sessions from this phone** and get the Mac's **Allow…**; it shows only while a Claude Code session is **Working** with no prompt open.
 
 Phone not syncing? See [The iPhone is not syncing](../troubleshooting/iphone-not-syncing.md).

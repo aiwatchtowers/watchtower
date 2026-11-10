@@ -23,6 +23,19 @@ var (
 	ErrRecordTooLarge = errors.New("transport: record too large")
 	// ErrUnsupportedVersion: the server no longer speaks this protocol.
 	ErrUnsupportedVersion = errors.New("transport: unsupported protocol version")
+	// ErrUnsupportedZone: the zone has no place on this transport (a
+	// pairing zone on CloudKit, where linking runs over shares).
+	ErrUnsupportedZone = errors.New("transport: zone not supported on this transport")
 	// ErrRateLimited: too many requests; back off.
 	ErrRateLimited = errors.New("transport: rate limited")
+	// ErrNotVouched: the relay has not admitted this hub (HUB_NOT_VOUCHED):
+	// no phone holds it in a slot, so only its pairing zones are open to it.
+	// Never a reason to register again; wait for a slot (Go hub design §7).
+	ErrNotVouched = errors.New("transport: the relay has not admitted this hub")
+	// ErrNoPushToken: the phone never registered a push token (send_alert's
+	// NOT_FOUND); it gets no push until it opens Watchtower once.
+	ErrNoPushToken = errors.New("transport: phone has no push token")
+	// ErrPushOff: the relay has no push provider configured (send_alert's
+	// UNSPECIFIED "not implemented").
+	ErrPushOff = errors.New("transport: relay pushes are off")
 )

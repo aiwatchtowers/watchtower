@@ -56,6 +56,7 @@ package final class AutomationTemplatePanelModel {
 
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let refresh: @MainActor (Int64?) async -> Void
+    @ObservationIgnored private let installStarted: @MainActor () -> @MainActor ([Int64]) async -> Void
     @ObservationIgnored private let checkDelay: Duration
     @ObservationIgnored private let sleep: (Duration) async -> Void
     /// The params the shown render was asked for (empty values dropped).
@@ -66,11 +67,16 @@ package final class AutomationTemplatePanelModel {
     @ObservationIgnored private var hasRendered = false
 
     /// `refresh` re-reads the list (and the first installed copy's card)
-    /// after an install; `sleep` is the param debounce's wait (a test seam).
+    /// after an install; `installStarted` runs as an install starts (what
+    /// it captures then — the copies' Inbox folder — is the install's) and
+    /// the hook it returns gets every copy the install made (a stopped one
+    /// too), before that refresh; `sleep` is the param debounce's wait (a
+    /// test seam).
     package init(
         template: AutomationTemplate,
         scope: AutomationScopeChoice,
         cli: AutomationsCLI,
+        installStarted: @escaping @MainActor () -> @MainActor ([Int64]) async -> Void = { { _ in } },
         refresh: @escaping @MainActor (Int64?) async -> Void,
         checkDelay: Duration = .milliseconds(500),
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -79,6 +85,7 @@ package final class AutomationTemplatePanelModel {
         self.scope = scope
         self.cli = cli
         self.refresh = refresh
+        self.installStarted = installStarted
         self.checkDelay = checkDelay
         self.sleep = sleep
     }
@@ -185,6 +192,7 @@ package final class AutomationTemplatePanelModel {
         isRendering = false
         state = .installing
         let installParams = shown.params.mapValues { $0.joined(separator: ",") }
+        let finished = installStarted()
         let installed: [AutomationsCLI.InstalledRecipe]
         do {
             installed = try await cli.installTemplate(template.name, workbenchID: scope.workbenchID,
@@ -197,6 +205,7 @@ package final class AutomationTemplatePanelModel {
         }
         let ids = installed.map(\.automationID)
         state = await confirmAndEnable(installed, shown: shown.files)
+        if !ids.isEmpty { await finished(ids) }
         await refresh(ids.first)
     }
 

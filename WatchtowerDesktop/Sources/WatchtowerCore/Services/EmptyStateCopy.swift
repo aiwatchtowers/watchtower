@@ -56,9 +56,18 @@ package enum EmptyStateAction: Equatable, Sendable {
 package enum EmptyStateCopyTable {
     /// Keyed by `SidebarDestination.rawValue` (SidebarDestination lives in the
     /// Desktop target; Workbench's persisted raw value is "projects"), plus
-    /// the Inbox filters' own keys (`InboxFilter.emptyCopyKey`).
-    package static func copy(for destinationRawValue: String, briefingHour: Int) -> EmptyStateCopy? {
+    /// the Inbox legacy lists' own keys (`InboxLegacyList.emptyCopyKey`) and the
+    /// Inbox folders' (`InboxFolderListContent.emptyCopyKey`); `folderTitle`
+    /// fills an owner folder's `{folder}`.
+    package static func copy(
+        for destinationRawValue: String, briefingHour: Int, folderTitle: String = ""
+    ) -> EmptyStateCopy? {
         guard let row = rows[destinationRawValue] else { return nil }
+        if destinationRawValue == "inboxFolder" {
+            return EmptyStateCopy(
+                icon: row.icon, title: row.title.replacingOccurrences(of: "{folder}", with: folderTitle),
+                landsHere: row.landsHere, feature: row.feature, primaryAction: row.primaryAction)
+        }
         // The day plan is made with the brief, after the briefing hour
         // (`day_plan.hour` is retired).
         guard ["briefings", "dayPlan"].contains(destinationRawValue) else { return row }
@@ -94,19 +103,25 @@ package enum EmptyStateCopyTable {
             icon: "calendar.day.timeline.left", title: "No day plan yet",
             landsHere: "Your day in time blocks, from the calendar, targets and the briefing. Once a day at or after {hour}.",
             feature: .dayPlan, primaryAction: .openBuiltin(id: "morning-brief", label: "Change the hour")),
+        // The Inbox's root folder (inbox builder B).
         "inbox": EmptyStateCopy(
-            icon: "tray", title: "Nothing waiting for you",
-            landsHere: "Your day, messages, tracks, ideas and automation cards that need you.",
-            feature: .inbox, primaryAction: nil),
-        // The Inbox's Messages and Automations filters (`InboxFilter.emptyCopyKey`).
+            icon: "tray", title: "Your Inbox is empty",
+            landsHere: "Automations put what they make here.",
+            feature: .inbox, primaryAction: .tabAction(label: "New Artifact…")),
+        // An owner folder of the Inbox menu; `{folder}` is its title.
+        "inboxFolder": EmptyStateCopy(
+            icon: "folder", title: "Nothing in {folder} yet",
+            landsHere: "Move an automation here from its ⋯ menu, or make a new one.",
+            feature: nil, primaryAction: .tabAction(label: "New Artifact…")),
+        // Needs approval: the title says it all.
+        "inboxApprovals": EmptyStateCopy(
+            icon: "checkmark.circle", title: "Nothing waits for your approval", landsHere: "",
+            feature: nil, primaryAction: nil),
+        // The Inbox's Messages legacy list (`InboxLegacyList.emptyCopyKey`).
         "inboxMessages": EmptyStateCopy(
             icon: "bubble.left.and.bubble.right", title: "No messages waiting",
             landsHere: "Mentions, DMs, thread replies, mail and Jira or Linear items that need you.",
             feature: .inbox, primaryAction: nil),
-        "inboxAutomations": EmptyStateCopy(
-            icon: "gearshape.2", title: "Nothing from your automations",
-            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
-            feature: nil, primaryAction: nil),
         "ideas": EmptyStateCopy(
             icon: "lightbulb", title: "No ideas yet",
             landsHere: "Ideas and decisions picked up from conversations, every ~6 h.",
@@ -165,7 +180,8 @@ extension EmptyStateCopyTable {
     /// The Getting ready card text per tracked feature. Where a tab's row shows
     /// this feature, `whatItIs` IS that row's `landsHere` (hour filled in); the
     /// five features with no tab row of their own (slackSync, streamDigests,
-    /// knowledgeIndex, jira, linear) have their own sentence here.
+    /// knowledgeIndex, jira, linear) and the Inbox, whose root's empty state
+    /// speaks of automations only, have their own sentence here.
     package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int) -> FeatureCardCopy {
         let title = cardTitle(feature)
         let tab: String
@@ -191,7 +207,11 @@ extension EmptyStateCopyTable {
         case .dayPlan: tab = "dayPlan"
         case .ideas: tab = "ideas"
         case .memory: tab = "memory"
-        case .inbox: tab = "inbox"
+        case .inbox:
+            // The Inbox's empty root speaks of automations; the feature card
+            // keeps what the Inbox holds.
+            return FeatureCardCopy(
+                title: title, whatItIs: "Your day, messages, tracks, ideas and automation cards that need you.")
         case .calendar: tab = "calendar"
         }
         // Every tab above has a row in `rows`.

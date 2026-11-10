@@ -91,8 +91,9 @@ var chatTableReaders = map[string]chatTableReader{
 	},
 }
 
-// checkChatTableReader: a listed reader still names the code_question and
-// spec_review_thread filters in its SQL, and its behavioural tests still exist.
+// checkChatTableReader: a listed reader still names the code_question,
+// spec_review_thread and review_reviewer filters in its SQL, and its
+// behavioural tests still exist.
 func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTableReader) {
 	t.Helper()
 	if !strings.Contains(string(src), "'code_question'") {
@@ -100,6 +101,9 @@ func checkChatTableReader(t *testing.T, file string, src []byte, reader chatTabl
 	}
 	if !strings.Contains(string(src), "'spec_review_thread'") {
 		t.Errorf("%s reads the chat tables but does not filter 'spec_review_thread' conversations", file)
+	}
+	if !strings.Contains(string(src), "'review_reviewer'") {
+		t.Errorf("%s reads the chat tables but does not filter 'review_reviewer' conversations", file)
 	}
 	testSrc, err := os.ReadFile(reader.testFile)
 	if err != nil {

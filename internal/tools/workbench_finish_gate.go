@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/gitbin"
 	"watchtower/internal/reviewai"
 	"watchtower/internal/reviewdiff"
+	"watchtower/internal/reviewmap"
 	"watchtower/internal/workbenchmethod"
 )
 
@@ -32,6 +33,12 @@ var finishGateBudget = 30 * time.Second
 // maxListedLeaves caps the open leaves a refusal lists.
 const maxListedLeaves = 20
 
+// bigBranchHint is the missing-overview refusal's line for a branch whose
+// shown lines exceed one batch (tech spec §3.7): such a run outlives a
+// shell's time limit, and a cut run keeps what it described.
+const bigBranchHint = "This branch is big: run it in the background and wait for it to finish; " +
+	"if it answers busy, Branch review is describing the branch now — run it again later, nothing is lost. "
+
 // finishGateExecutable is the binary the refusal's overview command names; a
 // var for tests.
 var finishGateExecutable = os.Executable
@@ -46,6 +53,9 @@ type ReviewSnapshot struct {
 	Tree, Base string
 	// Empty: the tree is the base's — nothing to review.
 	Empty bool
+	// Head is the commit the tree stands on (ReviewSource.Head): the tip's
+	// commit, else the folder's HEAD ("" when HEAD is unborn).
+	Head string
 	// Branch is the task branch read at its tip; "" for a folder snapshot.
 	Branch string
 	// FolderHead is the folder's checked-out branch on a branch-tip place
@@ -87,7 +97,11 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	snap := ReviewSnapshot{Repo: repo, Folder: src.Folder, Tree: tree, Base: base.SHA, Empty: same, Branch: src.Branch()}
+	head, err := src.Head(ctx, repo)
+	if err != nil {
+		return ReviewSnapshot{}, err
+	}
+	snap := ReviewSnapshot{Repo: repo, Folder: src.Folder, Tree: tree, Base: base.SHA, Empty: same, Head: head, Branch: src.Branch()}
 	if src.Tip == nil {
 		return snap, nil
 	}
@@ -196,12 +210,16 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 
 // checkOverviewGate is gate 2: with a diff, the cached overview of the
 // session's review place as it stands, with a done coverage entry for every
-// intent item. A folder outside git has no diff to check, nor has the
-// workbench folder once the session left a worktree of its own
-// (leftItsWorktree) — unless the place is a branch tip, which is the
-// session's task branch wherever the folder is. On a branch-tip place a
-// folder with uncommitted changes refuses, even with an empty tip: the
-// reviewer would not read them. Any other git failure refuses.
+// intent item of the session. The overview is found by the session's items
+// alone (reviewai.IntentHash leaves lane items out), so the gate needs no
+// lane map and the overview's lane coverage never gates (tech spec §4); only
+// a missing overview packs the diff once, for the big-branch hint. A folder
+// outside git has no diff to check, nor has the workbench folder once the
+// session left a worktree of its own (leftItsWorktree) — unless the place is
+// a branch tip, which is the session's task branch wherever the folder is.
+// On a branch-tip place a folder with uncommitted changes refuses, even with
+// an empty tip: the reviewer would not read them. Any other git failure
+// refuses.
 func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
 	gitCtx, cancel := context.WithTimeout(ctx, finishGateBudget)
 	defer cancel()
@@ -232,7 +250,7 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 		return fmt.Errorf("finish check: %w", err)
 	}
 	if !ok {
-		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session)}
+		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session, bigBranch(gitCtx, p.FolderPath, snap))}
 	}
 	var ov reviewai.Overview
 	if err := json.Unmarshal([]byte(js), &ov); err != nil {
@@ -247,14 +265,33 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	return nil
 }
 
-func missingOverviewRefusal(workbenchID, session int64) string {
+func missingOverviewRefusal(workbenchID, session int64, big bool) string {
 	cmd := "watchtower workbench review overview --workbench " + fmt.Sprint(workbenchID) + " --session " + fmt.Sprint(session) + " --json"
 	if bin, err := finishGateExecutable(); err == nil {
 		cmd = devpack.ReviewOverviewCommand(bin, workbenchID, session)
 	}
+	hint := ""
+	if big {
+		hint = bigBranchHint
+	}
 	return "your changes have no AI overview yet: annotate_changes first if you have notes, then run `" + cmd +
-		"`, compare its coverage with your work, and call finish_session again. If the overview cannot be made, " +
-		"file one ask_owner that says so and pass it as handover_ask_id"
+		"`, compare its coverage with your work, and call finish_session again. Re-run it; only the missing chapters are redone. " +
+		hint + "If the overview cannot be made, file one ask_owner that says so and pass it as handover_ask_id"
+}
+
+// bigBranch: the overview of the session's changes takes more than one
+// batch — the map's shown lines exceed reviewai.MaxBatchLines — so the
+// agent's run should go to the background. One git diff and a map without
+// the history walk, inside the gate's budget. Lanes regroup the same lines,
+// so near MaxBatchLines the run's batch count can differ: it is only a hint,
+// and a diff that cannot be read gives none.
+func bigBranch(ctx context.Context, folder string, snap ReviewSnapshot) bool {
+	d, err := snap.Repo.Diff(ctx, snap.Base, snap.Tree)
+	if err != nil {
+		return false
+	}
+	m := reviewmap.Build(reviewmap.Input{Diff: d, Patterns: reviewmap.LoadPatterns(folder)})
+	return len(reviewai.Pack(m, d, nil)) > 1
 }
 
 // uncoveredItems lists every intent item without a done coverage entry: a

@@ -87,7 +87,7 @@ func stubUsersOnlySlack(t *testing.T) *usersOnlySlack {
 func usersOnlyWorkspace(t *testing.T, tokens ...string) (string, []int64) {
 	t.Helper()
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "", "default")
+	_, err := initWorkspace(configPath, "", "default", false)
 	require.NoError(t, err)
 	cfg, err := config.Load(configPath)
 	require.NoError(t, err)

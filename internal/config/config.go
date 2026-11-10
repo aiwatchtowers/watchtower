@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -156,6 +157,13 @@ type StreamsConfig struct {
 type ReactionCommandsConfig struct {
 	Enabled       bool `mapstructure:"enabled"`        // enable reaction-command detection (default: true)
 	IntervalHours int  `mapstructure:"interval_hours"` // throttle between reactions.list polls; <= 0 = every daemon cycle (default: 0)
+}
+
+// ApprovalCardsConfig controls Needs approval's cards: the needs-approval
+// built-in draws one card per open approval (Inbox builder B). No AI, no
+// cost; off, the Inbox shows the standard approval cards.
+type ApprovalCardsConfig struct {
+	Enabled bool `mapstructure:"enabled"` // run the needs-approval built-in (default: true)
 }
 
 // PlanUsageConfig controls Claude plan limits — the daemon polls the owner's
@@ -418,6 +426,7 @@ type Config struct {
 	Streams          StreamsConfig               `mapstructure:"streams"`
 	ReactionCommands ReactionCommandsConfig      `mapstructure:"reaction_commands"`
 	PlanUsage        PlanUsageConfig             `mapstructure:"plan_usage"`
+	ApprovalCards    ApprovalCardsConfig         `mapstructure:"approval_cards"`
 	Tracks           TracksConfig                `mapstructure:"tracks"`
 	People           PeopleConfig                `mapstructure:"people"`
 	Calendar         CalendarConfig              `mapstructure:"calendar"`
@@ -434,6 +443,7 @@ type Config struct {
 	DB               DBConfig                    `mapstructure:"db"`
 	Workbench        WorkbenchConfig             `mapstructure:"workbench"`
 	Privacy          PrivacyConfig               `mapstructure:"privacy"`
+	Hub              HubConfig                   `mapstructure:"hub"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
 
@@ -445,6 +455,14 @@ type Config struct {
 	// data directory at all, so ValidateWorkspace reports that instead of
 	// mistaking an unreadable directory for a fresh install.
 	workspaceLookupErr error
+}
+
+// HubConfig holds the Go hub's settings (Go hub phase 2).
+type HubConfig struct {
+	// RelayOrigin is the relay a live headless hub connects to
+	// (https://host[:port]); it overrides the build's default origin, and
+	// WATCHTOWER_RELAY_ORIGIN overrides it (hub.RelayOrigin). "" = unset.
+	RelayOrigin string `mapstructure:"relay_origin"`
 }
 
 // PrivacyConfig holds the owner's privacy switches.
@@ -511,6 +529,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
 	v.SetDefault("plan_usage.enabled", DefaultPlanUsageEnabled)
+	v.SetDefault("approval_cards.enabled", DefaultApprovalCardsEnabled)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
@@ -866,8 +885,9 @@ func (c *Config) DBPath() string {
 // RecordingsDir returns the meeting-recording directory scanned by the daemon
 // orphan cleanup: transcripts.recordings_dir when set, otherwise the Swift
 // recorder's default location ($HOME/Library/Application Support/Watchtower/
-// recordings, cf. MeetingRecorderCenter.recordingsDirectory). Returns "" when
-// the home directory cannot be determined.
+// recordings, cf. MeetingRecorderCenter.recordingsDirectory; off darwin
+// <data root>/.support/recordings, where a Linux host keeps none). Returns ""
+// when the home directory cannot be determined.
 func (c *Config) RecordingsDir() string {
 	if c.Transcripts.RecordingsDir != "" {
 		return c.Transcripts.RecordingsDir
@@ -881,11 +901,27 @@ func (c *Config) RecordingsDir() string {
 
 // AppSupportDir returns the Desktop's Application Support folder
 // (~/Library/Application Support/Watchtower): recordings, MobileHub, the CLI
-// copy and the session host's log.
+// copy and the session host's log. Off darwin it is <data root>/.support
+// (appSupportDirFor).
 func AppSupportDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("could not determine home directory: %w", err)
 	}
-	return filepath.Join(home, "Library", "Application Support", "Watchtower"), nil
+	root := "" // darwin depends on the home folder alone
+	if runtime.GOOS != "darwin" {
+		if root, err = DataRoot(); err != nil {
+			return "", err
+		}
+	}
+	return appSupportDirFor(runtime.GOOS, home, root), nil
+}
+
+// appSupportDirFor is AppSupportDir for goos: the macOS Library folder on
+// darwin, <dataRoot>/.support elsewhere (no macOS-shaped path on Linux).
+func appSupportDirFor(goos, home, dataRoot string) string {
+	if goos == "darwin" {
+		return filepath.Join(home, "Library", "Application Support", "Watchtower")
+	}
+	return filepath.Join(dataRoot, ".support")
 }

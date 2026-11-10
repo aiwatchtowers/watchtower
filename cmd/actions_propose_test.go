@@ -21,6 +21,7 @@ func runPropose(t *testing.T, args ...string) (string, error) {
 	actionsProposeFlagSurface = ""
 	actionsProposeFlagContextType = ""
 	actionsProposeFlagContextID = ""
+	actionsProposeFlagContext = ""
 	actionsProposeFlagArgs = ""
 	actionsProposeFlagApprove = false
 	return out, err
@@ -160,10 +161,12 @@ func TestActionsPropose_RefusesOtherSurfaces(t *testing.T) {
 	cases := map[string][]string{
 		"main surface": {"--tool", "apply_track_action", "--surface", "main", "--context-type", "track_event",
 			"--context-id", id, "--args", `{"event_id":` + id + `}`, "--approve", "--json"},
-		"a tool not on the inbox": {"--tool", "create_target", "--surface", "inbox",
+		"a tool not on the inbox": {"--tool", "create_track", "--surface", "inbox",
 			"--args", `{"text":"x","reason":"r"}`, "--approve", "--json"},
-		"a tool not on the inbox, its own surface": {"--tool", "create_target", "--surface", "main",
+		"a tool not on the inbox, its own surface": {"--tool", "create_track", "--surface", "main",
 			"--args", `{"text":"x","reason":"r"}`, "--approve", "--json"},
+		"an inbox tool, another surface": {"--tool", "create_target", "--surface", "main",
+			"--args", `{"text":"x","reason":"r"}`, "--json"},
 		"unknown tool": {"--tool", "no_such_tool", "--surface", "inbox", "--args", `{}`, "--json"},
 	}
 	for name, args := range cases {
@@ -190,6 +193,10 @@ func TestActionsPropose_RefusedUnderAgentMarkers(t *testing.T) {
 
 			for _, extra := range [][]string{{"--approve"}, nil} {
 				out, err := runPropose(t, pressArgs(eventID, extra...)...)
+				require.Error(t, err, out)
+				assert.Contains(t, err.Error(), marker)
+				// An Inbox card's target button is the same owner press.
+				out, err = runPropose(t, targetPressArgs("7:2:abc", `{"text":"x","reason":"r"}`, extra...)...)
 				require.Error(t, err, out)
 				assert.Contains(t, err.Error(), marker)
 			}
@@ -223,12 +230,17 @@ func TestActionsTools_SkipsInboxOnlyTools(t *testing.T) {
 	out, err := runActions(t, "tools", "--json")
 	require.NoError(t, err)
 	var listed []struct {
-		Name string `json:"name"`
+		Name     string            `json:"name"`
+		Surfaces []string          `json:"surfaces"`
+		BySurf   map[string]string `json:"trust_by_surface"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
 	names := map[string]bool{}
 	for _, l := range listed {
 		names[l.Name] = true
+		// create_target's inbox surface (the target button) is no switch.
+		assert.NotContains(t, l.Surfaces, "inbox", l.Name)
+		assert.NotContains(t, l.BySurf, "inbox", l.Name)
 	}
 	assert.False(t, names["apply_track_action"], "the Inbox press is not an assistant tool")
 	assert.True(t, names["update_target"], "workbench tools stay listed")

@@ -145,7 +145,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertEqual(vm.outputRows.first?.isUnread, false)
         let badgeAfter = try await badge()
-        XCTAssertEqual(badgeAfter, badgeBefore, "unread outputs are not in the badge (R1)")
+        XCTAssertEqual(badgeAfter, badgeBefore - 1, "an opened plain artifact leaves the badge (inbox builder B)")
         XCTAssertNil(vm.lastError)
 
         await vm.select(nil)
@@ -216,7 +216,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         await opening.value
         await done.value
 
-        let row = try XCTUnwrap(try outputRow(pool, id))
+        let row = try XCTUnwrap(outputRow(pool, id))
         XCTAssertNotNil(row["done_at"] as String?, "the Done press was dropped")
         XCTAssertTrue(vm.outputRows.isEmpty)
         XCTAssertNil(vm.selection)
@@ -304,7 +304,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
                 VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
                 """)
         }
-        let tables = ["agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs"]
+        let tables = ["agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs",
+                      "inbox_folders", "inbox_folder_state", "inbox_folder_routes"]
         let snapshot = {
             try await pool.read { db in
                 try tables.map { table in
@@ -342,7 +343,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(badge, 0)
     }
 
-    func testInboxBadgeLeavesOutputsOut() async throws {
+    func testInboxBadgeCountsUnreadOutputs() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let seed = try await seedAutomation(pool)
@@ -366,8 +367,9 @@ final class ActionStripAutomationOutputTests: XCTestCase {
 
         let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
 
-        // 1 proposal + 1 due reminder; unread outputs leave the badge (R1, spec §6.1).
-        XCTAssertEqual(badge, 2)
+        // 1 proposal + 1 due reminder + 2 unread outputs (inbox builder B: the
+        // folder sum adds unread artifacts); read and done ones count nothing.
+        XCTAssertEqual(badge, 4)
     }
 
     /// J13: a source whose table is missing (an older schema) counts 0; any
@@ -389,6 +391,80 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertThrowsError(try ActionStripViewModel.zeroIfTableMissing {
             throw DatabaseError(resultCode: .SQLITE_ERROR, message: "no such column: read_at")
         })
+    }
+
+    // MARK: - The drawn version (Inbox builder A)
+
+    /// A living card seeded at hash `h1`, the list read (drawn at `h1`), then
+    /// rewritten by a later run to `h2` before the owner presses.
+    private func livingCardRewrittenUnderTheView(_ pool: DatabasePool) async throws
+        -> (ActionStripViewModel, Int64) {
+        let seed = try await seedAutomation(pool)
+        let id = try await pool.write { db in
+            try TestDatabase.insertAutomationOutput(
+                db, automationID: seed.automationID, runID: seed.runID, body: "- Thread A",
+                blocksJSON: #"{"v":1,"blocks":[]}"#, outputKey: "threads", contentHash: "h1"
+            )
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.refresh()
+        XCTAssertEqual(vm.outputRows.first?.contentHash, "h1")
+        try await pool.write { db in
+            let run = try TestDatabase.insertAutomationRun(db, automationID: seed.automationID)
+            try TestDatabase.rewriteLivingOutput(db, id: id, runID: run, body: "- Thread B",
+                                                 blocksJSON: #"{"v":1,"blocks":[]}"#, contentHash: "h2",
+                                                 at: "2026-10-02T09:00:00Z")
+        }
+        return (vm, id)
+    }
+
+    /// Opening, Done and Dismiss on a card rewritten under the view mark
+    /// nothing: the row keeps its new version open and unread, and the
+    /// strip reads it again instead of clearing it. (Each press starts from
+    /// a list drawn at `h1`: after any press's re-read the list shows `h2`.)
+    func testWritesOnRewrittenCardRereadInsteadOfClearing() async throws {
+        for press in ["open", "done", "dismiss"] {
+            let (pool, path) = try TestDatabase.createPool()
+            defer { TestDatabase.cleanup(path: path) }
+            let (vm, id) = try await livingCardRewrittenUnderTheView(pool)
+            vm.selection = .output(id)
+            switch press {
+            case "open": await vm.select(.output(id))
+            case "done": await vm.markOutputDone(id)
+            default: await vm.dismissOutput(id)
+            }
+
+            let row = try XCTUnwrap(outputRow(pool, id))
+            XCTAssertNil(row["read_at"] as String?, press)
+            XCTAssertNil(row["done_at"] as String?, press)
+            XCTAssertNil(row["dismissed_at"] as String?, press)
+            XCTAssertEqual(vm.outputRows.map(\.id), [id], "\(press): the card is still listed")
+            XCTAssertEqual(vm.outputRows.first?.contentHash, "h2", "\(press): read again, the new version")
+            XCTAssertEqual(vm.outputRows.first?.isUnread, true, press)
+            XCTAssertEqual(vm.selection, .output(id), "\(press): still shown")
+            XCTAssertNil(vm.lastError, press)
+        }
+    }
+
+    /// With the drawn hash the same writes land once, as before.
+    func testDoneWithTheDrawnHashMarksOnce() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let seed = try await seedAutomation(pool)
+        let id = try await pool.write { db in
+            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID,
+                                                    outputKey: "threads", contentHash: "h1")
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        await vm.refresh()
+        await vm.select(.output(id))
+        XCTAssertNotNil(try XCTUnwrap(outputRow(pool, id))["read_at"] as String?)
+
+        await vm.markOutputDone(id)
+
+        XCTAssertNotNil(try XCTUnwrap(outputRow(pool, id))["done_at"] as String?)
+        XCTAssertTrue(vm.outputRows.isEmpty)
+        XCTAssertNil(vm.selection)
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {

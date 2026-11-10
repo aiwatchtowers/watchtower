@@ -5,8 +5,22 @@ import WatchtowerCore
 /// field the save confirms, from `AutomationDraftColumnModel`. The footer
 /// (Save and Turn On / Save Turned Off, `AutomationDraftFooter`) sits under
 /// it in the editor panel, and is off unless `model.showsAllFields`. The
-/// paused auto grants start unchecked (AUTO-03).
+/// paused auto grants start unchecked (AUTO-03). The editor shows it a step
+/// at a time (`Section`); every other place, and the editor's save review,
+/// shows `.all` — every hashed field (AUTO-06).
 struct AutomationDraftColumn: View {
+    /// Which boxes the column shows.
+    enum Section {
+        /// Every box: what a save or confirm is pressed on.
+        case all
+        /// The editor's **What it collects**: It may, Sends, Changed, the dry
+        /// run, the sessions, the recipe and the paused grants.
+        case collects
+        /// The editor's **When it runs**: When, Each run, Missed and
+        /// Concurrency, and the Inbox cards' lifecycle.
+        case schedule
+    }
+
     let model: AutomationDraftColumnModel
     @Binding var keepAuto: Set<String>
     /// **Dry Run Again**; nil hides it (no chat, or a busy one).
@@ -18,6 +32,13 @@ struct AutomationDraftColumn: View {
     var embedded = false
     /// False where nothing is dry-run (a template's rendered file).
     var showsDryRun = true
+    var section = Section.all
+
+    private var showsCollects: Bool { section != .schedule }
+    /// The shell and #559 warnings sit in the boxes only in the full column:
+    /// in the editor's steps they are in the footer, on every step.
+    private var showsWarnings: Bool { section == .all }
+    private var showsSchedule: Bool { section != .collects }
 
     var body: some View {
         if embedded {
@@ -30,60 +51,81 @@ struct AutomationDraftColumn: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
             statusLine
-            box(title: "When", systemImage: "clock") {
-                Text(model.when).fontWeight(.semibold)
-                if let detail = model.whenDetail { secondary(detail) }
+            if showsSchedule { when }
+            if showsCollects { collects }
+            if showsSchedule { schedule }
+            if showsCollects {
+                if !model.changes.isEmpty { changed }
+                if showsDryRun { dryRunBox }
+                if !model.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: model.sessions) }
+                recipe
+                if !model.pausedGrants.isEmpty { pausedGrants }
             }
-            box(title: "It may", systemImage: "checkmark.shield") {
-                if let placeholder = model.placeholder {
-                    secondary(placeholder)
-                } else if model.mayDo.isEmpty {
-                    secondary("Nothing beyond its own state")
-                }
-                ForEach(Array(model.mayDo.enumerated()), id: \.offset) { _, line in
-                    HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                        Text(line.text).fixedSize(horizontal: false, vertical: true)
-                        if line.isNew {
-                            Chip(text: AutomationDraftColumnModel.newMark, color: Tone.warning)
-                        }
-                    }
-                }
-                if let warning = model.shellWarning { LLMWarningLabel(text: warning) }
-                // With grants paused, the #559 warning sits by their boxes.
-                if model.pausedGrants.isEmpty, let warning = model.llmWarning { LLMWarningLabel(text: warning) }
-            }
-            box(title: "Sends", systemImage: "paperplane") {
-                if let placeholder = model.placeholder {
-                    secondary(placeholder)
-                } else if model.sends.isEmpty {
-                    secondary("Nothing")
-                }
-                ForEach(Array(model.sends.enumerated()), id: \.offset) { _, line in Text(line) }
-            }
-            HStack(alignment: .top, spacing: Spacing.medium) {
-                box(title: "Each run", systemImage: "gauge.with.dots.needle.33percent") {
-                    Text(model.eachRun)
-                }
-                box(title: "Missed and Concurrency", systemImage: "arrow.triangle.2.circlepath") {
-                    Text(model.missedAndConcurrency).fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-            if !model.changes.isEmpty {
-                box(title: "Changed", systemImage: "arrow.left.arrow.right") {
-                    ForEach(Array(model.changes.enumerated()), id: \.offset) { _, line in
-                        Text(line).fixedSize(horizontal: false, vertical: true)
-                    }
-                    if let author = model.authorLine { secondary(author) }
-                }
-            }
-            if showsDryRun { dryRunBox }
-            if !model.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: model.sessions) }
-            recipe
-            if !model.pausedGrants.isEmpty { pausedGrants }
         }
         .font(.callout)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var when: some View {
+        box(title: "When", systemImage: "clock") {
+            Text(model.when).fontWeight(.semibold)
+            if let detail = model.whenDetail { secondary(detail) }
+        }
+    }
+
+    @ViewBuilder private var collects: some View {
+        box(title: "It may", systemImage: "checkmark.shield") {
+            if let placeholder = model.placeholder {
+                secondary(placeholder)
+            } else if model.mayDo.isEmpty {
+                secondary("Nothing beyond its own state")
+            }
+            ForEach(Array(model.mayDo.enumerated()), id: \.offset) { _, line in
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Text(line.text).fixedSize(horizontal: false, vertical: true)
+                    if line.isNew {
+                        Chip(text: AutomationDraftColumnModel.newMark, color: Tone.warning)
+                    }
+                }
+            }
+            if showsWarnings, let warning = model.shellWarning { LLMWarningLabel(text: warning) }
+            // With grants paused, the #559 warning sits by their boxes.
+            if showsWarnings, model.pausedGrants.isEmpty, let warning = model.llmWarning {
+                LLMWarningLabel(text: warning)
+            }
+        }
+        box(title: "Sends", systemImage: "paperplane") {
+            if let placeholder = model.placeholder {
+                secondary(placeholder)
+            } else if model.sends.isEmpty {
+                secondary("Nothing")
+            }
+            ForEach(Array(model.sends.enumerated()), id: \.offset) { _, line in Text(line) }
+        }
+    }
+
+    @ViewBuilder private var schedule: some View {
+        HStack(alignment: .top, spacing: Spacing.medium) {
+            box(title: "Each run", systemImage: "gauge.with.dots.needle.33percent") {
+                Text(model.eachRun)
+            }
+            box(title: "Missed and Concurrency", systemImage: "arrow.triangle.2.circlepath") {
+                Text(model.missedAndConcurrency).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        if let artifacts = model.artifacts {
+            box(title: "Inbox cards", systemImage: "rectangle.stack") { Text(artifacts) }
+        }
+    }
+
+    private var changed: some View {
+        box(title: "Changed", systemImage: "arrow.left.arrow.right") {
+            ForEach(Array(model.changes.enumerated()), id: \.offset) { _, line in
+                Text(line).fixedSize(horizontal: false, vertical: true)
+            }
+            if let author = model.authorLine { secondary(author) }
+        }
     }
 
     @ViewBuilder private var statusLine: some View {
@@ -145,7 +187,7 @@ struct AutomationDraftColumn: View {
                 Toggle("Keep auto for \(tool)", isOn: keepBinding(tool))
                     .toggleStyle(.checkbox)
             }
-            if let warning = model.llmWarning { LLMWarningLabel(text: warning) }
+            if showsWarnings, let warning = model.llmWarning { LLMWarningLabel(text: warning) }
         }
     }
 

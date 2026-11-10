@@ -1,0 +1,87 @@
+import SwiftUI
+import WatchtowerCore
+
+/// The entries as a `Menu`'s content: a button per press, a submenu per
+/// entry with children, a checkmark on the current choice.
+struct InboxMenuItems: View {
+    let entries: [InboxMenuEntry]
+    /// Writes are disabled; reads (Learned Rules, Run History…) stay.
+    var readOnly = false
+    let onCommand: (InboxMenuCommand) -> Void
+
+    var body: some View {
+        ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+            if entry.children.isEmpty {
+                button(entry)
+            } else {
+                Menu(entry.title) {
+                    Self(entries: entry.children, readOnly: readOnly, onCommand: onCommand)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func button(_ entry: InboxMenuEntry) -> some View {
+        let title = String(repeating: "   ", count: entry.indent) + entry.title
+        Button(role: entry.destructive ? .destructive : nil) {
+            if let command = entry.command { onCommand(command) }
+        } label: {
+            if entry.checked {
+                Label(title, systemImage: "checkmark")
+            } else if let image = entry.systemImage {
+                Label(title, systemImage: image)
+            } else {
+                Text(title)
+            }
+        }
+        .disabled(readOnly && !(entry.command?.isRead ?? false))
+    }
+}
+
+/// An artifact's ⋯ as the reading pane draws it: the entries, whether they
+/// are off (a call on the automation runs, or it is not known yet), and the
+/// last failed press's text (`InboxArtifactMenuModel.headerErrors`).
+struct InboxArtifactMenuState {
+    let entries: [InboxMenuEntry]
+    var isDisabled = false
+    var isWorking = false
+    var error: String?
+    var onCommand: (InboxMenuCommand) -> Void = { _ in }
+}
+
+/// The artifact ⋯ with its progress while a press runs.
+struct InboxArtifactMenuButton: View {
+    let menu: InboxArtifactMenuState
+
+    var body: some View {
+        HStack(spacing: Spacing.small) {
+            if menu.isWorking { ProgressView().controlSize(.small) }
+            InboxMoreMenu(entries: menu.entries, help: "More for this artifact", onCommand: menu.onCommand)
+                .disabled(menu.isDisabled)
+        }
+        .controlSize(.small)
+    }
+}
+
+/// A ⋯ button that opens `entries` (the artifact header, a folder row).
+struct InboxMoreMenu: View {
+    let entries: [InboxMenuEntry]
+    var help = "More"
+    var readOnly = false
+    let onCommand: (InboxMenuCommand) -> Void
+
+    var body: some View {
+        Menu {
+            InboxMenuItems(entries: entries, readOnly: readOnly, onCommand: onCommand)
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.kitIcon(isOn: false))
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}

@@ -36,6 +36,18 @@ final class SettingsWiringTests: XCTestCase {
         )
     }
 
+    /// Relay client Phase 4 Task 15 (Open decision 11): the Battery section left Settings for the Diagnostics page.
+    func testBatteryLivesInDiagnostics() throws {
+        let tests = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sources = tests.deletingLastPathComponent().appendingPathComponent("Sources/Features/Settings")
+        let settings = try String(contentsOf: sources.appendingPathComponent("SettingsView.swift"), encoding: .utf8)
+        let diagnostics = try String(contentsOf: sources.appendingPathComponent("DiagnosticsView.swift"), encoding: .utf8)
+        XCTAssertFalse(settings.contains("BatterySection"))
+        XCTAssertTrue(diagnostics.contains("BatterySection(report:"))
+        XCTAssertTrue(settings.contains("DiagnosticsView("))
+        XCTAssertEqual(SettingsView.diagnosticsTitle, "Diagnostics")
+    }
+
     // MARK: - Your Mac: online / offline / never connected
 
     func testHeartbeat2099SecondsOldIsOnline() {
@@ -246,6 +258,84 @@ final class SettingsWiringTests: XCTestCase {
         XCTAssertFalse(settings.typingRequested)
         XCTAssertTrue(settings.startSessions)
         XCTAssertTrue(settings.workAlerts)
+    }
+
+    /// A saved record is sent on (a relay route's save only queues); a failed save sends nothing.
+    func testASavedRecordIsSentOnAndAFailedOneIsNot() async throws {
+        let transport = SpyTransport(failingSaves: [1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        var sent = 0
+        settings.sendAfterWrite = { sent += 1 }
+
+        await settings.setPermissionsRequested(true)
+        XCTAssertEqual(sent, 1)
+
+        await settings.setTypingRequested(true)
+        XCTAssertEqual(sent, 1, "the second save failed")
+        XCTAssertFalse(settings.typingRequested)
+    }
+
+    /// A send can hang on a dead network: the choice is saved before it, and it holds no other toggle back.
+    func testAToggleIsSavedBeforeItsSendAndASlowSendHoldsNoOtherToggle() async throws {
+        let defaults = try makeDefaults()
+        let reread: @MainActor () throws -> DeviceSettings = {
+            DeviceSettings(transport: try TestPhone.transport(), defaults: defaults, hubID: TestHub.acme)
+        }
+        let settings = DeviceSettings(transport: try TestPhone.transport(), defaults: defaults, hubID: TestHub.acme)
+        settings.linkedDevice = device
+        var savedAtSend: Bool? // swiftlint:disable:this discouraged_optional_boolean
+        var parked = true
+        settings.sendAfterWrite = {
+            guard parked else { return }
+            savedAtSend = try? reread().permissionsRequested
+            while parked {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+
+        let first = Task { await settings.setPermissionsRequested(true) }
+        for _ in 0..<400 where savedAtSend == nil {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertEqual(savedAtSend, true, "saved before the send")
+
+        let second = Task { await settings.setTypingRequested(true) }
+        for _ in 0..<400 where try !reread().typingRequested {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertTrue(try reread().typingRequested, "a slow send held the next toggle back")
+
+        parked = false
+        await first.value
+        await second.value
+    }
+
+    /// A later toggle's record carries the switch too, and a failed write of the switch is owed to the next return.
+    func testAFailedWorkAlertsWriteIsOwedToTheNextForeground() async throws {
+        let transport = SpyTransport(failingSaves: [1])
+        let settings = DeviceSettings(transport: try TestPhone.transport(over: transport), defaults: try makeDefaults(), hubID: TestHub.acme)
+        settings.linkedDevice = device
+        settings.reportsWorkAlertsOff = true
+        await settings.touchIfStale()
+        var saves = await transport.saves
+        XCTAssertEqual(saves.count, 1)
+
+        settings.workAlerts = false
+        await settings.sendWorkAlertsChange()
+        saves = await transport.saves
+        XCTAssertEqual(saves.count, 2)
+        XCTAssertNil(settings.lastError, "the switch is the phone's: a failed note to the hub is no error to show")
+
+        await settings.touchIfStale()
+        saves = await transport.saves
+        XCTAssertEqual(saves.count, 3, "the failed write leaves the record stale")
+        let last = try await deviceWrites(transport).last
+        XCTAssertEqual(last?.workAlertsOff, true)
+
+        await settings.setTypingRequested(true)
+        let typing = try await deviceWrites(transport).last
+        XCTAssertEqual(typing?.workAlertsOff, true, "any later write keeps saying it")
     }
 
     /// The spy counts every save call: the in-memory transport collapses
