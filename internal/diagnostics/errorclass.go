@@ -1,5 +1,3 @@
-// Package diagnostics builds the privacy-safe summary printed by
-// `watchtower diagnostics` (Report a Problem, DIAG-01).
 package diagnostics
 
 import (
