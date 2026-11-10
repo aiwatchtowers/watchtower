@@ -405,3 +405,24 @@ func TestWaitingForMe_UnparsableStampHasNoBadge(t *testing.T) {
 		t.Errorf("rows = %+v; want one row without a badge or tone", rows)
 	}
 }
+
+// TestWaitingForMe_WebLinkKeepsOnlyLinksTheBlocksAdmit: a permalink the
+// blocks would refuse is dropped so it cannot fail the whole run.
+func TestWaitingForMe_WebLinkKeepsOnlyLinksTheBlocksAdmit(t *testing.T) {
+	long := "https://acme.example.com/" + strings.Repeat("a", blocks.MaxLinkBytes)
+	cases := map[string]string{
+		"https://acme.example.com/archives/C1/p1": "https://acme.example.com/archives/C1/p1",
+		"HTTP://acme.example.com/x":               "HTTP://acme.example.com/x",
+		"":                                        "",
+		"ftp://acme.example.com/x":                "",
+		"https:///no-host":                        "",
+		"javascript:alert(1)":                     "",
+		"%zz":                                     "",
+		long:                                      "",
+	}
+	for in, want := range cases {
+		if got := webLink(in); got != want {
+			t.Errorf("webLink(%.40q) = %q, want %q", in, got, want)
+		}
+	}
+}

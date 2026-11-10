@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/blocks"
 	"watchtower/internal/db"
 )
 
@@ -193,15 +193,15 @@ func waitingWhere(o db.OpenInboxItem) string {
 	return "#" + o.ChannelName
 }
 
-// webLink is raw when it is an http(s) link with a host that fits a row's
-// link, else "": a row with a link the blocks would refuse would fail the
-// whole run.
+// webLink is raw when the blocks admit it as a row's link (blocks.CheckURL:
+// a web link with a host, at most MaxLinkBytes), else "": a row with a link
+// the blocks would refuse would fail the whole run.
 func webLink(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || len(raw) > 2048 {
+	link, err := blocks.CheckURL("waiting", "link", raw)
+	if err != nil {
 		return ""
 	}
-	return raw
+	return link
 }
 
 // ageText is how long ago at was, coarse so the artifact changes at most
