@@ -167,7 +167,7 @@ func TestImportSuggestions_KnownFingerprintRetiredWithoutTakingASlot(t *testing.
 	wb, _ := d.workbench(t, "acme", 0)
 	newest := addSuggestion(t, d.DB, "Run the linter first", db.InstructionSession, 0, 3, sigNow)
 	// Its proposal was declined before: same text on the same destination.
-	fp, _ := fingerprint(keyOf(DestSession, 0, ""), "", "Run the linter first")
+	fp, _ := fingerprint(keyOf(DestSession, 0, "", ""), "", "Run the linter first")
 	id, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: fp, Kind: "add", Destination: DestSession,
 		Title: "t", Why: "w", Metric: "owner_loop", AfterText: "Run the linter first", Sources: 3}, sigNow)
 	require.NoError(t, err)
@@ -183,4 +183,20 @@ func TestImportSuggestions_KnownFingerprintRetiredWithoutTakingASlot(t *testing.
 	assert.True(t, movedTo(t, d.DB, a).Int64 > 0)
 	assert.True(t, movedTo(t, d.DB, b).Int64 > 0)
 	assert.True(t, movedTo(t, d.DB, c).Int64 > 0)
+}
+
+func TestImportSuggestions_ChatProposalsTakeNoSlot(t *testing.T) {
+	d := openDBs(t)
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, "Keep commits small."))
+	for _, skill := range []string{"a", "b", "c"} {
+		_, err := d.InsertChatCoachProposal(db.CoachProposal{Fingerprint: "chat-" + skill, Kind: "add",
+			Destination: DestClaudeSkillUser, Skill: skill, Title: "t", Why: "w", Metric: "corrections",
+			AfterText: "x", Sources: 1}, nil, sigNow)
+		require.NoError(t, err)
+	}
+	addSuggestion(t, d.DB, "Run the linter first", db.InstructionSession, 0, 5, sigNow.Add(-time.Hour))
+
+	n, err := ImportSuggestions(d.DB, "", sigNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "three open chat proposals leave every slot free")
 }

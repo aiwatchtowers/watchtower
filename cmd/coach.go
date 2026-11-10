@@ -149,7 +149,7 @@ type coachEnv struct {
 
 func (e *coachEnv) applier() *coach.Applier {
 	home, _ := coachHome() // empty: only a settings.json destination fails, with its own error
-	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home}
+	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv()}
 }
 
 // coachCodedError carries the machine-readable "code" (and a diff) of a failure object.

@@ -109,3 +109,72 @@ func TestCOACH01_DestinationsAreNeverRepoFiles(t *testing.T) {
 		assert.Empty(t, got, dest)
 	}
 }
+
+// COACH-01: the destinations a tuning chat may name are the six weekly ones
+// plus five in the owner's home folders (the Claude and Codex user skills, the
+// Watchtower pack overlay, ~/.codex/AGENTS.md and the Codex rules). All five
+// are global: none is a per-workbench or repository text. The paths they
+// resolve to are pinned by the destination tasks.
+func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
+	home := []string{DestClaudeSkillUser, DestCodexSkillUser, DestPackOverlay, DestCodexAgentsMDUser, DestCodexRulesAllow}
+	want := append([]string{DestClaudeMDUser, DestChat, DestProcedure, DestPromptAdd, DestSession, DestSettingsAllow}, home...)
+	var got []string
+	for dest := range chatDestinations {
+		got = append(got, dest)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	assert.Equal(t, want, got, "adding a destination is an owner decision: update COACH-01")
+
+	for _, dest := range home {
+		assert.True(t, globalDestinations[dest], dest)
+		assert.False(t, textDestinations[dest], "%s is not a weekly destination", dest)
+		assert.False(t, strings.HasPrefix(dest, "repo_"), dest)
+	}
+
+	// The file destinations resolve under <Home>/.claude/, <Home>/.agents/ or
+	// <CodexHome>/, with and without an own CODEX_HOME.
+	hdir := t.TempDir()
+	under := func(path string, roots ...string) bool {
+		for _, r := range roots {
+			if strings.HasPrefix(path, r+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range []Env{{Home: hdir}, {Home: hdir, CodexHome: t.TempDir()}} {
+		roots := []string{filepath.Join(hdir, ".claude"), filepath.Join(hdir, ".agents"), e.codexHome()}
+		assert.True(t, under(ClaudeSkillPath(e, "x"), filepath.Join(hdir, ".claude")))
+		assert.True(t, under(codexAgentsMDPath(e), e.codexHome()))
+		assert.True(t, under(codexRulesPath(e), e.codexHome()))
+		_, ok := CodexSkillPath(e, "x")
+		assert.False(t, ok)
+		for _, p := range []string{filepath.Join(e.codexHome(), "skills", "x", "SKILL.md"),
+			filepath.Join(hdir, ".agents", "skills", "x", "SKILL.md")} {
+			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o700))
+			require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
+			got, ok := CodexSkillPath(e, "x")
+			require.True(t, ok)
+			assert.True(t, under(got, roots...), got)
+			require.NoError(t, os.Remove(p))
+		}
+		require.NoError(t, os.RemoveAll(filepath.Join(hdir, ".agents")))
+	}
+	// With a symlinked ~/.claude (dotfiles) the written file is under the
+	// folder it resolves to, never anywhere else.
+	dot := t.TempDir()
+	linked := t.TempDir()
+	require.NoError(t, os.Symlink(dot, filepath.Join(linked, ".claude")))
+	u, err := userFileOf(Env{Home: linked}, DestClaudeSkillUser, "x")
+	require.NoError(t, err)
+	resolved, err := filepath.EvalSymlinks(dot)
+	require.NoError(t, err)
+	assert.True(t, under(u.path, resolved), u.path)
+
+	// A skill name never leaves its skills folder.
+	for _, dest := range []string{DestClaudeSkillUser, DestCodexSkillUser} {
+		_, err := userFileOf(Env{Home: hdir}, dest, "../../x")
+		require.ErrorIs(t, err, errBadSkillName)
+	}
+}

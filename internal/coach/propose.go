@@ -37,11 +37,20 @@ const (
 var (
 	textDestinations = map[string]bool{DestSession: true, DestProcedure: true, DestChat: true,
 		DestPromptAdd: true, DestSettingsAllow: true, DestClaudeMDUser: true}
+	// chatDestinations are the ones a tuning chat may name: the weekly ones
+	// plus the five only a chat proposes.
+	chatDestinations = map[string]bool{DestSession: true, DestProcedure: true, DestChat: true,
+		DestPromptAdd: true, DestSettingsAllow: true, DestClaudeMDUser: true,
+		DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true,
+		DestCodexAgentsMDUser: true, DestCodexRulesAllow: true}
 	// globalDestinations have no per-workbench text.
 	globalDestinations = map[string]bool{DestChat: true, DestPromptAdd: true, DestSettingsAllow: true,
-		DestClaudeMDUser: true}
-	proposalKinds = map[string]bool{"add": true, "cut": true, "replace": true}
-	metrics       = map[string]bool{"corrections": true, "task_cost": true, "owner_loop": true, "review_findings": true}
+		DestClaudeMDUser: true, DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true,
+		DestCodexAgentsMDUser: true, DestCodexRulesAllow: true}
+	// skillDestinations hold one text per skill: the skill is part of the key.
+	skillDestinations = map[string]bool{DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true}
+	proposalKinds     = map[string]bool{"add": true, "cut": true, "replace": true}
+	metrics           = map[string]bool{"corrections": true, "task_cost": true, "owner_loop": true, "review_findings": true}
 )
 
 // Proposer asks the model for edits to the owner's setup. The model only
@@ -94,7 +103,7 @@ func (p *Proposer) Run(ctx context.Context, in Inputs) (written int, usage *dige
 // that add the text of an instruction suggestion the owner added or dismissed
 // (blockedBySuggestion). It is the CLI's dry run.
 func (p *Proposer) Preview(ctx context.Context, in Inputs) ([]db.CoachProposal, *digest.Usage, error) {
-	slots := maxOpen - len(in.Open)
+	slots := maxOpen - weeklyOpen(in.Open)
 	if slots <= 0 || signalSources(in.Signals) < minDistinctSources {
 		return nil, nil, nil
 	}
@@ -179,24 +188,43 @@ type reply struct {
 	} `json:"proposals"`
 }
 
+// textKey identifies one destination text: at most one open proposal edits it.
 type textKey struct {
 	dest   string
 	wb     int64
 	prompt string
+	skill  string
 }
 
-func keyOf(dest string, wb int64, prompt string) textKey {
+// keyOf normalises a destination's identity: wb only for per-workbench texts,
+// prompt only for prompt additions, skill only for skill destinations.
+func keyOf(dest string, wb int64, prompt, skill string) textKey {
 	if globalDestinations[dest] {
 		wb = 0
 	}
 	if dest != DestPromptAdd {
 		prompt = ""
 	}
-	return textKey{dest, wb, prompt}
+	if !skillDestinations[dest] {
+		skill = ""
+	}
+	return textKey{dest, wb, prompt, skill}
+}
+
+// weeklyOpen counts the open proposals that hold a weekly slot: a chat
+// proposal takes none (it still blocks its own text through keyOf).
+func weeklyOpen(open []db.CoachProposal) int {
+	n := 0
+	for _, p := range open {
+		if p.Origin != "chat" {
+			n++
+		}
+	}
+	return n
 }
 
 // Validate checks a model reply against the inputs and returns the proposals
-// that survive, at most the free slots (maxOpen - len(in.Open)), in the
+// that survive, at most the free slots (maxOpen - weeklyOpen(in.Open)), in the
 // model's order. Per proposal: the destination names a text in in.Texts;
 // title, why, kind and metric are valid; evidence keeps only refs of
 // in.Signals and must rest on minDistinctSources distinct sources (recounted
@@ -217,7 +245,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 	if r.Proposals == nil {
 		return nil, errors.New(`coach proposals reply: no "proposals" list`)
 	}
-	slots := maxOpen - len(in.Open)
+	slots := maxOpen - weeklyOpen(in.Open)
 	if slots <= 0 {
 		return nil, nil
 	}
@@ -227,7 +255,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 	}
 	texts := map[textKey]CurrentText{}
 	for _, t := range in.Texts {
-		texts[keyOf(t.Destination, t.WorkbenchID, t.PromptID)] = t
+		texts[keyOf(t.Destination, t.WorkbenchID, t.PromptID, t.Skill)] = t
 	}
 	known := map[string]bool{}
 	busy := map[textKey]bool{}
@@ -237,7 +265,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 		}
 	}
 	for _, p := range in.Open {
-		busy[keyOf(p.Destination, p.WorkbenchID, p.PromptID)] = true
+		busy[keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill)] = true
 	}
 
 	var out []db.CoachProposal
@@ -252,7 +280,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 			!textDestinations[m.Destination] {
 			continue
 		}
-		key := keyOf(m.Destination, m.WorkbenchID, m.PromptID)
+		key := keyOf(m.Destination, m.WorkbenchID, m.PromptID, "")
 		t, ok := texts[key]
 		if !ok || busy[key] {
 			continue
@@ -272,7 +300,7 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 		known[fp] = true
 		busy[key] = true
 		out = append(out, db.CoachProposal{Fingerprint: fp, Kind: m.Kind, Destination: key.dest,
-			WorkbenchID: key.wb, PromptID: key.prompt, Title: title, Why: why, Metric: m.Metric,
+			WorkbenchID: key.wb, PromptID: key.prompt, Skill: key.skill, Title: title, Why: why, Metric: m.Metric,
 			BeforeText: t.Text, AfterText: after, Evidence: evidence, Sources: sources})
 	}
 	return out, nil
@@ -285,14 +313,20 @@ func Validate(raw string, in Inputs) ([]db.CoachProposal, error) {
 // separated by single spaces, so it never holds "|") and the fields are joined
 // by "|": a removed part cannot be read as an added one. ok is false when the
 // normalised parts are equal: the edit changes only spacing, case or
-// punctuation.
+// punctuation. The third field is the prompt, or the skill for a skill
+// destination (keyOf never keeps both), so fingerprints stored before skills
+// existed keep their exact form.
 func fingerprint(key textKey, before, after string) (fp string, ok bool) {
 	removed, added := changedPart(before, after)
 	r, a := instructions.Fingerprint(removed), instructions.Fingerprint(added)
 	if r == a {
 		return "", false
 	}
-	return fmt.Sprintf("%s|%d|%s|%s|%s", key.dest, key.wb, key.prompt, r, a), true
+	name := key.prompt
+	if key.skill != "" {
+		name = key.skill
+	}
+	return fmt.Sprintf("%s|%d|%s|%s|%s", key.dest, key.wb, name, r, a), true
 }
 
 // citedEvidence keeps the cited refs found in the input (deduplicated, in
@@ -364,9 +398,11 @@ func signalSources(sigs []Signal) int {
 // applyEdit returns the text with find replaced by replace (find "" appends
 // replace as a new line). find must occur exactly once. For a prompt's
 // additions find must be whole lines, and the result is normalised to one
-// trimmed addition per line. The allow list only grows: find must be "".
+// trimmed addition per line. The allow list and the Codex rules only grow:
+// find must be ""; the Codex rules get replace appended as newline-terminated
+// lines, the rest of the file untouched.
 func applyEdit(t CurrentText, find, replace string) (string, bool) {
-	if t.Destination == DestSettingsAllow && find != "" {
+	if (t.Destination == DestSettingsAllow || t.Destination == DestCodexRulesAllow) && find != "" {
 		return "", false
 	}
 	var after string
@@ -376,6 +412,8 @@ func applyEdit(t CurrentText, find, replace string) (string, bool) {
 			return "", false
 		}
 		switch {
+		case t.Destination == DestCodexRulesAllow:
+			after = appendCodexRules(t.Text, replace)
 		case t.Text == "":
 			after = replace
 		case strings.HasSuffix(t.Text, "\n"):
@@ -423,10 +461,12 @@ func kindFits(kind, before, after string) bool {
 // prompt's additions one per line, each passing prompts.ValidateAddition, with
 // at most prompts.MaxAdditionRunes in all, for a prompt the store tunes; an
 // allow list that keeps every rule it had and adds at least one rule, only
-// safe Bash rules (SafeAllowRule).
+// safe Bash rules (SafeAllowRule); the Codex rules file kept byte for byte
+// with whole lines appended, each a new CodexSafeAllowRule.
 func ValidateAfter(t CurrentText, after string) error {
 	switch t.Destination {
-	case DestSession, DestProcedure, DestChat, DestClaudeMDUser:
+	case DestSession, DestProcedure, DestChat, DestClaudeMDUser,
+		DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
 		if t.Budget > 0 && utf8.RuneCountInString(strings.TrimSpace(after)) > t.Budget {
 			return fmt.Errorf("the text is over its budget of %d characters", t.Budget)
 		}
@@ -470,6 +510,8 @@ func ValidateAfter(t CurrentText, after string) error {
 			return errors.New("the allow list already has every rule")
 		}
 		return nil
+	case DestCodexRulesAllow:
+		return validateCodexRules(t.Text, after)
 	}
 	return fmt.Errorf("unknown destination %q", t.Destination)
 }

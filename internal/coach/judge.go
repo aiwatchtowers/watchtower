@@ -141,17 +141,19 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 	if len(open) >= maxOpen {
 		return false, nil
 	}
-	key := keyOf(p.Destination, p.WorkbenchID, p.PromptID)
+	key := keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill)
 	for _, o := range open {
-		if keyOf(o.Destination, o.WorkbenchID, o.PromptID) == key {
+		if keyOf(o.Destination, o.WorkbenchID, o.PromptID, o.Skill) == key {
 			return false, nil
 		}
 	}
-	cur, err := (&Applier{DB: d, AgentLog: al, Home: home}).readCurrent(p)
+	cur, err := (&Applier{DB: d, AgentLog: al, Home: home, CodexHome: CodexHomeFromEnv()}).readCurrent(p)
 	if err != nil {
 		// A destination the coach cannot read safely is not cut.
 		if errors.Is(err, errNotSupported) || errors.Is(err, errClaudeMDNotRegular) ||
-			errors.Is(err, errClaudeMDTooBig) {
+			errors.Is(err, errClaudeMDTooBig) || errors.Is(err, errUnsafeFile) ||
+			errors.Is(err, errSkillNotFound) || errors.Is(err, errBadSkillName) || errors.Is(err, errPackSkill) ||
+			errors.Is(err, errCodexRulesMissing) {
 			return false, nil
 		}
 		return false, err
@@ -173,7 +175,7 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 		kind = "replace"
 	}
 	id, err := d.InsertCoachProposal(db.CoachProposal{
-		Fingerprint: fp, Kind: kind, Destination: key.dest, WorkbenchID: key.wb, PromptID: key.prompt,
+		Fingerprint: fp, Kind: kind, Destination: key.dest, WorkbenchID: key.wb, PromptID: key.prompt, Skill: key.skill,
 		Title: cutTitle(p.Title), Why: cutWhy(p), Metric: p.Metric,
 		BeforeText: cur.Text, AfterText: after, Evidence: p.Evidence, Sources: p.Sources, RevertsID: p.ID,
 	}, now)
