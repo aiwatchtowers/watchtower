@@ -15,7 +15,7 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | State | Spec | File |
 |---|---|---|
 | Analytics header: agent filter All / Claude Code / Codex, **Tune** (off) | §3.1 | `tuning-chat-analytics-header-{light,dark}.png` |
-| Statistics blocks with "Claude Code only" (Codex sessions in the period) | §4.7 | `tuning-chat-statistics-claude-only-{light,dark}.png` |
+| Statistics blocks with Codex sessions in the period: main's caption "Not measured for Codex sessions." (ask #1132) | §4.7 | `tuning-chat-statistics-codex-caption-{light,dark}.png` |
 | Empty: figures line, 4 starters | §3.3 | `tuning-chat-empty-{light,dark}.png` |
 | Loading | §4.4 | `tuning-chat-loading-{light,dark}.png` |
 | Streaming / busy (composer shows Stop) | §3.4 | `tuning-chat-streaming-{light,dark}.png` |
@@ -37,7 +37,6 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | No tools (ollama): Open Settings | §4.1, §4.4 | `tuning-chat-no-tools-{light,dark}.png` |
 | No tools midway: provider switched to ollama mid-conversation, the open card keeps Accept / Decline, no-tools line above the composer | §4.1, §4.4 | `tuning-chat-no-tools-midway-{light,dark}.png` |
 | Narrow: panel at 360 pt, evidence above the buttons, outputs stacked | §4.4 | `tuning-chat-narrow-{light,dark}.png` |
-| Statistics with unread Codex sessions: a quiet line under the title | §4.7 | `tuning-chat-codex-unread-{light,dark}.png` |
 
 "Analytics off" has no shot: **Tune** is hidden, as the coach sections are.
 When the panel leaves the pane narrow, the period picker and **Tune** wrap

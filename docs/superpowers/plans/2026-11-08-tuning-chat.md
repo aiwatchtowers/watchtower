@@ -4,9 +4,9 @@
 
 **Goal:** Turn Analytics' **Discuss in Chat** into a tuning chat that reads the owner's LLM setup (Watchtower prompts, Claude Code and Codex skills, instructions and allow rules, agent analytics with Codex sessions) and proposes coach edits and A/B replays the owner accepts.
 
-**Architecture:** A new chat surface `tuning` (Go tools in a new `internal/tuning` package, served by `mcp --chat --surface tuning`) on the Desktop's `EmbeddedChatEngine`; edits land as coach proposals (`origin = 'chat'`) through `coach.ValidateChatProposal`; prompt inputs are captured at the LLM leaves into `prompt_inputs` and removed by SQL triggers when their source goes; A/B replays run in the CLI (`watchtower prompts replay`); Codex rollouts are imported into agent analytics by a whole-install `ScanCodex` pass.
+**Architecture:** A new chat surface `tuning` (Go tools in a new `internal/tuning` package, served by `mcp --chat --surface tuning`) on the Desktop's `EmbeddedChatEngine`; edits land as coach proposals (`origin = 'chat'`) through `coach.ValidateChatProposal`; prompt inputs are captured at the LLM leaves into `prompt_inputs` and removed by SQL triggers when their source goes; A/B replays run in the CLI (`watchtower prompts replay`); main's per-workbench Codex import (AGENTLOG-04 as amended under asks #507, #514, #519) gains Codex prices, sub-agents read through the parent's spawn link, the report's agent filter and the coach's per-agent measurement (owner, ask #1132).
 
-**Tech Stack:** Go 1.26 (cobra CLI, `database/sql` over the in-repo SQLCipher driver, goose migrations, new dependency `github.com/klauspost/compress/zstd`), SwiftUI macOS (GRDB, DesignKit, WatchtowerCore).
+**Tech Stack:** Go 1.26 (cobra CLI, `database/sql` over the in-repo SQLCipher driver, goose migrations; no new dependency — main already has `github.com/klauspost/compress` for `internal/rollout`), SwiftUI macOS (GRDB, DesignKit, WatchtowerCore).
 
 **Spec:** `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` (approved in ask #1112; D46/D47 approved in ask #1109). Read it with this plan: tasks cite its sections.
 
@@ -14,14 +14,14 @@
 
 ## Global Constraints
 
-- Migrations: main database `internal/db/migrations/00179_tuning_chat.sql` (take the next free number if main moved on); agentlogdb `00003`. A table rebuild = `-- +goose NO TRANSACTION`, `PRAGMA foreign_keys = OFF;`, one `BEGIN IMMEDIATE; … COMMIT;` in one `StatementBegin`/`StatementEnd`, then `PRAGMA foreign_keys = ON;` (CLAUDE.md "Database & Migrations", `add-migration` skill, `00150`).
+- Migrations: main database `internal/db/migrations/00179_tuning_chat.sql` (take the next free number if main moved on); no agentlogdb migration (main's 00003 is the latest; none of Phase 4's gaps needs a column). A table rebuild = `-- +goose NO TRANSACTION`, `PRAGMA foreign_keys = OFF;`, one `BEGIN IMMEDIATE; … COMMIT;` in one `StatementBegin`/`StatementEnd`, then `PRAGMA foreign_keys = ON;` (CLAUDE.md "Database & Migrations", `add-migration` skill, `00150`).
 - Every new table/column/CHECK is mirrored in `internal/db/schema.sql`, `TestAllTablesExist`, the schema golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (`go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`).
 - Write transactions stay short: no model call, network or render inside one.
 - Logs carry ids, counts and fingerprints only, never captured text, skill text or outputs (FILES-01, `internal/logredact`).
 - Captured inputs and replays live at most 7 days; 5 rows per `prompt_id` unless pinned by a non-discarded replay.
 - Exact UI strings are the spec's; every visible string lives in `TuningChatTexts` / `AgentAnalyticsFormat` and is tested. Colours only through `Tone`; screens from `DesignKit`; no row separators.
 - Owner verbs (`prompts replay …`, `coach accept|decline|rollback`) are refused under an agent marker.
-- Inventory guard tests (`Test<MODULE>NN_…`) are never weakened; new guards: `TestCAPTURE01_*` (captures and replays never outlive their sources), `TestCAPTURE02_*` (what a tuning conversation or chat proposal read goes with it), `TestCAPTURE03_*` (every prompt call site captures or is listed), the four AGENTLOG-04 Codex guards, `TestAgent01_Tuning*`.
+- Inventory guard tests (`Test<MODULE>NN_…`) are never weakened; new guards: `TestCAPTURE01_*` (captures and replays never outlive their sources), `TestCAPTURE02_*` (what a tuning conversation or chat proposal read goes with it), `TestCAPTURE03_*` (every prompt call site captures or is listed), the AGENTLOG-04 guard `TestAgentlog04_CodexUnnamedRolloutNeverOpened` (Task 4.3), `TestAgent01_Tuning*`.
 - Public repo: fixtures are written from scratch (`acme`, `example.com`, "colleague A"); no live-install data, no real Codex rollout content.
 - Inner loop per task: `go test ./internal/<pkg>` / `make test-swift FILTER=…`, `make lint-diff` (Go) and `make lint-swift` (Swift). The full gate (`make test`, `make test-swift`, `make lint-all`) runs once per phase by the controller and before the PR.
 
@@ -32,7 +32,7 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 1. A source deleted while a tuning turn reads it — the read must return "not found" and never text whose conversation the deletion missed (Task 1.3 `ReadPromptInputForConversation` hook test; Task 3.10 `TestProposalTools_RemovalBetweenCalls`).
 2. Accept racing a source trigger — the file is restored and the card says "This proposal was removed with its source data" (Task 2.9; Desktop code `source_removed`, Task 5.1).
 3. A replay's "With"/"Without" text that is not byte-identical to the real pipeline render for some family (people + Jira tail, `ideas.digest_email` with a `gmail:` candidate) — golden tests in Tasks 3.6/3.7 against the capture side of Tasks 1.8–1.13.
-4. A Codex file read past its header when no analytics-on workbench owns it — the counting-opener guards in Tasks 4.9/4.11.
+4. A Codex rollout opened that no owned rollout names in a spawn event and no terminal row lists (a sub-agent lookup that globs too wide, or skips the `session_meta` parent check) — the never-open guard `TestAgentlog04_CodexUnnamedRolloutNeverOpened` and `TestCodexTranscript_ChildImportFileChecksParentAndSymlinks` (Task 4.3); and a child's rows leaking an `owner_turn` or a second session row (Task 4.3's `TestAgentlog_CodexChildImportsUnderRoot`).
 5. The Desktop quitting during **Run** — the CLI child must survive (started by the CLI's `--detach` in its own session, not killed at quit), else the daemon sweep marks it `stopped` and **Retry** resumes only the missing inputs (Tasks 3.12, 3.13, 3.14, 5.8).
 
 ## Cross-phase resolutions (these override any task text that disagrees)
@@ -45,15 +45,15 @@ Inputs and failure modes the spec implies that reviewers must check across task 
 - **CLI error code** for a proposal or edit removed with its source is `source_removed` (Tasks 2.9/2.11 → Desktop Task 5.1). Desktop lines: Accept → "This proposal was removed with its source data"; Roll Back → "This edit was removed with its source data".
 - **CompanyData:** every tuning read tool that returns content is marked (spec §4.2); only `list_prompt_inputs` (metadata) is not (Tasks 3.8, 3.9).
 - **Too few inputs:** `propose_prompt_replay` fails in `Execute`, so its `agent_actions` row is `failed` with `error` = the "Only N past calls…" line, which the Desktop shows as the quiet line (Tasks 3.10, 5.6). **Run** refuses under 3 eligible inputs and runs only the eligible ones otherwise (spec §4.6, Task 3.12).
-- **Swift ownership:** Tasks 3.1/3.2 own the Swift surface twins (`AssistantToolSurface`, `AgentToolsContract`, list-agreement tests); Task 5.1 owns the Swift `CoachProposal` model and reader; Task 5.2 only names the `prompts.replay` purpose.
+- **Swift ownership:** Tasks 3.1/3.2 own the Swift surface twins (`AssistantToolSurface`, `AgentToolsContract`, list-agreement tests); Task 5.1 owns the Swift `CoachProposal` model and reader; Task 5.2 only names the `prompts.replay` and `tuning.chat` purposes.
 - **Error sentinels:** `db.ErrNotFound`, `db.ErrConversationRemoved` (Task 1.3) are reused by replays (Task 3.3); Phase 3's replay read reuses Task 1.3's `copyInputSources`.
-- **Per-agent measurement** (Task 4.16) edits `internal/coach` after Phase 2's coach tasks (rebase on them) and uses Phase 2's `Dest…` consts.
+- **Per-agent measurement** (Task 4.5) edits `internal/coach` after Phase 2's coach tasks (rebase on them) and uses Phase 2's `Dest…` consts.
 - **IMAP item key** is `<uidvalidity>:<uid>` under the account (there is no mailbox column; each account syncs one folder); Jira keys are `issue:<KEY>` and `comment:<id>` (Task 1.2). The trigger and Go builders are the dual path `TestSRCDEL03`-shape test pins.
 - **Pack re-render points:** Accept/Rollback, `integrate`, and every `workbenchSetupOptions` path (workbench open / resync, new worktrees). There is no daemon pack drift pass today and none is added (the spec's "daemon drift check" maps to these paths).
 - **Run launch:** the Desktop never spawns the run itself. Run and Retry call `prompts replay <id> [--retry] --detach --json` with the ordinary short timeout; that CLI verb checks the state and the agent marker and starts the real run through `LaunchReplay` (`Setsid`, its own session and process group, so a Desktop quit does not stop it; Task 3.13), then returns `{"ok":true,"id":N,"started":true}`. The Desktop polls the row every 2 s and reads the outcome from the row, not from any child's exit (Task 5.8).
 - **Chats panel and the settings path** (owner, ask #1123, spec D48): tuning conversations are shown only in the tuning panel, never in the Chats panel; the no-tools line reads "Tuning tools need Claude or Codex — pick one in Settings → System → AI". The `…-conversation-removed-in-chats` mockup and `ChatsRemovedShot` are gone; no task shows the removed line outside the tuning panel.
 
-## Owner decisions found in recon (all answered: asks #1123, #1125)
+## Owner decisions found in recon (all answered: asks #1123, #1125, #1132)
 
 Choices found in recon that the spec did not settle; the owner chose each one as listed.
 
@@ -63,18 +63,23 @@ Choices found in recon that the spec did not settle; the owner chose each one as
 | The no-tools line's settings path | "Settings → System → AI" — **decided** | 5.4 | ask #1123 |
 | Memory and catch-up captures name every account in `refs` | yes (any account purge removes them) — **decided** | 1.11, 1.12 | ask #1125 (owner chose this) |
 | `media.*`, `chat.title`, `instructions.suggest`, `terminal.title` not captured (no A/B for them) | yes, v1 limit — **decided** | 1.13 | ask #1125 (owner chose this) |
-| An owned Codex session row stores the header cwd in `home_cwd` (file rows never store a cwd) | yes, like Claude — **decided** | 4.7 | ask #1125 (owner chose this) |
+| An owned Codex session row stores the header cwd in `home_cwd` (file rows never store a cwd) | moot under main's model: main's parser already stores the rollout's own `session_meta` cwd in `home_cwd` (`codexParser.handle`), and there are no Codex file-state rows; a sub-agent writes no session row (Task 4.3) | — | ask #1125; moot after ask #1132 |
+| Codex in analytics: whole-install importer or main's row-driven one | main's model kept; only prices, coach per agent, agent filter, cache-write/`usage_mismatch` counters and sub-agents added — **decided** (spec D49) | 4.1–4.7 | ask #1132 |
+| Codex sub-agents | read through the parent's `collab_agent_spawn_end.new_thread_id`, stored under the root, AGENTLOG-04 sentence + never-open guard — **decided** (D50) | 4.3, 4.7 | ask #1132 |
+| Note on Claude-only analytics blocks | main's caption "Not measured for Codex sessions."; no "Claude Code only" note — **decided** (D51) | 5.10, 5.13 | ask #1132 |
+| Tuning chat on ollama | no tools (draft-only), as the spec says — **decided** (D52) | 3.1, 5.7, 5.8 | ask #1132 |
+| Usage line of the tuning chat | own purpose `tuning.chat` — **decided** (D53) | 3.1, 5.2, 5.7 | ask #1132 |
 | **Propose this addition** text: title "Add to <prompt>: <line>", why "Tried on N past calls in A/B #id.", metric `corrections` | yes — **decided** | 3.13 | ask #1125 (owner chose this) |
 
-Settled by the plan without an owner choice (they follow the code or the spec): the IMAP item key `<uidvalidity>:<uid>` (no mailbox column exists); pack re-renders at Accept/Rollback (all of the owner's workbench folders at once), `integrate` and `workbenchSetupOptions` (the spec's "daemon drift check" does not exist; no folder is left unrendered after an overlay change); a Codex interrupt maps to `outcome = interrupted` only, as the spec says.
+Settled by the plan without an owner choice (they follow the code or the spec): the IMAP item key `<uidvalidity>:<uid>` (no mailbox column exists); pack re-renders at Accept/Rollback (all of the owner's workbench folders at once), `integrate` and `workbenchSetupOptions` (the spec's "daemon drift check" does not exist; no folder is left unrendered after an overlay change); a Codex interrupt stays main's `owner_turn` with trigger `interrupt` (ask #1132, D49).
 
 ## Execution order and lanes
 
 - Phase 1: 1.1 first (alone). Then 1.2 → {1.3 → {1.5 → {1.6, 1.8, 1.9, 1.10, 1.11 → 1.12} → 1.13; 1.7}; 1.4}.
 - Phase 2 starts after 1.1: 2.1 → {2.2, 2.3 → 2.4 → 2.5}, 2.6 → 2.7 → 2.8 (also needs 1.5) → 2.9 → {2.10, 2.11}.
 - Phase 3 needs Phases 1 and 2 for its tool and CLI tasks; 3.1, 3.2, 3.4, 3.15 can start any time.
-- Phase 4 is independent: lanes {4.1 → 4.2}, {4.3 → 4.4 → 4.5, 4.6}, {4.8}; 4.9 → 4.14 serial; 4.18 after 4.14; 4.15 after 4.5; 4.16 after 4.15 and Phase 2; 4.17 last.
-- Phase 5 needs Phase 3's contracts and Phase 4's report keys (5.10); 5.3, 5.4, 5.9 can start early.
+- Phase 4 is independent: lanes {4.1 → 4.2 → 4.3}, {4.4 → 4.5 (also after Phase 2's coach tasks)}, {4.6}; 4.7 last.
+- Phase 5 needs Phase 3's contracts and Task 4.4's report keys (5.10); 5.3, 5.4, 5.9 can start early.
 - Phase 6 last.
 
 ---
@@ -1202,6 +1207,7 @@ Constants used across tasks (all in `internal/tuning/tuning.go` unless said othe
 
 ```go
 const ReplayPurpose = "prompts.replay"    // llm_calls purpose of every replay call
+const ChatPurpose = "tuning.chat"         // llm_calls purpose of every tuning chat turn (ai query --purpose; owner, ask #1132, spec D53)
 const MinReplayInputs, MaxReplayInputs = 3, 5
 const ContextType = "analytics_tuning"    // chat_conversations.context_type of a tuning chat
 const StaleReplayAfter = 10 * time.Minute // daemon sweep
@@ -1216,7 +1222,7 @@ const StaleReplayAfter = 10 * time.Minute // daemon sweep
 - Create: `internal/tools/surfaces.go` (`SurfaceTuning`, `ChatSurfaces`, `KnownChatSurface`)
 - Create: `internal/tools/testdata/chat_surfaces.txt` (one id per line: `main`, `target`, `automation_editor`, `tuning`)
 - Modify: `cmd/mcp.go` (surface check via `KnownChatSurface`; tuning needs `--conversation` and `--context-type analytics_tuning`; tuning binding `DirectApply: true`; `--surface` help lists `tuning`)
-- Modify: `cmd/ai.go` (`--surface` help lists `tuning`; `runAIQuery` refuses an unknown surface before config/provider work)
+- Modify: `cmd/ai.go` (`--surface` help lists `tuning`; `runAIQuery` refuses an unknown surface before config/provider work; `queryPurposes` gains `"tuning.chat"` beside `"spec_review.discuss"` and the `--purpose` help names both — owner, ask #1132, spec D53: the tuning chat's spend is its own Usage line)
 - Modify: `cmd/generator.go` (`newQueryClient`: no Quick Connections on `tuning` in **both** branches — the runtime-B branch (`!providers.RunsChild(...)`, its own `tools.Binding` and `loadExternalMCPServersFrom`) and the MCP-child branch (`opts.ExternalMCP`) — through one helper `quickConnectionsOn(surface string) bool` = `surface != tools.AutomationEditorSurface && surface != tools.SurfaceTuning`; the runtime-B branch refuses `--surface tuning` before opening the database, because that branch's binding has no `DirectApply` and the tuning tools need a provider that runs an MCP child — a capability check, never a provider name)
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Models/AssistantToolSurface.swift` (label `"tuning"` → `"Tuning chat"`; `package static let chatSurfaces = ["main", "target", "automation_editor", "tuning"]`)
 - Test: `internal/tools/surfaces_test.go`, `cmd/mcp_tuning_test.go`, `cmd/ai_test.go`, `WatchtowerDesktop/Tests/Core/AssistantToolSurfaceTests.swift` (create if absent)
@@ -1239,11 +1245,12 @@ Note on naming: the repo style is `AutomationEditorSurface`/`InboxSurface`; the 
   - `TestMCPChatOptions_TuningNeedsConversation`: conversation 0 → error contains `"--surface tuning needs --conversation"`; context type `""` → error contains `"--context-type analytics_tuning"`.
   - `TestMCPChatOptions_UnknownSurface`: `"nope"` → error `--surface must be one of main, target, automation_editor, tuning` (automation stays its own branch above).
   - `TestAIQuery_UnknownSurfaceFailsBeforeProvider` (cmd/ai_test.go): write a stub `claude` script into `t.TempDir()` that touches a marker file; config with `ClaudePath` = the stub; run the cobra command `ai query --tools chat --surface nope hi`; assert stdout has one `{"type":"error"}` event whose `error` contains `unknown chat surface "nope"`, and the marker does not exist. The stub never starts, so there is nothing to reap; if a test variant starts it, `t.Cleanup` kills its process group.
+  - `TestQueryContext_TuningChatPurpose` (cmd/ai_test.go): `queryContext(ctx, "tuning.chat")` returns a ctx whose `llmusage.PurposeFrom` is `tuning.chat`; `"tuning.replay"` is still a usage error (exit 2). The literal equals `tuning.ChatPurpose` once Task 3.11 lands (a test there pins it).
   - `TestNewQueryClient_NoQuickConnectionsOnTuning`: with one enabled external connection seeded, `aiFlagTools="chat", aiFlagSurface="tuning"` → the claude client has no external servers (same assertion shape as the existing automation_editor test in `cmd/generator_wiring_test.go`); `main` on the same seed still gets one.
   - `TestAIQuery_RuntimeBRefusesTuning` (`cmd/ai_runtime_b_test.go`, the `TestAIQuery_RuntimeBMountsQuickConnectionsExceptEditor` setup: `Provider: "ollama"`, `seedQuickConnection`): `aiFlagTools="chat", aiFlagSurface="tuning"` → `newQueryClient` returns an error containing `"tuning tools need Claude or Codex"` and a nil client; `aiFlagSurface="main"` on the same config still builds the `*agentloop.Client` with one external server.
   - Swift `testChatSurfacesMatchTheGoFixture`: reads `internal/tools/testdata/chat_surfaces.txt` (the `#filePath` walk-up used by `AgentToolsContractTests.goFixture`) and asserts equality with `AssistantToolSurface.chatSurfaces`; `testTuningLabel`: `label(for: "tuning") == "Tuning chat"`.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/tools -run 'TestChatSurfaces|TestKnownChatSurface'`; `go test ./cmd -run 'TestMCPChatOptions_Tuning|TestMCPChatOptions_UnknownSurface|TestAIQuery_UnknownSurface|TestNewQueryClient_NoQuickConnectionsOnTuning'`; `make test-swift FILTER=AssistantToolSurfaceTests` — undefined symbols / wrong message.
-- [ ] **Step 3: Implement** — `runAIQuery`: right after the `--events` check, `if !tools.KnownChatSurface(aiFlagSurface) { emitError(enc, fmt.Sprintf("unknown chat surface %q", aiFlagSurface)); return nil }` (the default `main` passes). `mcpChatOptions`: replace the hard-coded three-way check by `KnownChatSurface`; for `SurfaceTuning` require `mcpFlagConversation > 0` and `mcpFlagContextType == tuning.ContextType` (use the literal `"analytics_tuning"` here if `internal/tuning` does not exist yet; Task 3.11 switches it), and set `DirectApply: true` on the binding. `newQueryClient`: in the runtime-B branch, `if aiFlagSurface == tools.SurfaceTuning { return nil, noop, errors.New("tuning tools need Claude or Codex — pick one in Settings → System → AI") }` before `db.Open` (the branch is entered on `!providers.RunsChild(...)`, so the refusal is the capability check; the Desktop already keeps such a provider draft-only, Task 5.7); both branches replace `aiFlagSurface != tools.AutomationEditorSurface` with `quickConnectionsOn(aiFlagSurface)`. The READ-01 key is already `conversation:<id>` (`Registry.ReadSessionKey`) once `ConversationID > 0`; the conversation requirement is what guarantees it.
+- [ ] **Step 3: Implement** — `runAIQuery`: right after the `--events` check, `if !tools.KnownChatSurface(aiFlagSurface) { emitError(enc, fmt.Sprintf("unknown chat surface %q", aiFlagSurface)); return nil }` (the default `main` passes). `mcpChatOptions`: replace the hard-coded three-way check by `KnownChatSurface`; for `SurfaceTuning` require `mcpFlagConversation > 0` and `mcpFlagContextType == tuning.ContextType` (use the literal `"analytics_tuning"` here if `internal/tuning` does not exist yet; Task 3.11 switches it), and set `DirectApply: true` on the binding. `newQueryClient`: in the runtime-B branch, `if aiFlagSurface == tools.SurfaceTuning { return nil, noop, errors.New("tuning tools need Claude or Codex — pick one in Settings → System → AI") }` before `db.Open` (the owner kept the tuning chat without tools on ollama even though main runs tools there elsewhere — ask #1132, spec D52) (the branch is entered on `!providers.RunsChild(...)`, so the refusal is the capability check; the Desktop already keeps such a provider draft-only, Task 5.7); both branches replace `aiFlagSurface != tools.AutomationEditorSurface` with `quickConnectionsOn(aiFlagSurface)`. The READ-01 key is already `conversation:<id>` (`Registry.ReadSessionKey`) once `ConversationID > 0`; the conversation requirement is what guarantees it.
 - [ ] **Step 4: Run, expect PASS** (+ `make lint-diff`, `make lint-swift`).
 - [ ] **Step 5: Commit** — `git commit -m "feat(tools): tuning chat surface, ai query surface check (#1517)"`.
 
@@ -1492,7 +1499,7 @@ Rules:
 
 ### Task 3.8: Fences + analytics, usage and prompt read tools
 
-**Depends on:** Task 3.1, Task 3.5, Phase 1 (`db.ListPromptInputs`, `db.ReadPromptInputForConversation`); the `agent` pass-through needs the Phase 4 task that adds `--agent` to `agents report` (until then the cmd adapter refuses `agent` ≠ `""`)
+**Depends on:** Task 3.1, Task 3.5, Phase 1 (`db.ListPromptInputs`, `db.ReadPromptInputForConversation`); the `agent` pass-through needs Task 4.4 (`agents report --agent`) (until then the cmd adapter refuses `agent` ≠ `""`)
 **Files:**
 - Create: `internal/tuning/fence.go`
 - Create: `internal/tuning/tools_read.go` (`Deps`, `ReadTools`, the eight tools below)
@@ -1621,7 +1628,7 @@ Rules:
 **Files:**
 - Modify: `cmd/actions_registry.go` (`regTools = append(regTools, tuning.ReadTools(tuningDeps(cfg))...)`, `tuning.ProposalTools(...)`)
 - Create: `cmd/tuning_deps.go` (`tuningDeps(cfg) tuning.Deps`: `AgentReport` / `AgentSession` over `agentreport.BuildOverview` / `BuildSession` through `openAgentsDBs` (lift the body of `runAgentsReport` into `agentsReportValue(cfg, wb, since, session, agent) (any, error)` and call it from both); `LLMUsage` over `buildUsageLLMReport(cfg, period, usageLLMSince(period, now))`; `Home` = `coachHome`)
-- Modify: `cmd/mcp.go` (use `tuning.ContextType` in the Task 3.1 check)
+- Modify: `cmd/mcp.go` (use `tuning.ContextType` in the Task 3.1 check), `cmd/ai.go` (`queryPurposes` key `tuning.ChatPurpose` instead of the Task 3.1 literal)
 - Test: `cmd/actions_registry_test.go`, `cmd/tuning_surface_test.go`
 
 **Interfaces:** Consumes everything above. Produces nothing new.
@@ -1631,9 +1638,10 @@ Rules:
   - `TestTuningSurface_ChildKilledAfterProposalCommit`: registry A proposes an edit (row #N committed); mark that `agent_actions` row `executing` as a killed child leaves it; a fresh `buildToolRegistry` (registry B, a new process's) proposes the same args → `ValidationError` containing `"already proposed as #N"`; exactly one `coach_proposals` row.
   - `TestTuningSurface_ReadLimitResetsOnNewConversation`: `reg.SetReadLimits(tools.ReadLimits{Calls: 1, Rows: 5000, ResponseRows: 200, ResponseBytes: 1 << 20})`; two `get_prompt_input` calls on conversation 1 → the second `errors.Is(err, tools.ErrReadLimit)`; a call on conversation 2 succeeds.
   - `TestTuningSurface_AcceptRacingNewProposal`: open chat proposal A on `claude_md_user` (`find "old"` → `"new"`); a second proposal B on the same text is refused (one open per destination text); `coach.Applier.Accept(A)` (file now has `"new"`); B with `find "old"` → refused (no match), B with `find "new"` → filed. Exactly one outcome per attempt.
+  - `TestTuningSurface_ChatPurposeAccepted`: `queryPurposes[tuning.ChatPurpose]` is true and `tuning.ChatPurpose == "tuning.chat"` (the Desktop's `TuningChatSurface.purpose`, Task 5.7, sends the same literal).
   - `TestTuningSurface_EmptiedActionRowStillReads`: a tuning proposal call, then delete its conversation → `watchtower actions list --json` (run in-process as the existing actions tests do) still lists the row with surface `tuning`, status `applied`, `args` `{}`.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./cmd -run 'TestBuildToolRegistry_TuningSurfaceTools|TestTuningSurface'`.
-- [ ] **Step 3: Implement** — the `agent` argument: pass through to the Phase 4 report option once it exists; until then `agent != ""` returns `"the agent filter needs a newer Watchtower build"`.
+- [ ] **Step 3: Implement** — the `agent` argument: pass through to Task 4.4's `BuildOverview` agent parameter once it exists; until then `agent != ""` returns `"the agent filter needs a newer Watchtower build"`.
 - [ ] **Step 4: Run, expect PASS** (+ `make lint-diff`; also `go test ./internal/tools`).
 - [ ] **Step 5: Commit** — `git commit -m "feat(cmd): mount the tuning tools, surface failure paths (#1517)"`.
 
@@ -1797,6 +1805,7 @@ Rules:
 | §4.6 Run/Retry refusals (built-in, custom track, other role/variant, template/additions change), refused row has no Retry | 3.12 |
 | §4.6 Retry runs only missing inputs | 3.12 |
 | §4.6 `llm_calls` purpose `prompts.replay`, surface watchtower, never captured | 3.12 |
+| §4.1 tuning chat turns under purpose `tuning.chat` (`ai query --purpose`), D53 (ask #1132); ollama refused on the runtime-B path, D52 (ask #1132) | 3.1, 3.11 |
 | §4.6 owner buttons: replay, --retry, discard, propose; second press same id; agent-marker refusal | 3.13 |
 | §4.6 daemon stale sweep (10 min → failed/stopped, "stopped after N of M") | 3.3, 3.14 |
 | §4.5 chat-history readers skip `analytics_tuning`; guard requires the `analytics_tuning` filter beside `code_question`/`spec_review_thread` and a `tuningTest` per reader; `TestListChatTurnsForIdeas_SkipsTuningChats` + `TestChatArtifactSource_SkipsTuningChats` | 3.15 |
@@ -1819,576 +1828,161 @@ Rules:
 
 ---
 
-## Phase 4 — Codex sessions in agent analytics (spec §4.7, Codex rows of §5)
+## Phase 4 — Codex gaps on main's importer (spec §4.7, Codex rows of §5)
 
-**Lane.** Independent of phases 1–3, with two exceptions, both in Task 4.16 (`internal/coach`): it edits
-`metrics.go`/`judge.go`/`apply.go`/`signals.go`, which Phase 2 also edits (merge after Phase 2's coach tasks
-or rebase onto them), and its two integration tests that file a `codex_*`/`pack_overlay` proposal need
-Phase 1's migration (Task 1.1, the widened `coach_proposals.destination` CHECK). Phase 5 consumes the report
-keys pinned in Task 4.15 and the `agents scan --json` `codex` keys of Task 4.14.
+**Scope (owner, ask #1132; spec D49–D56).** Main already imports Codex rollouts row by row per workbench
+(`internal/agentlog/scan.go` `workbenchCodexFiles` → `internal/sessionagent/codex.go` `codexTranscript.ImportFile`/`Open`,
+AGENTLOG-04 as amended under asks #507, #514, #519) with `internal/rollout` (256 MB cap), lineage content keys, both
+dialects, interrupts as `owner_turn` trigger `interrupt`, `archived_sessions/` and the `Result` keys
+`codex_rollouts_missing`/`codex_outside_workbench`. This phase adds only the gaps: the cache-write mapping and
+`codex_usage_mismatch` (4.1), Codex prices with per-agent repricing (4.2), Codex sub-agents through the parent's spawn
+link (4.3), the report's agent filter (4.4), the coach measured per agent (4.5), the owner's `CODEX_HOME` in the daemon
+(4.6) and the inventory text (4.7). No agentlogdb migration (main's 00003 is the latest and none of the gaps needs a
+column), no new dependency, no `internal/codexrollout`, no whole-install pass.
 
-Read first: `docs/features/agent-analytics.md`, `docs/inventory/agent-analytics.md` (AGENTLOG-01..07 — no guard
-test is weakened; the guards listed there stay green unchanged), CLAUDE.md "Database & Migrations".
+**Lane.** Independent of phases 1–3, except Task 4.5 (`internal/coach`): it edits `metrics.go`/`judge.go`/`apply.go`/
+`signals.go`, which Phase 2 also edits (merge after Phase 2's coach tasks or rebase onto them), and its two integration
+tests that file a `codex_*`/`pack_overlay` proposal need Phase 1's migration (Task 1.1, the widened
+`coach_proposals.destination` CHECK). Phase 5 consumes the report keys pinned in Task 4.4.
 
-**Parallel lanes:** {4.1 → 4.2}, {4.3 → 4.4 → 4.5, 4.6}, {4.8} can run at once; 4.7 after 4.1 + 4.6; the
-`ScanCodex` chain 4.9 → 4.10 → 4.11 → 4.12 → 4.13 → 4.14 is serial (one file, `internal/agentlog/scan_codex.go`);
-4.15 runs beside that chain once 4.5 is in; 4.16 after 4.15; 4.17 last.
+Read first: `docs/features/agent-analytics.md`, `docs/inventory/agent-analytics.md` (AGENTLOG-01..07 — every guard,
+main's `TestAgentlog0*_Codex…` ones included, stays green unchanged), `internal/agentlog/codex.go`, `internal/agentlog/scan.go`,
+`internal/sessionfeed/live.go` (`codexChildPath`, `sourceParent`) and `internal/sessionfeed/compressed_test.go`
+(`TestFeed_CodexSubagentsListed`).
 
-**Shared values (spec §4.7), used across tasks:**
-- header cap `codexrollout.HeaderCap = 64 << 10`; decompressed cap `codexrollout.MaxDecompressed = 64 << 20`;
-- file states `pending|ok|foreign|excluded|held|detached|unreadable|too_large|orphan_skipped`;
-- error classes (the only values ever stored in `agent_log_files.error_class`): `no_header`, `corrupt`, `open`;
-- event key `codex:<file's own thread id>:<ordinal>` (ordinal from 0, per file);
-- meta keys `codex_pass_complete` (`0`/`1`), `codex_pending` (decimal), `codex_pass_at` (RFC 3339 UTC),
-  `codex_owner_fingerprint` (hex);
-- orphan clock 7 days; open-call cap 256; `CodexParserVersion = 1`.
+**Parallel lanes:** 4.1 → 4.2 → 4.3 (one file, `internal/agentlog/codex.go`); {4.4 → 4.5}; {4.6}; 4.7 last.
 
 ---
 
-### Task 4.1: `internal/codexrollout` leaf — one decoder for three readers
+### Task 4.1: Codex usage mapping — cache writes and `codex_usage_mismatch`
 
 **Depends on:** none
 **Files:**
-- Create: `internal/codexrollout/rollout.go` (envelope + payload types, magic, ids, home)
-- Create: `internal/codexrollout/header.go` (header read, exec originator, parent thread)
-- Create: `internal/codexrollout/locate.go` (`Locate`, `IsRolloutOf`, `ThreadIDFromName`)
-- Create: `internal/codexrollout/testdata/` fixtures written from scratch (no real content)
-- Modify: `internal/sessionfeed/codex.go` (drop `zstdMagic`, `codexIDRe`, `codexLine`, `codexEvent`; use the leaf's types; `LocateCodex` = `codexrollout.Locate` mapped to `(string, bool)`)
-- Modify: `internal/sessionfeed/live.go` (`codexLine` → `codexrollout.Line`, `zstdMagic` → `codexrollout.IsZstd`, `sourceParent` → `codexrollout.SourceParent`, `codexIDRe` → `codexrollout.ValidID`)
-- Modify: `internal/terminal/codex_rollout.go` (drop `zstdMagic`, `rolloutLine`, `rolloutEvent`, `isRolloutOf`; `findCodexRollout` maps `codexrollout.Locate`'s errors to today's errors)
-- Test: `internal/codexrollout/rollout_test.go`, `header_test.go`, `locate_test.go`
+- Modify: `internal/agentlog/codex.go` (`codexUsage.CacheWrite` with tag `cache_write_input_tokens`; `codexParser.tokens`)
+- Modify: `internal/agentlog/claude.go` (`ParseResult.CodexUsageMismatch int`)
+- Modify: `internal/agentlog/scan.go` (`Result.CodexUsageMismatch int \`json:"codex_usage_mismatch"\``; `addSlice` sums it)
+- Modify: `internal/daemon/agent_analytics.go` (one log line per workbench per cycle when above 0)
+- Test: `internal/agentlog/codex_test.go`, `internal/agentlog/scan_test.go`, `internal/daemon/agent_analytics_test.go`
 
 **Interfaces:**
-- Produces (stdlib only; no import of any `watchtower/...` package — it is a leaf):
-  - `var ZstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}`; `func IsZstd(head []byte) bool`
-  - `type Line struct { Timestamp string \`json:"timestamp"\`; Type string \`json:"type"\`; Payload json.RawMessage \`json:"payload"\` }`
-  - `type Event struct { Type string; Message json.RawMessage; Item Item; Info *TokenInfo \`json:"info"\`; Reason string \`json:"reason"\` }` — `event_msg` payload of both dialects plus `token_count` and `turn_aborted`
-  - `type Item struct { Type, ID string; Content []ContentPart }`, `type ContentPart struct { Type, Text string }`
-  - `type TokenInfo struct { LastTokenUsage *TokenUsage \`json:"last_token_usage"\` }`
-  - `type TokenUsage struct { InputTokens, CachedInputTokens, CacheWriteInputTokens, OutputTokens, ReasoningOutputTokens, TotalTokens int64 }` (snake_case JSON tags: `input_tokens`, `cached_input_tokens`, `cache_write_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`)
-  - `type ResponseItem struct { Type, Name, CallID, Arguments, Input string; Output json.RawMessage }` (`function_call`, `custom_tool_call`, their `_output` twins)
-  - `func ValidID(id string) bool` (lowercase canonical UUID, today's `codexIDRe`)
-  - `func DefaultHome() string` — `$CODEX_HOME` when absolute, else `~/.codex` (today's `defaultTerminalCodexHome` rule; `cmd/terminal.go` keeps its own seam, now calling this)
-  - `var ErrBadID, ErrNoHome, ErrNotFound error`; `func Locate(home, sessionID, storedPath string) (string, error)` — stored path when `IsRolloutOf` and a regular file, else glob `sessions/*/*/*/rollout-*-<id>.jsonl` under the resolved root; **`.jsonl` only** (spec: Workchat and terminal keep skipping compressed files); `ErrNotFound` wraps `fs.ErrNotExist` for a missing `sessions` dir; any other `EvalSymlinks` error returned as `fmt.Errorf("codex sessions dir: %w", err)`
-  - `func IsRolloutOf(path, sessionID string) bool`
-  - `func ThreadIDFromName(base string) (string, bool)` — the UUID at the end of `rollout-<ts>-<uuid>.jsonl` or `rollout-<ts>-<uuid>.jsonl.zst`
-  - `const HeaderCap = 64 << 10`; `var ErrNoHeader = errors.New("no session_meta in the header")`
-  - `type Header struct { SessionID, CWD, Originator, ParentThreadID, Model, Provider, GitBranch string }` — `CWD` = first `turn_context.cwd`, fallback `session_meta.cwd`; `Model`/`Provider` from the first `turn_context`
-  - `func ReadHeader(r io.Reader) (Header, error)` — reads through `io.LimitReader(r, HeaderCap)`, complete lines only, stops at the first `turn_context` after `session_meta`; no `session_meta` inside the cap → `ErrNoHeader`
-  - `func SourceParent(raw json.RawMessage) string` (moved from `sessionfeed/live.go`: `parent_thread_id`, then `subagent`/`thread_spawn`/`threadSpawn` nested)
-  - `func IsExecOriginator(originator string) bool` — the exec originator value(s), confirmed on real files by the builder and pinned in the fixture (see Open points)
+- Produces: `ParseResult.CodexUsageMismatch` (token lines of this parse whose fresh input came out negative); `Result.CodexUsageMismatch` (pinned JSON key `codex_usage_mismatch`, beside `codex_rollouts_missing` and `codex_outside_workbench`).
+- Mapping in `tokens` (spec §4.7): `fresh = u.Input − u.Cached − u.CacheWrite`; `fresh < 0` → stored 0 and `CodexUsageMismatch++`; `InputTokens = fresh`, `CacheReadTokens = u.Cached`, `CacheWrite5mTokens = u.CacheWrite`, `OutputTokens = u.Output`, `ThinkingTokens = u.Reasoning` (unchanged). The `api_call` key keeps today's figures (`u.Input, u.Cached, u.Output, u.Reasoning, u.Total` and the totals) — `CacheWrite` is **not** added, so no stored row changes key. The cost call passes the cache write (`Cost(p.model, "", fresh, u.Output, u.Cached, u.CacheWrite, 0)` here; Task 4.2 switches it to `CostFor`).
+- Daemon log: `agent analytics: workbench %d: %d codex token line(s) with negative fresh input` (counts only, FILES-01).
 
 - [ ] **Step 1: Write the failing tests**
-  - `TestLocate_StoredPathThenGlob` (stored path wins; a stored path not named for the id is ignored; glob finds `sessions/2026/11/01/rollout-…-<id>.jsonl`)
-  - `TestLocate_JSONLOnly`: only `rollout-…-<id>.jsonl.zst` present → `errors.Is(err, ErrNotFound)`
-  - `TestLocate_Errors`: bad id → `ErrBadID`; `home == ""` → `ErrNoHome`; no `sessions` dir → `ErrNotFound` and `errors.Is(err, fs.ErrNotExist)`
-  - `TestThreadIDFromName`: `.jsonl` and `.jsonl.zst` give the UUID; `rollout-x.jsonl`, `foo.jsonl` → false
-  - `TestReadHeader_Fields`: fixture `session_meta` (`cwd: /a`) + `turn_context` (`cwd: /b`, `model: m1`) → `CWD == "/b"`, `Model == "m1"`; without `turn_context` → `CWD == "/a"`
-  - `TestReadHeader_ReadsAtMostCap`: a counting reader over `session_meta` + 1 MB of junk lines → bytes read `<= HeaderCap`
-  - `TestReadHeader_NoMetaIsErrNoHeader`: 70 KB of lines before `session_meta` → `ErrNoHeader`
-  - `TestReadHeader_ParentThread`: `parent_thread_id` and `source.subagent.parent_thread_id` both → `ParentThreadID`
-  - `TestIsExecOriginator`: the pinned exec value(s) → true; the interactive value(s) and `""` → false
-  - `TestIsZstd`
-  - The existing `internal/sessionfeed` and `internal/terminal` tests are **not edited** (`TestParseCodex_SkipsZstd`, `TestLocateCodex`, `TestCodexRollout_*`, `TestFeed01_*`).
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/codexrollout` (package missing).
-- [ ] **Step 3: Implement** the leaf, then move the three call sites. `terminal.findCodexRollout` maps: `ErrBadID` → `fmt.Errorf("not a session id: %q", id)`, `ErrNoHome` → `errors.New("codex home dir unknown")`, `ErrNotFound` → `fmt.Errorf("%w %s", ErrNoTranscript, id)`, others unchanged. Each reader keeps its own projection (text joining stays in `sessionfeed` with `EqualFold`, in `terminal` with `==`).
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/codexrollout ./internal/sessionfeed ./internal/terminal`; `git diff --stat -- internal/sessionfeed/*_test.go internal/terminal/*_test.go` is empty; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "refactor(codexrollout): one rollout decoder for sessionfeed and terminal (#1517)"`
+  - `TestParseCodex_CacheWriteMapping`: a from-scratch line with input 100, cached 60, cache write 10, output 20, reasoning 5 → `InputTokens 30`, `CacheReadTokens 60`, `CacheWrite5mTokens 10`, `OutputTokens 20`, `ThinkingTokens 5`, `CodexUsageMismatch 0`
+  - `TestParseCodex_NegativeFreshInputCounted`: input 50, cached 60 → `InputTokens 0`, `CodexUsageMismatch 1`; input 50, cached 40, cache write 20 → 0 and 1
+  - `TestParseCodex_KeyUnchangedWithoutCacheWrite`: a line without the new field gives exactly the key string today's code produces (compute it once from today's code and pin the literal); the same line with `cache_write_input_tokens: 10` gives the same key
+  - `TestScan_CodexUsageMismatchSummed` (scan_test.go, main's codex fixture helpers): a workbench rollout with one negative line → `res.CodexUsageMismatch == 1`; `json.Marshal(res)` has the key `codex_usage_mismatch`
+  - `TestPhaseAgentAnalytics_LogsCodexUsageMismatch`: the log line appears once for a cycle with a mismatch and not for one without
+  - Main's `TestParseCodex_TokenCountPerResponse` and every `TestAgentlog02_Codex…` guard run unchanged.
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ParseCodex_(CacheWrite|NegativeFresh|KeyUnchanged)|CodexUsageMismatch'`; `go test ./internal/daemon -run LogsCodexUsageMismatch`.
+- [ ] **Step 3: Implement.** Before the commit the builder looks at real rollouts on their own machine (never copied into the repo): if any already carries a non-zero `cache_write_input_tokens`, bump `ParserVersion` (4 → 5) in this commit and say so in the commit body — a re-read whose upsert (`ApplyAgentLogBatch` `ON CONFLICT … input_tokens/cache_write_5m_tokens`) corrects the stored rows, at the cost of one sliced re-read of every transcript; otherwise leave it (spec D56).
+- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog ./internal/daemon -run 'Codex|PhaseAgentAnalytics'`; `make lint-diff`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex cache writes and the usage mismatch counter (#1517)"`
 
-### Task 4.2: zstd opener (analytics only)
+### Task 4.2: Codex prices and per-agent repricing
 
 **Depends on:** Task 4.1
 **Files:**
-- Modify: `go.mod`, `go.sum` (`go get github.com/klauspost/compress@v1.20.3` — tagged 2026-10-12, already in the module cache; pure Go, no cgo)
-- Create: `internal/codexrollout/zstd.go`
-- Test: `internal/codexrollout/zstd_test.go`
-
-**Interfaces:**
-- Produces:
-  - `const MaxDecompressed = 64 << 20`; `var ErrTooLarge, ErrCorrupt error`
-  - `func VerifyZstd(r io.Reader) (decompressed int64, err error)` — streams the whole frame once into `io.Discard` through a decoder (checksums on, `zstd.WithDecoderConcurrency(1)`), reading at most `MaxDecompressed+1` bytes: over the cap → `ErrTooLarge`; checksum mismatch, truncated frame, bad magic or trailing garbage → `ErrCorrupt` (wrapping the decoder error)
-  - `func OpenZstd(r io.Reader) (io.ReadCloser, error)` — a streaming decoder capped at `MaxDecompressed` (reads past it fail with `ErrTooLarge`); `Close` releases the decoder
-- [ ] **Step 1: Write the failing tests** — fixtures built in the test with `zstd.NewWriter` (with checksum):
-  `TestVerifyZstd_OK` (returns the plain length), `TestVerifyZstd_DamagedNearEnd` (flip a byte in the last 8 → `ErrCorrupt`), `TestVerifyZstd_Truncated` (cut 10 bytes → `ErrCorrupt`), `TestVerifyZstd_OverCap` (set `maxDecompressed` test var to 1 KB, 2 KB of text → `ErrTooLarge`), `TestOpenZstd_ReadsLines` (round-trip equals the plain bytes), and a leaf guard `TestCodexrollout_IsLeaf` (`go/build` import list of the package: only stdlib and `github.com/klauspost/compress/...`).
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/codexrollout -run 'Zstd|IsLeaf'`.
-- [ ] **Step 3: Implement** in `zstd.go`; the cap is a package `var maxDecompressed = MaxDecompressed` so the test can lower it. Only `internal/agentlog` will call these (Task 4.13); `sessionfeed`/`terminal` never do.
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/codexrollout`; `go mod tidy` leaves no diff; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(codexrollout): verified zstd opener for analytics (#1517)"`
-
-### Task 4.3: agentlogdb migration 00003 — agent CHECK and Codex file columns
-
-**Depends on:** none
-**Files:**
-- Create: `internal/agentlogdb/migrations/00003_codex.sql`
-- Modify: `internal/agentlogdb/agent_log.go` (`AgentLogFile` fields + `agentLogFileCols`/`scanAgentLogFile`; `ApplyAgentLogBatch` writes the new file columns in the same tx as the offset CAS)
-- Modify: `internal/agentlog/scan.go` (`storeSlice` takes the agent: `string(agentkind.Claude)`, `State: "ok"`)
-- Test: `internal/agentlogdb/db_test.go`, `internal/agentlogdb/agent_log_test.go`
-
-**Interfaces:**
-- Produces:
-  - `AgentLogFile` gains `State, StateSince, ErrorClass, ParseState, FolderPath, VerifiedAt string; ProjectID *int64; Compressed, Complete bool` (`""` ↔ NULL for the nullable text columns).
-  - `ApplyAgentLogBatch` INSERT/UPDATE also sets `state, state_since, error_class, parse_state, project_id, folder_path, compressed, verified_at, complete` from `b.File` (`state_since` kept when `state` is unchanged: `CASE WHEN state = ? THEN state_since ELSE ? END` with the batch time).
-  - `func storeSlice(st store, agent string, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error)`.
-
-- [ ] **Step 1: Write the failing tests**
-  - `TestMigration00003_KeepsEveryRowAndOffset`: open an agentlog.db migrated to 00002 only (helper `openAt(t, path, 2)`: `db.OpenSidecar` over an `fstest.MapFS` holding just 00001/00002 from `migrationsFS`), seed every table (`agent_log_files` with `read_offset` 1234, `agent_log_sessions`, `agent_log_events`, `agent_log_context_parts`, `agent_log_skill_listing`, `agent_log_subagents`, `agent_log_meta`, `agent_log_import`), close, `Open` (runs 00003); assert `COUNT(*)` of **every** table unchanged, `read_offset` 1234 kept, the Claude row has `state = 'ok'` and NULL `state_since/error_class/parse_state/project_id/folder_path/verified_at`, `compressed = 0`, `complete = 0`; an insert with `agent = 'codex'` succeeds in both tables and `agent = 'x'` fails; a `state = 'bogus'` insert fails.
-  - `TestMigration00003_FKViolationAbortsAndRerunSucceeds`: seed as above plus an orphan `agent_log_events` row (inserted with `PRAGMA foreign_keys = OFF` on a raw connection); `Open` fails; reopen at 00002 shows tables, columns (no `state`) and counts unchanged and `goose` version 2; delete the orphan; `Open` succeeds. (Covers the §4.7 failure row "Migration 00003 fails inside its block".)
-  - `TestOpen_SchemaAndPerms` stays as is (it asserts `PRAGMA foreign_keys` = 1 on a new connection).
-  - `TestApplyAgentLogBatch_WritesCodexFileColumns`: a batch with `File{Agent:"codex", State:"ok", ParseState:`{"v":1}`, ProjectID:&7, FolderPath:"/w", Compressed:true, VerifiedAt:"10:t", Complete:true}` round-trips through `GetAgentLogFile`; a second batch whose CAS fails writes neither the offset nor `parse_state`.
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlogdb -run 'Migration00003|WritesCodexFileColumns'`.
-- [ ] **Step 3: Implement** the migration exactly in this form (the `-- +goose Down` rebuilds both tables back to `('claude')` after deleting Codex rows and their children explicitly, the same FK-off block shape):
-
-```sql
--- +goose NO TRANSACTION
--- +goose Up
--- Codex sessions in agent analytics (spec docs/superpowers/specs/2026-11-03-tuning-chat-design.md §4.7).
--- agent_log_files and agent_log_sessions are rebuilt to widen the agent CHECK; agent_log_sessions is the
--- parent of four ON DELETE CASCADE children, so foreign keys are off around the block (dropping it with
--- keys on would empty them while read_offset stays). The temp-table CHECK aborts the block on any
--- foreign-key violation (PRAGMA foreign_key_check alone stops nothing).
-PRAGMA foreign_keys = OFF;
--- +goose StatementBegin
-BEGIN IMMEDIATE;
-CREATE TABLE agent_log_files_new (
-  path           TEXT PRIMARY KEY,
-  agent          TEXT NOT NULL CHECK (agent IN ('claude','codex')),
-  size           INTEGER NOT NULL DEFAULT 0,
-  mtime          TEXT NOT NULL DEFAULT '',
-  read_offset    INTEGER NOT NULL DEFAULT 0,
-  parser_version INTEGER NOT NULL DEFAULT 0,
-  missing_at     TEXT,
-  scanned_at     TEXT NOT NULL DEFAULT '',
-  state          TEXT NOT NULL DEFAULT 'ok' CHECK (state IN
-                   ('pending','ok','foreign','excluded','held','detached','unreadable','too_large','orphan_skipped')),
-  state_since    TEXT,
-  error_class    TEXT,
-  parse_state    TEXT,
-  project_id     INTEGER,
-  folder_path    TEXT,
-  compressed     INTEGER NOT NULL DEFAULT 0,
-  verified_at    TEXT,
-  complete       INTEGER NOT NULL DEFAULT 0
-);
-INSERT INTO agent_log_files_new (path, agent, size, mtime, read_offset, parser_version, missing_at, scanned_at)
-  SELECT path, agent, size, mtime, read_offset, parser_version, missing_at, scanned_at FROM agent_log_files;
-DROP TABLE agent_log_files;
-ALTER TABLE agent_log_files_new RENAME TO agent_log_files;
-CREATE INDEX idx_agent_log_files_agent_state ON agent_log_files(agent, state);
-CREATE INDEX idx_agent_log_files_project ON agent_log_files(project_id) WHERE project_id IS NOT NULL;
-
-CREATE TABLE agent_log_sessions_new (
-  session_uuid        TEXT PRIMARY KEY,
-  agent               TEXT NOT NULL CHECK (agent IN ('claude','codex')),
-  project_id          INTEGER,
-  folder_path         TEXT NOT NULL,
-  home_cwd            TEXT NOT NULL,
-  terminal_session_id INTEGER,
-  source_path         TEXT NOT NULL,
-  git_branch          TEXT NOT NULL DEFAULT '',
-  model               TEXT NOT NULL DEFAULT '',
-  started_at          TEXT NOT NULL,
-  ended_at            TEXT NOT NULL,
-  reported_cost_usd   REAL
-);
-INSERT INTO agent_log_sessions_new (session_uuid, agent, project_id, folder_path, home_cwd, terminal_session_id,
-  source_path, git_branch, model, started_at, ended_at, reported_cost_usd)
-  SELECT session_uuid, agent, project_id, folder_path, home_cwd, terminal_session_id,
-  source_path, git_branch, model, started_at, ended_at, reported_cost_usd FROM agent_log_sessions;
-DROP TABLE agent_log_sessions;
-ALTER TABLE agent_log_sessions_new RENAME TO agent_log_sessions;
-CREATE INDEX idx_agent_log_sessions_project ON agent_log_sessions(project_id, started_at);
-
-CREATE TEMP TABLE agentlog_fk_guard(n INTEGER CHECK (n = 0));
-INSERT INTO agentlog_fk_guard SELECT COUNT(*) FROM pragma_foreign_key_check;
-DROP TABLE agentlog_fk_guard;
-COMMIT;
--- +goose StatementEnd
-PRAGMA foreign_keys = ON;
-```
-
-  The builder confirms the table-valued `pragma_foreign_key_check` works on the SQLCipher build (the FK test above proves it); if it does not, the test asserts the check instead and the spec note says so (Open points).
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlogdb ./internal/agentlog`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlogdb): migration 00003 — codex agent and file registry columns (#1517)"`
-
-### Task 4.4: agentlogdb — Codex file registry writes and reads
-
-**Depends on:** Task 4.3
-**Files:**
-- Create: `internal/agentlogdb/codex.go`
-- Test: `internal/agentlogdb/codex_test.go`
-
-**Interfaces:**
-- Produces:
-  - `type FileStamp struct { Size int64; MTime, State string }` — what a pass saw; `State == ""` = no row
-  - `type CodexFileState struct { State, ErrorClass, FolderPath, VerifiedAt string; ProjectID *int64; Size int64; MTime string; Compressed bool }`
-  - `func (d *DB) SetCodexFileState(path string, expect FileStamp, st CodexFileState, now time.Time) (bool, error)` — compare-and-set on the `size`, `mtime`, `state` the pass saw (an `INSERT … ON CONFLICT DO NOTHING` when `expect.State == ""`); sets `agent = 'codex'`, `state`, `error_class`, `project_id`, `folder_path`, `size`, `mtime`, `compressed`, `verified_at`, `missing_at = NULL`; `state_since` = `now` only when the state changes; **never touches** `read_offset`, `parse_state`, `complete`, `parser_version`. Returns false when another pass changed the row first.
-  - `func (d *DB) ListCodexFiles() (map[string]AgentLogFile, error)` — every `agent = 'codex'` row by path
-  - `func (d *DB) MarkCodexFilesMissing(present map[string]bool, at string) (int, error)` — `missing_at` on Codex rows not in `present` (rows stay)
-  - `func (d *DB) CodexFileCounts() (states map[string]int, unreadableUnowned int, err error)`
-  - `func (d *DB) CodexSessionStored(sessionUUID string) (bool, error)` — the root's `agent_log_sessions` row exists ("decided", sub-agents)
-- [ ] **Step 1: Write the failing tests**
-  - `TestSetCodexFileState_InsertThenCAS`: insert `foreign` with no row; a second call with a stale `FileStamp` returns false and changes nothing; a matching one moves to `pending`
-  - `TestSetCodexFileState_StateSinceOnlyOnChange`: `held` at t1, `held` again at t2 → `state_since == t1`; `ok` at t3 → `t3`
-  - `TestSetCodexFileState_KeepsOffsetAndParseState`: a row with `read_offset` 500 and `parse_state` set, moved to `detached` with `ProjectID` kept → offset and `parse_state` unchanged
-  - `TestSetCodexFileState_ForeignStoresOnlyStamp`: `foreign` row has NULL `project_id`, `folder_path`, `parse_state`, `error_class`
-  - `TestMarkCodexFilesMissing_ClaudeRowsUntouched`
-  - `TestCodexFileCounts` (one row per state, an `unreadable` with and without `project_id`)
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlogdb -run 'CodexFile|CodexFiles|CodexSessionStored'`.
-- [ ] **Step 3: Implement** each as one short statement or one `withTx`.
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlogdb`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlogdb): codex file registry with compare-and-set states (#1517)"`
-
-### Task 4.5: agentlogdb — adoption of file rows, owner fingerprint, pass meta, widened import progress, `codex_unread`
-
-**Depends on:** Task 4.4
-**Files:**
-- Modify: `internal/agentlogdb/codex.go`, `internal/agentlogdb/agent_log.go` (`AdoptAgentLogSessions` body moves into a tx helper; `StoredTranscripts` widened)
-- Test: `internal/agentlogdb/codex_test.go`, `internal/agentlogdb/agent_log_test.go`
-
-**Interfaces:**
-- Produces:
-  - `func (d *DB) AdoptAgentLogFiles(projectID int64, folder string, liveIDs []int64) (sessions, files int64, err error)` — **one transaction**: today's session `UPDATE` (as `AdoptAgentLogSessions`) and the same `UPDATE` over `agent_log_files` (`agent = 'codex' AND folder_path = ? COLLATE NOCASE AND (project_id IS NULL OR project_id NOT IN live)`). `AdoptAgentLogSessions` stays for the Claude `Scan` and shares the session statement.
-  - `func (d *DB) CodexOwnerFingerprint() (string, error)` (`""` = none stored)
-  - `func (d *DB) ApplyCodexOwnerFingerprint(old, next string, now time.Time) (bool, error)` — one tx: compare-and-set on the stored `codex_owner_fingerprint` (`old == ""` = key absent); on success every `foreign` row → `pending` (`state_since = now`) and the new value stored; false = another pass applied a change first (nothing queued)
-  - `type CodexPassMeta struct { Complete bool; Pending int; At string }`; `func (d *DB) SetCodexPassMeta(m CodexPassMeta) error` (keys `codex_pass_complete`, `codex_pending`, `codex_pass_at`, last writer wins); `func (d *DB) CodexPassMeta() (m CodexPassMeta, ok bool, err error)`
-  - `StoredTranscripts(projectID)` = `COUNT(DISTINCT source_path)` of its `agent = 'claude'` sessions **plus** `COUNT(*)` of `agent_log_files` with `agent = 'codex' AND project_id = ? AND state = 'ok'`
-  - `func (d *DB) CodexUnread(projectID int64, since string) (int, error)` — files with `agent = 'codex'`, `state IN ('too_large','unreadable')`, `project_id = ?`, `mtime >= since` (`since` RFC 3339; `""` = all) and no stored rows (no `agent_log_sessions.source_path = path` and no `agent_log_events.src_path = path`)
-- [ ] **Step 1: Write the failing tests**
-  - `TestAdoptAgentLogFiles_SessionsAndFilesTogether`: a dead `project_id` 3 session and Codex file on `/w` → adopted by 9 in one call; a file of live workbench 5 on `/w` is not taken; a failure injected on the file update (a `BEFORE UPDATE` trigger with `RAISE(ABORT)`) leaves the session row unmoved too
-  - `TestApplyCodexOwnerFingerprint_QueuesForeignOnce`: two calls with the same `old` → first true (foreign rows `pending`), second false (no second `state_since` write)
-  - `TestCodexPassMeta_RoundTrip`
-  - `TestStoredTranscripts_CountsCodexOkFiles` (a `foreign` and a `held` Codex file are not counted)
-  - `TestCodexUnread_OwnedNoRowsOnly`: owned `too_large` (counted), owned `unreadable` with an event row (not counted), `unreadable` with NULL `project_id` (not counted), mtime before `since` (not counted)
-  - `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted` stays unchanged and green.
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlogdb -run 'AdoptAgentLogFiles|Fingerprint|PassMeta|StoredTranscripts|CodexUnread'`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlogdb`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlogdb): codex adoption, owner fingerprint and pass meta (#1517)"`
-
-### Task 4.6: Codex pricing and per-agent repricing
-
-**Depends on:** Task 4.3
-**Files:**
-- Modify: `internal/pricing/pricing.go` (separate `codexPrices` map + `CodexCost`; `ModelTiers` stays Anthropic-only)
+- Modify: `internal/pricing/pricing.go` (separate `codexPrices` map + `CodexCost`; `Version` 1 → 2; `ModelTiers` stays Anthropic-only)
 - Modify: `internal/agentlog/pricing.go` (`CostFor`)
-- Modify: `internal/agentlogdb/agent_log.go` (`RepriceAgentLogEvents` joins the session's agent)
+- Modify: `internal/agentlog/codex.go` (`tokens` prices through `CostFor(AgentCodex, …)`)
+- Modify: `internal/agentlogdb/agent_log.go` (`RepriceAgentLogEvents` joins the session's agent; price func takes it)
 - Modify: `internal/agentlog/scan.go` (`al.RepriceAgentLogEvents(PriceVersion, CostFor)`)
-- Test: `internal/pricing/pricing_test.go`, `internal/agentlogdb/agent_log_test.go`
+- Test: `internal/pricing/pricing_test.go`, `internal/agentlogdb/agent_log_test.go`, `internal/agentlog/codex_test.go`
 
 **Interfaces:**
 - Produces:
-  - `func CodexCost(model string, in, out, cacheRead, cacheWrite int64) (float64, bool)` — `(in×input + cacheRead×cached + cacheWrite×input + out×output) / 1e6`; unknown model → `0, false`. The rows hold OpenAI's published input / cached input / output rates per million tokens for the models Codex records in `turn_context.model`, with a comment naming the price page and the date checked; cache writes at the input rate unless a write rate is published (D36).
-  - `func CostFor(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)` — `"codex"` → `pricing.CodexCost(model, in, out, cacheRead, cw5m+cw1h)`; anything else → `pricing.Cost(...)`.
-  - `func (d *DB) RepriceAgentLogEvents(version int, price func(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error)` — the row query joins `agent_log_sessions` for `agent`. `pricing.Version` stays one number for both agents and is **not** bumped by this task (no Codex rows exist yet).
+  - `func CodexCost(model string, in, out, cacheRead, cacheWrite int64) (float64, bool)` — `(in×input + cacheRead×cached + cacheWrite×input + out×output) / 1e6`; unknown model → `0, false`. Rows: OpenAI's published input / cached-input / output rates per million tokens for the model ids Codex writes in `turn_context.model`, with a comment naming the price page and the date checked; cache writes at the input rate unless a write rate is published (D36).
+  - `func CostFor(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)` — `AgentCodex` → `pricing.CodexCost(model, in, out, cacheRead, cw5m+cw1h)`; anything else → `pricing.Cost(...)`.
+  - `func (d *DB) RepriceAgentLogEvents(version int, price func(agent, model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error)` — the row query joins `agent_log_sessions` on `session_uuid` for `agent` (an event whose session row is missing is priced as Claude, today's behaviour).
+  - `pricing.Version = 2`: the next scan reprices every stored row once, in the existing short slices; Claude rows get identical values. The LLM ledger (`internal/llmusage`) keeps calling `pricing.Cost` (Codex ledger pricing is not in this feature).
 - [ ] **Step 1: Write the failing tests**
   - `TestCodexCost_Formula` (in-package: for one table model `m`, `CodexCost(m, 1e6, 1e6, 1e6, 1e6) == p.input+p.output+p.cached+p.input`); `TestCodexCost_UnknownModel` → `0, false`; `TestModelTiers_NoCodexModels`
-  - `TestRepriceAgentLogEvents_PerAgent`: a Claude and a Codex session, one `api_call` each at `price_version` 0 → after reprice the Claude row equals `pricing.Cost(...)` exactly and the Codex row equals `pricing.CodexCost(...)`
-  - `TestRepriceAgentLogEvents_SlicesAndPartialFailure` keeps its assertions; only its price closure gains the `agent` parameter.
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/pricing ./internal/agentlogdb -run 'CodexCost|ModelTiers|Reprice'`.
+  - `TestRepriceAgentLogEvents_PerAgent`: a Claude and a Codex session, one `api_call` each at `price_version` 1 → after reprice at 2 the Claude row equals `pricing.Cost(...)` exactly (and its value before), the Codex row equals `pricing.CodexCost(...)`, `cost_estimated` false for a table model
+  - `TestParseCodex_PricedModel`: a fixture with a table model → `CostUSD > 0`, `CostEstimated` false, value = `CodexCost`
+  - `TestRepriceAgentLogEvents_SlicesAndPartialFailure` keeps its assertions; only its price closure gains the `agent` parameter. `TestReport_CodexSessionsIncludedAndUnpriced` stays unchanged (its model `gpt-test` has no price).
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/pricing ./internal/agentlogdb ./internal/agentlog -run 'CodexCost|ModelTiers|Reprice|PricedModel'`.
 - [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/pricing ./internal/agentlogdb ./internal/agentlog`; `make lint-diff`.
+- [ ] **Step 4: Run, expect PASS** — `go test ./internal/pricing ./internal/agentlogdb ./internal/agentlog ./internal/agentreport`; `make lint-diff`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(pricing): codex price rows and per-agent repricing (#1517)"`
 
-### Task 4.7: `agentlog.ParseCodex` — rows, usage mapping, dialects, resume state
+### Task 4.3: Codex sub-agents through the parent's spawn link (+ the never-open guard)
 
-**Depends on:** Task 4.1, Task 4.6
+**Depends on:** Task 4.2 (same file `internal/agentlog/codex.go`)
 **Files:**
-- Create: `internal/agentlog/codex.go`
-- Create: `internal/agentlog/testdata/codex/*.jsonl` (written from scratch: `legacy.jsonl`, `paginated.jsonl`, `mixed.jsonl`, `usage.jsonl`, `tools.jsonl`, `denial.jsonl`, `aborted.jsonl`, `late_context.jsonl`, `child.jsonl`, `sentinel.jsonl`)
-- Test: `internal/agentlog/codex_test.go`
+- Modify: `internal/sessionfeed/live.go` (export `CodexChildMeta(firstLine []byte) (id, parent string, ok bool)` — today's `session_meta` id + `parent_thread_id`/`sourceParent` check; `codexChildPath` calls it, behaviour unchanged)
+- Modify: `internal/sessionagent/adapter.go` (`Transcript.ChildImportFile(childID string, parents []string) (string, bool)`)
+- Modify: `internal/sessionagent/codex.go` (`codexTranscript.ChildImportFile`), `internal/sessionagent/claude.go` (`claudeTranscript.ChildImportFile` → `"", false`)
+- Modify: `internal/agentlog/codex.go` (child mode; `collab_agent_spawn_end`)
+- Modify: `internal/agentlog/claude.go` (`ParseOptions.Depth int`; `ParseResult.Subagents []agentlogdb.AgentSubagent`)
+- Modify: `internal/agentlog/scan.go` (children after the workbench's own rollouts; `storeSlice` passes `pr.Subagents`; no session row for a child)
+- Modify: `internal/agentlogdb/agent_log.go` (events upsert takes a non-empty `spawned_agent_id`; `CodexSubagents(sessionUUID string) ([]AgentSubagent, error)`)
+- Modify: `internal/agentreport/classes.go` (`isAgentTool` also true for Codex's `spawn_agent`)
+- Test: `internal/agentlog/codex_test.go`, `internal/agentlog/adapter_test.go`, `internal/sessionagent/codex_test.go`, `internal/sessionfeed/compressed_test.go` (unchanged, must stay green), `internal/agentlogdb/agent_log_test.go`
 
 **Interfaces:**
-- Consumes: `codexrollout.Line/Event/ResponseItem/TokenUsage/ReadHeader`, `CostFor`, `NextLine`, `maxLineBytes`
-- Produces:
-  - `const CodexParserVersion = 1` (`ParserVersion` — 4 in code today — is unchanged)
-  - `type CodexOpenCall struct { CallID, Name, Start, Key string }`
-  - `type CodexTurn struct { Start string; OwnerCounted bool }`
-  - `type CodexState struct { V int; SessionID, RootSessionID string; Exec bool; Model, Provider string; NextOrdinal int64; Turn *CodexTurn; Open []CodexOpenCall }` (JSON = `parse_state`, snake_case keys; `V` = `CodexParserVersion`)
-  - `type CodexParseOptions struct { Path, Folder, RootSessionID, RootPath string; State *CodexState; MaxRows int }` — `RootSessionID == ""` = this file is a root
-  - `type CodexParseResult struct { ParseResult; State CodexState; UsageMismatch int }`
-  - `var ErrNoCodexState = errors.New("codex: mid-file read without parse state")`
-  - `func ParseCodex(r io.Reader, startOffset int64, o CodexParseOptions) (*CodexParseResult, error)` — `startOffset > 0 && o.State == nil` (or `State.V != CodexParserVersion`) → `ErrNoCodexState`, nothing parsed
-- Mapping (spec §4.7, exact):
-  - `api_call` per `token_count` with `last_token_usage`: `input_tokens` stored = `max(0, input − cached − cache_write)` (negative → stored 0, `UsageMismatch++`), `cache_read_tokens` = `cached_input_tokens`, `cache_write_5m_tokens` = `cache_write_input_tokens`, `output_tokens` = `output_tokens` (reasoning never added), `name` = the current `turn_context.model`; cost `CostFor("codex", model, "", …)`; unknown or missing model → cost 0, `cost_estimated`. A `token_count` with no `last_token_usage` stores nothing.
-  - `owner_turn` (trigger `""`): the first `user_message` (legacy) or `UserMessage` item (`item_completed`/`item_started`, paginated) after `task_started`/`turn_started`; a turn with both dialects counts once (`Turn.OwnerCounted`); a user message with no turn start opens its own turn. `response_item` and `compacted` text is never counted.
-  - `tool` per `function_call`/`custom_tool_call` (`name` = tool name, key reserved at the call, held in `State.Open`), paired by `call_id` with its `_output`: an `AgentToolResult{Key: <the call's key>, TS, Outcome, ErrorClass, ResultBytes}`; outcome `denied` (class `user-rejected`… as pinned) only where the output matches Codex's denial wording pinned in `denial.jsonl`, else `ok`/`error` (`errorClass`); at most 256 open calls, the oldest dropped as `AgentToolResult{Key, Outcome: "pending", ErrorClass: "unpaired"}`.
-  - `turn_aborted` with reason `interrupted`: the turn's open calls get outcome `interrupted`; no extra `owner_turn` row is written (spec §4.7 maps an interrupt to `outcome = interrupted` only) (earlier draft: plus one `owner_turn` with trigger `interrupt`, the twin of Claude's interrupt turn).
-  - `compacted` line / `context_compacted` event → `compaction`.
-  - Key `codex:<State.SessionID>:<ordinal>`, ordinal from `State.NextOrdinal`. Events go under `RootSessionID` (or the file's own id for a root); a child's events carry `agent_id` = the child's thread id.
-  - Session row (roots only, child → the root's row with `SourcePath = RootPath`): `agent = 'codex'`, `home_cwd` = header cwd, `source_path` = `Path`, `model`, `git_branch` from `session_meta`, `started_at`/`ended_at` from line timestamps.
-  - Text is never stored (AGENTLOG-01).
-- Needs: `AgentToolResult` gains `Key string` (when set, `ApplyAgentLogBatch` pairs by it instead of `"tool:"+ToolUseID`) — `internal/agentlogdb/agent_log.go`, test `TestApplyAgentLogBatch_ToolResultPairsByKey`.
+- `codexTranscript.ChildImportFile(childID, parents)`: `childID` must match `codexIDRe`; globs `rollout-*-<childID>.jsonl` under the same roots `ImportFile` builds from `row.Home` (`sessions/*/*/*/` and flat `archived_sessions/`), keeps only matches with `noSymlinkBelow`, opens each through `rollout.Open`, reads at most the first 64 KB of text up to the first `\n`, and returns the first whose `sessionfeed.CodexChildMeta` gives `id == childID` and `parent ∈ parents`. Nothing else is opened.
+- Parser, root rollout (`ParseOptions.AgentID == ""`): an `event_msg` `collab_agent_spawn_end` with a valid `new_thread_id` adds `AgentSubagent{SessionUUID: o.SessionUUID, AgentID: <new_thread_id>, Depth: o.Depth + 1}` to `pr.Subagents` (dropped past depth 8, `sessionfeed`'s `maxSubagentDepth`), and sets `SpawnedAgentID` on the `tool:codex:<call_id>` row of the same `call_id` — in memory when the call is in this parse, else by adding a key-only upsert row (`Kind: "tool"`, `Outcome: "pending"`, `SpawnedAgentID`) whose conflict clause keeps every other column.
+- Parser, child rollout (`ParseOptions.AgentID != ""`, `Depth ≥ 1`): events carry `AgentID` and `IsSidechain = true`; `user_message`, `item_completed` `UserMessage` and `turn_aborted` write nothing (they are the parent agent's, not the owner's); **no** entry in `pr.Sessions` (the root's session row is the only one); `api_call` and `tool` rows as for a root, content keys unchanged; its own spawn events add grandchildren at `Depth + 1`.
+- `ApplyAgentLogBatch`: `b.Subagents` rows whose session row does not exist are skipped (the `UpsertAgentSubagent` rule), so a child link can never orphan; the events upsert gains `spawned_agent_id = CASE WHEN excluded.spawned_agent_id <> '' THEN excluded.spawned_agent_id ELSE agent_log_events.spawned_agent_id END`.
+- Scan order in `Scan`, after `scanOwnedFiles` for the workbench's files: for each owned Codex session `scanOwnedFiles` returned (read this scan or unchanged), `al.CodexSubagents(rootUUID)`; for each link (by depth, then id), `tr.ChildImportFile(link.AgentID, parents)` (`tr` = the root's `Transcript`; cost: one glob and one first-line read per linked child per scan, then `scanCodexFile`'s unchanged-file skip) with `parents` = the root id plus every linked child id of that root; found → a `TranscriptFile{Path, SessionUUID: rootUUID, Agent: AgentCodex, Subagent: true, AgentID: link.AgentID, Depth: link.Depth}` read by `scanCodexFile` with the same budget `stop` (never through `ownsSession`: a child belongs to its root); not found → `res.CodexRolloutsMissing++` and looked for again next scan. Failures are `codexFailure` with the child's id, never a path (FILES-01). Links found during this pass are picked up in the same loop until none is new or the budget stops (`res.Incomplete`).
+- [ ] **Step 1: Write the failing tests** (fixtures from scratch: a parent rollout, a child and a grandchild with their own `session_meta` naming the parent; written under the test `CODEX_HOME` by main's `writeRollout` helper)
+  - `TestAgentlog_CodexChildImportsUnderRoot`: the parent's spawn event names the child → after one scan the child's `api_call`/`tool` rows have `session_uuid` = the root, `agent_id` = the child, `is_sidechain` 1; one `agent_log_subagents` row `(root, child, depth 1)`; no `owner_turn` from the child; still one session row
+  - `TestAgentlog_CodexChildInOtherFolderCountsForRoot` (the child's `session_meta` cwd is `/tmp/elsewhere`)
+  - `TestAgentlog_CodexGrandchildDepthTwo`
+  - `TestAgentlog_CodexChildFoundOnLaterScan` (the child file written after the first scan: first scan counts it in `codex_rollouts_missing`, the second imports it)
+  - `TestAgentlog_CodexChildNamingOtherParentNotRead` (named by the spawn event, but its `session_meta` names another thread → not read, counted missing)
+  - `TestAgentlog_CodexSpawnRowLinkedAcrossSlices` (`batchRows = 3`, the `spawn_agent` call and the spawn event in different slices → the stored tool row has `spawned_agent_id` = the child)
+  - `TestAgentlog_CodexKilledBetweenParentAndChild` (ctx cancelled after the parent's slice → the link row is stored; the next scan reads the child; no duplicates)
+  - `TestAgentlog04_CodexUnnamedRolloutNeverOpened` (AGENTLOG-04 guard): a rollout under `sessions/` whose `session_meta` names the owned root as its parent, which no spawn event names and no terminal row lists, is `chmod 000` (any open would fail the scan) → the scan ends with `FailedFiles == 0`, no `agent_log_files` row for its path, and the fake adapter (main's `fakeCodexAdapter` in `adapter_test.go`, extended to record `ChildImportFile` ids) records no `ChildImportFile` of its id and no `Open` of its path
+  - `TestCodexTranscript_ChildImportFileChecksParentAndSymlinks` (sessionagent): wrong id shape → false; a symlinked match → false; a match whose meta names another parent → false; an archived child → found
+  - `TestAgentlog05_CodexReadOnly` gains the child and grandchild (every file's mode, mtime and hash unchanged)
+  - `TestApplyAgentLogBatch_SpawnedAgentIDFilledOnConflict` (agentlogdb)
+  - `TestFeed_CodexSubagentsListed` and every `internal/sessionfeed` test stay unchanged.
+  - Token totals: the builder checks on real rollouts (own machine, nothing copied) whether a parent's `token_count` already includes its children's; the fixture pins the answer (`TestAgentlog_CodexParentTotalsExcludeChildren`); if they include them, the child parse skips `api_call` rows and the test says so (spec §4.7).
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog ./internal/sessionagent ./internal/agentlogdb -run 'Codex(Child|Grandchild|SpawnRow|Killed|Unnamed|ParentTotals)|ChildImportFile|SpawnedAgentID'`.
+- [ ] **Step 3: Implement.** `go test ./internal/transporttest` too: if the contract suite's `session-analytics` cells list the `Transcript` methods, add `ChildImportFile` for both agents there (regenerate `matrix.golden` only when the cell list changes).
+- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog ./internal/agentlogdb ./internal/agentreport ./internal/sessionagent ./internal/sessionfeed ./internal/transporttest`; `make lint-diff`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex sub-agents through the parent's spawn link (#1517)"`
 
-- [ ] **Step 1: Write the failing tests**
-  - `TestParseCodex_UsageMapping`: input 100, cached 60, cache write 10, output 20, reasoning 5 → fresh 30, read 60, write 10, output 20; input 50, cached 60 → fresh 0 and `UsageMismatch == 1`
-  - `TestParseCodex_TotalTokensRule`: fixture lines satisfy `total_tokens = input_tokens + output_tokens` and the stored output is `output_tokens` (pins the rule the builder confirmed)
-  - `TestParseCodex_NoLastTokenUsage` → no `api_call`
-  - `TestParseCodex_LateTurnContext`: `token_count` before the first `turn_context` → `name == ""`, cost 0, `CostEstimated`
-  - `TestParseCodex_BothDialects`: legacy file, paginated file, mixed file, a turn carrying both dialects (one `owner_turn`), a user message with no turn start (its own turn)
-  - `TestParseCodex_ToolsPairAndDenial`: `function_call` + output → `ok` with duration; denial wording → `denied`; other text → `ok`; 257 open calls → oldest `unpaired`
-  - `TestParseCodex_AbortedTurn` (open calls `interrupted`; the owner-turn count is unchanged by the abort) and `TestParseCodex_Compaction`
-  - `TestParseCodex_TruncatedLine`: last line without `\n` is not consumed (`Consumed` stops before it); completed later → parsed once
-  - `TestParseCodex_MidFileResumeEqualsWholeRead`: `MaxRows = 3`, read in slices carrying `State` → same events, keys, model, cost as one read; a tool call spanning a slice boundary still pairs
-  - `TestParseCodex_NoStateMidFileRefused` → `ErrNoCodexState`
-  - `TestParseCodex_ChildEventsUnderRoot` (`RootSessionID` set: events' `session_uuid` = root, `agent_id` = child id, keys use the child's own id)
-  - `TestParseCodex_StoresNoText` (AGENTLOG-01 twin): `sentinel.jsonl` carries `SENTINEL` in user/agent messages, tool arguments/outputs, `response_item` and `compacted`; no column of any returned row contains it
-  - `TestApplyAgentLogBatch_ToolResultPairsByKey`
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ParseCodex' ; go test ./internal/agentlogdb -run PairsByKey`.
-- [ ] **Step 3: Implement** `codexParser` beside `claudeParser`: one `handle(raw, off)` switching on `Line.Type` (`session_meta`, `turn_context`, `event_msg`, `response_item`, `compacted`), state carried in `CodexState`.
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog ./internal/agentlogdb`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex rollout parser with resume state (#1517)"`
-
-### Task 4.8: `db.CodexTerminalSessionIDs` — link Codex rows to workbench terminal sessions
+### Task 4.4: Report — agent filter and per-block `agents`
 
 **Depends on:** none
 **Files:**
-- Modify: `internal/db/workbench_agent_analytics.go`
-- Test: `internal/db/workbench_agent_analytics_test.go` (create)
-
-**Interfaces:**
-- Produces: `type CodexSessionRef struct { SessionID, Path string }`; `func (db *DB) CodexTerminalSessionIDs(refs []CodexSessionRef) (map[string]int64, error)` — per ref: `SELECT id FROM terminal_sessions WHERE kind = 'codex' AND agent_transcript_path = ? LIMIT 1`, else `… AND claude_session_id = ?` (the id from the file name); keyed by `SessionID`; plain reads, no transaction (the twin of `ClaudeTerminalSessionIDs`).
-- [ ] **Step 1: Write the failing tests** — `TestCodexTerminalSessionIDs_ByPathThenID`: one row matched by `agent_transcript_path`, one by `claude_session_id`, a `kind = 'claude'` row with the same id ignored, an unknown id absent.
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/db -run CodexTerminalSessionIDs`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/db -run 'CodexTerminalSessionIDs|ClaudeTerminal'`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(db): resolve codex terminal sessions for analytics (#1517)"`
-
-### Task 4.9: `ScanCodex` — listing, header, ownership, the never-owned states (AGENTLOG-04 guards)
-
-**Depends on:** Task 4.1, Task 4.5
-**Files:**
-- Create: `internal/agentlog/scan_codex.go`
-- Create: `internal/agentlog/codex_discover.go` (walk + listing)
-- Test: `internal/agentlog/scan_codex_test.go` (fixture `newCodexFixture`: watchtower.db + moved agentlog.db + temp `CODEX_HOME`; helper `writeRollout(day, id, lines...)`; a counting opener recording bytes read per path)
-
-**Interfaces:**
-- Produces:
-  - `type CodexOptions struct { CodexHome string; Budget time.Duration; Now func() time.Time; Open func(path string) (io.ReadSeekCloser, error) }` (`Open` nil = `os.Open`; `CodexHome` `""` = `codexrollout.DefaultHome()`)
-  - `type CodexResult struct { Listed int \`json:"listed"\`; Pending int \`json:"pending"\`; Complete bool \`json:"complete"\`; Excluded int \`json:"excluded"\`; Foreign int \`json:"foreign"\`; Held int \`json:"held"\`; Detached int \`json:"detached"\`; OrphanSkipped int \`json:"orphan_skipped"\`; UnreadableUnowned int \`json:"unreadable_unowned"\`; Failed int \`json:"failed"\`; UsageMismatch int \`json:"usage_mismatch"\`; EventsWritten int \`json:"-"\`; FirstFailure error \`json:"-"\` }` — the state counts are install-wide after the pass (`CodexFileCounts`); `Listed`/`Pending`/`Failed`/`UsageMismatch` are this pass's
-  - `func ScanCodex(ctx context.Context, main *db.DB, al *agentlogdb.DB, o CodexOptions) (*CodexResult, error)` — refuses with `agentlogdb.ErrNotMoved` before the move (as `Scan`); writes nothing to `main`
-  - `type CodexFile struct { Path, ThreadID string; Size int64; MTime string }`; `func ListRollouts(sessionsDir string) (files []CodexFile, walkErr error)` — every `rollout-*.jsonl` (and `rollout-*.jsonl.zst`, Open points) under `sessions/YYYY/MM/DD`, `os.Lstat`/`ReadDir` entry types only: symlinked folders and files are skipped and never opened; the `sessions` root is resolved once with `EvalSymlinks`; a folder that cannot be read sets `walkErr` and the walk goes on; a missing `sessions` dir → no files, no error
-  - `type codexWorkbench struct { ID int64; Folder string; Analytics bool; Roots []string }` and `func codexOwner(cwd string, wbs []codexWorkbench) (codexWorkbench, bool)` — `OwnerFolder(resolved(cwd), allFolders, wb.Folder, wb.Roots) != ""` over **every** workbench (roots = `worktreeRoots(folder, WorktreeRoots(ctx, folder), ledger)` as `Scan` computes them)
-- Behaviour in this task (reading owned files comes in 4.10; an owned new file is written `ok` with its owner and left at offset 0):
-  - Inert: no workbench with analytics on → return a zero result **before** listing or opening anything.
-  - A new path (no row, or `pending`): `ReadHeader` through `o.Open` (≤ `HeaderCap`); `ErrNoHeader`/read error → `unreadable`, class `no_header`, no owner; exec originator → `excluded`; parent thread set → left for 4.12 (this task stores it `pending`); else `codexOwner`: owner with analytics on → `ok` + `project_id` + `folder_path` (the workbench folder, never the cwd); analytics off or no match → `foreign`. The cwd and originator are used and never stored.
-  - `excluded`, `foreign`, `unreadable` rows whose size and mtime are unchanged are not opened. A grown `excluded` stays `excluded` (not opened); a grown `foreign` gets its header read again; a changed `unreadable` is retried.
-  - Every row-state write goes through `SetCodexFileState` with the `FileStamp` this pass saw; a lost compare-and-set leaves the row for the next pass.
-- [ ] **Step 1: Write the failing tests**
-  - `TestScanCodex_HeaderOnlyForForeign` (AGENTLOG-04 guard): a foreign file of 1 MB → the counting opener saw ≤ `HeaderCap` bytes of it
-  - `TestScanCodex_ForeignStoresNoContent` (guard): the foreign row's `project_id`, `parse_state`, `error_class` are NULL and no session, event or subagent row exists
-  - `TestScanCodex_NothingOpenedWhenAnalyticsOff` (guard): no workbench with analytics on → the opener is never called and no `agent_log_files` row is written
-  - `TestScanCodex_ExecExcluded`, `TestScanCodex_OwnershipByCWD` (header cwd inside the folder → `ok` with `project_id` and `folder_path` = the folder), `TestScanCodex_NestedOffWorkbenchKeepsFileOut` (nested workbench with analytics off → `foreign`, the parent does not get it)
-  - `TestScanCodex_NoHeaderUnreadableUnowned`, `TestScanCodex_MetaOnlyThenGrown` (only `session_meta` so far → `ok` with the header; grown → read by 4.10 — this task asserts the row and no failure)
-  - `TestScanCodex_SecondPassOpensNothing`: 500 fixture files (foreign/excluded) → second pass makes 0 opener calls
-  - `TestListRollouts_SymlinksNeverFollowed`: a symlinked day folder and a symlinked rollout are absent from the listing and never opened
-  - `TestListRollouts_OldDayFolderListed`: a file in a 2025 day folder is listed (no day window, D27)
-  - `TestScanCodex_NoWriteTxOnMain` (the twin of `TestScan_NoWriteTxOnMain`, `query_only` main handle)
-  - `TestScanCodex_RefusesBeforeMove`
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ScanCodex|ListRollouts'`.
-- [ ] **Step 3: Implement** the start of `ScanCodex`: `Moved` check → analytics-on ids (inert) → `ListWorkbenches` + `AgentAnalyticsWorkbenchIDs` + roots per workbench (`WorktreeRoots`, `WorkbenchSessionWorktrees`) → `ListRollouts` → per file the registry decision above.
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex pass listing, header ownership and registry (#1517)"`
-
-### Task 4.10: `ScanCodex` — reading owned plain rollouts, completeness, failures, import progress
-
-**Depends on:** Task 4.7, Task 4.8, Task 4.9
-**Files:**
-- Modify: `internal/agentlog/scan_codex.go`, `internal/agentlog/scan.go` (`recordImportProgress` ANDs the Codex pass)
-- Test: `internal/agentlog/scan_codex_test.go`, `internal/agentlog/scan_test.go`
-
-**Interfaces:**
-- Consumes: `ParseCodex`, `ApplyAgentLogBatch`, `CodexTerminalSessionIDs`, `MarkCodexFilesMissing`, `SetCodexPassMeta`, `CodexPassMeta`
-- Produces: `func scanCodexFile(st store, f CodexFile, row *agentlogdb.AgentLogFile, wb codexWorkbench, stop func() bool, res *CodexResult) error`; test seam `var codexSliceHook func(path string, slice int)` (nil in production, called after each committed slice); `recordImportProgress` = `!res.Incomplete && codexComplete` where `codexComplete` = `CodexPassMeta().Complete`, or true when no pass has stored meta yet.
-- Rules:
-  - Resume (plain file): unchanged size+mtime under `CodexParserVersion` → not opened; `size >= read_offset` with a parsable `parse_state` of the same version → read from `read_offset` with that state; otherwise from 0 with no state (dedupe drops what is stored; a shrunk file is re-read from 0).
-  - Slices of `batchRows`, each one `ApplyAgentLogBatch` carrying `File{Agent: "codex", State: "ok", ParseState: <json of pr.State>, ProjectID, FolderPath, ParserVersion: CodexParserVersion}`; while `More`, `Size, MTime = ReadOffset, ""` (Claude's rule). Sessions get `TerminalSessionID` from `CodexTerminalSessionIDs` read before the write tx.
-  - A slice the store refuses, an open or read error (incl. a file deleted mid-read) → `Failed++`, `FirstFailure`, keeps the last committed offset, the pass goes on; it counts as handled.
-  - Order: roots before children (children wait for 4.12), each group by path.
-  - Completeness: `Complete` = the walk had no error **and** every listed file was handled (read to its end, or in/moved to `held`, `detached`, `foreign`, `excluded`, `unreadable`, `too_large`, `orphan_skipped`, or failed this pass); a budget/ctx stop with files not looked at → `Complete = false`, `Pending` = those files. A `pending` row is never handled.
-  - Missing sweep: `MarkCodexFilesMissing(listed)` only when the walk had no error (a budget stop never marks unlisted files: the listing is complete before reading starts).
-  - End: `SetCodexPassMeta{Complete, Pending, At}`; counts from `CodexFileCounts`.
-- [ ] **Step 1: Write the failing tests** (one per §4.7 failure row and §5 parser/scan items)
-  - `TestScanCodex_ReadsOwnedFileWholeAndIncrementally` (rows, model, cost; a second pass on an appended file adds only the new lines)
-  - `TestScanCodex_SlicesEqualWholeRead`: `batchRows = 3`, and separately two passes → same rows, keys, model, cost as one read
-  - `TestScanCodex_CorruptParseStateRereadsFromZero` (no duplicates)
-  - `TestScanCodex_KilledAfterSecondSlice`: `codexSliceHook` cancels ctx after slice 2 → meta `codex_pass_complete = 0`; next pass ends with the rows of one whole read
-  - `TestScanCodex_StoreRefusesSecondSlice`: a `RAISE(ABORT)` trigger on the second slice's key → first slice's rows and offset stay, `Failed == 1`, pass `Complete`; trigger dropped → next pass finishes from that offset
-  - `TestScanCodex_DeletedBetweenSlices` (`Failed == 1` this pass; next pass marks it `missing_at`, rows stay)
-  - `TestScanCodex_ShrunkFileReread` (no duplicates)
-  - `TestScanCodex_LineWithoutNewlineWaits`
-  - `TestScanCodex_ResumedSessionInOldDayFolder` (appended file in an old day folder picked up next pass)
-  - `TestScanCodex_BudgetStopNotMissingAndPending`: fake `Now` past the budget after the first file → `Complete == false`, `Pending` = unreached count, no `missing_at`
-  - `TestScanCodex_WalkErrorIncomplete`: an unreadable (`chmod 000`) day folder → `Complete == false`, no missing marks, `agent_log_import.complete` for the workbench stays 0 after its `Scan`
-  - `TestScanCodex_FailingFileStillComplete` (a file failing every pass → passes end `Complete`)
-  - `TestScanCodex_CodexHomeChange`: two passes with two homes → the first home's files get `missing_at`, rows stay; the second's are read as new paths
-  - `TestScanCodex_TwoPassesAtOnce`: two goroutines → each event stored once, same final file states
-  - `TestScanCodex_TerminalSessionLinked` (by `agent_transcript_path`, and by id when the path is NULL)
-  - `TestScanCodex_DedupeAcrossRescans` (a parser-version bump re-read stores no new rows)
-  - `TestScan_ImportProgressWaitsForCodexPass` (scan_test.go): Claude scan complete, meta `codex_pass_complete = 0` → `agent_log_import.complete = 0`; after a complete Codex pass and a Claude scan → 1; `files_stored` counts the Codex `ok` file
-  - Existing `TestScan_Import*` tests stay unchanged and green (no meta = complete).
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ScanCodex|ImportProgressWaitsForCodexPass'`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog` (once, with `-race -run ScanCodex_TwoPassesAtOnce` at the end); `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex pass reads owned rollouts in resumable slices (#1517)"`
-
-### Task 4.11: `ScanCodex` — order of steps, owner fingerprint, `detached`, adoption
-
-**Depends on:** Task 4.10
-**Files:**
-- Modify: `internal/agentlog/scan_codex.go`
-- Test: `internal/agentlog/scan_codex_test.go`
-
-**Interfaces:**
-- Produces: `func codexFingerprint(wbs []codexWorkbench) string` — sha256 hex over the lines `id|folder|analytics(0/1)|external roots` sorted by id, where external roots = the workbench's roots not within **any** workbench folder, sorted.
-- Order at the start of a pass (before any file is read), exactly:
-  1. For each analytics-on workbench: `AdoptAgentLogFiles(id, folder, liveIDs)` (one tx with its sessions).
-  2. `codexFingerprint` ≠ stored → `ApplyCodexOwnerFingerprint(old, new, now)` (foreign → pending, CAS).
-  3. Owner check of every owned row (`ok`, `held`, `too_large`, `unreadable` with an owner) and every `detached` row against the live analytics-on workbenches: owner gone or off → `detached` (keeps `project_id`, `folder_path`, `read_offset`, `parse_state`; nothing more read however it grows); owner live and on for a `detached` row → a root back to `ok` (reading resumes from `read_offset` with the kept `parse_state`, no header read), a child back through the sub-agent rules (4.12; until then `held`).
-  4. Reading.
-  The pass works from the workbench list it read at its start; changes mid-pass are seen on the next pass.
-- [ ] **Step 1: Write the failing tests**
-  - `TestScanCodex_DetachedReadsNothingMore` (AGENTLOG-04 guard): analytics off for the owner while the file grows → `detached`, the counting opener sees no read of it, stored rows unchanged; on again → resumes from the kept offset, no duplicates, right model
-  - `TestScanCodex_AnalyticsOnReadsForeignHeaderOnce`: owner workbench off → `foreign`, nothing past the header; turned on → fingerprint changes, next pass reads the header once and imports
-  - `TestScanCodex_NewWorkbenchAdoptsForeign`
-  - `TestScanCodex_LedgerWorktreeAdoptsNextPass` (an external worktree recorded via `RecordSessionWorktree` after the first pass → fingerprint changes → its file adopted)
-  - `TestCodexFingerprint_InFolderWorktreeIgnored` (a root under the folder's `.claude/worktrees/` does not change it; an external root does)
-  - `TestScanCodex_FingerprintChangeThenBudgetStop` (pending rows left; the next pass finishes them with no new change)
-  - `TestScanCodex_TwoPassesQueueForeignOnce`
-  - `TestScanCodex_WorkbenchDeletedAdoptedOnSameFolder`: owner deleted → `detached`; a new workbench on the same folder adopts session and file rows in one transaction and reading resumes; a parent workbench with analytics on does not take it
-  - `TestScanCodex_WorkbenchDeletedMidPass` (deleted between two slices via `codexSliceHook`; next pass → `detached`; rows stored in between adopted by a recreated workbench)
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ScanCodex|CodexFingerprint'`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex owner fingerprint, detached rows and adoption (#1517)"`
-
-### Task 4.12: `ScanCodex` — sub-agent rollouts and the orphan clock
-
-**Depends on:** Task 4.11
-**Files:**
-- Modify: `internal/agentlog/scan_codex.go`
-- Test: `internal/agentlog/scan_codex_test.go`
-
-**Interfaces:**
-- Consumes: `CodexSessionStored`, `ParseCodex` with `RootSessionID`/`RootPath`
-- Rules (spec §4.7 "Sub-agents"):
-  - A file whose header names a parent thread is never an owner session; the parent is found by thread id in this pass's full listing (the id in the file name). Exec is decided on the root only.
-  - Root decided (`ok` **and** `CodexSessionStored(root id)`) → the child takes the root's `project_id`/`folder_path`, becomes `ok` and is read with `RootSessionID`/`RootPath`; an `agent_log_subagents` row `(root id, child id, AgentType from the header source if present, Depth 0, Finished nil)` is written in the child's first batch.
-  - Root `excluded` → child `excluded`; root `foreign` → `foreign`; root `too_large`/`unreadable` (incl. a damaged header) → `orphan_skipped` on the same pass; root `detached` → `detached`.
-  - Root listed but not decided → `held` (`state_since` = the pass that first held it, kept by `SetCodexFileState`).
-  - `held` → `orphan_skipped` only after a **complete** pass without the parent's id in the listing **and** `state_since` older than 7 days. Rows are never stored for it.
-  - An `orphan_skipped` or `held` child is looked at again whenever its parent's id is listed or its root's state changes.
-  - Roots are read before children in one pass, so a child listed before its root still imports that pass.
-  - Token totals: each file's own `token_count` deltas only (fixture pins that a parent's totals exclude its children; if real files show otherwise, the builder switches the child to tool/time rows only and amends the fixture — Open points).
-- [ ] **Step 1: Write the failing tests**
-  - `TestScanCodex_ChildInOtherFolderCountsForParent`
-  - `TestScanCodex_ChildListedBeforeRootSamePass`
-  - `TestScanCodex_ChildOfRootWithoutSessionRowHeld` (root stopped by the budget before its first slice)
-  - `TestScanCodex_ChildOfTooLargeOrDamagedRoot` (→ `orphan_skipped` at once; root replaced by a good file → `ok` → child imports)
-  - `TestScanCodex_ChildOfExcludedOrForeignRoot`
-  - `TestScanCodex_HeldChildParentNextPass`
-  - `TestScanCodex_OrphanAfterSevenDays` (fake `Now` + 8 days, complete pass, no parent → `orphan_skipped`, nothing stored); `TestScanCodex_IncompletePassNeverOrphans`; `TestScanCodex_FirstImportOldChildrenHoldThenStore` (old mtimes, parent listed not read → held, then stored, never `orphan_skipped`); `TestScanCodex_OrphanImportedWhenParentAppears`
-  - `TestScanCodex_HeldChildAcrossAnalyticsOffOn` (comes back `held` while the root has no session row, imports once it does)
-  - `TestScanCodex_ChildOfNeverDoneRootStillComplete`
-  - `TestScanCodex_ParentTotalsExcludeChildren` (fixture pins it)
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run ScanCodex`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): codex sub-agent rollouts under their root, orphan clock (#1517)"`
-
-### Task 4.13: `ScanCodex` — compressed rollouts (verify, resume, too large, damaged)
-
-**Depends on:** Task 4.2, Task 4.12
-**Files:**
-- Modify: `internal/agentlog/scan_codex.go`
-- Test: `internal/agentlog/scan_codex_test.go`
-
-**Interfaces:**
-- Consumes: `codexrollout.IsZstd`, `VerifyZstd`, `OpenZstd`, `ErrTooLarge`, `ErrCorrupt`
-- Rules (spec §4.7 "Compressed rollouts"):
-  - The magic at offset 0 is checked on **every** pass for every file that is opened (a plain file compressed in place is noticed).
-  - Header of a compressed new file: stream `OpenZstd` up to `HeaderCap` and no further.
-  - Before the first slice of a version: `VerifyZstd` once; `ErrTooLarge` → `too_large`; `ErrCorrupt`/read error → `unreadable` (class `corrupt`); nothing from that version is written. Pass → `verified_at = "<size>:<mtime>"`, `compressed = 1`.
-  - `read_offset` counts decompressed bytes; `size`/`mtime` stay the on-disk ones; `complete = 1` when the last slice reached the end.
-  - Resume: on-disk `size:mtime` == `verified_at` and `complete = 1` → not opened; equal and `complete = 0` → no re-check, stream, discard `read_offset` bytes, go on in slices; differs → check again; pass → read from 0 (dedupe drops what is stored).
-  - A verified, imported file later replaced by a damaged one → `unreadable`, earlier rows stay (not in `codex_unread`, counted in `agents scan`).
-  - A corrupt version is retried only when size or mtime changes.
-- [ ] **Step 1: Write the failing tests**
-  - `TestScanCodex_CompressedThreePassesEqualsOneRead` (budget stop after each slice; ends `complete = 1`)
-  - `TestScanCodex_CompressedDamagedNearEndStoresNothing`, `TestScanCodex_CompressedOverCapStoresNothing` (lowered cap; `too_large`)
-  - `TestScanCodex_CompressedReplacedByDamagedKeepsRows` (and `CodexUnread == 0` for it)
-  - `TestScanCodex_CompressedInPlaceBetweenPasses` (plain → zstd at the same path: no twice-counted rows)
-  - `TestScanCodex_ZstCopyBesidePlain` (`.jsonl` and `.jsonl.zst` of one session: no twice-counted rows)
-  - `TestScanCodex_CorruptRetriedOnlyOnChange` (unchanged → not opened; touched → retried)
-  - `TestScanCodex_CodexUnreadCases`: owned too-large file and owned file damaged after its header → `CodexUnread(wb, "") == 2`; a file damaged in its header → not counted there, `UnreadableUnowned == 1`
-  - `sessionfeed`/`terminal` still skip a compressed rollout: their existing tests are run unchanged.
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ScanCodex_(Compressed|ZstCopy|Corrupt|CodexUnread)'`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog ./internal/sessionfeed ./internal/terminal`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentlog): verified zstd codex rollouts with resume (#1517)"`
-
-### Task 4.14: Daemon budget share, `agents scan` Codex pass and its `--json` keys
-
-**Depends on:** Task 4.13
-**Files:**
-- Modify: `internal/daemon/agent_analytics.go` (Codex pass first, one share of the budget, logs)
-- Modify: `cmd/agents.go` (`agents scan` runs the Codex pass first; `codex` key)
-- Test: `internal/daemon/agent_analytics_test.go`, `cmd/agents_test.go`
-
-**Interfaces:**
-- Produces:
-  - daemon seam `var agentAnalyticsCodexHome = codexrollout.DefaultHome`; cmd seam `var agentsCodexHome = codexrollout.DefaultHome`
-  - `phaseAgentAnalytics`: after the move check, `per := agentAnalyticsBudget / time.Duration(len(ids)+1)`; `agentlog.ScanCodex(ctx, d.db, d.agentLog, agentlog.CodexOptions{CodexHome: agentAnalyticsCodexHome(), Budget: per})` first, then `Scan` per workbench with `per`. Logs, once per cycle, counts only: `agent analytics: codex: %d file(s) failed, retrying next cycle; first: %v` (when `Failed > 0`, `FirstFailure` is an id/class error — never file text), `agent analytics: codex: %d token line(s) with negative fresh input` (when `UsageMismatch > 0`), `agent analytics: codex: cycle budget reached, continuing next cycle` (when `!Complete`). A `ScanCodex` error is logged and the Claude scans still run. `items += codex.EventsWritten`.
-  - `agents scan --workbench N [--json]`: `ScanCodex` (unbounded) before `Scan`; JSON = `agentsScanJSON{ *agentlog.Result; Codex *agentlog.CodexResult \`json:"codex"\` }`; the text line gains `, codex: %d listed, %d pending` when the Codex folder exists.
-- [ ] **Step 1: Write the failing tests**
-  - `TestPhaseAgentAnalytics_CodexPassTakesOneShare`: two enabled workbenches, a seam recording budgets → Codex pass and each `Scan` get `30s/3`
-  - `TestPhaseAgentAnalytics_NoCodexFolderIsComplete` (missing `CODEX_HOME` folder → meta `codex_pass_complete = 1`, Claude scan still done)
-  - `TestPhaseAgentAnalytics_CodexSkippedWhenAgentlogNotOpen` and `…BeforeMove` (with a Codex fixture present, no `agent_log_files` Codex row is written)
-  - `TestAgentsScanJSON_CodexKeys`: `codex` keys exactly `complete, detached, excluded, failed, foreign, held, listed, orphan_skipped, pending, unreadable_unowned, usage_mismatch`; the top-level keys of `Result` unchanged
-  - `TestAgentsScan_CodexPassWritesForEveryEnabledWorkbench` (scan of N also imports a file owned by enabled workbench M)
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/daemon -run PhaseAgentAnalytics ; go test ./cmd -run 'AgentsScan'`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run, expect PASS** — `go test ./internal/daemon -run PhaseAgentAnalytics`, `go test ./cmd -run 'Agents'`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(daemon): codex pass in phaseAgentAnalytics and agents scan (#1517)"`
-
-### Task 4.15: Report — agent filter, per-block `agents`, `codex_unread`, Claude-only parser-version conditions
-
-**Depends on:** Task 4.5
-**Files:**
-- Modify: `internal/agentlogdb/agent_report.go` (`agent` on sessions, filter, `agent = 'claude'` on the parser-version conditions)
-- Modify: `internal/agentreport/build.go` (`BuildOverview` agent parameter, keys), `internal/agentreport/context.go`, `skills.go`, `trouble.go` (`Agents` field; Trouble includes Codex sessions)
-- Modify: `cmd/agents.go` (`report --agent`), `internal/coach/metrics.go`, `internal/coach/signals.go` (pass `agentreport.AgentAll` until Task 4.16)
+- Modify: `internal/agentlogdb/agent_report.go` (`AgentReportSessions` agent argument)
+- Modify: `internal/agentreport/build.go` (`BuildOverview` agent parameter, keys), `internal/agentreport/context.go`, `skills.go`, `trouble.go` (`Agents` field)
+- Modify: `cmd/agents.go` (`report --agent`), `internal/coach/metrics.go`, `internal/coach/signals.go` (pass `agentreport.AgentAll` until Task 4.5)
 - Test: `internal/agentlogdb/agent_report_test.go`, `internal/agentreport/build_test.go`, `cmd/agents_test.go`
 
 **Interfaces:**
 - Produces:
-  - `AgentReportSession` gains `Agent string`; `func (d *DB) AgentReportSessions(projectID int64, since, agent string) ([]AgentReportSession, error)` — `agent` `""` = both; `OldFormat` = a **Claude** source file with `parser_version < 2`; `Facts` = a Claude source file exists and none below 3 (both `files` CTE arms gain `f.agent = 'claude'`). A Codex session is never old format and has `Facts = false`.
+  - `func (d *DB) AgentReportSessions(projectID int64, since, agent string) ([]AgentReportSession, error)` — `agent` `""` = both; otherwise `s.agent = ?`. `OldFormat`/`Facts` unchanged (one `ParserVersion` for both agents, as on main; Context and Skills stay gated by `contextMeasured`).
   - `const AgentAll = "all"`; `var ErrUnknownAgent = errors.New("agent must be all, claude or codex")`
   - `func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time, lang Lang, agent string) (*Overview, error)` — `agent` ∈ {`""`, `all`, `claude`, `codex`}, else `ErrUnknownAgent`
   - New JSON keys (pinned):
-    - top level: `agent` (`"all"|"claude"|"codex"`, the filter applied), `agents` (`[]string`, sorted, the agents with sessions in the filtered period, never null), `agent_filter` (`[]string` `["claude","codex"]`, **omitted** unless both agents have sessions in the unfiltered period), `codex_unread` (int; `CodexUnread(workbench, since)`; 0 under `--agent claude`)
-    - `context.agents`, `skills.agents`, `trouble.agents` (`[]string`, never null): the agents whose sessions the block's numbers cover — `context`/`skills` = `["claude"]` when the filtered period has a Claude session else `[]`; `trouble` = the filtered period's agents (Codex sessions count in Trouble, and in its `facts_sessions` and sub-agent read)
-    - `sessions[].agent`
-    - `hints[].agents` (`[]string`, never null): the agents whose rows the hint was computed from — the Context (C1–C3) and Skills (S1) hints `["claude"]`; H1–H7 and T1–T3 the filtered period's agents that contributed to the hint's numbers (spec §4.7: Claude hints say "Claude Code only"). Test `TestBuildOverview_HintAgents`: a period with Claude and Codex sessions → a C1 hint has `["claude"]`, a T1 hint fed by both has `["claude","codex"]`.
-  - The pane's "Claude Code only" rule (for Phase 5, stated here so the JSON carries it): a block shows it when the top-level `agents` contains `codex` and the block's `agents` does not.
+    - top level: `agent` (`"all"|"claude"|"codex"`, the filter applied), `agents` (`[]string`, sorted, the agents with sessions in the filtered period, never null), `agent_filter` (`["claude","codex"]`, **omitted** unless both agents have sessions in the unfiltered period)
+    - `context.agents`, `skills.agents`, `trouble.agents` (`[]string`, never null): Context and Skills = the filtered period's agents whose sessions carry the facts (`sessionagent.CapsOf(agent).AnalyticsContext`, main's `contextMeasured` rule); Trouble = every agent of the filtered period
+    - `sessions[].agent` already exists on main (unchanged)
   - `cmd`: `agents report --agent all|claude|codex` (default `all`); any other value → error `--agent must be all, claude or codex` before any read.
 - [ ] **Step 1: Write the failing tests**
-  - `TestAgentReportSessions_CodexNeverOldFormat`: a period with Codex v1 files and Claude v3 files → every session `OldFormat == false`, the Claude session `Facts == true`, the Codex session `Facts == false`; `ov.OldFormatSessions == 0`
-  - `TestBuildOverview_AgentFilter`: both agents → `AgentFilter == ["claude","codex"]`; `agent = codex` → only Codex sessions, `Agents == ["codex"]`, `Context.Agents == []`, `AgentFilter` still both
-  - `TestBuildOverview_SingleAgentNoFilterNoNote`: an empty period, a workbench with no sessions, a Claude-only period → `agent_filter` absent in the JSON, `context.agents` has no `codex` and top-level `agents` has no `codex`
+  - `TestAgentReportSessions_AgentFilter` (agentlogdb): a Claude and a Codex session → `""` both, `"codex"` one
+  - `TestBuildOverview_AgentFilter`: both agents → `AgentFilter == ["claude","codex"]`; `agent = codex` → only Codex sessions, `Agents == ["codex"]`, `Context.Agents == []`, `Trouble.Agents == ["codex"]`, `AgentFilter` still both
+  - `TestBuildOverview_SingleAgentNoFilter`: an empty period, a workbench with no sessions, a Claude-only period → `agent_filter` absent in the JSON
   - `TestBuildOverview_CodexOnlyEmptyNotError`: `agent = codex` with no Codex data → empty sections, no error
   - `TestBuildOverview_UnknownAgentRefused` → `ErrUnknownAgent`
-  - `TestBuildOverview_TroubleIncludesCodex` (a Codex `denied` tool counts in `trouble.denials`)
-  - `TestBuildOverview_CodexUnread` (one owned too-large file in the period → 1; outside the period → 0)
-  - `TestAgentsReportJSON_PinnedKeys` extended (not relaxed): top level gains `agent`, `agents`, `codex_unread`; `context`, `skills`, `trouble` gain `agents`; `sessions[0]` gains `agent`
+  - `TestAgentsReportJSON_PinnedKeys` extended (not relaxed): top level gains `agent`, `agents`; `context`, `skills`, `trouble` gain `agents`
   - `TestAgentsReportJSON_AgentFilterKeyWithBothAgents`, `TestAgentsReport_AgentFlagRefusesUnknown`
-- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlogdb ./internal/agentreport -run 'AgentReportSessions|BuildOverview' ; go test ./cmd -run AgentsReport`.
+  - `TestReport_CodexSessionsIncludedAndUnpriced` and `TestAgentlog06_CodexTimeAddsUp` unchanged.
+- [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlogdb ./internal/agentreport -run 'AgentReportSessions_AgentFilter|BuildOverview' ; go test ./cmd -run AgentsReport`.
 - [ ] **Step 3: Implement**; every existing `BuildOverview` caller passes `AgentAll` in this task (`cmd/agents.go` passes the flag).
 - [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlogdb ./internal/agentreport ./internal/coach`, `go test ./cmd -run Agents`; `make lint-diff`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(agentreport): agent filter, per-block agents and codex_unread (#1517)"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(agentreport): agent filter and per-block agents (#1517)"`
 
-### Task 4.16: Coach — each proposal measured on the agent its destination serves
+### Task 4.5: Coach — each proposal measured on the agent its destination serves
 
-**Depends on:** Task 4.15; Task 1.1 (only for the two integration tests that insert a `codex_*`/`pack_overlay` proposal). Touches `internal/coach` — rebase onto Phase 2's coach tasks.
+**Depends on:** Task 4.4; Task 1.1 (only for the two integration tests that insert a `codex_*`/`pack_overlay` proposal). Touches `internal/coach` — rebase onto Phase 2's coach tasks.
 **Files:**
 - Modify: `internal/coach/metrics.go` (`Measure` agent parameter, `AgentFor`)
 - Modify: `internal/coach/judge.go` (`verdictOf`), `internal/coach/apply.go` (`baseline`), `internal/coach/signals.go` (`hintSignals` → `AgentAll`)
@@ -2400,6 +1994,7 @@ PRAGMA foreign_keys = ON;
   - `func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until time.Time, agent string) (Metrics, error)`
   - `func AgentFor(destination string) string` — `codex_skill_user`, `codex_agents_md_user`, `codex_rules_allow` → `"codex"`; `pack_overlay` → `agentreport.AgentAll`; every other destination (`claude_md_user`, `claude_skill_user`, `claude_settings_allow`, `prompt_addition`, `session`, `procedure`, `chat`) → `"claude"`. Uses Phase 2's `Dest…` consts when present on the base; otherwise string literals with a `// Phase 2 consts` note that the merge replaces.
   - `verdictOf` and `Applier.baseline` call `Measure(…, AgentFor(p.Destination))`; the weekly proposer's evidence (`hintSignals`) and `coach status` keep the owner's filter (`all` default).
+- Why now: since main's Codex import, `Measure` (`metrics.go`) and `hintSignals` (`signals.go`) call `BuildOverview` unfiltered, so Codex rows already mix into every baseline and verdict (spec §4.7).
 - [ ] **Step 1: Write the failing tests**
   - `TestAgentFor` (table over every destination above)
   - `TestMeasure_AgentFilter` (Claude and Codex rows in one workbench: `claude` sees Claude tasks only, `codex` Codex only, `all` both)
@@ -2412,85 +2007,62 @@ PRAGMA foreign_keys = ON;
 - [ ] **Step 4: Run, expect PASS** — `go test ./internal/coach`, `go test ./cmd -run Coach`; `make lint-diff`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(coach): measure each proposal on its destination's agent (#1517)"`
 
-### Task 4.18: The owner's `CODEX_HOME` reaches the Codex pass
+### Task 4.6: The owner's `CODEX_HOME` reaches the daemon
 
-**Depends on:** Task 4.14
+**Depends on:** none
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift` (`startDaemon()` sets `CODEX_HOME` in the daemon's environment from `Constants.resolvedLoginEnvironment()` when the login shell gives an absolute one; nothing when it gives none or does not answer)
-- Modify: `internal/agentlog/scan_codex.go` (store the home the pass read: `agent_log_meta.codex_home`), `cmd/agents.go` (`agents scan --json` `codex.home`)
-- Test: `WatchtowerDesktop/Tests/Core/DaemonManagerTests.swift`, `internal/agentlog/scan_codex_test.go`, `cmd/agents_test.go`
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift` (`startDaemon()` → the `sync --daemon --detach` process gets the login shell's `CODEX_HOME`)
+- Test: `WatchtowerDesktop/Tests/Core/DaemonManagerTests.swift` (create if absent)
 
-Why: the daemon runs under launchd and would read `~/.codex` while the owner's shell sets another `CODEX_HOME`, so Codex sessions would silently miss the pane (plan review, ask #1124). The Desktop already resolves the login shell's `CODEX_HOME` for Codex relaunches (`WorkbenchesViewModel.resolveCodexHome`); the daemon gets the same value. `agents scan` started by the Desktop inherits the Desktop's environment, so it passes the same variable.
+Why (spec §4.7, D55): main's `locateCodexRollout` (`internal/sessionagent/codex.go`) accepts a stored `agent_transcript_path` only under the reader's own `$CODEX_HOME/sessions` or `archived_sessions`, and the dated-glob fallback uses the same roots. `DaemonManager.makeProcess` passes no environment, so the daemon inherits the app's, which has no `CODEX_HOME` when the owner sets one in their shell: the daemon then looks under `~/.codex` and counts every Codex session (and every sub-agent of Task 4.3) in `codex_rollouts_missing`. `agents scan` from the Desktop already gets the login shell's value through `CLIRunner` (`Constants.resolvedEnvironmentAsync()`), so only the daemon start needs it.
 
-- [ ] **Step 1: Write the failing tests**
-  - `DaemonManagerTests.testDaemonEnvCarriesLoginCodexHome`: login env `["CODEX_HOME": "/tmp/x/codex"]` → the launch environment has `CODEX_HOME == "/tmp/x/codex"`; login env without it, or a relative value, or no answer → no `CODEX_HOME` key added (the daemon's default `~/.codex` applies).
-  - `TestScanCodex_StoresHomeRead`: a pass with `CodexOptions.Home = <tmp>` → `agent_log_meta.codex_home = <tmp>`; `agents scan --json` → `codex.home` equals it (key pinned beside the other `codex` keys).
-- [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=DaemonManagerTests`; `go test ./internal/agentlog -run TestScanCodex_StoresHomeRead`; `go test ./cmd -run TestAgentsScan`.
-- [ ] **Step 3: Implement** — the login-environment read is the existing async helper; `startDaemon()` awaits it with its existing timeout and starts without the key on a timeout.
-- [ ] **Step 4: Run, expect PASS** + `make lint-diff` + `make lint-swift`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(analytics): the daemon reads the owner's CODEX_HOME (#1517)"`.
+**Interfaces:**
+- Produces: `nonisolated static func daemonEnvironment(base: [String: String], login: [String: String]?) -> [String: String]` — `base` plus `CODEX_HOME` from `login` when it is an absolute path; nothing else from `login` is taken (PATH and the rest of the daemon's environment stay as today); `login == nil` (the shell did not answer) → `base` unchanged. `startDaemon()` awaits `Constants.resolvedLoginEnvironment()` (its existing timeout) and sets `process.environment = daemonEnvironment(base: ProcessInfo.processInfo.environment, login: …)`.
+- [ ] **Step 1: Write the failing tests** — `DaemonManagerTests.testDaemonEnvCarriesLoginCodexHome`: login `["CODEX_HOME": "/tmp/x/codex", "PATH": "/opt/bin"]` → result has `CODEX_HOME == "/tmp/x/codex"` and the base's `PATH`; login without it, with a relative `CODEX_HOME`, or `nil` → no `CODEX_HOME` added (a base `CODEX_HOME` is kept as is).
+- [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=DaemonManagerTests`.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): the daemon reads the owner's CODEX_HOME (#1517)"`
 
-### Task 4.17: Inventory amendments — AGENTLOG-01..05 (asks #999, #1013, #1018)
+### Task 4.7: Inventory amendments — AGENTLOG-02/04/05 and the COACH-01 per-agent line (ask #1132)
 
-**Depends on:** Task 4.14, Task 4.15, Task 4.16, Task 4.18
+**Depends on:** Tasks 4.1–4.6
 **Files:**
 - Modify: `docs/inventory/agent-analytics.md`
 - Modify: `docs/inventory/coach.md` (COACH-01: per-agent measurement line only; the rest of COACH-01's amendments belong to Phases 2/6)
 
 - [ ] **Step 1: Write the text** (word for word below; guard names as the tasks above created them):
-  - Module line gains `internal/codexrollout/` and `internal/agentlog/scan_codex.go`.
-  - **AGENTLOG-01** guards gain `internal/agentlog/codex_test.go::TestParseCodex_StoresNoText` (stricter, not relaxed).
-  - **AGENTLOG-02**, appended to Observable: "Codex rows key on `codex:<session id>:<ordinal>` beside Claude's `message.id:requestId`; a re-read, a file compressed in place or a `.zst` copy beside the plain file never counts a Codex call twice." Guards gain `TestScanCodex_DedupeAcrossRescans`, `TestScanCodex_SlicesEqualWholeRead`, `TestScanCodex_TwoPassesAtOnce`, `TestScanCodex_CompressedInPlaceBetweenPasses`, `TestScanCodex_ZstCopyBesidePlain`.
-  - **AGENTLOG-03**, appended: "Codex rows outlive their files and their workbench like Claude's; `detached` keeps them; adoption by a workbench on the same folder only." Guards gain `TestScanCodex_DetachedReadsNothingMore`, `TestScanCodex_WorkbenchDeletedAdoptedOnSameFolder`, `TestScanCodex_CompressedReplacedByDamagedKeepsRows`, `TestAdoptAgentLogFiles_SessionsAndFilesTogether`, `TestMigration00003_KeepsEveryRowAndOffset`.
-  - **AGENTLOG-04**, title unchanged; Observable becomes:
-    - "Claude Code transcripts: unchanged (slug folders only, never through a symlink, any other project's transcripts never opened)."
-    - "Codex rollouts: Watchtower may read the **header** of any rollout under `sessions/` — the `session_meta` line and the first `turn_context`, at most the first 64 KB of text (for a compressed file, streamed up to that point and no further). It reads nothing past the header unless the file belongs to a workbench with analytics on."
-    - "For a file that has **never** belonged to a workbench with analytics on (`pending`, `foreign`, `excluded`, and `unreadable` without an owner), only its path, size, mtime, state, `state_since` and, for `unreadable`, the error class are stored. No cwd, no originator, no text, no session row."
-    - "A file that did belong to such a workbench and lost it (`detached`: the workbench was deleted or its analytics turned off) keeps what was stored while it belonged: its rows, `project_id`, `folder_path`, `read_offset` and `parse_state`. That is the workbench's own history (AGENTLOG-03: disabling analytics deletes nothing). Nothing past its stored offset is read while it is `detached`."
-    - "Nothing is opened at all while no workbench has analytics on (the phase is inert, as today)."
-    - Amendment note (ask #999): "`agent_log_files.agent` and `agent_log_sessions.agent` take `claude` or `codex`; Codex sessions whose `session_meta.originator` is the exec kind (every Watchtower `codex exec` child, and the owner's own `codex exec` runs) are excluded, decided on the root thread."
-    - Guards gain `internal/agentlog/scan_codex_test.go::TestScanCodex_HeaderOnlyForForeign`, `::TestScanCodex_ForeignStoresNoContent`, `::TestScanCodex_NothingOpenedWhenAnalyticsOff`, `::TestScanCodex_DetachedReadsNothingMore`; the three Claude guards stay.
-  - **AGENTLOG-05**, Observable appended: "Nothing under `~/.codex` / `CODEX_HOME` is written either; the reviewer check (no `os.OpenFile`, `os.Create`, `os.Remove` on rollout paths) extends to `internal/agentlog` and `internal/codexrollout`."
+  - **AGENTLOG-04**, appended after main's Codex paragraph (spec §4.7, D50): "A Codex sub-agent's rollout is also read when, and only when, a rollout Watchtower already reads names it in a spawn event (`collab_agent_spawn_end.new_thread_id`) and its own `session_meta` names that rollout's thread, or another sub-agent of the same session linked the same way, as its parent: it is looked for under the same `sessions`/`archived_sessions` roots, by that thread id only, never through a symlink, and only its first line is read before that check. It is stored under its root's session and counts in the root's workbench whatever its own cwd. No other Codex rollout is opened." Guards gain `internal/agentlog/adapter_test.go::TestAgentlog04_CodexUnnamedRolloutNeverOpened` (or the file the test landed in); main's guards stay.
+  - **AGENTLOG-02**, main's Codex key note gains: "A Codex sub-agent's rows use the same content keys under its root's session, so a child that replays its parent's history counts once." Guards gain `TestAgentlog_CodexKilledBetweenParentAndChild`.
+  - **AGENTLOG-05**: guard line `TestAgentlog05_CodexReadOnly` notes it now covers sub-agent rollouts too (the test was extended, not relaxed).
   - **COACH-01** (`docs/inventory/coach.md`): "A proposal is measured, baseline and verdict, on the agent its destination serves: Codex destinations on Codex rows, `pack_overlay` on both, every other destination on Claude rows." Guard `internal/coach/judge_test.go::TestJudge_ClaudeDestinationIgnoresCodexRows`.
-  - Changelog line: `2026-11-xx (board #1517, ask #999, #1013, #1018): Codex sessions — AGENTLOG-02/03/04/05 amended as above, four new AGENTLOG-04 guards, Codex guards added to 01/02/03. Nothing relaxed.`
-- [ ] **Step 2: Check** — every guard named exists: `grep -rn 'func TestScanCodex_HeaderOnlyForForeign\|…' internal/` for each name; `go test ./internal/agentlog ./internal/agentlogdb ./internal/coach -run 'Codex|Migration00003|AdoptAgentLogFiles|Judge_ClaudeDestination'`.
-- [ ] **Step 3: Commit** — `git commit -m "docs(inventory): AGENTLOG-02..05 and COACH-01 amendments for Codex (#1517)"`
+  - Changelog lines: `2026-11-xx (board #1517, ask #1132): Codex sub-agents read through the parent's spawn link — AGENTLOG-04 sentence and guard added, AGENTLOG-02 note, AGENTLOG-05 guard extended. Main's row-driven AGENTLOG-04 text and every existing guard unchanged. Nothing relaxed.` and in `coach.md` `2026-11-xx (board #1517, ask #1018): per-agent measurement.`
+- [ ] **Step 2: Check** — every guard named exists: `grep -rn 'func TestAgentlog04_CodexUnnamedRolloutNeverOpened\|func TestAgentlog_CodexKilledBetweenParentAndChild\|func TestJudge_ClaudeDestinationIgnoresCodexRows' internal/`; `go test ./internal/agentlog ./internal/coach -run 'Codex|Judge_ClaudeDestination'`.
+- [ ] **Step 3: Commit** — `git commit -m "docs(inventory): AGENTLOG-02/04/05 and COACH-01 amendments for Codex (#1517)"`
 
 ---
 
 ### Phase 4 coverage
 | Spec item (§4.7 / §5 Codex rows) | Task |
 |---|---|
-| `codexrollout` leaf; `sessionfeed`/`terminal` moved, tests unchanged; `.jsonl`-only `Locate`; `TestParseCodex_SkipsZstd` + terminal twin unchanged | 4.1 |
-| zstd via `klauspost/compress/zstd`, 64 MB cap, whole-frame check | 4.2 |
-| Migration 00003 (FK off, temp-table guard, agent CHECK, new columns, Claude rows `ok`+NULLs, every-table row count + `read_offset`, failure in block rolls back + rerun, DSN keeps FK on) | 4.3 |
-| `storeSlice` takes the agent; state/parse_state in the offset-CAS tx | 4.3, 4.10 |
-| File registry states, CAS on size/mtime/state, `state_since` | 4.4 |
-| `AdoptAgentLogFiles` in one tx with sessions; fingerprint CAS queues foreign once; pass meta keys; `files_stored` widened; `codex_unread` query | 4.5 |
-| Codex price rows, Codex-shaped cost, `CostFor`, per-agent reprice, unknown model → 0 + estimated | 4.6 |
-| `ParseCodex`: usage mapping + mismatch, both dialects, turns, tools by `call_id`, denials, interrupt, compaction, key, model from `turn_context`, `CodexParserVersion`, resume state, 256 open calls, no state mid-file, parser edge cases (truncated line, no `last_token_usage`, late `turn_context`), no text | 4.7 |
-| Terminal session linking by `agent_transcript_path` else id | 4.8, 4.10 |
-| Discovery (`CODEX_HOME`, full listing, no day window, symlinks), exec exclusion, ownership longest-wins over every workbench, never-owned states, 500 files opened once, guards HeaderOnlyForForeign / ForeignStoresNoContent / NothingOpenedWhenAnalyticsOff | 4.9 |
-| Reading in slices; failure table rows (killed mid-pass, store refuses slice, deleted mid-read, truncated/shrunk, writing while read, `CODEX_HOME` change); completeness; `codex_pending`; walk error; missing sweep; two passes at once; old day folder; import progress `complete` AND Codex pass | 4.10 |
-| Order of steps; fingerprint (in-folder worktree ignored, external counts); `detached` and back; deletion/adoption; mid-pass delete; guard DetachedReadsNothingMore | 4.11 |
-| Sub-agents, decided root, final non-ok roots, held, orphan clock (7 days, complete pass only, first import, re-import), parent totals exclude children | 4.12 |
-| Compressed: magic every pass, verify before first write, `verified_at`/`complete`, resume rules, damaged/over cap, replaced-by-damaged, plain→zst, `.zst` copy, retry only on change, `codex_unread` three cases | 4.13 |
-| `phaseAgentAnalytics` order + `len(ids)+1` shares + missing folder no-op complete + not-open/not-moved skip; `agents scan` Codex pass for every workbench; `codex` JSON keys; daemon logs | 4.14 |
-| Report agent filter, `--agent`, per-block `agents`, `codex_unread`, parser-version conditions `agent='claude'`, Codex never old format, Facts over Claude files, tools edge cases (empty period / one agent / codex-only empty / unknown agent) | 4.15 |
-| `coach.Measure` per destination agent (Claude unchanged, Codex only, pack overlay All + baseline same filter); proposer evidence and tiles keep the owner's filter | 4.16 |
-| Inventory AGENTLOG-02/03/04/05 (+ 01 guard, exec/agent-column note) and COACH-01 per-agent line | 4.17 |
+| Cache-write mapping (fresh = input − cached − cache write; cache write → 5m), reasoning not added twice, negative → 0 + `codex_usage_mismatch` (scan key, daemon log), key unchanged, `ParserVersion` rule | 4.1 |
+| Codex price table + source note, D36 cache write at input rate, `CostFor`, per-agent reprice (session join), `pricing.Version` 2, unknown model → 0 + estimated, `ModelTiers` Anthropic-only | 4.2 |
+| Sub-agents: spawn link from the parent (`collab_agent_spawn_end.new_thread_id`), `ChildImportFile` through the adapter with the parent check and no symlinks, depth cap 8, child rows under the root (`agent_id`, sidechain, no owner turn, no session row), child counts in the root's workbench, `spawned_agent_id` + `isAgentTool`, missing child counted and retried, failures by id, killed mid-scan, never-open guard, read-only guard extended, parent totals pinned | 4.3 |
+| Report agent filter, `--agent`, top-level `agent`/`agents`/`agent_filter`, per-block `agents`, edge cases (empty period / one agent / codex-only empty / unknown agent) | 4.4 |
+| `coach.Measure` per destination agent (Claude unchanged, Codex only, pack overlay All + baseline same filter); proposer evidence and tiles keep the owner's filter; `coach status --agent` | 4.5 |
+| The daemon gets the login shell's `CODEX_HOME` | 4.6 |
+| Inventory AGENTLOG-04 sentence + guard, AGENTLOG-02 note, AGENTLOG-05 guard, COACH-01 per-agent line | 4.7 |
+| Main's caption "Not measured for Codex sessions." kept on Context and Skills | nothing to do (Desktop as on main; Task 5.10 keeps it) |
 
 ### Phase 4 notes from recon (resolved above where they conflict)
-1. **Phase 2/1 coupling (stated):** Task 4.16 edits `internal/coach` beside Phase 2 and needs Task 1.1's widened `destination` CHECK for its `codex_*`/`pack_overlay` integration tests; it uses Phase 2's `Dest…` consts when they exist, else literals.
-2. **Facts from the builder's real-file check (spec says "confirm"), each pinned in a from-scratch fixture:** the exec `originator` value(s) and the interactive one(s) (`IsExecOriginator`); whether Codex writes `rollout-*.jsonl.zst` (if not, `ListRollouts` still accepts the name harmlessly and the discovery test says so); `total_tokens = input + output`; that a parent's `token_count` excludes its children (else Task 4.12 switches children to tool/time rows); Codex's denial wording; the `session_meta.source` shape that names a spawned agent; the Codex model ids and OpenAI's price rows (D36: cache write at the input rate unless a write rate is published).
-3. **Spec drift found in code:** `agentlog.ParserVersion` is **4** today (spec §4.7 says 3); nothing in the plan depends on its value. `agentReportFactsParserVersion` is 3 and `agentReportMinParserVersion` 2 as the spec says.
-4. **Simplification of the fingerprint write:** `ApplyCodexOwnerFingerprint` queues only `foreign → pending`; `detached` rows return through step 3's owner check on every pass (the spec says step 3 needs no fingerprint change), so the fingerprint transaction does not also re-derive `detached` rows. Behaviour is the same within one pass.
-5. **Interrupt mapping:** (Resolved: spec only, no extra row.) besides `outcome = interrupted` on the aborted turn's open calls, Task 4.7 stores one `owner_turn` with trigger `interrupt` so the time model and Trouble treat a Codex interrupt like Claude's; the spec names only the outcome.
-6. **Tool pairing key:** Codex tool rows are keyed `codex:<id>:<ordinal>`, so `AgentToolResult` gains `Key` (pair by key) instead of `"tool:"+ToolUseID`; an overflowed open call is closed as `pending`/`unpaired` (outcome CHECK has no `unpaired`).
-7. **Owned session `home_cwd`:** an owned Codex session row stores the header cwd in `agent_log_sessions.home_cwd`, as Claude's does; file rows never store a cwd (D31). If the owner reads D31 as covering session rows too, store the workbench folder there instead.
-8. **`CODEX_HOME` in the daemon:** (Resolved: Task 4.18.) the daemon resolves it from its own environment (`codexrollout.DefaultHome`), which under launchd may differ from the owner's shell; a mismatch reads `~/.codex`. Not addressed in v1.
-9. **`pragma_foreign_key_check` as a table-valued function on the SQLCipher build** is proven by `TestMigration00003_FKViolationAbortsAndRerunSucceeds`; if it fails to parse, the migration keeps the plain `PRAGMA foreign_key_check` and the test asserts the check (spec note to update).
-10. The feature note `docs/features/agent-analytics.md` (Codex pass, budget share, widened `complete`, `codex` keys) and the guide line belong to Phase 6.
+1. **Main's model is the base (ask #1132).** Recon of main after PR #686 (`internal/agentlog/scan.go`, `codex.go`, `internal/sessionagent/codex.go`, `internal/rollout`, `docs/inventory/agent-analytics.md` changelog 2026-11-06/07) found the import row-driven per workbench; everything of the earlier whole-install design (Tasks 4.1–4.3, 4.5, 4.9–4.14 and most of 4.7/4.17/4.18 of the previous plan version) is dropped, not deferred.
+2. **Phase 2/1 coupling (stated):** Task 4.5 edits `internal/coach` beside Phase 2 and needs Task 1.1's widened `destination` CHECK for its `codex_*`/`pack_overlay` integration tests; it uses Phase 2's `Dest…` consts when they exist, else literals.
+3. **Facts the builder confirms on real rollouts (own machine, nothing copied), each pinned in a from-scratch fixture:** whether `cache_write_input_tokens` appears and is non-zero (Task 4.1's `ParserVersion` rule); the Codex model ids in `turn_context.model` and OpenAI's price rows (Task 4.2, D36); whether a parent's `token_count` includes its children's (Task 4.3); the `spawn_agent` call and `collab_agent_spawn_end` shapes (`call_id`, `new_thread_id`) that `sessionfeed` already reads.
+4. **`agentlog.ParserVersion` is 4** on main (the spec once said 3); the plan depends on it only in Task 4.1's conditional bump.
+5. **Discovery stays the adapter's.** `TestAgentlog_NoInterimRolloutDiscovery` bans rollout discovery and `rollout.Open` inside `internal/agentlog`, so the child lookup is a `Transcript` method in `internal/sessionagent` (Task 4.3), and the `session_meta` parent check is shared with `sessionfeed` through `CodexChildMeta` instead of a third copy.
+6. **`CODEX_HOME` is a real gap** (Task 4.6): the stored absolute path does not cover it, because `locateCodexRollout` checks the path against the reader's own roots.
+7. **Ollama and the tuning chat** are Phase 3/5 matters (Tasks 3.1, 5.7, 5.8; spec D52), not Phase 4's.
+8. The feature note `docs/features/agent-analytics.md` and the guide lines belong to Phase 6.
 
 ---
 
@@ -2553,20 +2125,20 @@ Recon facts the tasks rely on:
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(desktop): coach proposal origin, conversation and source-removed readers (#1517)"`.
 
-### Task 5.2: Replay purpose name
+### Task 5.2: Tuning purpose names in Usage (`prompts.replay`, `tuning.chat`)
 
-**Depends on:** Task 3.12 (purpose `prompts.replay`)
+**Depends on:** Task 3.12 (purpose `prompts.replay`), Task 3.1 (purpose `tuning.chat` accepted by `ai query`)
 **Files:**
-- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/LLMPurposeNames.swift` (`("prompts.replay", "Tuning A/B replays")` in the `"Workbench"` group)
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Services/LLMPurposeNames.swift` (`("prompts.replay", "Tuning A/B replays")` and `("tuning.chat", "Tuning chat")` in the `"Workbench"` group, beside `spec_review.discuss`)
 - Test: `WatchtowerDesktop/Tests/Core/LLMUsageReportTests.swift`
 
-The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `AssistantToolSurface`, the surface-list agreement tests) are in Tasks 3.1 and 3.2, next to the Go fixtures they pin.
+The tuning chat's own Usage line is the owner's decision (ask #1132, spec D53): every tuning turn runs `ai query --purpose tuning.chat` (Task 5.7), so its calls land in `llm_calls` under that purpose instead of the plain chat's. The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `AssistantToolSurface`, the surface-list agreement tests) are in Tasks 3.1 and 3.2, next to the Go fixtures they pin.
 
-- [ ] **Step 1: Write the failing test** — `LLMPurposeNames.display(purpose: "prompts.replay") == ("Tuning A/B replays", "Workbench")`.
+- [ ] **Step 1: Write the failing test** — `LLMPurposeNames.display(purpose: "prompts.replay") == ("Tuning A/B replays", "Workbench")`; `LLMPurposeNames.display(purpose: "tuning.chat") == ("Tuning chat", "Workbench")`.
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=LLMUsageReportTests`.
-- [ ] **Step 3: Implement** the one row.
+- [ ] **Step 3: Implement** the two rows.
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): name the tuning replay purpose in Usage (#1517)"`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): name the tuning purposes in Usage (#1517)"`.
 
 ### Task 5.3: Presence check in the embedded engine (removed conversation)
 
@@ -2696,18 +2268,19 @@ The Swift surface twins (`AgentSurface.tuning`, `AgentToolsContract`, `Assistant
 
 **Interfaces:**
 - Produces (`enum TuningChatSurface`):
-  - `contextType = "analytics_tuning"`, `surface = AgentSurface.tuning.rawValue`, `recentLimit = 10`.
-  - `@MainActor static func toolsAvailable(provider: String?) -> Bool` = `AIModelCatalog.shared.isKnownCLI(provider ?? Constants.aiProviderID())` — the `AutomationEditorChatSurface.toolsAvailable` shape (AGENT-04 precedent, `docs/inventory/agent-actions.md`): false for an HTTP provider, an unknown id, or a catalog not read yet. No provider-name comparison (the Swift LLMTRANSPORT-01 guard `Tests/Core/LLMTransportGuardTests.swift` fails on one in Sources).
+  - `contextType = "analytics_tuning"`, `surface = AgentSurface.tuning.rawValue`, `recentLimit = 10`, `purpose = "tuning.chat"` (the Go `tuning.ChatPurpose`; owner, ask #1132, spec D53 — the tuning chat is its own Usage line, the `SpecReviewThreadSurface.purpose` shape).
+  - `@MainActor static func toolsAvailable(provider: String?) -> Bool` = `AIModelCatalog.shared.isKnownCLI(provider ?? Constants.aiProviderID())` — the `AutomationEditorChatSurface.toolsAvailable` shape (AGENT-04 precedent, `docs/inventory/agent-actions.md`): false for an HTTP provider (ollama), an unknown id, or a catalog not read yet. The owner kept the tuning chat without tools on ollama although main runs tools on ollama elsewhere (the main chat's runtime B, automation `agent()`): its proposal tools need the MCP child's `DirectApply` binding (ask #1132, spec D52); Go refuses `--surface tuning` on the runtime-B path too (Task 3.1). No provider-name comparison (the Swift LLMTRANSPORT-01 guard `Tests/Core/LLMTransportGuardTests.swift` fails on one in Sources).
   - `@MainActor static func unavailableHelp(catalog: AIModelCatalog = .shared) -> String` = `catalog.unreadReason ?? "Tuning tools need Claude or Codex — pick one in Settings → System → AI"` (the panel's no-tools line).
   - `static func latestOrNewConversation(dbPool: DatabasePool, workbenchID: Int64) async throws -> Int64` (`DatabaseEmbeddedChatStore.conversationID(dbPool:contextType:contextID:title: "")`).
   - `static func newConversation(dbPool:workbenchID:) async throws -> Int64` (`ChatConversationQueries.create`, title `""`).
   - `static func recent(_ db: Database, workbenchID: Int64) throws -> [ChatConversation]` (newest `updated_at` first, `LIMIT 10`, exact `context_id`).
-  - `static func spec(workbenchID: Int64, conversationID: Int64, provider: String?, period: @escaping @MainActor () -> AgentAnalyticsCenter.Period, onWillSend: @escaping @MainActor () -> Void) -> ChatSurfaceSpec` — key `(analytics_tuning, "<wb>", conversationID)`, `.database(conversationID)`, `.actions(surface: "tuning")` or `.draftOnly`, `ownerInstructions: true`, `checksPresence: true`, `starterPrompts: []`.
+  - `static func spec(workbenchID: Int64, conversationID: Int64, provider: String?, period: @escaping @MainActor () -> AgentAnalyticsCenter.Period, onWillSend: @escaping @MainActor () -> Void) -> ChatSurfaceSpec` — key `(analytics_tuning, "<wb>", conversationID)`, `.database(conversationID)`, `.actions(surface: "tuning")` or `.draftOnly`, `ownerInstructions: true`, `checksPresence: true`, `purpose: TuningChatSurface.purpose` (with tools and without: every tuning turn is a `tuning.chat` call), `starterPrompts: []`.
   - `static func rulesBlock(tools: Bool) -> String`, `static func systemPrompt(tools: Bool) -> String` (rules + `AgentToolsContract.promptBlock(surface: .tuning)` when tools + `ChatQuestionsContract.promptBlock`), `static func turnContext(workbenchID: Int64, period: AgentAnalyticsCenter.Period) -> String`.
 
 - [ ] **Step 1: Write the failing tests** (`ScriptedAIService`, a temp `DatabasePool` from `WatchtowerTestSupport`, as `AutomationEditorChatSurfaceTests`; `setUp` seeds the shared catalog with `ProviderCatalogFixture.seedShared()` on the main actor, as that class does — the test ids `claude`/`codex`/`ollama` are data for the seeded catalog, never compared in Sources)
-  - `testSpecIsActionsTuningWithContext`: the first call's `toolMode.cliArgs` carry `--surface tuning`, `--context-type analytics_tuning`, `--context-id 3`, the conversation id; `ownerInstructions == true`.
-  - `testOllamaIsDraftOnly`: seeded catalog, provider `ollama` (an HTTP kind in the fixture) → `toolsAvailable == false`, `toolModes == [nil]` and the system prompt holds the no-tools rule; `claude` and `codex` → true.
+  - `testSpecIsActionsTuningWithContext`: the first call's `toolMode.cliArgs` carry `--surface tuning`, `--context-type analytics_tuning`, `--context-id 3`, the conversation id; `ownerInstructions == true`; the call's `purpose == "tuning.chat"` (the argument `ClaudeService` turns into `--purpose tuning.chat`).
+  - `testDraftOnlyTurnKeepsThePurpose`: provider `ollama` → the call is draft-only and its `purpose` is still `"tuning.chat"`.
+  - `testOllamaIsDraftOnly` (ask #1132, D52): seeded catalog, provider `ollama` (an HTTP kind in the fixture) → `toolsAvailable == false`, `toolModes == [nil]` and the system prompt holds the no-tools rule; `claude` and `codex` → true.
   - `testCatalogNotReadYetIsDraftOnly`: `AIModelCatalog.shared.replaceProviders([])` (restored with `defer { ProviderCatalogFixture.seedShared() }`) → `toolsAvailable(provider: "claude") == false`; `unavailableHelp()` returns the catalog's `unreadReason` when set, else the "Tuning tools need Claude or Codex …" line.
   - `testTurnPromptCarriesPeriodAndWorkbench`: period `.week` → the prompt sent contains `turnContext(workbenchID: 3, period: .week)` = `"=== ANALYTICS PANE ===\nWorkbench: 3 (pass workbench_id: 3)\nPeriod: the last 7 days (pass days: 7)"`; switching the closure to `.month` changes the next turn to `days: 30`.
   - `testRulesPinStaleCLILine`: `rulesBlock(tools: true)` contains `If no tuning tool is in your tool list, answer only "Tuning tools are not available in this Watchtower build — update Watchtower." and propose nothing.`
@@ -2743,7 +2316,7 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
 **Interfaces:**
 - Consumes: `EmbeddedChatCenter.engine(for:)`, `markShown`, `markHidden`, `drop(_:)`; `TuningChatSurface.*`; `CoachCenter.refreshProposals()`, `CoachProposal.forChat`; `PromptReplayQueries.*`; `TuningFeedCards.build`.
 - Produces (`@MainActor @Observable final class TuningChat`, the `AutomationEditorChat` shape, no `AgentActionFeed`):
-  - `init(workbenchID: Int64, conversationID: Int64, dbPool: DatabasePool, center: EmbeddedChatCenter, coach: CoachCenter?, cliRunner: CLIRunnerProtocol, decideTools: @escaping @MainActor () -> Bool = { TuningChatSurface.toolsAvailable(provider: nil) }, period: @escaping @MainActor () -> AgentAnalyticsCenter.Period, replayPoll: Duration = .seconds(2))` — `decideTools` is the `AutomationEditorChat` closure (AppState passes `{ TuningChatSurface.toolsAvailable(provider: nil) }`, which reads the current `Constants.aiProviderID()` through the catalog); the controller never holds or compares a provider string.
+  - `init(workbenchID: Int64, conversationID: Int64, dbPool: DatabasePool, center: EmbeddedChatCenter, coach: CoachCenter?, cliRunner: CLIRunnerProtocol, decideTools: @escaping @MainActor () -> Bool = { TuningChatSurface.toolsAvailable(provider: nil) }, period: @escaping @MainActor () -> AgentAnalyticsCenter.Period, replayPoll: Duration = .seconds(2))` — `decideTools` is the `AutomationEditorChat` closure (AppState passes `{ TuningChatSurface.toolsAvailable(provider: nil) }`, which reads the current `Constants.aiProviderID()` through the catalog); the controller never holds or compares a provider string. An ollama (HTTP) provider always decides `false`: the tuning chat stays without tools there (owner, ask #1132, spec D52); the rebuilt spec keeps `purpose: TuningChatSurface.purpose` either way (D53).
   - `private(set) var engine: EmbeddedChatEngine`, `conversationID: Int64`, `toolsAvailable: Bool`, `recent: [ChatConversation]`, `cards: TuningFeedCards`, `replayCards: [Int64: TuningReplayCardModel]`, `keptDraft: String?`; `var isRemoved: Bool { engine.conversationGone }`.
   - `func close()`, `func switchTo(_ conversationID: Int64)`, `func startNew() async`, `func refreshCards() async`, `func run(_ replayID: Int64)`, `func retry(_:)`, `func discard(_:) async`, `func propose(_:) async`, `func send(starter: ChatStarterPrompt)`.
   - `AppState.makeTuningChat(workbenchID: Int64, period: @escaping @MainActor () -> AgentAnalyticsCenter.Period) async throws -> TuningChat?` (nil while the database is closed).
@@ -2751,7 +2324,7 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
 - [ ] **Step 1: Write the failing tests** (`ScriptedAIService`, a real `EmbeddedChatCenter` built on `DatabaseEmbeddedChatStore`, a fake `CLIRunnerProtocol` recording args)
   - `testShownWhileOpenHiddenAfterClose`: after init the center does not release the engine on `sweep(now: +idleTTL)`; after `close()` it does.
   - `testPeriodCarriedIntoTurns`: period closure `.day` then `.month` → the two turn prompts contain `days: 1` and `days: 30`.
-  - `testProviderSwitchMakesTheNextTurnDraftOnly` (seeded catalog): `decideTools` reads a test-held provider id through `TuningChatSurface.toolsAvailable(provider:)` — `claude` for turn 1, `ollama` before turn 2 → `toolModes == [tuning mode, nil]`, `toolsAvailable == false` after the second send; an open proposal card's buttons still call the CLI (`coach accept` is not gated on the provider).
+  - `testProviderSwitchMakesTheNextTurnDraftOnly` (seeded catalog): `decideTools` reads a test-held provider id through `TuningChatSurface.toolsAvailable(provider:)` — `claude` for turn 1, `ollama` before turn 2 → `toolModes == [tuning mode, nil]`, `toolsAvailable == false` after the second send, both calls with `purpose == "tuning.chat"`; an open proposal card's buttons still call the CLI (`coach accept` is not gated on the provider).
   - `testToolAccessDecidedAgainWhenTheCatalogLoads` (the `AutomationEditorChatSurfaceTests` case): catalog emptied → draft-only; `ProviderCatalogFixture.seedShared()` posts `didLoadNotification` → `toolsAvailable` and `engine.spec.toolAccess` follow the seeded kind.
   - `testStartErrorShowsRetry` (§5 stale CLI row): the scripted stream fails at once with `unknown surface "tuning"` → the reply row is `error`, `engine.canRetry`.
   - `testSecondScreenAttachesToTheSameEngine`: two `TuningChat`s for one conversation → `===` engines.
@@ -2780,34 +2353,32 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
 - [ ] **Step 5: Commit** — `git commit -m "fix(design-kit): PanelSplit draws a vertical edge line (#1517)"`.
 
-### Task 5.10: Agent filter, `codex_unread` and the "Claude Code only" note
+### Task 5.10: Agent filter on the pane (main's Codex caption kept)
 
-**Depends on:** the Phase 4 task that adds the report keys `agents` (top level and per block), `codex_unread` and `agents report --agent claude|codex`
+**Depends on:** Task 4.4 (report keys `agent`, `agents`, `agent_filter`, per-block `agents`, `agents report --agent`), Task 4.5 (`coach status --agent`)
 **Files:**
-- Modify: `Sources/WatchtowerCore/Models/AgentReport.swift` (`AgentReportOverview.agents: [String]?`, `codexUnread: Int?`; `agents: [String]?` on `AgentContextReport`, `AgentSkillsReport`, `AgentTroubleReport`; `sameReport` compares them)
+- Modify: `Sources/WatchtowerCore/Models/AgentReport.swift` (`AgentReportOverview.agent: String?`, `agents: [String]?`, `agentFilter: [String]?`; `agents: [String]?` on `AgentContextReport`, `AgentSkillsReport`, `AgentTroubleReport`; `sameReport` compares them)
 - Modify: `Sources/Services/AgentAnalyticsCenter.swift` (`enum Agent { all, claude, codex }`, `show(workbench:period:agent:)`, `--agent` when not `.all`)
+- Modify: `Sources/Services/CoachCenter.swift` (`coach status --agent <filter>` when not `.all`)
 - Modify: `Sources/ViewModels/WorkbenchesViewModel.swift` (`var analyticsAgent: [Int64: AgentAnalyticsCenter.Agent] = [:]`)
-- Modify: `Sources/Views/Workbench/Analytics/AgentAnalyticsFormat.swift` (texts + picker rule)
-- Modify: `Sources/Views/Workbench/Analytics/AgentAnalyticsBlocks.swift` (`AgentAnalyticsBlock(scopeNote:)`, caption on the title row, trailing)
-- Modify: `AgentAnalyticsContextView.swift`, `AgentAnalyticsSkillsView.swift`, `AgentAnalyticsTroubleView.swift` (take `scopeNote: String?`)
-- Test: `Tests/Core/AgentReportDecodingTests.swift`, `Tests/AgentAnalyticsCenterTests.swift`, `Tests/AgentAnalyticsFormatTests.swift`, `Tests/AgentAnalyticsPaneViewTests.swift`
+- Modify: `Sources/Views/Workbench/Analytics/AgentAnalyticsFormat.swift` (titles, help line, picker rule)
+- Test: `Tests/Core/AgentReportDecodingTests.swift`, `Tests/AgentAnalyticsCenterTests.swift`, `Tests/AgentAnalyticsFormatTests.swift`, `Tests/AgentAnalyticsPaneViewTests.swift`, `Tests/CoachCenterTests.swift`
+
+The note on Claude-only blocks stays main's caption **Not measured for Codex sessions.** (`AgentAnalyticsCodexShare.notMeasuredLine`, from `AgentSessionCaps.contextNotMeasuredCaption`, on the Context and Skills blocks): owner, ask #1132, spec D51. No "Claude Code only" note, no `scopeNote`, no unread-Codex line (D54). With the filter on **Codex**, main's `AgentAnalyticsCodexShare.of(sessions)` is `.all`, so the caption replaces those blocks' state, as on main.
 
 **Interfaces:**
-- Produces: `AgentAnalyticsCenter.Agent` (`rawValue` `"all"`, `"claude"`, `"codex"`); `AgentAnalyticsFormat.agentTitles = [.all: "All", .claude: "Claude Code", .codex: "Codex"]`, `agentHelp = "Codex runs started with codex exec are not counted"`, `claudeOnly = "Claude Code only"`, `static func showsAgentPicker(_ overview: AgentReportOverview, filter: AgentAnalyticsCenter.Agent) -> Bool`, `static func scopeNote(blockAgents: [String]?, overview: AgentReportOverview) -> String?`, `static func codexUnreadLine(_ count: Int?) -> String?`.
+- Produces: `AgentAnalyticsCenter.Agent` (`rawValue` `"all"`, `"claude"`, `"codex"`); `AgentAnalyticsFormat.agentTitles = [.all: "All", .claude: "Claude Code", .codex: "Codex"]`, `agentHelp = "Codex sessions count when they were started from a Watchtower workbench terminal"` (the accurate scope line, spec §4.7: a session started elsewhere has no terminal row and is never read), `static func showsAgentPicker(_ overview: AgentReportOverview, filter: AgentAnalyticsCenter.Agent) -> Bool` (true when `agentFilter` is present or `filter != .all`).
 
 - [ ] **Step 1: Write the failing tests**
-  - `AgentReportDecodingTests.testAgentKeys`: the fixture plus `"agents":["claude","codex"]`, `"codex_unread":2`, `context.agents ["claude"]` decodes; without the keys → nil (older CLI).
+  - `AgentReportDecodingTests.testAgentKeys`: the fixture plus `"agent":"all"`, `"agents":["claude","codex"]`, `"agent_filter":["claude","codex"]`, `context.agents ["claude"]` decodes; without the keys → nil (older CLI).
   - `CoachCenterTests.testStatusFollowsAgentFilter`: filter `.codex` → `coach status` args contain `["--agent","codex"]`; `.all` → no `--agent`.
-  - `AgentAnalyticsFormatTests.testHintScopeNote`: hint agents `["claude"]` + overview `["claude","codex"]` → `"Claude Code only"`; hint agents `["claude","codex"]` → nil.
   - `AgentAnalyticsCenterTests.testAgentFilterAddsFlag`: `.codex` → args end `["--days","7","--agent","codex"]`; `.all` → no `--agent`; changing only the agent reruns the overview.
-  - `AgentAnalyticsFormatTests.testPickerShownOnlyWithBothAgents`: agents `["claude","codex"]` → true; `["claude"]` + filter `.all` → false; `["codex"]` + filter `.codex` → true (a chosen filter keeps its picker); nil → false.
-  - `testScopeNote`: block `["claude"]` + overview `["claude","codex"]` → `"Claude Code only"`; overview `["claude"]` → nil (§5: no note without Codex rows); block nil → nil.
-  - `testCodexUnreadLine`: 2 → `"2 Codex sessions were not read: too large or damaged."`; 1 → `"1 Codex session was not read: too large or damaged."`; 0/nil → nil.
-  - `AgentAnalyticsPaneViewTests.testContextBlockShowsClaudeOnlyNote` and `testCodexUnreadLineUnderStatistics` (ViewInspector `find(text:)`).
-- [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER='AgentReportDecodingTests|AgentAnalyticsCenterTests|AgentAnalyticsFormatTests|AgentAnalyticsPaneViewTests'`.
-- [ ] **Step 3: Implement** — `show` keys its "changed" check on `(period, agent)`; the coach tiles follow the same filter: `CoachCenter` passes `--agent <filter>` to `coach status` (Task 4.16's flag) when it is not `.all` (spec §4.7: "the Analytics tiles keep the owner's chosen filter"). Hints carry the note too: a hint whose `agents` (Task 4.15) lacks `codex` while the overview has it shows `claudeOnly` in its caption. The `codex_unread` line sits right under the **Statistics** header (or above the tiles when there is no coach), `.font(.caption)`, `.secondary`.
-- [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
-- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): agent filter, unread Codex line and Claude-only notes (#1517)"`.
+  - `AgentAnalyticsFormatTests.testPickerShownOnlyWithBothAgents`: `agentFilter ["claude","codex"]` → true; no `agentFilter` + filter `.all` → false; no `agentFilter` + filter `.codex` → true (a chosen filter keeps its picker).
+  - `AgentAnalyticsPaneViewTests.testCodexCaptionStaysMains`: an overview with a Claude and a Codex session → the Context block shows `AgentAnalyticsCodexShare.notMeasuredLine` and no text `"Claude Code only"`; with filter `.codex` the caption replaces the block's state.
+- [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER='AgentReportDecodingTests|AgentAnalyticsCenterTests|AgentAnalyticsFormatTests|AgentAnalyticsPaneViewTests|CoachCenterTests'`.
+- [ ] **Step 3: Implement** — `show` keys its "changed" check on `(period, agent)`; the coach tiles follow the same filter (spec §4.7: "the Analytics tiles keep the owner's chosen filter"). The fixture changes ride in this commit so the test target builds; the PNGs are rendered in Task 5.13.
+- [ ] **Step 4: Run, expect PASS** (+ `make test-swift FILTER=DesignShotsTests.testShotNamesAreUnique`) + `make lint-swift`.
+- [ ] **Step 5: Commit** — `git commit -m "feat(desktop): agent filter on Analytics, main's Codex caption kept (#1517)"`.
 
 ### Task 5.11: Tuning panel views and the A/B card view
 
@@ -2862,7 +2433,7 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
   - `testPanelOpensAndClosesWithTune`: pane with `vm.tuningOpen = [3]` and analytics on → `TuningPanelView` present; analytics turning off removes 3 from `tuningOpen`.
   - `testWorkbenchRemovedClosesThePanel`: `vm.onWorkbenchRemoved?(3)` (wired as in AppState) → `tuningOpen` lacks 3, the tuning engine is dropped.
   - `testShowInAcceptedEditsScrolls`: `onShowAccepted` sets `vm.analyticsScroll[3] == CoachSectionsView.acceptedID`; the overview resets it after scrolling.
-  - `testAgentPickerOnlyWithBothAgents`: overview agents `["claude"]` → no `"Codex"` segment; both → segments `"All"`, `"Claude Code"`, `"Codex"` with help `agentHelp`.
+  - `testAgentPickerOnlyWithBothAgents`: an overview without `agent_filter` (a Claude-only period) → no `"Codex"` segment; with `agent_filter ["claude","codex"]` → segments `"All"`, `"Claude Code"`, `"Codex"` with help `agentHelp`.
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER=AgentAnalyticsPaneViewTests`.
 - [ ] **Step 3: Implement** — the pane body becomes `PanelSplit(isPanelShown: vm.tuningOpen.contains(project.id) && analyticsOn, width: …) { existing ZStack } panel: { TuningPanelHost(...).panelBackground().onExitCommand { close } }` (`panelBackground()` is the kit's panel surface, as the catalog shots use); `TuningPanelHost` (private, in the pane file) builds the chat once with `.task { chat = try? await appState?.makeTuningChat(workbenchID:period:) }` and calls `chat.close()` on disappear; figures from the overview totals + `coach.status[wb]?.value?.metrics.taskCostUSD` (`tasks = overview.tasks.count + (overview.tasksMore ?? 0)`), starters with `costPerTaskGrew = value > previous` (both known) and `topHintFinding = overview.hints.first?.finding`; `loading` while the overview snapshot has no value; `onOpenSettings` → `appState.settingsTab = .system; appState.openSettingsWindow?()`; `onShowAccepted` → `vm.analyticsScroll[project.id] = CoachSectionsView.acceptedID`. The analytics agent filter is passed to `center.show(workbench:period:agent:)`.
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
@@ -2881,9 +2452,9 @@ How the real views replace the fixture views:
 - `TuningAnalyticsHeader` → `AgentAnalyticsHeaderView` over the `agent-report-overview` fixture with `agents ["claude","codex"]`.
 - `TuningPanelShot`/`TuningFeed`/`TuningToolLines` → `TuningPanelView` over a `TuningChat` whose `EmbeddedChatCenter` uses a factory with a temp `DatabasePool` (WatchtowerTestSupport schema) seeded with the fixture turns, and a `ScriptedAIService` held mid-stream for **streaming** (tool steps `get_llm_usage`, `get_prompt`, `list_prompt_inputs` give the quiet lines through `TuningChatTexts.toolLine`) or failed for **error**; proposal states keep the existing `CoachCenter` runner variants (`open`, `accepting`, `stale`, `accepted`); A/B states seed `prompt_replays`/`prompt_inputs` rows per phase; **no tools** / **no tools midway** use provider `ollama` over the seeded catalog (`ProviderCatalogFixture.seedShared()`, where it is an HTTP kind — the views read `toolsAvailable`, never the id); **conversation removed** deletes the row and calls `checkPresence()`.
 - `TuningReplayCard` → `TuningReplayCardView(model:stacked:)` (narrow: `stacked: true`).
-- Statistics shots → real `AgentAnalyticsContextView`/`SkillsView` with `scopeNote` from `AgentAnalyticsFormat.scopeNote` and the real `codexUnreadLine`.
+- Statistics shot (`tuning-chat-statistics-codex-caption`) → real `AgentAnalyticsContextView`/`SkillsView` over an overview with a Claude and a Codex session, so the blocks show main's caption **Not measured for Codex sessions.**; there is no unread-Codex shot.
 
-- [ ] **Step 1: Keep the shot list fixed** — `DesignShotsTests.testShotNamesAreUnique` and the shot names stay exactly the 28 `tuning-chat-*` names of the README table.
+- [ ] **Step 1: Keep the shot list fixed** — `DesignShotsTests.testShotNamesAreUnique` and the shot names stay exactly the 23 `tuning-chat-*` names of the README table (the unread-Codex shot was dropped and the statistics shot renamed `tuning-chat-statistics-codex-caption` at spec time, ask #1132).
 - [ ] **Step 2: Render** — `cd WatchtowerDesktop && DESKTOP_SHOTS_DIR=../build/tuning-shots swift test --filter DesignShotsTests.testTuningChatShotsRender > ../build/tuning-shots.log 2>&1; echo "exit=$?"`.
 - [ ] **Step 3: Compare** — Read each `build/tuning-shots/tuning-chat-<state>-{light,dark}.png` beside `docs/design/mockups/tuning-chat/tuning-chat-<state>-{light,dark}.png`; fix any difference in layout, text, tone or spacing in the real view (not in the fixture), re-render, repeat. A difference kept on purpose goes into the README's "Product changes" list (the done and failed lines show the actual cost, as the mockup does, so the cost is not one).
 - [ ] **Step 4: Run** `make test-swift FILTER='DesignShotsTests.testShotNamesAreUnique|TuningPanelViewTests|AgentAnalyticsPaneViewTests'` + `make lint-swift`.
@@ -2899,7 +2470,7 @@ How the real views replace the fixture views:
 - Modify: `CLAUDE.md` (one index line after the Agent coach line)
 - Modify: `docs/features/embedded-chat.md` (the presence check: `checksPresence`, 2 s / 10 s / focus / attach, `conversationGone`)
 
-- [ ] **Step 1: Write** the note with sections: What it is (§1–§3); Surface `tuning` (six places, `KnownChatSurface`, DirectApply, the `agent_actions` delete trigger and insert guard, D47); Tools (§4.2 table, `CompanyData`, fences); Destinations (§4.3, `codexSkillPath`, pack overlays, Codex rules table); Captured inputs (`prompt_inputs`/`prompt_input_items`, `WithCapture` call sites and tails, retention 5 rows/7 days, pins, removal table, triggers, purge, D45); A/B replay (eligibility by `template_hash`, block placement, CLI verbs, sweep, purpose `prompts.replay`); Chat proposals (`coach_proposal_sources`, blanking, `source_removed_at`, `writeCut` neutral text); Desktop (`TuningChat`, `TuningChatSurface`, `TuningChatTexts`, `TuningFeedCards`, `TuningReplayCardModel`, presence check, `analytics.tuningPanelWidth`, agent filter, `codex_unread`); Codex analytics pointer to `agent-analytics.md`; Writers and races (§4.8); v1 limits (§2 non-goals, D14, D25, D45 cost, Open points that shipped as limits); Tests (the guard and test names that landed, grepped from the code). Repo hygiene: placeholders only.
+- [ ] **Step 1: Write** the note with sections: What it is (§1–§3); Surface `tuning` (six places, `KnownChatSurface`, DirectApply, the `agent_actions` delete trigger and insert guard, D47); Tools (§4.2 table, `CompanyData`, fences); Destinations (§4.3, `codexSkillPath`, pack overlays, Codex rules table); Captured inputs (`prompt_inputs`/`prompt_input_items`, `WithCapture` call sites and tails, retention 5 rows/7 days, pins, removal table, triggers, purge, D45); A/B replay (eligibility by `template_hash`, block placement, CLI verbs, sweep, purpose `prompts.replay`); Chat proposals (`coach_proposal_sources`, blanking, `source_removed_at`, `writeCut` neutral text); Desktop (`TuningChat`, `TuningChatSurface`, `TuningChatTexts`, `TuningFeedCards`, `TuningReplayCardModel`, presence check, `analytics.tuningPanelWidth`, agent filter; the purpose `tuning.chat` (D53) and the no-tools rule on ollama (D52)); Codex analytics pointer to `agent-analytics.md`; Writers and races (§4.8); v1 limits (§2 non-goals, D14, D45 cost, Codex sessions only from a workbench terminal (D49), Open points that shipped as limits); Tests (the guard and test names that landed, grepped from the code). Repo hygiene: placeholders only.
 - [ ] **Step 2: Check** — every path and symbol in the note exists: `grep -c` each one; `make test-swift` not needed; `go test ./docs/guide` is unaffected.
 - [ ] **Step 3: Index line** — `- [Tuning chat — tune prompts, skills and agent instructions from Analytics (2026-11-xx, board #1517)](docs/features/tuning-chat.md) — …` summarising the same keywords in one line, in the CLAUDE.md style.
 - [ ] **Step 4: Commit** — `git commit -m "docs(features): tuning chat note and index line (#1517)"`.
@@ -2909,17 +2480,17 @@ How the real views replace the fixture views:
 **Depends on:** Task 6.1
 **Files:**
 - Modify: `docs/features/agent-coach.md` (origin `chat`, `conversation_id`, `skill`, `source_removed_at`; the five new destinations with budgets; `ValidateChatProposal` vs `Validate`; `keyOf` with skill; `writeCut` changes; per-agent measurement (§4.7); Desktop inline card)
-- Modify: `docs/features/agent-analytics.md` (Codex pass, `ScanCodex` budget share `len(ids)+1`, file registry states, `agent_log_import.complete` widened, `agents scan --json` `codex` keys, exec exclusion, report `agents`/`codex_unread`/`--agent`, pane agent filter and notes) — only the parts Phase 4 did not already write (check the file first)
-- Modify: `docs/features/llm-usage-ledger.md` (purpose `prompts.replay`, surface `watchtower`, never captured; Desktop name "Tuning A/B replays")
+- Modify: `docs/features/agent-analytics.md` (only the parts Task 4.x did not already write — check the file first: Codex prices and the repricing (`pricing.Version` 2, `CostFor`, D36), the cache-write mapping and `codex_usage_mismatch`, Codex sub-agents (the parent's `collab_agent_spawn_end` link, `Transcript.ChildImportFile`, depth cap 8, child rows under the root with no owner turn, `spawned_agent_id`), the report's `--agent` and its keys, the pane's agent filter with main's caption kept, the daemon's login-shell `CODEX_HOME`; Codex sessions count only when started from a Watchtower workbench terminal (main's AGENTLOG-04))
+- Modify: `docs/features/llm-usage-ledger.md` (purpose `prompts.replay`, surface `watchtower`, never captured; Desktop name "Tuning A/B replays"; purpose `tuning.chat` for every tuning chat turn through `ai query --purpose`, Desktop name "Tuning chat" — owner, ask #1132, spec D53)
 
 - [ ] **Step 1: Write** the edits; **Step 2: Check** names by grep; **Step 3: Commit** — `git commit -m "docs(features): coach, analytics and ledger notes for the tuning chat (#1517)"`.
 
-### Task 6.3: User guide — Tuning, Codex sessions, exec limit, Learn card
+### Task 6.3: User guide — Tuning, Codex sessions, Learn card
 
 **Depends on:** Task 6.1
 **Files:**
 - Create: `docs/guide/features/tuning-chat.md` (the Tuning page: open with **Tune**, the panel, starters, reading cards, **Accept**/**Edit…**/**Decline** on a proposal, A/B **Run**/**Not now**/**Propose this addition**/**Discard**/**Retry**, needs Claude or Codex, what is removed when source data goes, privacy: captured inputs live at most 7 days)
-- Modify: `docs/guide/features/agent-analytics.md` (header line: **Discuss in Chat** → **Tune** and the agent filter; a short `## Tuning` section pointing to the new page; Codex sessions paragraph; the line "Codex runs started with `codex exec` are not counted"; the unread line; the "Claude Code only" note)
+- Modify: `docs/guide/features/agent-analytics.md` (header line: **Discuss in Chat** → **Tune** and the **All / Claude Code / Codex** filter; a short `## Tuning` section pointing to the new page; the Codex sessions paragraph made accurate: Codex sessions count only when they were started from a Watchtower workbench terminal (a plain shell or `codex exec` run is never read), Codex models are now priced (the "Watchtower has no price for Codex models" sentence and the "Cost is 0" troubleshooting line change: only an unknown model shows **no price**), and sub-agent threads now count under their session (the "subagent threads are not counted yet" sentence goes); the **Not measured for Codex sessions** sentence stays; `scan --json` gains `codex_usage_mismatch` beside `codex_rollouts_missing`, and a missing sub-agent rollout counts in `codex_rollouts_missing`)
 - Modify: `docs/guide/features/agent-coach.md` (proposals from the tuning chat show in Proposed edits; new destinations in one sentence)
 - Modify: `docs/guide/README.md` (catalogue line for the new page under the agent-analytics group)
 
@@ -2974,7 +2545,7 @@ action: nav:projects
 | §4.1 surface twin (`AgentToolsContract`, `AssistantToolSurface`), Go/Swift lists agree | 3.1, 3.2 |
 | §4.1 / §5 stale-CLI line in the rules (pinned) | 5.7 |
 | §4.2 data-fence rule line (pinned) | 5.7 |
-| §4.4 every state: empty, loading, streaming, error, proposal (open/accepting/stale/accepted fold), A/B proposed/running/done/failed/discarded/removed/propose-refused/run-refused, too few, no tools, no tools midway, narrow, codex unread, agent filter, conversation removed (panel and elsewhere), analytics off | 5.5, 5.10, 5.11, 5.12, 5.13 |
+| §4.4 every state: empty, loading, streaming, error, proposal (open/accepting/stale/accepted fold), A/B proposed/running/done/failed/discarded/removed/propose-refused/run-refused, too few, no tools, no tools midway, narrow, agent filter (main's Codex caption), conversation removed, analytics off | 5.5, 5.10, 5.11, 5.12, 5.13 |
 | §4.4 Accept secondary in the panel | 5.11 |
 | §4.4 destination labels | already on the branch (`CoachPresentation`); readers 5.1 |
 | §4.4 PanelSplit edge line fix + Panels shot | 5.9 |
@@ -2984,22 +2555,23 @@ action: nav:projects
 | §4.5 no Add to Knowledge, no `решили:`/`факт:` mining in the panel | 5.7, 5.11 |
 | §4.5 / §4.9 Swift `CoachProposal` + `+Row` read new keys and a blanked row; Desktop reader of an emptied `agent_actions` row | 5.1 |
 | §4.5 Accept losing the race: "This proposal was removed with its source data" | 5.1 |
-| §4.7 agent filter `KitSegmentedPicker` (only with both agents), `scopeNote` "Claude Code only", `codex_unread` line, exec help line | 5.10, 5.12 |
-| §4.6 purpose `prompts.replay` named on the Desktop | 5.2 |
+| §4.7 agent filter `KitSegmentedPicker` (only with both agents or a chosen filter), main's caption "Not measured for Codex sessions." kept (D51), the accurate scope help line, the coach tiles on the same filter; the `codex-unread` shot dropped and the statistics shot renamed (D54) | 5.10, 5.12, 5.13 |
+| §4.6 purpose `prompts.replay` named on the Desktop; §4.1 purpose `tuning.chat` named ("Tuning chat", D53, ask #1132) and sent by every tuning turn | 5.2, 5.7 |
+| §4.1 ollama keeps the tuning chat draft-only (D52, ask #1132) | 5.7, 5.8 |
 | §5 Desktop: TuningChatTexts tests, TuningChat tests (shown/hidden, period into turns), DesignShots for every §4.4 state | 5.4, 5.8, 5.13 |
 | §4.4 "compare the screens with the mockups" | 5.13 |
 | §6 feature note + CLAUDE.md line | 6.1 |
-| §6 guide: Tuning section, Codex, exec limit, Learn card (8 KB, `go test ./docs/guide`) | 6.3 |
+| §6 guide: Tuning section, Codex prices / sub-agents / agent filter, the accurate scope line, Learn card (8 KB, `go test ./docs/guide`) | 6.3 |
 | §6 agent-coach.md / agent-analytics.md / llm-usage-ledger.md | 6.2 |
 | §6 inventory CHAT-01, COACH-01 (both amendments), AGENT-01, DEV-04, new capture contract | 6.4 |
 
 ### Phase 5–6 notes from recon (resolved above where they conflict)
 1. **Tuning chats in the Chats panel.** (Decided by the owner in ask #1123: not listed; spec D48.) The spec says they "appear in the Chats panel under the workbench project, as embedded chats do today", but no embedded chat is listed there: the panel reads `context_type IS NULL` only, and `chat_projects` are not workbenches. The plan ships the removed line generically in `EmbeddedChatView` (5.11) and the `conversation-removed-in-chats` shot renders it, but does not add a Chats-panel listing. Needs an owner call: drop that sentence, or add a listing (a new query branch + opening an embedded engine from the Chats panel — its own task).
-2. **Cross-phase contracts this plan assumes** (pin them in Phases 2–4 or adjust 5.x): `coach proposals --json` keys `origin`/`conversation_id`/`source_removed_at` and a CLI error code `source_removed` for Accept losing the trigger race (5.1); Go testdata `internal/chat/testdata/actions_contract_tuning.txt` (5.2); tool argument keys `days`, `prompt_id`, `skill`, `name` (5.4); `agent_actions.result_json` keys `proposal_id` / `replay_id`, and a refused `propose_prompt_replay` recorded as a `failed` row with the refusal text in `error` (5.6 — if Phase 3 writes no row on refusal, the too-few line needs another source); a shared fixture `internal/db/testdata/prompt_replay_results.json` for the `results` JSON shape (5.5); report keys `agents` (top level = agents with sessions in the period, per block = agents the block reads) and `codex_unread` (5.10).
+2. **Cross-phase contracts this plan assumes** (pin them in Phases 2–4 or adjust 5.x): `coach proposals --json` keys `origin`/`conversation_id`/`source_removed_at` and a CLI error code `source_removed` for Accept losing the trigger race (5.1); Go testdata `internal/chat/testdata/actions_contract_tuning.txt` (5.2); tool argument keys `days`, `prompt_id`, `skill`, `name` (5.4); `agent_actions.result_json` keys `proposal_id` / `replay_id`, and a refused `propose_prompt_replay` recorded as a `failed` row with the refusal text in `error` (5.6 — if Phase 3 writes no row on refusal, the too-few line needs another source); a shared fixture `internal/db/testdata/prompt_replay_results.json` for the `results` JSON shape (5.5); report keys `agent`, `agents`, `agent_filter` (top level) and per-block `agents` (5.10, pinned by Task 4.4).
 3. **Swift twin ownership.** 5.1 (Swift `CoachProposal`/`+Row`) and 5.2 (`AgentToolsContract`/`AssistantToolSurface`) are Swift and placed here; Phases 2/3 must not also do them.
 4. **Done-card cost.** Resolved: each side stores `cost_usd` (Cross-phase resolutions, Tasks 1.1, 3.3, 3.12, 5.5).
 5. **"Detached" Run.** Resolved: Run and Retry call the CLI with `--detach`; `LaunchReplay` starts the run in its own session (Cross-phase resolutions, Tasks 3.13 and 5.8).
-6. **Coach tiles and the agent filter.** (Resolved: `coach status --agent`, Task 5.10.) "The Analytics tiles keep the owner's chosen filter" — the tiles are `coach status`, which gets no `--agent` flag in Phase 4's list; 5.10 leaves the coach tiles unfiltered.
-7. **Claude-hint notes.** (Resolved: `hints[].agents`, Tasks 4.15 and 5.10.) §4.7 names "Claude hints" among the Claude-only blocks; the plan puts `scopeNote` on the Context, Skills and Trouble blocks only (the mockup shows Context and Skills). Hints need a per-hint `agents` key to do the same.
+6. **Coach tiles and the agent filter.** (Resolved: `coach status --agent`, Tasks 4.5 and 5.10.)
+7. **Claude-only notes.** (Resolved by the owner, ask #1132, spec D51: main's caption "Not measured for Codex sessions." stays on Context and Skills; no "Claude Code only" note, no `scopeNote`, no per-hint `agents` key.)
 8. **No-tools text.** (Decided by the owner in ask #1123: "Settings → System → AI".) "pick one in Settings → System → AI": the AI section is under Settings → **System**; **Open Settings** opens `.system`. Wording kept from the mockup; change to "Settings → System → AI" if wanted.
 9. **Inventory guard names.** 6.4 cites `TestCAPTURE01_*` / `TestCAPTURE02_*`; Phases 1/3 should name their capture/removal guards that way.

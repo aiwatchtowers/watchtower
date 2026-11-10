@@ -63,11 +63,8 @@ enum TuningChatShotFixtures {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .detailBackground())
             },
-            DesignShot(name: "tuning-chat-statistics-claude-only", size: NSSize(width: 900, height: 590)) {
+            DesignShot(name: "tuning-chat-statistics-codex-caption", size: NSSize(width: 900, height: 590)) {
                 statistics()
-            },
-            DesignShot(name: "tuning-chat-codex-unread", size: NSSize(width: 900, height: 590)) {
-                statistics(codexUnread: true)
             }
         ]
     }
@@ -87,9 +84,10 @@ enum TuningChatShotFixtures {
         }
     }
 
-    /// The Statistics blocks with Codex sessions in the period: the blocks
-    /// that read Claude Code facts only say so (§4.7).
-    static func statistics(codexUnread: Bool = false) -> AnyView {
+    /// The Statistics blocks with Codex sessions in the period: the Context
+    /// and Skills blocks carry main's caption "Not measured for Codex
+    /// sessions." (§4.7, ask #1132).
+    static func statistics() -> AnyView {
         do {
             let overview = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
             let actions = AgentAnalyticsActions(turnOn: {}, openSession: { _ in }, openTarget: { _ in },
@@ -97,13 +95,8 @@ enum TuningChatShotFixtures {
             return AnyView(VStack(alignment: .leading, spacing: Spacing.page) {
                 TuningAnalyticsHeader(tuneOn: false)
                 SectionHeader(title: "Statistics", systemImage: "chart.bar")
-                if codexUnread {
-                    Text(TuningChatTexts.codexUnread)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                AgentAnalyticsContextView(context: overview.context, actions: actions).claudeOnly()
-                AgentAnalyticsSkillsView(skills: overview.skills).claudeOnly()
+                AgentAnalyticsContextView(context: overview.context, codex: .some, actions: actions)
+                AgentAnalyticsSkillsView(skills: overview.skills, codex: .some)
             }
             .frame(maxWidth: 900, alignment: .leading)
             .padding(Spacing.large)
@@ -202,18 +195,6 @@ enum TuningChatShotFixtures {
     }
 }
 
-private extension View {
-    /// The block's scope caption on its title line.
-    func claudeOnly() -> some View {
-        overlay(alignment: .topTrailing) {
-            Text(TuningChatTexts.claudeOnly)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(Spacing.medium)
-        }
-    }
-}
-
 // MARK: - Texts
 
 /// Every visible string of the mockups, as `TuningChatTexts` will own them.
@@ -230,7 +211,6 @@ enum TuningChatTexts {
     ]
     static let loading = "Reading this workbench's analytics…"
     static let placeholder = "Ask about cost, prompts, skills or instructions…"
-    static let codexUnread = "2 Codex sessions were not read: too large or damaged."
     static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → System → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
@@ -243,7 +223,6 @@ enum TuningChatTexts {
     static let showAccepted = "Show in Accepted edits"
     /// The owner's text kept in the composer after the conversation was removed (mockup only).
     static let keptDraft = "Also check why digest.daily repeats the channel names"
-    static let claudeOnly = "Claude Code only"
     static let tooFew = "Only 2 past calls of digest.channel match the current prompt — A/B needs 3. "
         + "It will be possible after the prompt runs again."
     static let skillAsk = "The review-pr skill makes the agent read every changed file. Can we fix that?"
