@@ -108,7 +108,9 @@ final class SessionBackgroundProber {
                   let count = Self.count(of: row, live: status.state.live, startedAt: startedAt[row.id]),
                   let reported = SessionAgentStatus.parseStamp(count.stamp),
                   showsCount(status, overShown: (entries[row.id]?.failures ?? 0) >= Self.failuresShownOver),
-                  policy.needsProbe(count: agents, lastReport: reported, now: now) else { continue }
+                  policy.needsProbe(
+                      count: agents, shells: row.agentBackgroundShells ?? 0, lastReport: reported, now: now
+                  ) else { continue }
             var entry = entries[row.id].flatMap { $0.count == count ? $0 : nil }
                 ?? Entry(count: count, lastProbe: .distantPast, failures: 0)
             let retrying = entry.failures > 0 && entry.failures < Self.failuresShownOver

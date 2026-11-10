@@ -34,17 +34,18 @@ A caption under the session name says what the agent is doing. When several appl
 | **Error: …** | red | The turn stopped on an error. The caption names it, for example "Error: rate limit". |
 | **Working** | green | The agent works on your prompt. |
 | **Agents working** (or **N agents working**) | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
+| **Background task running** | green, pulsing | The turn is over but a background command runs, such as a CI wait; the agent resumes when it ends. Shown for up to 2 hours. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
 | **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
-| **Stopped** | grey | The agent finished its turn. |
+| **Idle** | grey | The agent finished its turn and waits for you. |
 | **Running** / **Not running** | green / grey | No state reported yet, or not started. |
 
 A ring instead of a filled dot means the session is not running. A blue ring is finished, orange still has a question, purple still has checks or reviews for you. A state from before an exit, a Restart or a Watchtower restart is never shown.
 
-Two limits matter. Pressing Esc or Ctrl+C to interrupt the agent reports nothing, so the session keeps saying "Working" until your next prompt. And only sessions started in a workbench's terminal in Watchtower report a state.
+Two limits: interrupting the agent with Esc or Ctrl+C reports nothing, so it keeps saying "Working" until your next prompt; and only sessions started in a workbench's terminal in Watchtower report a state.
 
-When no helper has reported for 30 minutes, Watchtower asks Claude Code whether the session is still at work, then every 30 minutes. It shows **Stopped** once the answer is no, or after the check fails twice in a row.
+After 30 minutes without news from a helper, Watchtower asks Claude Code whether the session still works, then every 30 minutes, and shows **Idle** on a no or after two failed checks.
 
 ### Where the agent works
 
@@ -118,7 +119,7 @@ action: nav:projects
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
 - Right-click an agent session, then **Session Target**, to pick the target its progress counts; **None — Count What It Touched** resets it.
 - Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
-- Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or with no state yet) needs **Delete…**.
+- Hover a session that is finished, idle, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
 - If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
@@ -133,7 +134,7 @@ Workchat is a session's second mode: its dialog as a chat that you can write to,
 
 ### Get notified
 
-While Watchtower is in the background, a running session that stops, needs approval, hits an error or finishes sends one notice. A session waiting on an ask sends none. **Agents working** sends nothing. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
+While Watchtower is in the background, a running session that turns idle, needs approval, hits an error or finishes sends one notice; asks and background states send none. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
 
 ## When it's empty or wrong
 

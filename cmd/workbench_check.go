@@ -222,6 +222,23 @@ func backgroundAgents(tasks backgroundTasks, turns db.AgentTurns, except string)
 	return n + min(open, teammates), true
 }
 
+// backgroundShells counts the background shells tasks reports (board
+// #1712): the `shell` entries, a `run_in_background` Bash such as a CI watch
+// or a dev server. Claude Code wakes the main agent when one exits, so while
+// one runs the session works in the background; a shell that never exits is
+// bounded by the Desktop's shell cap (SessionBackgroundPolicy.shellCap) and
+// the staleness probe. Monitors and every other type never count. 0 when the
+// field was absent, null or not an array.
+func backgroundShells(tasks backgroundTasks) int64 {
+	var n int64
+	for _, task := range tasks.List {
+		if task.Type == "shell" {
+			n++
+		}
+	}
+	return n
+}
+
 // codexBackgroundCount is a Codex Stop's count of background agents: the
 // subagent turns still open (spec 2026-10-12 §6.3). Codex sends no
 // background_tasks; its SubagentStart and SubagentStop fire on the parent

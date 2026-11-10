@@ -124,12 +124,12 @@ struct SessionTimelineSlice: SliceSource {
         switch state.kind {
         case .running: "Started"
         case .working: "Working"
-        case .background: "Agents working"
+        case .background: state.shellsOnly ? "Background task running" : "Agents working"
         case .waitingOnAsk: "Waiting for you"
         case .readyToCheck: state.asksAreOnlyReviews ? "Ready for review" : "Ready to check"
         case .needsApproval: "Needs approval"
         case .finished: "Finished"
-        case .stopped: "Stopped"
+        case .stopped: "Idle"
         // "Error: rate limit", or "Stopped on an error".
         case .failed: SessionStatePresentation.caption(for: state)
         case .notStarted: nil

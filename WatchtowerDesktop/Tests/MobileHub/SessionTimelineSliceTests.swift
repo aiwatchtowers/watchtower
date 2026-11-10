@@ -197,6 +197,8 @@ final class SessionTimelineSliceTests: XCTestCase {
         XCTAssertEqual(try sidecar.stateMilestones()[session]?.map(\.text), ["Agents working", "Working"],
                        "a new count is not a new milestone")
         XCTAssertEqual(SessionTimelineSlice.stateText(.live(.background)), "Agents working")
+        XCTAssertEqual(SessionTimelineSlice.stateText(.live(.background, backgroundShells: 1)), "Background task running")
+        XCTAssertEqual(SessionTimelineSlice.stateText(.live(.stopped)), "Idle")
     }
 
     /// #534: Ready to check is a milestone text of its own, "Ready for

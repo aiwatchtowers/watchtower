@@ -30,7 +30,7 @@ package enum SessionStatePresentation {
     package static func glyph(for state: State) -> String? {
         switch state.kind {
         case .working: state.openAsks > 0 ? askGlyph(state) : nil
-        case .background: state.openAsks > 0 ? askGlyph(state) : "person.2.fill"
+        case .background: state.openAsks > 0 ? askGlyph(state) : state.shellsOnly ? "hourglass" : "person.2.fill"
         case .waitingOnAsk: "questionmark"
         case .readyToCheck: "checklist"
         case .needsApproval: "hand.raised.fill"
@@ -73,7 +73,9 @@ package enum SessionStatePresentation {
         case .finished:
             state.openAsks > 0 ? "Finished · \(asksOpen(state.openAsks))" : "Finished"
         case .stopped:
-            "Stopped"
+            // Turn over, the agent at its prompt (board #1712: "Stopped"
+            // read as a dead session). The kind keeps its `stopped` id.
+            "Idle"
         case .background:
             backgroundCaption(state)
         case .failed:
@@ -116,12 +118,15 @@ package enum SessionStatePresentation {
     }
 
     /// "Agents working" (no count shown), "1 agent working", "N agents
-    /// working", with the open asks.
+    /// working"; with no agents but shells "Background task running", "N
+    /// background tasks running" (board #1712); with the open asks.
     private static func backgroundCaption(_ state: State) -> String {
-        let agents = switch state.backgroundAgents {
-        case ...0: "Agents working"
-        case 1: "1 agent working"
-        default: "\(state.backgroundAgents) agents working"
+        let agents = switch (state.backgroundAgents, state.backgroundShells) {
+        case (1, _): "1 agent working"
+        case (2..., _): "\(state.backgroundAgents) agents working"
+        case (_, 1): "Background task running"
+        case (_, 2...): "\(state.backgroundShells) background tasks running"
+        default: "Agents working"
         }
         return state.openAsks > 0 ? "\(agents) · \(asksOpen(state.openAsks))" : agents
     }

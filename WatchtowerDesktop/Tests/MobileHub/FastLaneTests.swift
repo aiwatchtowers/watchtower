@@ -339,7 +339,7 @@ final class FastLaneTests: XCTestCase {
         try await publisher.publishOnce(kinds: [.terminalSession])
         let published = try XCTUnwrap(try latestPayloads(transport, kind: .terminalSession)[record])
         XCTAssertEqual(published["state_kind"] as? String, "stopped")
-        XCTAssertEqual(published["state_caption"] as? String, "Stopped")
+        XCTAssertEqual(published["state_caption"] as? String, "Idle")
 
         // Review F8: a stopped center forgets what it showed over.
         lane.stop()

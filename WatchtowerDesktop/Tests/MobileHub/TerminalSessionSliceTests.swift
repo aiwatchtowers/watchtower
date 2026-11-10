@@ -325,7 +325,7 @@ final class TerminalSessionSliceTests: XCTestCase {
         XCTAssertEqual(try payloads(shown([:]))[session]?["state_kind"] as? String, "working")
         let over = try XCTUnwrap(try payloads(shown([session: judged]))[session])
         XCTAssertEqual(over["state_kind"] as? String, "stopped")
-        XCTAssertEqual(over["state_caption"] as? String, "Stopped")
+        XCTAssertEqual(over["state_caption"] as? String, "Idle")
 
         let olderReport = ShownOverCount(run: started, reportedAt: stamp(1))
         XCTAssertEqual(try payloads(shown([session: olderReport]))[session]?["state_kind"] as? String, "working",

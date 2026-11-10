@@ -873,9 +873,9 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let waiting = SessionSwitcherPresentation.rows([session], liveIDs: [id], statuses: [id: status], now: Date())[0]
         let live = TerminalSessionRow(row: waiting, actions: actions)
         let label = try live.inspect().find(SessionStateLabel.self)
-        XCTAssertNoThrow(try label.find(text: "Stopped"))
+        XCTAssertNoThrow(try label.find(text: "Idle"))
         XCTAssertEqual(try label.find(ViewType.Image.self).actualImage().name(), "pause.fill")
-        XCTAssertEqual(try label.hStack().accessibilityLabel().string(), "Stopped", "the caption is read out")
+        XCTAssertEqual(try label.hStack().accessibilityLabel().string(), "Idle", "the caption is read out")
         let dot = try live.inspect().find(SessionLiveDot.self)
         XCTAssertEqual(try dot.actualView().state, .live(.stopped))
         XCTAssertEqual(try dot.find(ViewType.Image.self).foregroundStyleShapeStyle(Color.self), .secondary)
@@ -885,7 +885,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let idle = TerminalSessionRow(row: dead, actions: actions)
         XCTAssertNoThrow(try idle.inspect().find(text: "Not running · 5m"))
         XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running · 5m"), "the age is read")
-        XCTAssertThrowsError(try idle.inspect().find(text: "Stopped"))
+        XCTAssertThrowsError(try idle.inspect().find(text: "Idle"))
         XCTAssertThrowsError(try idle.inspect().find(SessionStateLabel.self).find(ViewType.Image.self), "no glyph")
     }
 
@@ -913,7 +913,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let expected: [(SessionSwitcherPresentation.State, Color, String, String)] = [
             (.live(.running), .green, "Running", "circle.fill"),
             (.live(.working), .green, "Working", "circle.fill"),
-            (.live(.stopped), .secondary, "Stopped", "circle.fill"),
+            (.live(.stopped), .secondary, "Idle", "circle.fill"),
             (.live(.waitingOnAsk, openAsks: 1), .orange, "Waiting for you", "circle.fill"),
             (.live(.waitingOnAsk, openAsks: 2, oldestAskID: 12), .orange, "Waiting for you · ask #12 · 2 asks", "circle.fill"),
             (SessionSwitcherPresentation.State(kind: .waitingOnAsk, live: false, openAsks: 1, oldestAskID: 3), .orange,

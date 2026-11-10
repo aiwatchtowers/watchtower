@@ -828,6 +828,181 @@
     "working": false,
     "needs_approval": false
    }
+  },
+  {
+   "name": "background shell only",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T11:30:00.000Z",
+    "agent_background_shells": 1,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false,
+    "background_shells": 1
+   }
+  },
+  {
+   "name": "background shells, agents ended by the probe",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:05:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T11:05:00.000Z",
+    "agent_background_shells": 2,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false,
+    "background_shells": 2
+   }
+  },
+  {
+   "name": "background shell inside the cap",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T10:00:30.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T10:00:30.000Z",
+    "agent_background_shells": 1,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T10:00:00.000Z"
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false,
+    "background_shells": 1
+   }
+  },
+  {
+   "name": "background shell past the cap",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T10:00:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T10:00:00.000Z",
+    "agent_background_shells": 1,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T09:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false,
+    "background_shells": 0
+   }
+  },
+  {
+   "name": "background shell report from the future",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T11:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T12:30:00.000Z",
+    "agent_background_shells": 1,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T11:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false,
+    "background_shells": 0
+   }
+  },
+  {
+   "name": "background agents with a shell past the cap",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T09:30:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 1,
+    "agent_background_at": "2026-10-31T09:30:00.000Z",
+    "agent_background_shells": 1,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T09:00:00.000Z"
+   },
+   "expect": {
+    "state": "agents_working",
+    "hooks_reported": true,
+    "idle": false,
+    "working": true,
+    "needs_approval": false,
+    "background_shells": 0
+   }
+  },
+  {
+   "name": "no shell count",
+   "row": {
+    "kind": "claude",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-31T10:00:00.000Z",
+    "finished_at": null,
+    "agent_failed_at": null,
+    "agent_background": 0,
+    "agent_background_at": "2026-10-31T10:00:00.000Z",
+    "agent_background_shells": null,
+    "open_asks": 0,
+    "open_question_asks": 0,
+    "open_review_asks": 0,
+    "run_started_at": "2026-10-31T09:00:00.000Z"
+   },
+   "expect": {
+    "state": "stopped",
+    "hooks_reported": true,
+    "idle": true,
+    "working": false,
+    "needs_approval": false,
+    "background_shells": 0
+   }
   }
  ],
  "note": "idle/working/needs_approval mirror SessionControl.isIdle / isWorking and the lineCheck needs-approval test (Swift)"

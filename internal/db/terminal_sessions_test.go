@@ -724,7 +724,7 @@ func TestProj11_OnlyTheStopStartsBackground(t *testing.T) {
 	before := terminalRowSnapshot(t, d, id)
 	one := int64(1)
 	for _, count := range []*int64{nil, &one} {
-		if w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), count)) {
+		if w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), count, nil)) {
 			t.Fatalf("LowerTerminalBackground(%v) wrote over a NULL count", count)
 		}
 		if after := terminalRowSnapshot(t, d, id); after != before {
@@ -778,7 +778,7 @@ func TestProj11_LowerTerminalBackgroundOnlyLowers(t *testing.T) {
 		id := counted()
 		others := otherAgentColumns(t, d, id)
 		at := t0.Add(time.Second)
-		if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, at, tc.count)) {
+		if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, at, tc.count, nil)) {
 			t.Fatalf("%s: did not write", tc.name)
 		}
 		requireBackground(t, d, id, tc.wantN, at, tc.name)
@@ -816,7 +816,7 @@ func TestProj11_LowerTerminalBackgroundOnlyLowers(t *testing.T) {
 		}
 		before := terminalRowSnapshot(t, d, id)
 		for _, count := range []*int64{nil, ptr(1)} {
-			if w(d.LowerTerminalBackground(id, tc.workbench, tc.uuid, tc.at, count)) {
+			if w(d.LowerTerminalBackground(id, tc.workbench, tc.uuid, tc.at, count, nil)) {
 				t.Fatalf("%s: wrote (count %v)", tc.name, count)
 			}
 			if after := terminalRowSnapshot(t, d, id); after != before {
@@ -1289,7 +1289,7 @@ func TestEndTerminalBackgroundIsCompareAndClear(t *testing.T) {
 		uuid      string
 	}{
 		{"a newer report", func(id int64) {
-			if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), nil)) {
+			if !w(d.LowerTerminalBackground(id, pid, agentStateUUID, t0.Add(time.Second), nil, nil)) {
 				t.Fatal("the heartbeat did not write")
 			}
 		}, pid, agentStateUUID},

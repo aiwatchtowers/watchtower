@@ -55,6 +55,7 @@ type stateSeed struct {
 	finished   bool
 	failed     *string // agent_error of a StopFailure
 	background *int
+	shells     *int // agent_background_shells (board #1712)
 	bgAt       *time.Duration
 }
 
@@ -83,8 +84,9 @@ func (r *sessionRig) setState(id int64, s stateSeed) {
 		bgAt = r.stamp(off)
 	}
 	exec(r.t, r.d, `UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?, finished_at = ?,
-    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ? WHERE id = ?`,
-		s.state, stateAt, finished, failedAt, agentErr, s.background, bgAt, id)
+    agent_failed_at = ?, agent_error = ?, agent_background = ?, agent_background_at = ?,
+    agent_background_shells = ? WHERE id = ?`,
+		s.state, stateAt, finished, failedAt, agentErr, s.background, bgAt, s.shells, id)
 }
 
 func countsOf(t *testing.T, d *db.DB, s *TerminalSessionSource) map[int64]sessionCounts {
@@ -184,7 +186,7 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			insertAsk(t, r.d, project, askSeed{session: &id})
 		}, want{"finished", "Finished · 2 asks open", "checkmark", "orange"}},
 		{"stopped", true, func(id int64) { r.setState(id, stateSeed{state: ptr("waiting")}) },
-			want{"stopped", "Stopped", "pause.fill", "secondary"}},
+			want{"stopped", "Idle", "pause.fill", "secondary"}},
 		// #411: agents working has no wire kind; it goes out as working.
 		{"agents working", true, func(id int64) { r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(2)}) },
 			want{"working", "2 agents working", "person.2.fill", "green"}},
@@ -194,6 +196,17 @@ func TestEveryStateKindPublishesTheMacsPresentation(t *testing.T) {
 			want{"failed", "Stopped on an error", "exclamationmark", "red"}},
 		// No age: the caption never ticks.
 		{"not started", false, func(int64) {}, want{"not_started", "Not running", "", "secondary"}},
+		// #1712: background shells alone go out as working too, with their
+		// own caption and glyph; agents win the caption beside them.
+		{"background shell", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(0), shells: ptr(1)})
+		}, want{"working", "Background task running", "hourglass", "green"}},
+		{"background shells", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(0), shells: ptr(2)})
+		}, want{"working", "2 background tasks running", "hourglass", "green"}},
+		{"agents and a shell", true, func(id int64) {
+			r.setState(id, stateSeed{state: ptr("waiting"), background: ptr(1), shells: ptr(1)})
+		}, want{"working", "1 agent working", "person.2.fill", "green"}},
 		// §3.5 (U6): a working codex row the Mac cannot watch.
 		{"working, not watched", true, func(id int64) {
 			r.setState(id, stateSeed{state: ptr("working")})

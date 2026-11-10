@@ -1194,23 +1194,30 @@ func hookClock(t *testing.T) (base time.Time, at func(sec int)) {
 
 // PROJ-11, board #411: the Stop stores how many background subagents and
 // workflows its input lists, stamped with the state's own time; none, an
-// absent field or a malformed one stores NULL.
+// absent field or a malformed one stores NULL. Since board #1712 it also
+// stores the shells it lists beside them (the agent count then 0 when only
+// shells run); a monitor or an idle teammate still counts as neither.
 func TestProj11_StopRecordsBackgroundSubagents(t *testing.T) {
 	captured, err := os.ReadFile("testdata/stop_background_tasks.json")
 	require.NoError(t, err)
 	capturedInput := strings.ReplaceAll(string(captured), "00000000-0000-4000-8000-000000000411", briefLaunchID)
 	for _, tc := range []struct {
-		name, input string
-		want        sql.NullInt64
+		name, input  string
+		want, shells sql.NullInt64
 	}{
 		{"subagents, a shell and a teammate", stopWithBackground(`[{"id":"a","type":"subagent"},{"id":"b","type":"subagent"},
-			{"id":"s","type":"shell"},{"id":"t","type":"teammate"}]`), sql.NullInt64{Int64: 2, Valid: true}},
-		{"the captured input", capturedInput, sql.NullInt64{Int64: 2, Valid: true}},
-		{"a workflow", stopWithBackground(`[{"id":"w","type":"workflow"}]`), sql.NullInt64{Int64: 1, Valid: true}},
-		{"empty", stopWithBackground(`[]`), sql.NullInt64{}},
-		{"absent", stopWithBackground(""), sql.NullInt64{}},
+			{"id":"s","type":"shell"},{"id":"t","type":"teammate"}]`), bgCount(2), bgCount(1)},
+		{"the captured input", capturedInput, bgCount(2), bgCount(1)},
+		{"a workflow", stopWithBackground(`[{"id":"w","type":"workflow"}]`), bgCount(1), bgCount(0)},
+		{"a shell only", stopWithBackground(`[{"id":"s","type":"shell"}]`), bgCount(0), bgCount(1)},
+		{"two shells and a monitor", stopWithBackground(`[{"id":"s1","type":"shell"},{"id":"s2","type":"shell"},
+			{"id":"m","type":"monitor"}]`), bgCount(0), bgCount(2)},
+		{"a monitor and an idle teammate", stopWithBackground(`[{"id":"m","type":"monitor"},{"id":"t","type":"teammate"}]`),
+			sql.NullInt64{}, sql.NullInt64{}},
+		{"empty", stopWithBackground(`[]`), sql.NullInt64{}, sql.NullInt64{}},
+		{"absent", stopWithBackground(""), sql.NullInt64{}, sql.NullInt64{}},
 		{"malformed entries ignored", stopWithBackground(`[{"id":"a","type":"subagent"},1,"subagent",{"type":7}]`),
-			sql.NullInt64{Int64: 1, Valid: true}},
+			bgCount(1), bgCount(0)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database, pid, row := stopStateFixture(t, "open")
@@ -1224,6 +1231,7 @@ func TestProj11_StopRecordsBackgroundSubagents(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, "waiting", s.AgentState.String)
 			assert.Equal(t, tc.want, s.Background)
+			assert.Equal(t, tc.shells, s.BackgroundShells)
 			if tc.want.Valid {
 				assert.Equal(t, s.AgentStateAt, s.BackgroundAt, "the count is stamped with the Stop's time")
 			} else {
@@ -1564,10 +1572,11 @@ func TestProj11_TeammateCountsOnlyInItsTurn(t *testing.T) {
 
 	s = hookStep(t, database, pid, row, at, 8, idle)
 	assert.Equal(t, "waiting", s.AgentState.String)
-	assert.False(t, s.Background.Valid, "idle teammates are not counted")
+	assert.Equal(t, bgCount(0), s.Background, "idle teammates are not counted")
+	assert.Equal(t, bgCount(1), s.BackgroundShells, "the captured shell is (board #1712)")
 
 	s = hookStep(t, database, pid, row, at, 9, alphaStart)
-	assert.False(t, s.Background.Valid, "a teammate's start never raises the count")
+	assert.Equal(t, bgCount(0), s.Background, "a teammate's start never raises the count")
 	assert.True(t, storedTurns(t, database, row).Open("aalpha-0000000000000001"))
 
 	s = hookStep(t, database, pid, row, at, 10, idle)
@@ -1636,7 +1645,8 @@ func TestProj11_LostTeammateStopIsCappedByTheList(t *testing.T) {
 	s := hookStep(t, database, pid, row, at, 3, stopWithBackground(withTeammates(1, "[]")))
 	assert.Equal(t, bgCount(1), s.Background, "two open turns, one teammate listed")
 	s = hookStep(t, database, pid, row, at, 4, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
-	assert.False(t, s.Background.Valid, "no teammate listed: no open turn counts")
+	assert.Equal(t, bgCount(0), s.Background, "no teammate listed: no open turn counts")
+	assert.Equal(t, bgCount(1), s.BackgroundShells, "the shell counts as a shell (board #1712)")
 	s = hookStep(t, database, pid, row, at, 5, stopWithBackground(`[]`))
 	assert.False(t, s.Background.Valid)
 }
@@ -2146,4 +2156,68 @@ func TestProj11_SubagentCwdIsNeverRecorded(t *testing.T) {
 		hookStep(t, database, pid, row, at, 5+i, withCwd(t, input, other))
 		assert.Equal(t, "/tmp/acme", storedCwd(t, database, row).Path, "input %d", i)
 	}
+}
+
+// PROJ-11, board #1712: a session whose agent ended its turn while a
+// background shell runs (a CI watch Claude Code wakes the agent from) keeps
+// a shell count beside the agent count. A Stop repeating the same counts is a
+// report, not a transition; a SubagentStop's snapshot lowers the shells as it
+// lowers the agents, never raising them; a later Stop without shells and a
+// new turn clear them.
+func TestProj11_BackgroundShellsLifecycle(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	hookStep(t, database, pid, row, at, 1, subagentStart("a1", "general-purpose"))
+
+	s := hookStep(t, database, pid, row, at, 2,
+		stopWithBackground(`[{"id":"a1","type":"subagent"},{"id":"sh","type":"shell"}]`))
+	require.Equal(t, "waiting", s.AgentState.String)
+	assert.Equal(t, bgCount(1), s.Background)
+	assert.Equal(t, bgCount(1), s.BackgroundShells)
+	stopAt := s.AgentStateAt
+
+	s = hookStep(t, database, pid, row, at, 3,
+		subagentStop("a1", "general-purpose", `[{"id":"a1","type":"subagent"},{"id":"sh","type":"shell"}]`))
+	assert.Equal(t, bgCount(0), s.Background, "the subagent ended")
+	assert.Equal(t, bgCount(1), s.BackgroundShells, "the shell still runs")
+
+	s = hookStep(t, database, pid, row, at, 4, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	assert.Equal(t, stopAt, s.AgentStateAt, "the same counts are a report, not a transition")
+	assert.Equal(t, bgCount(1), s.BackgroundShells)
+	assert.True(t, s.BackgroundAt.After(stopAt), "the report time moves")
+
+	s = hookStep(t, database, pid, row, at, 5,
+		subagentStop("t1", "alpha", `[{"id":"sh","type":"shell"},{"id":"sh2","type":"shell"}]`))
+	assert.Equal(t, bgCount(1), s.BackgroundShells, "a snapshot never raises the shells")
+	s = hookStep(t, database, pid, row, at, 6, subagentStop("t1", "alpha", `[]`))
+	assert.Equal(t, bgCount(0), s.BackgroundShells, "a snapshot without the shell lowers it")
+
+	s = hookStep(t, database, pid, row, at, 7, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	assert.Equal(t, bgCount(1), s.BackgroundShells, "the next Stop snapshots again")
+	s = hookStep(t, database, pid, row, at, 8, stopWithBackground(`[]`))
+	assert.False(t, s.Background.Valid, "a Stop without shells clears both")
+	assert.False(t, s.BackgroundShells.Valid)
+
+	hookStep(t, database, pid, row, at, 9, stopWithBackground(`[{"id":"sh","type":"shell"}]`))
+	s = hookStep(t, database, pid, row, at, 10, statePayload("UserPromptSubmit", briefLaunchID, ""))
+	assert.Equal(t, "working", s.AgentState.String, "the shell exited and woke the agent")
+	assert.False(t, s.Background.Valid)
+	assert.False(t, s.BackgroundShells.Valid, "a new turn clears the shells")
+}
+
+// PROJ-11, board #1712: a Codex Stop reports no shells, so a repeat of its
+// agent count stays a repeat (the shell column stays NULL beside it).
+func TestProj11_ShellCountNeverMakesACodexRepeatATransition(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	order := db.AgentOrder{Stop: true, Background: bgCount(1)}
+	ok, err := database.SetTerminalAgentState(row, pid, briefLaunchID, "waiting", at, "", nil, false, order)
+	require.NoError(t, err)
+	require.True(t, ok)
+	s, err := database.GetTerminalSession(row)
+	require.NoError(t, err)
+	assert.False(t, s.BackgroundShells.Valid)
+	assert.True(t, repeatsAgentState(s, "waiting", nil, false, bgCount(1), sql.NullInt64{}))
+	assert.False(t, repeatsAgentState(s, "waiting", nil, false, bgCount(1), bgCount(0)))
 }
