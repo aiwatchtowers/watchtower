@@ -200,7 +200,8 @@ Steps:
   - `TestWorkbenchStatus_IgnoresDeletingRow`;
   - `TestSessionInput_DeletingRowRefused`;
   - `TestSessionInterrupt_DeletingRowRefused`;
-  - `TestPermissionRequestSlice_HidesDeletingRow`.
+  - `TestPermissionRequestSlice_HidesDeletingRow`;
+  - `internal/db/automation_session_steps.go` treats a deleting row as gone (`GetAutomationSessionStep` `SessionGone`, `SessionEnds` → `ErrTerminalSessionNotFound`, `AttachAutomationSessionStep` refuses it), so a `session()` step waiting on a deleted session ends instead of hanging: `TestAutomationSessionStep_DeletingRowIsGone`, `TestSessionEnds_DeletingRowNotFound`, `TestAttachAutomationSessionStep_RefusesDeletingRow`.
 - [ ] Run `go test ./internal/db -run TestProj17_DeletingRowsLeaveEveryList`. Expected: FAIL, listing the unfiltered sites.
 - [ ] **Add the filter** at each list site. Run `go test` on each touched package (`./internal/hub/... ./internal/sessionstart ./internal/sessionstate ./internal/db`) and `go test ./cmd -run 'TestWorkbenchSession'`. Expected: PASS.
 - [ ] Commit `feat: a session being deleted leaves every list (#1716)`.
@@ -255,7 +256,22 @@ Depends on: Task 1, Task 6
 - Modify: `WatchtowerDesktop/Sources/Services/SessionCleanupCenter.swift`: an apply with no `--item`, a 10-min timeout with a process-group kill, and a slot that waits instead of refusing.
 - Modify: `WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/TerminalSessionQueries.swift`:
   - `fetchForWorkbench`, `fetchAllWorkbenchSessions`, `fetchStandalone`, `fetchForTarget`, `fetchWorkLinks`, `fetchAgentStates`, `fetchAgentCwds`, the activity ordering in `WorkbenchQueries.swift`, and the reads in `Services/HubKeepAwake.swift` filter deleting rows. A deleting row must give no notice, no "needs you" badge, and keep nothing awake;
-  - `AutomationQueries.unattachedSession` filters deleting rows: a session being deleted is never adopted into an automation run;
+  - **Every Swift read of `terminal_sessions`, classified** (20 sites today; the guard below keeps the table honest):
+
+    | Site | Treatment |
+    |---|---|
+    | `TerminalSessionQueries` `fetchForWorkbench` (:132), `fetchAllWorkbenchSessions` (:142), `fetchStandalone` (:149), `fetchForTarget` (:211) | filter: lists |
+    | `fetchWorkLinks` targets JOIN (:186) and worktrees JOIN (:197) | filter: lanes |
+    | `fetchAgentStates` (:244), `fetchAgentCwds` (:275) | filter: no notice, badge or cwd from a deleting row |
+    | `WorkbenchQueries` last-activity ordering (:141) | filter |
+    | `HubKeepAwake` count (:90) | filter: keeps nothing awake |
+    | `AutomationQueries.unattachedSession` (:394) | filter (see below) |
+    | `AutomationQueries.waitingSessionSteps` JOIN (:423) | filter: a deleting session is gone for the app; Go's wait ends the step (Task 5, `automation_session_steps.go`) |
+    | `AutomationQueries.disownUnattachedSessions` (:406) | **not filtered**, allowlisted: it clears the run marker on every unattached row of the run, deleting ones too, so a Resume can never make one adoptable later |
+    | `fetch(id:)` (:88), `goStartRow` (:111), `isFinished` (:125), `fetchCleanupRecord` (:308), `delete` (:410), the new `fetchDeleting`, `markDeleteRequested`, `clearDeleteRequested` | allowlisted: by-id lookups and writes |
+
+    `unattachedSessionsWhere` is split: the filter goes into `unattachedSession`'s own SQL only, never into the shared constant that `disownUnattachedSessions` uses.
+  - **Automation behaviour (owner noted in ask #1223):** an unattached session of a run that the owner deleted is not adopted, so the run's next poll launches a new session for that step. This is the same as today: today the delete removes the row after the Undo window, and the poll then finds no row and launches. The only change is that "deleted" now starts when the window ends, not after the cleanup finishes. Test `testDeletingRowNotAdoptedByAutomation` asserts the new launch. Test `testDisownClearsDeletingRowsToo` asserts the marker is cleared.
   - the guard `testProj17_SwiftDeletingRowsLeaveEveryList` (in `Tests/Core`) scans `WatchtowerDesktop/Sources/**/*.swift` for string literals matching `(?i)\b(FROM|JOIN)\s+terminal_sessions\b`. Each must contain `delete_requested_at` or be on its explicit by-id allowlist (`fetch(id:)`, `goStartRow`, `isFinished`, `fetchCleanupRecord`, `hasWorktree`, `fetchDeleting`, the update/delete statements);
   - new `fetchDeleting(projectID:)`, `markDeleteRequested(id:at:)` and `clearDeleteRequested(id:)`.
 - Modify: `WatchtowerDesktop/Sources/App/QuitCoordinator.swift` (stops a running background apply's process group at quit: SIGTERM, 5 s, SIGKILL).
@@ -289,7 +305,7 @@ Steps:
   - `testDeleteAnywayDeletesRow`;
   - `testDeletingRowsHiddenFromLists`;
   - `testDeletingRowGivesNoAgentStateNotice` (`fetchAgentStates`);
-  - `testDeletingRowNotAdoptedByAutomation` (`unattachedSession`);
+  - `testDeletingRowNotAdoptedByAutomation` (`unattachedSession`); `testDisownClearsDeletingRowsToo`; `testWaitingSessionStepsSkipDeletingRow`;
   - `testRequeueSkipsRowWithLiveTerminal`;
   - `testQuitStopsRunningApplyAndKeepsMark`;
   - `testCleanUpAgainSuccessDeletesRow`, `testCleanUpAgainFailureKeepsNewMark`;
