@@ -246,7 +246,7 @@ struct OnboardingGoalsStepView: View {
             return
         }
         do {
-            try OnboardingClaudePathConfig.save(path, configPath: Constants.configPath)
+            try OnboardingAgentPathConfig.save(path, for: .claude, configPath: Constants.configPath)
         } catch {
             manualPathError = "Could not save the path to \(Constants.configPath): \(error.localizedDescription)"
             return

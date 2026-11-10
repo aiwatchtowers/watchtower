@@ -1,21 +1,22 @@
 import Foundation
 
-/// The onboarding Claude step's `config.yaml` edit: pins `claude_path` to a
-/// binary the owner picked by hand.
-package enum OnboardingClaudePathConfig {
+/// The onboarding agent check's `config.yaml` edit: pins `claude_path` /
+/// `codex_path` (`Agent.pathKey`) to a binary the owner picked by hand.
+package enum OnboardingAgentPathConfig {
     /// `value` as a single-quoted YAML scalar (internal quotes doubled), so a
     /// path cannot inject YAML.
     package static func yamlQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
     }
 
-    /// `content` (nil: no config file yet) with its top-level `claude_path`
+    /// `content` (nil: no config file yet) with the agent's top-level path
     /// line replaced by one for `path`; every other line is kept as is.
-    package static func settingClaudePath(_ path: String, in content: String?) -> String {
-        let line = "claude_path: \(yamlQuote(path))\n"
+    package static func settingPath(_ path: String, for agent: OnboardingAgentChoice.Agent, in content: String?) -> String {
+        let key = agent.pathKey
+        let line = "\(key): \(yamlQuote(path))\n"
         guard let content, !content.isEmpty else { return line }
         var kept = content.components(separatedBy: "\n")
-            .filter { !$0.hasPrefix("claude_path:") }
+            .filter { !$0.hasPrefix("\(key):") }
             .joined(separator: "\n")
         if !kept.hasSuffix("\n") { kept += "\n" }
         return kept + line
@@ -26,7 +27,7 @@ package enum OnboardingClaudePathConfig {
     /// the file holds secrets) sibling first and is renamed over the config,
     /// so the config is never readable by others nor half-written. Throws on
     /// a path with a line break, or when the config cannot be read or written.
-    package static func save(_ path: String, configPath: String) throws {
+    package static func save(_ path: String, for agent: OnboardingAgentChoice.Agent, configPath: String) throws {
         guard !path.contains(where: \.isNewline) else {
             throw CocoaError(.fileWriteInvalidFileName, userInfo: [NSFilePathErrorKey: path])
         }
@@ -45,7 +46,7 @@ package enum OnboardingClaudePathConfig {
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         do {
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            try handle.write(contentsOf: Data(settingClaudePath(path, in: existing).utf8))
+            try handle.write(contentsOf: Data(settingPath(path, for: agent, in: existing).utf8))
             try handle.close()
             guard rename(staged, configPath) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         } catch {
