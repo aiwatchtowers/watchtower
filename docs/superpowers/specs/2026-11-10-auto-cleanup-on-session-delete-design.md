@@ -190,9 +190,9 @@ There is no empty state: a workbench with no deletes looks as today.
 - If something could not be removed, the session stays in the list marked "not fully cleaned" — ask #1205.
 - The existing pile is cleared once by hand on the Clean Up screen, with no periodic sweep — ask #1205.
 - No LLM decides what to remove; rules only — approved by the owner — ask #1210.
-- New ownership sources: parsed agent commands + the Claude scratchpad uuid — agent's call (proposed in ask #1205).
+- New ownership sources: parsed agent commands + the Claude scratchpad uuid — agent's call (proposed in ask #1205), approved with the spec in ask #1213.
 - Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — approved by the owner — ask #1210.
 - The Delete dialog loses **Delete Only** / **Delete and Clean Up** — approved by the owner — ask #1210.
 - Quit inside the Undo window defers the delete to the next launch instead of deleting — approved by the owner — ask #1210.
 - Guard test replacements in §5 — approved by the owner, ask #1210.
-- Workbench delete unchanged; remote branches never touched — agent's call.
+- Workbench delete unchanged; remote branches never touched — agent's call, approved with the spec in ask #1213 (a deleted workbench's sessions are not auto-cleaned).
