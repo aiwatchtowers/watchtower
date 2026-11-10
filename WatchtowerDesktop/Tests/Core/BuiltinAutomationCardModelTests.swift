@@ -341,6 +341,40 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         XCTAssertEqual(card.actionError, "busy elsewhere")
     }
 
+    /// The Inbox's artifact ⋯ shows a press's own result: `.busy` while
+    /// another card write runs (nothing sent), else the write's outcome.
+    func testRunNowAndSetEnabledReturnBusyWhileWorking() async throws {
+        let runner = VerbRunner([
+            "show": .success(try Self.show()),
+            "run": .success(Data(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#.utf8))
+        ])
+        let card = model(runner)
+        var gate: CheckedContinuation<Void, Never>?
+        let first = Task {
+            await card.setEnabled(false) { _, _ in
+                await withCheckedContinuation { gate = $0 }
+                return nil
+            }
+        }
+        while gate == nil { await Task.yield() }
+        let run = await card.runNow()
+        XCTAssertEqual(run, .busy)
+        let toggle = await card.setEnabled(true) { _, _ in nil }
+        XCTAssertEqual(toggle, .busy)
+        XCTAssertFalse(runner.invocations.contains { $0.count > 1 && $0[1] == "run" }, "nothing sent while busy")
+        gate?.resume()
+        let firstResult = await first.value
+        XCTAssertEqual(firstResult, .done)
+
+        let ran = await card.runNow()
+        XCTAssertEqual(ran, .done)
+        let refused = await card.setEnabled(true) { _, _ in "config locked" }
+        XCTAssertEqual(refused, .failed("config locked"))
+        runner.set("run", .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "daemon gone\n")))
+        let failed = await card.runNow()
+        XCTAssertEqual(failed, .failed("daemon gone"))
+    }
+
     func testSetEnabledWithoutAShowWritesNothing() async {
         let card = model(VerbRunner([:]))
         var called = false

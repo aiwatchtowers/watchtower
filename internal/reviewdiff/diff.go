@@ -25,6 +25,7 @@ type File struct {
 	Binary          bool   `json:"binary"`
 	CollapsedReason string `json:"collapsed_reason,omitempty"` // lockfile|generated|too_large
 	NewBlob         string `json:"new_blob"`                   // the new side's blob id; "" for a deleted file
+	OldBlob         string `json:"-"`                          // the old side's blob id; "" for an added file (the overview's part hash)
 	NewMode         string `json:"new_mode"`                   // the new side's mode; "" for a deleted file
 	OldMode         string `json:"old_mode,omitempty"`         // the old side's mode; "" for an added file
 	Hunks           []Hunk `json:"hunks"`
@@ -76,7 +77,7 @@ func (r *Repo) Diff(ctx context.Context, from, to string) (Diff, error) {
 	total, next := 0, 0
 	for i := range d.Files {
 		f := &d.Files[i]
-		f.CollapsedReason = collapsedReason(f.Path)
+		f.CollapsedReason = CollapsedReason(f.Path)
 		parseSection(f, sections[next])
 		next++
 		if f.typeChange { // a file turned symlink (or back): git patches it as delete + create
@@ -111,7 +112,7 @@ func parseRaw(b []byte) []File {
 			f.NewMode, f.NewBlob = mode, blob
 		}
 		if strings.Trim(meta[2], "0") != "" {
-			f.OldMode = meta[0]
+			f.OldMode, f.OldBlob = meta[0], meta[2]
 		}
 		st := meta[4][0]
 		if st == 'R' || st == 'C' {

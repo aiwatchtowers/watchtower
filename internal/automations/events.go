@@ -38,7 +38,15 @@ var EventFields = map[string][]string{
 	"calendar.event_changed":  {"account", "event_id", "change"},
 	"confluence.page_changed": {"space", "page_id"},
 	SlackReactionAdded:        {"account", "channel_id", "emoji"},
+	ApprovalEvent:             {},
 }
+
+// ApprovalEvent is the event type of an approval's state change: an
+// agent_actions row or a reminder changed (or came due). Built-in only
+// (approvalTriggerAllowed); its runs are queued by builtin.Fire with events
+// {"type": "approval", "ref": "<kind>:<id>"} (or "sweep"), never by the bus,
+// and it has no where fields.
+const ApprovalEvent = "approval"
 
 // MatchWhere reports whether e satisfies every where key: the event carries
 // the field as a string and it equals the pattern case-insensitively or

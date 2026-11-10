@@ -27,7 +27,7 @@ var Signals = []string{
 // of the Desktop's SidebarDestination
 // (WatchtowerDesktop/Sources/App/SidebarDestination.swift) — a dual path, keep
 // both in step — plus the old screen names watchtower-nav:// still accepts
-// for the Inbox's filters (InboxRoute.aliasHosts in
+// for the screens the Inbox replaced (InboxRoute.aliasHosts in
 // WatchtowerDesktop/Sources/WatchtowerCore/Services/Inbox/InboxRoute.swift).
 var navScreens = []string{
 	"home", "chat", "catchUp", "inbox", "calendar", "targets", "projects",

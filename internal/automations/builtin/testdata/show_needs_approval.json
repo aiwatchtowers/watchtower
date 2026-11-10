@@ -1,0 +1,37 @@
+{
+  "id": "needs-approval",
+  "slot": "",
+  "overridden": false,
+  "shipped_hash": "a992bf528c402d12144b6e4c054305633fd9677458147166a6ea589c04494d23",
+  "base_hash": "",
+  "update_available": false,
+  "shipped_text": "---\nname: Needs approval\nsummary: Every action and reminder that waits for you\ntrigger:\n  event:\n    type: approval\nconcurrency: 1\nartifacts: living\npermissions:\n  - builtin:approvals.list\noutputs: [inbox]\nbudget: {tokens: 1000, minutes: 2}\n---\nWhenever an action waits for your approval or a reminder comes due, shows it in Needs approval, one card each, and takes the card away once it is settled.\n\n```js\nvar open = approvals.list();\n\n// Plain text inside a text block: the summary is the proposer's words, so\n// no character of it may turn into a link or other markup.\nfunction plain(s) {\n  return s.replace(/[\\\\`*_{}\\[\\]()#+\\-.!|\u003c\u003e~]/g, \"\\\\$\u0026\");\n}\n\nopen.approvals.forEach(function (a) {\n  var row = { title: a.line, ref: { kind: a.kind, id: a.id } };\n  if (a.detail) {\n    row.subtitle = a.detail;\n  }\n  if (a.tone) {\n    row.tone = a.tone;\n  }\n  var blocks = [{ type: \"heading\", text: a.title }];\n  if (a.text) {\n    blocks.push({ type: \"text\", markdown: plain(a.text) });\n  }\n  blocks.push({ type: \"list\", rows: [row] });\n  if (a.link) {\n    blocks.push({ type: \"link\", title: \"Open in Slack\", url: a.link });\n  }\n  output.inbox({ key: a.key, title: a.title, blocks: blocks });\n});\n\n// Every card whose approval was settled or is gone.\nopen.remove.forEach(function (key) {\n  output.remove({ key: key });\n});\n```\n",
+  "default_prompts": {},
+  "when": "When an action or a reminder needs you",
+  "reads": [
+    "The actions that wait for your approval",
+    "Your reminders that came due"
+  ],
+  "does": [
+    "Shows every action that waits for your approval and every reminder that came due, one card each",
+    "Updates the cards as soon as one changes, and takes a card away once you approve, reject, finish or snooze it",
+    "Uses no AI"
+  ],
+  "sends": [
+    "One card per approval in your Inbox, in Needs approval"
+  ],
+  "default_folder": "needs-approval",
+  "parameters": [],
+  "feature_ids": [
+    "approval-cards"
+  ],
+  "enabled": true,
+  "run_now": true,
+  "copy_error": "",
+  "costs": {
+    "usd": 0,
+    "days": 7,
+    "reported": false,
+    "tokens": 0
+  }
+}

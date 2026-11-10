@@ -72,23 +72,11 @@ var legacyDigestOffFeatureKeys = []string{
 // time any product write can flip digest.enabled, the marker is already
 // there.
 func MigrateFeatureGates(configPath string) (bool, error) {
-	v := viper.New()
-	v.SetConfigFile(configPath)
-
-	if err := v.ReadInConfig(); err != nil {
-		// Missing config file is not an error here — nothing to migrate.
-		var configNotFound viper.ConfigFileNotFoundError
-		if errors.As(err, &configNotFound) || os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("reading config: %w", err)
+	pending, legacy, err := FeatureMigrationPending(configPath)
+	if err != nil || !pending {
+		return false, err
 	}
 
-	if v.IsSet("features.migrated") {
-		return false, nil
-	}
-
-	legacy := v.IsSet("digest.enabled") && !v.GetBool("digest.enabled")
 	sets := map[string]bool{"features.migrated": true}
 	if legacy {
 		for _, key := range legacyDigestOffFeatureKeys {
@@ -100,6 +88,31 @@ func MigrateFeatureGates(configPath string) (bool, error) {
 	// mapping and did not get it" is exactly the signal the daemon's
 	// fail-closed path (ApplyLegacyDigestOff) keys on.
 	return legacy, patchConfigYAML(configPath, sets, nil)
+}
+
+// FeatureMigrationPending is MigrateFeatureGates' read half: it reads the
+// config with a fresh viper and writes nothing. pending is true when the
+// features.migrated marker is absent (the next MigrateFeatureGates call
+// would write the file); legacy is true when that write would also apply the
+// digest.enabled=false mapping. A missing file is (false, false, nil); a
+// file that cannot be read is an error.
+func FeatureMigrationPending(configPath string) (pending, legacy bool, err error) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+
+	if err := v.ReadInConfig(); err != nil {
+		// Missing config file is not an error here — nothing to migrate.
+		var configNotFound viper.ConfigFileNotFoundError
+		if errors.As(err, &configNotFound) || os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("reading config: %w", err)
+	}
+
+	if v.IsSet("features.migrated") {
+		return false, false, nil
+	}
+	return true, v.IsSet("digest.enabled") && !v.GetBool("digest.enabled"), nil
 }
 
 // ApplyLegacyDigestOff applies the legacy digest.enabled=false mapping to an

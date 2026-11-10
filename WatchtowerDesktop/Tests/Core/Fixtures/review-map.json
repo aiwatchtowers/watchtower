@@ -1,0 +1,177 @@
+{
+  "ok": true,
+  "map": {
+    "chapters": [
+      {
+        "key": "dir:api",
+        "title": "api",
+        "level": "breaking",
+        "core": true,
+        "paths": [
+          "api/api.go"
+        ],
+        "changed_lines": 2,
+        "signals_summary": {
+          "api_removed": 1
+        }
+      },
+      {
+        "key": "lane:ABC-1-login",
+        "title": "Login with a passkey",
+        "level": "significant",
+        "core": false,
+        "paths": [
+          "login/auth.go"
+        ],
+        "changed_lines": 1,
+        "lane": "ABC-1-login",
+        "jira_key": "ABC-1",
+        "signals_summary": {
+          "security_path": 1
+        }
+      },
+      {
+        "key": "dir:",
+        "title": "(root)",
+        "level": "significant",
+        "core": false,
+        "paths": [
+          "README.md"
+        ],
+        "changed_lines": 1,
+        "signals_summary": {
+          "file_deleted": 1
+        }
+      },
+      {
+        "key": "dir:internal/db/migrations",
+        "title": "internal/db/migrations",
+        "level": "significant",
+        "core": false,
+        "paths": [
+          "internal/db/migrations/00001_init.sql"
+        ],
+        "changed_lines": 1,
+        "signals_summary": {
+          "migration_added": 1
+        }
+      },
+      {
+        "key": "agent:1",
+        "title": "Docs first",
+        "level": "normal",
+        "core": false,
+        "paths": [
+          "docs/notes.md"
+        ],
+        "changed_lines": 1,
+        "signals_summary": {}
+      },
+      {
+        "key": "lane:task-b",
+        "title": "Payments lane",
+        "level": "normal",
+        "core": false,
+        "paths": [
+          "pay/pay.go",
+          "shared.go"
+        ],
+        "changed_lines": 2,
+        "lane": "task-b",
+        "target_id": 1,
+        "signals_summary": {}
+      },
+      {
+        "key": "collapsed",
+        "title": "Can skip",
+        "level": "normal",
+        "core": false,
+        "paths": [
+          "testdata/golden.json"
+        ],
+        "changed_lines": 1,
+        "signals_summary": {}
+      }
+    ],
+    "files": [
+      {
+        "path": "README.md",
+        "chapter": "dir:",
+        "level": "significant",
+        "signals": [
+          "file_deleted"
+        ]
+      },
+      {
+        "path": "api/api.go",
+        "chapter": "dir:api",
+        "level": "breaking",
+        "signals": [
+          "api_removed"
+        ]
+      },
+      {
+        "path": "docs/notes.md",
+        "chapter": "agent:1",
+        "level": "normal",
+        "signals": [],
+        "lane": "task-b"
+      },
+      {
+        "path": "internal/db/migrations/00001_init.sql",
+        "chapter": "dir:internal/db/migrations",
+        "level": "significant",
+        "signals": [
+          "migration_added"
+        ]
+      },
+      {
+        "path": "login/auth.go",
+        "chapter": "lane:ABC-1-login",
+        "level": "significant",
+        "signals": [
+          "security_path"
+        ],
+        "lane": "ABC-1-login"
+      },
+      {
+        "path": "pay/pay.go",
+        "chapter": "lane:task-b",
+        "level": "normal",
+        "signals": [],
+        "lane": "task-b"
+      },
+      {
+        "path": "shared.go",
+        "chapter": "lane:task-b",
+        "level": "normal",
+        "signals": [],
+        "lane": "task-b",
+        "also": [
+          "ABC-1-login"
+        ]
+      },
+      {
+        "path": "testdata/golden.json",
+        "chapter": "collapsed",
+        "level": "normal",
+        "signals": []
+      }
+    ],
+    "lanes": [
+      {
+        "name": "ABC-1-login",
+        "title": "Login with a passkey",
+        "jira_key": "ABC-1"
+      },
+      {
+        "name": "task-b",
+        "title": "Payments lane",
+        "target_id": 1
+      }
+    ],
+    "lanes_partial": false,
+    "diff_truncated": false,
+    "notes": []
+  }
+}

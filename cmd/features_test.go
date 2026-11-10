@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/features"
@@ -535,4 +536,117 @@ func TestFeaturesEnable_UnknownIDListsValidIDs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "secretary-inbox", "error should list valid toggleable ids")
 	assert.NotContains(t, err.Error(), "targets", "core ids are not valid toggle targets")
+}
+
+// TestFeaturesDisable_ApprovalCardsTurnsTheBuiltinOffAtOnce: disabling
+// approval-cards turns the needs-approval built-in's row off in the same
+// command, so the approval trigger queues nothing before the daemon's next
+// built-in sync (FEAT-01: off writes nothing).
+func TestFeaturesDisable_ApprovalCardsTurnsTheBuiltinOffAtOnce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	_, err = builtin.Sync(context.Background(), database, cfg.WorkspaceDir(), cfg, time.Now())
+	require.NoError(t, err)
+	a, err := database.GetBuiltinAutomation(builtin.NeedsApprovalID)
+	require.NoError(t, err)
+	require.True(t, a.Runnable(), "needs-approval starts on")
+
+	featuresDisableCmd.SetOut(new(bytes.Buffer))
+	featuresDisableCmd.SetErr(new(bytes.Buffer))
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+
+	after, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, after.ApprovalCards.Enabled)
+	a, err = database.GetBuiltinAutomation(builtin.NeedsApprovalID)
+	require.NoError(t, err)
+	assert.False(t, a.Enabled, "the row is off at once")
+	morning, err := database.GetBuiltinAutomation("morning-brief")
+	require.NoError(t, err)
+	assert.True(t, morning.Enabled, "a built-in of another feature stays on")
+
+	require.NoError(t, builtin.Fire(database, "reminder:1", nil))
+	runs, err := database.ListAutomationRuns(a.ID, 0)
+	require.NoError(t, err)
+	assert.Empty(t, runs, "Fire queues nothing while approval-cards is off")
+}
+
+// TestFeaturesDisable_BuiltinRowFailureIsAWarning: once the config key is
+// written the disable stands — a failed built-in row update is a warning on
+// stderr and the result is still printed.
+func TestFeaturesDisable_BuiltinRowFailureIsAWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	ws := cfg.WorkspaceDir()
+	require.NoError(t, os.MkdirAll(ws, 0o700))
+	require.NoError(t, os.Chmod(ws, 0o000)) // the database cannot even be looked at
+	t.Cleanup(func() { _ = os.Chmod(ws, 0o700) })
+	if _, err := os.Stat(cfg.DBPath()); err == nil || os.IsNotExist(err) {
+		t.Skipf("stat in an unreadable directory gave %v (running as root?)", err)
+	}
+
+	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
+	featuresDisableCmd.SetOut(out)
+	featuresDisableCmd.SetErr(errOut)
+	t.Cleanup(func() { featuresDisableCmd.SetOut(nil); featuresDisableCmd.SetErr(nil) })
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+
+	after, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, after.ApprovalCards.Enabled, "the key is written")
+	assert.NotEmpty(t, out.String(), "the result is still printed")
+	assert.Contains(t, errOut.String(), `warning: "approval-cards" is disabled, but its built-in automations stay on until the daemon's next built-in sync`)
+}
+
+// TestFeaturesDisable_BuiltinWorkspaceErrorIsAWarning: a workspace that
+// cannot be resolved (here an invalid name) is not folded into success — the
+// warning names it — while the disable itself stands.
+func TestFeaturesDisable_BuiltinWorkspaceErrorIsAWarning(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := writeFeaturesConfig(t, "")
+	original := flagWorkspace
+	flagWorkspace = "bad name/"
+	t.Cleanup(func() { flagWorkspace = original })
+
+	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
+	featuresDisableCmd.SetOut(out)
+	featuresDisableCmd.SetErr(errOut)
+	t.Cleanup(func() { featuresDisableCmd.SetOut(nil); featuresDisableCmd.SetErr(nil) })
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+
+	after, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.False(t, after.ApprovalCards.Enabled, "the key is written")
+	assert.Contains(t, errOut.String(), `warning: "approval-cards" is disabled, but its built-in automations stay on until the daemon's next built-in sync`)
+	assert.Contains(t, errOut.String(), "invalid workspace name")
+}
+
+// TestFeaturesDisable_NoWorkspaceIsSilent: a fresh install with no
+// workspace has no built-in row to turn off, so the disable prints no
+// warning.
+func TestFeaturesDisable_NoWorkspaceIsSilent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("digest:\n  enabled: true\n"), 0o600))
+	original := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = original })
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	require.ErrorIs(t, cfg.ValidateWorkspace(), config.ErrNoWorkspace, "the fixture has no workspace")
+
+	out, errOut := new(bytes.Buffer), new(bytes.Buffer)
+	featuresDisableCmd.SetOut(out)
+	featuresDisableCmd.SetErr(errOut)
+	t.Cleanup(func() { featuresDisableCmd.SetOut(nil); featuresDisableCmd.SetErr(nil) })
+	require.NoError(t, featuresDisableCmd.RunE(featuresDisableCmd, []string{"approval-cards"}))
+	assert.Empty(t, errOut.String())
 }

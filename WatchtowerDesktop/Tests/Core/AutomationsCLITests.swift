@@ -8,6 +8,25 @@ final class AutomationsCLITests: XCTestCase {
         return (AutomationsCLI(runner: runner), runner)
     }
 
+    /// The Look step's Dry run: the text on stdin, through the runner's
+    /// stdin path (the one `ProcessCLIRunner` registers with
+    /// `OwnerConfirmGrants`, so the owner confirmation needs no window).
+    func testPreviewSendsTheTextOnStdin() async throws {
+        let body = #"{"ok":true,"errors":[],"manifest":{"name":"N","slug":"","trigger_kind":"manual","#
+            + #""trigger":"manual","permissions":[],"outputs":["inbox"],"budget_tokens":1,"budget_minutes":1},"#
+            + #""dry_run":{"steps":[],"outputs":[{"kind":"inbox","title":"T","body":"b","priority":"low","#
+            + #""blocks":null,"key":"k","content_hash":"h"}],"tokens":5,"status":"succeeded","error":""}}"#
+        let (cli, runner) = cli(body)
+        let result = try await cli.preview(text: "RECIPE", slug: "digest", workbench: 3, builtin: nil)
+        XCTAssertEqual(runner.invocations,
+                       [["automations", "preview", "--stdin", "--json", "--slug", "digest", "--workbench", "3"]])
+        XCTAssertEqual(runner.stdinInputs, [Data("RECIPE".utf8)])
+        XCTAssertEqual(result.dryRun?.outputs.first?.key, "k")
+        XCTAssertEqual(result.dryRun?.outputs.first?.blocksJSON, "")
+        XCTAssertEqual(AutomationsCLI.args(.preview(slug: nil, workbench: nil, builtin: "morning-brief")),
+                       ["automations", "preview", "--stdin", "--json", "--builtin", "morning-brief"])
+    }
+
     func testRunArgs() async throws {
         let (cli, runner) = cli(#"{"run_id":12,"coalesced":true,"daemon_running":false}"#)
         let result = try await cli.run(7)
@@ -19,10 +38,12 @@ final class AutomationsCLITests: XCTestCase {
 
     func testReplyArgs() async throws {
         let (cli, runner) = cli(#"{"run_id":7,"daemon_running":false}"#)
-        let result = try await cli.reply(outputID: 5, action: 1)
-        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1", "--json"]])
-        XCTAssertEqual(AutomationsCLI.args(.reply(outputID: 5, action: 1)),
-                       ["automations", "reply", "--output", "5", "--action", "1", "--json"])
+        let result = try await cli.reply(outputID: 5, action: 1, contentHash: "h1")
+        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1",
+                                             "--content-hash", "h1", "--json"]])
+        XCTAssertEqual(AutomationsCLI.args(.reply(outputID: 5, action: 1, contentHash: "")),
+                       ["automations", "reply", "--output", "5", "--action", "1", "--content-hash", "", "--json"],
+                       "a card from before the blocks migration passes its empty hash; Go skips the check")
         XCTAssertEqual(result, AutomationsCLI.ReplyResult(runID: 7, daemonRunning: false))
     }
 

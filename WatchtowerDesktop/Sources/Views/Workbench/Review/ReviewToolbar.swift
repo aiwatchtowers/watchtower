@@ -164,6 +164,19 @@ struct ReviewToolbar: View {
 /// error. They show in the empty state too, so a failed refresh is never hidden.
 struct ReviewBanners: View {
     let model: ReviewChangesModel
+    /// The size-limit banner was closed (for as long as the pane is open).
+    @State private var sizeLimitDismissed = false
+
+    /// The map failed (tech spec §3.5, mockup frame 4b): the files without chapters.
+    static let mapFailedText = "Chapters could not be built. The files and the diff are shown without them."
+    /// The map says the diff stopped at its cap (tech spec §5, mockup frame 4a).
+    static let sizeLimitText =
+        "This branch is past the reviewer's size limit (50,000 changed lines); the files after it are not shown."
+
+    private var mapCut: Bool {
+        if case .ready(let map) = model.map { return map.diffTruncated }
+        return false
+    }
 
     var body: some View {
         if model.mode == .deep, model.pace.breakHintDue, !model.breakHintDismissed {
@@ -177,7 +190,12 @@ struct ReviewBanners: View {
         if model.previousTreeLost, let round = model.round {
             ReviewBanner(text: "Round \(round.prevRoundId)'s snapshot is gone — showing all changes")
         }
-        if model.truncated {
+        if case .failed = model.map {
+            ReviewBanner(text: Self.mapFailedText, isError: true, action: ("Retry", { model.retryMap() }))
+        }
+        if mapCut, !sizeLimitDismissed {
+            ReviewBanner(text: Self.sizeLimitText, isError: true) { sizeLimitDismissed = true }
+        } else if model.truncated, !mapCut {
             ReviewBanner(text: "The diff is too large; later files show without hunks")
         }
         // An approved round says how its line went in its own banner.
@@ -195,6 +213,8 @@ struct ReviewBanner: View {
     let text: String
     var isError = false
     var dismiss: (() -> Void)?
+    /// A button on the banner (the map's Retry).
+    var action: (title: String, run: () -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: Spacing.compact) {
@@ -202,6 +222,9 @@ struct ReviewBanner: View {
                 .foregroundStyle(isError ? Tone.warning : Color.secondary)
             Text(text).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: Spacing.small)
+            if let action {
+                Button(action.title, action: action.run).buttonStyle(.kitSecondary).controlSize(.small)
+            }
             if let dismiss {
                 Button(action: dismiss) { Image(systemName: "xmark") }
                     .buttonStyle(.borderless)

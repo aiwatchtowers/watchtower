@@ -173,12 +173,12 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     static func routeNavigation(_ type: String?, userInfo: [AnyHashable: Any] = [:], appState: AppState?) {
         switch type {
         case "track", "track_update":
-            // The Inbox's Tracks filter, on the updated track's card when the
+            // The Inbox's Track my threads, on the updated track's card when the
             // push names it (an Int, restored as one when forwarded).
             if type == "track_update", let id = userInfo[NotificationForwarding.trackIDKey] as? Int {
                 appState?.navigateToTrack(id)
             } else {
-                appState?.openInbox(InboxRoute(filter: .tracks))
+                appState?.openInbox(.legacy(.tracks))
             }
         case "briefing":
             // The morning briefing push: today's day card.

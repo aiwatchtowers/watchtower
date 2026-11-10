@@ -11,12 +11,12 @@ struct ArtifactActionOutcome: Equatable {
     var opened = false
 }
 
-/// The only place an `ArtifactAction` becomes an effect: a pasteboard write
+/// The only place a `ChatArtifactAction` becomes an effect: a pasteboard write
 /// and/or opening an allowlisted URL. Nothing here sends (CHAT-05).
 enum ArtifactActionPerformer {
     @discardableResult
     static func perform(
-        _ action: ArtifactAction,
+        _ action: ChatArtifactAction,
         pasteboard: NSPasteboard = .general,
         open: (URL) -> Bool = { NSWorkspace.shared.open($0) }
     ) -> ArtifactActionOutcome {

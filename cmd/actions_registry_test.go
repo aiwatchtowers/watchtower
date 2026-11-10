@@ -125,6 +125,26 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	require.True(t, ok, "apply_track_action missing")
 	assert.Equal(t, []string{tools.InboxSurface}, press.Surfaces)
 	assert.True(t, press.AlwaysAsk)
+	// An Inbox card's target button (Inbox builder A, ask #445): create_target
+	// is on the inbox surface too, which is no trust place.
+	inbox := surfaceToolNames(reg, tools.InboxSurface)
+	assert.True(t, inbox["create_target"], "create_target answers an Inbox card's target button")
+	ct, ok := reg.Get("create_target")
+	require.True(t, ok)
+	assert.NotContains(t, tools.TrustSurfaces(ct), tools.InboxSurface, "the inbox keeps no trust level")
+	// A Reply from an Inbox row (Inbox builder B, asks #445/#451): the three
+	// Reply tools join the inbox surface, stay External and keep no trust
+	// level there, so every reply waits for the owner's Approve (AGENT-03).
+	assert.ElementsMatch(t, []string{"send_slack_message", "add_jira_comment", "add_linear_comment"}, tools.InboxReplyTools())
+	for _, name := range tools.InboxReplyTools() {
+		assert.True(t, inbox[name], "%s answers an Inbox row's Reply", name)
+		rt, ok := reg.Get(name)
+		require.True(t, ok, name)
+		assert.True(t, rt.External, "%s leaves the machine (AGENT-03)", name)
+		assert.NotContains(t, tools.TrustSurfaces(rt), tools.InboxSurface, "%s: the inbox keeps no trust level", name)
+	}
+	assert.ElementsMatch(t, append([]string{"apply_track_action", "create_target"}, tools.InboxReplyTools()...),
+		surfaceNamesOf(reg, tools.InboxSurface, tools.AccessWrite), "no other write tool on the inbox surface")
 	for _, m := range []map[string]bool{main, target, reaction, project, surfaceToolNames(reg, tools.AutomationSurface),
 		surfaceToolNames(reg, tools.AutomationEditorSurface)} {
 		assert.False(t, m["apply_track_action"], "apply_track_action is offered to no model")
@@ -183,8 +203,16 @@ func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
 		"list_slack_channels", "get_confluence_page", "list_emails", "get_email",
 		"list_inbox", "list_calendar_events", "list_meeting_recaps", "get_meeting_recap", "list_meeting_notes",
 		"list_day_plans", "get_day_plan", "list_reminders", "list_jira_sprints", "list_jira_releases",
-		"list_linear_cycles"} {
+		"list_linear_cycles", "list_inbox_folders"} {
 		assert.True(t, listed[name], "%s missing on automation_editor", name)
+	}
+	// The Inbox folder list (inbox builder B, Task 15) is the editor chat's
+	// alone: a recipe names folders by slug, and no other chat proposes one.
+	for _, surface := range []string{"main", "target", "inbox", "project", "reaction", tools.AutomationSurface} {
+		assert.False(t, surfaceToolNames(reg, surface)["list_inbox_folders"], "list_inbox_folders leaked onto %s", surface)
+	}
+	for _, rt := range tools.ReadTools() {
+		assert.NotEqual(t, "list_inbox_folders", rt.Name, "dev-mode MCP never mounts list_inbox_folders (DEV-01)")
 	}
 	for _, name := range surfaceNamesOf(reg, tools.AutomationEditorSurface, tools.AccessWrite) {
 		assert.Equal(t, "save_automation", name, "save_automation is the only write on automation_editor")
@@ -307,22 +335,25 @@ func pinAutomationSurface(t *testing.T, reg *tools.Registry, main, target, react
 
 // automationWriteSurfaces is the pinned surface set of each write tool
 // offered to automations (Automations P2, spec 2026-10-14 §6.1): its
-// pre-P2 surfaces plus the automation surface.
+// pre-P2 surfaces plus the automation surface. create_target is also on the
+// inbox surface (an Inbox card's target button, Inbox builder A, ask #445),
+// and so are the three Reply tools (an Inbox row's Reply, Inbox builder B,
+// ask #451).
 var automationWriteSurfaces = map[string][]string{
-	"create_target":         {"main", "reaction", tools.AutomationSurface},
+	"create_target":         {"main", "reaction", tools.AutomationSurface, tools.InboxSurface},
 	"create_idea":           {"reaction", "main", tools.AutomationSurface},
 	"create_track":          {"reaction", "main", tools.AutomationSurface},
 	"remind_me":             {"reaction", "main", tools.AutomationSurface},
 	"create_jira_issue":     {"main", "target", "reaction", tools.AutomationSurface},
-	"add_jira_comment":      {"main", "target", tools.AutomationSurface},
+	"add_jira_comment":      {"main", "target", tools.AutomationSurface, tools.InboxSurface},
 	"transition_jira_issue": {"main", "target", tools.AutomationSurface},
 	"assign_jira_issue":     {"main", "target", tools.AutomationSurface},
 	"update_jira_issue":     {"main", "target", tools.AutomationSurface},
-	"send_slack_message":    {"main", tools.WorkbenchSurface, tools.AutomationSurface},
+	"send_slack_message":    {"main", tools.WorkbenchSurface, tools.AutomationSurface, tools.InboxSurface},
 	// Linear writes (spec 2026-10-18 §6.2): the Jira writes' surfaces; the
 	// create is on the reaction surface too, like create_jira_issue.
 	"create_linear_issue":     {"main", "target", "reaction", tools.AutomationSurface},
-	"add_linear_comment":      {"main", "target", tools.AutomationSurface},
+	"add_linear_comment":      {"main", "target", tools.AutomationSurface, tools.InboxSurface},
 	"transition_linear_issue": {"main", "target", tools.AutomationSurface},
 	"assign_linear_issue":     {"main", "target", tools.AutomationSurface},
 	"update_linear_issue":     {"main", "target", tools.AutomationSurface},

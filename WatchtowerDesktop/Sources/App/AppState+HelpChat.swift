@@ -72,12 +72,12 @@ extension AppState {
         let connected = featureVisibility.connectedSources
         let visible = SidebarDestination.allCases.filter { $0.isVisible(disabledFeatures: disabled, connected: connected) }
         var ids = Set(visible.map(\.rawValue))
-        if visible.contains(.inbox) { ids.formUnion(InboxRoute.aliasHosts.keys) }
+        if visible.contains(.inbox) { ids.formUnion(InboxRoute.aliasHosts) }
         return ids
     }
 
     /// A `watchtower-nav://<screen>` link from AI Chat, the popup or an Inbox
-    /// card: opens a visible screen — an old screen name its Inbox filter —
+    /// card: opens a visible screen — an old screen name its Inbox entry —
     /// and closes the popup. An unknown or hidden screen is ignored (the link
     /// does nothing).
     func openNavLink(_ url: URL) {
