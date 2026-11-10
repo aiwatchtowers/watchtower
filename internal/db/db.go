@@ -319,7 +319,27 @@ func (db *DB) setupSidecarSchema(path string, migrations fs.FS) error {
 // (when no other connection has them open) and checkpoint on close; neither
 // changes the database's content.
 func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
-	return openExistingDSN(dbPath, existingDSN(dbPath, busy, "_query_only=1"))
+	return openExistingDSN(context.Background(), dbPath, existingDSN(dbPath, busy, "_query_only=1"))
+}
+
+// OpenExistingContext opens the database at dbPath like OpenExisting (the
+// same DSN: mode=rw, query_only, busy), with ctx bounding the open, for a
+// caller that must never write the main database file — watchtower
+// diagnostics. Its connector turns SQLite's checkpoint on close off and
+// sets wal_autocheckpoint = 0, so a left-over WAL stays in the -wal file;
+// the open fails (wrapping sqlcipher.ErrNoCheckpointGuard) when SQLite does
+// not confirm that setting. The lock-metrics sink is turned off after the
+// open, so the caller writes no dblock.jsonl line.
+func OpenExistingContext(ctx context.Context, dbPath string, busy time.Duration) (*DB, error) {
+	dsn := existingDSN(dbPath, busy, "_query_only=1")
+	c := engineConnector(dsn)
+	c.NoCheckpointOnClose = true
+	d, err := openExistingWith(ctx, dbPath, lockmetrics.Wrap(c, dsn))
+	if err != nil {
+		return nil, err
+	}
+	lockmetrics.Configure("")
+	return d, nil
 }
 
 // existingDSN is the DSN of the hook openers: a file: URI so mode=rw (open,
@@ -331,15 +351,24 @@ func existingDSN(dbPath string, busy time.Duration, params ...string) string {
 }
 
 // openExistingDSN opens dsn on one connection and checks the file is there.
-func openExistingDSN(dbPath, dsn string) (*DB, error) {
-	d := openPool(dsn)
-	d.SetConnMaxIdleTime(idleCloseAfter)
-	if err := d.Ping(); err != nil {
-		d.Close()
-		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
+func openExistingDSN(ctx context.Context, dbPath, dsn string) (*DB, error) {
+	d, err := openExistingWith(ctx, dbPath, metricsConnector(dsn))
+	if err != nil {
+		return nil, err
 	}
 	// Only an open that worked points the lock-metrics sink at its file.
 	lockmetrics.Configure(dbPath)
+	return d, nil
+}
+
+// openExistingWith opens c as a one-connection pool and pings it under ctx.
+func openExistingWith(ctx context.Context, dbPath string, c driver.Connector) (*DB, error) {
+	d := openPoolWith(c)
+	d.SetConnMaxIdleTime(idleCloseAfter)
+	if err := d.PingContext(ctx); err != nil {
+		d.Close()
+		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
+	}
 	return d, nil
 }
 
@@ -355,7 +384,7 @@ func openExistingDSN(dbPath, dsn string) (*DB, error) {
 // crossed migration line is possible).
 func OpenExistingRW(dbPath string, busy time.Duration) (*DB, error) {
 	params := append([]string{strings.TrimPrefix(immediateTxDSN, "?")}, connPragmaParams()...)
-	d, err := openExistingDSN(dbPath, existingDSN(dbPath, busy, params...))
+	d, err := openExistingDSN(context.Background(), dbPath, existingDSN(dbPath, busy, params...))
 	if err != nil {
 		return nil, err
 	}
