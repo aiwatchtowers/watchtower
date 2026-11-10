@@ -260,6 +260,35 @@ func (b *builder) loadObserved(ctx context.Context) error {
 	}
 	b.seen = observe(rows, targets, b.req.DeclaredWorktrees, b.req.DeclaredBranches)
 	b.observePlacement()
+	return b.loadScratch(ctx)
+}
+
+// loadScratch adopts the session's Claude scratchpad (auto cleanup spec
+// 2026-11-10 §2b): an agent session id of this row counts only when this
+// row is its only owner (history or current id of any terminal session); a
+// uuid resumed in another tab adopts nothing for either row. A failed read
+// fails the plan (nothing is removed).
+func (b *builder) loadScratch(ctx context.Context) error {
+	ids, err := b.deps.DB.AgentSessionIDs(ctx, b.session.ID)
+	if err != nil {
+		return fmt.Errorf("reading session %d agent session ids: %w", b.session.ID, err)
+	}
+	b.seen.scratchIDs = map[string]bool{}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		owners, err := b.deps.DB.AgentSessionIDOwners(ctx, id)
+		if err != nil {
+			return fmt.Errorf("reading the owners of agent session %s: %w", id, err)
+		}
+		if len(owners) == 1 && owners[0] == b.session.ID {
+			b.seen.scratchIDs[id] = true
+		}
+	}
+	if len(b.seen.scratchIDs) > 0 {
+		b.seen.scratch = scratchDirs()
+	}
 	return nil
 }
 

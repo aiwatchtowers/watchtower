@@ -81,6 +81,16 @@ func (s DBStore) WorkbenchFolders(context.Context) ([]string, error) {
 	return out, nil
 }
 
+// AgentSessionIDs is db.DB.AgentSessionIDs.
+func (s DBStore) AgentSessionIDs(ctx context.Context, sessionID int64) ([]string, error) {
+	return s.DB.AgentSessionIDs(ctx, sessionID)
+}
+
+// AgentSessionIDOwners is db.DB.AgentSessionIDOwners.
+func (s DBStore) AgentSessionIDOwners(ctx context.Context, uuid string) ([]int64, error) {
+	return s.DB.AgentSessionIDOwners(ctx, uuid)
+}
+
 // WorkbenchSessionWorktrees is db.DB.WorkbenchSessionWorktrees.
 func (s DBStore) WorkbenchSessionWorktrees(ctx context.Context, workbenchID int64) (map[string][]int64, error) {
 	return s.DB.WorkbenchSessionWorktrees(ctx, workbenchID)

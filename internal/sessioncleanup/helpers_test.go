@@ -187,6 +187,10 @@ type fakeStore struct {
 	extraFolders   []string
 	activity       []SessionActivity
 	rootOwners     map[string][]int64
+	// agentIDs are the session's agent session ids; uuidOwners the rows
+	// holding each uuid (absent = none, which adopts nothing).
+	agentIDs   []string
+	uuidOwners map[string][]int64
 }
 
 func (s *fakeStore) CleanupSession(_ context.Context, id int64) (SessionInfo, error) {
@@ -202,6 +206,14 @@ func (s *fakeStore) SessionWorktrees(context.Context, int64) ([]db.SessionWorktr
 
 func (s *fakeStore) SessionTargetBranches(context.Context, int64) ([]string, error) {
 	return s.targetBranches, nil
+}
+
+func (s *fakeStore) AgentSessionIDs(context.Context, int64) ([]string, error) {
+	return s.agentIDs, nil
+}
+
+func (s *fakeStore) AgentSessionIDOwners(_ context.Context, uuid string) ([]int64, error) {
+	return s.uuidOwners[uuid], nil
 }
 
 func (s *fakeStore) WorkbenchFolder(_ context.Context, id int64) (string, error) {

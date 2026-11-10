@@ -124,6 +124,12 @@ type Store interface {
 	// SessionTargetBranches is the non-empty `branch` of every target the
 	// session linked (terminal_session_targets, PROJ-14).
 	SessionTargetBranches(ctx context.Context, sessionID int64) ([]string, error)
+	// AgentSessionIDs is every agent session id the row has had (history
+	// plus the current claude_session_id).
+	AgentSessionIDs(ctx context.Context, sessionID int64) ([]string, error)
+	// AgentSessionIDOwners is every terminal session row whose history or
+	// current id holds uuid.
+	AgentSessionIDOwners(ctx context.Context, uuid string) ([]int64, error)
 	WorkbenchFolder(ctx context.Context, workbenchID int64) (string, error)
 	// WorkbenchFolders is every workbench's folder_path.
 	WorkbenchFolders(ctx context.Context) ([]string, error)

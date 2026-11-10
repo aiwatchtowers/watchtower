@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -90,4 +91,55 @@ func TestMigration00127_Backfill(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT agent_session_id, first_seen_at FROM terminal_session_agent_sessions`).Scan(&id, &at))
 	assert.Equal(t, "s-old", id)
 	assert.Equal(t, "2026-10-01T10:00:00Z", at)
+}
+
+func TestAgentSessionIDs_HistoryAndCurrent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	wb := newTestWorkbench(t, d)
+	sid := newTestSession(t, d, wb)
+	_, err := d.SetTerminalClaudeSessionID(sid, wb, "u-2")
+	require.NoError(t, err)
+	// The current id counts even when its ledger row is missing.
+	_, err = d.Exec(`DELETE FROM terminal_session_agent_sessions WHERE agent_session_id = 'u-2'`)
+	require.NoError(t, err)
+
+	got, err := d.AgentSessionIDs(ctx, sid)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"uuid", "u-2"}, got) // newTestSession's id, then the current one
+
+	none, err := d.AgentSessionIDs(ctx, sid+100)
+	require.NoError(t, err)
+	assert.Empty(t, none)
+}
+
+func TestAgentSessionIDOwners_HistoryAndCurrent(t *testing.T) {
+	d := openTestDB(t)
+	ctx := context.Background()
+	wb := newTestWorkbench(t, d)
+	a := newTestSession(t, d, wb)
+	b := newTestSession(t, d, wb)
+	c := newTestSession(t, d, wb)
+	_, err := d.SetTerminalClaudeSessionID(a, wb, "shared")
+	require.NoError(t, err)
+	_, err = d.SetTerminalClaudeSessionID(a, wb, "a-later") // "shared" stays in a's history only
+	require.NoError(t, err)
+	_, err = d.SetTerminalClaudeSessionID(b, wb, "shared") // b's current id
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM terminal_session_agent_sessions WHERE terminal_session_id = ? AND agent_session_id = 'shared'`, b)
+	require.NoError(t, err)
+	_, err = d.SetTerminalClaudeSessionID(c, wb, "c-own")
+	require.NoError(t, err)
+
+	owners, err := d.AgentSessionIDOwners(ctx, "shared")
+	require.NoError(t, err)
+	assert.Equal(t, []int64{a, b}, owners)
+
+	owners, err = d.AgentSessionIDOwners(ctx, "c-own")
+	require.NoError(t, err)
+	assert.Equal(t, []int64{c}, owners)
+
+	owners, err = d.AgentSessionIDOwners(ctx, "nobody")
+	require.NoError(t, err)
+	assert.Empty(t, owners)
 }
