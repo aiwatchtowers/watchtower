@@ -202,6 +202,10 @@ const (
 	// nor confirmed-reused — resolveProcess does NOT remove the file for
 	// this state, and a signalling caller must not act on the pid either.
 	processUnknown
+	// processNone: there is no pid file at all. Only PeekProcess tells it
+	// apart from processGone; FindProcess/FindConfirmedProcess return 0
+	// for it, as they did for a missing file before this state existed.
+	processNone
 )
 
 // pidReuseTolerance bounds the allowed gap between a TAGGED pid file's
@@ -228,18 +232,25 @@ const legacyStartTolerance = 2 * time.Second
 
 // resolveProcess reads the pid file, checks the process's liveness, and —
 // when a start time was recorded — verifies identity via identifyProcess.
-// It removes the pid file itself whenever it concludes processGone or
-// processReused; it never removes it for processConfirmedSame or
-// processUnknown, both of which leave "should this pid file be touched?"
-// to the caller (FindProcess is lenient about processUnknown; a caller
-// about to SIGNAL a process must not be — see FindConfirmedProcess).
-func resolveProcess(path string) (int, processState, error) {
+// With removeStale it removes the pid file itself whenever it concludes
+// processGone or processReused (FindProcess, FindConfirmedProcess);
+// without it (PeekProcess) it never touches the file. It never removes
+// the file for processConfirmedSame or processUnknown, both of which
+// leave "should this pid file be touched?" to the caller (FindProcess is
+// lenient about processUnknown; a caller about to SIGNAL a process must
+// not be — see FindConfirmedProcess). A missing file is processNone.
+func resolveProcess(path string, removeStale bool) (int, processState, error) {
 	pid, startTime, tagged, err := readPIDWithStart(path)
 	if err != nil {
 		return 0, processGone, err
 	}
 	if pid == 0 {
-		return 0, processGone, nil
+		return 0, processNone, nil
+	}
+	dropStale := func() {
+		if removeStale {
+			removeStalePIDFile(path)
+		}
 	}
 
 	// Signal 0 checks process existence without sending a real signal. Its
@@ -248,7 +259,7 @@ func resolveProcess(path string) (int, processState, error) {
 	// than a failure to propagate — the process being gone is not itself
 	// an error condition for resolveProcess's caller.
 	if killErr := syscall.Kill(pid, 0); killErr != nil {
-		removeStalePIDFile(path)
+		dropStale()
 		return 0, processGone, nil //nolint:nilerr // killErr ("no such process", or EPERM for a reused pid now owned by another user) IS the "gone" answer, not a failure to report
 	}
 
@@ -260,7 +271,7 @@ func resolveProcess(path string) (int, processState, error) {
 		// is as strong a check as the timestamped path below.
 		info, statErr := os.Stat(path)
 		if statErr == nil && time.Since(info.ModTime()) > 30*24*time.Hour {
-			removeStalePIDFile(path)
+			dropStale()
 			return 0, processGone, nil
 		}
 		return pid, processConfirmedSame, nil
@@ -268,7 +279,7 @@ func resolveProcess(path string) (int, processState, error) {
 
 	switch identifyProcess(pid, startTime, tagged) {
 	case processReused:
-		removeStalePIDFile(path)
+		dropStale()
 		return 0, processReused, nil
 	case processUnknown:
 		// The identity read failed. Re-check liveness before settling for
@@ -279,7 +290,7 @@ func resolveProcess(path string) (int, processState, error) {
 		// liveness check, getting this one wrong means a caller about to
 		// signal the daemon refuses when it didn't need to.
 		if killErr := syscall.Kill(pid, 0); killErr != nil {
-			removeStalePIDFile(path)
+			dropStale()
 			return 0, processGone, nil //nolint:nilerr // killErr here means the process exited between the identity read and this re-check — "gone", not a failure to report
 		}
 		return pid, processUnknown, nil
@@ -382,7 +393,7 @@ func identifyProcess(pid int, storedStart time.Time, tagged bool) processState {
 // before starting a new one). A caller about to SIGNAL the process must use
 // FindConfirmedProcess instead, which fails safe on exactly this case.
 func FindProcess(path string) (int, error) {
-	pid, state, err := resolveProcess(path)
+	pid, state, err := resolveProcess(path, true)
 	if err != nil {
 		return 0, err
 	}
@@ -410,7 +421,7 @@ var ErrIdentityUnconfirmed = errors.New("process identity could not be confirmed
 // receiving a non-nil error here means "do not act on this pid." For
 // processGone/processReused it returns (0, nil), same as FindProcess.
 func FindConfirmedProcess(path string) (int, error) {
-	pid, state, err := resolveProcess(path)
+	pid, state, err := resolveProcess(path, true)
 	if err != nil {
 		return 0, err
 	}
@@ -421,6 +432,54 @@ func FindConfirmedProcess(path string) (int, error) {
 		return pid, ErrIdentityUnconfirmed
 	default:
 		return 0, nil
+	}
+}
+
+// PeekState is PeekProcess's verdict on a pid file, for a read-only
+// caller (`watchtower diagnostics`) that must report what it sees and
+// change nothing.
+type PeekState int
+
+const (
+	// PeekNone: there is no pid file.
+	PeekNone PeekState = iota
+	// PeekRunning: the pid names a live process confirmed as the one that
+	// wrote the file.
+	PeekRunning
+	// PeekGone: the pid file is stale — its process is dead, or it is an
+	// untagged one-field file older than 30 days.
+	PeekGone
+	// PeekReused: the pid names a live process that is provably not the
+	// one that wrote the file.
+	PeekReused
+	// PeekUnknown: the pid names a live process whose identity could not
+	// be read.
+	PeekUnknown
+)
+
+// PeekProcess is FindProcess without its side effect: the same file read,
+// liveness and identity checks (resolveProcess), but it never removes or
+// writes the pid file. pid is non-zero only for PeekRunning and
+// PeekUnknown. err is the pid file read error: an empty or unparsable
+// file's message starts with "parsing pid file", and an unreadable file
+// wraps the os error (errors.Is(err, fs.ErrPermission) for a permission
+// failure); state is PeekNone whenever err is non-nil.
+func PeekProcess(path string) (pid int, state PeekState, err error) {
+	pid, ps, err := resolveProcess(path, false)
+	if err != nil {
+		return 0, PeekNone, err
+	}
+	switch ps {
+	case processConfirmedSame:
+		return pid, PeekRunning, nil
+	case processUnknown:
+		return pid, PeekUnknown, nil
+	case processReused:
+		return 0, PeekReused, nil
+	case processGone:
+		return 0, PeekGone, nil
+	default:
+		return 0, PeekNone, nil
 	}
 }
 
