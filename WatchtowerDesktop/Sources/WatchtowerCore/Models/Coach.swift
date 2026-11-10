@@ -111,6 +111,7 @@ package struct CoachProposal: Decodable, Equatable, Identifiable, Sendable {
 extension CoachProposal {
     /// Written out (in an extension, so the memberwise init stays) only for
     /// the keys an older CLI does not print: they decode to their defaults.
+    /// A new stored property must be decoded here too.
     package init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(

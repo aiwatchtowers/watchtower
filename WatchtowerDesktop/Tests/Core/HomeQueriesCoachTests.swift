@@ -115,7 +115,7 @@ final class HomeQueriesCoachTests: XCTestCase {
     }
 
     func testRowReaderReadsChatColumns() throws {
-        let row = try db.write { d -> Row? in
+        let (row, conv) = try db.write { d -> (Row?, Int64) in
             try d.execute(sql: "INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 0, 0)")
             let conv = d.lastInsertedRowID
             try d.execute(sql: """
@@ -125,12 +125,12 @@ final class HomeQueriesCoachTests: XCTestCase {
                 VALUES ('f', 'add', 'claude_skill_user', 't', 'w', 'corrections', 'x', 1, 'open',
                         '2026-11-01T09:00:00Z', 'chat', 'review-pr', ?, 'main', '2026-11-02T09:00:00Z')
                 """, arguments: [conv])
-            return try Row.fetchOne(d, sql: "SELECT * FROM coach_proposals")
+            return (try Row.fetchOne(d, sql: "SELECT * FROM coach_proposals"), conv)
         }
         let p = CoachProposal(row: try XCTUnwrap(row))
         XCTAssertEqual(p.origin, "chat")
         XCTAssertEqual(p.skill, "review-pr")
-        XCTAssertNotNil(p.conversationID)
+        XCTAssertEqual(p.conversationID, conv)
         XCTAssertEqual(p.writtenBranch, "main")
         XCTAssertEqual(p.measureFrom, "2026-11-02T09:00:00Z")
         XCTAssertNil(p.folderBranch)
