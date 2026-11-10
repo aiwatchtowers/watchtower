@@ -328,6 +328,13 @@ type coachProposalJSON struct {
 	RevertsID    int64               `json:"reverts_id"`
 	// Budget is the destination's rune budget (0: none), the same number Validate uses.
 	Budget int `json:"budget"`
+	// Origin is "weekly" (the coach run) or "chat" (the tuning chat).
+	Origin string `json:"origin"`
+	// Skill names the skill of a skill destination ("" for the others).
+	Skill string `json:"skill"`
+	// ConversationID is the tuning chat a chat proposal came from; null for
+	// a weekly one and once that conversation is deleted.
+	ConversationID *int64 `json:"conversation_id"`
 }
 
 type coachProposalsJSON struct {
@@ -353,7 +360,8 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		Before: p.BeforeText, After: p.AfterText, Evidence: ev, Sources: p.Sources, Status: p.Status,
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), DecidedAt: stampPtr(p.DecidedAt),
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
-		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText)}
+		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
+		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID}
 }
 
 func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
@@ -495,6 +503,8 @@ func codedCoachErr(err error) *coachCodedError {
 		code = "changed_since"
 	case errors.Is(err, db.ErrCoachStateChanged):
 		code = "state_changed"
+	case errors.Is(err, coach.ErrRefused):
+		code = "refused"
 	}
 	return &coachCodedError{code: code, err: err}
 }
@@ -647,7 +657,18 @@ func printCoachProposals(w io.Writer, ps []coachProposalJSON) {
 		if p.PromptID != "" {
 			dest += " [" + p.PromptID + "]"
 		}
-		fmt.Fprintf(w, "#%d [%s] %s\n  where: %s\n  why: %s\n", p.ID, p.Status, p.Title, dest, p.Why)
+		if p.Skill != "" {
+			dest += " [" + p.Skill + "]"
+		}
+		fmt.Fprintf(w, "#%d [%s] %s\n  where: %s\n", p.ID, p.Status, p.Title, dest)
+		if p.Origin == "chat" {
+			from := "deleted"
+			if p.ConversationID != nil {
+				from = strconv.FormatInt(*p.ConversationID, 10)
+			}
+			fmt.Fprintf(w, "  from: chat %s\n", from)
+		}
+		fmt.Fprintf(w, "  why: %s\n", p.Why)
 		printCoachChange(w, p.Before, p.After)
 	}
 }
