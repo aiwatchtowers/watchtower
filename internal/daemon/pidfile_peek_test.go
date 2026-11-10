@@ -52,6 +52,13 @@ func TestPeekProcess_States(t *testing.T) {
 			wantState: PeekNone,
 		},
 		{
+			name: "pid_zero_file",
+			setup: func(t *testing.T, path string) {
+				require.NoError(t, os.WriteFile(path, []byte("0"), 0o600))
+			},
+			wantState: PeekNone,
+		},
+		{
 			name: "tagged_exited_child",
 			setup: func(t *testing.T, path string) {
 				writeTaggedPID(t, path, exitedChildPID(t), time.Now().Unix())

@@ -181,8 +181,9 @@ func readPIDWithStart(path string) (pid int, startTime time.Time, tagged bool, e
 type processState int
 
 const (
-	// processGone: no process exists at the stored pid (or no pid file at
-	// all). Safe to have removed the file, and resolveProcess already did.
+	// processGone: no process exists at the stored pid (a missing pid file
+	// is processNone). Safe to remove the file, and resolveProcess already
+	// did when called with removeStale.
 	processGone processState = iota
 	// processReused: a live process exists at the stored pid, but its
 	// identity provably does not match what was recorded — the OS has
