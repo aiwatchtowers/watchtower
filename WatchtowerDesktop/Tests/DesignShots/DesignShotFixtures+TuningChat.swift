@@ -4,8 +4,8 @@ import XCTest
 import WatchtowerCore
 
 /// Mockups of the tuning chat beside the Analytics pane (board #1517, spec
-/// `2026-11-03-tuning-chat-design.md` §3 and §4.4). Proposal only: the
-/// panel, its feed rows and the A/B card are test-target mock views; the
+/// `2026-11-03-tuning-chat-design.md` §3, §4.3a and §4.4). Proposal only: the
+/// panel and its feed rows are test-target mock views; the
 /// coach card in the feed, the pane's coach sections and the Statistics
 /// blocks are the real views on fixture data. Everything is synthetic.
 @MainActor
@@ -14,20 +14,12 @@ enum TuningChatShotFixtures {
         case empty, loading, streaming, error, proposal
         case proposalAccepting = "proposal-accepting", proposalAccepted = "proposal-accepted"
         case proposalStale = "proposal-stale"
-        case abProposed = "ab-proposed", abRunning = "ab-running", abDone = "ab-done", abFailed = "ab-failed"
-        case abTooFew = "ab-too-few", noTools = "no-tools", narrow
+        /// An accepted edit of the workbench folder's CLAUDE.md (§4.3a, ask #1165):
+        /// the folded line says the file was written and the owner commits it.
+        case proposalAcceptedRepo = "proposal-accepted-repo"
+        case noTools = "no-tools", narrow
         /// The provider switched to ollama mid-conversation (§4.1): the open card keeps its buttons.
         case noToolsMidway = "no-tools-midway"
-        /// §4.6 owner buttons and removal: a discarded card folds, a card whose
-        /// inputs were removed reads the removed line, Propose refused, and a
-        /// conversation removed with the inputs it read.
-        case abDiscarded = "ab-discarded", abRemoved = "ab-removed"
-        case abProposeRefused = "ab-propose-refused", conversationRemoved = "conversation-removed"
-        /// Retry (or Run) refused because the prompt changed since the run: Discard only.
-        case abRunRefused = "ab-run-refused"
-
-        /// A removed conversation keeps the owner's typed text in the composer (§4.5).
-        var keepsDraft: Bool { self == .conversationRemoved }
 
         /// Which fixture coach backs the state.
         var coachVariant: String {
@@ -35,6 +27,7 @@ enum TuningChatShotFixtures {
             case .proposalStale: "stale"
             case .proposalAccepting: "accepting"
             case .proposalAccepted: "accepted"
+            case .proposalAcceptedRepo: "accepted-repo"
             default: "open"
             }
         }
@@ -149,7 +142,20 @@ enum TuningChatShotFixtures {
     """
 
     /// The chat's proposal (a user skill, workbench 0) and one accepted edit.
+    /// `accepted-repo` lists only the earlier accepted edit: the repository
+    /// edit's Accepted edits row needs the `repo_*` label Task 5.14 adds.
     nonisolated static func proposals(chatStatus: String) -> String {
+        if chatStatus == "accepted-repo" {
+            return #"""
+            {"ok":true,"proposals":[
+            {"id":4,"title":"Spec reviewer: skip naming nits","why":"Seen in several reviews.","destination":"prompt_addition",
+            "workbench_id":0,"prompt_id":"review.spec","kind":"add","metric":"spec_findings","before":"",
+            "after":"Skip naming nits.","evidence":[],"sources":3,"status":"accepted","created_at":"2026-10-24T09:00:00Z",
+            "decided_at":"2026-10-24T09:00:00Z","baseline":null,"verdict":"","verdict_value":null,"verdict_at":null,
+            "reverts_id":0,"budget":600}
+            ]}
+            """#
+        }
         let decided = chatStatus == "accepted" ? #""2026-11-03T10:05:00Z""# : "null"
         return #"""
         {"ok":true,"proposals":[
@@ -186,7 +192,8 @@ enum TuningChatShotFixtures {
             case "accept":
                 throw CLIRunnerError.nonZeroExit(code: 1, stderr: #"{"ok":false,"error":"stale","code":"stale"}"#)
             default:
-                return Data(TuningChatShotFixtures.proposals(chatStatus: variant == "accepted" ? "accepted" : "open").utf8)
+                let status = ["accepted", "accepted-repo"].contains(variant) ? variant : "open"
+                return Data(TuningChatShotFixtures.proposals(chatStatus: status).utf8)
             }
         }
 
@@ -214,28 +221,19 @@ enum TuningChatTexts {
     static let noTools = "Tuning tools need Claude or Codex — pick one in Settings → System → AI"
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
-    static let runRefused = "The prompt changed since this A/B ran — start a new one."
-    static let abDiscarded = "A/B discarded · digest.channel"
-    static let abRemoved = "This A/B was removed with its source data"
-    static let proposeRefused = "Not proposed: with today's additions digest.channel would pass 600 characters."
-    static let conversationRemoved = "This conversation was removed: data it read was deleted, made private or purged. "
-        + "Proposals built on that data are withdrawn unless accepted."
+    /// The folded line of an accepted workbench repository file (§4.3a).
+    static let acceptedRepo = "Accepted · wrote CLAUDE.md — commit it yourself · measuring for 14 days"
     static let showAccepted = "Show in Accepted edits"
-    /// The owner's text kept in the composer after the conversation was removed (mockup only).
-    static let keptDraft = "Also check why digest.daily repeats the channel names"
-    static let tooFew = "Only 2 past calls of digest.channel match the current prompt — A/B needs 3. "
-        + "It will be possible after the prompt runs again."
     static let skillAsk = "The review-pr skill makes the agent read every changed file. Can we fix that?"
     static let skillAnswer = "In 9 of 12 review sessions the agent opened every changed file in full before "
         + "looking at the diff. Step 2 of your review-pr skill asks for exactly that. Here is a smaller step 2:"
     static let costAsk = "Which prompt costs the most?"
     static let costPartial = "Over the last 7 days, **digest.channel** is the most expensive Watchtower prompt: "
         + "$6.80 in 212 calls. Most of it is input: each call carries the whole"
-    static let digestAsk = "Channel digests never say who made a decision. Can a prompt addition fix it?"
-    static let digestAnswer = "Yes, with one line in the additions of digest.channel. "
-        + "Before you keep it, it can run on the last 5 captured inputs, without and with the line."
-    static let tooFewAnswer = "One line in the additions of digest.channel should do it: "
-        + "\"When a thread ends in a decision, name who made it.\" I can propose it as an edit now."
+    static let repoAsk = "Sessions in this repo keep running the whole test suite. Can CLAUDE.md fix that?"
+    static let repoAnswer = "In 7 of 9 sessions the agent ran `go test ./...` after a one-package change. "
+        + "Your CLAUDE.md never says which tests to run. I proposed one line under Build & Test: "
+        + "\"Run only the touched package's tests while iterating.\""
 }
 
 // MARK: - Pane
@@ -398,19 +396,14 @@ private struct TuningPanelShot: View {
     private var conversation: String {
         switch state {
         case .streaming, .error: "Which prompt costs the most?"
-        case .proposal, .proposalAccepting, .proposalAccepted, .proposalStale, .noToolsMidway:
-            "review-pr reads every file"
-        default: "Digests miss the decision owner"
+        case .proposalAcceptedRepo: "Tests run the whole suite"
+        default: "review-pr reads every file"
         }
     }
 
     private var composer: some View {
         HStack(spacing: Spacing.compact) {
-            if state.keepsDraft {
-                Text(TuningChatTexts.keptDraft).lineLimit(1)
-            } else {
-                Text(TuningChatTexts.placeholder).foregroundStyle(.tertiary).lineLimit(1)
-            }
+            Text(TuningChatTexts.placeholder).foregroundStyle(.tertiary).lineLimit(1)
             Spacer(minLength: Spacing.compact)
             Image(systemName: busy ? "stop.fill" : "arrow.up")
                 .font(.caption.weight(.semibold))
@@ -449,19 +442,8 @@ private struct TuningFeed: View {
             case .error: turnError
             case .proposal, .proposalAccepting, .proposalStale: skillTurn(folded: false)
             case .proposalAccepted: skillTurn(folded: true)
-            case .abProposed: replayTurn(.proposed)
-            case .abRunning: replayTurn(.running)
-            case .abDone: replayTurn(.done)
-            case .abFailed: replayTurn(.failed)
-            case .abDiscarded: replayTurn(nil, line: (TuningChatTexts.abDiscarded, "xmark.circle", .secondary))
-            case .abRemoved: replayTurn(nil, line: (TuningChatTexts.abRemoved, "trash", .secondary))
-            case .abProposeRefused: replayTurn(.proposeRefused)
-            case .abRunRefused: replayTurn(.runRefused)
-            case .conversationRemoved: Self.conversationRemoved
-            case .abTooFew: tooFew
-            case .narrow:
-                skillTurn(folded: false)
-                replayTurn(.done, stacked: true)
+            case .proposalAcceptedRepo: repoTurn
+            case .narrow: skillTurn(folded: false)
             }
         }
     }
@@ -504,8 +486,7 @@ private struct TuningFeed: View {
 
     @ViewBuilder private var streaming: some View {
         UserMessageBubble(text: TuningChatTexts.costAsk)
-        TuningToolLines(lines: [("Read the 7-day LLM usage", false), ("Read prompt digest.channel", false),
-                                ("Listing captured inputs of digest.channel…", true)])
+        TuningToolLines(lines: [("Read the 7-day LLM usage", false), ("Reading prompt digest.channel…", true)])
         MarkdownView(text: TuningChatTexts.costPartial)
         StreamingIndicator()
     }
@@ -528,78 +509,33 @@ private struct TuningFeed: View {
                                 ("Read the coach's proposals", false), ("Proposed an edit to review-pr", false)])
         Text(TuningChatTexts.skillAnswer)
         if folded {
-            acceptedLine
+            acceptedLine(TuningChatTexts.accepted)
         } else if let proposal = coach.proposals?.value?.first(where: { $0.id == TuningChatTexts.proposalID }) {
             CoachProposalCardView(proposal: proposal, isFirst: false, coach: coach, actions: Self.noActions) {}
         }
     }
 
+    /// A chat edit of the workbench folder's CLAUDE.md, accepted (§4.3a): the
+    /// file is written and the owner commits it; Watchtower runs no git write.
+    @ViewBuilder private var repoTurn: some View {
+        UserMessageBubble(text: TuningChatTexts.repoAsk)
+        TuningToolLines(lines: [("Read your agent instructions", false), ("Read 9 sessions of the last 7 days", false),
+                                ("Read the coach's proposals", false), ("Proposed an edit to CLAUDE.md", false)])
+        MarkdownView(text: TuningChatTexts.repoAnswer)
+        acceptedLine(TuningChatTexts.acceptedRepo)
+    }
+
     /// An accepted proposal folds to one line; the pane's Accepted edits holds the rest.
-    private var acceptedLine: some View {
-        HStack(spacing: Spacing.compact) {
+    private func acceptedLine(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Image(systemName: "checkmark.circle.fill").foregroundStyle(Tone.success)
-            Text(TuningChatTexts.accepted).font(.callout).lineLimit(1)
+            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: Spacing.regular)
             Button(TuningChatTexts.showAccepted) {}.buttonStyle(.kitQuiet).font(.callout)
         }
         .padding(.horizontal, Spacing.cozy)
         .padding(.vertical, Spacing.regular)
         .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-
-    @ViewBuilder private var tooFew: some View {
-        UserMessageBubble(text: TuningChatTexts.digestAsk)
-        TuningToolLines(lines: [("Read prompt digest.channel", false),
-                                ("Listed 2 captured inputs of digest.channel", false)])
-        Text(TuningChatTexts.tooFewAnswer)
-        Label(TuningChatTexts.tooFew, systemImage: "info.circle")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-
-    /// The whole conversation was deleted with the captured inputs it read (§4.5).
-    /// Shown only in the tuning panel (D48, ask #1123).
-    static var conversationRemoved: some View {
-        VStack(alignment: .leading, spacing: Spacing.regular) {
-            Label(TuningChatTexts.conversationRemoved, systemImage: "trash")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button(TuningChatTexts.newChat) {}.buttonStyle(.kitSecondary)
-        }
-        .padding(Spacing.cozy)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-
-    /// A one-line replay row in place of the card.
-    private func foldedLine(_ line: (String, String, Color)) -> some View {
-        HStack(spacing: Spacing.compact) {
-            Image(systemName: line.1).foregroundStyle(line.2)
-            Text(line.0).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, Spacing.cozy)
-        .padding(.vertical, Spacing.regular)
-        .background(Fill.rest, in: RoundedRectangle(cornerRadius: Radius.row))
-    }
-
-    @ViewBuilder private func replayTurn(
-        _ phase: TuningReplayCard.Phase?,
-        line: (String, String, Color)? = nil,
-        stacked: Bool = false
-    ) -> some View {
-        UserMessageBubble(text: TuningChatTexts.digestAsk)
-        TuningToolLines(lines: [("Read prompt digest.channel", false),
-                                ("Listed 5 captured inputs of digest.channel", false),
-                                ("Proposed a replay on 5 past calls", false)])
-        Text(TuningChatTexts.digestAnswer)
-        if let phase {
-            TuningReplayCard(phase: phase, stacked: stacked)
-        } else if let line {
-            foldedLine(line)
-        }
     }
 }
 
