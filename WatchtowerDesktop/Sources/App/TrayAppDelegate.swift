@@ -272,7 +272,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                     sessions: { await Self.finishPendingDeletes(app.workbenchesViewModel) }
                 )
             },
-            stopBackgroundCleanups: { await app.workbenchesViewModel?.stopAutoCleanupForQuit() },
+            stopBackgroundCleanups: { await Self.stopBackgroundCleanups(app.workbenchesViewModel) },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
     }
@@ -315,6 +315,14 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         await QuitProgressPanel.showing("Finishing session deletes…", present: present) {
             _ = await workbenches.commitPendingDeletesForQuit()
         }
+    }
+
+    /// The quit's board #1716 step: deleted sessions' background cleanups
+    /// stop (their process groups SIGTERM, SIGKILL after 5 s) and no other
+    /// starts; their rows keep `delete_requested_at` for the next launch.
+    @MainActor
+    static func stopBackgroundCleanups(_ workbenches: WorkbenchesViewModel?) async {
+        await workbenches?.stopAutoCleanupForQuit()
     }
 
     /// The terminate decision, extracted from `applicationShouldTerminate` so

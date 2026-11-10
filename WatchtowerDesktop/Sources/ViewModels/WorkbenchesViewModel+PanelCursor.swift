@@ -74,7 +74,7 @@ extension WorkbenchesViewModel {
     /// have turned busy since the ✕ showed — else asks for the
     /// confirmation.
     func deleteQuicklyOrConfirm(_ session: TerminalSession) async -> PanelDeleteIntent {
-        guard !cleaningUpSessions.contains(session.id) else { return .busy }
+        guard !cleaningUpSessions.contains(session.id), !closedForCleanup.contains(session.id) else { return .busy }
         guard isQuickDelete(session) else { return .confirm(session) }
         await delete(session)
         return .quick

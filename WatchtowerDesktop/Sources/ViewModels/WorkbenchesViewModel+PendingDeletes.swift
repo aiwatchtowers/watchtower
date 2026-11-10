@@ -30,7 +30,7 @@ extension WorkbenchesViewModel {
     /// left alone. The panel cursor moves to the row's neighbour. A row a
     /// cleanup apply runs on is busy: nothing happens (board #535).
     func delete(_ session: TerminalSession) async {
-        guard !cleaningUpSessions.contains(session.id) else { return }
+        guard !cleaningUpSessions.contains(session.id), !closedForCleanup.contains(session.id) else { return }
         setSessionError(nil, projectID: session.projectID)
         movePanelCursorOff(session)
         let at = now()

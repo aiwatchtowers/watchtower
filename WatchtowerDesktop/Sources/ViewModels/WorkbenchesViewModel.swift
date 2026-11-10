@@ -162,7 +162,26 @@ final class WorkbenchesViewModel {
     /// workbench, in request order (board #1716, spec 2026-11-10 §1); the
     /// first one runs. A row here is hidden, its terminal closed, and it
     /// does not resume (`closedForCleanup`).
-    var autoCleanupQueue: [Int64: [Int64]] = [:]
+    var autoCleanupQueue: [Int64: [Int64]] = [:] {
+        didSet { closedForCleanup = Set(autoCleanupQueue.values.joined()) }
+    }
+    /// The rows in `autoCleanupQueue`, kept with it: hidden, their terminal
+    /// closed, and they do not resume.
+    private(set) var closedForCleanup: Set<Int64> = []
+    /// Per workbench, the row whose background cleanup has started (the
+    /// apply may still wait for the slot); nil between rows.
+    @ObservationIgnored var autoCleanupRunning: [Int64: Int64] = [:]
+    /// Not fully cleaned rows in a transition — a Resume clearing the
+    /// delete request, a Delete Anyway's DELETE: the other actions refuse
+    /// the row meanwhile.
+    var autoCleanupBusy: Set<Int64> = []
+    /// Rows still marked deleted whose terminal was live at launch: queued
+    /// for their cleanup once that terminal ends.
+    @ObservationIgnored var deletingLiveAtLaunch: [Int64: PendingSessionDeletes.Entry] = [:]
+    /// Clears a row's delete request for a Resume. A seam for tests.
+    @ObservationIgnored lazy var clearDeleteRequestWrite: @Sendable (Int64) async throws -> Void = { [dbPool] id in
+        try await dbPool.write { try TerminalSessionQueries.clearDeleteRequested($0, id: id) }
+    }
     /// A deleted session whose background cleanup could not remove
     /// everything: its "Not fully cleaned: …" line (`SessionAutoCleanupOutcome`).
     /// In memory: the next launch cleans the row up again.

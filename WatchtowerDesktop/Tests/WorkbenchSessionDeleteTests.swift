@@ -248,6 +248,80 @@ final class WorkbenchSessionDeleteTests: XCTestCase {
         XCTAssertTrue(mark.hasPrefix("Not fully cleaned: the cleanup could not run — ") && mark.contains("git missing"), mark)
     }
 
+    // MARK: - A row being cleaned up is busy (PROJ-17 note)
+
+    /// While a deleted row's background cleanup runs it is busy: ✕ / ⌘⌫ do
+    /// nothing, a delete is a no-op, and a resume is refused `.cleaningUp`.
+    func testBusyRowRefusesDeleteAndResume() async throws {
+        let streamer = RepliedCleanupStreamer(replies: [.success(CleanupFixture.applied)])
+        streamer.holdsCalls = true
+        let (vm, _) = makeVM(FakeSessionCleanupRunner(replies: []), streamer: streamer)
+        let (p, row) = try await liveSession(vm)
+        await vm.delete(row)
+        window.open()
+        await vm.deleteCommitTask?.value
+        await waitUntilHeld(streamer, 1)
+        XCTAssertEqual(vm.autoCleanupQueue[p], [row.id])
+
+        let intent = await vm.deleteQuicklyOrConfirm(row)
+        XCTAssertEqual(intent, .busy, "✕ / ⌘⌫ do nothing")
+        await vm.delete(row)
+        XCTAssertFalse(vm.pendingDeletes.ids.contains(row.id), "no second delete while it is cleaned up")
+        do {
+            try await vm.resume(row)
+            XCTFail("a row being cleaned up must not resume")
+        } catch let error as WorkbenchesViewModel.TargetStartError {
+            XCTAssertEqual(error, .cleaningUp)
+        }
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "no resume while the cleanup runs")
+        XCTAssertFalse(vm.canResume(row.id))
+
+        streamer.release()
+        await vm.autoCleanupIdle()
+        XCTAssertEqual(applyCalls(streamer).count, 1)
+        let gone = try await stored(row.id)
+        XCTAssertNil(gone)
+    }
+
+    /// Work on It, ⌘N and the phone's open_existing on the session's target
+    /// while its background cleanup runs: the deleting row is never
+    /// resumed. Work on It starts another session, ⌘N says the session is
+    /// gone, and open_existing picks that other session — no error, so the
+    /// phone is told nothing about a cleanup.
+    func testWorkOnDuringTheCleanupDoesNotResume() async throws {
+        let streamer = RepliedCleanupStreamer(replies: [.success(CleanupFixture.applied)])
+        streamer.holdsCalls = true
+        let (vm, _) = makeVM(FakeSessionCleanupRunner(replies: []), streamer: streamer)
+        let acme = folder.appendingPathComponent("acme").path
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: acme) }
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
+        await vm.reload()
+        vm.selectedWorkbenchID = p
+        await vm.workOn(targetID: target, targetText: "Ship it", projectID: p)
+        let row = try XCTUnwrap(vm.terminalSessions[p]?.first { $0.targetID == target })
+        await vm.delete(row)
+        window.open()
+        await vm.deleteCommitTask?.value
+        await waitUntilHeld(streamer, 1)
+
+        await vm.workOn(targetID: target, targetText: "Ship it", projectID: p)
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForTarget($0, targetID: target) }
+        let fresh = try XCTUnwrap(rows.first, "Work on It started another session")
+        XCTAssertNotEqual(fresh.id, row.id)
+        XCTAssertFalse(terminals.liveIDs.contains(row.id), "the deleting row is not resumed")
+
+        await vm.showSession(id: row.id)
+        XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.", "⌘N finds no such session")
+        XCTAssertFalse(terminals.liveIDs.contains(row.id))
+
+        let picked = try await vm.startForTarget(targetID: target, prompt: nil, mode: .openExisting, placement: .background)
+        XCTAssertEqual(picked.id, fresh.id, "the phone's open_existing picks the other session, without an error")
+        XCTAssertFalse(terminals.liveIDs.contains(row.id))
+
+        streamer.release()
+        await vm.autoCleanupIdle()
+    }
+
     // MARK: - Clean Up screen beside the background cleanup
 
     /// The Clean Up screen's apply in a session's scope makes the row busy

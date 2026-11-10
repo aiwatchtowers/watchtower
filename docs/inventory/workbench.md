@@ -2209,21 +2209,31 @@ asks would be worse than the dialog it replaces.
 - supporting: `WatchtowerDesktop/Tests/WorkbenchesViewModelPendingDeleteTests.swift` (`testBatchUndoRestoresEverySessionOfTheBatch`, `testFailedCommitBringsTheRowBackWithAnError`, `testPendingRowIsInNoListGoToOrTargetLookup`, `testUndoStateSurvivesLeavingTheWorkbench`, `testAWorkbenchGoneElsewhereDropsItsPendingSessions`, `testADeleteDuringAnotherClosesGraceWaitsForThatClose`, `testUndoWhileTheCloseIsPendingCommitsNothing`, `testAskOfAPendingSessionSaysTheSessionIsGone`, `testQuitWaitsForTheWindowsCommitInFlight`, `testQuitIsBoundedWhenTheWriteHangs`, `testQuitBoundOutlastsTheBusyBudget`, `testQuitCommitsAWriteSlowerThanTheOldWait`, `testQuitWaitsForTheTimersCommitAndItsOwnBatch`, `testTheQuitStepCommitsTheBatch`, `testQuitWriteFailureKeepsTheRow`, `testHiddenIDsChangesAreReportedOnDeleteAndUndo`), `WatchtowerDesktop/Tests/WorkbenchesViewModelAutoCleanupTests.swift` (2026-11-10: `testQuitInsideWindowMarksInsteadOfDeleting`, `testQuitStopsRunningApplyAndKeepsMark`, `testRequeueAtLaunchRunsOncePerRow`, `testRequeueSkipsRowWithLiveTerminal`, `testResumeClearsDeleteRequested`, `testResumeDisabledWhileCleaning`, `testDeleteAnywayDeletesRow`, `testDeletingRowsHiddenFromLists`, `testDeletingRowGivesNoAgentStateNotice`), `WatchtowerDesktop/Tests/AutomationSessionCenterTests.swift::testDeletingRowNotAdoptedByAutomation`, `WatchtowerDesktop/Tests/Core/AutomationWorkbenchQueriesTests.swift` (`testDisownClearsDeletingRowsToo`, `testWaitingSessionStepsSkipDeletingRow`), `internal/hub/slices/sources/terminal_session_test.go::TestHiddenSessionIsNotPublished` (Go twin of the deleted Swift `TerminalSessionSliceTests.testASessionInTheUndoBatchIsNotPublished`), `WatchtowerDesktop/Tests/WorkbenchesViewModelDeleteTests.swift::testWorkbenchDeleteDropsItsPendingSessions`, `internal/sessionstart/open_existing_test.go::TestOpenExistingNeverPicksAPendingDelete` (Go twin of the deleted Swift `SessionStartHandlerTests.testOpenExistingNeverPicksAPendingDelete`), `WatchtowerDesktop/Tests/Core/PendingSessionDeletesTests.swift`
 
 **Note (2026-10-14, board #535, PROJ-18 — for the owner's sight; amended
-2026-11-10, board #1716):** a row a session cleanup apply runs on is busy
-(`WorkbenchesViewModel.cleaningUpSessions`: while a **Clean Up…** screen's
-apply in its scope or a placed session's cleanup runs).
-`WorkbenchesViewModel.delete` — and so the ✕ and ⌘⌫ — is a silent no-op on
-a busy row (the panel's quick delete reads it as busy and does nothing), and
-**Start fresh** is refused on it; a **Clean Up…** apply does not stop a
-resume (a live session's terminal stays reachable). A deleted row whose
-background cleanup is queued or runs (`closedForCleanup`) is refused every
-resume (`reopen`: a click, ⌘N, Work on It, the phone's `open_existing` —
-dropped silently on the Mac, the phone told "This session is being cleaned
-up on the Mac"), so its worktree is not re-entered while it is removed.
-**Delete and Clean Up** and the dialog's cleanup choice are gone: every
-delete cleans up (amendment above). Guards:
-`WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift::testSheetApplyMarksTheRowBusy`,
-`WatchtowerDesktop/Tests/WorkbenchesViewModelAutoCleanupTests.swift::testResumeDisabledWhileCleaning`;
+2026-11-10, board #1716):** a row a session cleanup runs on is busy. While a
+**Clean Up…** screen's apply in its scope or a placed session's cleanup runs
+(`WorkbenchesViewModel.cleaningUpSessions`), `WorkbenchesViewModel.delete` —
+and so the ✕ and ⌘⌫ — is a silent no-op on it (the panel's quick delete
+reads it as busy and does nothing) and **Start fresh** is refused; such an
+apply does not stop a resume (a live session's terminal stays reachable).
+While a deleted row's background cleanup is queued or runs
+(`closedForCleanup`), the same delete and quick-delete refusals apply, and a
+resume of that row (`reopen`, through `resume`/`open`) is refused with
+`TargetStartError.cleaningUp`, so its worktree is not re-entered while it is
+removed. The row is out of every list, so Work on It and the phone's
+`open_existing` never find it: they start or pick another session of the
+target (no cleanup message reaches the phone), and ⌘N on it says "That
+session no longer exists.". On a Not fully cleaned row, Resume, **Clean Up
+Again** and **Delete Anyway** exclude each other: each marks the row before
+its first await (`autoCleanupBusy`, or the queue), and the others refuse it
+until it ends; Delete Anyway also refuses a row a Clean Up screen apply or a
+background cleanup runs on. **Delete and Clean Up** and the dialog's cleanup
+choice are gone: every delete cleans up (amendment above). Guards:
+`WatchtowerDesktop/Tests/WorkbenchSessionDeleteTests.swift`
+(`testBusyRowRefusesDeleteAndResume`, `testWorkOnDuringTheCleanupDoesNotResume`,
+`testSheetApplyMarksTheRowBusy`),
+`WatchtowerDesktop/Tests/WorkbenchesViewModelAutoCleanupTests.swift`
+(`testResumeDisabledWhileCleaning`, `testResumeRefusesCleanUpAgainAndDeleteAnywayMeanwhile`,
+`testDeleteAnywayRefusesResumeAndCleanUpAgainMeanwhile`, `testDeleteAnywayRefusesARowACleanupRunsOn`);
 the PROJ-17 guards above.
 
 **Locked since:** 2026-10-12

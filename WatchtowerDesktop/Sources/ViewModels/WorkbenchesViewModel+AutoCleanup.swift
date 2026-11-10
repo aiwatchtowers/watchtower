@@ -21,16 +21,20 @@ extension WorkbenchesViewModel {
     /// How long the clean notice shows (spec §3).
     nonisolated static let cleanupNoticeDuration: Duration = .seconds(6)
 
-    /// The rows whose background cleanup is queued or running: hidden,
-    /// their terminal closed, and they do not resume.
-    var closedForCleanup: Set<Int64> {
-        Set(autoCleanupQueue.values.joined())
+    /// Whether row `id` may be resumed: not while its background cleanup
+    /// is queued or runs (spec §4), nor while a Delete Anyway or another
+    /// Resume of it is in flight.
+    func canResume(_ id: Int64) -> Bool {
+        !closedForCleanup.contains(id) && !autoCleanupBusy.contains(id)
     }
 
-    /// Whether row `id` may be resumed: not while its background cleanup
-    /// is queued or runs (spec §4).
-    func canResume(_ id: Int64) -> Bool {
-        !closedForCleanup.contains(id)
+    /// Whether a Not fully cleaned row's action may start now: it is marked,
+    /// not queued, not in another transition, and no cleanup apply (the
+    /// Clean Up screen's, a background one) runs on it.
+    private func markedRowIsFree(_ id: Int64) -> Bool {
+        notFullyCleaned[id] != nil && canResume(id) && !cleaningUpSessions.contains(id)
+            && sessionCleanup?.isApplyingInBackground(sessionID: id) != true
+            && sessionCleanup?.cleanupPhase(for: .session(id)) != .applying
     }
 
     /// The rows of workbench `projectID` whose background cleanup is queued
@@ -71,17 +75,33 @@ extension WorkbenchesViewModel {
             return
         }
         let live = terminalCenter?.liveIDs ?? []
-        for row in rows where !live.contains(row.id) {
+        for row in rows {
             guard let workbenchID = row.projectID else { continue }
-            enqueueAutoCleanup(sessionID: row.id, workbenchID: workbenchID, title: row.title)
+            if live.contains(row.id) {
+                // Its terminal ends later: then it is cleaned up
+                // (`deletedRowExited`).
+                deletingLiveAtLaunch[row.id] = .init(sessionID: row.id, workbenchID: workbenchID, title: row.title)
+            } else {
+                enqueueAutoCleanup(sessionID: row.id, workbenchID: workbenchID, title: row.title)
+            }
         }
+    }
+
+    /// A row still marked deleted whose terminal was live at launch ended:
+    /// it is queued for its cleanup now. True when it was such a row.
+    @discardableResult
+    func deletedRowExited(_ id: Int64) -> Bool {
+        guard let entry = deletingLiveAtLaunch.removeValue(forKey: id), let workbenchID = entry.workbenchID else {
+            return false
+        }
+        enqueueAutoCleanup(sessionID: id, workbenchID: workbenchID, title: entry.title)
+        return true
     }
 
     /// **Clean Up Again** on a Not fully cleaned row: the same background
     /// cleanup; on a clean outcome the row goes, else it is marked anew.
     func cleanUpAgain(_ id: Int64) {
-        guard notFullyCleaned[id] != nil, !closedForCleanup.contains(id),
-              let row = notFullyCleanedRow(id), let workbenchID = row.projectID else { return }
+        guard markedRowIsFree(id), let row = notFullyCleanedRow(id), let workbenchID = row.projectID else { return }
         clearMark(id, workbenchID: workbenchID)
         enqueueAutoCleanup(sessionID: id, workbenchID: workbenchID, title: row.title)
     }
@@ -90,8 +110,10 @@ extension WorkbenchesViewModel {
     /// (its cascades as before); what the cleanup kept stays on disk, where
     /// a Clean Up screen sweep still lists it.
     func deleteAnyway(_ id: Int64) async {
-        guard notFullyCleaned[id] != nil, !closedForCleanup.contains(id),
-              let row = notFullyCleanedRow(id), let workbenchID = row.projectID else { return }
+        guard markedRowIsFree(id), let row = notFullyCleanedRow(id), let workbenchID = row.projectID else { return }
+        // Resume and Clean Up Again refuse the row until the DELETE ended.
+        autoCleanupBusy.insert(id)
+        defer { autoCleanupBusy.remove(id) }
         do {
             try await startSessionDeletes([id]).value
         } catch {
@@ -112,17 +134,25 @@ extension WorkbenchesViewModel {
 
     /// Resume of a Not fully cleaned row (spec §4): its `delete_requested_at`
     /// is cleared in a write of its own before the session starts, so it is
-    /// an ordinary finished session again. True when the row may go on.
-    func clearDeleteRequestForResume(_ session: TerminalSession) async -> Bool {
-        guard notFullyCleaned[session.id] != nil else { return true }
+    /// an ordinary finished session again. The row is marked busy before
+    /// the write — Clean Up Again and Delete Anyway refuse it until the mark
+    /// is gone — and checked again after it. Throws `.cleaningUp` while the
+    /// row is queued or in another transition, `.failed` when the write
+    /// failed (reported on the page).
+    func clearDeleteRequestForResume(_ session: TerminalSession) async throws {
+        guard canResume(session.id) else { throw TargetStartError.cleaningUp }
+        guard notFullyCleaned[session.id] != nil else { return }
+        autoCleanupBusy.insert(session.id)
+        defer { autoCleanupBusy.remove(session.id) }
         do {
-            try await dbPool.write { try TerminalSessionQueries.clearDeleteRequested($0, id: session.id) }
+            try await clearDeleteRequestWrite(session.id)
         } catch {
-            setSessionError("Could not reopen the session: \(error.localizedDescription)", projectID: session.projectID)
-            return false
+            let message = "Could not reopen the session: \(error.localizedDescription)"
+            setSessionError(message, projectID: session.projectID)
+            throw TargetStartError.failed(message)
         }
         if let workbenchID = session.projectID { clearMark(session.id, workbenchID: workbenchID) }
-        return true
+        guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
     }
 
     /// The quit (`QuitCoordinator`): no background cleanup starts any more,
@@ -141,14 +171,12 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// A workbench gone: its queued rows went with it; the run in flight
-    /// ends on its own.
+    /// A workbench gone: its queued rows went with it; a run that has
+    /// started ends on its own.
     func discardAutoCleanup(workbenchID: Int64) {
-        if let running = autoCleanupQueue[workbenchID]?.first, autoCleanupWorkers[workbenchID] != nil {
-            autoCleanupQueue[workbenchID] = [running]
-        } else {
-            autoCleanupQueue[workbenchID] = nil
-        }
+        let running = autoCleanupRunning[workbenchID]
+        for id in autoCleanupQueue[workbenchID] ?? [] where id != running { autoCleanupTitles[id] = nil }
+        autoCleanupQueue[workbenchID] = running.map { [$0] }
         notFullyCleanedRows[workbenchID] = nil
     }
 
@@ -177,7 +205,9 @@ extension WorkbenchesViewModel {
 
     private func runAutoCleanupQueue(workbenchID: Int64) async {
         while !autoCleanupStopped, let id = autoCleanupQueue[workbenchID]?.first {
+            autoCleanupRunning[workbenchID] = id
             await cleanUpDeleted(id, workbenchID: workbenchID)
+            autoCleanupRunning[workbenchID] = nil
             guard !autoCleanupStopped else { break }
             autoCleanupQueue[workbenchID]?.removeFirst()
             if autoCleanupQueue[workbenchID]?.isEmpty == true { autoCleanupQueue[workbenchID] = nil }
@@ -199,10 +229,7 @@ extension WorkbenchesViewModel {
             do {
                 try await startSessionDeletes([id]).value
             } catch {
-                let reason = "could not delete the session: \(error.localizedDescription)"
-                if case let .notFullyCleaned(mark) = SessionAutoCleanupOutcome.evaluate(result: nil, title: title, runError: reason) {
-                    notFullyCleaned[id] = mark
-                }
+                notFullyCleaned[id] = SessionAutoCleanupOutcome.deleteFailedMark(error.localizedDescription)
                 return
             }
             notFullyCleaned[id] = nil

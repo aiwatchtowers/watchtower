@@ -686,10 +686,14 @@ final class SessionCleanupCenter {
         defer { releaseSlot(workbenchID: workbenchID) }
         guard !backgroundStopped else { return BackgroundApply(runError: Self.quitRunError) }
         guard let streamer else { return BackgroundApply(runError: CLIRunnerError.binaryNotFound.localizedDescription) }
+        let environment = Self.cleanupEnvironment(await baseEnvironment())
+        // The quit may have stopped the background applies during that
+        // wait: nothing is spawned after it. From here to the child's
+        // registration nothing suspends, so the quit always sees it.
+        guard !backgroundStopped else { return BackgroundApply(runError: Self.quitRunError) }
         var live = liveSessionIDs()
         live.remove(sessionID)
         let args = Self.cleanupArguments(sessionID: sessionID, workbenchID: workbenchID, live: live, applying: [], stream: true)
-        let environment = Self.cleanupEnvironment(await baseEnvironment())
         let child: SessionCleanupStream
         do {
             child = try streamer.streamCleanup(args: args, environment: environment)
@@ -698,11 +702,9 @@ final class SessionCleanupCenter {
         }
         backgroundChildren[sessionID] = child
         defer { backgroundChildren[sessionID] = nil }
-        let limit = backgroundTimeLimit
-        let sleep = backgroundSleep
         let grace = backgroundStopGrace
         let timedOut = TimedOutFlag()
-        let watchdog = Task {
+        let watchdog = Task { [sleep = backgroundSleep, limit = backgroundTimeLimit] in
             await sleep(limit)
             guard !Task.isCancelled else { return }
             timedOut.set()
@@ -715,17 +717,24 @@ final class SessionCleanupCenter {
                 break
             }
         }
-        if done != nil {
-            await Self.awaitExit(of: child, within: exitAfterDoneLimit)
-        } else {
-            _ = await child.exit()
+        // A child that said `done` but does not exit is stopped after
+        // `exitAfterDoneLimit`; either way its exit is awaited until it was
+        // reaped, so the slot is freed only then.
+        let lingering = done == nil ? nil : Task { [limit = exitAfterDoneLimit] in
+            try? await Task.sleep(for: limit)
+            guard !Task.isCancelled else { return }
+            Self.stop(child, within: grace)
         }
-        watchdog.cancel()
-        if timedOut.isSet { return BackgroundApply(result: nil, runError: SessionAutoCleanupOutcome.timeoutRunError) }
-        if backgroundStopped { return BackgroundApply(runError: Self.quitRunError) }
-        if let done { return BackgroundApply(result: done) }
         let exit = await child.exit()
-        return BackgroundApply(runError: exit.status == 0 ? Self.endedWithoutResultText : exit.message)
+        lingering?.cancel()
+        watchdog.cancel()
+        if timedOut.isSet { return BackgroundApply(result: done, runError: SessionAutoCleanupOutcome.timeoutRunError) }
+        if backgroundStopped { return BackgroundApply(runError: Self.quitRunError) }
+        // A non-zero exit — after `done` too, a child stopped for not
+        // exiting included — is a run that failed as a whole: never clean.
+        guard exit.status == 0 else { return BackgroundApply(result: done, runError: exit.message) }
+        guard let done else { return BackgroundApply(runError: Self.endedWithoutResultText) }
+        return BackgroundApply(result: done)
     }
 
     /// The quit (board #1716): every background apply running gets SIGTERM

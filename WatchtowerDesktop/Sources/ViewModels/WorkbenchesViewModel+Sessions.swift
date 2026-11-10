@@ -542,9 +542,16 @@ extension WorkbenchesViewModel {
     /// `ticket` is the switch's `beginSwitch` when the caller took it before
     /// an await of its own; otherwise it is taken here.
     func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
-        let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
         // A failure is reported already (`reopen`).
-        _ = try? await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)
+        _ = try? await resume(session, placement: placement, ticket: ticket)
+    }
+
+    /// `open` that throws why the row did not resume (`TargetStartError`:
+    /// `.cleaningUp` for a deleted row whose cleanup is queued or runs).
+    @discardableResult
+    func resume(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async throws -> TerminalSession {
+        let ticket = placement == .background ? nil : ticket ?? beginSwitch(projectID: session.projectID)
+        return try await reopen(session, placement: placement, ticket: ticket, checkLaunch: placement == .background)
     }
 
     /// `open` past its ticket; nil only for `.background`. Throws
@@ -557,10 +564,9 @@ extension WorkbenchesViewModel {
         // It, the phone's open_existing): a deleted row whose background
         // cleanup is queued or runs is refused (board #1716). A Clean Up…
         // apply does not stop a resume.
-        guard canResume(session.id) else { throw TargetStartError.cleaningUp }
         // A Not fully cleaned row is an ordinary finished session again:
         // its delete request is cleared in a write of its own first.
-        guard await clearDeleteRequestForResume(session) else { throw TargetStartError.failed("Could not reopen the session.") }
+        try await clearDeleteRequestForResume(session)
         // A kind this build has no adapter for is refused before anything
         // runs (A7b): never a shell, never Claude Code in its place. Its pane
         // opens on the not-supported line. A run the session host holds for
@@ -751,7 +757,9 @@ extension WorkbenchesViewModel {
     /// (`startPlacedCleanup`), which decides itself whether the row
     /// qualifies.
     func sessionExited(_ id: Int64, code: Int32?, closedByApp: Bool = false) {
-        if !closedByApp { startPlacedCleanup(sessionID: id) }
+        // A row marked deleted whose run outlived the last launch (board
+        // #1716) is cleaned up now, never by the placed cleanup.
+        if !deletedRowExited(id), !closedByApp { startPlacedCleanup(sessionID: id) }
         // The run ended: what the owner pasted into its Workchat goes with it
         // (#604 S9), off the main thread.
         if let store = attachmentStore {
