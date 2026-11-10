@@ -1257,6 +1257,7 @@ Every decision in this plan, with its source. "Decided by the agent" items that 
 | Phone tests are signed locally with the private test key `com.apple.appstored.octane` (`StoreKitTesting.entitlements`), which never reaches an archive or TestFlight | decided by the agent, Task 4; ask #1040 |
 | `iphone-relay.md` and the other Relay passages stand on a dark build, against `docs/guide/WRITING.md` rule 7 ("Only what ships on `main`"): do not delete them as unshipped. They leave or change at launch (Launch conditions) | owner's comment on ask #1012, which overrides rule 7 for this page |
 | Every one of the 19 Open decisions below on its recommended option | ask #1038 |
+| Every TestFlight build talks to the staging relay (`make mobile-testflight` reads the origin from `RELAY_TESTFLIGHT_ORIGIN_FILE` outside the repo); the App Store review build is a separate, dark `make mobile-archive`, never a promoted TestFlight build; `TestNoReleasePhoneBuildSetsRelayOrigin` narrowed for TestFlight only | ask #1156 |
 
 ## Open decisions for the owner
 

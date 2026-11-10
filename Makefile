@@ -243,6 +243,9 @@ design-gallery:
 # three numbers: git describe's v0.15.0-12-g<sha>-dirty gives 0.15.0, and a
 # release's make testflight VERSION=0.16.0 gives 0.16.0, the same number its
 # make app VERSION=0.16.0 stamps on the Mac. Override with MOBILE_VERSION=x.y.z.
+# make mobile-archive on its own is dark (no relay origin): it is the build for
+# App Store review. MOBILE_ARCHIVE_SETTINGS is empty here; only
+# mobile-testflight fills it, with the staging origin (ask #1156).
 MOBILE_ARCHIVE := build/WatchtowerMobile.xcarchive
 MOBILE_EXPORT := build/WatchtowerMobile-export
 ifndef MOBILE_BUILD_NUMBER
@@ -271,7 +274,8 @@ mobile-archive:
 	xcodebuild archive -project $(MOBILE_PROJ) -scheme WatchtowerMobile \
 		-configuration Release -destination 'generic/platform=iOS' \
 		-archivePath $(MOBILE_ARCHIVE) $(MOBILE_ARCHIVE_AUTH) \
-		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER) MARKETING_VERSION=$(MOBILE_VERSION)
+		CURRENT_PROJECT_VERSION=$(MOBILE_BUILD_NUMBER) MARKETING_VERSION=$(MOBILE_VERSION) \
+		$(MOBILE_ARCHIVE_SETTINGS)
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
 		-exportOptionsPlist WatchtowerMobile/ExportOptions.plist \
 		-exportPath $(MOBILE_EXPORT) $(MOBILE_ARCHIVE_AUTH)
@@ -298,8 +302,19 @@ ASC_ISSUER_ID ?=
 ASC_KEY_PATH ?= $(HOME)/.appstoreconnect/private_keys/AuthKey_$(ASC_KEY_ID).p8
 ASC_AUTH = -allowProvisioningUpdates -authenticationKeyPath "$(ASC_KEY_PATH)" \
 	-authenticationKeyID "$(ASC_KEY_ID)" -authenticationKeyIssuerID "$(ASC_ISSUER_ID)"
+# Every TestFlight build talks to the staging relay (ask #1156): the origin
+# comes from RELAY_TESTFLIGHT_ORIGIN_FILE, a file outside the repo holding one
+# https://host[:port] line, read and checked by scripts/testflight-relay-origin.sh.
+# A missing or malformed file fails the upload; RELAY_TESTFLIGHT_DARK=1 uploads
+# a dark build on purpose. The command-line setting beats project.yml's
+# Release "" for the archive action. Never send a TestFlight build to App Store
+# review: it carries the staging origin; review gets a separate, dark
+# make mobile-archive.
+RELAY_TESTFLIGHT_ORIGIN_FILE ?= $(HOME)/.config/watchtower/relay-testflight-origin
+RELAY_TESTFLIGHT_DARK ?=
 testflight: mobile-testflight
 mobile-testflight:
+	@bash scripts/testflight-relay-origin.sh "$(RELAY_TESTFLIGHT_ORIGIN_FILE)" "$(RELAY_TESTFLIGHT_DARK)" > /dev/null
 	@if [ -z "$(ASC_KEY_ID)" ] || [ -z "$(ASC_ISSUER_ID)" ]; then \
 		echo "error: ASC_KEY_ID and ASC_ISSUER_ID are not set."; \
 		echo "  Put them in ~/.appstoreconnect/watchtower.mk:"; \
@@ -313,7 +328,9 @@ mobile-testflight:
 		exit 1; \
 	fi
 	@if [ -z "$(SKIP_CLOUDKIT_CHECK)" ]; then bash scripts/cloudkit-schema-check.sh; fi
-	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_VERSION=$(MOBILE_VERSION) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)'
+	origin=$$(bash scripts/testflight-relay-origin.sh "$(RELAY_TESTFLIGHT_ORIGIN_FILE)" "$(RELAY_TESTFLIGHT_DARK)") && \
+	$(MAKE) mobile-archive MOBILE_BUILD_NUMBER=$(MOBILE_BUILD_NUMBER) MOBILE_VERSION=$(MOBILE_VERSION) MOBILE_ARCHIVE_AUTH='$(ASC_AUTH)' \
+		MOBILE_ARCHIVE_SETTINGS="WATCHTOWER_RELAY_ORIGIN=$$origin"
 	cp WatchtowerMobile/ExportOptions.plist build/ExportOptions-upload.plist
 	plutil -replace destination -string upload build/ExportOptions-upload.plist
 	xcodebuild -exportArchive -archivePath $(MOBILE_ARCHIVE) \
