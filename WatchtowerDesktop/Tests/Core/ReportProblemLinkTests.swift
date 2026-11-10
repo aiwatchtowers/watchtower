@@ -124,6 +124,17 @@ final class ReportProblemLinkTests: XCTestCase {
         ])
     }
 
+    func testFailedStateOverBudgetCarriesNoLogs() throws {
+        let text = String(repeating: "漢", count: ReportProblemLink.maxTextLength)
+        let link = make(text, answer: nil)
+        XCTAssertTrue(link.shortened)
+        XCTAssertLessThanOrEqual(link.url.absoluteString.count, ReportProblemLink.maxURLLength)
+        let fields = items(link.url)
+        XCTAssertEqual(Set(fields.keys), ["template", "title", "version", "macos", "actual"])
+        let actual = try XCTUnwrap(fields["actual"])
+        XCTAssertTrue(actual.hasSuffix(ReportProblemCopy.truncatedSuffix))
+    }
+
     func testEmptyProviderIsLeftUnset() {
         let invalid = DiagnosticsAnswer(
             text: "x", version: "1", macos: "macOS 15.5", chip: "Other",
@@ -136,6 +147,8 @@ final class ReportProblemLinkTests: XCTestCase {
         let first = String(repeating: "x", count: 100)
         let title = items(make("  \n" + first + "\nrest", answer: answer).url)["title"]
         XCTAssertEqual(title, String(repeating: "x", count: 80))
+        let spaced = String(repeating: "x", count: 79) + " tail"
+        XCTAssertEqual(items(make(spaced, answer: answer).url)["title"], String(repeating: "x", count: 79))
         let short = items(make("  Short title  \nrest", answer: answer).url)["title"]
         XCTAssertEqual(short, "Short title")
     }

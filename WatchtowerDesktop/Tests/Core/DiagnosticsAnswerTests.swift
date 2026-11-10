@@ -37,6 +37,18 @@ final class DiagnosticsAnswerTests: XCTestCase {
         XCTAssertThrowsError(try DiagnosticsAnswer.decode(stdout: Data(noPartial.utf8)))
     }
 
+    func testDecodesEmptySources() throws {
+        let none = json.replacingOccurrences(of: "[\"Slack\",\"Jira\"]", with: "[]")
+        XCTAssertNotEqual(none, json)
+        XCTAssertEqual(try DiagnosticsAnswer.decode(stdout: Data(none.utf8)).sources, [])
+    }
+
+    func testNullSourcesFails() {
+        let null = json.replacingOccurrences(of: "[\"Slack\",\"Jira\"]", with: "null")
+        XCTAssertNotEqual(null, json)
+        XCTAssertThrowsError(try DiagnosticsAnswer.decode(stdout: Data(null.utf8)))
+    }
+
     func testEmptyOutputFails() {
         XCTAssertThrowsError(try DiagnosticsAnswer.decode(stdout: Data("\n \n".utf8)))
         XCTAssertThrowsError(try DiagnosticsAnswer.decode(stdout: Data()))
