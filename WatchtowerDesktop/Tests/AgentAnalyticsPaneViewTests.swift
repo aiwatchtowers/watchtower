@@ -694,8 +694,10 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             let card = CoachProposalCardView(proposal: proposal, isFirst: true, coach: coach, actions: actions) {}
             return try card.inspect().findAll(ViewType.Button.self).map { try $0.labelView().text().string() }
         }
-        XCTAssertEqual(try labels(session).filter { $0 == "Edit…" }.count, 1)
-        XCTAssertEqual(try labels(allow).filter { $0 == "Edit…" }.count, 0)
+        // The card lays its verbs out twice inside `ViewThatFits` (one line, or
+        // stacked in a narrow panel), so the inspector sees each button per layout.
+        XCTAssertTrue(try labels(session).contains("Edit…"))
+        XCTAssertFalse(try labels(allow).contains("Edit…"))
         XCTAssertTrue(try labels(allow).contains("Accept"))
     }
 
