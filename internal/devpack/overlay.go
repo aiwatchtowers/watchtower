@@ -77,7 +77,9 @@ func PackSkill(name string) (Skill, bool) {
 // the shipped skill rendered with lines, under the DEV-04 rules: a copy that
 // is ours (StateUpdated) is rewritten with its sidecar; StateUnchanged writes
 // nothing; a missing, owner-edited (StateDrifted) or foreign copy is left as
-// it is and its state returned. It never creates a copy. The caller checks
+// it is and its state returned; a pre-v10 single-file workbench core is
+// left for the workbench install and reported StateDrifted. It never
+// creates a copy. The caller checks
 // that skillsDir stays inside its folder (skillDirsInside): a symlinked
 // skills directory is not guarded here.
 func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
@@ -89,6 +91,14 @@ func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
 		// A sidecar-less shipped core is ours, as for a resync.
 		if err := adoptShippedSingleFile(skillsDir); err != nil {
 			return "", err
+		}
+		// A pre-v10 core carries the methodology itself: rewriting it
+		// alone would drop the methodology without the preset beside it.
+		// The workbench install splits it (installSkillPair); here it is
+		// left as it is and reported as not rendered (StateDrifted).
+		file := filepath.Join(skillsDir, name, "SKILL.md")
+		if single, err := carriesMethodology(file); err == nil && single {
+			return StateDrifted, nil
 		}
 	}
 	if err := adoptPlainCopy(skillsDir, s); err != nil {

@@ -366,3 +366,25 @@ func TestInstallWorkbench_OverlaysUnreadKeepsASingleFileCoreAlone(t *testing.T) 
 		t.Fatal("the kept core must stay as it is")
 	}
 }
+
+func TestRerenderSkill_PreSplitCoreLeftForTheInstall(t *testing.T) {
+	dir := t.TempDir()
+	v8, err := os.ReadFile(filepath.Join("testdata", "watchtower-workbench-v8.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, WorkbenchSkillName, "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, v8, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := RerenderSkill(dir, WorkbenchSkillName, []string{"Be brief."})
+	if err != nil || st != StateDrifted {
+		t.Fatalf("rerender: %v %v", st, err)
+	}
+	if readTestFile(t, file) != string(v8) {
+		t.Fatal("a pre-split core must stay as it is")
+	}
+}
