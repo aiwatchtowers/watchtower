@@ -21,13 +21,13 @@ contributors.
   error or a timeout keeps everything in the cloud.
 - On the Mac the jobs run as a separate standard macOS user, `ci`, so a
   branch's code cannot reach the owner's Keychain, `~/.config/watchtower` or
-  the live database. Four runners, each a LaunchAgent in `ci`'s GUI session
+  the live database. Nine runners, each a LaunchAgent in `ci`'s GUI session
   (simulators and the WKWebView tests need one):
 
   | folder (in `ci`'s home)       | runner name         | label        | takes |
   |-------------------------------|---------------------|--------------|-------|
   | `actions-runner-swift`        | `wt-mac-swift`      | `wt-swift`   | Swift Test only: one warm `WatchtowerDesktop/.build` (~11 GB) |
-  | `actions-runner-general-1..3` | `wt-mac-general-N`  | `wt-general` | everything else, three at a time |
+  | `actions-runner-general-1..8` | `wt-mac-general-N`  | `wt-general` | everything else, eight at a time |
 
 - Where a job differs on the Mac it checks `runner.environment`: no
   `apt-get`, no `setup-xcode` (the runners' `.env` sets `DEVELOPER_DIR`),
@@ -55,7 +55,7 @@ contributors.
    It creates the standard user `ci`, installs swiftlint with Homebrew if it
    is missing, accepts the Xcode license (`/Applications/Xcode.app`; another
    one with `--xcode <path>`), downloads actions/runner (pinned version,
-   checksum checked), registers the four runners and installs their
+   checksum checked), registers the nine runners and installs their
    LaunchAgents. Your own `xcode-select` choice is not touched: the runners
    use `DEVELOPER_DIR`. Running it again is safe; it restarts the runners, so
    run it while no job is running.
@@ -140,9 +140,9 @@ contributors.
   a main push saves `WatchtowerDesktop/.build` to the Actions cache; while
   the Mac takes those runs the entries are not refreshed and GitHub evicts
   them after 7 days, so the next cloud (or release) Swift Test builds cold.
-- **One home for every job.** Jobs share `ci`'s home and run three at a
+- **One home for every job.** Jobs share `ci`'s home and run eight at a
   time, so a test that writes to the real home (rather than a temp folder)
   sees what other jobs and earlier runs left there.
 - **No spill-over.** A class goes to the Mac whenever one of its runners is
-  online, busy or not; concurrent runs queue for the four runners rather
+  online, busy or not; concurrent runs queue for the nine runners rather
   than overflow to the cloud.

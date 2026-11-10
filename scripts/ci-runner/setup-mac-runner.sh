@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sets up the owner's Mac as Watchtower's self-hosted CI (see README.md next
-# to this file): a standard macOS user `ci` and four GitHub Actions runners
+# to this file): a standard macOS user `ci` and nine GitHub Actions runners
 # under it, each a LaunchAgent in ci's GUI session —
 #
 #   ~ci/actions-runner-swift      label wt-swift    (Swift Test only)
@@ -16,7 +16,7 @@
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
 #
-#   --uninstall        stop, unregister and delete the four runners (the ci
+#   --uninstall        stop, unregister and delete the nine runners (the ci
 #                      user and its caches stay; the script prints how to
 #                      remove the user)
 #   --repo             repository the runners serve (default aiwatchtowers/watchtower)
@@ -44,7 +44,7 @@ RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSIO
 
 # name:label — the folder is actions-runner-<name>, the runner wt-mac-<name>.
 # Runner names show in public job logs: never the host name.
-INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general"
+INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general general-6:wt-general general-7:wt-general general-8:wt-general"
 
 die() {
     echo "setup-mac-runner: $*" >&2
@@ -273,7 +273,7 @@ install() {
 
     echo
     if gui_session "$uid"; then
-        echo "All four runners are running in $CI_USER's session."
+        echo "All nine runners are running in $CI_USER's session."
     else
         echo "Runners installed. They start when $CI_USER logs in: log in as $CI_USER once"
         echo "(Fast User Switching), then switch back to your account without logging out."
