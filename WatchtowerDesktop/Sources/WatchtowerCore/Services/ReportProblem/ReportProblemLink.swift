@@ -51,10 +51,13 @@ package enum ReportProblemLink {
         let full = build(actual: text, logs: answer?.text)
         if full.count <= maxURLLength { return (url(full), false) }
 
-        // Step 2: the report is pasted by hand.
-        let placeholder = ReportProblemCopy.logsPlaceholder
-        let withoutLogs = build(actual: text, logs: placeholder)
-        if withoutLogs.count <= maxURLLength { return (url(withoutLogs), true) }
+        // Step 2: the report is pasted by hand. A failed collection has no
+        // report, so its link carries no `logs` at all and goes to step 3.
+        let placeholder = answer == nil ? nil : ReportProblemCopy.logsPlaceholder
+        if placeholder != nil {
+            let withoutLogs = build(actual: text, logs: placeholder)
+            if withoutLogs.count <= maxURLLength { return (url(withoutLogs), true) }
+        }
 
         // Step 3: cut the user text, whole characters only, so neither a
         // character nor its percent escape is ever split.
@@ -70,14 +73,15 @@ package enum ReportProblemLink {
         return (url(build(actual: kept + suffix, logs: placeholder)), true)
     }
 
-    /// The first non-blank line of the text, trimmed, at most 80 characters.
+    /// The first non-blank line of the text, at most 80 characters, trimmed
+    /// (again after the cut, so no trailing space).
     private static func firstLine(_ text: String) -> String {
         let line = text
             .split(whereSeparator: \.isNewline)
             .lazy
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty } ?? ""
-        return String(line.prefix(maxTitleLength))
+        return String(line.prefix(maxTitleLength)).trimmingCharacters(in: .whitespaces)
     }
 
     /// RFC 3986 unreserved characters stay; everything else is escaped,
