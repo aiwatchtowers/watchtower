@@ -452,11 +452,10 @@ func TestRepriceAgentLogEvents_PerAgent(t *testing.T) {
 }
 
 // Spec 2026-11-03 §4.7: a spawn link to a call stored by an earlier slice
-// comes as a key-only row whose upsert fills spawned_agent_id and keeps every
-// other column; an empty spawned_agent_id never clears a stored one. A link
-// whose session row does not exist is skipped; a spawn link keeps the
-// smaller depth.
-func TestApplyAgentLogBatch_SpawnedAgentIDFilledOnConflict(t *testing.T) {
+// sets spawned_agent_id on that row and touches nothing else; a spawn whose
+// call was never stored writes no row. A link whose session row does not
+// exist is skipped; a spawn link keeps the smaller depth.
+func TestApplyAgentLogBatch_SpawnLinkFillsStoredCall(t *testing.T) {
 	d := openTestDB(t)
 	pid := testWorkbenchID
 	s := agentSession("root", "2026-10-01T10:00:00Z", pid)
@@ -467,40 +466,65 @@ func TestApplyAgentLogBatch_SpawnedAgentIDFilledOnConflict(t *testing.T) {
 		Sessions: []AgentLogSession{s}, Events: []AgentLogEvent{call}})
 	require.NoError(t, err)
 
-	link := AgentLogEvent{SessionUUID: "root", Key: "tool:codex:c1", Kind: "tool", TS: "2026-10-01T10:00:09Z",
-		Name: "spawn_agent", Outcome: "pending", SpawnedAgentID: "child", SrcPath: "/x/r.jsonl", SrcOffset: 90}
 	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 2}, ExpectOffset: 1,
-		Events: []AgentLogEvent{link}, Subagents: []AgentSubagent{
+		Spawns: []AgentSpawn{{Key: "tool:codex:c1", AgentID: "child"}, {Key: "tool:codex:absent", AgentID: "other"}},
+		Subagents: []AgentSubagent{
 			{SessionUUID: "root", AgentID: "child", Depth: 2, SpawnLink: true},
 			{SessionUUID: "missing", AgentID: "orphan", Depth: 1, SpawnLink: true},
 		}})
 	require.NoError(t, err)
-	read := func() (spawned, ts, outcome string, off int64) {
-		require.NoError(t, d.QueryRow(`SELECT spawned_agent_id, ts, outcome, src_offset FROM agent_log_events WHERE key = 'tool:codex:c1'`).
-			Scan(&spawned, &ts, &outcome, &off))
-		return
-	}
-	spawned, ts, outcome, off := read()
+	var spawned, ts, outcome string
+	var off int64
+	require.NoError(t, d.QueryRow(`SELECT spawned_agent_id, ts, outcome, src_offset FROM agent_log_events WHERE key = 'tool:codex:c1'`).
+		Scan(&spawned, &ts, &outcome, &off))
 	assert.Equal(t, "child", spawned)
 	assert.Equal(t, call.TS, ts)
 	assert.Equal(t, "ok", outcome)
 	assert.Equal(t, int64(10), off)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE key = 'tool:codex:absent'`).Scan(&n))
+	assert.Zero(t, n, "a spawn whose call was never stored writes no row")
 
-	// A replayed spawn of the same child one level deeper, and a plain
-	// re-store of the call: depth stays the smaller, the id stays.
-	call.SrcOffset = 11
+	// A replayed spawn of the same child one level deeper, then one level up.
 	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 3}, ExpectOffset: 2,
-		Events: []AgentLogEvent{call}, Subagents: []AgentSubagent{{SessionUUID: "root", AgentID: "child", Depth: 3, SpawnLink: true},
+		Subagents: []AgentSubagent{{SessionUUID: "root", AgentID: "child", Depth: 3, SpawnLink: true},
 			{SessionUUID: "root", AgentID: "child", Depth: 1, SpawnLink: true}}})
 	require.NoError(t, err)
-	spawned, _, _, _ = read()
-	assert.Equal(t, "child", spawned)
-	var depth, n int
-	require.NoError(t, d.QueryRow(`SELECT depth FROM agent_log_subagents WHERE session_uuid = 'root' AND agent_id = 'child'`).Scan(&depth))
-	assert.Equal(t, 1, depth)
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents WHERE agent_id = 'orphan'`).Scan(&n))
 	assert.Zero(t, n, "a link never orphans")
 	links, err := d.CodexSubagents("root")
 	require.NoError(t, err)
 	assert.Equal(t, []AgentSubagent{{SessionUUID: "root", AgentID: "child", Depth: 1}}, links)
+}
+
+// A sub-agent batch (Lane) times only its own lane's tool rows: a forked
+// child replaying its parent's result under the same root session never
+// re-times the parent's call, but still fills a row left pending.
+func TestApplyAgentLogBatch_LaneTimesOnlyItsRows(t *testing.T) {
+	d := openTestDB(t)
+	s := agentSession("root", "2026-10-01T10:00:00Z", testWorkbenchID)
+	s.Agent = "codex"
+	mk := func(key string) AgentLogEvent {
+		return AgentLogEvent{SessionUUID: "root", Key: key, Kind: "tool", TS: "2026-10-01T10:00:01Z", Name: "Bash", Outcome: "pending"}
+	}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/r.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{s}, Events: []AgentLogEvent{mk("tool:codex:a"), mk("tool:codex:b")},
+		ToolResults: []AgentToolResult{{ToolUseID: "codex:a", TS: "2026-10-01T10:00:02Z", Outcome: "ok"}}})
+	require.NoError(t, err)
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/c.jsonl", Agent: "codex", ReadOffset: 1}, ExpectOffset: -1,
+		Lane: "child", ToolResults: []AgentToolResult{
+			{ToolUseID: "codex:a", TS: "2026-10-01T10:09:00Z", Outcome: "error", ErrorClass: "exit_code"},
+			{ToolUseID: "codex:b", TS: "2026-10-01T10:09:00Z", Outcome: "ok"},
+		}})
+	require.NoError(t, err)
+	read := func(key string) (outcome string, dur sql.NullInt64) {
+		require.NoError(t, d.QueryRow(`SELECT outcome, duration_ms FROM agent_log_events WHERE key = ?`, key).Scan(&outcome, &dur))
+		return
+	}
+	outcome, dur := read("tool:codex:a")
+	assert.Equal(t, "ok", outcome)
+	assert.Equal(t, int64(1000), dur.Int64, "the parent's call keeps its own timing")
+	outcome, dur = read("tool:codex:b")
+	assert.Equal(t, "ok", outcome, "a pending row is still filled")
+	assert.False(t, dur.Valid && dur.Int64 > 0, "never timed by another lane's copy")
 }

@@ -114,9 +114,11 @@ type Transcript interface {
 	// rollout the importer reads named in a spawn event (AGENTLOG-04,
 	// ask #1132): under the same roots as ImportFile, by that id only, never
 	// through a symlink, reading only its first line, accepted only when its
-	// session_meta is childID's and names one of parents as its parent.
-	// Claude's returns false (its sub-agents are listed by folder).
-	ChildImportFile(childID string, parents []string) (path string, ok bool)
+	// session_meta is childID's and names one of parents as its parent. err
+	// is a match that could not be read (not found or not the child: ok
+	// false, err nil). Claude's returns false (its sub-agents are listed by
+	// folder).
+	ChildImportFile(childID string, parents []string) (path string, ok bool, err error)
 }
 
 // Puller reads an agent's pull signals from its transcript (spec §3.5).

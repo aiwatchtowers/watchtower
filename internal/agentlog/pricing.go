@@ -8,7 +8,8 @@ import "watchtower/internal/pricing"
 // PriceVersion is stamped on every priced row (see pricing.Version).
 const PriceVersion = pricing.Version
 
-// Cost prices one API call (see pricing.Cost).
+// Cost prices one Claude API call (see pricing.Cost); a row of any agent is
+// priced through CostFor.
 func Cost(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool) {
 	return pricing.Cost(model, speed, in, out, cacheRead, cw5m, cw1h)
 }

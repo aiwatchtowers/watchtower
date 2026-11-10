@@ -239,6 +239,7 @@ func scanCodexChildren(st store, rootFiles []TranscriptFile, owned map[string]bo
 		}
 		tr := st.transcripts[rf.Path]
 		done := map[string]bool{}
+		// Each pass lists the links again: a child read in it may have linked grandchildren.
 		for {
 			links, err := st.al.CodexSubagents(rf.SessionUUID)
 			if err != nil {
@@ -276,7 +277,10 @@ func scanCodexChild(st store, tr sessionagent.Transcript, root string, l agentlo
 	if tr == nil {
 		return &codexFailure{op: "locating", session: l.AgentID, err: errNoTranscript}
 	}
-	path, ok := tr.ChildImportFile(l.AgentID, parents)
+	path, ok, err := tr.ChildImportFile(l.AgentID, parents)
+	if err != nil {
+		return &codexFailure{op: "locating", session: l.AgentID, err: err}
+	}
 	if !ok {
 		res.CodexRolloutsMissing++
 		return nil
@@ -520,6 +524,10 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 		b.Subagents = []agentlogdb.AgentSubagent{subagentRow(tf)}
 	}
 	b.Subagents = append(b.Subagents, pr.Subagents...) // codex spawn links, committed with the slice's offset
+	b.Spawns = pr.CodexSpawns
+	if tf.Agent == AgentCodex && tf.Subagent {
+		b.Lane = tf.AgentID
+	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
 		return 0, false, err
@@ -724,11 +732,10 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 		if cwd, o.CodexLineage, err = codexHead(tr, tf.Path, id); err != nil {
 			return err
 		}
-		if o.AgentID != "" { // the session row is the root's: the lane's own model, its head's cwd
+		if o.AgentID != "" { // the session row is the root's: its head's cwd, the last model before the offset
 			o.CodexCWD = cwd
-			if o.CodexModel, err = st.al.CodexLaneModel(tf.SessionUUID, o.AgentID); err != nil {
-				return err
-			}
+			prefix := start
+			o.CodexPriorModel = func() (string, error) { return codexPriorModel(tr, tf.Path, prefix, id) }
 		} else if o.CodexModel, o.CodexCWD, err = st.al.CodexResumeState(tf.SessionUUID); err != nil {
 			return err
 		}
@@ -740,6 +747,7 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 			return &codexFailure{op: "reading", session: id, err: err}
 		}
 		o.CodexModel, o.CodexCWD = pr.CodexModel, pr.CodexCWD
+		o.CodexPriorModel = nil          // the next slice starts with this one's model
 		o.CodexLineage = pr.CodexLineage // the next slice starts past the head
 		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
@@ -833,6 +841,40 @@ func failureClass(err error) string {
 		return class
 	}
 	return err.Error()
+}
+
+// codexPriorModel is the model of the last turn_context in the first limit
+// bytes of the rollout's text at path, read through tr ("" when none); a
+// failure is a codexFailure naming thread id.
+func codexPriorModel(tr sessionagent.Transcript, path string, limit int64, id string) (string, error) {
+	fail := func(err error) error { return &codexFailure{op: "reading the model of", session: id, err: err} }
+	if tr == nil {
+		return "", fail(errNoTranscript)
+	}
+	rc, _, err := tr.Open(path)
+	if err != nil {
+		return "", fail(err)
+	}
+	defer rc.Close()
+	br := bufio.NewReaderSize(io.LimitReader(rc, limit), 64<<10)
+	model := ""
+	for {
+		raw, _, complete, err := NextLine(br, maxLineBytes)
+		if !complete {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return "", fail(err)
+			}
+			return model, nil
+		}
+		if raw == nil || !bytes.Contains(raw, []byte(`"turn_context"`)) {
+			continue
+		}
+		var l codexRolloutLine
+		var pl codexPayload
+		if json.Unmarshal(raw, &l) == nil && l.Type == "turn_context" && json.Unmarshal(l.Payload, &pl) == nil && pl.Model != "" {
+			model = pl.Model
+		}
+	}
 }
 
 // codexHead reads the first 200 lines of the codex rollout at path through

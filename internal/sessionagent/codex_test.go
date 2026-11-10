@@ -38,25 +38,30 @@ func TestCodexTranscript_ChildImportFileChecksParentAndSymlinks(t *testing.T) {
 	tr := codexTranscript{row: Row{SessionID: tRoot, Home: home}}
 	dated := filepath.Join(home, "sessions", "2026", "11", "01")
 
-	_, ok := tr.ChildImportFile("../"+tChild, []string{tRoot})
+	_, ok, err := tr.ChildImportFile("../"+tChild, []string{tRoot})
+	require.NoError(t, err)
 	assert.False(t, ok, "an id that is not a thread id is never globbed")
 
 	p := writeChild(t, dated, tChild, childHead(tChild, tRoot))
-	got, ok := tr.ChildImportFile(tChild, []string{tRoot})
+	got, ok, err := tr.ChildImportFile(tChild, []string{tRoot})
+	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, p, got)
-	_, ok = tr.ChildImportFile(tChild, []string{tOther})
+	_, ok, err = tr.ChildImportFile(tChild, []string{tOther})
+	require.NoError(t, err)
 	assert.False(t, ok, "its session_meta names another parent")
 
 	require.NoError(t, os.WriteFile(p, []byte(childHead(tChild, tOther)), 0o600))
-	_, ok = tr.ChildImportFile(tChild, []string{tRoot})
+	_, ok, err = tr.ChildImportFile(tChild, []string{tRoot})
+	require.NoError(t, err)
 	assert.False(t, ok)
 
 	// A symlinked match is refused.
 	require.NoError(t, os.Remove(p))
 	target := writeChild(t, t.TempDir(), tChild, childHead(tChild, tRoot))
 	require.NoError(t, os.Symlink(target, p))
-	_, ok = tr.ChildImportFile(tChild, []string{tRoot})
+	_, ok, err = tr.ChildImportFile(tChild, []string{tRoot})
+	require.NoError(t, err)
 	assert.False(t, ok, "never through a symlink")
 	require.NoError(t, os.Remove(p))
 
@@ -64,13 +69,22 @@ func TestCodexTranscript_ChildImportFileChecksParentAndSymlinks(t *testing.T) {
 	long := `{"type":"session_meta","payload":{"id":"` + tChild + `","parent_thread_id":"` + tRoot + `","pad":"` +
 		string(make([]byte, childMetaBytes)) + `"}}` + "\n"
 	writeChild(t, dated, tChild, long)
-	_, ok = tr.ChildImportFile(tChild, []string{tRoot})
+	_, ok, err = tr.ChildImportFile(tChild, []string{tRoot})
+	require.NoError(t, err)
 	assert.False(t, ok)
 	require.NoError(t, os.Remove(p))
 
 	// An archived child is found; a child of a linked sibling too.
 	archived := writeChild(t, filepath.Join(home, "archived_sessions"), tChild, childHead(tChild, tOther))
-	got, ok = tr.ChildImportFile(tChild, []string{tRoot, tOther})
+	got, ok, err = tr.ChildImportFile(tChild, []string{tRoot, tOther})
+	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, archived, got)
+
+	// A match that cannot be opened is an error, not "not found".
+	require.NoError(t, os.Chmod(archived, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(archived, 0o600) })
+	_, ok, err = tr.ChildImportFile(tChild, []string{tRoot, tOther})
+	assert.False(t, ok)
+	assert.Error(t, err)
 }

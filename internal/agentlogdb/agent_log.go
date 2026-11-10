@@ -94,7 +94,18 @@ type AgentLogBatch struct {
 	ContextParts []AgentContextPart
 	SkillListing []AgentSkillListed
 	Subagents    []AgentSubagent
+	// Lane is a Codex sub-agent batch's agent id: its tool results time and
+	// settle only that lane's rows, so a forked child's replay of its
+	// parent's results (under the same root session) never re-times the
+	// parent's call; a pending row of another lane is still filled untimed.
+	Lane string
+	// Spawns set spawned_agent_id on stored spawn tool rows (an update only:
+	// a spawn whose call was never stored writes nothing).
+	Spawns []AgentSpawn
 }
+
+// AgentSpawn links a stored tool row (Key) to the sub-agent it spawned.
+type AgentSpawn struct{ Key, AgentID string }
 
 // AgentLogStats is a workbench's totals for `agents stats --json` (pinned keys).
 type AgentLogStats struct {
@@ -237,9 +248,9 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 			if _, err := tx.Exec(`UPDATE agent_log_events SET outcome = ?, error_class = ?,
 				lines_added = ?, lines_removed = ?, result_bytes = ?,
 				duration_ms = CAST(ROUND((julianday(?) - julianday(ts)) * 86400000) AS INTEGER)
-				WHERE key = ? AND (? IS NULL OR session_uuid IN (SELECT value FROM json_each(?)))`,
+				WHERE key = ? AND (? IS NULL OR session_uuid IN (SELECT value FROM json_each(?))) AND (? = '' OR agent_id = ?)`,
 				r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.ResultBytes, r.TS,
-				"tool:"+r.ToolUseID, owners, owners); err != nil {
+				"tool:"+r.ToolUseID, owners, owners, b.Lane, b.Lane); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
 			// A result only a replayed copy carries (the owner's transcript
@@ -259,6 +270,11 @@ func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				if _, err := tx.Exec(`UPDATE agent_log_events SET background = 1 WHERE key = ?`, "tool:"+r.ToolUseID); err != nil {
 					return fmt.Errorf("pairing background flag: %w", err)
 				}
+			}
+		}
+		for _, sp := range b.Spawns {
+			if _, err := tx.Exec(`UPDATE agent_log_events SET spawned_agent_id = ? WHERE key = ? AND kind = 'tool'`, sp.AgentID, sp.Key); err != nil {
+				return fmt.Errorf("linking spawned agent: %w", err)
 			}
 		}
 		for _, p := range b.ContextParts {
@@ -396,7 +412,6 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		  trigger = CASE WHEN excluded.trigger <> '' THEN excluded.trigger ELSE agent_log_events.trigger END,
 		  target = CASE WHEN excluded.target <> '' THEN excluded.target ELSE agent_log_events.target END,
 		  background = MAX(agent_log_events.background, excluded.background),
-		  spawned_agent_id = CASE WHEN excluded.spawned_agent_id <> '' THEN excluded.spawned_agent_id ELSE agent_log_events.spawned_agent_id END,
 		  outcome = CASE WHEN agent_log_events.outcome IN ('', 'pending') THEN excluded.outcome ELSE agent_log_events.outcome END`,
 		e.SessionUUID, e.Key, e.Kind, e.TS, e.UUID, e.ParentUUID, e.PromptID, e.AgentID, e.IsSidechain,
 		e.Name, e.Target, e.Trigger, e.Outcome, e.ErrorClass, e.Skill, e.InputTokens, e.OutputTokens, e.CacheReadTokens,
@@ -473,22 +488,6 @@ func (d *DB) CodexSubagents(sessionUUID string) ([]AgentSubagent, error) {
 		return nil, fmt.Errorf("codex subagents of %s: %w", sessionUUID, err)
 	}
 	return out, nil
-}
-
-// CodexLaneModel is the model of a lane's (a session's agent id) latest
-// stored api_call, "" when it has none: the seed of a Codex sub-agent read
-// that does not start at offset 0 (its session row is the root's).
-func (d *DB) CodexLaneModel(sessionUUID, agentID string) (string, error) {
-	var model string
-	err := d.QueryRow(`SELECT name FROM agent_log_events WHERE session_uuid = ? AND agent_id = ? AND +kind = 'api_call'
-		ORDER BY ts DESC, id DESC LIMIT 1`, sessionUUID, agentID).Scan(&model)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("codex lane model: %w", err)
-	}
-	return model, nil
 }
 
 // AgentLaneBaseline reports whether a lane (a session's agent id, "" for the

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/sessionfeed"
 )
 
 // The agent column of a transcript's file and session rows: Claude Code, or a
@@ -131,6 +132,9 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 		} else {
 			p.handle(raw, lineOff)
 		}
+		if p.err != nil {
+			return nil, p.err
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
@@ -152,11 +156,12 @@ type codexParser struct {
 	res       *ParseResult
 	lineage   codexLineage
 	model     string
-	cwd       string                      // the session's own working directory (its session_meta)
-	seen      map[string]bool             // event keys added in this read
-	fromStart bool                        // read from offset 0: the first line's time may start the session
-	scratch   *agentlogdb.AgentLogSession // a sub-agent's session fields: never stored (the root's row is the only one)
-	linked    map[string]bool             // spawn links added in this read
+	cwd       string          // the session's own working directory (its session_meta)
+	seen      map[string]bool // event keys added in this read
+	fromStart bool            // read from offset 0: the first line's time may start the session
+	linked    map[string]bool // spawn links added in this read
+	modelSeen bool            // a turn_context was read, or CodexPriorModel was asked
+	err       error           // CodexPriorModel's failure: fails the read
 }
 
 // child reports a sub-agent rollout read under its root's session.
@@ -197,6 +202,7 @@ func (p *codexParser) handle(raw []byte, off int64) {
 			}
 		}
 	case "turn_context":
+		p.modelSeen = true
 		if pl.Model != "" {
 			p.model, s.Model = pl.Model, pl.Model
 		}
@@ -212,20 +218,16 @@ func (p *codexParser) handle(raw []byte, off int64) {
 // read from offset 0; a later read leaves it "" (the stored start stays), so
 // a fork's replayed parent lines never move its start back.
 func (p *codexParser) session(ts string) *agentlogdb.AgentLogSession {
-	s := p.res.Sessions[p.o.SessionUUID]
 	if p.child() {
-		s = p.scratch
+		return &agentlogdb.AgentLogSession{} // the root's session row is the only one; a sub-agent's fields are dropped
 	}
+	s := p.res.Sessions[p.o.SessionUUID]
 	if s == nil {
 		s = &agentlogdb.AgentLogSession{SessionUUID: p.o.SessionUUID, Agent: AgentCodex, SourcePath: p.o.Path, Model: p.model}
 		if p.fromStart {
 			s.StartedAt = ts
 		}
-		if p.child() {
-			p.scratch = s
-		} else {
-			p.res.Sessions[p.o.SessionUUID] = s
-		}
+		p.res.Sessions[p.o.SessionUUID] = s
 	}
 	if ts > s.EndedAt {
 		s.EndedAt = ts
@@ -251,7 +253,7 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 	case "token_count":
 		p.tokens(l, pl, off)
 	case "collab_agent_spawn_end":
-		p.spawn(l, pl, off)
+		p.spawn(pl)
 	}
 	if p.child() {
 		return // a sub-agent's user messages and aborts are its parent agent's, not the owner's
@@ -287,45 +289,35 @@ func (p *codexParser) event(l codexRolloutLine, pl codexPayload, off int64) {
 	}
 }
 
-// maxCodexSubagentDepth bounds the stored spawn links (sessionfeed's
-// maxSubagentDepth): a deeper link is not stored, so never read.
-const maxCodexSubagentDepth = 8
-
-// codexThreadIDRe is a codex thread id (a UUID).
-var codexThreadIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
 // spawn links the sub-agent a collab_agent_spawn_end names under the root
-// session, one level below the reading rollout, and sets it on the spawn
-// tool row of the same call id: in this read's rows when the call is among
-// them, else by a key-only row whose upsert fills only spawned_agent_id
-// (the call was stored by an earlier slice). A link to the reading rollout
-// itself or to the root (a fork's replay) is not one.
-func (p *codexParser) spawn(l codexRolloutLine, pl codexPayload, off int64) {
+// session, one level below the reading rollout (at most
+// sessionfeed.MaxSubagentDepth: a deeper link is counted, not stored, so
+// never read), and sets it on the spawn tool row of the same call id when
+// that row is stored (CodexSpawns: an update, never a new row). A link to the
+// reading rollout itself or to the root (a fork's replay) is not one; a
+// spawn with no thread id is counted.
+func (p *codexParser) spawn(pl codexPayload) {
 	id := pl.NewThreadID
-	if !codexThreadIDRe.MatchString(id) || id == p.self() || id == p.o.SessionUUID {
+	if !sessionfeed.IsCodexThreadID(id) {
+		p.res.Unknown["<codex-spawn-no-thread>"]++
 		return
 	}
-	if depth := p.o.Depth + 1; depth <= maxCodexSubagentDepth && !p.linked[id] {
+	if id == p.self() || id == p.o.SessionUUID {
+		return
+	}
+	switch depth := p.o.Depth + 1; {
+	case depth > sessionfeed.MaxSubagentDepth:
+		p.res.Unknown["<codex-spawn-too-deep>"]++
+	case !p.linked[id]:
 		if p.linked == nil {
 			p.linked = map[string]bool{}
 		}
 		p.linked[id] = true
 		p.res.Subagents = append(p.res.Subagents, agentlogdb.AgentSubagent{SessionUUID: p.o.SessionUUID, AgentID: id, Depth: depth, SpawnLink: true})
 	}
-	if pl.CallID == "" {
-		return
+	if pl.CallID != "" {
+		p.res.CodexSpawns = append(p.res.CodexSpawns, agentlogdb.AgentSpawn{Key: "tool:codex:" + pl.CallID, AgentID: id})
 	}
-	key := "tool:codex:" + pl.CallID
-	for i := range p.res.Events {
-		if p.res.Events[i].Key == key {
-			p.res.Events[i].SpawnedAgentID = id
-			return
-		}
-	}
-	if p.seen[key] {
-		return
-	}
-	p.add(l, off, agentlogdb.AgentLogEvent{Key: key, Kind: "tool", Name: "spawn_agent", Outcome: "pending", SpawnedAgentID: id})
 }
 
 // codexLineage is the id of the last session_meta before a rollout's first
@@ -374,6 +366,15 @@ func (p *codexParser) tokens(l codexRolloutLine, pl codexPayload, off int64) {
 	if pl.Info.Last == nil || pl.Info.Total == nil {
 		p.res.Unknown["<codex-token-count>"]++
 		return
+	}
+	if !p.modelSeen && p.o.CodexPriorModel != nil {
+		p.modelSeen = true
+		m, err := p.o.CodexPriorModel()
+		if err != nil {
+			p.err = err
+			return
+		}
+		p.model = cmp.Or(m, p.model)
 	}
 	u, t := pl.Info.Last, pl.Info.Total
 	// OpenAI's input_tokens include the cached and the cache-write parts;

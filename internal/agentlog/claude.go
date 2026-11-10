@@ -136,6 +136,11 @@ type ParseOptions struct {
 	// (codexLineage, read from its head by codexHead): the session_meta lines
 	// it comes from sit before the read's offset (ParseCodex only).
 	CodexLineage string
+	// CodexPriorModel, when set, returns the model of the last turn_context
+	// before a sub-agent read's start offset. It is called at most once, on
+	// a token line read before any turn_context of this read (the root's
+	// model is seeded from its session row; a sub-agent has none).
+	CodexPriorModel func() (string, error)
 	// Depth is a Codex sub-agent rollout's depth below its root (1 = a
 	// child of the root; 0 = the root). ParseCodex reads a rollout with
 	// AgentID set as that sub-agent of SessionUUID (ParseCodex only).
@@ -166,8 +171,10 @@ type ParseResult struct {
 	// of the parse (seed for the next slice; ParseCodex only).
 	CodexModel, CodexCWD string
 	// Subagents are the Codex sub-agent links of this parse's spawn events
-	// (collab_agent_spawn_end), stored with the slice (ParseCodex only).
-	Subagents []agentlogdb.AgentSubagent
+	// (collab_agent_spawn_end), stored with the slice, and CodexSpawns the
+	// spawn tool rows they link (ParseCodex only).
+	Subagents   []agentlogdb.AgentSubagent
+	CodexSpawns []agentlogdb.AgentSpawn
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any

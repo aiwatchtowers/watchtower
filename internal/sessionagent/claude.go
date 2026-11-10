@@ -197,7 +197,10 @@ func (t claudeTranscript) ImportFile() (string, bool) {
 	return path, err == nil
 }
 
-func (claudeTranscript) ChildImportFile(string, []string) (string, bool) { return "", false }
+// ChildImportFile: no child rollouts; Claude sub-agents are listed by folder.
+func (claudeTranscript) ChildImportFile(string, []string) (string, bool, error) {
+	return "", false, nil
+}
 
 func (claudeTranscript) Open(path string) (io.ReadCloser, bool, error) {
 	f, err := os.Open(path)

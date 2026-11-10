@@ -335,3 +335,88 @@ func TestAgentlog_CodexParentTotalsExcludeChildren(t *testing.T) {
 		assert.Empty(t, agentID, "the replayed call stays the parent's")
 	})
 }
+
+// A sub-agent read that resumes past its turn_context still prices the
+// next call with that model: the root's model comes from its session row, a
+// sub-agent's from the last turn_context before the offset.
+func TestAgentlog_CodexChildResumeKeepsModel(t *testing.T) {
+	f := newFixture(t)
+	f.writeRollout(cxParent, rootWithSpawn(t, f.folder, cxChild))
+	head := cxChildMeta(t, "19.000", cxChild, cxParent, f.folder) + cxModel(t, "19.500", "gpt-5.6-sol")
+	p := f.writeRollout(cxChild, head)
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	require.Zero(t, f.scan().FailedFiles)
+
+	require.NoError(t, os.WriteFile(p, []byte(head+cxTokens(t, "21.000", 500, 100, 40, 10, 540)), 0o600))
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	var name string
+	var usd float64
+	require.NoError(t, f.al.QueryRow(`SELECT name, cost_usd FROM agent_log_events WHERE kind = 'api_call' AND agent_id = ?`, cxChild).
+		Scan(&name, &usd))
+	assert.Equal(t, "gpt-5.6-sol", name)
+	assert.Positive(t, usd)
+}
+
+// A forked child that replays its parent's tool call and result, re-stamped
+// later, never re-times or re-settles the parent's call (AGENTLOG-02/06).
+func TestAgentlog_CodexForkedChildKeepsParentToolTiming(t *testing.T) {
+	f := newFixture(t)
+	parent := cxMeta(t, "00.000", cxParent, f.folder) + cxModel(t, "00.500", "gpt-test") +
+		cxExec(t, "01.000", "call-p", "go test ./...") + cxOut(t, "02.000", "call-p", "Process exited with code 0\n")
+	f.writeRollout(cxParent, parent+cxSpawn(t, "03.000", "call-spawn-1", cxChild))
+	f.writeRollout(cxChild, cxChildMeta(t, "04.000", cxChild, cxParent, f.folder)+parent+
+		cxOut(t, "40.000", "call-p", "Process exited with code 1\n")) // a re-stamped, different copy
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	var outcome string
+	var dur int64
+	require.NoError(t, f.al.QueryRow(`SELECT outcome, duration_ms FROM agent_log_events WHERE key = 'tool:codex:call-p'`).Scan(&outcome, &dur))
+	assert.Equal(t, "ok", outcome)
+	assert.Equal(t, int64(1000), dur)
+}
+
+// Spawn events never dropped silently: no thread id, or past the depth cap,
+// count in Unknown; a spawn whose call is absent writes no tool row.
+func TestParseCodex_SpawnEdgesCounted(t *testing.T) {
+	pr := parseCodex(t, cxSpawnEnd(t, "01.000", "call-x", "not-a-thread")+cxSpawnEnd(t, "02.000", "", cxGrand),
+		ParseOptions{Path: "/r.jsonl", SessionUUID: cxParent})
+	assert.Equal(t, 1, pr.Unknown["<codex-spawn-no-thread>"])
+	require.Len(t, pr.Subagents, 1)
+	assert.Empty(t, pr.CodexSpawns, "no call id, no tool row to link")
+	for _, e := range pr.Events {
+		assert.NotEqual(t, "tool", e.Kind, "a spawn never adds a tool row of its own")
+	}
+
+	pr = parseCodex(t, cxSpawnEnd(t, "01.000", "call-y", cxGrand),
+		ParseOptions{Path: "/r.jsonl", SessionUUID: cxParent, AgentID: cxChild, Depth: 8})
+	assert.Empty(t, pr.Subagents, "depth 9 is past the cap")
+	assert.Equal(t, 1, pr.Unknown["<codex-spawn-too-deep>"])
+}
+
+func TestAgentlog_CodexSpawnWithoutCallWritesNoRow(t *testing.T) {
+	f := newFixture(t)
+	f.writeRollout(cxParent, cxSession(t, cxParent, f.folder)+cxSpawnEnd(t, "13.000", "call-gone", cxChild))
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	require.Zero(t, f.scan().FailedFiles)
+	assert.Zero(t, f.count(`SELECT COUNT(*) FROM agent_log_events WHERE key = 'tool:codex:call-gone'`))
+	assert.Len(t, f.links(), 1)
+}
+
+// A named child that cannot be opened is a failed file (by its thread id,
+// never its path), not a missing one.
+func TestAgentlog_CodexUnreadableChildFailed(t *testing.T) {
+	f := newFixture(t)
+	f.writeRollout(cxParent, rootWithSpawn(t, f.folder, cxChild))
+	p := f.writeRollout(cxChild, cxChildMeta(t, "19.000", cxChild, cxParent, f.folder)+cxChildBody(t, cxChild, 9000))
+	require.NoError(t, os.Chmod(p, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	r := f.scan()
+	assert.Equal(t, 1, r.FailedFiles)
+	assert.Zero(t, r.CodexRolloutsMissing)
+	require.Error(t, r.FirstFailure)
+	assert.Contains(t, r.FirstFailure.Error(), cxChild)
+	assert.NotContains(t, r.FirstFailure.Error(), p)
+}

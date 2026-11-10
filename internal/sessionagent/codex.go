@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -267,42 +269,53 @@ const childMetaBytes = 64 << 10
 // folders and the flat archived_sessions folder, keeps the matches with no
 // symlink below their root, and returns the first whose first line
 // (sessionfeed.CodexChildMeta, at most 64 KB of text, a compressed file
-// decoded in memory) is childID's session_meta naming one of parents.
-func (t codexTranscript) ChildImportFile(childID string, parents []string) (string, bool) {
+// decoded in memory) is childID's session_meta naming one of parents. A
+// match that cannot be opened or read is returned as err when no other
+// match is the child (the importer counts it failed, not missing).
+func (t codexTranscript) ChildImportFile(childID string, parents []string) (string, bool, error) {
 	if !codexIDRe.MatchString(childID) {
-		return "", false
+		return "", false, nil
 	}
-	suffix := "-" + childID + ".jsonl"
+	var firstErr error
 	for _, root := range t.roots() {
-		pattern := filepath.Join(root, "*", "*", "*", "rollout-*"+suffix)
-		if filepath.Base(root) == "archived_sessions" {
-			pattern = filepath.Join(root, "rollout-*"+suffix)
-		}
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := filepath.Glob(rolloutPattern(root, "-"+childID+".jsonl"))
 		sort.Strings(matches)
 		for _, m := range matches {
-			if noSymlinkBelow(root, m) && childMetaMatches(m, childID, parents) {
-				return m, true
+			if !noSymlinkBelow(root, m) {
+				continue
+			}
+			ok, err := childMetaMatches(m, childID, parents)
+			if ok {
+				return m, true, nil
+			}
+			if err != nil && firstErr == nil {
+				firstErr = err
 			}
 		}
 	}
-	return "", false
+	return "", false, firstErr
 }
 
-func childMetaMatches(path, childID string, parents []string) bool {
+func childMetaMatches(path, childID string, parents []string) (bool, error) {
 	rc, _, err := rollout.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer rc.Close()
 	buf := make([]byte, childMetaBytes)
-	n, _ := io.ReadFull(rc, buf)
+	n, err := io.ReadFull(rc, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, err
+	}
 	first, _, ok := bytes.Cut(buf[:n], []byte{'\n'})
 	if !ok {
-		return false
+		return false, nil
 	}
 	id, parent, ok := sessionfeed.CodexChildMeta(first)
-	return ok && id == childID && parent != "" && slices.Contains(parents, parent)
+	return ok && id == childID && parent != "" && slices.Contains(parents, parent), nil
 }
 
 // Open opens the rollout (rollout.Open: a zstd file is decompressed in
@@ -325,11 +338,7 @@ func locateCodexRollout(roots []string, row Row) (string, bool) {
 		}
 	}
 	for _, root := range roots {
-		pattern := filepath.Join(root, "*", "*", "*", "rollout-*"+suffix)
-		if filepath.Base(root) == "archived_sessions" {
-			pattern = filepath.Join(root, "rollout-*"+suffix)
-		}
-		matches, _ := filepath.Glob(pattern)
+		matches, _ := filepath.Glob(rolloutPattern(root, suffix))
 		sort.Strings(matches)
 		for _, m := range matches {
 			if noSymlinkBelow(root, m) {
@@ -338,6 +347,15 @@ func locateCodexRollout(roots []string, row Row) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// rolloutPattern globs the rollouts named …<suffix> under root: dated
+// folders under sessions, flat under archived_sessions.
+func rolloutPattern(root, suffix string) string {
+	if filepath.Base(root) == "archived_sessions" {
+		return filepath.Join(root, "rollout-*"+suffix)
+	}
+	return filepath.Join(root, "*", "*", "*", "rollout-*"+suffix)
 }
 
 // noSymlinkBelow reports whether every path element of p below root (the

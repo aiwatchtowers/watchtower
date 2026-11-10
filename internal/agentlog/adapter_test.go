@@ -25,9 +25,7 @@ type fakeCodexAdapter struct {
 	path     string
 	rows     []sessionagent.Row
 	opens    []string
-	children []string // ChildImportFile ids asked
-	// child, when set, answers ChildImportFile (default: none found).
-	child func(id string, parents []string) (string, bool)
+	children []string // ChildImportFile ids asked (none is ever found)
 }
 
 func (a *fakeCodexAdapter) Transcript(row sessionagent.Row) sessionagent.Transcript {
@@ -41,12 +39,9 @@ func (fakeTranscript) OwnerText(int) (string, error) { return "", nil }
 
 func (t fakeTranscript) ImportFile() (string, bool) { return t.a.path, true }
 
-func (t fakeTranscript) ChildImportFile(id string, parents []string) (string, bool) {
+func (t fakeTranscript) ChildImportFile(id string, _ []string) (string, bool, error) {
 	t.a.children = append(t.a.children, id)
-	if t.a.child == nil {
-		return "", false
-	}
-	return t.a.child(id, parents)
+	return "", false, nil
 }
 
 func (t fakeTranscript) Open(path string) (io.ReadCloser, bool, error) {
