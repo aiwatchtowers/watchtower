@@ -210,6 +210,8 @@ func (a *Applier) rerenderPack(skill string) (updated, drifted int) {
 			updated++
 		case devpack.StateDrifted:
 			drifted++
+		case devpack.StateInstalled, devpack.StateUnchanged, devpack.StateMissing, devpack.StateForeign, devpack.StateRemoved:
+			// Nothing written: current already, absent, or not ours.
 		}
 	}
 	wbs, err := a.DB.ListWorkbenches()
