@@ -1,22 +1,23 @@
 #!/bin/bash
 # Sets up the owner's Mac as Watchtower's self-hosted CI (see README.md next
-# to this file): a standard macOS user `ci` and nine GitHub Actions runners
+# to this file): a standard macOS user `ci` and six GitHub Actions runners
 # under it, each a LaunchAgent in ci's GUI session —
 #
-#   ~ci/actions-runner-swift      label wt-swift    (Swift Test only)
-#   ~ci/actions-runner-general-N  label wt-general  (every other job), N = 1..3
+#   ~ci/actions-runner-general-N  label wt-general  N = 1..6
 #
 # .github/workflows/ci.yml sends jobs here only while these runners are online
 # (scripts/ci-pick-runner.sh); otherwise CI runs on GitHub-hosted runners.
 #
 # Run it as yourself (not root) with `gh` signed in as a repository admin; it
 # asks for your sudo password. Safe to run again: it creates what is missing,
-# rewrites each runner's PATH and environment, and restarts the runners.
+# rewrites each runner's PATH and environment, restarts the runners, and
+# removes the runners an earlier setup made that the list below no longer has
+# (the retired wt-swift runner, general-7 and general-8).
 #
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
 #
-#   --uninstall        stop, unregister and delete the nine runners (the ci
+#   --uninstall        stop, unregister and delete the runners (the ci
 #                      user and its caches stay; the script prints how to
 #                      remove the user)
 #   --repo             repository the runners serve (default aiwatchtowers/watchtower)
@@ -44,7 +45,10 @@ RUNNER_URL="https://github.com/actions/runner/releases/download/v${RUNNER_VERSIO
 
 # name:label — the folder is actions-runner-<name>, the runner wt-mac-<name>.
 # Runner names show in public job logs: never the host name.
-INSTANCES="swift:wt-swift general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general general-6:wt-general general-7:wt-general general-8:wt-general"
+# Six: one run's Mac jobs at once (Go Test, Go Lint, Leak Check, Swift Lint
+# + Kit Test, Guide Check, the code index), so a second run queues instead of
+# piling onto the cores the owner's own work needs (#1705).
+INSTANCES="general-1:wt-general general-2:wt-general general-3:wt-general general-4:wt-general general-5:wt-general general-6:wt-general"
 
 die() {
     echo "setup-mac-runner: $*" >&2
@@ -123,28 +127,36 @@ service_plist() {
 
 gui_session() { sudo launchctl print "gui/$1" >/dev/null 2>&1; }
 
+# remove_runner <uid> <dir>: stops, unregisters and deletes one runner folder.
+remove_runner() {
+    local uid=$1 dir=$2 name plist
+    name=${dir##*/actions-runner-}
+    step "removing $dir"
+    plist=$(service_plist "$dir")
+    if [ -n "$plist" ]; then
+        sudo launchctl bootout "gui/$uid" "$plist" 2>/dev/null || true
+        sudo rm -f "$plist" "$dir/.service"
+    fi
+    if sudo test -f "$dir/.runner"; then
+        runner_config "$dir" "$(runner_token remove-token)" remove ||
+            echo "   could not unregister wt-mac-$name; remove it under Settings → Actions → Runners"
+    fi
+    sudo rm -rf "$dir"
+}
+
+# The runner folders in ci's home, one per line.
+runner_dirs() {
+    sudo find "$1" -mindepth 1 -maxdepth 1 -type d -name 'actions-runner-*'
+}
+
 uninstall() {
-    local home uid entry name dir plist token=""
+    local home uid dir
     home=$(ci_home)
     [ -n "$home" ] || die "no user $CI_USER"
     uid=$(id -u "$CI_USER")
-    for entry in $INSTANCES; do
-        name=${entry%%:*}
-        dir="$home/actions-runner-$name"
-        sudo test -d "$dir" || continue
-        step "removing $dir"
-        plist=$(service_plist "$dir")
-        if [ -n "$plist" ]; then
-            sudo launchctl bootout "gui/$uid" "$plist" 2>/dev/null || true
-            sudo rm -f "$plist" "$dir/.service"
-        fi
-        if sudo test -f "$dir/.runner"; then
-            [ -n "$token" ] || token=$(runner_token remove-token)
-            runner_config "$dir" "$token" remove ||
-                echo "   could not unregister wt-mac-$name; remove it under Settings → Actions → Runners"
-        fi
-        sudo rm -rf "$dir"
-    done
+    while IFS= read -r dir; do
+        [ -n "$dir" ] && remove_runner "$uid" "$dir"
+    done <<< "$(runner_dirs "$home")"
     echo
     echo "Runners removed. The $CI_USER user and its caches are still there; to delete them:"
     echo "  sudo sysadminctl -deleteUser $CI_USER"
@@ -246,6 +258,15 @@ install() {
     runner_path="$brew_prefix/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     tarball=$(download_runner "$home")
 
+    # A folder an earlier setup made that INSTANCES no longer lists.
+    while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        case " $INSTANCES " in
+        *" ${dir##*/actions-runner-}:"*) ;;
+        *) remove_runner "$uid" "$dir" ;;
+        esac
+    done <<< "$(runner_dirs "$home")"
+
     for entry in $INSTANCES; do
         name=${entry%%:*}
         label=${entry#*:}
@@ -273,7 +294,7 @@ install() {
 
     echo
     if gui_session "$uid"; then
-        echo "All nine runners are running in $CI_USER's session."
+        echo "All six runners are running in $CI_USER's session."
     else
         echo "Runners installed. They start when $CI_USER logs in: log in as $CI_USER once"
         echo "(Fast User Switching), then switch back to your account without logging out."

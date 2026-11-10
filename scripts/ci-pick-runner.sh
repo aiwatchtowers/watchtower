@@ -4,16 +4,17 @@
 # $GITHUB_OUTPUT:
 #
 #   linux — the jobs that run on ubuntu-24.04 in the cloud
-#   macos — Swift Lint + Kit Test and Mobile App (macos-26 in the cloud)
-#   swift — Swift Test (macos-26 in the cloud)
+#   macos — Swift Lint + Kit Test (macos-26 in the cloud)
 #
-# A class goes to the owner's Mac (self-hosted runners set up by
+# Swift Test and Mobile App are not classes: they always run in the cloud,
+# since the Mac's runners have no window server (scripts/ci-runner/README.md).
+#
+# Both classes go to the owner's Mac (self-hosted runners set up by
 # scripts/ci-runner/setup-mac-runner.sh) only when ALL hold:
 #   - the event is a push or workflow_dispatch, or a pull_request whose head
 #     branch lives in this repository (never a fork);
 #   - RUNNER_STATUS_TOKEN is set (GITHUB_TOKEN cannot list runners);
-#   - the repository's runner list shows a runner with the class's label
-#     (wt-swift for swift, wt-general for linux and macos) online.
+#   - the repository's runner list shows a wt-general runner online.
 # Anything else — a fork, no token, an API error or timeout, output that is
 # not the runner list — keeps the class in the cloud (fail-safe). The script
 # always exits 0, so the gate job never fails because of it.
@@ -26,19 +27,16 @@ set -uo pipefail
 CLOUD_LINUX='"ubuntu-24.04"'
 CLOUD_MACOS='"macos-26"'
 MAC_GENERAL='["self-hosted","wt-general"]'
-MAC_SWIFT='["self-hosted","wt-swift"]'
 
 linux=$CLOUD_LINUX
 macos=$CLOUD_MACOS
-swift=$CLOUD_MACOS
 
 write() {
     {
         echo "linux=$linux"
         echo "macos=$macos"
-        echo "swift=$swift"
     } >> "$GITHUB_OUTPUT"
-    echo "runs-on: linux=$linux macos=$macos swift=$swift"
+    echo "runs-on: linux=$linux macos=$macos"
 }
 
 eligible() {
@@ -91,9 +89,6 @@ main() {
     if grep -qxF wt-general <<< "$labels"; then
         linux=$MAC_GENERAL
         macos=$MAC_GENERAL
-    fi
-    if grep -qxF wt-swift <<< "$labels"; then
-        swift=$MAC_SWIFT
     fi
 }
 
