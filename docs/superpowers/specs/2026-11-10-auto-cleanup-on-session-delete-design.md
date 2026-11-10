@@ -145,7 +145,7 @@ A Go guard test (`TestProj17_DeletingRowsLeaveEveryList`) lists every `FROM term
   - the 64 cap applies to `cwd` rows, and `command` rows have their own 512.
 
   "Only what the session observed and what was created after the session started" stays word for word.
-- **Guard tests**: `testQuickDeleteNeverCleansUp` is replaced by `testProj17_EveryDeleteCleansUpAfterTheWindow`. `testProj18_DeleteAppliesOnlyThePlannedItems` is replaced by `testProj18_BackgroundApplyHasNoItemFilter`. `testProj18_FailedCleanupKeepsTheSessionRow` stays (now with the mark). New Go tests: `TestProj18_CommandLedgerAdoptsWorktree`, `TestProj18_ScratchpadWorktreeIsTheSessions`, and `TestProj18_CommandNamedBranchOlderThanSessionIsKept`. The owner approves these replacements before review (CLAUDE.md: a guard test is never weakened silently).
+- **Guard tests**: `testQuickDeleteNeverCleansUp` is replaced by `testProj17_EveryDeleteCleansUpAfterTheWindow`. `testProj18_DeleteAppliesOnlyThePlannedItems` is replaced by `testProj18_BackgroundApplyHasNoItemFilter`. `testProj18_FailedCleanupKeepsTheSessionRow` stays (now with the mark). New Go tests: `TestProj18_CommandLedgerAdoptsWorktree`, `TestProj18_ScratchpadWorktreeIsTheSessions`, and `TestProj18_CommandNamedBranchOlderThanSessionIsKept`. The owner approved these replacements in ask #1210 (CLAUDE.md: a guard test is never weakened silently).
 
 ## 6. Schema
 
@@ -183,10 +183,10 @@ There is no empty state: a workbench with no deletes looks as today.
 - Every delete cleans in the background, with no question and no switch — ask #1205.
 - If something could not be removed, the session stays in the list marked "not fully cleaned" — ask #1205.
 - The existing pile is cleared once by hand on the Clean Up screen, with no periodic sweep — ask #1205.
-- No LLM decides what to remove; rules only — agent's call, put to the owner before review (ask #1210).
+- No LLM decides what to remove; rules only — approved by the owner — ask #1210.
 - New ownership sources: parsed agent commands + the Claude scratchpad uuid — agent's call (proposed in ask #1205).
-- Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — agent's call, put to the owner before review (ask #1210).
-- The Delete dialog loses **Delete Only** / **Delete and Clean Up** — agent's call, put to the owner before review (ask #1210).
-- Quit inside the Undo window defers the delete to the next launch instead of deleting — agent's call, put to the owner before review (ask #1210).
-- Guard test replacements in §5 — put to the owner before review (ask #1210).
+- Kept-on-purpose items (uncommitted, unpushed, …) do not keep the row; only "could not" items do — approved by the owner — ask #1210.
+- The Delete dialog loses **Delete Only** / **Delete and Clean Up** — approved by the owner — ask #1210.
+- Quit inside the Undo window defers the delete to the next launch instead of deleting — approved by the owner — ask #1210.
+- Guard test replacements in §5 — approved by the owner, ask #1210.
 - Workbench delete unchanged; remote branches never touched — agent's call.
