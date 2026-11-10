@@ -109,6 +109,8 @@ func daemonState(state daemon.PeekState, err error) string {
 
 func lastCycle(lastSyncPath string, now time.Time, daemonRunning bool) string {
 	if daemonRunning {
+		// A live sync: its age counts from that sync's start, while SyncRow
+		// still reports last_sync.json (the previous finished cycle).
 		p, err := sync.ReadSyncProgress(filepath.Join(filepath.Dir(lastSyncPath), syncProgressFile))
 		if err == nil && p.IsSyncing(now) && !p.StartedAt.IsZero() {
 			return LastCycle(Age(now.Sub(p.StartedAt)), CycleRunning)
@@ -200,13 +202,17 @@ func CrashLine(c CrashScan) (text, reason string) {
 var crashLogFiles = []string{LogWatchtower, LogWatchtower + ".1", LogDaemon}
 
 // CrashPart scans the workspace folder dir's logs under b.LogScan, counted
-// from the part's start, and prints CrashLine. now is time.Now in
-// production.
+// from the part's start, and prints CrashLine. A log that is not a regular
+// file is skipped before it is opened (opening a FIFO would block). now is
+// time.Now in production.
 func CrashPart(dir string, b Budgets, now func() time.Time) Part {
 	return func(context.Context) (string, string) {
-		files := make([]string, len(crashLogFiles))
-		for i, name := range crashLogFiles {
-			files[i] = filepath.Join(dir, name)
+		files := make([]string, 0, len(crashLogFiles))
+		for _, name := range crashLogFiles {
+			path := filepath.Join(dir, name)
+			if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
+				files = append(files, path)
+			}
 		}
 		return CrashLine(ScanCrashes(files, now().Add(b.LogScan), now, time.Local))
 	}

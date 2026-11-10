@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -173,6 +174,7 @@ func TestDiagnostics_DaemonLine(t *testing.T) {
 			if c.pid != nil {
 				writeFile(t, pidPath, *c.pid)
 				if c.name == "permission_denied" {
+					skipIfRoot(t)
 					if err := os.Chmod(pidPath, 0o000); err != nil {
 						t.Fatal(err)
 					}
@@ -204,6 +206,7 @@ func TestDiagnostics_LastSyncUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	lastSync := filepath.Join(dir, "last_sync.json")
 	writeFile(t, lastSync, `{"finished_at":"2026-11-04T09:00:00Z"}`)
+	skipIfRoot(t)
 	if err := os.Chmod(lastSync, 0o000); err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +278,7 @@ func TestDiagnostics_LogUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(locked, "watchtower.log"), "x")
+	skipIfRoot(t)
 	if err := os.Chmod(locked, 0o000); err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +385,13 @@ func TestDiagnosticsText_LocalHelpers(t *testing.T) {
 		{"Age seconds", Age(59 * time.Second), "under 1 min"},
 		{"Age minutes", Age(4*time.Minute + 59*time.Second), "4 min"},
 		{"Age hours", Age(47 * time.Hour), "47 h"},
+		{"Age just under 48 h", Age(48*time.Hour - time.Second), "47 h"},
+		{"Age 48 h", Age(48 * time.Hour), "2 d"},
 		{"Age days", Age(72 * time.Hour), "3 d"},
+		{"Size 1 KB - 1", Size(1023), "1023 B"},
+		{"Size 10 KB - 1", Size(10*1024 - 1), "10 KB"},
+		{"Size 1 MB - 1", Size(1<<20 - 1), "1023 KB"},
+		{"Size 1 GB exact", Size(1 << 30), "1 GB"},
 		{"Size bytes", Size(512), "512 B"},
 		{"Size KB", Size(12 * 1024), "12 KB"},
 		{"Size MB exact", Size(4 << 20), "4 MB"},
@@ -400,3 +410,46 @@ func TestDiagnosticsText_LocalHelpers(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// skipIfRoot skips a mode-000 case: root reads the file anyway.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode 000 does not block reads")
+	}
+}
+
+// TestDiagnostics_CrashPartSkipsNonRegular: a directory or a FIFO where a
+// log should be is skipped before it is opened (a FIFO would block open).
+func TestDiagnostics_CrashPartSkipsNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, "watchtower.log"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "daemon.log"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan string, 1)
+	go func() {
+		text, _ := CrashPart(dir, DefaultBudgets, time.Now)(context.Background())
+		done <- text
+	}()
+	select {
+	case text := <-done:
+		if text != UnknownNoLogs {
+			t.Errorf("CrashPart = %q, want %q", text, UnknownNoLogs)
+		}
+	case <-time.After(5 * time.Second):
+		// Unblock the stuck open so the goroutine can finish.
+		if f, err := os.OpenFile(filepath.Join(dir, "watchtower.log"), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = f.Close()
+		}
+		t.Fatal("CrashPart blocked on a FIFO log")
+	}
+
+	// A regular log beside them is still scanned.
+	writeFile(t, filepath.Join(dir, "watchtower.log.1"), "2026/11/04 09:00:00 ok\n")
+	if text, _ := CrashPart(dir, DefaultBudgets, time.Now)(context.Background()); text != CrashNone {
+		t.Errorf("CrashPart = %q, want %q", text, CrashNone)
+	}
+}
