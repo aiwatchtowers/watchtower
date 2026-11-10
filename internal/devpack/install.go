@@ -40,15 +40,39 @@ type SkillStatus struct {
 // far are still returned alongside the error, so a caller (e.g. the CLI) can
 // report what actually happened rather than losing that information because
 // one later skill failed.
-func Install(skillsDir string) ([]SkillStatus, error) {
+//
+// ov holds the owner's overlay lines per skill (nil = none): each skill is
+// written rendered with its lines (Render), and its sidecar records the
+// rendered digest, so the overlay is never read as drift.
+func Install(skillsDir string, ov Overlays) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
 	for _, s := range skills {
-		status, err := installSkill(skillsDir, s)
+		status, err := installSkill(skillsDir, ov.overlaid(s))
 		if err != nil {
 			return out, err
 		}
 		out = append(out, status)
+	}
+	return out, nil
+}
+
+// InstallMissing is Install when the overlays could not be read: a skill
+// with no copy is installed plain, an existing copy is only reported
+// (statusSkill), so it never loses the owner's overlay lines over a database
+// error.
+func InstallMissing(skillsDir string) ([]SkillStatus, error) {
+	skills := Skills()
+	out := make([]SkillStatus, 0, len(skills))
+	for _, s := range skills {
+		st, err := statusSkill(skillsDir, s)
+		if err == nil && st.State == StateMissing {
+			st, err = installSkill(skillsDir, s)
+		}
+		if err != nil {
+			return out, err
+		}
+		out = append(out, st)
 	}
 	return out, nil
 }
@@ -138,12 +162,12 @@ func planFor(file string, s Skill) (State, error) {
 	return StateDrifted, nil
 }
 
-// Status reports what Install would do, writing nothing.
-func Status(skillsDir string) ([]SkillStatus, error) {
+// Status reports what Install(skillsDir, ov) would do, writing nothing.
+func Status(skillsDir string, ov Overlays) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
 	for _, s := range skills {
-		st, err := statusSkill(skillsDir, s)
+		st, err := statusSkill(skillsDir, ov.overlaid(s))
 		if err != nil {
 			return out, err
 		}

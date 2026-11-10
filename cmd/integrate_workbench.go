@@ -68,7 +68,36 @@ func workbenchSetupOptions(p *db.Workbench) (devpack.WorkbenchInstallOptions, er
 		return o, err
 	}
 	o.PresetNone = installPreset(p.ID, p.FolderPath) == workbenchmethod.PresetNone
+	withInstallOverlays(&o)
 	return o, nil
+}
+
+// installOverlays reads the owner's pack overlay lines per skill
+// (skill_pack_overlays, spec 2026-11-03 §4.3). A var for tests, the
+// installPreset pattern.
+var installOverlays = func() (devpack.Overlays, error) {
+	database, err := openDBFromConfig()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = database.Close() }()
+	all, err := database.AllSkillPackOverlays()
+	if err != nil {
+		return nil, err
+	}
+	return devpack.Overlays(all), nil
+}
+
+// withInstallOverlays fills o's overlays; when they cannot be read the
+// install keeps every existing pack skill copy as it is (OverlaysUnread)
+// rather than write it without the owner's lines.
+func withInstallOverlays(o *devpack.WorkbenchInstallOptions) {
+	ov, err := installOverlays()
+	if err != nil {
+		o.OverlaysUnread = true
+		return
+	}
+	o.Overlays = ov
 }
 
 // installPreset is workbench id's effective preset with folder's
@@ -507,6 +536,8 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 	if err != nil {
 		return err
 	}
+	// A copy rendered with the owner's overlay lines reads as current.
+	withInstallOverlays(&o)
 	st, err := devpack.StatusWorkbench(ctx, o)
 	if err != nil {
 		return err

@@ -1,0 +1,112 @@
+package devpack
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Overlays maps a pack skill's name to the owner's approved lines, in order
+// (the skill_pack_overlays rows, spec 2026-11-03 §4.3). A nil map is none.
+type Overlays map[string][]string
+
+// OverlayHeading opens the owner's block in a rendered skill.
+const OverlayHeading = "## Owner additions (approved by the owner)"
+
+// Render is s with the owner's lines in a block right after the frontmatter
+// (fixed position): the frontmatter through its closing "---\n", then
+// "\n" + OverlayHeading + "\n\n" + the lines + "\n", then the rest of the
+// shipped body unchanged. SHA256 is the rendered bytes' digest, so the
+// installer's sidecar records what it wrote and a rendered copy is never
+// mistaken for an owner edit (DEV-04). Blank lines are dropped; no lines (or
+// a skill without a frontmatter, which the pack never ships) leave s as it is.
+func Render(s Skill, lines []string) Skill {
+	var kept []string
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			kept = append(kept, l)
+		}
+	}
+	if len(kept) == 0 || !strings.HasPrefix(s.Content, "---\n") {
+		return s
+	}
+	end := strings.Index(s.Content[len("---\n"):], "\n---\n")
+	if end < 0 {
+		return s
+	}
+	cut := len("---\n") + end + len("\n---\n")
+	content := s.Content[:cut] + "\n" + OverlayHeading + "\n\n" + strings.Join(kept, "\n") + "\n" + s.Content[cut:]
+	sum := sha256.Sum256([]byte(content))
+	return Skill{Name: s.Name, Content: content, SHA256: hex.EncodeToString(sum[:])}
+}
+
+// PackSkillNames is every skill an overlay may target: the pack (Skills)
+// and the workbench core and preset, sorted.
+func PackSkillNames() []string {
+	names := []string{WorkbenchSkillName, FlowSkillName}
+	for _, s := range Skills() {
+		names = append(names, s.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// PackSkill is the shipped skill named name, unrendered.
+func PackSkill(name string) (Skill, bool) {
+	switch name {
+	case WorkbenchSkillName:
+		return workbenchSkill(), true
+	case FlowSkillName:
+		return flowSkill(), true
+	}
+	for _, s := range Skills() {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return Skill{}, false
+}
+
+// RerenderSkill brings an existing copy of pack skill name in skillsDir to
+// the shipped skill rendered with lines, under the DEV-04 rules: a copy that
+// is ours (StateUpdated) is rewritten with its sidecar; StateUnchanged writes
+// nothing; a missing, owner-edited (StateDrifted) or foreign copy is left as
+// it is and its state returned. It never creates a copy.
+func RerenderSkill(skillsDir, name string, lines []string) (State, error) {
+	s, ok := PackSkill(name)
+	if !ok {
+		return "", fmt.Errorf("%s is not a Watchtower pack skill", name)
+	}
+	s = Render(s, lines)
+	dir := filepath.Join(skillsDir, name)
+	file := filepath.Join(dir, "SKILL.md")
+	state, err := planFor(file, s)
+	if err != nil {
+		return "", err
+	}
+	switch state {
+	case StateInstalled:
+		return StateMissing, nil
+	case StateUpdated:
+		if err := writeFileNoFollow(file, []byte(s.Content)); err != nil {
+			return "", err
+		}
+		if err := writeShippedDigest(dir, s.SHA256); err != nil {
+			return "", err
+		}
+	}
+	return state, nil
+}
+
+// overlaid is s rendered with ov's lines for it.
+func (ov Overlays) overlaid(s Skill) Skill {
+	return Render(s, ov[s.Name])
+}
+
+// coreSkill and flowSkill are the workbench core and preset rendered with
+// the options' overlays.
+func (o WorkbenchInstallOptions) coreSkill() Skill { return o.Overlays.overlaid(workbenchSkill()) }
+func (o WorkbenchInstallOptions) flowSkill() Skill { return o.Overlays.overlaid(flowSkill()) }

@@ -143,7 +143,7 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 	}
 
 	if scope.touchSkills {
-		results, err := devpack.Install(scope.dir)
+		results, err := installPackSkills(scope.dir)
 		fmt.Printf("Skills (%s):\n", scope.dir)
 		printSkillStatuses(results)
 		if err != nil {
@@ -158,6 +158,18 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return registerMCPWithClaudeCode()
+}
+
+// installPackSkills installs the pack into dir rendered with the owner's
+// overlay lines; when they cannot be read (no workspace yet, a database
+// error) only missing skills are installed and an existing copy is kept as
+// it is, so it never loses the owner's lines.
+func installPackSkills(dir string) ([]devpack.SkillStatus, error) {
+	ov, err := installOverlays()
+	if err != nil {
+		return devpack.InstallMissing(dir)
+	}
+	return devpack.Install(dir, ov)
 }
 
 func runIntegrateCodex(cmd *cobra.Command, _ []string) error {
@@ -180,7 +192,8 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	results, err := devpack.Status(dir)
+	ov, _ := installOverlays() // unreadable: status against the plain pack
+	results, err := devpack.Status(dir, ov)
 	fmt.Printf("Skills (%s):\n", dir)
 	printSkillStatuses(results)
 	if err != nil {

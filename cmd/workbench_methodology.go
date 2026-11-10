@@ -255,6 +255,7 @@ func syncWorkbenchMethodology(p *db.Workbench, preset string) (devpack.Methodolo
 		return devpack.MethodologyReport{}, err
 	}
 	o.PresetNone = preset == workbenchmethod.PresetNone
+	withInstallOverlays(&o)
 	return devpack.SyncMethodology(o)
 }
 
