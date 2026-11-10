@@ -14,35 +14,11 @@ extension OnboardingGoalsModel {
         }
         return OnboardingGoalsModel(
             defaults: defaults,
-            checkCLI: {
-                // findInPath's PATH step needs the login-shell environment.
-                _ = await Constants.resolvedEnvironmentAsync()
-                let inputs = await MainActor.run { () -> OnboardingCLIProbe.Inputs in
-                    let config = ConfigService()
-                    let claudePath = config.claudePath?.trimmingCharacters(in: .whitespaces) ?? ""
-                    let claudeInstalled = (!claudePath.isEmpty && FileManager.default.isExecutableFile(atPath: claudePath))
-                        || Constants.findInPath("claude") != nil
-                    return OnboardingCLIProbe.Inputs(
-                        configuredProvider: config.aiProvider,
-                        configUnreadable: config.parseError != nil,
-                        claudeInstalled: claudeInstalled
-                    )
-                }
-                return await OnboardingCLIProbe.check(
-                    inputs,
-                    test: { try await WatchtowerAIService.testConnection(provider: $0).provider },
-                    switchProvider: { provider in
-                        // No Claude Code here either: Workbench sessions
-                        // start the same agent. ai.provider goes last, so a
-                        // failed write leaves it unset and Check again
-                        // switches again.
-                        if ConfigService.readWorkbenchDefaultAgent().rawValue != provider {
-                            try await run(["config", "set", "workbench.default_agent", provider])
-                        }
-                        try await run(["config", "set", "ai.provider", provider])
-                    }
-                )
+            checkAgents: {
+                // Task 3 wires the real probes
+                OnboardingAgentCheckResult(statuses: [.claude: .notInstalled, .codex: .notInstalled])
             },
+            configuredProvider: { ConfigService().aiProvider },
             actions: OnboardingGoalsActions(
                 initWorkspace: { try await run(["workspace", "init", "--json"]) },
                 setLanguage: { try await run(["config", "set", "digest.language", $0]) },
@@ -55,7 +31,15 @@ extension OnboardingGoalsModel {
                     return (applied ? nil : (featureManager.loadError ?? "Could not apply the feature selection."), changed)
                 },
                 historyDepthUnset: { ConfigService().initialHistoryDays == nil },
-                setHistoryDepth: { try await run(["config", "set", "sync.initial_history_days", "\($0)"]) }
+                setHistoryDepth: { try await run(["config", "set", "sync.initial_history_days", "\($0)"]) },
+                saveAgent: { provider in
+                    // Workbench sessions start the same agent. ai.provider
+                    // goes last, so a failed write leaves it unset.
+                    if ConfigService.readWorkbenchDefaultAgent().rawValue != provider {
+                        try await run(["config", "set", "workbench.default_agent", provider])
+                    }
+                    try await run(["config", "set", "ai.provider", provider])
+                }
             )
         )
     }

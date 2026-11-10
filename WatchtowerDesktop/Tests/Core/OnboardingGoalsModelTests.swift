@@ -11,7 +11,9 @@ final class OnboardingGoalsModelTests: XCTestCase {
     @MainActor
     private final class Spy {
         var calls: [String] = []
-        var cliResult: OnboardingCLICheck = .ready(provider: "claude")
+        var cliResult = OnboardingGoalsModelTests.claudeReady
+        var configured: String? = "claude"
+        var saveError: Error?
         var workspaceError: Error?
         var languageError: Error?
         var featuresFailure: String?
@@ -19,6 +21,10 @@ final class OnboardingGoalsModelTests: XCTestCase {
         var historyUnset = false
         var featuresChanged = false
     }
+
+    private static let claudeReady = OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled])
+    private static let bothReady = OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .ready])
+    private static let noneInstalled = OnboardingAgentCheckResult(statuses: [.claude: .notInstalled, .codex: .notInstalled])
 
     private struct Failure: LocalizedError {
         let errorDescription: String?
@@ -38,13 +44,14 @@ final class OnboardingGoalsModelTests: XCTestCase {
 
     private func makeModel(
         systemLanguage: String = "Russian",
-        checkCLI: (() async -> OnboardingCLICheck)? = nil
+        checkAgents: (() async -> OnboardingAgentCheckResult)? = nil
     ) -> OnboardingGoalsModel {
         let spy = self.spy
         return OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: systemLanguage,
-            checkCLI: checkCLI ?? { spy.cliResult },
+            checkAgents: checkAgents ?? { spy.cliResult },
+            configuredProvider: { spy.configured },
             actions: OnboardingGoalsActions(
                 initWorkspace: {
                     spy.calls.append("workspace init")
@@ -60,7 +67,11 @@ final class OnboardingGoalsModelTests: XCTestCase {
                     return (spy.featuresFailure, spy.featuresChanged)
                 },
                 historyDepthUnset: { spy.historyUnset },
-                setHistoryDepth: { spy.calls.append("history \($0)") }
+                setHistoryDepth: { spy.calls.append("history \($0)") },
+                saveAgent: {
+                    spy.calls.append("agent \($0)")
+                    if let error = spy.saveError { throw error }
+                }
             )
         )
     }
@@ -95,24 +106,22 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertEqual(model.language, "Russian")
     }
 
-    // MARK: - Continue gate per CLI check
+    // MARK: - Continue gate per agent check
 
     func testContinueIsBlockedWhileChecking() {
         let model = makeModel()
-        XCTAssertEqual(model.cliCheck, .checking)
         XCTAssertFalse(model.canContinue)
     }
 
-    func testContinueUnlocksWhenTheCLIIsReady() async {
+    func testContinueUnlocksWhenAnAgentIsReady() async {
         let model = await readyModel()
-        XCTAssertEqual(model.cliCheck, .ready(provider: "claude"))
+        XCTAssertEqual(model.agentChoice.selected, .claude)
         XCTAssertTrue(model.canContinue)
     }
 
-    func testContinueStaysBlockedWhenTheCLIFails() async {
-        spy.cliResult = .failed("claude: command not found")
+    func testContinueStaysBlockedWhenNothingIsInstalled() async {
+        spy.cliResult = Self.noneInstalled
         let model = await readyModel()
-        XCTAssertEqual(model.cliCheck, .failed("claude: command not found"))
         XCTAssertFalse(model.canContinue)
         let route = await model.submit(hasSlackAccount: false)
         XCTAssertNil(route)
@@ -120,38 +129,103 @@ final class OnboardingGoalsModelTests: XCTestCase {
     }
 
     func testCheckAgainUnlocksAfterTheOwnerFixedTheCLI() async {
-        spy.cliResult = .failed("not signed in")
+        spy.cliResult = Self.noneInstalled
         let model = await readyModel()
-        spy.cliResult = .ready(provider: "codex")
-        await model.runCLICheck()
+        spy.cliResult = Self.claudeReady
+        await model.runAgentCheck()
         XCTAssertTrue(model.canContinue)
     }
 
-    func testSwitchedProviderCountsAsAChangeAndIsReported() async {
-        spy.cliResult = .ready(provider: "codex", switched: true)
-        let model = makeModel()
-        var reported: [String] = []
-        model.onProviderSwitched = { reported.append($0) }
-        await model.prepareGoalsStep(configuredLanguage: nil)
+    func testCheckAppliesResultAndDefault() async {
+        spy.configured = nil
+        spy.cliResult = Self.bothReady
+        let model = await readyModel()
+        XCTAssertEqual(model.agentChoice.selected, .claude)
         XCTAssertTrue(model.canContinue)
-        XCTAssertTrue(model.wroteChanges, "a re-run must restart the daemon for the new provider")
-        XCTAssertEqual(reported, ["codex"])
     }
 
-    func testPlainReadyIsNoChange() async {
-        let model = makeModel()
+    func testCheckNeverWrites() async {
+        spy.configured = nil
+        spy.cliResult = Self.bothReady
         var reported: [String] = []
+        let model = makeModel()
         model.onProviderSwitched = { reported.append($0) }
         await model.prepareGoalsStep(configuredLanguage: nil)
+        XCTAssertEqual(spy.calls, [])
         XCTAssertFalse(model.wroteChanges)
         XCTAssertEqual(reported, [])
     }
 
+    func testContinueSavesTheChangedPickFirst() async {
+        spy.cliResult = Self.bothReady
+        let model = makeModel()
+        var reported: [String] = []
+        model.onProviderSwitched = { reported.append($0) }
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        model.pickAgent(.codex)
+        let route = await model.submit(hasSlackAccount: false)
+        XCTAssertNotNil(route)
+        XCTAssertEqual(Array(spy.calls.prefix(2)), ["agent codex", "workspace init"])
+        XCTAssertEqual(reported, ["codex"])
+        XCTAssertTrue(model.wroteChanges)
+    }
+
+    func testContinueSkipsAnUnchangedAgent() async {
+        spy.cliResult = Self.bothReady
+        let model = makeModel()
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        model.pickAgent(.claude)
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertFalse(spy.calls.contains { $0.hasPrefix("agent") })
+    }
+
+    func testProviderWriteFailureKeepsTheStep() async {
+        spy.cliResult = Self.bothReady
+        spy.saveError = Failure(errorDescription: "permission denied")
+        let model = makeModel()
+        var reported: [String] = []
+        model.onProviderSwitched = { reported.append($0) }
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        model.pickAgent(.codex)
+        let route = await model.submit(hasSlackAccount: false)
+        XCTAssertNil(route)
+        XCTAssertEqual(model.continueError, OnboardingAgentChoice.saveFailure + " permission denied")
+        XCTAssertEqual(reported, [])
+        XCTAssertFalse(spy.calls.contains("workspace init"))
+    }
+
+    func testSignInExitZeroRechecks() async {
+        spy.cliResult = Self.noneInstalled
+        let model = await readyModel()
+        spy.cliResult = Self.claudeReady
+        model.signInStarted()
+        await model.signInEnded(exitCode: 0)
+        XCTAssertTrue(model.canContinue)
+    }
+
+    func testWindowBecameActiveChecksOnlyWhenNotReady() async {
+        let calls = Counter()
+        let model = makeModel { [spy] in
+            calls.value += 1
+            return spy.cliResult
+        }
+        spy.cliResult = Self.noneInstalled
+        await model.prepareGoalsStep(configuredLanguage: nil)
+        XCTAssertEqual(calls.value, 1)
+        await model.windowBecameActive()
+        XCTAssertEqual(calls.value, 2)
+        spy.cliResult = Self.claudeReady
+        await model.windowBecameActive()
+        XCTAssertEqual(calls.value, 3)
+        await model.windowBecameActive()
+        XCTAssertEqual(calls.value, 3, "a ready choice is not rechecked")
+    }
+
     func testPassedCheckIsNotRerunOnReappear() async {
         let model = await readyModel()
-        spy.cliResult = .failed("would fail now")
+        spy.cliResult = Self.noneInstalled
         await model.prepareGoalsStep(configuredLanguage: nil)
-        XCTAssertEqual(model.cliCheck, .ready(provider: "claude"))
+        XCTAssertTrue(model.canContinue)
     }
 
     // MARK: - Continue writes
@@ -268,14 +342,14 @@ final class OnboardingGoalsModelTests: XCTestCase {
     @MainActor
     private final class GatedCheck {
         var calls = 0
-        private var waiting: [CheckedContinuation<OnboardingCLICheck, Never>] = []
+        private var waiting: [CheckedContinuation<OnboardingAgentCheckResult, Never>] = []
 
-        func runCheck() async -> OnboardingCLICheck {
+        func runCheck() async -> OnboardingAgentCheckResult {
             calls += 1
             return await withCheckedContinuation { waiting.append($0) }
         }
 
-        func release(_ index: Int, with result: OnboardingCLICheck) {
+        func release(_ index: Int, with result: OnboardingAgentCheckResult) {
             waiting[index].resume(returning: result)
         }
 
@@ -294,21 +368,21 @@ final class OnboardingGoalsModelTests: XCTestCase {
         let first = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
         await yieldALot()
         let second = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
-        let third = Task { await model.runCLICheck() }
+        let third = Task { await model.runAgentCheck() }
         await yieldALot()
         XCTAssertEqual(gate.calls, 1)
 
-        gate.release(0, with: .ready(provider: "claude"))
+        gate.release(0, with: Self.claudeReady)
         await first.value
         await second.value
         await third.value
-        XCTAssertEqual(model.cliCheck, .ready(provider: "claude"))
+        XCTAssertTrue(model.canContinue)
     }
 
     /// A failed check is not rerun by the step re-appearing; Check again
     /// runs it.
     func testReappearingDoesNotRerunAFailedCheck() async {
-        spy.cliResult = .failed("not signed in")
+        spy.cliResult = Self.noneInstalled
         let calls = Counter()
         let model = makeModel { [spy] in
             calls.value += 1
@@ -317,7 +391,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         await model.prepareGoalsStep(configuredLanguage: nil)
         await model.prepareGoalsStep(configuredLanguage: nil)
         XCTAssertEqual(calls.value, 1)
-        await model.runCLICheck()
+        await model.runAgentCheck()
         XCTAssertEqual(calls.value, 2)
     }
 
@@ -339,11 +413,12 @@ final class OnboardingGoalsModelTests: XCTestCase {
         await yieldALot()
         XCTAssertEqual(gate.pending, 2)
 
-        gate.release(1, with: .failed("claude: not signed in"))
+        gate.release(1, with: Self.noneInstalled)
         await fresh.value
-        gate.release(0, with: .ready(provider: "claude"))
+        gate.release(0, with: Self.claudeReady)
         await stale.value
-        XCTAssertEqual(model.cliCheck, .failed("claude: not signed in"))
+        XCTAssertFalse(model.canContinue)
+        XCTAssertEqual(model.agentChoice.status(.claude), .notInstalled)
     }
 
     func testPrepareForRerunResetsTheTransientState() async {
@@ -356,13 +431,13 @@ final class OnboardingGoalsModelTests: XCTestCase {
 
         model.prepareForRerun()
 
-        XCTAssertEqual(model.cliCheck, .checking)
+        XCTAssertEqual(model.agentChoice, OnboardingAgentChoice())
         XCTAssertNil(model.continueError)
         XCTAssertFalse(model.isCustomizingFeatures)
         XCTAssertFalse(model.selection.goals.contains(.meetings), "the deselected goal stays deselected (no reset to defaults)")
         await model.prepareGoalsStep(configuredLanguage: "German")
         XCTAssertEqual(model.language, "German", "the configured language is adopted again")
-        XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")
+        XCTAssertTrue(model.canContinue, "the agent is checked again")
     }
 
     // MARK: - History depth
@@ -504,7 +579,8 @@ final class OnboardingGoalsModelTests: XCTestCase {
         let model = OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: "Russian",
-            checkCLI: { .ready(provider: "claude") },
+            checkAgents: { OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled]) },
+            configuredProvider: { "claude" },
             actions: OnboardingGoalsActions(
                 initWorkspace: {
                     spy.calls.append("workspace init")
