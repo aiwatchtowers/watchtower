@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go 1.26 (cobra CLI, `database/sql` over the in-repo SQLCipher driver, goose migrations; no new dependency — main already has `github.com/klauspost/compress` for `internal/rollout`), SwiftUI macOS (GRDB, DesignKit, WatchtowerCore).
 
-**Spec:** `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` (approved in ask #1112; D46/D47 approved in ask #1109). Read it with this plan: tasks cite its sections.
+**Spec:** `docs/superpowers/specs/2026-11-03-tuning-chat-design.md` (approved in ask #1112; D46/D47 approved in ask #1109; §4.7 rewritten for main's Codex model and approved in ask #1155). Read it with this plan: tasks cite its sections.
 
 **Board:** feature target #1517; one sub-target per task below.
 
