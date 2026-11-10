@@ -139,8 +139,8 @@ func (db *DB) GetAutomationSessionStep(stepID int64) (AutomationSessionStep, err
 	)
 	var finished, failed sql.NullBool
 	var summary, agentErr, issue sql.NullString
-	err := db.QueryRow(`SELECT st.status, st.error, st.session_id, ts.id IS NULL OR ts.delete_requested_at IS NOT NULL, `+sessionEndColumns+`
-		FROM automation_run_steps st LEFT JOIN terminal_sessions ts ON ts.id = st.session_id
+	err := db.QueryRow(`SELECT st.status, st.error, st.session_id, ts.id IS NULL, `+sessionEndColumns+`
+		FROM automation_run_steps st LEFT JOIN terminal_sessions ts ON ts.id = st.session_id AND ts.`+NotDeletingSQL+`
 		WHERE st.id = ?`, stepID).
 		Scan(&s.Status, &s.Error, &session, &gone, &finished, &summary, &failed, &agentErr, &issue)
 	if errors.Is(err, sql.ErrNoRows) {
