@@ -443,4 +443,13 @@ final class OnboardingAgentChoiceTests: XCTestCase {
         codex.installs = [.codex: .init(path: "/p/codex", kind: .npm, executable: "/opt/homebrew/bin/codex")]
         XCTAssertEqual(codex.terminalCommand, "'/opt/homebrew/bin/codex' login")
     }
+
+    func testOtherProviderCopy() {
+        XCTAssertEqual(Choice.providerName("ollama"), "Ollama")
+        XCTAssertEqual(Choice.providerName("acme-llm"), "acme-llm")
+        XCTAssertEqual(Choice.otherFailureLine(code: "transport", error: nil), "Couldn’t reach it.")
+        XCTAssertEqual(Choice.otherFailureLine(code: "timeout", error: "x"), "Couldn’t reach it.")
+        XCTAssertEqual(Choice.otherFailureLine(code: "auth", error: nil), "It didn’t pass the check.")
+        XCTAssertEqual(Choice.otherFailureLine(code: nil, error: nil), "It didn’t pass the check.")
+    }
 }

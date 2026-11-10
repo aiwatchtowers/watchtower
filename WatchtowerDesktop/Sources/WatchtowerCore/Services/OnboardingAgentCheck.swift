@@ -75,15 +75,11 @@ package enum OnboardingAgentCheck {
         let configured = probes.configuredProvider?.trimmingCharacters(in: .whitespaces) ?? ""
         if !configured.isEmpty, Agent(rawValue: configured) == nil {
             let answer = await probes.test(nil, nil)
-            let name = await MainActor.run { AIModelCatalog.shared.displayName(configured) }
-            if answer.ok {
-                result.otherProvider = name
-                return result
+            result.otherProvider = OnboardingAgentChoice.providerName(configured)
+            if !answer.ok {
+                result.otherProviderFailure = OnboardingAgentChoice.otherFailureLine(code: answer.errorCode, error: answer.error)
             }
-            result.otherProvider = name
-            result.otherProviderFailure = OnboardingAgentChoice.failureMessage(
-                .claude, code: answer.errorCode, error: answer.error
-            )
+            if answer.ok { return result }
         }
         let outcomes = await withTaskGroup(of: AgentOutcome.self) { group in
             for agent in Agent.allCases {

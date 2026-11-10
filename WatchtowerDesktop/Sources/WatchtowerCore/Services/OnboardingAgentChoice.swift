@@ -500,5 +500,19 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         }
     }
 
+    /// The display name of a provider other than claude / codex: no catalog
+    /// read, so it never changes after launch.
+    package static func providerName(_ id: String) -> String {
+        id == "ollama" ? "Ollama" : id
+    }
+
+    /// The failure line of that provider's test (the caption wraps it).
+    package static func otherFailureLine(code: String?, error: String?) -> String {
+        switch code {
+        case "transport", "timeout": "Couldn’t reach it."
+        default: "It didn’t pass the check."
+        }
+    }
+
     package static let saveFailure = "Couldn’t save the AI agent."
 }
