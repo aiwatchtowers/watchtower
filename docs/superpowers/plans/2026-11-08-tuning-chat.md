@@ -585,6 +585,8 @@ No row is marked or removed with its source (spec D62); Accept, Decline and Roll
 
 ### Task 2.10: `writeCut` — weekly count only, no Codex rules or repository cut
 
+**From Task 2.3 (PR #762):** `writeCut` must count only weekly proposals against the slot limit (`weeklyOpen`), else three open chat proposals stop a cut of an ineffective weekly edit for good (its verdict is stored once). Test it here.
+
 **Depends on:** Task 2.7, Task 2.1 (`Origin`), Task 2.3 (`weeklyOpen`); the `repo_*` skip lands with Task 2.13's consts (if 2.13 is not in yet, 2.13 adds that case and its test)
 **Files:**
 - Modify: `internal/coach/judge.go`
@@ -1553,6 +1555,8 @@ If no tuning tool is in your tool list, answer only "Tuning tools are not availa
   Without tools: `You are Watchtower's tuning assistant for one workbench. This provider has no tools: you can talk tuning through, but you cannot read the report, prompts or skills, or propose an edit. Tell the owner tuning tools need Claude or Codex.` `onWillSend` is the spec's `willSend` hook (returns true) — the controller re-reads the provider there (Task 5.8).
 - [ ] **Step 4: Run, expect PASS** + `make lint-swift`.
 - [ ] **Step 5: Commit** — `git commit -m "feat(desktop): tuning chat surface (#1517)"`.
+
+**As shipped (PR #759, controller decision after review):** the rules text differs from the draft above in three places, and the code is the source of truth: (1) with tools on, the surface's own rules no longer repeat lines the tuning contract block (Task 3.2) carries — the stale-CLI line, the `list_coach_proposals` rule, the propose-tool line, the never-writes line; (2) the draft-only rules name no cause ("Tuning tools are not available for this turn — say so in one line and answer from what the owner pastes. You cannot read the report, prompts or skills, or propose an edit."); the panel's `unavailableHelp()` stays the one place that names it; (3) `turnContext(workbenchID:period:tools:)` leaves out the `pass workbench_id` / `pass days` hints when draft-only. Tests: `testToolsOnSaysTheContractRulesOnce`, `testCatalogNotReadYetIsDraftOnly`, `testDraftOnlyTurnContextHasNoToolHint`, `testRulesSayAcceptWritesTheFolderFile` (replaces `testRulesSayChatNeverWrites`; `testRulesPinStaleCLILine` moved to the contract's own test).
 
 ### Task 5.8: `TuningChat` controller
 
