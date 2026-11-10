@@ -65,3 +65,16 @@ struct InboxTargetButtonSource {
         return InboxCardPress.target(target, index: index, card: card, facts: button.facts, state: button.state)
     }
 }
+
+@MainActor
+extension ActionStripViewModel {
+    /// The target buttons' state from this center: every Inbox reading
+    /// pane (the folder Inbox and the legacy split) draws its buttons from it.
+    func targetButtons(now: Date) -> InboxTargetButtonSource {
+        InboxTargetButtonSource(
+            facts: { self.targetFacts(contextID: $0) },
+            isProposing: { self.proposingTargets.contains($0) },
+            now: now
+        )
+    }
+}

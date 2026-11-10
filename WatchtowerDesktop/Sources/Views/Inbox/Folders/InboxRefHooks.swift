@@ -143,8 +143,9 @@ struct InboxRefHooks {
             return feed.reminders.contains { $0.id == ref.id } ? .reminder : nil
         case .action:
             guard let action = feed.proposals.first(where: { $0.id == ref.id }) else { return nil }
-            return .action(summary: AgentActionCardView.rowSummary(for: action),
-                           buttons: AgentActionCardView.rowButtons(for: action, sessionHolds: sessionHoldsCall(action)))
+            let buttons = AgentActionCardView.rowButtons(
+                for: action, sessionHolds: sessionHoldsCall(action), offersRetry: !vm.isSupersededButtonRow(action))
+            return .action(summary: AgentActionCardView.rowSummary(for: action), buttons: buttons)
         }
     }
 
@@ -278,7 +279,9 @@ struct InboxRowActionHandler {
                   let action = vm.feed.proposals.first(where: { $0.id == ref.id }),
                   let again = InboxRowActionsContent.actionRetry(
                       verb: verb,
-                      buttons: AgentActionCardView.rowButtons(for: action, sessionHolds: sessionHoldsCall(action)))
+                      buttons: AgentActionCardView.rowButtons(
+                          for: action, sessionHolds: sessionHoldsCall(action),
+                          offersRetry: !vm.isSupersededButtonRow(action)))
             else { return }
             await self.action(again, id: ref.id)
             return
@@ -370,7 +373,13 @@ struct InboxRowActionHandler {
             guard let action = vm.feed.proposals.first(where: { $0.id == id }) else { return }
             await vm.approve(id, shownArgs: action.argsJSON)
         case .reject: await vm.reject(id)
-        case .retry: await vm.retry(id)
+        case .retry:
+            // As the native card: never a superseded button row; a target
+            // button's newest row retries through Try again (apply, or
+            // apply --force when stranded in executing).
+            guard let action = vm.feed.proposals.first(where: { $0.id == id }),
+                  !vm.isSupersededButtonRow(action) else { return }
+            if vm.targetFacts(for: action) != nil { await vm.tryAgainTarget(id) } else { await vm.retry(id) }
         case .dismiss: await vm.dismiss(id)
         case .edit: onEditAction(id)
         case .openDraft:

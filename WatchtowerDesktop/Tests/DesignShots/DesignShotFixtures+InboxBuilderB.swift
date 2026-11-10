@@ -305,7 +305,7 @@ enum InboxBuilderBShotFixtures {
             body: "", priority: "normal", createdAt: now.addingTimeInterval(-360), blocksJSON: json,
             outputKey: "waiting")
         let menu = InboxArtifactMenuState(entries: InboxArtifactMenuContent(isBuiltin: true, folders: fullTree).entries)
-        return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+        return AnyView(InboxReadingPane(item: .output(card), navScreens: [], targets: InboxTargetButtonSource(), now: now) { _ in }
             .withArtifactMenu(menu)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .detailBackground())
@@ -361,7 +361,7 @@ enum InboxBuilderBShotFixtures {
                     createdAt: now.addingTimeInterval(-7200))
                 let menu = InboxArtifactMenuState(
                     entries: artifact.entries, error: "Couldn't move it: \(InboxFolderMenuModel.routeMenuChanged)")
-                return AnyView(InboxReadingPane(item: .output(card), navScreens: [], now: now) { _ in }
+                return AnyView(InboxReadingPane(item: .output(card), navScreens: [], targets: InboxTargetButtonSource(), now: now) { _ in }
                     .withArtifactMenu(menu)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .detailBackground())

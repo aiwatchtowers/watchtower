@@ -135,6 +135,59 @@ final class InboxFolderEntriesTests: XCTestCase {
         }
     }
 
+    /// Turned off after a successful run (attention detection off flips only
+    /// `enabled`): its stale card is not drawn and does not count, and the
+    /// Messages entry does not stand in either. Stopped by the daemon (a
+    /// `disabled_reason`) it is a failed run: the Messages entry stands in.
+    func testWaitingForMeTurnedOffShowsAndCountsNothing() async throws {
+        let pool = try pool()
+        let ids = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            let waiting = try self.waitingForMe(db)
+            try db.execute(sql: "UPDATE automations SET enabled = 0 WHERE id = ?", arguments: [waiting.automation])
+            return (root: folders.root, automation: waiting.automation)
+        }
+        let vm = await read(pool, folder: ids.root)
+        XCTAssertEqual(vm.folderEntries.map(\.id), [], "nothing is shown")
+        XCTAssertEqual(vm.folderMenu.snapshot.counts[ids.root] ?? 0, 0, "nothing counts")
+        XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.turnedOff)
+
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE automations SET disabled_reason = 'run would not end' WHERE id = ?",
+                           arguments: [ids.automation])
+        }
+        await vm.refresh()
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["messages"], "stopped: the Messages entry stands in")
+    }
+
+    /// An approved or executing proposal is not closed: Needs approval keeps
+    /// it on its native card, after the open approvals (spec A, a stuck row's
+    /// "Didn't finish" and Try again), and never counts it; an applied one
+    /// leaves.
+    func testNeedsApprovalKeepsApprovedAndExecutingRowsUncounted() async throws {
+        let pool = try pool()
+        let ids = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            let pending = try TestDatabase.insertAgentAction(db, status: "pending", createdAt: "2026-11-06T09:00:00Z")
+            let approved = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", contextType: "automation_output", contextID: "5:0:0123456789abcdef",
+                status: "approved", createdAt: "2026-11-06T09:01:00Z", decidedAt: "2026-11-06T09:02:00Z")
+            let executing = try TestDatabase.insertAgentAction(
+                db, status: "executing", createdAt: "2026-11-06T09:03:00Z", decidedAt: "2026-11-06T09:04:00Z")
+            _ = try TestDatabase.insertAgentAction(db, status: "applied", createdAt: "2026-11-06T09:05:00Z",
+                                                   decidedAt: "2026-11-06T09:06:00Z", appliedAt: "2026-11-06T09:06:00Z")
+            return (folders: folders, pending: pending, approved: approved, executing: executing)
+        }
+        let vm = await read(pool, folder: ids.folders.approvals)
+        let drawn = vm.folderEntries.compactMap { entry -> String? in
+            guard case let .approval(item) = entry, item.recipe == nil else { return nil }
+            return item.key
+        }
+        XCTAssertEqual(drawn.first, "action:\(ids.pending)", "the open approval first")
+        XCTAssertEqual(Set(drawn), ["action:\(ids.pending)", "action:\(ids.approved)", "action:\(ids.executing)"])
+        XCTAssertEqual(vm.folderMenu.snapshot.counts[ids.folders.approvals], 1, "only the open approval counts")
+    }
+
     /// Every track stopped: Track my threads stays, so its Stopped fold and
     /// Restore stay reachable.
     func testTrackMyThreadsStaysWhileTracksAreStopped() async throws {

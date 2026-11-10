@@ -511,6 +511,7 @@ struct ActionStripActionsView: View {
         let pane = InboxReadingPane(
             item: item,
             navScreens: navScreens,
+            targets: vm.targetButtons(now: now),
             now: now,
             isWriting: item.map { vm.isWriting($0.id) } ?? false,
             onCommand: onCardAction,
@@ -622,9 +623,10 @@ struct ActionStripActionsView: View {
             onNote: { Task { await vm.pressApprovalsNote(turnOn: onTurnOnApprovals, runHistory: onRunHistory) } },
             onMenu: { command in Task { await artifactMenu?.performApprovals(command) } },
             emptyState: emptyState,
+            scrollTarget: vm.entrySelection,
             cards: {
                 ForEach(entries) { entry in
-                    approvalCard(entry)
+                    approvalCard(entry).id(entry.id)
                 }
             }
         )
@@ -769,7 +771,8 @@ struct ActionStripActionsView: View {
 
     private func card(_ action: AgentAction) -> AgentActionCardView {
         // An Inbox target button's newest proposal: the button's state, so a
-        // stuck row offers Try again (apply, or apply --force on the same row).
+        // stuck row (Needs approval keeps approved and executing rows on their
+        // native card) offers Try again (apply, or apply --force on the same row).
         let targetState = vm.targetFacts(for: action).map { TargetButtonStateResolver.state($0, now: now ?? Date()) }
         return AgentActionCardView(
             action: action,

@@ -20,9 +20,25 @@ struct NeedsApprovalPane<Cards: View>: View {
     var onNote: () -> Void = {}
     var onMenu: (InboxMenuCommand) -> Void = { _ in }
     var emptyState: EmptyStateContext = .neutral
+    /// The card a route opened (a waiting target button's click): the
+    /// stack scrolls to the card with this `.id`.
+    var scrollTarget: String?
     @ViewBuilder let cards: () -> Cards
 
     var body: some View {
+        ScrollViewReader { proxy in
+            stack
+                .onAppear { scroll(proxy) }
+                .onChange(of: scrollTarget) { scroll(proxy) }
+        }
+    }
+
+    private func scroll(_ proxy: ScrollViewProxy) {
+        guard let scrollTarget else { return }
+        withAnimation { proxy.scrollTo(scrollTarget, anchor: .top) }
+    }
+
+    private var stack: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.medium) {
                 HStack {

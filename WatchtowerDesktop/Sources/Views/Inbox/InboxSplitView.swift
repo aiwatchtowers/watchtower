@@ -133,7 +133,7 @@ struct InboxSplitView<EmptyList: View>: View {
                         .selectionDisabled()
                         .listRowSeparator(.hidden)
                     ForEach(section.items) { item in
-                        InboxListRow(item: item, proposalLabel: proposalLabel(item), now: now)
+                        InboxListRow(item: item, now: now)
                             .tag(Optional(item.id))
                             .listRowSeparator(.hidden)
                     }
@@ -171,11 +171,6 @@ struct InboxSplitView<EmptyList: View>: View {
         })
     }
 
-    private func proposalLabel(_ item: InboxListItem) -> String? {
-        guard case .proposal(let action) = item else { return nil }
-        return vm.actionLabels[action.id]
-    }
-
     private static func icon(_ section: String) -> String {
         switch section {
         case "Needs your decision": "hand.raised"
@@ -191,6 +186,7 @@ struct InboxSplitView<EmptyList: View>: View {
         return InboxReadingPane(
             item: shown,
             navScreens: navScreens,
+            targets: vm.targetButtons(now: now),
             now: now,
             isWriting: shown.map { vm.isWriting($0.id) } ?? false,
             onCommand: onCardAction,
@@ -205,11 +201,6 @@ struct InboxSplitView<EmptyList: View>: View {
             onRetryBuiltin: onRetryBuiltin,
             workbenches: workbenches,
             artifactPeople: vm.feed.artifactPeople,
-            targets: InboxTargetButtonSource(
-                facts: { vm.targetFacts(contextID: $0) },
-                isProposing: { vm.proposingTargets.contains($0) },
-                now: now
-            ),
             dayCard: { card in
                 if let pane = dayPane?(card) {
                     pane
