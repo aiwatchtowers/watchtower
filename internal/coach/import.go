@@ -47,9 +47,9 @@ func suggestionProposal(open []db.CoachProposal, s db.InstructionSuggestion, bef
 	default:
 		return db.CoachProposal{}, false
 	}
-	key := keyOf(dest, nullID(s.WorkbenchID), "")
+	key := keyOf(dest, nullID(s.WorkbenchID), "", "")
 	for _, p := range open {
-		if keyOf(p.Destination, p.WorkbenchID, p.PromptID) == key { // accepting one would supersede the other
+		if keyOf(p.Destination, p.WorkbenchID, p.PromptID, p.Skill) == key { // accepting one would supersede the other
 			return db.CoachProposal{}, false
 		}
 	}

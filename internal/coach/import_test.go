@@ -167,7 +167,7 @@ func TestImportSuggestions_KnownFingerprintRetiredWithoutTakingASlot(t *testing.
 	wb, _ := d.workbench(t, "acme", 0)
 	newest := addSuggestion(t, d.DB, "Run the linter first", db.InstructionSession, 0, 3, sigNow)
 	// Its proposal was declined before: same text on the same destination.
-	fp, _ := fingerprint(keyOf(DestSession, 0, ""), "", "Run the linter first")
+	fp, _ := fingerprint(keyOf(DestSession, 0, "", ""), "", "Run the linter first")
 	id, err := d.InsertCoachProposal(db.CoachProposal{Fingerprint: fp, Kind: "add", Destination: DestSession,
 		Title: "t", Why: "w", Metric: "owner_loop", AfterText: "Run the linter first", Sources: 3}, sigNow)
 	require.NoError(t, err)

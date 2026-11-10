@@ -109,3 +109,26 @@ func TestCOACH01_DestinationsAreNeverRepoFiles(t *testing.T) {
 		assert.Empty(t, got, dest)
 	}
 }
+
+// COACH-01: the destinations a tuning chat may name are the six weekly ones
+// plus five in the owner's home folders (the Claude and Codex user skills, the
+// Watchtower pack overlay, ~/.codex/AGENTS.md and the Codex rules). All five
+// are global: none is a per-workbench or repository text. The paths they
+// resolve to are pinned by the destination tasks.
+func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
+	home := []string{DestClaudeSkillUser, DestCodexSkillUser, DestPackOverlay, DestCodexAgentsMDUser, DestCodexRulesAllow}
+	want := append([]string{DestClaudeMDUser, DestChat, DestProcedure, DestPromptAdd, DestSession, DestSettingsAllow}, home...)
+	var got []string
+	for dest := range chatDestinations {
+		got = append(got, dest)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	assert.Equal(t, want, got, "adding a destination is an owner decision: update COACH-01")
+
+	for _, dest := range home {
+		assert.True(t, globalDestinations[dest], dest)
+		assert.False(t, textDestinations[dest], "%s is not a weekly destination", dest)
+		assert.False(t, strings.HasPrefix(dest, "repo_"), dest)
+	}
+}
