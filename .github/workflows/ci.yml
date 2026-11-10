@@ -434,6 +434,12 @@ jobs:
       # recompiling it — a checkout touches every file, so without it the
       # restored products are thrown away. A changed file, or a dependent of a
       # changed API in another module, still recompiles (checked 2026-10-14).
+      # Across modules the driver sees WatchtowerCore (and, for the test
+      # target, WatchtowerDesktop) as one source file: a top-level change
+      # there (a new, removed or renamed type, extension or free function,
+      # even a private one) recompiles every file that imports it, ~1,800
+      # files and ~8 min here; a change inside a type's body or a function
+      # body recompiles only its users (checked 2026-11-10, Swift 6.3).
       - name: Build
         run: swift build --build-tests -Xswiftc -enable-incremental-file-hashing
 
