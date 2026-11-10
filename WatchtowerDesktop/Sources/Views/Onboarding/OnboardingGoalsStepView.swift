@@ -50,8 +50,7 @@ struct OnboardingGoalsStepView: View {
     }
 
     private var cliFailed: Bool {
-        if case .failed = model.cliCheck { return true }
-        return false
+        !model.isCheckingAgents && !model.agentChoice.canContinue
     }
 
     private var goals: some View {
@@ -73,8 +72,8 @@ struct OnboardingGoalsStepView: View {
 
             AssistantLanguageRow(selection: $model.language)
 
-            if case .failed(let reason) = model.cliCheck {
-                cliRequiredBox(reason)
+            if cliFailed {
+                cliRequiredBox("")
             }
 
             Spacer(minLength: 0)
@@ -157,23 +156,20 @@ struct OnboardingGoalsStepView: View {
 
     @ViewBuilder
     private var cliStatusLine: some View {
-        switch model.cliCheck {
-        case .checking:
+        if model.isCheckingAgents {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
                 Text("Checking for Claude Code or Codex CLI…")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-        case .ready(let provider, _):
+        } else if let agent = model.agentChoice.selected, model.agentChoice.canContinue {
             HStack(spacing: 6) {
                 Circle().fill(.green).frame(width: 6, height: 6)
-                Text("\(Self.cliName(provider)) found and signed in")
+                Text("\(Self.cliName(agent.rawValue)) found and signed in")
             }
             .font(.caption)
             .foregroundStyle(.secondary)
-        case .failed:
-            EmptyView()
         }
     }
 
@@ -203,7 +199,7 @@ struct OnboardingGoalsStepView: View {
                 .textSelection(.enabled)
                 .lineLimit(3)
             HStack(spacing: 16) {
-                Button("Check again") { Task { await model.runCLICheck() } }
+                Button("Check again") { Task { await model.runAgentCheck() } }
                 Button("Set the Claude Code path manually") { showManualPath.toggle() }.buttonStyle(.link)
                 Button("No npm?") { showNodeHelp.toggle() }.buttonStyle(.link)
             }
@@ -256,7 +252,7 @@ struct OnboardingGoalsStepView: View {
             return
         }
         manualPathError = nil
-        Task { await model.runCLICheck() }
+        Task { await model.runAgentCheck() }
     }
 
     private func codeBlock(_ code: String) -> some View {

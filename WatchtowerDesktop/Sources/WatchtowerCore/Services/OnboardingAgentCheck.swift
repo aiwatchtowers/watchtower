@@ -56,6 +56,20 @@ package struct OnboardingAgentCheckResult: Equatable, Sendable {
     /// The display name of a working provider other than claude / codex.
     package var otherProvider: String?
     package var otherProviderFailure: String?
+
+    package init(
+        statuses: [OnboardingAgentChoice.Agent: OnboardingAgentChoice.Status] = [:],
+        installs: [OnboardingAgentChoice.Agent: OnboardingAgentChoice.Install] = [:],
+        outdated: Set<OnboardingAgentChoice.Agent> = [],
+        otherProvider: String? = nil,
+        otherProviderFailure: String? = nil
+    ) {
+        self.statuses = statuses
+        self.installs = installs
+        self.outdated = outdated
+        self.otherProvider = otherProvider
+        self.otherProviderFailure = otherProviderFailure
+    }
 }
 
 package enum OnboardingAgentCheck {

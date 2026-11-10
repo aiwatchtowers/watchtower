@@ -1,16 +1,6 @@
 import Foundation
 import Observation
 
-/// The Goals step's AI CLI check (`watchtower ai test`): Continue is blocked
-/// until it is `.ready` (owner decision — every AI feature runs on the CLI).
-package enum OnboardingCLICheck: Equatable, Sendable {
-    case checking
-    /// `provider` is the `ai.provider` the test answered for; `switched`:
-    /// the check itself wrote it (the Codex fallback, `OnboardingCLIProbe`).
-    case ready(provider: String, switched: Bool = false)
-    case failed(String)
-}
-
 /// What Continue on the Goals step does to the outside world, injected so
 /// the ordering and the exactly-once workspace init are testable.
 package struct OnboardingGoalsActions {
@@ -26,24 +16,29 @@ package struct OnboardingGoalsActions {
     package var historyDepthUnset: @MainActor () -> Bool
     /// `watchtower config set sync.initial_history_days <days>`.
     package var setHistoryDepth: (Int) async throws -> Void
+    /// Writes the chosen agent: `workbench.default_agent` when it differs,
+    /// then `ai.provider` (last, so a failed write leaves it unset).
+    package var saveAgent: (String) async throws -> Void
 
     package init(
         initWorkspace: @escaping () async throws -> Void,
         setLanguage: @escaping (String) async throws -> Void,
         applyFeatures: @escaping (OnboardingFeatureSelection) async -> (failure: String?, changed: Bool),
         historyDepthUnset: @escaping @MainActor () -> Bool = { false },
-        setHistoryDepth: @escaping (Int) async throws -> Void = { _ in }
+        setHistoryDepth: @escaping (Int) async throws -> Void = { _ in },
+        saveAgent: @escaping (String) async throws -> Void = { _ in }
     ) {
         self.initWorkspace = initWorkspace
         self.setLanguage = setLanguage
         self.applyFeatures = applyFeatures
         self.historyDepthUnset = historyDepthUnset
         self.setHistoryDepth = setHistoryDepth
+        self.saveAgent = saveAgent
     }
 }
 
 /// Onboarding's Goals step: the goals and feature selection, the assistant
-/// language, the AI CLI check and Continue. Lives in `AppState` so the
+/// language, the AI agent choice and Continue. Lives in `AppState` so the
 /// selection survives the Customize screen and a running check or Continue
 /// survives the step re-rendering.
 @MainActor
@@ -66,7 +61,9 @@ package final class OnboardingGoalsModel {
     package var language: String
     /// The Customize features screen is showing in place of the goals.
     package var isCustomizingFeatures = false
-    package private(set) var cliCheck: OnboardingCLICheck = .checking
+    package private(set) var agentChoice = OnboardingAgentChoice()
+    /// A per-agent check is in flight.
+    package private(set) var isCheckingAgents = false
     package private(set) var isContinuing = false
     package private(set) var continueError: String?
     package private(set) var savedGoals: Set<OnboardingGoal>
@@ -75,7 +72,8 @@ package final class OnboardingGoalsModel {
     package private(set) var wroteChanges = false
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let checkCLI: () async -> OnboardingCLICheck
+    @ObservationIgnored private let checkAgents: () async -> OnboardingAgentCheckResult
+    @ObservationIgnored private let configuredProvider: () -> String?
     @ObservationIgnored private let actions: OnboardingGoalsActions
     @ObservationIgnored private var cliCheckGeneration = 0
     /// The check in flight; a second request joins it instead of running
@@ -84,7 +82,7 @@ package final class OnboardingGoalsModel {
     /// A check ran (or runs) since the last setup start: the step
     /// re-appearing (Goals ↔ Customize) does not run another.
     @ObservationIgnored private var cliCheckStarted = false
-    /// Called on the main actor when a check switched the AI provider, so
+    /// Called on the main actor when Continue switched the AI provider, so
     /// the owner of state that snapshotted the old one can follow.
     @ObservationIgnored package var onProviderSwitched: ((String) -> Void)?
     @ObservationIgnored private var languagePrepared = false
@@ -98,11 +96,13 @@ package final class OnboardingGoalsModel {
     package init(
         defaults: UserDefaults = .standard,
         systemLanguage: String = AssistantLanguageCatalog.systemDefault().englishName,
-        checkCLI: @escaping () async -> OnboardingCLICheck,
+        checkAgents: @escaping () async -> OnboardingAgentCheckResult,
+        configuredProvider: @escaping () -> String?,
         actions: OnboardingGoalsActions
     ) {
         self.defaults = defaults
-        self.checkCLI = checkCLI
+        self.checkAgents = checkAgents
+        self.configuredProvider = configuredProvider
         self.actions = actions
         let saved = (defaults.stringArray(forKey: Self.goalsKey)?.compactMap(OnboardingGoal.init(rawValue:)))
             .map(Set.init) ?? Self.defaultGoals
@@ -117,8 +117,7 @@ package final class OnboardingGoalsModel {
     }
 
     package var canContinue: Bool {
-        guard case .ready = cliCheck else { return false }
-        return !isContinuing
+        agentChoice.canContinue && !isContinuing && !isCheckingAgents
     }
 
     /// Called when the step appears: adopts an already configured language
@@ -136,13 +135,13 @@ package final class OnboardingGoalsModel {
             await cliCheckTask?.value
             return
         }
-        await runCLICheck()
+        await runAgentCheck()
     }
 
     /// Check again. Joins a check already in flight. A check that finishes
     /// after `prepareForRerun` reset the step is dropped, so a slow old run
-    /// cannot overwrite a later result.
-    package func runCLICheck() async {
+    /// cannot overwrite a later result. Never writes the config.
+    package func runAgentCheck() async {
         if let cliCheckTask {
             await cliCheckTask.value
             return
@@ -150,21 +149,41 @@ package final class OnboardingGoalsModel {
         cliCheckStarted = true
         cliCheckGeneration += 1
         let generation = cliCheckGeneration
-        cliCheck = .checking
-        let task = Task { [checkCLI] in
-            let result = await checkCLI()
+        isCheckingAgents = true
+        let task = Task { [checkAgents] in
+            let result = await checkAgents()
             guard generation == cliCheckGeneration else { return }
-            cliCheck = result
+            agentChoice.statuses = result.statuses
+            agentChoice.installs = result.installs
+            agentChoice.otherProvider = result.otherProvider
+            agentChoice.otherProviderFailure = result.otherProviderFailure
+            agentChoice.applyLoginProbe(outdated: result.outdated)
+            agentChoice.applyDefault(configured: configuredProvider())
+            isCheckingAgents = false
             cliCheckTask = nil
-            if case .ready(let provider, switched: true) = result {
-                // The config changed: a re-run restarts the daemon for it.
-                wroteChanges = true
-                onProviderSwitched?(provider)
-            }
         }
         cliCheckTask = task
         await task.value
     }
+
+    package func pickAgent(_ agent: OnboardingAgentChoice.Agent) { agentChoice.pick(agent) }
+
+    /// The window came back to the front: the owner may have installed or
+    /// signed in somewhere else. Checks only while Continue is blocked and
+    /// no sign-in terminal runs.
+    package func windowBecameActive() async {
+        guard !agentChoice.canContinue, agentChoice.signIn != .running else { return }
+        await runAgentCheck()
+    }
+
+    package func signInStarted() { agentChoice.signInStarted() }
+
+    package func signInEnded(exitCode: Int32) async {
+        agentChoice.signInEnded(exitCode: exitCode)
+        if exitCode == 0 { await runAgentCheck() }
+    }
+
+    package func signInStopped() { agentChoice.signInStopped() }
 
     /// "Run setup again": the step starts over as if just shown — the CLI is
     /// checked again, the configured language adopted again, no error or
@@ -173,7 +192,8 @@ package final class OnboardingGoalsModel {
         cliCheckGeneration += 1
         cliCheckTask = nil
         cliCheckStarted = false
-        cliCheck = .checking
+        isCheckingAgents = false
+        agentChoice = OnboardingAgentChoice()
         continueError = nil
         languagePrepared = false
         configuredLanguage = nil
@@ -214,6 +234,16 @@ package final class OnboardingGoalsModel {
         defer { isContinuing = false }
 
         let historyUnset = actions.historyDepthUnset()
+        if let provider = agentChoice.providerToSave(configured: configuredProvider()) {
+            do {
+                try await actions.saveAgent(provider)
+            } catch {
+                continueError = OnboardingAgentChoice.saveFailure + " " + error.localizedDescription
+                return nil
+            }
+            wroteChanges = true
+            onProviderSwitched?(provider)
+        }
         if !hasSlackAccount && !workspaceReady {
             do {
                 try await actions.initWorkspace()
