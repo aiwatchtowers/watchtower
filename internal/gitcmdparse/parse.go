@@ -22,8 +22,17 @@
 //     checkout (`git checkout -t origin/x`, `git switch x`) records nothing.
 //   - `git --git-dir/--work-tree` and a `GIT_*=` assignment before git record
 //     nothing: the repository is not the directory.
-//   - `pushd`/`popd` make the directory unknown; a `( … )` subshell restores
-//     the directory it started in.
+//   - `-h`/`--help` in `worktree add`, `checkout` or `switch` records nothing
+//     (git prints usage). `worktree add` has no dry-run option (git 2.50).
+//   - Directory: a `cd` applies to the rest of its own &&-chain. When the
+//     chain ends (`;`, newline, end) the new directory is kept only if the cd
+//     was the chain's first command; otherwise it becomes unknown. A cd
+//     followed by `||` or reached after one, a negated cd (`! cd`), and a cd
+//     inside if/while/until/for/select make the directory unknown. A cd in a
+//     pipeline element (`|`, `|&`) or a backgrounded chain (`&`) runs in a
+//     subshell and changes nothing after it; so does a `( … )` subshell.
+//     `pushd`/`popd` make the directory unknown. A function definition or a
+//     `case` makes it unknown for the rest of the command.
 //   - Text that does not lex (an unterminated quote, substitution or
 //     here-doc, a redirection without a target) records nothing at all.
 package gitcmdparse
@@ -57,35 +66,92 @@ func Parse(command, cwd string) []Created {
 	if !ok {
 		return nil
 	}
-	p := &walker{dir: path.Clean(cwd)}
+	w := &walker{}
+	w.dir = path.Clean(cwd)
+	w.chainStart = w.dir
 	var seg []token
-	for _, t := range toks {
+	prevOp := ""
+	for i, t := range toks {
 		if t.kind == tokWord {
 			seg = append(seg, t)
 			continue
 		}
-		p.segment(seg)
+		w.segment(seg, prevOp, t.text)
 		seg = nil
-		switch t.text {
-		case "(":
-			p.stack = append(p.stack, p.dir)
-		case ")":
-			if n := len(p.stack); n > 0 {
-				p.dir = p.stack[n-1]
-				p.stack = p.stack[:n-1]
-			}
-		}
+		fnDef := t.text == "(" && i+1 < len(toks) && toks[i+1].kind == tokOp && toks[i+1].text == ")"
+		w.operator(t.text, fnDef)
+		prevOp = t.text
 	}
-	p.segment(seg)
-	return p.out
+	w.segment(seg, prevOp, "")
+	return w.out
+}
+
+// frame is the directory state of one shell level; a ( … ) subshell pushes a
+// new one. dir == "" means unknown.
+type frame struct {
+	dir        string
+	chainStart string // dir when the current &&/|| chain began
+	commands   int    // commands seen so far in the chain
+	sawCD      bool   // a cd changed dir in this chain
+	cdLater    bool   // a cd changed dir past the chain's first command
+	sawOr      bool   // the chain has passed a ||
+	depth      int    // open if/while/until/for/select
 }
 
 // walker carries the effective directory across the segments of a command.
-// dir == "" means unknown.
 type walker struct {
-	dir   string
-	stack []string
+	frame
+	stack []frame
+	lost  bool // a function or case was seen: dir is unknown for good
 	out   []Created
+}
+
+func (w *walker) operator(op string, fnDef bool) {
+	switch op {
+	case "&&", "|", "|&":
+	case "||":
+		w.sawOr = true
+		if w.sawCD {
+			w.dir = "" // the cd may or may not have happened
+		}
+	case "&":
+		// The chain ran in a background subshell: its cd stays there.
+		w.endChain(w.chainStart)
+	case "(":
+		if fnDef {
+			w.lose()
+			return
+		}
+		w.stack = append(w.stack, w.frame)
+		w.frame = frame{dir: w.dir, chainStart: w.dir}
+	case ")":
+		if w.lost || len(w.stack) == 0 {
+			w.lose()
+			return
+		}
+		w.frame = w.stack[len(w.stack)-1]
+		w.stack = w.stack[:len(w.stack)-1]
+		w.commands++
+	default: // ";", ";;", newline
+		next := w.dir
+		if w.cdLater || (w.sawOr && w.sawCD) {
+			next = "" // a conditional cd: unknown whether it ran
+		}
+		w.endChain(next)
+	}
+}
+
+func (w *walker) endChain(dir string) {
+	if w.lost {
+		dir = ""
+	}
+	depth := w.depth
+	w.frame = frame{dir: dir, chainStart: dir, depth: depth}
+}
+
+func (w *walker) lose() {
+	w.lost = true
+	w.dir = ""
 }
 
 // leadingWords may precede a command without changing what it runs.
@@ -94,15 +160,27 @@ var leadingWords = map[string]bool{
 	"do": true, "while": true, "until": true, "time": true, "command": true,
 }
 
-func (w *walker) segment(words []token) {
+func (w *walker) segment(words []token, prevOp, nextOp string) {
+	if len(words) == 0 {
+		return
+	}
+	first := w.commands == 0
+	w.commands++
+	negated := false
 	for len(words) > 0 {
 		t := words[0]
 		if leadingWords[t.text] {
+			switch t.text {
+			case "if", "while", "until":
+				w.depth++
+			case "!":
+				negated = true
+			}
 			words = words[1:]
 			continue
 		}
-		if name, ok := assignmentName(t.text); ok {
-			if strings.HasPrefix(name, "GIT_") {
+		if isAssignment(t.text) {
+			if strings.HasPrefix(t.text, "GIT_") {
 				return
 			}
 			words = words[1:]
@@ -113,13 +191,31 @@ func (w *walker) segment(words []token) {
 	if len(words) == 0 || words[0].tainted {
 		return
 	}
-	cmd, args := words[0].text, words[1:]
-	switch {
-	case cmd == "cd":
-		w.dir = cdTarget(args, w.dir)
-	case cmd == "pushd" || cmd == "popd":
+	piped := prevOp == "|" || prevOp == "|&" || nextOp == "|" || nextOp == "|&"
+	args := words[1:]
+	switch path.Base(words[0].text) {
+	case "case", "function":
+		w.lose()
+	case "for", "select":
+		w.depth++
+	case "fi", "done":
+		if w.depth > 0 {
+			w.depth--
+		}
+	case "cd":
+		switch {
+		case w.lost || piped:
+			// A pipeline element runs in a subshell.
+		case w.depth > 0 || w.sawOr || negated:
+			w.dir = "" // inside a condition or branch: may not have run
+		default:
+			w.dir = cdTarget(args, w.dir)
+			w.sawCD = true
+			w.cdLater = w.cdLater || !first
+		}
+	case "pushd", "popd":
 		w.dir = ""
-	case path.Base(cmd) == "git":
+	case "git":
 		plain := make([]string, len(args))
 		for i, a := range args {
 			if a.tainted {
@@ -131,20 +227,20 @@ func (w *walker) segment(words []token) {
 	}
 }
 
-// assignmentName reports whether word is NAME=value and returns NAME.
-func assignmentName(word string) (string, bool) {
+// isAssignment reports whether word is NAME=value.
+func isAssignment(word string) bool {
 	name, _, found := strings.Cut(word, "=")
 	if !found || name == "" {
-		return "", false
+		return false
 	}
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		letter := c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 		if !letter && (i == 0 || c < '0' || c > '9') {
-			return "", false
+			return false
 		}
 	}
-	return name, true
+	return true
 }
 
 func cdTarget(args []token, dir string) string {
@@ -229,7 +325,7 @@ global:
 
 func worktreeAdd(args []string, dir string) []Created {
 	opts, pos, ok := splitArgs(args, set("-b", "-B", "--reason"))
-	if !ok || len(pos) < 1 || len(pos) > 2 || pos[0] == "" {
+	if !ok || asksHelp(opts) || len(pos) < 1 || len(pos) > 2 || pos[0] == "" {
 		return nil
 	}
 	branch := ""
@@ -282,7 +378,7 @@ func branchCreate(args []string, dir string) []Created {
 func switchCreate(args []string, dir string, creating ...string) []Created {
 	valued := set(creating...)
 	opts, pos, ok := splitArgs(args, valued)
-	if !ok || len(pos) > 1 {
+	if !ok || asksHelp(opts) || len(pos) > 1 {
 		return nil
 	}
 	name := ""
@@ -302,6 +398,16 @@ func switchCreate(args []string, dir string, creating ...string) []Created {
 func validBranch(name string) bool {
 	return name != "" && name[0] != '-' && name != "HEAD" && name != "@" &&
 		!strings.ContainsAny(name, " \t\n~^:?*[\\")
+}
+
+// asksHelp reports a -h/--help, with which git prints usage and creates nothing.
+func asksHelp(opts []option) bool {
+	for _, o := range opts {
+		if o.name == "-h" || o.name == "--help" {
+			return true
+		}
+	}
+	return false
 }
 
 func set(items ...string) map[string]bool {
@@ -335,7 +441,7 @@ func splitArgs(args []string, valued map[string]bool) (opts []option, pos []stri
 			opts = append(opts, option{name, val})
 		case len(a) > 1 && a[0] == '-':
 			for j := 1; j < len(a); j++ {
-				name := "-" + a[j:j+1]
+				name := "-" + string(a[j]) // option letters are ASCII bytes
 				if !valued[name] {
 					opts = append(opts, option{name: name})
 					continue

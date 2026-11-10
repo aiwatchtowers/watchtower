@@ -124,6 +124,41 @@ var parseCases = []struct {
 	{"single-quoted dollar is still skipped", `git branch 'a$b'`, "/tmp/r", nil},
 	{"escaped quote in double quotes", `git worktree add "a\"b"`, "/tmp/r", []Created{wt(`/tmp/r/a"b`, "", "/tmp/r")}},
 	{"empty", "", "/tmp/r", nil},
+
+	// Subshells: pipelines and background.
+	{"cd in a pipeline does not leak", "cd /tmp/other | cat; git branch topic", "/tmp/r", []Created{br("topic", "/tmp/r")}},
+	{"cd after a pipe does not leak", "cat | cd /tmp/other; git branch topic", "/tmp/r", []Created{br("topic", "/tmp/r")}},
+	{"cd |& does not leak", "cd /tmp/other |& cat; git branch topic", "/tmp/r", []Created{br("topic", "/tmp/r")}},
+	{"backgrounded cd does not leak", "cd /tmp/other & git branch topic", "/tmp/r", []Created{br("topic", "/tmp/r")}},
+	{"backgrounded chain keeps its own cd", "cd /tmp/a && git branch x & git branch y", "/tmp/r", []Created{br("x", "/tmp/a"), br("y", "/tmp/r")}},
+	{"cd before a pipeline still applies", "cd /tmp/a && git branch x | cat", "/tmp/r", []Created{br("x", "/tmp/a")}},
+
+	// Conditional cd.
+	{"cd || git", "cd /tmp/x || git branch t", "/tmp/r", nil},
+	{"cd after ||", "false || cd /tmp/x && git branch t", "/tmp/r", nil},
+	{"cd then || later", "cd /tmp/x && a || git branch t", "/tmp/r", nil},
+	{"cd not first in its chain is unknown after it", "false && cd /tmp/x; git branch t", "/tmp/r", nil},
+	{"cd not first still applies inside its chain", "a && cd /tmp/x && git branch t", "/tmp/r", []Created{br("t", "/tmp/x")}},
+	{"first cd persists across ;", "cd /tmp/x; git branch t", "/tmp/r", []Created{br("t", "/tmp/x")}},
+	{"first cd persists across newline", "cd /tmp/x && a\ngit branch t", "/tmp/r", []Created{br("t", "/tmp/x")}},
+	{"cd in an if condition", "if cd /tmp/x; then git branch t; fi", "/tmp/r", nil},
+	{"cd in an if body", "if a; then cd /tmp/x; fi; git branch t", "/tmp/r", nil},
+	{"cd in a while condition", "while cd /tmp/x; do git branch t; done", "/tmp/r", nil},
+	{"negated cd", "! cd /tmp/x && git branch t", "/tmp/r", nil},
+	{"git after a closed if keeps the dir", "if a; then b; fi; git branch t", "/tmp/r", []Created{br("t", "/tmp/r")}},
+
+	// Functions and case.
+	{"function definition", "f() { cd /tmp/x; }; git branch t", "/tmp/r", nil},
+	{"function keyword", "function f { cd /tmp/x; }; git branch t", "/tmp/r", nil},
+	{"case pattern does not pop a subshell", "(case a in a) cd /tmp/x;; esac; git branch t)", "/tmp/r", nil},
+	{"case then git", "case a in a) b;; esac; git branch t", "/tmp/r", nil},
+
+	// Help.
+	{"worktree add -h", "git worktree add -h /tmp/a", "/tmp/r", nil},
+	{"worktree add --help", "git worktree add --help", "/tmp/r", nil},
+	{"switch -h", "git switch -h -c x", "/tmp/r", nil},
+	{"checkout --help", "git checkout --help -b x", "/tmp/r", nil},
+	{"branch -h", "git branch -h x", "/tmp/r", nil},
 }
 
 func TestParse(t *testing.T) {

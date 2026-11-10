@@ -26,8 +26,6 @@ type lexer struct {
 	toks     []token
 	heredocs []heredoc
 	wordEnd  int // index just past the last word, -1 after anything else
-
-	lastTainted bool // set by doubleQuoted
 }
 
 // redirOps are the redirection operators, longest first.
@@ -62,11 +60,11 @@ func lex(s string) ([]token, bool) {
 		case c == ';' || c == '&' || c == '|' || c == '(' || c == ')':
 			l.operator()
 		default:
-			text, tainted, ok := l.word()
+			w, ok := l.word()
 			if !ok {
 				return nil, false
 			}
-			l.toks = append(l.toks, token{kind: tokWord, text: text, tainted: tainted})
+			l.toks = append(l.toks, w)
 			l.wordEnd = l.i
 		}
 	}
@@ -114,12 +112,12 @@ func (l *lexer) redirect() bool {
 	if l.i >= len(l.s) || strings.IndexByte("\n;&|()<>#", l.s[l.i]) >= 0 {
 		return false
 	}
-	target, _, ok := l.word()
+	target, ok := l.word()
 	if !ok {
 		return false
 	}
 	if op == "<<" || op == "<<-" {
-		l.heredocs = append(l.heredocs, heredoc{delim: target, stripTabs: op == "<<-"})
+		l.heredocs = append(l.heredocs, heredoc{delim: target.text, stripTabs: op == "<<-"})
 	}
 	l.wordEnd = -1
 	return true
@@ -152,8 +150,9 @@ func (l *lexer) heredocBodies() bool {
 	return true
 }
 
-// word reads one word, removing quotes and backslashes.
-func (l *lexer) word() (string, bool, bool) {
+// word reads one word, removing quotes and backslashes; ok is false when it
+// does not end (an unterminated quote or expansion).
+func (l *lexer) word() (token, bool) {
 	var b strings.Builder
 	tainted := false
 	start := l.i
@@ -161,7 +160,7 @@ func (l *lexer) word() (string, bool, bool) {
 		c := l.s[l.i]
 		switch c {
 		case ' ', '\t', '\r', '\n', ';', '&', '|', '(', ')', '<', '>':
-			return b.String(), tainted, true
+			return token{kind: tokWord, text: b.String(), tainted: tainted}, true
 		case '\\':
 			if l.i+1 >= len(l.s) {
 				l.i++
@@ -174,21 +173,22 @@ func (l *lexer) word() (string, bool, bool) {
 		case '\'':
 			end := strings.IndexByte(l.s[l.i+1:], '\'')
 			if end < 0 {
-				return "", false, false
+				return token{}, false
 			}
 			part := l.s[l.i+1 : l.i+1+end]
 			tainted = tainted || strings.ContainsAny(part, "$`")
 			b.WriteString(part)
 			l.i += end + 2
 		case '"':
-			if !l.doubleQuoted(&b) {
-				return "", false, false
+			quotedTainted, ok := l.doubleQuoted(&b)
+			if !ok {
+				return token{}, false
 			}
-			tainted = tainted || l.lastTainted
+			tainted = tainted || quotedTainted
 		case '$', '`':
 			tainted = true
 			if !l.expansion() {
-				return "", false, false
+				return token{}, false
 			}
 		case '*', '?', '[':
 			tainted = true
@@ -203,20 +203,18 @@ func (l *lexer) word() (string, bool, bool) {
 			l.i++
 		}
 	}
-	return b.String(), tainted, true
+	return token{kind: tokWord, text: b.String(), tainted: tainted}, true
 }
 
-// doubleQuoted reads a "…" part into b; it sets l.lastTainted when the part
-// holds an expansion.
-func (l *lexer) doubleQuoted(b *strings.Builder) bool {
-	l.lastTainted = false
+// doubleQuoted reads a "…" part into b; tainted reports an expansion in it.
+func (l *lexer) doubleQuoted(b *strings.Builder) (tainted, ok bool) {
 	l.i++
 	for l.i < len(l.s) {
 		c := l.s[l.i]
 		switch c {
 		case '"':
 			l.i++
-			return true
+			return tainted, true
 		case '\\':
 			if l.i+1 < len(l.s) && strings.IndexByte("$`\"\\\n", l.s[l.i+1]) >= 0 {
 				if l.s[l.i+1] != '\n' {
@@ -228,16 +226,16 @@ func (l *lexer) doubleQuoted(b *strings.Builder) bool {
 			b.WriteByte(c)
 			l.i++
 		case '$', '`':
-			l.lastTainted = true
+			tainted = true
 			if !l.expansion() {
-				return false
+				return tainted, false
 			}
 		default:
 			b.WriteByte(c)
 			l.i++
 		}
 	}
-	return false
+	return tainted, false
 }
 
 // expansion skips a `$…` or backtick expansion starting at l.i, contents
