@@ -377,3 +377,51 @@ func TestSessionProbeHasNoPingFlag(t *testing.T) {
 		"--session", strconv.FormatInt(row, 10), "--ping")
 	assert.ErrorContains(t, err, "unknown flag: --ping")
 }
+
+// PROJ-11, board #1712: a stale count with background shells. The registry's
+// `shell` (only background shells run) ends the subagents and keeps the
+// shells and their report stamp, or writes nothing when only shells were
+// counted; busy and waiting write nothing; every other reading — idle, no
+// entry, a dead or reused pid (the session process exited while a shell was
+// listed), an unknown status — ends every count. A shell that never exits is
+// bounded by the Desktop's shell cap, not here.
+func TestSessionProbeKeepsBackgroundShells(t *testing.T) {
+	stale := time.Now().Add(-31 * time.Minute)
+	for _, agents := range []int64{2, 0} {
+		for _, reg := range probeRegistries {
+			t.Run(fmt.Sprintf("%d agents, %s", agents, reg.name), func(t *testing.T) {
+				database, pid, row := briefSessionFixture(t)
+				_, err := database.SetTerminalTurnEnd(row, pid, briefLaunchID, 100)
+				require.NoError(t, err)
+				ok, err := database.SetTerminalAgentState(row, pid, briefLaunchID, "waiting", stale, "", nil, false,
+					db.AgentOrder{Stop: true, Background: bgCount(agents), Shells: bgCount(1)})
+				require.NoError(t, err)
+				require.True(t, ok)
+				reg.apply(t)
+				before := rowSnapshot(t, database, row)
+				stamp := db.AgentStateStamp(stale)
+
+				got := runSessionProbe(t, pid, row)
+				after := rowSnapshot(t, database, row)
+				switch outcome := got["outcome"]; outcome {
+				case "busy", "waiting":
+					assert.Equal(t, false, got["ended"])
+					assert.Equal(t, before, after)
+				case "shell":
+					assert.Equal(t, agents > 0, got["ended"], "only counted agents end")
+					assert.Equal(t, int64(0), after["agent_background"])
+					assert.Equal(t, int64(1), after["agent_background_shells"], "the shells still run")
+					assert.Equal(t, stamp, after["agent_background_at"], "the report stamp stays")
+					delete(before, "agent_background")
+					delete(after, "agent_background")
+					assert.Equal(t, before, after)
+				default:
+					assert.Equal(t, true, got["ended"], "outcome %v", outcome)
+					assert.Nil(t, after["agent_background"])
+					assert.Nil(t, after["agent_background_shells"])
+					assert.Nil(t, after["agent_background_at"])
+				}
+			})
+		}
+	}
+}
