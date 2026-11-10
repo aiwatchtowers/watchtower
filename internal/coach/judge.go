@@ -86,7 +86,7 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 
 // verdictOf measures p's period and names the verdict and the measured value.
 func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (string, *float64, error) {
-	m, err := Measure(d, al, p.WorkbenchID, p.DecidedAt, now)
+	m, err := Measure(d, al, p.WorkbenchID, p.DecidedAt, now, AgentFor(p.Destination))
 	if err != nil {
 		return "", nil, err
 	}

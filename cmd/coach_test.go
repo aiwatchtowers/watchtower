@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlogdb"
+	"watchtower/internal/agentreport"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -40,6 +42,7 @@ func runCoach(t *testing.T, stdin string, args ...string) (string, error) {
 	rootCmd.SetIn(nil)
 	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
 	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
+	coachFlagAgent = agentreport.AgentAll
 	return out.String(), err
 }
 
@@ -408,6 +411,7 @@ func runCoachSplit(t *testing.T, args ...string) (stdout, stderr string, err err
 	rootCmd.SetIn(nil)
 	coachFlagJSON, coachFlagWorkbench, coachFlagStatus = false, 0, "open"
 	coachFlagStdin, coachFlagForce, coachFlagDryRun, coachFlagDays = false, false, false, coachDefaultDays
+	coachFlagAgent = agentreport.AgentAll
 	return out.String(), errb.String(), err
 }
 
@@ -445,6 +449,79 @@ func TestCoachStatus_DaysWindow(t *testing.T) {
 		_, err := runCoach(t, "", "status", "--days", bad)
 		require.Error(t, err, bad)
 		assert.Contains(t, err.Error(), "--days must be between 1 and 90")
+	}
+}
+
+// seedCoachAgentSession stores one session of agent an hour ago on target
+// tid of workbench wb, with interrupts interrupts.
+func seedCoachAgentSession(t *testing.T, al *agentlogdb.DB, agent, uuid string, wb, tid int64, interrupts int) {
+	t.Helper()
+	const layout = "2006-01-02T15:04:05Z"
+	start := time.Now().UTC().Add(-time.Hour)
+	at := func(s int) string { return start.Add(time.Duration(s) * time.Second).Format(layout) }
+	path := "/w/" + uuid + ".jsonl"
+	var evs []agentlogdb.AgentLogEvent
+	add := func(e agentlogdb.AgentLogEvent, s int) {
+		e.SessionUUID, e.TS, e.SrcPath, e.SrcOffset = uuid, at(s), path, int64(len(evs))
+		e.Key = fmt.Sprintf("%s:%d", uuid, len(evs))
+		evs = append(evs, e)
+	}
+	add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 0)
+	add(agentlogdb.AgentLogEvent{Kind: "tool", Name: "mcp__watchtower-workbench__update_target", Target: fmt.Sprintf("#%d", tid), Outcome: "ok"}, 10)
+	for i := range interrupts {
+		add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "interrupt"}, 20+i)
+	}
+	add(agentlogdb.AgentLogEvent{Kind: "api_call", Name: "model-x", InputTokens: 10, OutputTokens: 5}, 60)
+	_, err := al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: agent, ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: uuid, Agent: agent, ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+			SourcePath: path, StartedAt: at(0), EndedAt: at(60), Model: "model-x"}},
+		Events: evs,
+	})
+	require.NoError(t, err)
+}
+
+func TestCoachStatus_AgentFlag(t *testing.T) {
+	d := coachSetup(t)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	alPath := agentlogdb.PathFor(cfg.DBPath())
+	al, err := agentlogdb.Open(alPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(alPath))
+	require.NoError(t, err)
+	wb, err := d.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
+	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id, status)
+		VALUES ('goal', '2026-01-01', '2099-12-31', ?, 'in_progress')`, wb)
+	require.NoError(t, err)
+	tid, err := res.LastInsertId()
+	require.NoError(t, err)
+	seedCoachAgentSession(t, al, "claude", "sc", wb, tid, 2)
+	seedCoachAgentSession(t, al, "codex", "sx", wb, tid, 0)
+
+	corrections := func(args ...string) *float64 {
+		out, err := runCoach(t, "", append([]string{"status", "--json"}, args...)...)
+		require.NoError(t, err, out)
+		var st coachStatusJSON
+		require.NoError(t, json.Unmarshal([]byte(out), &st))
+		return st.Metrics.Corrections.Value
+	}
+	all, claude, codex := corrections(), corrections("--agent", "claude"), corrections("--agent", "codex")
+	require.NotNil(t, all)
+	require.NotNil(t, claude)
+	require.NotNil(t, codex)
+	assert.InDelta(t, 2.0, *all, 1e-9)
+	assert.InDelta(t, 2.0, *claude, 1e-9)
+	assert.InDelta(t, 0.0, *codex, 1e-9, "Codex sessions only")
+	assert.Equal(t, all, corrections("--agent", "all"))
+
+	for _, bad := range []string{"gemini", ""} {
+		_, err := runCoach(t, "", "status", "--agent", bad)
+		require.Error(t, err, bad)
+		assert.Contains(t, err.Error(), "--agent must be all, claude or codex")
 	}
 }
 
@@ -574,4 +651,16 @@ func TestCoachRun_ImportsSuggestions(t *testing.T) {
 	open, err = d.ListOpenInstructionSuggestions()
 	require.NoError(t, err)
 	assert.Empty(t, open, "the row moved to the coach")
+}
+
+// A failed agentlog.db open at daemon start leaves the one-time re-measure
+// for the next start instead of marking it done.
+func TestRemeasureCoachBaselines_FailedOpenRetriesNextStart(t *testing.T) {
+	d := coachSetup(t)
+	var logs bytes.Buffer
+	remeasureCoachBaselines(d, nil, log.New(&logs, "", 0))
+	done, err := d.CoachBaselinesPerAgentDone()
+	require.NoError(t, err)
+	assert.False(t, done)
+	assert.Empty(t, logs.String())
 }
