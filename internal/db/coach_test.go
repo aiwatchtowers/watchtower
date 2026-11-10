@@ -53,7 +53,7 @@ func TestCoachProposal_RoundTrip(t *testing.T) {
 	assert.Equal(t, 2, n)
 
 	base := 2.5
-	require.NoError(t, d.MarkCoachAccepted(id, "after edited", &base, 4, now.Add(time.Hour)))
+	require.NoError(t, d.MarkCoachAccepted(id, "after edited", "", &base, 4, now.Add(time.Hour)))
 	acc, err := d.ListCoachProposals("accepted")
 	require.NoError(t, err)
 	require.Len(t, acc, 1)
@@ -61,7 +61,7 @@ func TestCoachProposal_RoundTrip(t *testing.T) {
 	assert.Equal(t, 2.5, *acc[0].Baseline)
 	assert.Equal(t, 4, acc[0].BaselineN)
 	assert.Equal(t, "after edited", acc[0].AfterText)
-	assert.Error(t, d.MarkCoachAccepted(id, "x", nil, 1, now), "only from open")
+	assert.Error(t, d.MarkCoachAccepted(id, "x", "", nil, 1, now), "only from open")
 
 	v := 1.0
 	require.NoError(t, d.SetCoachVerdict(id, "works", &v, now.Add(2*time.Hour)))
@@ -410,4 +410,61 @@ func TestCoachProposal_ConversationDeletedKeepsProposal(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got.ConversationID)
 	assert.Equal(t, "open", got.Status)
+}
+
+// A workbench repository edit stores its branch at Accept; measure_from is set
+// once, only while accepted; the awaiting list holds accepted repo_* rows with
+// no measure_from and no verdict.
+func TestCoachProposal_WrittenBranchAndMeasureFrom(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 10, 26, 9, 0, 0, 0, time.UTC)
+	wb := newTestWorkbench(t, d)
+	repo := func(fp string) int64 {
+		p := coachFixture(fp)
+		p.Destination, p.WorkbenchID = "repo_claude_md", wb
+		id, err := d.InsertCoachProposal(p, now)
+		require.NoError(t, err)
+		return id
+	}
+	a, b, c, rolled := repo("r1"), repo("r2"), repo("r3"), repo("r4")
+	open := repo("r5")
+	other, err := d.InsertCoachProposal(coachFixture("s1"), now)
+	require.NoError(t, err)
+	for _, id := range []int64{a, b, c, rolled, other} {
+		require.NoError(t, d.MarkCoachAccepted(id, "a\nb", "feature/x", nil, 0, now))
+	}
+	require.NoError(t, d.SetCoachVerdict(c, "too_little_data", nil, now.Add(31*24*time.Hour)))
+	require.NoError(t, d.DecideCoachProposal(rolled, "accepted", "rolled_back", now))
+
+	got, err := d.GetCoachProposal(a)
+	require.NoError(t, err)
+	assert.Equal(t, "feature/x", got.WrittenBranch)
+	assert.True(t, got.MeasureFrom.IsZero())
+
+	awaiting, err := d.ListRepoProposalsAwaitingCommit()
+	require.NoError(t, err)
+	var ids []int64
+	for _, p := range awaiting {
+		ids = append(ids, p.ID)
+	}
+	assert.Equal(t, []int64{a, b}, ids, "not the judged, rolled back, open or non-repo rows (%d, %d, %d, %d)", c, rolled, open, other)
+
+	at := now.Add(48 * time.Hour)
+	set, err := d.SetCoachMeasureFrom(a, at)
+	require.NoError(t, err)
+	assert.True(t, set)
+	set, err = d.SetCoachMeasureFrom(a, at.Add(time.Hour))
+	require.NoError(t, err)
+	assert.False(t, set, "set once")
+	set, err = d.SetCoachMeasureFrom(rolled, at)
+	require.NoError(t, err)
+	assert.False(t, set, "only while accepted")
+	got, err = d.GetCoachProposal(a)
+	require.NoError(t, err)
+	assert.Equal(t, at, got.MeasureFrom.UTC())
+
+	awaiting, err = d.ListRepoProposalsAwaitingCommit()
+	require.NoError(t, err)
+	require.Len(t, awaiting, 1)
+	assert.Equal(t, b, awaiting[0].ID)
 }

@@ -91,7 +91,18 @@ func repoApplier(t *testing.T, d dbs) (*Applier, *gitState) {
 	g := &gitState{}
 	a := newApplier(t, d)
 	a.RepoState = g.read(t)
+	a.RepoBranch = func(folder string) (string, error) { return gitBranch(t, folder), nil }
 	return a, g
+}
+
+// gitBranch is the branch checked out in folder the way cmd's RepoBranch
+// names it: "detached:<short sha>" for a detached HEAD.
+func gitBranch(t *testing.T, folder string) string {
+	t.Helper()
+	if b := git(t, folder, "branch", "--show-current"); b != "" {
+		return b
+	}
+	return "detached:" + git(t, folder, "rev-parse", "--short=7", "HEAD")
 }
 
 func repoWorkbench(t *testing.T, d dbs, folder string) int64 {
@@ -393,7 +404,7 @@ func TestAccept_RepoWorkbenchDeletedAfterWrite_Undone(t *testing.T) {
 		w, err := a.writeDestination(p, cur, p.AfterText, applyNow)
 		require.NoError(t, err, c.name)
 		require.NoError(t, d.DeleteWorkbench(wb), c.name)
-		require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, nil, 0, applyNow), db.ErrCoachStateChanged, c.name)
+		require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, "", nil, 0, applyNow), db.ErrCoachStateChanged, c.name)
 		require.NoError(t, w.undo(), c.name)
 		if c.before == "" {
 			assert.NoFileExists(t, path, c.name)
@@ -455,6 +466,10 @@ func TestAccept_RepoSeamsNotWired(t *testing.T) {
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
 	err := a.acceptErr(id, "")
 	require.ErrorIs(t, err, errRepoNotWired)
+	// RepoState alone is not enough: the branch reader is wired too, or nothing is written.
+	noBranch, _ := repoApplier(t, d)
+	noBranch.RepoBranch = nil
+	require.ErrorIs(t, noBranch.acceptErr(id, ""), errRepoNotWired)
 	assert.Contains(t, err.Error(), "repo_* accept: git state reader not wired")
 	assert.Equal(t, "Run tests.\n", readFile(t, filepath.Join(folder, "CLAUDE.md")))
 	assert.Equal(t, "open", proposal(t, d, id).Status)
@@ -536,7 +551,7 @@ func TestAccept_RepoStateErrorRefuses(t *testing.T) {
 	failing := func(string, string) (RepoFileState, error) {
 		return RepoFileState{Git: true}, errors.New("fatal: simulated status failure")
 	}
-	a := newApplier(t, d)
+	a, _ := repoApplier(t, d)
 	a.RepoState = failing
 	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
 	err := a.acceptErr(id, "")
@@ -579,4 +594,48 @@ func TestAccept_RepoStatusCASFailsThroughAccept_Undone(t *testing.T) {
 		}
 		assert.Empty(t, git(t, folder, "status", "--porcelain=v1"), c.name)
 	}
+}
+
+// Accept stores the branch checked out at the write (spec §4.3a, D68); a
+// failed branch read leaves "" and keeps the write.
+func TestAccept_RepoRecordsBranch(t *testing.T) {
+	d := openDBs(t)
+	folder := fullRepo(t)
+	wb := repoWorkbench(t, d, folder)
+	a, _ := repoApplier(t, d)
+
+	git(t, folder, "switch", "-q", "-c", "feature/x")
+	id := propose(t, d, repoProposal(DestRepoClaudeMD, wb, "", "Run tests.\n", "Run lint.\n"))
+	r, err := a.Accept(id, "")
+	require.NoError(t, err)
+	assert.Equal(t, "feature/x", r.WrittenBranch)
+	assert.Equal(t, "feature/x", proposal(t, d, id).WrittenBranch)
+
+	git(t, folder, "commit", "-q", "-am", "owner commits")
+	git(t, folder, "switch", "-q", "--detach")
+	sha := git(t, folder, "rev-parse", "--short=7", "HEAD")
+	id = propose(t, d, repoProposal(DestRepoWorkflow, wb, "", "# Workflow\n", "# Workflow\nReview first.\n"))
+	r, err = a.Accept(id, "")
+	require.NoError(t, err)
+	assert.Equal(t, "detached:"+sha, r.WrittenBranch)
+	assert.Equal(t, "detached:"+sha, proposal(t, d, id).WrittenBranch)
+
+	// A failed branch read after the write: accepted, written, no branch.
+	git(t, folder, "commit", "-q", "-am", "owner commits")
+	a.RepoBranch = func(string) (string, error) { return "", errors.New("git status failed") }
+	id = propose(t, d, repoProposal(DestRepoCodexSkill, wb, "b", "Read the board.\n", "Read the board first.\n"))
+	r, err = a.Accept(id, "")
+	require.NoError(t, err)
+	assert.Empty(t, r.WrittenBranch)
+	p := proposal(t, d, id)
+	assert.Equal(t, "accepted", p.Status)
+	assert.Empty(t, p.WrittenBranch)
+	assert.Equal(t, "Read the board first.\n", readFile(t, filepath.Join(folder, ".agents/skills/b/SKILL.md")))
+
+	// Every other destination stores no branch.
+	id = propose(t, d, db.CoachProposal{Destination: DestChat, BeforeText: "", AfterText: "Be brief."})
+	r, err = a.Accept(id, "")
+	require.NoError(t, err)
+	assert.Empty(t, r.WrittenBranch)
+	assert.Empty(t, proposal(t, d, id).WrittenBranch)
 }

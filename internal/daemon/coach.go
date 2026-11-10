@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/agentlog"
 	"watchtower/internal/coach"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
@@ -20,6 +21,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/workbenchgit"
 )
 
 // coachInterval is the gap between two coach runs; coachRetryAfter the gap
@@ -27,6 +29,10 @@ import (
 const (
 	coachInterval   = 7 * 24 * time.Hour
 	coachRetryAfter = 24 * time.Hour
+	// coachCommitsEvery is the gap between two commit checks of the accepted
+	// workbench repository edits; coachHeadReadBudget caps one git read.
+	coachCommitsEvery   = 24 * time.Hour
+	coachHeadReadBudget = 15 * time.Second
 )
 
 // coachGeneratorFactory is the seam tests override. The coach prompt carries
@@ -71,6 +77,12 @@ var coachSessionDirs = func() sessionfeed.Dirs {
 
 // Seams tests replace to count and script the steps.
 var (
+	// coachFileAtHead reads a workbench file at the folder's HEAD: the
+	// read-only `git show` of workbenchgit.FileAtHead (COACH-01:
+	// TestCOACH01_NoGitWrites scans this file).
+	coachFileAtHead = func(ctx context.Context, folder, rel string) (string, bool, error) {
+		return workbenchgit.FileAtHead(ctx, workbenchgit.Options{Folder: folder}, rel)
+	}
 	runCoachImport   = coach.ImportSuggestions
 	runCoachJudge    = coach.Judge
 	runCoachProposer = func(ctx context.Context, p *coach.Proposer, in coach.Inputs) (int, *digest.Usage, error) {
@@ -124,7 +136,8 @@ func (d *Daemon) markCoachFailed(now time.Time) {
 	}
 }
 
-// phaseCoach runs the agent coach once a week: fold the old instruction
+// phaseCoach checks the accepted workbench repository edits for their commit
+// once a day (coachCommitCheck), and runs the agent coach once a week: fold the old instruction
 // suggestions in (once ever, ImportSuggestions), judge the accepted proposals
 // that are old enough, collect the signals, ask for new proposals. The fold
 // runs under the lock, before proposing, so it and `coach run` never race on
@@ -141,6 +154,10 @@ func (d *Daemon) phaseCoach(ctx context.Context) {
 		return
 	}
 	now := time.Now()
+	if d.lastCoachCommits.IsZero() || now.Sub(d.lastCoachCommits) >= coachCommitsEvery {
+		d.lastCoachCommits = now
+		d.coachCommitCheck(ctx, now)
+	}
 	if !d.lastCoach.IsZero() && now.Sub(d.lastCoach) < coachInterval {
 		return
 	}
@@ -210,4 +227,68 @@ func (d *Daemon) coachGenerator(ctx context.Context) digest.Generator {
 		gen = digest.WithCallTimeout(digest.NewPooledGenerator(gen, d.aiWorkerPool), digest.DaemonAICallTimeout)
 	}
 	return gen
+}
+
+// coachCommitCheck starts the verdict window of each accepted workbench
+// repository edit the owner has committed (spec §4.3a, D68): the first time
+// the file at the workbench folder's HEAD equals the accepted text,
+// measure_from = now, by a compare-and-set on measure_from IS NULL (a second
+// pass is a no-op). A folder that is gone, is not a git work tree any more,
+// or cannot be read skips the row that day; the judge's 30-day rule ends a
+// row never committed. Git is read outside any write transaction; each
+// SetCoachMeasureFrom is its own short write. Logs carry ids, never a path.
+func (d *Daemon) coachCommitCheck(ctx context.Context, now time.Time) {
+	ps, err := d.db.ListRepoProposalsAwaitingCommit()
+	if err != nil {
+		d.logger.Printf("coach: commit check: %v", err)
+		return
+	}
+	committed := 0
+	for _, p := range ps {
+		if ctx.Err() != nil {
+			return
+		}
+		seen, why := d.coachEditAtHead(ctx, p)
+		if why != "" {
+			d.logger.Printf("coach: commit check: proposal %d (workbench %d) skipped today: %s", p.ID, p.WorkbenchID, why)
+			continue
+		}
+		if !seen {
+			continue
+		}
+		set, err := d.db.SetCoachMeasureFrom(p.ID, now)
+		if err != nil {
+			d.logger.Printf("coach: commit check: proposal %d: %v", p.ID, err)
+			continue
+		}
+		if set {
+			committed++
+		}
+	}
+	if committed > 0 {
+		d.logger.Printf("coach: commit check: %d repository edit(s) committed, measured from now", committed)
+	}
+}
+
+// coachEditAtHead reports whether p's file at its workbench folder's HEAD
+// holds p's accepted text; why names a skip (never the folder or the path).
+func (d *Daemon) coachEditAtHead(ctx context.Context, p db.CoachProposal) (seen bool, why string) {
+	rel, ok := coach.RepoRelPath(p.Destination, p.Skill)
+	if !ok {
+		return false, "not a repository file"
+	}
+	w, err := d.db.GetWorkbench(p.WorkbenchID)
+	if err != nil {
+		return false, "workbench not readable"
+	}
+	if fi, err := os.Stat(w.FolderPath); err != nil || !fi.IsDir() {
+		return false, "folder gone"
+	}
+	readCtx, cancel := context.WithTimeout(ctx, coachHeadReadBudget)
+	defer cancel()
+	text, ok, err := coachFileAtHead(readCtx, w.FolderPath, rel)
+	if err != nil {
+		return false, "not readable at HEAD (not a git work tree, or git failed)"
+	}
+	return ok && text == p.AfterText, ""
 }

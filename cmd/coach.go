@@ -175,17 +175,29 @@ func coachRepoBranch() func(folder string) (string, error) {
 	return func(folder string) (string, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
 		defer cancel()
-		st := workbenchgit.ReadStatus(ctx, workbenchgit.Options{Folder: folder})
-		switch {
-		case !st.Git:
-			return "", coach.ErrRepoNotGit
-		case !st.StatusOK:
-			return "", errors.New("reading the branch: git status failed")
-		case st.Detached:
-			return "detached:" + st.Head, nil
-		}
-		return st.Branch, nil
+		return coachBranchOf(coachFolderStatus(ctx, folder))
 	}
+}
+
+// coachFolderStatus is the read-only `git status` of a workbench folder
+// (workbenchgit.ReadStatus); a seam so tests count the reads.
+var coachFolderStatus = func(ctx context.Context, folder string) workbenchgit.Status {
+	return workbenchgit.ReadStatus(ctx, workbenchgit.Options{Folder: folder})
+}
+
+// coachBranchOf names the branch of a folder's status: the branch, or
+// "detached:<short sha>" for a detached HEAD; not a work tree or a failed
+// status read is an error.
+func coachBranchOf(st workbenchgit.Status) (string, error) {
+	switch {
+	case !st.Git:
+		return "", coach.ErrRepoNotGit
+	case !st.StatusOK:
+		return "", errors.New("reading the branch: git status failed")
+	case st.Detached:
+		return "detached:" + st.Head, nil
+	}
+	return st.Branch, nil
 }
 
 // coachCodedError carries the machine-readable "code" (and a diff) of a failure object.
@@ -371,6 +383,16 @@ type coachProposalJSON struct {
 	// ConversationID is the tuning chat a chat proposal came from; null for
 	// a weekly one and once that conversation is deleted.
 	ConversationID *int64 `json:"conversation_id"`
+	// WrittenBranch is the branch a workbench repository file was written on
+	// at Accept ("" for every other destination).
+	WrittenBranch string `json:"written_branch"`
+	// MeasureFrom is when the daemon first saw a repository edit committed:
+	// its verdict window starts there; null until then and for the others.
+	MeasureFrom *string `json:"measure_from"`
+	// FolderBranch is only on an open repository proposal: the branch checked
+	// out in the workbench folder now ("detached:<short sha>"; "" when it
+	// cannot be read). No key on any other row.
+	FolderBranch *string `json:"folder_branch,omitempty"`
 }
 
 type coachProposalsJSON struct {
@@ -397,7 +419,8 @@ func proposalJSON(p db.CoachProposal) coachProposalJSON {
 		CreatedAt: p.CreatedAt.UTC().Format(time.RFC3339), DecidedAt: stampPtr(p.DecidedAt),
 		Baseline: p.Baseline, Verdict: p.Verdict, VerdictValue: p.VerdictValue, VerdictAt: stampPtr(p.VerdictAt),
 		RevertsID: p.RevertsID, Budget: coach.BudgetOf(p.Destination, p.BeforeText),
-		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID}
+		Origin: p.Origin, Skill: p.Skill, ConversationID: p.ConversationID,
+		WrittenBranch: p.WrittenBranch, MeasureFrom: stampPtr(p.MeasureFrom)}
 }
 
 func proposalsOf(ps []db.CoachProposal) coachProposalsJSON {
@@ -421,7 +444,51 @@ func runCoachProposals(_ *cobra.Command, e *coachEnv) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return proposalsOf(ps), nil
+	out := proposalsOf(ps)
+	withFolderBranches(e.db, out.Proposals)
+	return out, nil
+}
+
+// withFolderBranches gives each open repository proposal the branch checked
+// out in its workbench folder now: one read-only status per workbench per
+// call; "" when the workbench or its folder cannot be read or is not a git
+// work tree (spec §4.3a: the open card names the branch it would land on).
+func withFolderBranches(d *db.DB, ps []coachProposalJSON) {
+	branches := map[int64]string{}
+	for i := range ps {
+		p := &ps[i]
+		if p.Status != "open" {
+			continue
+		}
+		if _, ok := coach.RepoRelPath(p.Destination, p.Skill); !ok {
+			continue
+		}
+		branch, ok := branches[p.WorkbenchID]
+		if !ok {
+			branch = coachFolderBranch(d, p.WorkbenchID)
+			branches[p.WorkbenchID] = branch
+		}
+		p.FolderBranch = &branch
+	}
+}
+
+// coachFolderBranch is the branch checked out in a workbench's folder, ""
+// when it cannot be read.
+func coachFolderBranch(d *db.DB, wb int64) string {
+	w, err := d.GetWorkbench(wb)
+	if err != nil {
+		return ""
+	}
+	if fi, err := os.Stat(w.FolderPath); err != nil || !fi.IsDir() {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
+	defer cancel()
+	branch, err := coachBranchOf(coachFolderStatus(ctx, w.FolderPath))
+	if err != nil {
+		return ""
+	}
+	return branch
 }
 
 // ---- accept, decline, rollback ----
@@ -442,6 +509,9 @@ type coachAcceptJSON struct {
 	// WrittenPath is the workbench repository file written, relative to the
 	// workbench folder; "" for every other destination.
 	WrittenPath string `json:"written_path"`
+	// WrittenBranch is the branch that file was written on ("" for every
+	// other destination, or when the branch could not be read).
+	WrittenBranch string `json:"written_branch"`
 }
 
 func parseCoachID(s string) (int64, error) {
@@ -479,7 +549,7 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 	}
 	return coachAcceptJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
 		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted,
-		WrittenPath: res.WrittenPath}, nil
+		WrittenPath: res.WrittenPath, WrittenBranch: res.WrittenBranch}, nil
 }
 
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
@@ -703,6 +773,9 @@ func printCoachProposals(w io.Writer, ps []coachProposalJSON) {
 		}
 		if p.Skill != "" {
 			dest += " [" + p.Skill + "]"
+		}
+		if p.FolderBranch != nil && *p.FolderBranch != "" {
+			dest += " on " + *p.FolderBranch
 		}
 		fmt.Fprintf(w, "#%d [%s] %s\n  where: %s\n", p.ID, p.Status, p.Title, dest)
 		if p.Origin == "chat" {

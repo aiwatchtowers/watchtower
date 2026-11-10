@@ -23,13 +23,20 @@ const (
 	// judgeImprovement is the drop in the metric, against the baseline, that
 	// counts as "works".
 	judgeImprovement = 0.10
+	// repoCommitWait is how long an accepted workbench repository edit may
+	// wait for the owner's commit: past it, still unseen at the folder's HEAD,
+	// its verdict is a final too_little_data (spec §4.3a, D68).
+	repoCommitWait = 30 * 24 * time.Hour
 )
 
 // Judge gives the accepted proposals a verdict by comparing the metric since
 // the Accept with the baseline taken then. It shows correlation, not
 // causation: other changes land in the same weeks. A proposal decided at least
 // judgeAfter ago with no verdict, or with too_little_data (until judgeGiveUp),
-// is measured over [decided_at, now): under judgeMinSessions sessions, no
+// is measured over [decided_at, now) — for a workbench repository file over
+// [measure_from, now), from when the daemon first saw the edit committed
+// (windowStart; never committed within repoCommitWait: too_little_data,
+// final): under judgeMinSessions sessions, no
 // baseline or no value is too_little_data; a value at least judgeImprovement
 // below the baseline is works; anything else is no_effect. A no_effect edit
 // gets one mechanical cut proposal (no model call) when a slot is free. judged
@@ -69,13 +76,26 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 	}
 	var errs []error
 	for _, p := range accepted {
-		if p.DecidedAt.IsZero() || now.Sub(p.DecidedAt) < judgeAfter {
+		if isRepoDestination(p.Destination) && p.MeasureFrom.IsZero() {
+			// Not committed yet: no window to measure. Past repoCommitWait
+			// it never will be (the daily commit check skips a judged row).
+			if p.Verdict != "" || p.DecidedAt.IsZero() || now.Sub(p.DecidedAt) < repoCommitWait {
+				continue
+			}
+			if err := d.SetCoachVerdict(p.ID, "too_little_data", nil, now); err != nil &&
+				!errors.Is(err, db.ErrCoachStateChanged) {
+				errs = append(errs, fmt.Errorf("judging coach proposal %d: %w", p.ID, err))
+			}
+			continue
+		}
+		start := windowStart(p)
+		if start.IsZero() || now.Sub(start) < judgeAfter {
 			continue
 		}
 		if p.Verdict != "" && p.Verdict != "too_little_data" {
 			continue
 		}
-		if p.Verdict == "too_little_data" && !p.VerdictAt.Before(p.DecidedAt.Add(judgeGiveUp)) {
+		if p.Verdict == "too_little_data" && !p.VerdictAt.Before(start.Add(judgeGiveUp)) {
 			continue // final
 		}
 		verdict, value, err := verdictOf(d, al, p, now)
@@ -107,9 +127,19 @@ func judge(d *db.DB, al *agentlogdb.DB, home string, now time.Time) (judged, cut
 	return judged, cuts, errors.Join(errs...)
 }
 
+// windowStart is where p's verdict window starts: measure_from for a
+// workbench repository file (zero until its commit is seen), the Accept for
+// every other destination.
+func windowStart(p db.CoachProposal) time.Time {
+	if isRepoDestination(p.Destination) {
+		return p.MeasureFrom
+	}
+	return p.DecidedAt
+}
+
 // verdictOf measures p's period and names the verdict and the measured value.
 func verdictOf(d *db.DB, al *agentlogdb.DB, p db.CoachProposal, now time.Time) (string, *float64, error) {
-	m, err := Measure(d, al, p.WorkbenchID, p.DecidedAt, now, AgentFor(p.Destination))
+	m, err := Measure(d, al, p.WorkbenchID, windowStart(p), now, AgentFor(p.Destination))
 	if err != nil {
 		return "", nil, err
 	}

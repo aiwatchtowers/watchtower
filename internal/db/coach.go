@@ -57,6 +57,11 @@ type CoachProposal struct {
 	VerdictAt                                           time.Time
 	Origin, Skill                                       string
 	ConversationID                                      *int64
+	// WrittenBranch is the branch a repo_* Accept wrote on ("" otherwise, or
+	// when the branch could not be read); MeasureFrom is when the daemon first
+	// saw a repo_* edit at the folder's HEAD (zero = not yet, or not repo_*).
+	WrittenBranch string
+	MeasureFrom   time.Time
 }
 
 // PromptAddition is an owner-accepted addition to a Watchtower prompt.
@@ -84,17 +89,18 @@ func parseCoachStamp(s string) (time.Time, error) {
 
 const coachCols = `id, fingerprint, kind, destination, COALESCE(workbench_id, 0), prompt_id, title, why, metric,
 	before_text, after_text, evidence, sources, status, COALESCE(reverts_id, 0), created_at, decided_at,
-	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id`
+	baseline, baseline_n, verdict, verdict_value, verdict_at, origin, skill, conversation_id,
+	written_branch, COALESCE(measure_from, '')`
 
 func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, error) {
 	var p CoachProposal
-	var evidence, created, decided, verdictAt string
+	var evidence, created, decided, verdictAt, measureFrom string
 	var baseline, verdictValue sql.NullFloat64
 	var conv sql.NullInt64
 	if err := row.Scan(&p.ID, &p.Fingerprint, &p.Kind, &p.Destination, &p.WorkbenchID, &p.PromptID, &p.Title,
 		&p.Why, &p.Metric, &p.BeforeText, &p.AfterText, &evidence, &p.Sources, &p.Status, &p.RevertsID,
 		&created, &decided, &baseline, &p.BaselineN, &p.Verdict, &verdictValue, &verdictAt,
-		&p.Origin, &p.Skill, &conv); err != nil {
+		&p.Origin, &p.Skill, &conv, &p.WrittenBranch, &measureFrom); err != nil {
 		return CoachProposal{}, fmt.Errorf("scanning coach proposal: %w", err)
 	}
 	if err := json.Unmarshal([]byte(evidence), &p.Evidence); err != nil {
@@ -109,6 +115,9 @@ func scanCoachProposal(row interface{ Scan(...any) error }) (CoachProposal, erro
 	}
 	if p.VerdictAt, err = parseCoachStamp(verdictAt); err != nil {
 		return CoachProposal{}, fmt.Errorf("parsing coach proposal verdict_at: %w", err)
+	}
+	if p.MeasureFrom, err = parseCoachStamp(measureFrom); err != nil {
+		return CoachProposal{}, fmt.Errorf("parsing coach proposal measure_from: %w", err)
 	}
 	if baseline.Valid {
 		v := baseline.Float64
@@ -350,17 +359,47 @@ func (db *DB) DecideCoachProposal(id int64, from, to string, now time.Time) erro
 }
 
 // MarkCoachAccepted accepts an open proposal: it stores the destination text
-// as written (after, which may be the owner's edit of the proposed text) and
-// the metric baseline with the number of observations behind it, measured at
-// that moment. A nil baseline (nothing measurable) is stored as NULL.
-func (db *DB) MarkCoachAccepted(id int64, after string, baseline *float64, n int, now time.Time) error {
+// as written (after, which may be the owner's edit of the proposed text), the
+// branch a workbench repository file was written on ("" for every other
+// destination) and the metric baseline with the number of observations behind
+// it, measured at that moment. A nil baseline (nothing measurable) is stored
+// as NULL.
+func (db *DB) MarkCoachAccepted(id int64, after, branch string, baseline *float64, n int, now time.Time) error {
 	var b any
 	if baseline != nil {
 		b = *baseline
 	}
 	res, err := db.Exec(`UPDATE coach_proposals SET status = 'accepted', decided_at = ?, after_text = ?,
-		baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`, coachStamp(now), after, b, n, id)
+		written_branch = ?, baseline = ?, baseline_n = ? WHERE id = ? AND status = 'open'`,
+		coachStamp(now), after, branch, b, n, id)
 	return coachCAS(res, err, "accepting coach proposal")
+}
+
+// SetCoachMeasureFrom starts the verdict window of an accepted repo_* edit:
+// the first time the daemon sees it at the folder's HEAD. A compare-and-set on
+// measure_from IS NULL and status accepted: false (no error) when it was
+// already set or the proposal left accepted, so a second pass is a no-op.
+func (db *DB) SetCoachMeasureFrom(id int64, at time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE coach_proposals SET measure_from = ?
+		WHERE id = ? AND status = 'accepted' AND measure_from IS NULL`, coachStamp(at), id)
+	if err != nil {
+		return false, fmt.Errorf("setting coach measure_from: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting coach measure_from: %w", err)
+	}
+	return n > 0, nil
+}
+
+// ListRepoProposalsAwaitingCommit returns the accepted workbench repository
+// edits whose commit has not been seen yet (measure_from NULL) and that have
+// no verdict (30 days without the commit is a final too_little_data), oldest
+// first.
+func (db *DB) ListRepoProposalsAwaitingCommit() ([]CoachProposal, error) {
+	return queryCoachProposals(db, `SELECT `+coachCols+` FROM coach_proposals
+		WHERE status = 'accepted' AND destination LIKE 'repo\_%' ESCAPE '\'
+		AND measure_from IS NULL AND verdict = '' ORDER BY id`)
 }
 
 // SetCoachVerdict stores the outcome verdict of an accepted proposal, only

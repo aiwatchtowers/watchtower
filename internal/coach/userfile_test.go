@@ -394,7 +394,7 @@ func TestAccept_CreatedAgentsMDStatusFailureLeavesEmpty(t *testing.T) {
 	w, err := a.writeDestination(p, cur, "Run tests.\n", applyNow)
 	require.NoError(t, err)
 	require.NoError(t, d.DecideCoachProposal(id, "open", "declined", applyNow))
-	require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, nil, 0, applyNow), db.ErrCoachStateChanged)
+	require.ErrorIs(t, d.MarkCoachAccepted(id, w.result, "", nil, 0, applyNow), db.ErrCoachStateChanged)
 	require.NoError(t, w.undo())
 	fi, err := os.Stat(path)
 	require.NoError(t, err, "never removed")

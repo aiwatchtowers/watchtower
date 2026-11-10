@@ -306,12 +306,13 @@ func folderFiles(t *testing.T, folder string) map[string]string {
 // the git state reaches Accept and ValidateChatProposal only through the
 // RepoState/RepoBranch seams, which have no default there. (b) The tuning
 // paths that fill them — the coach and tuning CLI code, which lives only in
-// cmd/coach*.go and cmd/tuning*.go, and internal/tuning — call no workbenchgit
+// cmd/coach*.go and cmd/tuning*.go, the daemon's commit check (in
+// internal/daemon/coach*.go) and internal/tuning — call no workbenchgit
 // helper but PathStatus, ReadStatus and FileAtHead. (c) Those helpers run git
 // only with the read-only verbs status, rev-parse and show (pinned argv by
 // argv in workbenchgit's recording-runner tests: TestPathStatus_RunsOnlyStatus,
-// TestReadStatus_RunsOnlyReadVerbs). Extend the lists with each new read-only
-// helper or caller (the daemon's commit check, Task 2.14); never relax them.
+// TestReadStatus_RunsOnlyReadVerbs, TestFileAtHead). Extend the lists with
+// each new read-only helper or caller; never relax them.
 func TestCOACH01_NoGitWrites(t *testing.T) {
 	// (a)
 	for _, f := range parseDir(t, ".") {
@@ -345,6 +346,21 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 	if _, err := os.Stat(filepath.Join("..", "tuning")); err == nil {
 		files = append(files, parseDir(t, filepath.Join("..", "tuning"))...)
 	}
+	// The daemon's coach phase (the daily commit check); its other files are
+	// not tuning paths.
+	daemonGit := 0
+	for _, f := range parseDir(t, filepath.Join("..", "daemon")) {
+		if !tuningPath(f.name) {
+			continue
+		}
+		files = append(files, f)
+		for sel := range selectors(f.file, importNames(f.file, pkgs)) {
+			if strings.HasPrefix(sel, "workbenchgit.") {
+				daemonGit++
+			}
+		}
+	}
+	assert.Positive(t, daemonGit, "the scan finds the daemon's commit check (workbenchgit.FileAtHead)")
 	for _, f := range files {
 		inTuning := tuningPath(f.name) || strings.Contains(filepath.ToSlash(f.name), "internal/tuning/")
 		for sel := range selectors(f.file, importNames(f.file, pkgs)) {
@@ -403,9 +419,7 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 	verbs := 0
 	for name := range helpers {
 		fd, ok := decls[name]
-		if !ok {
-			continue // FileAtHead lands with Task 2.14
-		}
+		require.True(t, ok, "%s: the helper is gone; update the scan", name)
 		ast.Inspect(fd.Body, func(n ast.Node) bool {
 			c, ok := n.(*ast.CallExpr)
 			if !ok {
