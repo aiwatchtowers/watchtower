@@ -164,8 +164,9 @@ func buildQuerier(cfg *config.Config, opts transport.Options) ai.Provider {
 // ways: a provider with an MCP child gets the MCP args on its client; one
 // without (ollama) gets the runtime-B in-process tool loop (agentloop)
 // instead. All get the owner's Quick Connections except on the automation
-// editor. It returns a cleanup to run after the query drains (closing the
-// tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
+// editor and the tuning chat; runtime B refuses the tuning surface. It
+// returns a cleanup to run after the query drains (closing the tool-loop's
+// DB, if one was opened); the cleanup is a no-op otherwise.
 func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (ai.Provider, func(), error) {
 	if toolRoutingEnabled(cfg, aiFlagModel) {
 		routed := newToolRouteProvider(cfg, func(actual *config.Config) (ai.Provider, func(), error) { return newQueryClient(actual, dbPath, opts) })
@@ -195,6 +196,11 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 		if model == "" {
 			_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 		}
+		if aiFlagSurface == tools.SurfaceTuning {
+			// The tuning tools need a provider that runs an MCP child: this
+			// in-process loop has no DirectApply binding (spec D52).
+			return nil, noop, errors.New("tuning tools need Claude or Codex — pick one in Settings → System → AI")
+		}
 		database, err := db.Open(dbPath)
 		if err != nil {
 			return nil, noop, err
@@ -207,9 +213,9 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 			TurnID:         aiFlagTurn,
 		}
 		// The owner's Quick Connections, as the MCP-child transports get
-		// them; the editor chat carries only draft/save and read tools (D11).
+		// them; the editor and tuning chats get none (quickConnectionsOn).
 		var ext []ai.ExternalMCPServer
-		if aiFlagSurface != tools.AutomationEditorSurface {
+		if quickConnectionsOn(aiFlagSurface) {
 			ext = loadExternalMCPServersFrom(cfg, database, nil)
 		}
 		loop := newRuntimeBQuerier(cfg, model, buildToolRegistry(cfg, database), binding, ext, opts.ToolEvents)
@@ -219,13 +225,19 @@ func newQueryClient(cfg *config.Config, dbPath string, opts transport.Options) (
 	opts.DBPath, opts.Model = dbPath, model
 	if aiFlagTools == "chat" {
 		opts.MCPArgs = chatMCPArgs() // the MCP-child transports reach tools via the MCP subprocess
-		// The editor chat carries only draft/save and read tools (spec
-		// 2026-10-14 §14.5, D11); an external server may expose writes.
-		if aiFlagSurface != tools.AutomationEditorSurface {
+		if quickConnectionsOn(aiFlagSurface) {
 			opts.ExternalMCP = loadExternalMCPServersWith(cfg, dbPath, quickConnectionEnv(cfg.AI.Provider))
 		}
 	}
 	return buildQuerier(cfg, opts), noop, nil
+}
+
+// quickConnectionsOn reports whether a chat surface mounts the owner's Quick
+// Connections. The automation editor carries only draft/save and read tools
+// (spec 2026-10-14 §14.5, D11) and the tuning chat only its own tools (spec
+// 2026-11-03 §4.1); an external server may expose writes.
+func quickConnectionsOn(surface string) bool {
+	return surface != tools.AutomationEditorSurface && surface != tools.SurfaceTuning
 }
 
 // loadExternalMCPServers reads the owner's enabled external MCP connections

@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/providers"
 	"watchtower/internal/providers/transport"
 	"watchtower/internal/specreview"
+	"watchtower/internal/tools"
 
 	"github.com/spf13/cobra"
 )
@@ -66,7 +67,7 @@ var (
 
 // queryPurposes are the --purpose values ai query accepts: embedded chats
 // whose turns the usage ledger shows apart from the plain chat.
-var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true}
+var queryPurposes = map[string]bool{"spec_review.discuss": true, "review.reviewer": true, "tuning.chat": true}
 
 var aiCmd = &cobra.Command{
 	Use:   "ai",
@@ -145,7 +146,7 @@ func init() {
 	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
-	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor")
+	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor|tuning")
 	aiQueryCmd.Flags().Int64Var(&aiFlagConversation, "conversation", 0, "chat conversation id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagTurn, "turn", "", "turn id for --tools chat")
 	aiQueryCmd.Flags().StringVar(&aiFlagContextType, "context-type", "", "chat context type (e.g. target)")
@@ -158,7 +159,7 @@ func init() {
 	aiQueryCmd.Flags().Int64Var(&aiFlagReadFolderRound, "read-folder-round", 0,
 		"run, like --read-folder, in the folder diff review round N was taken from; exit 2 if it is no such round")
 	aiQueryCmd.Flags().StringVar(&aiFlagPurpose, "purpose", "",
-		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer); exit 2 on any other value")
+		"record this query's LLM calls under this usage purpose (spec_review.discuss, review.reviewer, tuning.chat); exit 2 on any other value")
 }
 
 // queryContext tags ctx with the --purpose value for the LLM usage ledger.
@@ -265,6 +266,18 @@ func runAIQuery(cmd *cobra.Command, args []string) error {
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
 		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
 		return nil
+	}
+	// Before any config or provider work: an unknown surface never starts a
+	// model call or an MCP child.
+	if !tools.KnownChatSurface(aiFlagSurface) {
+		emitError(enc, fmt.Sprintf("unknown chat surface %q", aiFlagSurface))
+		return nil
+	}
+	if aiFlagTools == "chat" && aiFlagSurface == tools.SurfaceTuning {
+		if err := checkTuningBinding(aiFlagConversation, aiFlagContextType); err != nil {
+			emitError(enc, err.Error())
+			return nil
+		}
 	}
 	// Before the config/DB work below, so a writer feeding a large prompt on
 	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
