@@ -186,7 +186,7 @@ jobs:
           bash scripts/leak-check.sh "$range"
 
   # Three parallel jobs over disjoint package slices (`make test-cover
-  # SHARD=K/3`: cmd alone, then the rest by weight — the split lives in
+  # SHARD=K/3`: packages dealt by measured weight — the split lives in
   # scripts/coverage-gate.sh). Unsharded the suite took 7-13 min on one
   # 4-vCPU runner (2026-11-10), CPU-bound. Every threshold is per package, so
   # each shard checks the packages it ran and no merge job is needed.

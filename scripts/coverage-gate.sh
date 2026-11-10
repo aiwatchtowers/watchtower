@@ -18,11 +18,10 @@
 # gate as one unsharded run. Without SHARD every package runs, as before.
 # `scripts/coverage-gate.sh --packages` prints the slice SHARD selects.
 #
-# The split: watchtower/cmd alone in shard 1 (~a third of the suite's CPU
-# time; it runs as CMD_SHARDS processes below), the other packages dealt over
-# shards 2..N heaviest first, each to the shard with the least weight so far
-# (ties to the lower shard). A package weighs its CI seconds in COVER_WEIGHTS,
-# else COVER_WEIGHT_DEFAULT. To rebalance, read the per-package seconds off a
+# The split: packages dealt heaviest first, each to the shard with the least
+# weight so far (ties to the lower shard), so watchtower/cmd, the heaviest,
+# opens shard 1. A package weighs its CI seconds in COVER_WEIGHTS (cmd:
+# CMD_WEIGHT), else COVER_WEIGHT_DEFAULT. To rebalance, read the per-package seconds off a
 # go-test log ("ok <pkg> <s>s") and update the list; a package new to the
 # module needs nothing.
 #
@@ -61,7 +60,11 @@ DB_SHARDS="${DB_SHARDS:-3}"
 SPLIT_PKGS="$CMD_PKG:$CMD_SHARDS watchtower/internal/db:$DB_SHARDS"
 
 # CI seconds per package (go-test log, 2026-11-10, every package on one
-# runner; db's an estimate for its DB_SHARDS slices).
+# runner; db's an estimate for its DB_SHARDS slices). CMD_WEIGHT is cmd's
+# share in the same units, fitted to a sharded run (2026-11-10: cmd's slices
+# took ~100 s of wall where weight 560 of other packages took ~190 s), plus
+# make test-scripts, which CI runs in cmd's shard: the heaviest, so shard 1.
+CMD_WEIGHT=350
 COVER_WEIGHTS="db 150 automations 125 transporttest 70 daemon 69 codex 35 jira 31 chat 27 confluenceedit 24 kb 24 sync 22 tools 22 ideas 17 automations/builtin 15 memory 15 hub/slices/sources 14 ai 13 hub 12 agentlogdb 12 agentlog 12 coach 11 sessioncleanup 10"
 COVER_WEIGHT_DEFAULT=3
 
@@ -70,7 +73,7 @@ if [[ -z "$ALL_PKGS" ]]; then
     echo "coverage-gate: go list ./... listed no packages" >&2
     exit 1
 fi
-MY_PKGS="$(echo "$ALL_PKGS" | awk -v shard="$SHARD" -v cmd="$CMD_PKG" -v weights="$COVER_WEIGHTS" -v dflt="$COVER_WEIGHT_DEFAULT" '
+MY_PKGS="$(echo "$ALL_PKGS" | awk -v shard="$SHARD" -v cmd="$CMD_PKG" -v cmdw="$CMD_WEIGHT" -v weights="$COVER_WEIGHTS" -v dflt="$COVER_WEIGHT_DEFAULT" '
     { pkgs[NR] = $0 }
     END {
         if (shard == "") { for (i = 1; i <= NR; i++) print pkgs[i]; exit }
@@ -80,18 +83,18 @@ MY_PKGS="$(echo "$ALL_PKGS" | awk -v shard="$SHARD" -v cmd="$CMD_PKG" -v weights
         if (n == 1) { for (i = 1; i <= NR; i++) print pkgs[i]; exit }
         nw = split(weights, ws, " ")
         for (j = 1; j < nw; j += 2) w["watchtower/internal/" ws[j]] = ws[j + 1] + 0
+        w[cmd] = cmdw
         # Heaviest first; equal weights keep go list order (stable insertion).
         m = 0
         for (i = 1; i <= NR; i++) {
             p = pkgs[i]
-            if (p == cmd) { if (k == 1) print p; continue }
             pw = (p in w) ? w[p] : dflt
             for (j = m; j > 0 && wt[j] < pw; j--) { order[j + 1] = order[j]; wt[j + 1] = wt[j] }
             order[j + 1] = p; wt[j + 1] = pw; m++
         }
         for (i = 1; i <= m; i++) {
-            best = 2
-            for (s = 3; s <= n; s++) if (load[s] < load[best]) best = s
+            best = 1
+            for (s = 2; s <= n; s++) if (load[s] < load[best]) best = s
             load[best] += wt[i]
             if (best == k) print order[i]
         }

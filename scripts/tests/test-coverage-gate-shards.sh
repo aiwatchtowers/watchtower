@@ -8,7 +8,8 @@
 #
 # Covers:
 #   - SHARD=1..3/3 partition the module: disjoint, union = the unsharded list
-#   - cmd alone in shard 1; db and automations (the two heaviest) apart
+#   - cmd (the heaviest) opens shard 1, alone in this small module; db and
+#     automations (the next two) apart
 #   - no SHARD and SHARD=1/1 select every package
 #   - a malformed SHARD fails
 #   - each shard checks only its packages' thresholds; a threshold for a
