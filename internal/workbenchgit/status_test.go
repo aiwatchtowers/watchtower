@@ -253,3 +253,88 @@ func TestReadStatus_IgnoresInheritedRepositoryEnvironment(t *testing.T) {
 	l := ListBranches(context.Background(), options(dir, &recorder{}))
 	assert.Equal(t, "main", l.Current)
 }
+
+func pathState(t *testing.T, dir, rel string) (PathState, *recorder) {
+	t.Helper()
+	rec := &recorder{}
+	st, err := PathStatus(context.Background(), options(dir, rec), rel)
+	require.NoError(t, err)
+	return st, rec
+}
+
+func TestPathStatus_Clean(t *testing.T) {
+	dir := newRepo(t)
+	st, _ := pathState(t, dir, "README.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+func TestPathStatus_DirtyKinds(t *testing.T) {
+	cases := map[string]func(t *testing.T, dir string){
+		"unstaged edit": func(t *testing.T, dir string) { writeFile(t, dir, "README.md", "changed\n") },
+		"staged edit": func(t *testing.T, dir string) {
+			writeFile(t, dir, "README.md", "changed\n")
+			gitIn(t, dir, "add", "README.md")
+		},
+		"untracked": func(t *testing.T, dir string) { writeFile(t, dir, "NEW.md", "x\n") },
+		"deleted":   func(t *testing.T, dir string) { require.NoError(t, os.Remove(filepath.Join(dir, "README.md"))) },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := newRepo(t)
+			mutate(t, dir)
+			rel := "README.md"
+			if name == "untracked" {
+				rel = "NEW.md"
+			}
+			st, _ := pathState(t, dir, rel)
+			assert.Equal(t, PathState{Git: true, Dirty: true}, st)
+		})
+	}
+}
+
+func TestPathStatus_OtherPathDirty(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "other.md", "x\n")
+	st, _ := pathState(t, dir, "README.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+func TestPathStatus_IgnoredIsClean(t *testing.T) {
+	dir := newRepo(t)
+	commit(t, dir, ".gitignore", "secret.md\n", "ignore")
+	writeFile(t, dir, "secret.md", "x\n")
+	st, _ := pathState(t, dir, "secret.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+func TestPathStatus_MissingFile(t *testing.T) {
+	dir := newRepo(t)
+	st, _ := pathState(t, dir, "CLAUDE.md")
+	assert.Equal(t, PathState{Git: true}, st)
+}
+
+func TestPathStatus_NotARepo(t *testing.T) {
+	newRepo(t) // skips without git
+	st, rec := pathState(t, t.TempDir(), "CLAUDE.md")
+	assert.Equal(t, PathState{}, st)
+	assert.Empty(t, rec.argv())
+}
+
+func TestPathStatus_RefusesEscapingPath(t *testing.T) {
+	dir := newRepo(t)
+	for _, rel := range []string{"../x", "/etc/x", "a/../../x", ""} {
+		rec := &recorder{}
+		_, err := PathStatus(context.Background(), options(dir, rec), rel)
+		require.Error(t, err, rel)
+		assert.Empty(t, rec.argv(), rel)
+	}
+}
+
+func TestPathStatus_RunsOnlyStatus(t *testing.T) {
+	dir := newRepo(t)
+	_, rec := pathState(t, dir, "sub/CLAUDE.md")
+	assert.Equal(t, [][]string{
+		{"rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"},
+		{"status", "--porcelain=v1", "-z", "--", "sub/CLAUDE.md"},
+	}, rec.argv())
+}
