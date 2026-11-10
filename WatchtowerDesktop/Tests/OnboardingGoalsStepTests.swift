@@ -41,6 +41,21 @@ final class OnboardingGoalsStepTests: XCTestCase {
         var result = OnboardingAgentCheckResult()
         var sessions: [FakeSession] = []
         var picked: String?
+        /// Set: the next check waits for `releaseCheck()`.
+        var holdChecks = false
+        private var held: CheckedContinuation<Void, Never>?
+
+        func check() async -> OnboardingAgentCheckResult {
+            if holdChecks { await withCheckedContinuation { held = $0 } }
+            return result
+        }
+
+        var isHolding: Bool { held != nil }
+
+        func releaseCheck() {
+            held?.resume()
+            held = nil
+        }
     }
 
     private var fakes = Fakes()
@@ -56,13 +71,15 @@ final class OnboardingGoalsStepTests: XCTestCase {
     }
 
     private var configPath: String { configDir.appendingPathComponent("config.yaml").path }
+    /// Overrides `configPath` for the next `makeCoordinator()`.
+    private var configPathOverride: String?
 
     private func makeCoordinator() -> OnboardingSignInCoordinator {
         let fakes = self.fakes
         let model = OnboardingGoalsModel(
             defaults: AppState.isolatedDefaults,
             systemLanguage: "English",
-            checkAgents: { fakes.result },
+            checkAgents: { await fakes.check() },
             configuredProvider: { nil },
             actions: OnboardingGoalsActions(initWorkspace: {}, setLanguage: { _ in }, applyFeatures: { _ in (nil, false) })
         )
@@ -75,7 +92,7 @@ final class OnboardingGoalsStepTests: XCTestCase {
                 fakes.sessions.append(session)
                 return session
             },
-            configPath: configPath,
+            configPath: configPathOverride ?? configPath,
             pickExecutable: pick
         )
     }
@@ -176,6 +193,61 @@ final class OnboardingGoalsStepTests: XCTestCase {
         await coordinator.exitHandling?.value
         XCTAssertEqual(fakes.sessions.map(\.commands), [["'\(executable)' update"], ["'\(executable)' auth login"]])
         XCTAssertEqual(coordinator.model.agentChoice.signIn, .running)
+    }
+
+    /// An update exits 0; the recheck is slow; the owner leaves the step
+    /// before it lands: no sign-in terminal opens afterwards.
+    func testLeavingDuringTheRecheckOpensNoTerminal() async throws {
+        let install = Choice.Install(path: "/Users/acme/.local/share/claude/versions/1.0.88", kind: .native)
+        fakes.result = OnboardingAgentCheckResult(
+            statuses: [.claude: .signedOut, .codex: .notInstalled], installs: [.claude: install], outdated: [.claude]
+        )
+        let coordinator = makeCoordinator()
+        await coordinator.model.runAgentCheck()
+        await coordinator.openIfNeeded()
+        let session = try XCTUnwrap(fakes.sessions.first)
+
+        fakes.holdChecks = true
+        fakes.result.outdated = []
+        session.exit(0)
+        while !fakes.isHolding { await Task.yield() }
+        coordinator.stop()
+        fakes.releaseCheck()
+        await coordinator.exitHandling?.value
+        XCTAssertEqual(fakes.sessions.count, 1)
+        XCTAssertNotNil(coordinator.model.agentChoice.signInToOpen, "the step opens it when shown again")
+    }
+
+    /// Check again finds the agent signed in while its sign-in runs: the
+    /// terminal closes and the model leaves `.running`.
+    func testCheckAgainReadyClosesTheTerminal() async throws {
+        let (coordinator, session) = try await runningSignIn()
+        fakes.result = OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled])
+        await coordinator.checkAgain()
+        XCTAssertEqual(session.stops, 1)
+        XCTAssertEqual(coordinator.model.agentChoice.signIn, .idle)
+        XCTAssertTrue(coordinator.model.canContinue)
+    }
+
+    func testPathErrorClearsOnTileSwitchAndCheckAgain() async throws {
+        let blocker = configDir.appendingPathComponent("file")
+        try FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try Data().write(to: blocker)
+        configPathOverride = blocker.appendingPathComponent("config.yaml").path
+        fakes.result = OnboardingAgentCheckResult(statuses: [.claude: .notInstalled, .codex: .notInstalled])
+        let coordinator = makeCoordinator()
+        await coordinator.model.runAgentCheck()
+        fakes.picked = "/opt/acme/bin/claude"
+
+        await coordinator.chooseExecutable(for: .claude)
+        XCTAssertNotNil(coordinator.pathError)
+        coordinator.pick(.codex)
+        XCTAssertNil(coordinator.pathError)
+
+        await coordinator.chooseExecutable(for: .codex)
+        XCTAssertNotNil(coordinator.pathError)
+        await coordinator.checkAgain()
+        XCTAssertNil(coordinator.pathError)
     }
 
     func testChooseExecutableSavesThePickedAgentsPath() async throws {

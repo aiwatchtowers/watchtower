@@ -56,6 +56,10 @@ struct OnboardingGoalsStepView: View {
             guard agent != nil else { return }
             Task { await signIn?.openIfNeeded() }
         }
+        // Any check that settles a running sign-in closes its terminal.
+        .onChange(of: model.agentChoice.signIn) { _, state in
+            if state != .running { signIn?.closeIfSettled() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await model.windowBecameActive() }
         }
@@ -95,7 +99,7 @@ struct OnboardingGoalsStepView: View {
         OnboardingAgentSection(
             choice: model.agentChoice,
             onPick: { agent in signIn?.pick(agent) },
-            onCheckAgain: { Task { await model.runAgentCheck() } },
+            onCheckAgain: { Task { await signIn?.checkAgain() } },
             onChoosePath: { agent in Task { await signIn?.chooseExecutable(for: agent) } },
             onSignIn: { Task { await signIn?.open() } },
             onStopSignIn: { signIn?.stopByOwner() },

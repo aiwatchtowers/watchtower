@@ -159,6 +159,7 @@ package final class OnboardingGoalsModel {
             agentChoice.otherProviderFailure = result.otherProviderFailure
             agentChoice.applyLoginProbe(outdated: result.outdated)
             agentChoice.applyDefault(configured: configuredProvider())
+            agentChoice.settleSignIn()
             isCheckingAgents = false
             cliCheckTask = nil
         }

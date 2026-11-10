@@ -203,6 +203,19 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertTrue(model.canContinue)
     }
 
+    /// A check that finds the agent signed in ends a running sign-in, so
+    /// coming back to the window can check again.
+    func testCheckSettlesARunningSignIn() async {
+        spy.cliResult = OnboardingAgentCheckResult(statuses: [.claude: .signedOut, .codex: .notInstalled])
+        let model = await readyModel()
+        model.signInStarted()
+        await model.runAgentCheck()
+        XCTAssertEqual(model.agentChoice.signIn, .running, "still signed out: it keeps running")
+        spy.cliResult = Self.claudeReady
+        await model.runAgentCheck()
+        XCTAssertEqual(model.agentChoice.signIn, .idle)
+    }
+
     func testWindowBecameActiveChecksOnlyWhenNotReady() async {
         let calls = Counter()
         let model = makeModel { [spy] in

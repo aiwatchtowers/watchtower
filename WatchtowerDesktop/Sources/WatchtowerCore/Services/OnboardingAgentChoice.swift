@@ -313,6 +313,14 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
 
     package mutating func signInStopped() { signIn = .ended(nil) }
 
+    /// After a check: a running sign-in whose agent is no longer signed out
+    /// (signed in elsewhere, gone, or another agent picked) is over — the
+    /// caller closes its terminal.
+    package mutating func settleSignIn() {
+        guard signIn == .running, selected.map(status) != .signedOut else { return }
+        signIn = .idle
+    }
+
     /// The tiles show unless a working provider was set elsewhere.
     package var showsTiles: Bool { otherProvider == nil || otherProviderFailure != nil }
 

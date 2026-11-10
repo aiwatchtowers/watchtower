@@ -112,10 +112,26 @@ final class OnboardingSignInCoordinator {
 
     /// A tile tap: the other agent's tile stops a running terminal first.
     func pick(_ agent: Agent) {
+        pathError = nil
         if agent != model.agentChoice.selected, model.agentChoice.status(agent) != .forbidden {
             stop()
         }
         model.pickAgent(agent)
+    }
+
+    /// Check again. The tile may turn Ready while the sign-in runs: its
+    /// terminal closes.
+    func checkAgain() async {
+        pathError = nil
+        await model.runAgentCheck()
+        closeIfSettled()
+    }
+
+    /// The model no longer runs a sign-in (a check settled it): a terminal
+    /// still going is stopped.
+    func closeIfSettled() {
+        guard model.agentChoice.signIn != .running, session?.isRunning == true else { return }
+        stop()
     }
 
     /// Ends the process only (leaving the step, Cancel, app quit): the model
@@ -137,6 +153,7 @@ final class OnboardingSignInCoordinator {
         }
         pathError = nil
         await model.runAgentCheck()
+        closeIfSettled()
     }
 
     private func resolvedEnvironment() async -> [String: String] {
@@ -146,10 +163,14 @@ final class OnboardingSignInCoordinator {
         return env
     }
 
+    /// The recheck after an exit can take seconds: a stop in the meantime
+    /// (the step left, Cancel, quit, another tile) means no new terminal.
     private func exited(_ code: Int32) {
-        exitHandling = Task { [model] in
+        let run = generation
+        exitHandling = Task { [weak self, model] in
             await model.signInEnded(exitCode: code)
-            await openIfNeeded()
+            guard let self, run == self.generation else { return }
+            await self.openIfNeeded()
         }
     }
 
