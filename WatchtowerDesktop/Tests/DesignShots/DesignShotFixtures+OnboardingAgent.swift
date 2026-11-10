@@ -37,11 +37,13 @@ enum OnboardingAgentShotFixtures {
 
     private static var scenes: [Scene] {
         let bothReady = choice(.ready, .ready)
-        var other = OnboardingAgentChoice(statuses: [.claude: .ready, .codex: .notInstalled], otherProvider: OnboardingAgentChoice.providerName("ollama"))
+        var other = OnboardingAgentChoice(
+            statuses: [.claude: .ready, .codex: .notInstalled], otherProvider: AIModelCatalog.fallbackDisplayName("ollama")
+        )
         other.applyDefault(configured: "ollama")
         var otherFailed = OnboardingAgentChoice(
             statuses: [.claude: .ready, .codex: .notInstalled],
-            otherProvider: OnboardingAgentChoice.providerName("ollama"),
+            otherProvider: AIModelCatalog.fallbackDisplayName("ollama"),
             otherProviderFailure: OnboardingAgentChoice.otherFailureLine(code: "transport", error: nil)
         )
         otherFailed.applyDefault(configured: "ollama")
@@ -206,7 +208,7 @@ enum OnboardingStepLiveShotFixtures {
     private static var scenes: [Scene] {
         let bothReady = result(.ready, .ready)
         let none = result(.notInstalled, .notInstalled)
-        let ollama = Choice.providerName("ollama")
+        let ollama = AIModelCatalog.fallbackDisplayName("ollama")
         let oldClaude = Choice.Install(path: "/Users/acme/.local/share/claude/versions/1.0.88", kind: .native)
         return [
             Scene(name: "checking", result: bothReady, hangs: true),

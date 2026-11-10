@@ -121,7 +121,7 @@ final class OnboardingAgentCheckTests: XCTestCase {
     func testOtherProviderWorking() async {
         let calls = Calls()
         let result = await OnboardingAgentCheck.run(probes(configured: "ollama", calls: calls) { _, _ in Result(ok: true) })
-        XCTAssertEqual(result.otherProvider, "Ollama")
+        XCTAssertEqual(result.otherProvider, "Ollama / Local")
         XCTAssertNil(result.otherProviderFailure)
         let located = await calls.located
         let tested = await calls.tested
@@ -134,7 +134,7 @@ final class OnboardingAgentCheckTests: XCTestCase {
         let result = await OnboardingAgentCheck.run(probes(configured: "ollama", calls: calls) { provider, _ in
             provider == nil ? Result(ok: false, errorCode: "transport") : Result(ok: true)
         })
-        XCTAssertEqual(result.otherProvider, "Ollama")
+        XCTAssertEqual(result.otherProvider, "Ollama / Local")
         XCTAssertEqual(result.otherProviderFailure, "Couldn’t reach it.")
         XCTAssertEqual(result.statuses[.claude], .ready)
         XCTAssertEqual(result.statuses[.codex], .ready)
