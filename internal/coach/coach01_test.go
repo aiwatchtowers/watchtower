@@ -294,7 +294,7 @@ func folderFiles(t *testing.T, folder string) map[string]string {
 		if err != nil {
 			return err
 		}
-		raw, err := os.ReadFile(path)
+		raw, err := os.ReadFile(path) //nolint:gosec // a test's own temp folder
 		out[filepath.ToSlash(rel)] = string(raw)
 		return err
 	}))

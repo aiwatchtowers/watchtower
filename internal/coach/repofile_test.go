@@ -77,7 +77,8 @@ func (g *gitState) read(t *testing.T) func(folder, rel string) (RepoFileState, e
 		g.calls++
 		c := exec.Command("git", "rev-parse", "--is-inside-work-tree")
 		c.Dir = folder
-		if out, err := c.Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+		// Outside a work tree rev-parse fails: that is the "not git" answer.
+		if out, _ := c.Output(); strings.TrimSpace(string(out)) != "true" {
 			return RepoFileState{}, nil
 		}
 		return RepoFileState{Git: true, Dirty: git(t, folder, "status", "--porcelain=v1", "-z", "--", rel) != ""}, nil
