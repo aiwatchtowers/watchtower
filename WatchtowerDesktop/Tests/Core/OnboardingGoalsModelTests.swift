@@ -203,6 +203,19 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertTrue(model.canContinue)
     }
 
+    /// A check that finds the agent signed in ends a running sign-in, so
+    /// coming back to the window can check again.
+    func testCheckSettlesARunningSignIn() async {
+        spy.cliResult = OnboardingAgentCheckResult(statuses: [.claude: .signedOut, .codex: .notInstalled])
+        let model = await readyModel()
+        model.signInStarted()
+        await model.runAgentCheck()
+        XCTAssertEqual(model.agentChoice.signIn, .running, "still signed out: it keeps running")
+        spy.cliResult = Self.claudeReady
+        await model.runAgentCheck()
+        XCTAssertEqual(model.agentChoice.signIn, .idle)
+    }
+
     func testWindowBecameActiveChecksOnlyWhenNotReady() async {
         let calls = Counter()
         let model = makeModel { [spy] in
@@ -376,6 +389,27 @@ final class OnboardingGoalsModelTests: XCTestCase {
         await first.value
         await second.value
         await third.value
+        XCTAssertTrue(model.canContinue)
+    }
+
+    /// A check that started before the sign-in ended cannot see the new
+    /// login: exit 0 waits for it and then runs one more.
+    func testSignInExitZeroRechecksAfterInFlightCheck() async {
+        let gate = GatedCheck()
+        let model = makeModel { await gate.runCheck() }
+        let early = Task { await model.runAgentCheck() }
+        await yieldALot()
+        model.signInStarted()
+        let ended = Task { await model.signInEnded(exitCode: 0) }
+        await yieldALot()
+        XCTAssertEqual(gate.calls, 1)
+
+        gate.release(0, with: Self.noneInstalled)
+        await early.value
+        await yieldALot()
+        XCTAssertEqual(gate.calls, 2)
+        gate.release(1, with: Self.claudeReady)
+        await ended.value
         XCTAssertTrue(model.canContinue)
     }
 

@@ -159,6 +159,7 @@ package final class OnboardingGoalsModel {
             agentChoice.otherProviderFailure = result.otherProviderFailure
             agentChoice.applyLoginProbe(outdated: result.outdated)
             agentChoice.applyDefault(configured: configuredProvider())
+            agentChoice.settleSignIn()
             isCheckingAgents = false
             cliCheckTask = nil
         }
@@ -178,9 +179,13 @@ package final class OnboardingGoalsModel {
 
     package func signInStarted() { agentChoice.signInStarted() }
 
+    /// Exit 0 checks again. A check already in flight started before the
+    /// login and may miss it: it is awaited, then a fresh one runs.
     package func signInEnded(exitCode: Int32) async {
         agentChoice.signInEnded(exitCode: exitCode)
-        if exitCode == 0 { await runAgentCheck() }
+        guard exitCode == 0 else { return }
+        if let cliCheckTask { await cliCheckTask.value }
+        await runAgentCheck()
     }
 
     package func signInStopped() { agentChoice.signInStopped() }

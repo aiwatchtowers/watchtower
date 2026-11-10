@@ -23,17 +23,15 @@ extension OnboardingGoal {
     }
 }
 
-/// Onboarding step 1: goals, the assistant language and the AI CLI check.
-/// Everything stateful is `AppState.onboardingGoals`; `onContinue` gets the
-/// route Continue saved.
+/// Onboarding step 1: goals, the assistant language and the AI agent
+/// (#1521). Everything stateful is `AppState.onboardingGoals`; the sign-in
+/// terminal and Choose the executable… go through the step's
+/// `OnboardingSignInCoordinator`. `onContinue` gets the route Continue saved.
 struct OnboardingGoalsStepView: View {
     let onContinue: (OnboardingRoute) async -> Void
 
     @Environment(AppState.self) private var appState
-    @State private var showManualPath = false
-    @State private var showNodeHelp = false
-    @State private var manualPath = ""
-    @State private var manualPathError: String?
+    @State private var signIn: OnboardingSignInCoordinator?
 
     private var model: OnboardingGoalsModel { appState.onboardingGoals }
 
@@ -46,93 +44,77 @@ struct OnboardingGoalsStepView: View {
                 goals
             }
         }
+        .onAppear {
+            let coordinator = signIn ?? OnboardingSignInCoordinator(model: model)
+            signIn = coordinator
+            Task { await coordinator.openIfNeeded() }
+        }
         .task { await model.prepareGoalsStep(configuredLanguage: ConfigService().digestLanguage) }
-    }
-
-    private var cliFailed: Bool {
-        !model.isCheckingAgents && !model.agentChoice.canContinue
+        // Signed out after a check, or an update fixed the CLI: the terminal
+        // opens by itself (once per agent, the model keeps count).
+        .onChange(of: model.agentChoice.signInToOpen) { _, agent in
+            guard agent != nil else { return }
+            Task { await signIn?.openIfNeeded() }
+        }
+        // Any check that settles a running sign-in closes its terminal.
+        .onChange(of: model.agentChoice.signIn) { _, state in
+            if state != .running { signIn?.closeIfSettled() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await model.windowBecameActive() }
+        }
+        // Leaving the step (Continue, Cancel of a re-run, the window going)
+        // ends the terminal's process; app quit is the coordinator's own.
+        .onDisappear { signIn?.stop() }
     }
 
     private var goals: some View {
         @Bindable var model = model
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
+        return VStack(alignment: .leading, spacing: Spacing.large) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
                 Text("What do you want Watchtower for?").font(.headline)
-                if !cliFailed {
-                    Text("Pick any").font(.subheadline).foregroundStyle(.secondary)
-                }
+                Text("Pick any").font(.subheadline).foregroundStyle(.secondary)
             }
-
-            if cliFailed {
-                goalChips
-            } else {
-                goalCards
-                customizeLine
-            }
-
+            OnboardingGoalCards(
+                goals: model.selection.goals,
+                developmentPitch: model.agentChoice.developmentPitch
+            ) { model.toggleGoal($0) }
+            customizeLine
             AssistantLanguageRow(selection: $model.language)
-
-            if cliFailed {
-                cliRequiredBox("")
-            }
-
+            agentSection
             Spacer(minLength: 0)
-
-            if let error = model.continueError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
-
-            HStack(alignment: .center) {
-                cliStatusLine
-                Spacer()
-                if cliFailed {
-                    Text("Continue unlocks once the CLI is found")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Button {
-                    Task {
-                        appState.clearOnboardingStepError()
-                        if let route = await model.submit(
-                            hasSlackAccount: appState.onboardingHasSlackAccount
-                        ) {
-                            await onContinue(route)
-                        }
-                    }
-                } label: {
-                    if model.isContinuing {
-                        ProgressView().controlSize(.small).frame(minWidth: 120)
-                    } else {
-                        Text("Continue").fontWeight(.semibold).frame(minWidth: 120)
-                    }
-                }
-                .onboardingPrimaryButton()
-                .keyboardShortcut(.defaultAction)
-                .disabled(!model.canContinue || appState.isFinishingOnboarding)
-            }
+            OnboardingGoalsFooter(
+                hint: model.agentChoice.continueHint,
+                error: model.continueError ?? signIn?.pathError,
+                canContinue: model.canContinue && !appState.isFinishingOnboarding,
+                isContinuing: model.isContinuing,
+                onContinue: submit
+            )
+            .padding(.top, Spacing.regular)
         }
         .disabled(model.isContinuing)
     }
 
-    private var goalCards: some View {
-        OnboardingGoalCards(goals: model.selection.goals) { model.toggleGoal($0) }
+    private var agentSection: some View {
+        OnboardingAgentSection(
+            choice: model.agentChoice,
+            onPick: { agent in signIn?.pick(agent) },
+            onCheckAgain: { Task { await signIn?.checkAgain() } },
+            onChoosePath: { agent in Task { await signIn?.chooseExecutable(for: agent) } },
+            onSignIn: { Task { await signIn?.open() } },
+            onStopSignIn: { signIn?.stopByOwner() },
+            signInTerminal: {
+                guard let session = signIn?.session as? OnboardingSignInSession else { return AnyView(EmptyView()) }
+                return AnyView(OnboardingSignInTerminal(session: session).id(ObjectIdentifier(session)))
+            }
+        )
     }
 
-    /// The goals while the CLI box takes the room: one chip per goal.
-    private var goalChips: some View {
-        HStack(spacing: 8) {
-            ForEach(OnboardingGoal.allCases, id: \.self) { goal in
-                let checked = model.selection.goals.contains(goal)
-                Button(goal.title) { model.toggleGoal(goal) }
-                    .buttonStyle(.plain)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(checked ? Color.accentColor.opacity(0.15) : .clear))
-                    .overlay(Capsule().strokeBorder(checked ? Color.accentColor : Color.secondary.opacity(0.3)))
-                    .foregroundStyle(checked ? .primary : .secondary)
+    private func submit() {
+        Task {
+            appState.clearOnboardingStepError()
+            if let route = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount) {
+                await onContinue(route)
             }
         }
     }
@@ -140,7 +122,7 @@ struct OnboardingGoalsStepView: View {
     @ViewBuilder
     private var customizeLine: some View {
         if model.selection.isCustomized {
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 Text("Features customized ·").foregroundStyle(.secondary)
                 Button("Reset") { model.selection.resetToGoals() }.buttonStyle(.link)
                 Text("·").foregroundStyle(.secondary)
@@ -152,127 +134,6 @@ struct OnboardingGoalsStepView: View {
                 .buttonStyle(.link)
                 .font(.callout)
         }
-    }
-
-    @ViewBuilder
-    private var cliStatusLine: some View {
-        if model.isCheckingAgents {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text("Checking for Claude Code or Codex CLI…")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        } else if let agent = model.agentChoice.selected, model.agentChoice.canContinue {
-            HStack(spacing: 6) {
-                Circle().fill(.green).frame(width: 6, height: 6)
-                Text("\(Self.cliName(agent.rawValue)) found and signed in")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    /// `ai.provider` as the owner knows it; empty is the claude default.
-    static func cliName(_ provider: String) -> String {
-        switch provider {
-        case "", "claude": "Claude Code"
-        case "codex": "Codex CLI"
-        case "ollama": "Ollama"
-        default: provider
-        }
-    }
-
-    private func cliRequiredBox(_ reason: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Claude Code or Codex CLI is required", systemImage: "exclamationmark.triangle")
-                .font(.headline)
-                .foregroundStyle(.orange)
-            Text("The assistant, Workbench and every AI feature run on it. Install one and sign in from Terminal:")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            codeBlock("npm install -g @anthropic-ai/claude-code && claude")
-            codeBlock("npm install -g @openai/codex && codex login")
-            Text(reason)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .lineLimit(3)
-            HStack(spacing: 16) {
-                Button("Check again") { Task { await model.runAgentCheck() } }
-                Button("Set the Claude Code path manually") { showManualPath.toggle() }.buttonStyle(.link)
-                Button("No npm?") { showNodeHelp.toggle() }.buttonStyle(.link)
-            }
-            if showManualPath { manualPathRow }
-            if showNodeHelp {
-                Text("Install Node.js first from nodejs.org, then run one of the commands above.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.secondary.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.5)))
-    }
-
-    private var manualPathRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                TextField("e.g. /usr/local/bin/claude", text: $manualPath)
-                    .textFieldStyle(.roundedBorder)
-                Button("Browse…") {
-                    let panel = NSOpenPanel()
-                    panel.canChooseFiles = true
-                    panel.canChooseDirectories = false
-                    panel.allowsMultipleSelection = false
-                    panel.message = "Select the 'claude' executable"
-                    if panel.runModal() == .OK, let url = panel.url {
-                        manualPath = url.path
-                    }
-                }
-                Button("Use this path") { saveManualPath() }
-                    .disabled(manualPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if let manualPathError {
-                Text(manualPathError).font(.caption).foregroundStyle(.red)
-            }
-        }
-    }
-
-    private func saveManualPath() {
-        let path = manualPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard FileManager.default.isExecutableFile(atPath: path) else {
-            manualPathError = "File not found or not executable: \(path)"
-            return
-        }
-        do {
-            try OnboardingAgentPathConfig.save(path, for: .claude, configPath: Constants.configPath)
-        } catch {
-            manualPathError = "Could not save the path to \(Constants.configPath): \(error.localizedDescription)"
-            return
-        }
-        manualPathError = nil
-        Task { await model.runAgentCheck() }
-    }
-
-    private func codeBlock(_ code: String) -> some View {
-        HStack {
-            Text(code)
-                .font(.system(.caption, design: .monospaced))
-                .textSelection(.enabled)
-            Spacer()
-            Button {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(code, forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc").font(.caption)
-            }
-            .buttonStyle(.borderless)
-            .help("Copy to clipboard")
-            .accessibilityLabel("Copy to clipboard")
-        }
-        .padding(8)
-        .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -288,7 +149,8 @@ struct OnboardingGoalCards: View {
     }
 
     var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+        let column = GridItem(.flexible(), spacing: Spacing.medium)
+        return LazyVGrid(columns: [column, column], spacing: Spacing.medium) {
             ForEach(OnboardingGoal.allCases, id: \.self) { goal in
                 goalCard(goal)
             }
@@ -300,10 +162,10 @@ struct OnboardingGoalCards: View {
         return Button {
             toggle(goal)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: Spacing.medium) {
                 Image(systemName: checked ? "checkmark.square.fill" : "square")
                     .foregroundStyle(checked ? Color.accentColor : .secondary)
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(goal.title).fontWeight(.semibold)
                     Text(pitch(goal))
                         .font(.caption)
@@ -312,16 +174,9 @@ struct OnboardingGoalCards: View {
                 }
                 Spacer(minLength: 0)
             }
-            .padding(14)
+            .padding(Spacing.medium + Spacing.tight)
             .frame(maxWidth: .infinity, minHeight: 84, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(checked ? Color.accentColor.opacity(0.1) : Color.secondary.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(checked ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: checked ? 1.5 : 1)
-            )
+            .card(selected: checked, fill: checked ? Fill.selected : Fill.card)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

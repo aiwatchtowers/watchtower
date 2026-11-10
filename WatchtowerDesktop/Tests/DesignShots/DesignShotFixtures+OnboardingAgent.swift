@@ -143,3 +143,153 @@ enum OnboardingAgentShotFixtures {
         }
     }
 }
+
+/// The same scenes from the real `OnboardingGoalsStepView` (#1521 Task 5),
+/// with the model brought to each state through its own API and a fake
+/// check, to compare with the mockups above. Not the four scenes that need
+/// a live PTY or a held Continue (`signed-out`, `signed-out-outdated`,
+/// `signed-out-update-failed`, `continuing`): those are checked by hand.
+@MainActor
+enum OnboardingStepLiveShotFixtures {
+    private typealias Choice = OnboardingAgentChoice
+
+    private struct Scene {
+        var name: String
+        var result: OnboardingAgentCheckResult
+        var configured: String?
+        var narrow = false
+        /// The check never answers (the checking scene).
+        var hangs = false
+        var saveError: String?
+        /// What the owner did after the check.
+        var after: @MainActor (OnboardingGoalsModel) async -> Void = { _ in }
+    }
+
+    private struct SaveError: LocalizedError {
+        let errorDescription: String?
+    }
+
+    static var shots: [DesignShot] {
+        scenes.map { scene in
+            DesignShot(name: "onboarding-step-live-\(scene.name)", size: NSSize(width: scene.narrow ? 600 : 860, height: 0)) {
+                let model = seeded(scene)
+                let appState = AppState(
+                    onboardingDefaults: AppState.isolatedDefaults,
+                    workbenchDefaults: AppState.isolatedDefaults,
+                    onboardingGoals: model
+                )
+                return AnyView(
+                    OnboardingGoalsStepView { _ in }
+                        .padding(Spacing.page)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .background(Surface.window)
+                        .environment(appState)
+                )
+            }
+        }
+    }
+
+    private static func result(
+        _ claude: Choice.Status,
+        _ codex: Choice.Status,
+        installs: [Choice.Agent: Choice.Install] = [:],
+        outdated: Set<Choice.Agent> = [],
+        other: String? = nil,
+        otherFailure: String? = nil
+    ) -> OnboardingAgentCheckResult {
+        OnboardingAgentCheckResult(
+            statuses: [.claude: claude, .codex: codex], installs: installs, outdated: outdated,
+            otherProvider: other, otherProviderFailure: otherFailure
+        )
+    }
+
+    private static var scenes: [Scene] {
+        let bothReady = result(.ready, .ready)
+        let none = result(.notInstalled, .notInstalled)
+        let ollama = Choice.providerName("ollama")
+        let oldClaude = Choice.Install(path: "/Users/acme/.local/share/claude/versions/1.0.88", kind: .native)
+        return [
+            Scene(name: "checking", result: bothReady, hangs: true),
+            Scene(name: "both-ready", result: bothReady),
+            Scene(name: "both-ready-codex", result: bothReady) { $0.pickAgent(.codex) },
+            Scene(name: "only-codex", result: result(.notInstalled, .ready)),
+            Scene(name: "signed-out-stopped", result: result(.signedOut, .notInstalled)) {
+                $0.signInStarted()
+                $0.signInStopped()
+            },
+            Scene(
+                name: "signed-out-update-stuck",
+                result: result(.signedOut, .notInstalled, installs: [.claude: oldClaude], outdated: [.claude])
+            ) {
+                $0.signInStarted()
+                await $0.signInEnded(exitCode: 0)
+            },
+            Scene(name: "none", result: none),
+            Scene(name: "none-codex", result: none) { $0.pickAgent(.codex) },
+            Scene(name: "none-narrow", result: none, narrow: true),
+            Scene(name: "failed", result: result(
+                .failed(Choice.failureMessage(.claude, code: "timeout", error: nil)), .notInstalled
+            )),
+            Scene(name: "policy", result: result(.forbidden, .ready)),
+            Scene(name: "policy-both", result: result(.forbidden, .forbidden)),
+            Scene(name: "other-provider", result: result(.ready, .notInstalled, other: ollama), configured: "ollama"),
+            Scene(
+                name: "other-provider-failed",
+                result: result(.ready, .notInstalled, other: ollama,
+                               otherFailure: Choice.otherFailureLine(code: "transport", error: nil)),
+                configured: "ollama"
+            ),
+            Scene(name: "save-error", result: bothReady,
+                  saveError: "config set ai.provider: permission denied") { model in
+                _ = await model.submit(hasSlackAccount: true)
+            }
+        ]
+    }
+
+    /// A model in the scene's state: the language prepared (the step's own
+    /// `.task` then reads no config value into it) and the check answered,
+    /// the run loop turned until that is done.
+    private static func seeded(_ scene: Scene) -> OnboardingGoalsModel {
+        let check = scene.result
+        let hangs = scene.hangs
+        let saveError = scene.saveError
+        let model = OnboardingGoalsModel(
+            defaults: AppState.isolatedDefaults,
+            systemLanguage: "English",
+            checkAgents: {
+                if hangs { try? await Task.sleep(for: .seconds(3600)) }
+                return check
+            },
+            configuredProvider: { scene.configured },
+            actions: OnboardingGoalsActions(
+                initWorkspace: {},
+                setLanguage: { _ in },
+                applyFeatures: { _ in (nil, false) },
+                saveAgent: { _ in
+                    if let saveError { throw SaveError(errorDescription: saveError) }
+                }
+            )
+        )
+        let done = Flag()
+        Task { @MainActor in
+            if hangs {
+                Task { await model.prepareGoalsStep(configuredLanguage: "English") }
+                await Task.yield()
+            } else {
+                await model.prepareGoalsStep(configuredLanguage: "English")
+                await scene.after(model)
+            }
+            done.value = true
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !done.value, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        return model
+    }
+
+    @MainActor
+    private final class Flag {
+        var value = false
+    }
+}

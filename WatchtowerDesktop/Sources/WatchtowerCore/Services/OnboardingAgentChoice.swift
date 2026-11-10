@@ -188,6 +188,12 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
         package static let checkAgain = "Check again"
         package static let manualPath = "Choose the executable…"
         package static let autoCheck = "Watchtower checks again when you come back to this window."
+        /// The error line when Choose the executable… could not write the config.
+        package static let pathSaveFailure = "Couldn’t save the executable’s path."
+        /// The open panel's message for Choose the executable….
+        package static func choosePanelMessage(_ agent: Agent) -> String {
+            "Select the \(agent.name) executable"
+        }
     }
 
     package var statuses: [Agent: Status]
@@ -306,6 +312,14 @@ package struct OnboardingAgentChoice: Equatable, Sendable {
     }
 
     package mutating func signInStopped() { signIn = .ended(nil) }
+
+    /// After a check: a running sign-in whose agent is no longer signed out
+    /// (signed in elsewhere, gone, or another agent picked) is over — the
+    /// caller closes its terminal.
+    package mutating func settleSignIn() {
+        guard signIn == .running, selected.map(status) != .signedOut else { return }
+        signIn = .idle
+    }
 
     /// The tiles show unless a working provider was set elsewhere.
     package var showsTiles: Bool { otherProvider == nil || otherProviderFailure != nil }
