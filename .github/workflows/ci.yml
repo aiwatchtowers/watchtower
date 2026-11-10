@@ -32,6 +32,13 @@ jobs:
   #            KeyboardShortcutCatalogTests reads it.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
   # A push (main included) and workflow_dispatch always run everything.
+  # It also picks where the jobs run (scripts/ci-pick-runner.sh): the
+  # owner's Mac when its self-hosted runners are online (wt-swift takes Swift
+  # Test, wt-general everything else; set up by
+  # scripts/ci-runner/setup-mac-runner.sh), else the GitHub-hosted runners —
+  # always for a fork PR, without the RUNNER_STATUS_TOKEN secret, and on any
+  # API error. Its `linux`, `macos` and `swift` outputs are each job's
+  # runs-on; a job's steps branch on runner.environment where the Mac differs.
   gate:
     name: Dedupe gate
     runs-on: ubuntu-24.04
@@ -44,6 +51,9 @@ jobs:
       code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' || steps.filter.outputs.guide_input == 'true' }}
       mobile: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true' }}
       guide: ${{ github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true' }}
+      linux: ${{ steps.pick.outputs.linux || '"ubuntu-24.04"' }}
+      macos: ${{ steps.pick.outputs.macos || '"macos-26"' }}
+      swift: ${{ steps.pick.outputs.swift || '"macos-26"' }}
     steps:
       # every: a file counts for a filter only when it matches all of its
       # patterns, which is what the `!` exclusions need.
@@ -64,11 +74,22 @@ jobs:
             guide:
               - 'docs/guide/**'
 
-      # Only the gate script: the job stays a few seconds long.
+      # Only the gate scripts: the job stays a few seconds long.
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: scripts/ci-dedupe-gate.sh
+          sparse-checkout: |
+            scripts/ci-dedupe-gate.sh
+            scripts/ci-pick-runner.sh
           sparse-checkout-cone-mode: false
+
+      # scripts/ci-pick-runner.sh, tested by scripts/tests/test-ci-pick-runner.sh.
+      # Never fails: anything unexpected keeps every job in the cloud.
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          RUNNER_STATUS_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+        run: bash scripts/ci-pick-runner.sh
 
       # scripts/ci-dedupe-gate.sh, tested by scripts/tests/test-ci-dedupe-gate.sh.
       - id: check
@@ -84,18 +105,22 @@ jobs:
     name: Guide Check
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.guide == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Guide check
@@ -107,18 +132,22 @@ jobs:
     name: Go Lint
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: golangci-lint
@@ -126,6 +155,8 @@ jobs:
         with:
           version: "v2.11.4"
           args: --timeout=5m
+          # The Mac keeps golangci-lint's own cache in the ci user's home.
+          skip-cache: ${{ runner.environment == 'self-hosted' }}
 
   # Blocks live-install data (real Slack/Google/Jira ids, corp domains,
   # personal emails) in the lines this change adds. The private denylist
@@ -135,7 +166,7 @@ jobs:
     name: Leak Check
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -189,7 +220,7 @@ jobs:
     name: Go Test
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
     # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
     timeout-minutes: 60
@@ -199,11 +230,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Build
@@ -240,7 +275,7 @@ jobs:
     name: Go Test (race ${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     strategy:
       # Both shards report: one shard's race must not hide the other's.
       fail-fast: false
@@ -253,11 +288,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (race, library packages)
@@ -271,7 +310,7 @@ jobs:
     name: Code index changes
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     permissions:
       contents: read
       pull-requests: read
@@ -297,13 +336,14 @@ jobs:
   # build's); Go Test above stays untagged and compiles only the Go, Swift and
   # Python grammars. Skipped — neutral, not failed — when the change leaves the
   # index, its walk, go.mod/go.sum, the Makefile and this workflow alone (a
-  # docs-only PR). ubuntu ships gcc, so cgo works; setup-go caches the grammar
+  # docs-only PR). ubuntu ships gcc and the Mac clang, so cgo works; setup-go
+  # (in the cloud) or the ci user's GOCACHE (on the Mac) keeps the grammar
   # builds after the first cold run.
   codeindex-full:
     name: Code Index (full grammars)
     needs: [gate, codeindex-changes]
     if: needs.gate.outputs.run == 'true' && needs.codeindex-changes.outputs.codeindex == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -311,11 +351,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
       # macOS build uses CommonCrypto); install it explicitly so a runner
       # image change cannot break the cgo build quietly.
       - name: Install libssl-dev
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (full grammar set)
@@ -328,8 +372,9 @@ jobs:
     name: Swift Lint + Kit Test
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
-    # macos-26 + Xcode 26.4.1: the Kit tests run on Swift Test's toolchain.
-    runs-on: macos-26
+    # macos-26 + Xcode 26.4.1 in the cloud, the Mac's Xcode (DEVELOPER_DIR in
+    # its runners' .env) there: the Kit tests run on Swift Test's toolchain.
+    runs-on: ${{ fromJSON(needs.gate.outputs.macos) }}
     timeout-minutes: 30
     defaults:
       run:
@@ -337,12 +382,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # On the Mac the runner's .env sets DEVELOPER_DIR (the action needs sudo).
       - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.environment == 'github-hosted'
         with:
           xcode-version: "26.4.1"
 
+      # The Mac's ci user cannot write to Homebrew; its setup script puts
+      # swiftlint on the runners' PATH.
       - name: Install SwiftLint
-        run: brew install swiftlint
+        run: command -v swiftlint >/dev/null || brew install swiftlint
 
       # The design kit's rules have no inline swiftlint:disable (the
       # baseline only absorbs legacy code); same check as `make lint-swift`.
@@ -376,7 +425,9 @@ jobs:
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
     # resolve — the job only passed on macos-15 while a warm cache hid it.
-    runs-on: macos-26
+    # On the Mac (wt-swift, one runner) .build stays warm between runs: no
+    # cache restore or save, a checkout that keeps ignored files, 8 lanes.
+    runs-on: ${{ fromJSON(needs.gate.outputs.swift) }}
     # A hang must fail the job, not run to GitHub's 6 h default (seen
     # 2026-10-02: a pool-starved test run sat 45+ min). Measured ~8 min, up to
     # ~12; the margin is for a cold SPM cache.
@@ -388,7 +439,18 @@ jobs:
       run:
         working-directory: WatchtowerDesktop
     steps:
+      # clean: false on the Mac keeps WatchtowerDesktop/.build (ignored), which
+      # the default `git clean -ffdx` would wipe.
       - uses: actions/checkout@v4
+        with:
+          clean: ${{ runner.environment == 'github-hosted' }}
+
+      # Untracked files a previous run's branch left behind would be compiled
+      # (SwiftPM builds every file in a target's folder); ignored ones stay.
+      - name: Remove untracked files
+        if: runner.environment == 'self-hosted'
+        working-directory: .
+        run: git clean -ffd
 
       # The runner's default toolchain (Xcode 16.4) predates the macOS 26 SDK, so
       # any reference to Speech's SpeechTranscriber/SpeechAnalyzer/AssetInventory/
@@ -397,7 +459,9 @@ jobs:
       # this image (non-default) and ships the macOS 26 SDK those declarations live
       # in; selecting it lets the file weak-link as designed without needing a
       # macOS-26 runner to execute the guarded code.
+      # On the Mac the runner's .env sets DEVELOPER_DIR (the action needs sudo).
       - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.environment == 'github-hosted'
         with:
           xcode-version: "26.4.1"
 
@@ -407,6 +471,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+          # The Mac's ci user keeps its GOCACHE between jobs; the action's
+          # cache would only add a restore and a save to every job there.
+          cache: ${{ runner.environment == 'github-hosted' }}
 
       # The build products of the latest main commit (saved below), so a run
       # recompiles only what differs from main instead of all of our own
@@ -415,11 +482,13 @@ jobs:
       # invalidated wholesale. Restore picks the newest entry for the same
       # dependencies, else any.
       - id: spm-key
+        if: runner.environment == 'github-hosted'
         env:
           KEY: ${{ runner.os }}-spm-v2-${{ hashFiles('WatchtowerDesktop/Package.resolved') }}-${{ github.sha }}
         run: echo "key=$KEY" >> "$GITHUB_OUTPUT"
 
       - name: Restore SPM build
+        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v4
         with:
           path: WatchtowerDesktop/.build
@@ -441,14 +510,15 @@ jobs:
       # drops the older main entries. Pull requests read main's entries but
       # never write their own.
       - name: Save SPM build
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: runner.environment == 'github-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:
           path: WatchtowerDesktop/.build
           key: ${{ steps.spm-key.outputs.key }}
 
-      # Three concurrent xctest processes over round-robin slices of the test
-      # classes (see the script): serially the suite took ~5 min (2026-10-13).
+      # Three concurrent xctest processes (eight on the Mac's 16 cores) over
+      # round-robin slices of the test classes (see the script): serially the
+      # suite took ~5 min (2026-10-13).
       # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
       # (the step's own timeout would kill the script with every log unread).
       # Two phases (shards, then the timing-bound classes) fit the step's 25.
@@ -458,7 +528,7 @@ jobs:
           LANE_TIMEOUT: "600"
           # SQLCipherInteropTests fail instead of skipping without Go (#603).
           WATCHTOWER_REQUIRE_GO: "1"
-        run: ../scripts/swift-test-sharded.sh 3
+        run: ../scripts/swift-test-sharded.sh ${{ runner.environment == 'self-hosted' && 8 || 3 }}
 
       # The process-spawning suites again on a one-thread concurrency pool,
       # so blocking I/O that slips back onto pool threads fails here.
@@ -515,23 +585,35 @@ jobs:
     name: Mobile App
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.mobile == 'true'
-    runs-on: macos-26
+    runs-on: ${{ fromJSON(needs.gate.outputs.macos) }}
     # A cold SPM resolve plus the simulator boot; the suite itself is minutes.
     timeout-minutes: 45
     env:
       # Must exist on the runner image: macos-26's iOS 26.4 runtime (Xcode
       # 26.4.1) lists iPhone 17 Pro (actions/runner-images,
       # images/macos/macos-26-arm64-Readme.md). The Makefile's local default
-      # (iPhone 18 Pro) is not on the image.
+      # (iPhone 18 Pro) is not on the image. On the Mac it is the device type
+      # of a simulator made for this job (below).
       SIM: iPhone 17 Pro
     steps:
       - uses: actions/checkout@v4
 
       # Same Xcode as Swift Test. WatchtowerMobile.xcodeproj is committed
       # (generated by `make mobile-gen`), so the job needs no xcodegen.
+      # On the Mac the runner's .env sets DEVELOPER_DIR (the action needs sudo).
       - uses: maxim-lobanov/setup-xcode@v1
+        if: runner.environment == 'github-hosted'
         with:
           xcode-version: "26.4.1"
+
+      # On the Mac the ci user has no simulators of its own, and two runs'
+      # jobs must not share one: each job makes its own and deletes it after.
+      - name: Create a simulator
+        if: runner.environment == 'self-hosted'
+        run: |
+          name="wt-ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          xcrun simctl create "$name" "$SIM"
+          echo "SIM=$name" >> "$GITHUB_ENV"
 
       # Unsigned: Base.xcconfig and the recipe set CODE_SIGNING_ALLOWED=NO.
       - name: Build
@@ -540,4 +622,10 @@ jobs:
       - name: Test
         timeout-minutes: 30
         run: make mobile-test SIM="$SIM"
+
+      - name: Delete the simulator
+        if: always() && runner.environment == 'self-hosted' && startsWith(env.SIM, 'wt-ci-')
+        run: |
+          xcrun simctl shutdown "$SIM" 2>/dev/null || true
+          xcrun simctl delete "$SIM"
 
