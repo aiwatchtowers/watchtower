@@ -420,3 +420,25 @@ func TestAgentlog_CodexUnreadableChildFailed(t *testing.T) {
 	assert.Contains(t, r.FirstFailure.Error(), cxChild)
 	assert.NotContains(t, r.FirstFailure.Error(), p)
 }
+
+// The prior model is still asked for in a later slice when the resumed
+// read's first slice had no token line.
+func TestAgentlog_CodexChildResumeKeepsModelAcrossSlices(t *testing.T) {
+	old := batchRows
+	batchRows = 2
+	t.Cleanup(func() { batchRows = old })
+	f := newFixture(t)
+	f.writeRollout(cxParent, rootWithSpawn(t, f.folder, cxChild))
+	head := cxChildMeta(t, "19.000", cxChild, cxParent, f.folder) + cxModel(t, "19.500", "gpt-5.6-sol")
+	p := f.writeRollout(cxChild, head)
+	f.codexRow(f.wb, cxParent, f.folder, "")
+	require.Zero(t, f.scan().FailedFiles)
+
+	require.NoError(t, os.WriteFile(p, []byte(head+cxExec(t, "20.000", "call-c1", "ls")+cxOut(t, "20.500", "call-c1", "ok\n")+
+		cxTokens(t, "21.000", 500, 100, 40, 10, 540)), 0o600))
+	r := f.scan()
+	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
+	var name string
+	require.NoError(t, f.al.QueryRow(`SELECT name FROM agent_log_events WHERE kind = 'api_call' AND agent_id = ?`, cxChild).Scan(&name))
+	assert.Equal(t, "gpt-5.6-sol", name)
+}

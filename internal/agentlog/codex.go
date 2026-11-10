@@ -147,7 +147,7 @@ func ParseCodex(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, e
 		}
 	}
 	p.res.CodexLineage = p.lineage.id
-	p.res.CodexModel, p.res.CodexCWD = p.model, p.cwd
+	p.res.CodexModel, p.res.CodexCWD, p.res.CodexModelSeen = p.model, p.cwd, p.modelSeen
 	return p.res, nil
 }
 

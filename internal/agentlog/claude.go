@@ -170,6 +170,9 @@ type ParseResult struct {
 	// CodexModel and CodexCWD are the model and working directory at the end
 	// of the parse (seed for the next slice; ParseCodex only).
 	CodexModel, CodexCWD string
+	// CodexModelSeen: the parse read a turn_context or asked CodexPriorModel,
+	// so the next slice needs no prior model (ParseCodex only).
+	CodexModelSeen bool
 	// Subagents are the Codex sub-agent links of this parse's spawn events
 	// (collab_agent_spawn_end), stored with the slice, and CodexSpawns the
 	// spawn tool rows they link (ParseCodex only).

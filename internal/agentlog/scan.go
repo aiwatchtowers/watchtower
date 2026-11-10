@@ -747,7 +747,9 @@ func scanCodexFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bo
 			return &codexFailure{op: "reading", session: id, err: err}
 		}
 		o.CodexModel, o.CodexCWD = pr.CodexModel, pr.CodexCWD
-		o.CodexPriorModel = nil          // the next slice starts with this one's model
+		if pr.CodexModelSeen {
+			o.CodexPriorModel = nil // the next slice starts with this one's model
+		}
 		o.CodexLineage = pr.CodexLineage // the next slice starts past the head
 		next, applied, err := storeSlice(st, tf, wb, pr, start, expect)
 		if err != nil {
