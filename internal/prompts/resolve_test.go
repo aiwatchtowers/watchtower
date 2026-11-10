@@ -217,3 +217,30 @@ func TestResolve_NoAdditionsForBuiltinOwnedPrompt(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Defaults[BriefingDaily], tmpl)
 }
+
+func TestTakesAdditions(t *testing.T) {
+	for id := range MovedToBuiltin {
+		assert.False(t, TakesAdditions(id), id)
+	}
+	for _, id := range []string{TrackRun, TrackShortlist, TrackCompose} {
+		assert.False(t, TakesAdditions(id), id)
+	}
+	assert.True(t, TakesAdditions(DigestChannel))
+}
+
+func TestResolve_NoAdditionsWhenNotTaken(t *testing.T) {
+	database := openTestDB(t)
+	store := New(database, nil)
+	require.NoError(t, store.Seed())
+	for id := range MovedToBuiltin {
+		_, err := database.AddPromptAddition(id, "Stored line.", 0, time.Now())
+		require.NoError(t, err)
+		tmpl, _, _ := Resolve(store, id, "")
+		assert.NotContains(t, tmpl, "- Stored line.", id)
+	}
+	_, err := database.AddPromptAddition(DigestChannel, "Stored line.", 0, time.Now())
+	require.NoError(t, err)
+	tmpl, _, err := Resolve(store, DigestChannel, "")
+	require.NoError(t, err)
+	assert.Contains(t, tmpl, "- Stored line.\n")
+}
