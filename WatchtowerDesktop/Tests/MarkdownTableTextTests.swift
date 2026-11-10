@@ -1,4 +1,5 @@
 import AppKit
+import DesignKit
 import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
@@ -6,8 +7,9 @@ import WatchtowerCore
 
 /// A finished answer's table drawn as one native text view (spec
 /// 2026-10-24 §5c, ask #541): copy as TSV, selection across cells and
-/// rows, the run's link gate, a scroll view only when it is wider than the
-/// column, a size that no probe width changes, today's height.
+/// rows, the run's link gate, no scroll view — a wide table fills the
+/// column and wraps (ask #1197) —, a size probe that leaves the shown
+/// table alone, the streaming table's height.
 @MainActor
 final class MarkdownTableTextTests: XCTestCase {
     private final class FlippedView: NSView {
@@ -41,7 +43,7 @@ final class MarkdownTableTextTests: XCTestCase {
 
     private func tableView(_ markdown: String = sample, navScreens: Set<String> = []) throws -> MarkdownTableTextView {
         let view = MarkdownTableTextView.makeTable()
-        view.show(MarkdownTableText.attributed(try table(markdown), links: InlineLinkContext(codeLinks: false, navScreens: navScreens)))
+        view.show(try table(markdown), links: InlineLinkContext(codeLinks: false, navScreens: navScreens))
         return view
     }
 
@@ -82,7 +84,7 @@ final class MarkdownTableTextTests: XCTestCase {
             let size = view.fittingSize(width: 600)
             view.frame = NSRect(origin: .zero, size: size)
             root.addSubview(view)
-            let string = view.string as NSString
+            let string = view.plainText as NSString
             let box = view.firstRect(forCharacterRange: string.range(of: "c", options: .backwards), actualRange: nil)
             return (view.plainText, box.minX)
         }
@@ -109,7 +111,7 @@ final class MarkdownTableTextTests: XCTestCase {
         tracker.attach(to: anchor)
         detach = { tracker.detach(from: anchor) }
 
-        let string = view.string as NSString
+        let string = view.plainText as NSString
         view.setSelectedRange(string.range(of: "list_messages"))
         XCTAssertEqual(tracker.selection?.text, "list_messages", "inside one cell")
 
@@ -136,7 +138,7 @@ final class MarkdownTableTextTests: XCTestCase {
 
         let (_, root) = makeWindow()
         let view = MarkdownTableTextView.makeTable()
-        view.show(text)
+        view.show(try table(markdown), links: InlineLinkContext(codeLinks: false, navScreens: []))
         let size = view.fittingSize(width: 600)
         view.frame = NSRect(origin: .zero, size: size)
         root.addSubview(view)
@@ -209,60 +211,146 @@ final class MarkdownTableTextTests: XCTestCase {
 
     // MARK: - Width and height
 
-    /// The size is the table's own: no proposal (a probe, zero, the
-    /// column) changes it or leaves the text laid out at another width.
-    func testAProbeWidthNeverChangesTheTable() throws {
-        let view = try tableView()
-        let natural = view.fittingSize(width: 600)
-        XCTAssertGreaterThan(natural.width, 100)
-        XCTAssertGreaterThan(natural.height, 40)
-        let container = view.textContainer?.size.width
-        for width: CGFloat in [0, 40, 100_000, 300] {
-            XCTAssertEqual(view.fittingSize(width: width), natural, "width \(width)")
-            XCTAssertEqual(view.textContainer?.size.width, container, "the probe left the container alone")
-        }
-        view.setFrameSize(NSSize(width: 60, height: natural.height))
-        XCTAssertEqual(view.textContainer?.size.width, container, "a narrow frame never wraps a row")
-        XCTAssertEqual(view.fittingSize(width: 60), natural)
+    /// "Пункт | Что сказано": short labels and long sentences.
+    private static let wide: String = {
+        let sentence = "Сказано, что команда переносит запуск на следующую неделю, потому что проверка ещё не закончена"
+        let rows = (1...9).map { "| Пункт \($0) | \(sentence) и пункт \($0) остаётся открытым |" }
+        return "| Пункт | Что сказано |\n|---|---|\n" + rows.joined(separator: "\n")
+    }()
 
-        let host = NSHostingView(rootView: MarkdownTableRun(text: view.attributedString(), codeLinks: false, navScreens: []))
+    private static let wideSentence = "Сказано, что команда переносит запуск на следующую неделю, потому что проверка ещё не закончена и пункт"
+
+    /// The natural table for no width, zero or a wide one; a narrower
+    /// width fills it; a probe never leaves the shown table at its width.
+    func testAProbeLeavesTheShownTableAlone() throws {
+        let view = try tableView(Self.wide)
+        let natural = view.fittingSize(width: 0)
+        XCTAssertGreaterThan(natural.width, 600)
+        XCTAssertEqual(view.fittingSize(width: 100_000), natural)
+        XCTAssertEqual(view.fittingSize(width: .infinity), natural)
+
+        view.setFrameSize(NSSize(width: 400, height: 300))
+        let narrow = view.fittingSize(width: 400)
+        XCTAssertEqual(narrow.width, 400, "a wide table fills the width")
+        XCTAssertGreaterThan(narrow.height, natural.height * 2, "its long column wraps")
+        let shown = view.attributedString()
+        XCTAssertEqual(view.fittingSize(width: 0), natural)
+        XCTAssertEqual(view.fittingSize(width: 250).width, 250)
+        XCTAssertTrue(view.attributedString().isEqual(to: shown), "the frame's table is back after a probe")
+        XCTAssertEqual(view.textContainer?.size.width, 100_000, "the container never wraps the table")
+
+        let host = NSHostingView(rootView: MarkdownTableRun(table: try table(Self.wide),
+                                                            links: InlineLinkContext(codeLinks: false, navScreens: [])))
         XCTAssertEqual(host.fittingSize.width, natural.width, accuracy: 1)
         XCTAssertEqual(host.fittingSize.height, natural.height, accuracy: 1)
+    }
+
+    /// A wrapping table reports exactly the width it was given, so the
+    /// frame SwiftUI sets from it lays out the very columns that were
+    /// measured — the rounded columns' sum may lay out others (a review
+    /// counterexample: natural 100/1000/1001 at 301 vs 300).
+    func testTheFrameLaysOutTheMeasuredColumns() throws {
+        let markdown = "| a | \(String(repeating: "word ", count: 200)) | \(String(repeating: "term ", count: 200)) |\n|---|---|---|\n| x | y | z |"
+        let view = try tableView(markdown)
+        let table = try table(markdown)
+        let links = InlineLinkContext(codeLinks: false, navScreens: [])
+        for width: CGFloat in [180, 301, 333.5, 401, 517] {
+            let size = view.fittingSize(width: width)
+            XCTAssertEqual(size.width, width, "width \(width)")
+            view.setFrameSize(size)
+            XCTAssertTrue(view.attributedString().isEqual(to: MarkdownTableText.attributed(table, links: links, width: width)),
+                          "width \(width): the frame shows the measured table")
+            XCTAssertEqual(view.fittingSize(width: size.width), size)
+        }
+    }
+
+    /// The streaming table sizes its columns from its own cells: a table
+    /// that fits in a larger font does not wrap.
+    func testTheStreamingTableMeasuresItsOwnFont() throws {
+        let table = try table()
+        func size(_ font: Font) -> CGSize {
+            NSHostingView(rootView: MarkdownTableView(table: table).font(font).fixedSize()).fittingSize
+        }
+        let body = size(.body)
+        let title = size(.title)
+        XCTAssertGreaterThan(title.width, body.width * 1.3, "the columns grow with the font")
+        XCTAssertLessThan(title.height, body.height * 2.2, "and its rows stay one line each")
+    }
+
+    /// A selection survives the table's relayout at another width.
+    func testASelectionSurvivesAResize() throws {
+        let view = try tableView(Self.wide)
+        view.setFrameSize(NSSize(width: 700, height: 300))
+        let range = (view.plainText as NSString).range(of: "Пункт 3")
+        view.setSelectedRange(range)
+        view.setFrameSize(NSSize(width: 380, height: 300))
+        _ = view.fittingSize(width: 500)
+        XCTAssertEqual(view.selectedRange(), range)
     }
 
     private func hosted(_ view: some View, width: CGFloat) -> NSView {
         let (_, root) = makeWindow()
         let host = NSHostingView(rootView: view.frame(width: width))
-        host.frame = NSRect(x: 0, y: 0, width: width, height: 300)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 400)
         root.addSubview(host)
         host.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         return host
     }
 
-    private func count<T: NSView>(_ type: T.Type, in view: NSView) -> Int {
-        (view is T ? 1 : 0) + view.subviews.reduce(0) { $0 + count(type, in: $1) }
+    private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
     }
 
-    func testAFittingTableHasNoScrollViewAndAWideOneHasOne() throws {
+    func testNoTableHasAScrollView() throws {
         let small = hosted(NativeMarkdownTableView(table: try table()), width: 400)
-        XCTAssertEqual(count(NSScrollView.self, in: small), 0, "a table that fits draws without a scroll view")
-        XCTAssertEqual(count(NSTextView.self, in: small), 1, "one text view for the whole table")
-        let wideRow = (0..<12).map { "column \($0) with a long header" }
-        let wide = "| " + wideRow.joined(separator: " | ") + " |\n|" + String(repeating: "---|", count: 12)
-        let host = hosted(NativeMarkdownTableView(table: try table(wide)), width: 300)
-        XCTAssertEqual(count(NSScrollView.self, in: host), 1, "a table wider than the column keeps one horizontal scroll")
-        XCTAssertEqual(count(NSTextView.self, in: host), 1)
+        XCTAssertEqual(views(NSScrollView.self, in: small).count, 0, "a table that fits draws without a scroll view")
+        XCTAssertEqual(views(NSTextView.self, in: small).count, 1, "one text view for the whole table")
+        let host = hosted(NativeMarkdownTableView(table: try table(Self.wide)), width: 360)
+        XCTAssertEqual(views(NSScrollView.self, in: host).count, 0, "a table wider than the column has no scroll view either")
+        XCTAssertEqual(views(NSTextView.self, in: host).count, 1)
     }
 
-    /// A streamed answer that completes keeps its table's height.
-    func testHeightMatchesTodaysTable() throws {
+    /// A wide table fits the column: the short column on one line, the
+    /// long one wrapped, every cell inside the view, rows top-aligned.
+    func testAWideTableWrapsItsLongColumnInsideTheColumn() throws {
+        let host = hosted(NativeMarkdownTableView(table: try table(Self.wide)), width: 360)
+        let view = try XCTUnwrap(views(MarkdownTableTextView.self, in: host).first)
+        XCTAssertLessThanOrEqual(view.frame.width, 360 - 2 * Spacing.regular + 0.5)
+        let layout = try XCTUnwrap(view.layoutManager)
+        let container = try XCTUnwrap(view.textContainer)
+        func box(_ needle: String) -> CGRect {
+            let range = (view.plainText as NSString).range(of: needle)
+            return layout.boundingRect(forGlyphRange: layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil),
+                                       in: container)
+        }
+        let label = box("Пункт 1")
+        XCTAssertGreaterThan(label.height, 0)
+        XCTAssertLessThan(label.height, MarkdownRunText.bodyFont.pointSize * 2, "the short column stays on one line")
+        let sentence = box(Self.wideSentence + " 1")
+        XCTAssertGreaterThan(sentence.height, label.height * 2, "the long column wraps")
+        XCTAssertLessThanOrEqual(sentence.maxX, view.frame.width + 0.5, "no cell runs past the view")
+        XCTAssertGreaterThan(sentence.minX, label.maxX, "the long column starts after the short one")
+        XCTAssertEqual(box("Пункт 9").minY, box(Self.wideSentence + " 9").minY, accuracy: 0.5, "a row's cells start together")
+        XCTAssertGreaterThan(box("Пункт 2").minY, sentence.maxY, "the next row starts below the tallest cell")
+
+        // Copy keeps one line per row, tab-separated.
+        let rows = view.plainText.components(separatedBy: "\n")
+        XCTAssertEqual(rows.count, 10)
+        XCTAssertEqual(rows[1].components(separatedBy: "\t").count, 2)
+        XCTAssertTrue(rows[1].hasPrefix("Пункт 1\tСказано, что"))
+    }
+
+    /// A streamed answer that completes keeps its table's height, at a
+    /// width it fits and one it has to wrap at.
+    func testHeightMatchesTheStreamingTable() throws {
         let tables = [
             Self.sample,
             "| Recipe | Channel | Schedule | State | Runs |\n|:---|---|---|:---:|---:|\n" +
                 "| Daily digest | #acme-general | weekdays 9:00 | on | 12 |\n" +
                 "| Weekly recap with a long name | #acme-team | Fridays 17:00 | off | 3 |",
-            "| one |\n|---|\n| a |\n| b |\n| c |\n| d |\n| e |\n| f |\n| g |\n| h |"
+            "| one |\n|---|\n| a |\n| b |\n| c |\n| d |\n| e |\n| f |\n| g |\n| h |",
+            Self.wide
         ]
         for markdown in tables {
             let table = try table(markdown)
@@ -270,9 +358,9 @@ final class MarkdownTableTextTests: XCTestCase {
                 func height(_ view: some View) -> CGFloat {
                     NSHostingView(rootView: view.frame(width: width)).fittingSize.height
                 }
-                let today = height(MarkdownTableView(table: table))
-                XCTAssertGreaterThan(today, 50)
-                XCTAssertEqual(height(NativeMarkdownTableView(table: table)), today, accuracy: 1,
+                let streaming = height(MarkdownTableView(table: table))
+                XCTAssertGreaterThan(streaming, 50)
+                XCTAssertEqual(height(NativeMarkdownTableView(table: table)), streaming, accuracy: 2,
                                "width \(width): \(markdown.prefix(20))")
             }
         }

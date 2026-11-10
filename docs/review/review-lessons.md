@@ -2832,3 +2832,12 @@ Entry format:
 - rule-gap (candidate, dim 7/8): *a Swift test that feeds a CLI stream or envelope uses a sequence captured from the Go side's test for the same outcome (or the shared golden), never a hand-written mix of events.*
 - rule-gap (candidate, dim 9): *a `--stream` command writes its envelope as the last line on every return path, early refusals and usage errors included; a bare `return err` after the stream starts is the tell.*
 - outcome: TBD
+
+## 2026-11-10 — fix/1714-chat-table-wrap (#1714 / ask #1197: chat tables wrap instead of scrolling; `MarkdownTableColumns` in WatchtowerCore, `NSTextTable` run view, streaming `MarkdownTableGrid` Layout; 13 files; panel: prosecutor (5) + codex (0); pr-review-toolkit specialists unavailable; judge verified fabdd38f8 by reading, no runs) — verdict: approve
+
+- contested: F1 (the size reported to SwiftUI was the sum of floored column widths, and the frame set to it laid out different columns). The fix does not make `widths()` stable; it reports exactly the proposed width when wrapping and the ceil'd natural width when the table fits, so the frame width always equals the probe width. Checked that `Metrics.natural` is ceil'd in `buildMetrics`, so the fits-branch round trip cannot fall into the wrap path. [6]
+- false-positive: none dismissed outright. F5 (rebuilding the `NSTextTable` string on each new width) was rejected as inherent to wrapping (memo + 2-entry size cache), and F4 (per-delta metrics build during streaming) was deferred as a minor follow-up; a chat table is small. [4]
+- miss: codex returned "no actionable issues" while the prosecutor found a real frame/probe mismatch (F1) and a font-blind streaming grid (F3). Codex's clean pass on SwiftUI/AppKit sizing code is weak signal. [6]
+- weak-dimension: 7 in round 1. The core test pinned a "widths(sum(widths(W))) == widths(W)" stability property on hand-picked inputs while the property is false in general; the view relied on it. Round 2 removed the reliance and the test.
+- rule-gap (candidate, dim 6/7): *a view whose `sizeThatFits` reports a size derived from rounded parts (column widths, line heights) must report a value whose re-layout at that frame reproduces the probe, and a test sets the frame to the reported size and compares the shown content with the probe's, at non-integer widths too.*
+- outcome: TBD
