@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
 	"watchtower/internal/tools"
@@ -162,7 +163,7 @@ func reportScope(d *db.DB, b tools.Binding, a *reportArgs) (int64, error) {
 	switch {
 	case a.Days < 0:
 		return 0, &tools.ValidationError{Msg: "days must not be negative"}
-	case a.Agent != "" && a.Agent != "claude" && a.Agent != "codex":
+	case a.Agent != "" && !agentkind.IsAgent(a.Agent):
 		return 0, &tools.ValidationError{Msg: fmt.Sprintf("invalid agent %q: must be claude or codex", a.Agent)}
 	}
 	a.Days = min(a.Days, maxReportDays)
