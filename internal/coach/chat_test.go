@@ -65,8 +65,8 @@ func TestValidateChatProposal_Refusals(t *testing.T) {
 		edit ChatEdit
 		want string
 	}{
-		{"unknown destination", with(func(e *ChatEdit) { e.Destination = "repo_claude_md" }),
-			`destination "repo_claude_md" cannot be edited from the chat`},
+		{"unknown destination", with(func(e *ChatEdit) { e.Destination = "repo_readme" }),
+			`destination "repo_readme" cannot be edited from the chat`},
 		{"empty title", with(func(e *ChatEdit) { e.Title = "  " }), "title and why are required"},
 		{"empty why", with(func(e *ChatEdit) { e.Why = "" }), "title and why are required"},
 		{"long title", with(func(e *ChatEdit) { e.Title = strings.Repeat("t", 121) }), "title is over 120 characters"},

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -233,9 +234,64 @@ func TestCoachAccept_JSONKeysPinned(t *testing.T) {
 	for k := range top {
 		got = append(got, k)
 	}
-	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted"}, got)
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
+		"written_path"}, got)
 	assert.Equal(t, "accepted", strings.Trim(string(top["status"]), `"`))
 	assert.Equal(t, "0", string(top["pack_copies_updated"]))
+	assert.JSONEq(t, `""`, string(top["written_path"]))
+}
+
+// insertRepoProposal is an open chat edit creating CLAUDE.md in workbench wb.
+func insertRepoProposal(t *testing.T, d *db.DB, wb int64, fp string) int64 {
+	t.Helper()
+	id, err := d.InsertChatCoachProposal(db.CoachProposal{Fingerprint: fp, Kind: "add",
+		Destination: coach.DestRepoClaudeMD, WorkbenchID: wb, Title: "Run tests", Why: "Asked twice.",
+		Metric: "corrections", AfterText: "Run tests.\n", Sources: 1}, nil, time.Now())
+	require.NoError(t, err)
+	require.NotZero(t, id)
+	return id
+}
+
+// A workbench repository file: dirty → "dirty", not a git work tree →
+// "not_git", written → "written_path" relative to the folder.
+func TestCoachAccept_RepoCodes(t *testing.T) {
+	d := coachSetup(t)
+	repo := gitBranchRepo(t)
+	wb, err := d.CreateWorkbench("acme", repo)
+	require.NoError(t, err)
+	plain, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	wbPlain, err := d.CreateWorkbench("acme-plain", plain)
+	require.NoError(t, err)
+
+	// Untracked CLAUDE.md in the folder: dirty.
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "CLAUDE.md"), []byte("Mine.\n"), 0o644))
+	id := insertRepoProposal(t, d, wb, "repo1")
+	out, err := runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	top := coachJSONObject(t, out)
+	assert.JSONEq(t, `"dirty"`, string(top["code"]))
+	assert.NotContains(t, out, repo, "the folder is never named")
+
+	id2 := insertRepoProposal(t, d, wbPlain, "repo2")
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(id2, 10), "--json")
+	require.Error(t, err)
+	assert.JSONEq(t, `"not_git"`, string(coachJSONObject(t, out)["code"]))
+
+	require.NoError(t, os.Remove(filepath.Join(repo, "CLAUDE.md")))
+	out, err = runCoach(t, "", "accept", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	top = coachJSONObject(t, out)
+	var got []string
+	for k := range top {
+		got = append(got, k)
+	}
+	assert.ElementsMatch(t, []string{"ok", "id", "status", "pack_copies_updated", "pack_copies_drifted",
+		"written_path"}, got)
+	assert.JSONEq(t, `"CLAUDE.md"`, string(top["written_path"]))
+	raw, err := os.ReadFile(filepath.Join(repo, "CLAUDE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "Run tests.\n", string(raw))
 }
 
 func TestCoachStatus_JSONKeysPinned(t *testing.T) {

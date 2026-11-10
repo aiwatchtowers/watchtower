@@ -187,10 +187,8 @@ func writeCut(d *db.DB, al *agentlogdb.DB, home string, p db.CoachProposal, now 
 }
 
 // isRepoDestination reports a workbench repository file destination (the
-// five repo_* names of spec §4.3a, which share the prefix).
-func isRepoDestination(dest string) bool {
-	return strings.HasPrefix(dest, "repo_")
-}
+// five of spec §4.3a).
+func isRepoDestination(dest string) bool { return repoDestinations[dest] }
 
 // withoutEdit is cur with p's edit undone: for an owner text the added part
 // (where it still appears exactly once) is replaced by what the edit removed,

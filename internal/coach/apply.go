@@ -42,10 +42,20 @@ type Applier struct {
 	// means <Home>/.codex.
 	CodexHome string
 	Now       func() time.Time
+	// RepoState reads the git state of one workbench repository file
+	// (folder, its relative path); RepoBranch the branch checked out in a
+	// workbench folder ("detached:<short sha>" for a detached HEAD). Both are
+	// seams with no default here — internal/coach runs no git (COACH-01) — and
+	// cmd fills them over workbenchgit's read-only helpers. A nil RepoState
+	// refuses every Accept of a repository file.
+	RepoState  func(folder, rel string) (RepoFileState, error)
+	RepoBranch func(folder string) (string, error)
 }
 
 // env is where a's file destinations live.
-func (a *Applier) env() Env { return Env{Home: a.Home, CodexHome: a.CodexHome} }
+func (a *Applier) env() Env {
+	return Env{Home: a.Home, CodexHome: a.CodexHome, RepoState: a.RepoState}
+}
 
 func (a *Applier) now() time.Time {
 	if a.Now != nil {
@@ -56,8 +66,13 @@ func (a *Applier) now() time.Time {
 
 // AcceptResult is what an Accept changed beyond the destination: for a pack
 // overlay, how many installed copies of the skill were re-rendered and how
-// many were left because the owner edited them by hand.
-type AcceptResult struct{ PackCopiesUpdated, PackCopiesDrifted int }
+// many were left because the owner edited them by hand; for a workbench
+// repository file, the file written, relative to the workbench folder ("" for
+// every other destination).
+type AcceptResult struct {
+	PackCopiesUpdated, PackCopiesDrifted int
+	WrittenPath                          string
+}
 
 // Accept applies an open proposal (accept); a pack overlay then re-renders
 // the skill's installed copies (rerenderPack) and the result counts them.
@@ -72,6 +87,9 @@ func (a *Applier) Accept(id int64, edited string) (AcceptResult, error) {
 	var r AcceptResult
 	if p.Destination == DestPackOverlay {
 		r.PackCopiesUpdated, r.PackCopiesDrifted = a.rerenderPack(p.Skill)
+	}
+	if repoDestinations[p.Destination] {
+		r.WrittenPath, _ = RepoRelPath(p.Destination, p.Skill)
 	}
 	return r, nil
 }
@@ -96,6 +114,13 @@ func (a *Applier) accept(p db.CoachProposal, edited string) error {
 	baseline, n, err := a.baseline(p, now)
 	if err != nil {
 		return fmt.Errorf("coach proposal %d: measuring the baseline: %w", id, err)
+	}
+	if repoDestinations[p.Destination] {
+		// The git check is not repeated after the write, which makes the path
+		// dirty itself (spec §4.3a).
+		if err := a.checkRepo(p); err != nil {
+			return fmt.Errorf("coach proposal %d (%s): %w", id, p.Destination, err)
+		}
 	}
 	cur, err := a.readCurrent(p)
 	if err != nil {
@@ -334,6 +359,8 @@ func (a *Applier) readCurrent(p db.CoachProposal) (CurrentText, error) {
 			return CurrentText{}, err
 		}
 		t.Budget = BudgetOf(p.Destination, t.Text)
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.readRepo(p, t)
 	default:
 		return CurrentText{}, errors.New("unknown destination")
 	}
@@ -385,6 +412,8 @@ func (a *Applier) writeDestination(p db.CoachProposal, cur CurrentText, after st
 		// The Codex rules too: after is the whole file, its old text plus the
 		// added lines (ValidateAfter).
 		return a.writeUserFile(p, cur, after)
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.writeRepoFile(p, cur, after)
 	}
 	return written{}, errNotSupported
 }
@@ -539,6 +568,8 @@ func (a *Applier) restoreDestination(p db.CoachProposal, cur CurrentText, now ti
 			return err
 		}
 		return nil
+	case DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
+		return a.restoreRepoFile(p, cur)
 	}
 	return errNotSupported
 }

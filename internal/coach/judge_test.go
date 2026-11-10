@@ -409,8 +409,8 @@ func TestJudge_NoCutForRepoFile(t *testing.T) {
 	}
 }
 
-var repoDestinationsForTest = []string{"repo_claude_md", "repo_agents_md", "repo_claude_skill",
-	"repo_codex_skill", "repo_workflow"}
+var repoDestinationsForTest = []string{DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill,
+	DestRepoCodexSkill, DestRepoWorkflow}
 
 // A Codex skill found in both folders cannot be read: no cut, no error.
 func TestJudge_NoCutForCodexSkillInTwoFolders(t *testing.T) {

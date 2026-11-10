@@ -59,6 +59,17 @@ const (
 	DestCodexRulesAllow   = "codex_rules_allow"
 )
 
+// The workbench repository files a tuning chat may edit (spec §4.3a, owner
+// ask #1165): per workbench, inside its own folder only, written by Accept and
+// committed by the owner. RepoRelPath spells their paths.
+const (
+	DestRepoClaudeMD    = "repo_claude_md"    // CLAUDE.md
+	DestRepoAgentsMD    = "repo_agents_md"    // AGENTS.md
+	DestRepoClaudeSkill = "repo_claude_skill" // .claude/skills/<name>/SKILL.md
+	DestRepoCodexSkill  = "repo_codex_skill"  // .agents/skills/<name>/SKILL.md
+	DestRepoWorkflow    = "repo_workflow"     // workbenchmethod.FileRel
+)
+
 // Signal is one piece of evidence the model may cite. Ref is the citation key
 // the model's output is validated against: "ask:<id>#<item key>" (a spec
 // review finding), "s<id>" (a workbench session's owner line), "c<id>" (an AI

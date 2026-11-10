@@ -338,3 +338,17 @@ func TestPathStatus_RunsOnlyStatus(t *testing.T) {
 		{"status", "--porcelain=v1", "-z", "--", "sub/CLAUDE.md"},
 	}, rec.argv())
 }
+
+// ReadStatus, the coach's branch read (COACH-01: TestCOACH01_NoGitWrites),
+// runs only the probe's rev-parse and one porcelain v2 status.
+func TestReadStatus_RunsOnlyReadVerbs(t *testing.T) {
+	dir := newRepo(t)
+	writeFile(t, dir, "README.md", "changed\n")
+	rec := &recorder{}
+	st := ReadStatus(context.Background(), options(dir, rec))
+	require.True(t, st.StatusOK, st.StatusError)
+	assert.Equal(t, [][]string{
+		{"rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel"},
+		{"status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal", "--ignore-submodules=all"},
+	}, rec.argv())
+}

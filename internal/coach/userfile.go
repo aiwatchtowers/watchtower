@@ -1,6 +1,7 @@
 package coach
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -47,6 +48,9 @@ type Env struct {
 	Home string
 	// CodexHome is Codex's home ($CODEX_HOME); "" = <Home>/.codex.
 	CodexHome string
+	// RepoState is Applier.RepoState: no default here, so a nil one refuses
+	// every repository file proposal (never filed unchecked).
+	RepoState func(folder, rel string) (RepoFileState, error)
 }
 
 // CodexHomeFromEnv is $CODEX_HOME when it is an absolute path, else "" (the
@@ -161,11 +165,15 @@ func codexAgentsMDPath(e Env) string { return filepath.Join(e.codexHome(), "AGEN
 
 // textFile is one kind of owner text file: its label for errors, its temp-file
 // pattern and its errors (missing: the file does not exist and may not be
-// created), and whether a copy with the devpack marker is refused.
+// created), whether a copy with the devpack marker is refused, and how a file
+// that may be created is: createMode (0 = 0600) and whether its folder must
+// already exist (else missing folders are made, 0700).
 type textFile struct {
 	label, tmp                           string
 	notRegular, tooBig, changed, missing error
 	packCheck                            bool
+	createMode                           fs.FileMode
+	folderMustExist                      bool
 }
 
 var (
@@ -243,8 +251,9 @@ func (f textFile) read(root, path string) (raw []byte, mode fs.FileMode, exists 
 
 // replace makes the file hold to, only while it still holds from (an empty
 // from also matches a missing file); otherwise f.changed. A missing file is
-// f.missing unless create, when it and its folders are created (0600,
-// 0700); an existing file keeps its mode. It returns whether the file existed.
+// f.missing unless create, when it is created with f.createMode (its folders
+// too unless f.folderMustExist); an existing file keeps its mode. It returns whether
+// the file existed.
 func (f textFile) replace(root, path, from, to string, create bool) (existed bool, err error) {
 	raw, mode, exists, err := f.read(root, path)
 	if err != nil {
@@ -257,9 +266,11 @@ func (f textFile) replace(root, path, from, to string, create bool) (existed boo
 		return exists, f.changed
 	}
 	if !exists {
-		mode = 0o600
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return false, settingsErr("creating the "+f.label+" folder", err)
+		mode = cmp.Or(f.createMode, 0o600)
+		if !f.folderMustExist {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return false, settingsErr("creating the "+f.label+" folder", err)
+			}
 		}
 	}
 	return exists, writeAtomic(f.atomic(root), path, []byte(to), mode, raw, exists)

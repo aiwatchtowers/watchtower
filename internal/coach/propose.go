@@ -49,10 +49,16 @@ var (
 	globalDestinations = map[string]bool{DestChat: true, DestPromptAdd: true, DestSettingsAllow: true,
 		DestClaudeMDUser: true, DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true,
 		DestCodexAgentsMDUser: true, DestCodexRulesAllow: true}
+	// repoDestinations are the workbench repository files (spec §4.3a): a
+	// tuning chat may name them too, but they are per workbench and kept apart
+	// from chatDestinations, the owner's home and Watchtower texts.
+	repoDestinations = map[string]bool{DestRepoClaudeMD: true, DestRepoAgentsMD: true,
+		DestRepoClaudeSkill: true, DestRepoCodexSkill: true, DestRepoWorkflow: true}
 	// skillDestinations hold one text per skill: the skill is part of the key.
-	skillDestinations = map[string]bool{DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true}
-	proposalKinds     = map[string]bool{"add": true, "cut": true, "replace": true}
-	metrics           = map[string]bool{"corrections": true, "task_cost": true, "owner_loop": true, "review_findings": true}
+	skillDestinations = map[string]bool{DestClaudeSkillUser: true, DestCodexSkillUser: true, DestPackOverlay: true,
+		DestRepoClaudeSkill: true, DestRepoCodexSkill: true}
+	proposalKinds = map[string]bool{"add": true, "cut": true, "replace": true}
+	metrics       = map[string]bool{"corrections": true, "task_cost": true, "owner_loop": true, "review_findings": true}
 )
 
 // Proposer asks the model for edits to the owner's setup. The model only
@@ -470,7 +476,8 @@ func kindFits(kind, before, after string) bool {
 func ValidateAfter(t CurrentText, after string) error {
 	switch t.Destination {
 	case DestSession, DestProcedure, DestChat, DestClaudeMDUser,
-		DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser:
+		DestClaudeSkillUser, DestCodexSkillUser, DestCodexAgentsMDUser,
+		DestRepoClaudeMD, DestRepoAgentsMD, DestRepoClaudeSkill, DestRepoCodexSkill, DestRepoWorkflow:
 		if t.Budget > 0 && utf8.RuneCountInString(strings.TrimSpace(after)) > t.Budget {
 			return fmt.Errorf("the text is over its budget of %d characters", t.Budget)
 		}

@@ -3,6 +3,10 @@ package coach
 import (
 	"bytes"
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -177,4 +181,300 @@ func TestCOACH01_HomeDestinationsStayUnderHome(t *testing.T) {
 		_, err := userFileOf(Env{Home: hdir}, dest, "../../x")
 		require.ErrorIs(t, err, errBadSkillName)
 	}
+}
+
+// COACH-01 (amended, owner ask #1165): a repository file is a destination only
+// as one of the five of spec §4.3a, only inside the workbench's own folder,
+// never through a symlinked folder, and never from the weekly pass.
+func TestCOACH01_RepoFilesOnlyInTheWorkbenchFolder(t *testing.T) {
+	want := map[string]string{
+		DestRepoClaudeMD:    "CLAUDE.md",
+		DestRepoAgentsMD:    "AGENTS.md",
+		DestRepoClaudeSkill: ".claude/skills/a/SKILL.md",
+		DestRepoCodexSkill:  ".agents/skills/a/SKILL.md",
+		DestRepoWorkflow:    ".watchtower/workflow.md",
+	}
+	got := map[string]bool{}
+	for dest := range repoDestinations {
+		got[dest] = true
+		assert.False(t, textDestinations[dest], "%s is never a weekly destination", dest)
+		assert.False(t, globalDestinations[dest], "%s is per workbench", dest)
+		assert.False(t, chatDestinations[dest], "%s is not a home destination", dest)
+	}
+	require.Len(t, got, len(want), "adding a repository destination is an owner decision: update COACH-01")
+
+	d := openDBs(t)
+	a := newApplier(t, d)
+	for dest, rel := range want {
+		skill := ""
+		if skillDestinations[dest] {
+			skill = "a"
+		}
+		r, ok := RepoRelPath(dest, skill)
+		require.True(t, ok, dest)
+		require.Equal(t, rel, r, dest)
+
+		folder, err := filepath.EvalSymlinks(t.TempDir())
+		require.NoError(t, err)
+		files := map[string]string{"README.md": "readme\n"}
+		for _, other := range want {
+			files[other] = "text of " + other + "\n"
+		}
+		for f, text := range files {
+			writeFile(t, filepath.Join(folder, filepath.FromSlash(f)), text)
+		}
+		wb, err := d.CreateWorkbench("acme-"+dest, folder)
+		require.NoError(t, err)
+
+		u, err := repoFileOf(folder, dest, skill)
+		require.NoError(t, err, dest)
+		assert.Equal(t, filepath.Join(folder, filepath.FromSlash(rel)), u.path, dest)
+		assert.Equal(t, folder, u.root, dest)
+
+		// readCurrent and writeDestination touch exactly that file.
+		p := db.CoachProposal{Destination: dest, WorkbenchID: wb, Skill: skill}
+		cur, err := a.readCurrent(p)
+		require.NoError(t, err, dest)
+		assert.Equal(t, "text of "+rel+"\n", cur.Text, dest)
+		_, err = a.writeDestination(p, cur, cur.Text+"Edited.\n", applyNow)
+		require.NoError(t, err, dest)
+		files[rel] += "Edited.\n"
+		assert.Equal(t, files, folderFiles(t, folder), dest)
+
+		// A symlink on the way or at the file is refused.
+		if dir := filepath.Dir(filepath.FromSlash(rel)); dir != "." {
+			top := filepath.Join(folder, strings.Split(dir, string(filepath.Separator))[0])
+			moved := filepath.Join(t.TempDir(), "moved")
+			require.NoError(t, os.Rename(top, moved))
+			require.NoError(t, os.Symlink(moved, top))
+		} else {
+			moved := filepath.Join(t.TempDir(), "moved.md")
+			require.NoError(t, os.Rename(u.path, moved))
+			require.NoError(t, os.Symlink(moved, u.path))
+		}
+		_, err = a.readCurrent(p)
+		require.ErrorIs(t, err, errUnsafeFile, dest)
+		_, err = a.writeDestination(p, cur, cur.Text+"Edited.\n", applyNow)
+		require.ErrorIs(t, err, errUnsafeFile, dest)
+	}
+
+	// A skill name never leaves its skills folder.
+	for _, dest := range []string{DestRepoClaudeSkill, DestRepoCodexSkill} {
+		for _, bad := range []string{"../x", "..", "a/b", "/x"} {
+			_, err := repoFileOf(t.TempDir(), dest, bad)
+			require.ErrorIs(t, err, errBadSkillName, bad)
+		}
+	}
+
+	// The weekly pass drops a model reply naming any of the five, even with
+	// the text in its inputs.
+	in := proposeInputs()
+	for dest := range want {
+		in.Texts = append(in.Texts, CurrentText{Destination: dest, WorkbenchID: 1, Text: "Run tests.", Budget: 1000})
+	}
+	for dest := range want {
+		raw := `{"proposals":[{"title":"t","why":"w","destination":"` + dest + `","workbench_id":1,"prompt_id":"",` +
+			`"kind":"add","find":"","replace":"Keep it short.","metric":"corrections","evidence":["s1","s2","s3"]}]}`
+		got, err := Validate(raw, in)
+		require.NoError(t, err)
+		assert.Empty(t, got, dest)
+	}
+}
+
+// folderFiles is every regular file below folder (relative, slash-separated)
+// with its text.
+func folderFiles(t *testing.T, folder string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	require.NoError(t, filepath.WalkDir(folder, func(path string, e fs.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return err
+		}
+		rel, err := filepath.Rel(folder, path)
+		if err != nil {
+			return err
+		}
+		raw, err := os.ReadFile(path)
+		out[filepath.ToSlash(rel)] = string(raw)
+		return err
+	}))
+	return out
+}
+
+// COACH-01 (amended, owner ask #1165): Watchtower never runs a git write for
+// the coach. (a) internal/coach imports no workbenchgit and starts no process:
+// the git state reaches Accept and ValidateChatProposal only through the
+// RepoState/RepoBranch seams, which have no default there. (b) The tuning
+// paths that fill them — the coach and tuning CLI code, which lives only in
+// cmd/coach*.go and cmd/tuning*.go, and internal/tuning — call no workbenchgit
+// helper but PathStatus, ReadStatus and FileAtHead. (c) Those helpers run git
+// only with the read-only verbs status, rev-parse and show (pinned argv by
+// argv in workbenchgit's recording-runner tests: TestPathStatus_RunsOnlyStatus,
+// TestReadStatus_RunsOnlyReadVerbs). Extend the lists with each new read-only
+// helper or caller (the daemon's commit check, Task 2.14); never relax them.
+func TestCOACH01_NoGitWrites(t *testing.T) {
+	// (a)
+	for _, f := range parseDir(t, ".") {
+		for _, imp := range f.file.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			assert.NotEqual(t, "watchtower/internal/workbenchgit", path, f.name)
+			assert.NotEqual(t, "os/exec", path, f.name)
+		}
+		for sel := range selectors(f.file, map[string]string{"os": "os", "syscall": "syscall"}) {
+			assert.NotContains(t, []string{"os.StartProcess", "syscall.Exec", "syscall.ForkExec", "syscall.StartProcess"},
+				sel, f.name)
+		}
+	}
+
+	// (b)
+	tuningPath := func(name string) bool {
+		base := filepath.Base(name)
+		return strings.HasPrefix(base, "coach") || strings.HasPrefix(base, "tuning")
+	}
+	allowed := map[string]bool{
+		"workbenchgit.PathStatus": true, "workbenchgit.ReadStatus": true, "workbenchgit.FileAtHead": true,
+		// Types, not helpers: they run nothing.
+		"workbenchgit.Options": true, "workbenchgit.Status": true, "workbenchgit.PathState": true,
+		"workbenchgit.StatusFields": true,
+	}
+	seams := []string{"coach.Applier", "coach.Env", "coach.RepoFileState", "tuning.Deps"}
+	pkgs := map[string]string{"watchtower/internal/workbenchgit": "workbenchgit",
+		"watchtower/internal/coach": "coach", "watchtower/internal/tuning": "tuning"}
+	scanned := 0
+	files := parseDir(t, filepath.Join("..", "..", "cmd"))
+	if _, err := os.Stat(filepath.Join("..", "tuning")); err == nil {
+		files = append(files, parseDir(t, filepath.Join("..", "tuning"))...)
+	}
+	for _, f := range files {
+		inTuning := tuningPath(f.name) || strings.Contains(filepath.ToSlash(f.name), "internal/tuning/")
+		for sel := range selectors(f.file, importNames(f.file, pkgs)) {
+			if !inTuning {
+				assert.NotContains(t, seams, sel, "%s: coach and tuning wiring lives in cmd/coach*.go or cmd/tuning*.go", f.name)
+				continue
+			}
+			if strings.HasPrefix(sel, "workbenchgit.") {
+				scanned++
+				assert.True(t, allowed[sel], "%s calls %s: only the read-only helpers", f.name, sel)
+			}
+		}
+	}
+	assert.Positive(t, scanned, "the scan finds the coach's git reads (coachRepoState, coachRepoBranch)")
+
+	// (c)
+	helpers := map[string]bool{"PathStatus": true, "ReadStatus": true, "readStatus": true, "FileAtHead": true,
+		"probe": true, "open": true, "locatePaths": true}
+	readVerbs := map[string]bool{"status": true, "rev-parse": true, "show": true}
+	decls := map[string]*ast.FuncDecl{}
+	for _, f := range parseDir(t, filepath.Join("..", "workbenchgit")) {
+		for _, d := range f.file.Decls {
+			if fd, ok := d.(*ast.FuncDecl); ok {
+				decls[fd.Name.Name] = fd
+			}
+		}
+	}
+	runsGit := func(fd *ast.FuncDecl) bool {
+		found := false
+		ast.Inspect(fd, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok {
+				if s, ok := c.Fun.(*ast.SelectorExpr); ok && (s.Sel.Name == "git" || s.Sel.Name == "run") {
+					found = true
+				}
+			}
+			return true
+		})
+		return found
+	}
+	verbs := 0
+	for name := range helpers {
+		fd, ok := decls[name]
+		if !ok {
+			continue // FileAtHead lands with Task 2.14
+		}
+		ast.Inspect(fd.Body, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			var callee string
+			switch fn := c.Fun.(type) {
+			case *ast.Ident:
+				callee = fn.Name
+			case *ast.SelectorExpr:
+				callee = fn.Sel.Name
+			}
+			if callee == "git" || callee == "run" {
+				require.GreaterOrEqual(t, len(c.Args), 2, "%s: git call without a verb", name)
+				lit, ok := c.Args[1].(*ast.BasicLit)
+				require.True(t, ok && lit.Kind == token.STRING, "%s: the git verb must be a literal", name)
+				verb := strings.Trim(lit.Value, `"`)
+				assert.True(t, readVerbs[verb], "%s runs git %s", name, verb)
+				verbs++
+				return true
+			}
+			if other, ok := decls[callee]; ok && !helpers[callee] && runsGit(other) {
+				t.Errorf("%s calls %s, which runs git: add it to the scan only if it is read-only", name, callee)
+			}
+			return true
+		})
+	}
+	assert.Positive(t, verbs, "the scan finds the helpers' git calls")
+}
+
+type parsedFile struct {
+	name string
+	file *ast.File
+}
+
+// parseDir parses the non-test Go files of dir.
+func parseDir(t *testing.T, dir string) []parsedFile {
+	t.Helper()
+	names, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	require.NoError(t, err)
+	var out []parsedFile
+	fset := token.NewFileSet()
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		require.NoError(t, err)
+		out = append(out, parsedFile{name: name, file: f})
+	}
+	require.NotEmpty(t, out, dir)
+	return out
+}
+
+// importNames maps the local name of each import of f in pkgs (import path →
+// canonical name) to that canonical name.
+func importNames(f *ast.File, pkgs map[string]string) map[string]string {
+	out := map[string]string{}
+	for _, imp := range f.Imports {
+		canonical, ok := pkgs[strings.Trim(imp.Path.Value, `"`)]
+		if !ok {
+			continue
+		}
+		local := canonical
+		if imp.Name != nil {
+			local = imp.Name.Name
+		}
+		out[local] = canonical
+	}
+	return out
+}
+
+// selectors is the set of "pkg.Name" selectors in f whose pkg is a local
+// import name in names, spelled with its canonical name.
+func selectors(f *ast.File, names map[string]string) map[string]bool {
+	out := map[string]bool{}
+	ast.Inspect(f, func(n ast.Node) bool {
+		if s, ok := n.(*ast.SelectorExpr); ok {
+			if id, ok := s.X.(*ast.Ident); ok {
+				if canonical, ok := names[id.Name]; ok {
+					out[canonical+"."+s.Sel.Name] = true
+				}
+			}
+		}
+		return true
+	})
+	return out
 }

@@ -23,6 +23,7 @@ import (
 	"watchtower/internal/fsutil"
 	"watchtower/internal/instructions"
 	"watchtower/internal/sessionfeed"
+	"watchtower/internal/workbenchgit"
 )
 
 // coachDefaultDays is the default length of the period `coach status`
@@ -149,7 +150,42 @@ type coachEnv struct {
 
 func (e *coachEnv) applier() *coach.Applier {
 	home, _ := coachHome() // empty: only a settings.json destination fails, with its own error
-	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv()}
+	return &coach.Applier{DB: e.db, AgentLog: e.al, Home: home, CodexHome: coach.CodexHomeFromEnv(),
+		RepoState: coachRepoState(), RepoBranch: coachRepoBranch()}
+}
+
+// coachRepoState is the coach's reader of one workbench repository file's git
+// state (coach.Applier.RepoState, coach.Env.RepoState): workbenchgit.PathStatus,
+// `git status` only. With coachRepoBranch it is the only cmd code that calls
+// workbenchgit for the coach (COACH-01: TestCOACH01_NoGitWrites).
+func coachRepoState() func(folder, rel string) (coach.RepoFileState, error) {
+	return func(folder, rel string) (coach.RepoFileState, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
+		defer cancel()
+		st, err := workbenchgit.PathStatus(ctx, workbenchgit.Options{Folder: folder}, rel)
+		return coach.RepoFileState{Git: st.Git, Dirty: st.Dirty}, err
+	}
+}
+
+// coachRepoBranch is the branch checked out in a workbench folder
+// (coach.Applier.RepoBranch): workbenchgit.ReadStatus's branch, or
+// "detached:<short sha>" for a detached HEAD; a folder that is not a work tree
+// or a failed status read is an error.
+func coachRepoBranch() func(folder string) (string, error) {
+	return func(folder string) (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), workbenchGitReadBudget)
+		defer cancel()
+		st := workbenchgit.ReadStatus(ctx, workbenchgit.Options{Folder: folder})
+		switch {
+		case !st.Git:
+			return "", coach.ErrRepoNotGit
+		case !st.StatusOK:
+			return "", errors.New("reading the branch: git status failed")
+		case st.Detached:
+			return "detached:" + st.Head, nil
+		}
+		return st.Branch, nil
+	}
 }
 
 // coachCodedError carries the machine-readable "code" (and a diff) of a failure object.
@@ -395,6 +431,9 @@ type coachAcceptJSON struct {
 	coachDecisionJSON
 	PackCopiesUpdated int `json:"pack_copies_updated"`
 	PackCopiesDrifted int `json:"pack_copies_drifted"`
+	// WrittenPath is the workbench repository file written, relative to the
+	// workbench folder; "" for every other destination.
+	WrittenPath string `json:"written_path"`
 }
 
 func parseCoachID(s string) (int64, error) {
@@ -431,7 +470,8 @@ func runCoachAccept(cmd *cobra.Command, e *coachEnv, arg string) (any, error) {
 		return nil, codedCoachErr(err)
 	}
 	return coachAcceptJSON{coachDecisionJSON: coachDecisionJSON{OK: true, ID: id, Status: "accepted"},
-		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted}, nil
+		PackCopiesUpdated: res.PackCopiesUpdated, PackCopiesDrifted: res.PackCopiesDrifted,
+		WrittenPath: res.WrittenPath}, nil
 }
 
 func runCoachDecline(e *coachEnv, arg string) (any, error) {
@@ -495,6 +535,10 @@ func codedCoachErr(err error) *coachCodedError {
 		code = "changed_since"
 	case errors.Is(err, db.ErrCoachStateChanged):
 		code = "state_changed"
+	case errors.Is(err, coach.ErrRepoDirty):
+		code = "dirty"
+	case errors.Is(err, coach.ErrRepoNotGit):
+		code = "not_git"
 	}
 	return &coachCodedError{code: code, err: err}
 }
