@@ -2,6 +2,7 @@ package agentreport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,7 +102,7 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	putSessionWith(t, d, wb, "new", 40, 2, extra)
 	putSessionWith(t, d, wb, "old", 40, 1, extra)
 
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.OldFormatSessions)
 	assert.Equal(t, 2, ov.Totals.Sessions)
@@ -150,7 +151,7 @@ func TestBuildOverview_ImportState(t *testing.T) {
 			d, wb := buildDB(t)
 			require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 			require.NoError(t, tc.set(d, wb))
-			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English)
+			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, AgentAll)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, ov.Import)
 		})
@@ -172,13 +173,13 @@ func TestBuildOverview_ImportWaitingForMove(t *testing.T) {
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
 	require.NoError(t, al.SetImportProgress(wb, false, 3, t0))
 
-	ov, err := BuildOverview(d, al, wb, time.Time{}, t0, English)
+	ov, err := BuildOverview(d, al, wb, time.Time{}, t0, English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, ImportState{State: "waiting_for_move"}, ov.Import)
 
 	_, err = agentlogdb.MoveFromMain(context.Background(), d, al, agentlogdb.MoveLockPath(filepath.Join(dir, "agentlog.db")))
 	require.NoError(t, err)
-	ov, err = BuildOverview(d, al, wb, time.Time{}, t0, English)
+	ov, err = BuildOverview(d, al, wb, time.Time{}, t0, English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, "loading", ov.Import.State)
 }
@@ -325,7 +326,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	var runs []time.Duration
 	for range 3 {
 		start := time.Now()
-		ov, err = BuildOverview(d.DB, d.al, wb, time.Time{}, now, English)
+		ov, err = BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, AgentAll)
 		runs = append(runs, time.Since(start))
 		require.NoError(t, err)
 	}
@@ -370,7 +371,7 @@ func TestBuildOverview_Trouble(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(2*time.Hour), English)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(2*time.Hour), English, AgentAll)
 	require.NoError(t, err)
 	assert.Equal(t, 1, ov.Trouble.FactsSessions)
 	assert.Equal(t, 3, ov.Trouble.Interrupts)
@@ -382,4 +383,99 @@ func TestBuildOverview_Trouble(t *testing.T) {
 	det, err := BuildSession(d.DB, d.al, wb, "new", t0.Add(time.Hour), English)
 	require.NoError(t, err)
 	assert.Len(t, hintsOf(det.Hints, "T3"), 1, "the session's drill-down has the trouble hints too")
+}
+
+// Task 4.4: the agent filter and the per-block agents.
+func TestBuildOverview_AgentFilter(t *testing.T) {
+	d, wb := buildDB(t)
+	putSession(t, d, wb, "claude-1", 8, 3)
+	storeCodex(t, d, wb)
+	now := t0.Add(time.Hour)
+
+	all, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, AgentAll)
+	require.NoError(t, err)
+	assert.Equal(t, "all", all.Agent)
+	assert.Equal(t, []string{"claude", "codex"}, all.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, all.AgentFilter)
+	assert.Equal(t, []string{"claude"}, all.Context.Agents, "a rollout carries no context facts")
+	assert.Equal(t, []string{"claude"}, all.Skills.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, all.Trouble.Agents)
+
+	cx, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, "codex")
+	require.NoError(t, err)
+	assert.Equal(t, "codex", cx.Agent)
+	require.Len(t, cx.Sessions, 1)
+	assert.Equal(t, cxSession, cx.Sessions[0].UUID)
+	assert.Equal(t, 1, cx.Totals.Sessions)
+	assert.Equal(t, []string{"codex"}, cx.Agents)
+	assert.Equal(t, []string{}, cx.Context.Agents)
+	assert.Equal(t, []string{}, cx.Skills.Agents)
+	assert.Equal(t, []string{"codex"}, cx.Trouble.Agents)
+	assert.Equal(t, []string{"claude", "codex"}, cx.AgentFilter, "the unfiltered period still has both")
+
+	cl, err := BuildOverview(d.DB, d.al, wb, time.Time{}, now, English, "claude")
+	require.NoError(t, err)
+	require.Len(t, cl.Sessions, 1)
+	assert.Equal(t, "claude-1", cl.Sessions[0].UUID)
+	assert.Equal(t, []string{"claude"}, cl.Agents)
+	assert.Equal(t, []string{"claude"}, cl.Context.Agents)
+	assert.Equal(t, []string{"claude"}, cl.Trouble.Agents)
+}
+
+func TestBuildOverview_SingleAgentNoFilter(t *testing.T) {
+	noFilter := func(t *testing.T, ov *Overview) {
+		t.Helper()
+		raw, err := json.Marshal(ov)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), `"agent_filter"`)
+		assert.Contains(t, string(raw), `"agents":[`, "agents is never null")
+	}
+	t.Run("no sessions", func(t *testing.T) {
+		d, wb := buildDB(t)
+		ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, AgentAll)
+		require.NoError(t, err)
+		noFilter(t, ov)
+	})
+	t.Run("empty period", func(t *testing.T) {
+		d, wb := buildDB(t)
+		putSession(t, d, wb, "claude-1", 8, 3)
+		storeCodex(t, d, wb)
+		ov, err := BuildOverview(d.DB, d.al, wb, t0.Add(48*time.Hour), t0.Add(72*time.Hour), English, AgentAll)
+		require.NoError(t, err)
+		assert.Empty(t, ov.Sessions)
+		noFilter(t, ov)
+	})
+	t.Run("claude only", func(t *testing.T) {
+		d, wb := buildDB(t)
+		putSession(t, d, wb, "claude-1", 8, 3)
+		ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, AgentAll)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"claude"}, ov.Agents)
+		noFilter(t, ov)
+	})
+}
+
+func TestBuildOverview_CodexOnlyEmptyNotError(t *testing.T) {
+	d, wb := buildDB(t)
+	putSession(t, d, wb, "claude-1", 8, 3)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English, "codex")
+	require.NoError(t, err)
+	assert.Empty(t, ov.Sessions)
+	assert.Zero(t, ov.Totals.Sessions)
+	assert.Equal(t, []string{}, ov.Agents)
+	assert.Equal(t, []string{}, ov.Context.Agents)
+	assert.Equal(t, []string{}, ov.Trouble.Agents)
+	assert.Nil(t, ov.AgentFilter)
+	raw, err := json.Marshal(ov)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "null")
+}
+
+func TestBuildOverview_UnknownAgentRefused(t *testing.T) {
+	d, wb := buildDB(t)
+	_, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, "gemini")
+	require.ErrorIs(t, err, ErrUnknownAgent)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0, English, "")
+	require.NoError(t, err)
+	assert.Equal(t, "all", ov.Agent, `"" means all`)
 }

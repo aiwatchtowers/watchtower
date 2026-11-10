@@ -59,7 +59,7 @@ func Measure(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, until tim
 	var tasks int
 	var corrections, agentMS, costUSD, ownerMS, activeMS float64
 	for _, id := range ids {
-		ov, err := agentreport.BuildOverview(main, al, id, since, until, agentreport.English)
+		ov, err := agentreport.BuildOverview(main, al, id, since, until, agentreport.English, agentreport.AgentAll)
 		if err != nil {
 			return Metrics{}, fmt.Errorf("building overview of workbench %d: %w", id, err)
 		}

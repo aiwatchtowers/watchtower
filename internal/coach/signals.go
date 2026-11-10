@@ -232,7 +232,7 @@ func hintSignals(d *db.DB, al *agentlogdb.DB, since, now time.Time) ([]Signal, e
 	}
 	var out []Signal
 	for _, id := range ids {
-		ov, err := agentreport.BuildOverview(d, al, id, since, now, agentreport.English)
+		ov, err := agentreport.BuildOverview(d, al, id, since, now, agentreport.English, agentreport.AgentAll)
 		if err != nil {
 			return nil, fmt.Errorf("building overview of workbench %d: %w", id, err)
 		}

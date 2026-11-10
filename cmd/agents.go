@@ -23,6 +23,7 @@ var (
 	flagAgentsSession   string
 	flagAgentsWorkbench int64
 	flagAgentsJSON      bool
+	flagAgentsAgent     string
 	// agentsClaudeDir is a test seam; ~/.claude, never CLAUDE_CONFIG_DIR.
 	agentsClaudeDir = agentlog.DefaultClaudeDir
 )
@@ -45,6 +46,7 @@ func init() {
 	report.Flags().StringVar(&flagAgentsSince, "since", "", "first day of the period (YYYY-MM-DD, UTC)")
 	report.Flags().IntVar(&flagAgentsDays, "days", 7, "period length in days (0 = all)")
 	report.Flags().StringVar(&flagAgentsSession, "session", "", "one session's drill-down")
+	report.Flags().StringVar(&flagAgentsAgent, "agent", agentreport.AgentAll, "the agent's sessions only: all, claude or codex")
 	report.MarkFlagsMutuallyExclusive("since", "days")
 	_ = report.MarkFlagRequired("workbench")
 	agentsCmd.AddCommand(report)
@@ -251,6 +253,9 @@ func runAgentsStats(cmd *cobra.Command, _ []string) error {
 }
 
 func runAgentsReport(cmd *cobra.Command, _ []string) error {
+	if !agentreport.ValidAgent(flagAgentsAgent) {
+		return errors.New("--agent must be all, claude or codex")
+	}
 	now := time.Now().UTC()
 	var since time.Time
 	switch {
@@ -290,7 +295,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 		printReportHints(out, det.Hints)
 		return nil
 	}
-	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now, lang)
+	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now, lang, flagAgentsAgent)
 	if err != nil {
 		return err
 	}

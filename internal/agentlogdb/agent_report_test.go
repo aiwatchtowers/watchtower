@@ -35,7 +35,7 @@ func TestAgentReportSessions_OldFormat(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, err := d.AgentReportSessions(pid, "2026-09-15T00:00:00.000Z")
+	got, err := d.AgentReportSessions(pid, "2026-09-15T00:00:00.000Z", "")
 	require.NoError(t, err)
 	require.Len(t, got, 3)
 	byID := map[string]AgentReportSession{}
@@ -120,7 +120,7 @@ func TestAgentReportSessions_FactsFlag(t *testing.T) {
 	applyFactsFile(t, d, "/x/nofile.jsonl", "nofile", 3, nil)
 	_, err := d.Exec(`DELETE FROM agent_log_files WHERE path = '/x/nofile.jsonl'`)
 	require.NoError(t, err)
-	got, err := d.AgentReportSessions(testWorkbenchID, "2026-09-01T00:00:00.000Z")
+	got, err := d.AgentReportSessions(testWorkbenchID, "2026-09-01T00:00:00.000Z", "")
 	require.NoError(t, err)
 	byID := map[string]AgentReportSession{}
 	for _, s := range got {
@@ -207,4 +207,26 @@ func TestAgentReportSubagents(t *testing.T) {
 	assert.Equal(t, "s2", got[1].AgentID)
 	assert.Equal(t, 0, got[1].Depth, "unknown depth stays 0")
 	assert.Nil(t, got[1].Finished)
+}
+
+// Task 4.4: "" lists both agents' sessions, an agent only its own.
+func TestAgentReportSessions_AgentFilter(t *testing.T) {
+	d := openTestDB(t)
+	applyFactsFile(t, d, "/x/cl.jsonl", "cl", 3, nil)
+	applyFactsFile(t, d, "/x/cx.jsonl", "cx", 3, func(b *AgentLogBatch) {
+		b.File.Agent = "codex"
+		b.Sessions[0].Agent = "codex"
+	})
+	ids := func(agent string) []string {
+		got, err := d.AgentReportSessions(testWorkbenchID, "2026-09-01T00:00:00.000Z", agent)
+		require.NoError(t, err)
+		out := []string{}
+		for _, s := range got {
+			out = append(out, s.SessionUUID+":"+s.Agent)
+		}
+		return out
+	}
+	assert.ElementsMatch(t, []string{"cl:claude", "cx:codex"}, ids(""))
+	assert.Equal(t, []string{"cx:codex"}, ids("codex"))
+	assert.Equal(t, []string{"cl:claude"}, ids("claude"))
 }
