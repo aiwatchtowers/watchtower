@@ -72,9 +72,9 @@ check `event.window` is that window.
    checksum checked), registers the six runners and installs their
    LaunchAgents. Your own `xcode-select` choice is not touched: the runners
    use `DEVELOPER_DIR`. Running it again is safe; it restarts the runners and
-   removes the ones an earlier setup made that it no longer lists (the
-   `wt-swift` runner, `general-7` and `general-8`), so run it while no job is
-   running.
+   removes every other runner folder in `ci`'s home (`ci` is for these
+   runners only; from earlier setups: `wt-swift`, `general-7`, `general-8`),
+   so run it while no job is running.
 
 3. **Log in as `ci` once and leave it logged in.** Turn on Fast User
    Switching (System Settings → Control Center → Fast User Switching), pick

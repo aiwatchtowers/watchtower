@@ -11,8 +11,8 @@
 # Run it as yourself (not root) with `gh` signed in as a repository admin; it
 # asks for your sudo password. Safe to run again: it creates what is missing,
 # rewrites each runner's PATH and environment, restarts the runners, and
-# removes the runners an earlier setup made that the list below no longer has
-# (the retired wt-swift runner, general-7 and general-8).
+# removes every other actions-runner-* folder in ci's home (ci serves these
+# runners only; earlier setups made wt-swift, general-7 and general-8).
 #
 # Usage: scripts/ci-runner/setup-mac-runner.sh [--uninstall] [--repo OWNER/NAME]
 #            [--xcode /Applications/Xcode.app] [--allow-open-home]
