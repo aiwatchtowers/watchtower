@@ -12,8 +12,9 @@ import (
 	"watchtower/internal/rollout"
 )
 
-// maxSubagentDepth bounds FindSubagent's descent into nested subagents.
-const maxSubagentDepth = 8
+// MaxSubagentDepth bounds FindSubagent's descent into nested subagents and
+// the Codex spawn links the analytics importer stores.
+const MaxSubagentDepth = 8
 
 // AskLookupFor resolves the asks of workbench workbenchID only, with the
 // answer rendered as the owner gave it. Reading never marks an ask
@@ -75,7 +76,7 @@ func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth in
 			continue
 		}
 		match := ref.ToolUseID == toolUseID
-		if !match && depth >= maxSubagentDepth {
+		if !match && depth >= MaxSubagentDepth {
 			continue
 		}
 		path := filepath.Join(sessionDir, "subagents", "agent-"+ref.AgentID+".jsonl")
@@ -98,7 +99,7 @@ func findSubagent(sessionDir string, entries []Entry, toolUseID string, depth in
 }
 
 func findCodexSubagent(c Conversation, selector string, depth int) (*Result, string, error) {
-	if depth >= maxSubagentDepth || !strings.HasPrefix(selector, "codex:") {
+	if depth >= MaxSubagentDepth || !strings.HasPrefix(selector, "codex:") {
 		return nil, "", nil
 	}
 	live, err := LiveOf(c, false, time.Now())
