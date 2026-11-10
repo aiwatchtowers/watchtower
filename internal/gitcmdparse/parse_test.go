@@ -153,6 +153,13 @@ var parseCases = []struct {
 	{"case pattern does not pop a subshell", "(case a in a) cd /tmp/x;; esac; git branch t)", "/tmp/r", nil},
 	{"case then git", "case a in a) b;; esac; git branch t", "/tmp/r", nil},
 
+	// Builtins match by exact text; only git matches by base name.
+	{"external cd binary changes nothing", "/usr/bin/cd /tmp/other; git branch topic", "/tmp/r", []Created{br("topic", "/tmp/r")}},
+	{"external case binary is not a keyword", "/tmp/bin/case; git branch topic", "/tmp/r", []Created{br("topic", "/tmp/r")}},
+	{"absolute git still records", "/usr/bin/git branch t", "/tmp/r", []Created{br("t", "/tmp/r")}},
+	{"cd chain then worktree add", "cd /r && git worktree add ../wt -B y", "/tmp/s", []Created{wt("/wt", "y", "/r")}},
+	{"subshell then ;", "(cd /a && git branch x); git branch y", "/tmp/r", []Created{br("x", "/a"), br("y", "/tmp/r")}},
+
 	// Help.
 	{"worktree add -h", "git worktree add -h /tmp/a", "/tmp/r", nil},
 	{"worktree add --help", "git worktree add --help", "/tmp/r", nil},

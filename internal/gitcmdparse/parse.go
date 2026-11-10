@@ -192,17 +192,19 @@ func (w *walker) segment(words []token, prevOp, nextOp string) {
 		return
 	}
 	piped := prevOp == "|" || prevOp == "|&" || nextOp == "|" || nextOp == "|&"
-	args := words[1:]
-	switch path.Base(words[0].text) {
-	case "case", "function":
+	cmd, args := words[0].text, words[1:]
+	// Builtins and keywords match by exact text (/usr/bin/cd is a child
+	// process and changes nothing); only git is recognised by base name.
+	switch {
+	case cmd == "case" || cmd == "function":
 		w.lose()
-	case "for", "select":
+	case cmd == "for" || cmd == "select":
 		w.depth++
-	case "fi", "done":
+	case cmd == "fi" || cmd == "done":
 		if w.depth > 0 {
 			w.depth--
 		}
-	case "cd":
+	case cmd == "cd":
 		switch {
 		case w.lost || piped:
 			// A pipeline element runs in a subshell.
@@ -213,9 +215,9 @@ func (w *walker) segment(words []token, prevOp, nextOp string) {
 			w.sawCD = true
 			w.cdLater = w.cdLater || !first
 		}
-	case "pushd", "popd":
+	case cmd == "pushd" || cmd == "popd":
 		w.dir = ""
-	case "git":
+	case path.Base(cmd) == "git":
 		plain := make([]string, len(args))
 		for i, a := range args {
 			if a.tainted {
