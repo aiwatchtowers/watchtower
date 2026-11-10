@@ -107,9 +107,8 @@ func TestProj18_ScratchpadWorktreeIsTheSessions(t *testing.T) {
 
 	p := f.plan(Request{})
 	wantItem(t, p, "worktree:"+root, ActionRemove, "")
-	// The scratchpad adopts the worktree only (spec §2b): its branch needs a
-	// ledger or named source of its own, as a placed row's other branches do.
-	wantItem(t, p, "branch:feat/lane", ActionKeep, ReasonNotThisSession)
+	// The branch checked out in an adopted lane is named: it goes too.
+	wantItem(t, p, "branch:feat/lane", ActionRemove, "")
 
 	// Every catch still applies: an uncommitted change keeps it.
 	writeFile(t, filepath.Join(root, "dirty.txt"), "unsaved\n")
@@ -134,6 +133,25 @@ func TestProj18_ScratchpadUUIDSharedAdoptsNothing(t *testing.T) {
 	if p := f.plan(Request{}); hasItem(p, "worktree:"+root) {
 		t.Fatalf("another uuid's scratchpad was adopted: %+v", p.Items)
 	}
+}
+
+// The lane's branch still has to be born after the session started: a lane
+// that checked out an older branch removes the worktree and keeps the branch.
+func TestProj18_ScratchpadBranchOlderThanSessionIsKept(t *testing.T) {
+	f := newFixture(t)
+	useScratchBases(t, f.base)
+	gitIn(t, f.repo, "branch", "feat/older", "main") // merged: only the age keeps it
+	rel := filepath.Join(fmt.Sprintf("claude-%d", os.Getuid()), "-tmp-acme", testUUID, "scratchpad", "lane")
+	root := filepath.Join(f.base, rel)
+	gitIn(t, f.repo, "worktree", "add", "-q", root, "feat/older")
+	f.sessionCreated = time.Now().Add(time.Hour)
+	f.birth = func(string) (time.Time, bool) { return time.Now().Add(2 * time.Hour), true } // the lane is younger
+	f.store.agentIDs = []string{testUUID}
+	f.store.uuidOwners = map[string][]int64{testUUID: {testSession}}
+
+	p := f.plan(Request{})
+	wantItem(t, p, "worktree:"+root, ActionRemove, "")
+	wantItem(t, p, "branch:feat/older", ActionKeep, ReasonExistedBeforeSession)
 }
 
 // A scratchpad worktree older than the session is kept like any other.

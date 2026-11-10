@@ -266,7 +266,8 @@ func (b *builder) loadObserved(ctx context.Context) error {
 // loadScratch adopts the session's Claude scratchpad (auto cleanup spec
 // 2026-11-10 §2b): an agent session id of this row counts only when this
 // row is its only owner (history or current id of any terminal session); a
-// uuid resumed in another tab adopts nothing for either row. A failed read
+// uuid resumed in another tab adopts nothing for either row. The branch
+// checked out in an adopted worktree is named. A failed read
 // fails the plan (nothing is removed).
 func (b *builder) loadScratch(ctx context.Context) error {
 	ids, err := b.deps.DB.AgentSessionIDs(ctx, b.session.ID)
@@ -286,8 +287,18 @@ func (b *builder) loadScratch(ctx context.Context) error {
 			b.seen.scratchIDs[id] = true
 		}
 	}
-	if len(b.seen.scratchIDs) > 0 {
-		b.seen.scratch = scratchDirs()
+	if len(b.seen.scratchIDs) == 0 {
+		return nil
+	}
+	b.seen.scratch = scratchDirs()
+	// A scratchpad worktree's checked-out branch is named, as a target's
+	// branch is: removing a lane removes its branch too, and B1-B4 (birth
+	// after the start, merged or pushed, not checked out elsewhere, not
+	// the default branch) still apply.
+	for _, w := range b.repo.worktrees {
+		if w.Branch != "" && !w.Main && !w.Bare && b.seen.inScratch(w.Root) {
+			b.seen.branches[w.Branch], b.seen.named[w.Branch] = true, true
+		}
 	}
 	return nil
 }
