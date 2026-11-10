@@ -10,10 +10,55 @@ struct RelayConfig: Equatable, Sendable {
     /// nil = not configured.
     let origin: RelayOrigin?
 
+    /// The Relay subscription's StoreKit product id; nil = unset.
+    var productID: String?
+    /// The Terms and Privacy pages the subscription screen links to (`https` only); nil = no link.
+    var termsURL: URL?
+    var privacyURL: URL?
+    /// The APNs environment this build's token belongs to, for `register_push`; nil = unset, and no token is sent. Release
+    /// says `production` though its entitlements file says `development`: App Store export rewrites `aps-environment`.
+    var pushEnvironment: RelayPushEnvironment?
+
     static let infoPlistKey = "WTRelayOrigin"
+    static let productIDKey = "WTRelayProductID"
+    static let termsURLKey = "WTTermsURL"
+    static let privacyURLKey = "WTPrivacyURL"
+    static let pushEnvironmentKey = "WTPushEnvironment"
+
+    init(origin: RelayOrigin?, productID: String? = nil, termsURL: URL? = nil, privacyURL: URL? = nil) {
+        self.origin = origin
+        self.productID = productID
+        self.termsURL = termsURL
+        self.privacyURL = privacyURL
+    }
 
     static func from(bundle: Bundle) -> Self {
-        parse(bundle.object(forInfoDictionaryKey: infoPlistKey) as? String)
+        var config = parse(bundle.object(forInfoDictionaryKey: infoPlistKey) as? String)
+        config.productID = value(bundle.object(forInfoDictionaryKey: productIDKey) as? String)
+        config.termsURL = url(bundle.object(forInfoDictionaryKey: termsURLKey) as? String)
+        config.privacyURL = url(bundle.object(forInfoDictionaryKey: privacyURLKey) as? String)
+        config.pushEnvironment = pushEnvironment(bundle.object(forInfoDictionaryKey: pushEnvironmentKey) as? String)
+        return config
+    }
+
+    /// `sandbox` or `production`; anything else → nil.
+    static func pushEnvironment(_ raw: String?) -> RelayPushEnvironment? {
+        value(raw).flatMap(RelayPushEnvironment.init(rawValue:))
+    }
+
+    /// A trimmed build-setting value; empty or still holding an unexpanded `$(` → nil.
+    static func value(_ raw: String?) -> String? {
+        guard let text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, !text.contains("$(")
+        else { return nil }
+        return text
+    }
+
+    /// A link setting: an `https` URL with a host, else nil.
+    static func url(_ raw: String?) -> URL? {
+        guard let text = value(raw), let url = URL(string: text), url.scheme?.lowercased() == "https",
+              url.host?.isEmpty == false
+        else { return nil }
+        return url
     }
 
     /// Empty or whitespace, a value still holding an unexpanded `$(`, an invalid origin, or plain `http` to a host

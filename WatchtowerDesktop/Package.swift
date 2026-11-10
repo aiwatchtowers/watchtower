@@ -88,6 +88,27 @@ let package = Package(
             dependencies: ["DesignKit", "DesignKitCatalog"],
             path: "Sources/DesignGallery"
         ),
+        // The CloudKit bridge (Go hub phase 3, spec §6.2): the signed helper
+        // WatchtowerCloudBridge.app serves the Go hub's CloudKit transport on
+        // <hub dir>/bridge.sock. The library takes the Kit's model-free
+        // WatchtowerSync only (and its GRDB, for bridge.db): it holds no hub
+        // key and opens no envelope (pinned by CloudBridgeTests'
+        // testBridgeNeverOpensEnvelopes). The app links it for the share code
+        // the Swift hub's CloudKitShareService wraps until that hub goes.
+        .target(
+            name: "CloudBridgeCore",
+            dependencies: [
+                .product(name: "WatchtowerSync", package: "WatchtowerKit"),
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Sources/CloudBridgeCore"
+        ),
+        // The helper's executable: main.swift only.
+        .executableTarget(
+            name: "WatchtowerCloudBridge",
+            dependencies: ["CloudBridgeCore"],
+            path: "Sources/WatchtowerCloudBridge"
+        ),
         .executableTarget(
             name: "WatchtowerDesktop",
             dependencies: [
@@ -100,9 +121,13 @@ let package = Package(
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
+                "CloudBridgeCore",
             ],
             path: "Sources",
-            exclude: ["WatchtowerCore", "OCRKit", "OCRHelper", "DesignKit", "DesignKitCatalog", "DesignGallery"],
+            exclude: [
+                "WatchtowerCore", "OCRKit", "OCRHelper", "DesignKit", "DesignKitCatalog", "DesignGallery",
+                "CloudBridgeCore", "WatchtowerCloudBridge",
+            ],
             resources: [
                 .process("Resources"),
                 // POC (code viewer): Monaco host page + build (scripts/fetch-monaco.sh).
@@ -148,7 +173,14 @@ let package = Package(
                 .product(name: "WatchtowerE2ETesting", package: "WatchtowerKit"),
             ],
             path: "Tests",
-            exclude: ["Core", "Support", "OCRHelperTests"]
+            exclude: ["Core", "Support", "OCRHelperTests", "CloudBridge"]
+        ),
+        // The bridge's own tests: CloudBridgeCore only — no app, no ML stack,
+        // so the linked-symbols check sees the bridge's code alone.
+        .testTarget(
+            name: "CloudBridgeTests",
+            dependencies: ["CloudBridgeCore"],
+            path: "Tests/CloudBridge"
         ),
     ]
 )

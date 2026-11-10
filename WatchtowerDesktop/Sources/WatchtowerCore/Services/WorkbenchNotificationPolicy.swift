@@ -106,7 +106,10 @@ package enum WorkbenchNotificationPolicy {
     /// One project's state at a poll. `questions` holds only the agent root
     /// comments past the previous watermark, `pendingActions` only the
     /// pending proposals past `lastActionID`; `ownerTouched` what the owner
-    /// changed since the previous poll. All three are transient (`persisted`).
+    /// changed: the done targets whose newest history row is the owner's
+    /// (`WorkbenchOwnerNoticePolicy`, filled by the read) plus this process's
+    /// `onOwnerWrite` reports since the previous poll. All three are
+    /// transient (`persisted`).
     package struct Snapshot: Codable, Equatable, Sendable {
         package var projectID: Int64
         package var projectName: String

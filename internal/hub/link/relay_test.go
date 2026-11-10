@@ -534,3 +534,31 @@ func TestPairZoneKeyboxOpensInTheKitsDataContext(t *testing.T) {
 		t.Fatal("opens in the relay context too: the zone byte is not bound")
 	}
 }
+
+// A phone just confirmed over the relay is not a reader yet (its promotion and
+// the next readers sync come later), so the runtime keeps its keys out of the
+// data zone; its pairing slot is its way into the link and carries them.
+func TestPairZoneKeyboxCarriesKeysOutsideTheZoneRule(t *testing.T) {
+	r := newRig(t)
+	ctx := context.Background()
+	f := memfake.New(transport.KindRelay, r.clock)
+	p := newPhone(t)
+	r.keepOut(p, true)
+	r.writeHello(f, "slot1", p, r.issue().Nonce, withRelayID(relayID(t)))
+	if err := r.c.OnPairingOpened(ctx, f, "slot1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.Confirm(p.id.String(), r.code(p), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.PublishPairKeyboxes(ctx, f); err != nil {
+		t.Fatal(err)
+	}
+	kb, ok := r.pairKeybox(f, "slot1", p)
+	if !ok || !kb.Grant.Linked || !r.sameKeys(kb.Keys, p) {
+		t.Fatalf("pair-zone keybox %+v (found %v)", kb, ok)
+	}
+	if zone := r.mustKeybox(p); zone.Keys != nil {
+		t.Fatalf("the data zone's keybox has keys: %+v", zone.Keys)
+	}
+}

@@ -318,6 +318,15 @@ func (s *transcriptSource) prepareDir() error {
 	return nil
 }
 
+// ForgetStaged drops every staged file's entry, once the runtime removed the
+// files (an iCloud account change): the next call stages them anew.
+func (s *transcriptSource) ForgetStaged() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.cache)
+	s.stale = nil
+}
+
 // prune forgets transcripts that left the window; their files go at the next call.
 func (s *transcriptSource) prune(window []int64) {
 	keep := make(map[int64]bool, len(window))

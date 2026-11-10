@@ -10,12 +10,21 @@ import (
 
 // Epoch is one hub_epochs row: SealedKeys is ChaChaPoly(wrap, K_data ‖
 // K_alert) in CryptoKit's combined layout; no key is stored in the clear.
+// Reason is why the epoch began ("" for epoch 1 and rows written before
+// sidecar migration 00010). RetireAfter, set when the epoch is retired, is
+// when its relay-lane keys stop being accepted (nil on an older row: its
+// retention is read from RetiredAt). OnRelay is whether the epoch began on the
+// relay, written when it begins (nil on a row written before sidecar migration
+// 00016: such a row is never erased, EraseEpoch).
 type Epoch struct {
-	Epoch      uint32
-	SealedKeys []byte
-	CreatedAt  time.Time
-	FirstSeq   uint64
-	RetiredAt  *time.Time
+	Epoch       uint32
+	SealedKeys  []byte
+	CreatedAt   time.Time
+	FirstSeq    uint64
+	RetiredAt   *time.Time
+	Reason      string
+	RetireAfter *time.Time
+	OnRelay     *bool
 }
 
 // querier is what a read needs: the database or a transaction.
@@ -32,7 +41,7 @@ func (s *Store) Epochs() ([]Epoch, error) { return epochs(s.db) }
 func EpochsTx(tx *sql.Tx) ([]Epoch, error) { return epochs(tx) }
 
 func epochs(q querier) ([]Epoch, error) {
-	rows, err := q.Query(`SELECT epoch, sealed_keys, created_at, first_seq, retired_at FROM hub_epochs ORDER BY epoch`)
+	rows, err := q.Query(`SELECT epoch, sealed_keys, created_at, first_seq, retired_at, reason, retire_after, on_relay FROM hub_epochs ORDER BY epoch`)
 	if err != nil {
 		return nil, fmt.Errorf("listing epochs: %w", err)
 	}
@@ -45,8 +54,11 @@ func epochs(q querier) ([]Epoch, error) {
 			created  float64
 			first    int64
 			retiredF sql.NullFloat64
+			reason   sql.NullString
+			afterF   sql.NullFloat64
+			onRelay  sql.NullBool
 		)
-		if err := rows.Scan(&epoch, &e.SealedKeys, &created, &first, &retiredF); err != nil {
+		if err := rows.Scan(&epoch, &e.SealedKeys, &created, &first, &retiredF, &reason, &afterF, &onRelay); err != nil {
 			return nil, fmt.Errorf("reading an epoch: %w", err)
 		}
 		if epoch < 0 || epoch > math.MaxUint32 {
@@ -58,6 +70,14 @@ func epochs(q querier) ([]Epoch, error) {
 		if retiredF.Valid {
 			t := fromReal(retiredF.Float64)
 			e.RetiredAt = &t
+		}
+		e.Reason = reason.String
+		if afterF.Valid {
+			t := fromReal(afterF.Float64)
+			e.RetireAfter = &t
+		}
+		if onRelay.Valid {
+			e.OnRelay = &onRelay.Bool
 		}
 		out = append(out, e)
 	}
@@ -74,23 +94,72 @@ func InsertEpoch(tx *sql.Tx, e Epoch) error {
 	if err != nil {
 		return err
 	}
-	var retired any
+	var retired, after, reason, onRelay any
 	if e.RetiredAt != nil {
 		retired = toReal(*e.RetiredAt)
 	}
-	if _, err := tx.Exec(`INSERT INTO hub_epochs (epoch, sealed_keys, created_at, first_seq, retired_at) VALUES (?, ?, ?, ?, ?)`,
-		int64(e.Epoch), e.SealedKeys, toReal(e.CreatedAt), first, retired); err != nil {
+	if e.RetireAfter != nil {
+		after = toReal(*e.RetireAfter)
+	}
+	if e.Reason != "" {
+		reason = e.Reason
+	}
+	if e.OnRelay != nil {
+		onRelay = *e.OnRelay
+	}
+	if _, err := tx.Exec(`INSERT INTO hub_epochs (epoch, sealed_keys, created_at, first_seq, retired_at, reason, retire_after, on_relay) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		int64(e.Epoch), e.SealedKeys, toReal(e.CreatedAt), first, retired, reason, after, onRelay); err != nil {
 		return fmt.Errorf("writing an epoch: %w", err)
 	}
 	return nil
 }
 
-// RetireEpoch stamps epoch as retired at at.
-func RetireEpoch(tx *sql.Tx, epoch uint32, at time.Time) error {
-	if _, err := tx.Exec(`UPDATE hub_epochs SET retired_at = ? WHERE epoch = ?`, toReal(at), int64(epoch)); err != nil {
+// StampEpochOnRelay sets epoch's on_relay to onRelay when it has none, in the
+// caller's transaction; a stamped row is left as it is.
+func StampEpochOnRelay(tx *sql.Tx, epoch uint32, onRelay bool) error {
+	if _, err := tx.Exec(`UPDATE hub_epochs SET on_relay = ? WHERE epoch = ? AND on_relay IS NULL`, onRelay, int64(epoch)); err != nil {
+		return fmt.Errorf("stamping an epoch's on_relay: %w", err)
+	}
+	return nil
+}
+
+// RetireEpoch stamps epoch as retired at at, its relay-lane keys accepted
+// until after.
+func RetireEpoch(tx *sql.Tx, epoch uint32, at, after time.Time) error {
+	if _, err := tx.Exec(`UPDATE hub_epochs SET retired_at = ?, retire_after = ? WHERE epoch = ?`,
+		toReal(at), toReal(after), int64(epoch)); err != nil {
 		return fmt.Errorf("retiring an epoch: %w", err)
 	}
 	return nil
+}
+
+// EndRetention moves a retired epoch's retire_after to at when that is
+// sooner (relay sim rule 14: every phone acked a newer epoch and nothing
+// sealed in it is held), in the caller's transaction. A retention is never
+// lengthened, and the current epoch (never retired) is left alone.
+func EndRetention(tx *sql.Tx, epoch uint32, at time.Time) error {
+	if _, err := tx.Exec(`UPDATE hub_epochs SET retire_after = ?
+		WHERE epoch = ? AND retired_at IS NOT NULL AND (retire_after IS NULL OR retire_after > ?)`,
+		toReal(at), int64(epoch), toReal(at)); err != nil {
+		return fmt.Errorf("ending an epoch's retention: %w", err)
+	}
+	return nil
+}
+
+// SealedIn reports whether a held action or a queued write (an echo or a
+// control still owed to a phone) is sealed in epoch, in the caller's
+// transaction (sim rule 14: such an epoch keeps its keys). It reads the
+// epoch field of each envelope's header (bytes 38–41, big endian), never
+// the envelope itself.
+func SealedIn(tx *sql.Tx, epoch uint32) (bool, error) {
+	be := []byte{byte(epoch >> 24), byte(epoch >> 16), byte(epoch >> 8), byte(epoch)}
+	var used bool
+	err := tx.QueryRow(`SELECT EXISTS (SELECT 1 FROM held_actions WHERE substr(envelope, 39, 4) = ?)
+		OR EXISTS (SELECT 1 FROM control_queue WHERE substr(envelope, 39, 4) = ?)`, be, be).Scan(&used)
+	if err != nil {
+		return false, fmt.Errorf("reading what is sealed in an epoch: %w", err)
+	}
+	return used, nil
 }
 
 // WipeSliceHashes forgets every pushed record's payload hash in the caller's

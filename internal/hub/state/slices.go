@@ -63,3 +63,20 @@ func DeleteSliceState(tx *sql.Tx, record string) error {
 	}
 	return nil
 }
+
+// DeleteSliceAssets forgets every staged asset descriptor (slice_assets, the
+// rows an adopted Swift sidecar brings, each holding its file's K_asset);
+// it writes nothing when there are none.
+func (s *Store) DeleteSliceAssets() error {
+	var found bool
+	if err := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM slice_assets)`).Scan(&found); err != nil {
+		return fmt.Errorf("reading slice assets: %w", err)
+	}
+	if !found {
+		return nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM slice_assets`); err != nil {
+		return fmt.Errorf("deleting slice assets: %w", err)
+	}
+	return nil
+}

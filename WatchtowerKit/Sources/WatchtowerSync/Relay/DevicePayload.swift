@@ -48,7 +48,21 @@ public struct DevicePayload: Codable, Equatable, Sendable {
     /// older phones, whose `updatedAt` stands in.
     public let seenAt: Date?
     public let updatedAt: Date
+    /// An upgraded phone's hosted-relay device id (`RelayIDs.deviceID` of its `relay_auth` key), named so a hub it
+    /// linked to over iCloud can name it to the relay; wire `relay_device_id`, absent when nil. A decoded id that
+    /// fails `RelayIDs.isValid` reads as nil. The hub takes it only with `relayAuthPub` and `relayIDSig`
+    /// (`RelayIDProof`).
+    public let relayDeviceID: String?
+    /// The `relay_auth` Ed25519 public key, unpadded base64url; wire `relay_auth_pub`.
+    public let relayAuthPub: String?
+    /// The `relay_auth` key's signature over `RelayIDProof.message`, unpadded base64url; wire `relay_id_sig`.
+    public let relayIDSig: String?
 
+    /// The phone's "When work stops" switch is off, so the hub sends it no alert; wire `work_alerts_off`, true or
+    /// absent. An older hub ignores it.
+    let workAlertsOffFlag: Bool? // swiftlint:disable:this discouraged_optional_boolean
+
+    public var workAlertsOff: Bool { workAlertsOffFlag ?? false }
     public var recordName: String { "device-\(deviceID)" }
     public var permissionsRequested: Bool { permissionsAsked ?? false }
 
@@ -68,6 +82,10 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         case permissionsAsked = "permissionsRequested"
         case seenAt
         case updatedAt
+        case relayDeviceID = "relayDeviceId"
+        case relayAuthPub
+        case relayIDSig = "relayIdSig"
+        case workAlertsOffFlag = "workAlertsOff"
     }
 
     public init(
@@ -83,7 +101,11 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         startSessions: Bool,
         permissionsRequested: Bool = false,
         seenAt: Date? = nil,
-        updatedAt: Date
+        updatedAt: Date,
+        relayDeviceID: String? = nil,
+        relayAuthPub: String? = nil,
+        relayIDSig: String? = nil,
+        workAlertsOff: Bool = false
     ) {
         self.deviceID = deviceID
         self.name = name
@@ -98,5 +120,30 @@ public struct DevicePayload: Codable, Equatable, Sendable {
         permissionsAsked = permissionsRequested ? true : nil
         self.seenAt = seenAt
         self.updatedAt = updatedAt
+        self.relayDeviceID = relayDeviceID
+        self.relayAuthPub = relayAuthPub
+        self.relayIDSig = relayIDSig
+        workAlertsOffFlag = workAlertsOff ? true : nil
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        deviceID = try values.decode(String.self, forKey: .deviceID)
+        name = try values.decode(String.self, forKey: .name)
+        model = try values.decode(String.self, forKey: .model)
+        appVersion = try values.decode(String.self, forKey: .appVersion)
+        scope = try values.decode(DeviceScope.self, forKey: .scope)
+        userRecordName = try values.decode(String.self, forKey: .userRecordName)
+        linkNonce = try values.decodeIfPresent(String.self, forKey: .linkNonce)
+        unlinked = try values.decodeIfPresent(Bool.self, forKey: .unlinked)
+        typingRequested = try values.decode(Bool.self, forKey: .typingRequested)
+        startSessions = try values.decode(Bool.self, forKey: .startSessions)
+        permissionsAsked = try values.decodeIfPresent(Bool.self, forKey: .permissionsAsked)
+        seenAt = try values.decodeIfPresent(Date.self, forKey: .seenAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        relayDeviceID = try values.decodeIfPresent(String.self, forKey: .relayDeviceID).flatMap { RelayIDs.isValid($0) ? $0 : nil }
+        relayAuthPub = try values.decodeIfPresent(String.self, forKey: .relayAuthPub)
+        relayIDSig = try values.decodeIfPresent(String.self, forKey: .relayIDSig)
+        workAlertsOffFlag = try values.decodeIfPresent(Bool.self, forKey: .workAlertsOffFlag) == true ? true : nil
     }
 }

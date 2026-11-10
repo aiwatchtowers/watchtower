@@ -324,7 +324,7 @@ func TestBackgroundAgentsCountTable(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(raw), &in), "a malformed field never fails the input")
 			assert.Equal(t, "s", in.SessionID)
 
-			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, "")
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, "", nil)
 
 			assert.Equal(t, tc.want, n)
 			assert.Equal(t, tc.wantOK, ok)
@@ -356,12 +356,94 @@ func TestBackgroundAgentsLeavesOutTheStoppingAgent(t *testing.T) {
 			var in stopHookInput
 			require.NoError(t, json.Unmarshal([]byte(`{"session_id":"s","background_tasks":`+mixed+`}`), &in))
 
-			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, tc.except)
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, tc.except, nil)
 
 			assert.True(t, ok)
 			assert.Equal(t, tc.want, n)
 		})
 	}
+}
+
+// Board #1710 (ask #1195): with the subagents' parents known, a subagent
+// waiting on its own background agents counts (its turn closed, listed or
+// not), an unlisted open turn under a listed subagent counts as its work
+// rather than as a teammate, and a finished subagent awaiting collection
+// still does not (#543).
+func TestBackgroundAgentsFollowsTheAgentTree(t *testing.T) {
+	const t1, t2 = "2026-11-10T10:00:00.000Z", "2026-11-10T10:00:01.000Z"
+	open := db.AgentTurn{Start: t2, Stop: t1}
+	closed := db.AgentTurn{Start: t1, Stop: t2}
+	tree := map[string]string{"c1": "i1", "c2": "i1", "g1": "c1", "x": "y", "y": "x", "c3": "aalpha-1"}
+	list := func(ids ...string) string {
+		entries := make([]string, len(ids))
+		for i, id := range ids {
+			typ := "subagent"
+			if strings.HasPrefix(id, "tm") {
+				typ = "teammate"
+			}
+			entries[i] = `{"id":"` + id + `","type":"` + typ + `"}`
+		}
+		return "[" + strings.Join(entries, ",") + "]"
+	}
+	for _, tc := range []struct {
+		name, field, except string
+		turns               db.AgentTurns
+		noParents           bool
+		want                int64
+	}{
+		{"an implementer waiting on two children", list("i1", "c1", "c2"), "",
+			db.AgentTurns{"i1": closed, "c1": open, "c2": open}, false, 3},
+		{"the same without parents is the old rule", list("i1", "c1", "c2"), "",
+			db.AgentTurns{"i1": closed, "c1": open, "c2": open}, true, 2},
+		{"a finished subagent awaiting collection (#543)", list("i1", "i2"), "",
+			db.AgentTurns{"i1": closed, "i2": open}, false, 1},
+		{"everyone finished", list("i1", "c1", "c2"), "",
+			db.AgentTurns{"i1": closed, "c1": closed, "c2": closed}, false, 0},
+		{"a waiting parent the list dropped", list("c2"), "",
+			db.AgentTurns{"i1": closed, "c1": closed, "c2": open}, false, 2},
+		{"an unlisted child under a listed parent", list("i1"), "",
+			db.AgentTurns{"i1": closed, "c1": open}, false, 2},
+		{"a child whose parent was collected (lost stop)", list("i2"), "",
+			db.AgentTurns{"i1": closed, "c1": open, "i2": open}, false, 1},
+		{"the stopping parent with an open child", list("i1", "c1"), "i1",
+			db.AgentTurns{"i1": closed, "c1": open}, false, 2},
+		{"a grandchild keeps both above it", list("i1"), "",
+			db.AgentTurns{"i1": closed, "c1": closed, "g1": open}, false, 3},
+		{"a looped chain ends", list("x"), "",
+			db.AgentTurns{"x": closed, "y": open}, false, 2},
+		{"teammates keep their own cap", list("tm1", "i1"), "",
+			db.AgentTurns{"aalpha-1": open, "c1": open}, false, 3},
+		{"an open unlisted parent counts once, not also as a teammate", list("tm1", "c3"), "",
+			db.AgentTurns{"aalpha-1": open, "c3": open}, false, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var in stopHookInput
+			require.NoError(t, json.Unmarshal([]byte(`{"session_id":"s","background_tasks":`+tc.field+`}`), &in))
+			var parents agentParents
+			if !tc.noParents {
+				parents = func(id string) string { return tree[id] }
+			}
+
+			n, ok := backgroundAgents(in.BackgroundTasks, tc.turns, tc.except, parents)
+
+			assert.True(t, ok)
+			assert.Equal(t, tc.want, n)
+		})
+	}
+}
+
+// Board #1710: a SubagentStart's count — the open turns and the agents
+// waiting on them, each once.
+func TestAgentsInTurn(t *testing.T) {
+	const t1, t2 = "2026-11-10T10:00:00.000Z", "2026-11-10T10:00:01.000Z"
+	open := db.AgentTurn{Start: t2, Stop: t1}
+	closed := db.AgentTurn{Start: t1, Stop: t2}
+	tree := map[string]string{"c1": "i1", "c2": "i1"}
+	parents := agentParents(func(id string) string { return tree[id] })
+	turns := db.AgentTurns{"i1": closed, "c1": open, "c2": open, "i2": closed, "aalpha-1": open}
+	assert.Equal(t, int64(4), agentsInTurn(turns, parents), "c1, c2, their parent and the teammate")
+	assert.Equal(t, int64(3), agentsInTurn(turns, nil))
+	assert.Equal(t, int64(0), agentsInTurn(db.AgentTurns{"i1": closed}, parents))
 }
 
 // The inputs captured from Claude Code (spec A.7, Appendix C): Stops with
@@ -382,7 +464,7 @@ func TestStopHookInputParsesTheCapturedFixtures(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &in), tc.file)
 		assert.NotEmpty(t, in.SessionID, tc.file)
 
-		n, ok := backgroundAgents(in.BackgroundTasks, nil, "")
+		n, ok := backgroundAgents(in.BackgroundTasks, nil, "", nil)
 
 		assert.True(t, ok, tc.file)
 		assert.Equal(t, tc.want, n, tc.file)

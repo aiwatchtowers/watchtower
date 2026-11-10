@@ -109,11 +109,16 @@ targets:
           ENABLE_TESTABILITY: YES
         Release:
           # No relay in Release: the origin is forced empty here, which beats
-          # any xcconfig value (a local Signing.xcconfig included).
+          # any xcconfig value (a local Signing.xcconfig included). Only the
+          # xcodebuild command line beats it: make mobile-testflight passes the
+          # staging origin from a file outside the repo (ask #1156);
+          # make mobile-archive, the App Store review build, stays dark.
           WATCHTOWER_RELAY_ORIGIN: ""
-          # The Debug file without the App Attest key. Phase 4 adds the key
-          # (production) to Release; enabling App Attest on the App ID is the
-          # owner's portal step then, so archives need none before it.
+          # The relay's APNs environment; Debug keeps Base.xcconfig's sandbox. Production is what
+          # App Store export rewrites aps-environment to; see Base.xcconfig.
+          WT_PUSH_ENV: production
+          # The Debug file with the App Attest environment fixed to production;
+          # enabling App Attest on the App ID is the owner's portal step.
           CODE_SIGN_ENTITLEMENTS: WatchtowerMobile-Release.entitlements
 
   # Notification Service Extension (spec §2.1). Fills an ask alert from its
@@ -175,10 +180,18 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Tests
+        excludes:
+          - Support/Relay.storekit
+      # The local StoreKit configuration SKTestSession loads by name from the test bundle.
+      - path: Tests/Support/Relay.storekit
+        buildPhase: resources
       # The Kit's in-memory relay, compiled into the bundle (relay client Phase 3 Task 10's end-to-end link): its
       # product would link a second copy of WatchtowerHostedRelay beside the host app's, and errors thrown by one
       # copy would not match a catch in the other.
       - path: ../WatchtowerKit/Sources/WatchtowerHostedRelayTesting
+        # The loopback CloudKit store is the Kit ↔ Go hub interop's alone (Phase 3 R24): nothing in the phone links it.
+        excludes:
+          - LoopbackCloudTransport.swift
     configFiles:
       Debug: Base.xcconfig
       Release: Base.xcconfig
@@ -201,6 +214,8 @@ targets:
         product: GRDB
       - package: SwiftProtobuf
         product: SwiftProtobuf
+      # SKTestSession for the Relay subscription's tests. Test target only.
+      - sdk: StoreKitTest.framework
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aiwatchtowers.watchtower.mobileTests
@@ -214,6 +229,7 @@ schemes:
         WatchtowerMobileTests: [test]
     run:
       config: Debug
+      storeKitConfiguration: Tests/Support/Relay.storekit
     test:
       config: Debug
       targets:

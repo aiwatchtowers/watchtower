@@ -1594,20 +1594,21 @@ func TestProj11_FinishedSubagentStillListedIsNotCounted(t *testing.T) {
 	assert.Equal(t, base.Add(time.Second).UTC().Truncate(time.Millisecond), s.AgentStateAt.UTC(), "the state's time stays the Stop's")
 }
 
-// PROJ-11, board #543: a SubagentStart records the turn and nothing else —
-// over a counted `waiting` (no raise, no stamp) and over `working` alike.
-func TestProj11_SubagentStartNeverStartsOrRaisesTheCount(t *testing.T) {
+// PROJ-11, board #543 (amended by board #1710, ask #1198): a SubagentStart
+// never starts a count — over a `waiting` with none and over `working` it
+// records the turn and nothing else.
+func TestProj11_SubagentStartNeverStartsTheCount(t *testing.T) {
 	database, pid, row := stopStateFixture(t, "open")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 	base, at := hookClock(t)
-	hookStep(t, database, pid, row, at, 1, stopWithBackground(withTeammates(2, subagents("a"))))
+	hookStep(t, database, pid, row, at, 1, stopWithBackground(withTeammates(2, "[]")))
 	require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
 
 	for i, input := range []string{subagentStart("aalpha-1", "alpha"), subagentStart("abeta-1", "beta")} {
 		before := rowSnapshot(t, database, row)
 		s := hookStep(t, database, pid, row, at, 2+i, input)
 		after := rowSnapshot(t, database, row)
-		assert.Equal(t, bgCount(1), s.Background, "never raised")
+		assert.False(t, s.Background.Valid, "never started")
 		assert.NotEqual(t, before["agent_turns"], after["agent_turns"])
 		delete(before, "agent_turns")
 		delete(after, "agent_turns")
@@ -1622,6 +1623,154 @@ func TestProj11_SubagentStartNeverStartsOrRaisesTheCount(t *testing.T) {
 	delete(before, "agent_turns")
 	delete(after, "agent_turns")
 	assert.Equal(t, before, after, "a SubagentStart over working wrote more than its turn")
+}
+
+// PROJ-11, board #1710 (ask #1195, guard change ask #1198): over a `waiting`
+// whose count the Stop started — 0 included — a SubagentStart raises the
+// count to the agents in a turn (never lowers it) and stamps the report time;
+// an older start writes nothing; the state, its time and finished_at stay.
+func TestProj11_SubagentStartRaisesACountedWaiting(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	base, at := hookClock(t)
+	stamp := func(sec int) time.Time {
+		return base.Add(time.Duration(sec) * time.Second).UTC().Truncate(time.Millisecond)
+	}
+	hookStep(t, database, pid, row, at, 1, subagentStart("a1", "general-purpose"))
+	s := hookStep(t, database, pid, row, at, 2, stopWithBackground(withTeammates(2, subagents("a1"))))
+	require.Equal(t, bgCount(1), s.Background)
+	require.NoError(t, database.FinishTerminalSession(row, "Done.", time.Now()))
+	finished := storedFinishedAt(t, database, row)
+
+	s = hookStep(t, database, pid, row, at, 3, subagentStop("a1", "general-purpose", withTeammates(2, subagents("a1"))))
+	require.Equal(t, bgCount(0), s.Background, "its turn ended")
+
+	for _, step := range []struct {
+		name, input string
+		sec         int
+		want        int64
+		wantAt      int
+	}{
+		{"a resumed subagent raises from 0", subagentStart("a1", "general-purpose"), 4, 1, 4},
+		{"a teammate in its turn", subagentStart("aalpha-1", "alpha"), 5, 2, 5},
+		{"an older start writes nothing", subagentStart("abeta-1", "beta"), 4, 2, 5},
+		{"the older start's turn counts at the next report", subagentStart("aalpha-1", "alpha"), 6, 3, 6},
+		{"a start that adds nothing still reports", subagentStart("aalpha-1", "alpha"), 7, 3, 7},
+	} {
+		s = hookStep(t, database, pid, row, at, step.sec, step.input)
+		assert.Equal(t, bgCount(step.want), s.Background, step.name)
+		assert.Equal(t, stamp(step.wantAt), s.BackgroundAt.UTC(), step.name)
+		assert.Equal(t, "waiting", s.AgentState.String, step.name)
+		assert.Equal(t, stamp(2), s.AgentStateAt.UTC(), step.name)
+		assert.Equal(t, finished, storedFinishedAt(t, database, row), step.name)
+	}
+	// Its count never lowers: two agents ended their turns (stops without a
+	// list lower nothing), yet a start that sees two in a turn keeps 3
+	// (lowering is a listing SubagentStop's).
+	hookStep(t, database, pid, row, at, 8, subagentStop("aalpha-1", "alpha", ""))
+	hookStep(t, database, pid, row, at, 9, subagentStop("a1", "general-purpose", ""))
+	s = hookStep(t, database, pid, row, at, 10, subagentStart("agamma-1", "gamma"))
+	assert.Equal(t, bgCount(3), s.Background, "a start never lowers")
+}
+
+// agentTree is a scratch Claude Code session folder: its main transcript
+// path and a meta file per subagent naming its parent (board #1710).
+func agentTree(t *testing.T, parents map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	transcript := filepath.Join(dir, briefLaunchID+".jsonl")
+	subagentsDir := filepath.Join(dir, briefLaunchID, "subagents")
+	require.NoError(t, os.MkdirAll(subagentsDir, 0o700))
+	for id, parent := range parents {
+		meta := `{"agentType":"general-purpose","spawnDepth":1}`
+		if parent != "" {
+			meta = `{"agentType":"codex-wrapper","parentAgentId":"` + parent + `","spawnDepth":2}`
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(subagentsDir, "agent-"+id+".meta.json"), []byte(meta), 0o600))
+	}
+	return transcript
+}
+
+// withTranscript adds transcript_path to a hook input built by the helpers.
+func withTranscript(input, transcript string) string {
+	if strings.Contains(input, `"transcript_path"`) {
+		return strings.Replace(input, `"transcript_path":"/tmp/x.jsonl"`, `"transcript_path":"`+transcript+`"`, 1)
+	}
+	return strings.Replace(input, `{`, `{"transcript_path":"`+transcript+`",`, 1)
+}
+
+// PROJ-11, board #1710 regression (live session #179, ask #1195): six
+// implementers run in the background, each launches its own reviewers in the
+// background, ends its turn to wait for them and is resumed when one reports
+// (the shape of spec Appendix D). The row must count every agent alive: the
+// implementers between their turns, the nested reviewers in theirs, a
+// resumed implementer whose stop lands after its resume, and a finished
+// implementer must still drop out (#543).
+func TestProj11_NestedAgentsAndWaitingImplementersCount(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	impl := []string{"a0000000000000001", "a0000000000000002", "a0000000000000003",
+		"a0000000000000004", "a0000000000000005", "a0000000000000006"}
+	r1, r2, r3 := "a00000000000000r1", "a00000000000000r2", "a00000000000000r3"
+	tree := map[string]string{r1: impl[0], r2: impl[0], r3: impl[1]}
+	for _, id := range impl {
+		tree[id] = ""
+	}
+	tr := agentTree(t, tree)
+	step := func(sec int, input string) sql.NullInt64 {
+		t.Helper()
+		return hookStep(t, database, pid, row, at, sec, withTranscript(input, tr)).Background
+	}
+	listed := func(extra ...string) string { return subagents(append(append([]string{}, impl...), extra...)...) }
+
+	for _, id := range impl {
+		step(1, subagentStart(id, "general-purpose"))
+	}
+	assert.Equal(t, bgCount(6), step(2, stopWithBackground(listed())), "six implementers at the Stop")
+
+	step(3, subagentStart(r1, "codex-wrapper"))
+	assert.Equal(t, bgCount(8), step(4, subagentStart(r2, "codex-wrapper")), "an implementer's reviewers raise it")
+	assert.Equal(t, bgCount(8), step(5, subagentStop(impl[0], "general-purpose", listed(r1, r2))),
+		"the implementer waits for its reviewers: still alive")
+
+	assert.Equal(t, bgCount(9), step(6, subagentStart(r3, "codex-wrapper")))
+	assert.Equal(t, bgCount(9), step(7, subagentStop(impl[1], "general-purpose", listed(r1, r2, r3))))
+
+	assert.Equal(t, bgCount(8), step(8, subagentStop(r1, "codex-wrapper", subagents(append(impl[1:], r1, r2, r3)...))),
+		"one reviewer done; its implementer, dropped from the list, still waits for the other")
+	assert.Equal(t, bgCount(6), step(9, subagentStop(r2, "codex-wrapper", listed(r2, r3))),
+		"both reviewers done: the implementer is between turns until it is resumed")
+	assert.Equal(t, bgCount(7), step(10, subagentStart(impl[0], "general-purpose")), "resumed by its reviewers' result")
+
+	// A resume whose start lands before the stop of the turn it follows: the
+	// older stop never lowers the count past the start's report.
+	assert.Equal(t, bgCount(7), step(12, subagentStart(impl[2], "general-purpose")))
+	assert.Equal(t, bgCount(7), step(11, subagentStop(impl[2], "general-purpose", listed(r3))))
+
+	assert.Equal(t, bgCount(6), step(13, subagentStop(impl[0], "general-purpose", listed(r3))),
+		"a finished implementer awaiting collection drops out")
+}
+
+// PROJ-11, board #1710: a nested agent whose SubagentStop never came stops
+// counting once no listed subagent is above it — the list still bounds a lost
+// stop, as for teammates.
+func TestProj11_LostNestedStopIsBoundedByTheList(t *testing.T) {
+	database, pid, row := stopStateFixture(t, "open")
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	_, at := hookClock(t)
+	tr := agentTree(t, map[string]string{"a1": "", "a2": "", "c1": "a1"})
+	step := func(sec int, input string) sql.NullInt64 {
+		t.Helper()
+		return hookStep(t, database, pid, row, at, sec, withTranscript(input, tr)).Background
+	}
+	step(1, subagentStart("a1", "general-purpose"))
+	step(1, subagentStart("a2", "general-purpose"))
+	step(2, subagentStart("c1", "general-purpose"))
+	assert.Equal(t, bgCount(3), step(3, stopWithBackground(subagents("a1", "a2"))))
+	assert.Equal(t, bgCount(1), step(4, subagentStop("a1", "general-purpose", subagents("a2"))),
+		"c1's stop was lost and a1 left the list: only a2 counts")
+	assert.Equal(t, bgCount(1), step(5, stopWithBackground(subagents("a2"))), "the next Stop agrees")
 }
 
 // PROJ-11, board #543: a teammate turn whose SubagentStop never came (killed

@@ -276,6 +276,65 @@ extension RelayFeedTests {
         XCTAssertTrue(after.isEmpty)
     }
 
+    /// Relay client Phase 3b Task 19: `transport_switch_rejected` reaches the rejection handler (the session's upgrade)
+    /// with its reason and `retry_after_s`; once it returns true it is marked handled and deleted, and a second copy is
+    /// deleted unread.
+    func testSwitchRejectedReachesTheHandler() async throws {
+        let rig = try await OrderedRig.make()
+        let seen = ControlLog()
+        await rig.feed.setRejectionHandler { control in
+            await seen.add(control)
+            return true
+        }
+        let rejected = ControlPayload(
+            id: UUID().uuidString, kind: .transportSwitchRejected, deviceID: TestE2E.deviceID.uuidString,
+            hubID: TestE2E.hubID.uuidString, reason: "too_soon", retryAfterS: 240)
+        try await rig.hub.writeControl(rejected)
+
+        _ = try await rig.feed.pollOnce()
+
+        let handed = await seen.all
+        XCTAssertEqual(handed.map(\.id), [rejected.id])
+        XCTAssertEqual(handed.first?.reason, "too_soon")
+        XCTAssertEqual(handed.first?.retryAfterS, 240)
+        XCTAssertTrue(try rig.store.isControlHandled(id: rejected.id))
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertTrue(mailbox.isEmpty, "deleted once handled")
+
+        try await rig.hub.writeControl(rejected, expect: .none)
+        _ = try await rig.feed.pollOnce()
+        let again = await seen.all
+        XCTAssertEqual(again.count, 1, "a second copy is not handed again")
+        let afterCopy = try await rig.mailboxNames()
+        XCTAssertTrue(afterCopy.isEmpty, "the second copy is deleted unread")
+    }
+
+    /// A rejection handler that cannot decide yet (false) leaves the rejection in the mailbox, unmarked; the next
+    /// cycle hands it again.
+    func testUnhandledRejectionStaysInTheMailbox() async throws {
+        let rig = try await OrderedRig.make()
+        let answers = ControlLog()
+        await rig.feed.setRejectionHandler { control in
+            await answers.add(control)
+            return await answers.all.count > 1
+        }
+        let rejected = await rig.hub.control(.transportSwitchRejected)
+        try await rig.hub.writeControl(rejected)
+
+        _ = try await rig.feed.pollOnce()
+
+        XCTAssertFalse(try rig.store.isControlHandled(id: rejected.id))
+        let mailbox = try await rig.mailboxNames()
+        XCTAssertEqual(mailbox, [try rig.wire(rejected)], "left for the next pass")
+
+        _ = try await rig.feed.pollOnce()
+        let handed = await answers.all.map(\.id)
+        XCTAssertEqual(handed, [rejected.id, rejected.id])
+        XCTAssertTrue(try rig.store.isControlHandled(id: rejected.id))
+        let after = try await rig.mailboxNames()
+        XCTAssertTrue(after.isEmpty)
+    }
+
     /// The phone's own `skip_to` reflects back through the shared zone: the hub reads and deletes it, never the phone.
     func testThePhonesOwnControlIsLeftForTheHub() async throws {
         let rig = try await OrderedRig.make()
@@ -360,6 +419,50 @@ extension RelayFeedTests {
         let savesAfter = await rig.recorder.conditionalSaves.count
         XCTAssertEqual(savesAfter, saves, "a drain never writes")
         XCTAssertEqual(try rig.rows().map(\.actionSeq), [2])
+    }
+
+    /// The side reader reads around a record whose keybox has not come (plan, "The phone's rule for a relay key",
+    /// the pending row): a `hub_on_relay` behind it is handled, the pending record is neither handled nor deleted,
+    /// and the drain stays incomplete while it is there.
+    func testTheSideReaderReadsAroundARecordWaitingForItsKeybox() async throws {
+        let rig = try await OrderedRig.make()
+        try EphemeralLink.make(rig.keys, epochs: [1])
+        let onRelay = await rig.hub.control(.hubOnRelay)
+        try await rig.hub.writeControl(onRelay)
+        rig.hub.keys.currentEpochValue = 2
+        let pending = await rig.hub.control(.transportSwitchRejected)
+        try await rig.hub.writeControl(pending)
+        let log = ControlLog()
+
+        let read = try await rig.feed.readControls(over: rig.phone) { control in
+            await log.add(control)
+            return true
+        }
+
+        XCTAssertEqual(read, 1)
+        let told = await log.all.map(\.id)
+        XCTAssertEqual(told, [onRelay.id], "the control behind the pending record is handled")
+        XCTAssertTrue(try rig.store.isControlHandled(id: onRelay.id))
+        XCTAssertFalse(try rig.store.isControlHandled(id: pending.id))
+        let left = try await rig.mailboxNames()
+        XCTAssertEqual(left, [try rig.wire(pending)], "the pending record is not deleted")
+
+        let drain = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+
+        XCTAssertEqual(drain, .incomplete, "the drain stays incomplete while the pending record is there")
+        let afterDrain = try await rig.mailboxNames()
+        XCTAssertEqual(afterDrain, [try rig.wire(pending)])
+
+        rig.keys.isLocked = true
+        do {
+            _ = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+            XCTFail("a locked keychain still stops the whole scan")
+        } catch SecureTransportError.keysUnavailable {}
+        rig.keys.isLocked = false
+
+        try EphemeralLink.add(rig.keys, epoch: 2)
+        let settled = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
+        XCTAssertEqual(settled, .drained, "once the keybox merges, the record opens and goes")
     }
 
     /// The owner's ruling on review round 1: on CloudKit the drain keeps the phone's own `device` record (both hubs'

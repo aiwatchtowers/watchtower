@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,14 +24,27 @@ import (
 	"watchtower/internal/hub/wire"
 )
 
-// Rotation and relay-window constants (spec §2.2, D10), the Swift
-// HubKeyring's values.
+// PreviousEpochGrace is how long, at most, a retired epoch's relay envelopes
+// are accepted and keyboxes carry the newest retired epoch's keys after it was
+// retired — for every rotation, transport-switch epochs included (Go hub
+// plan 3 Task 20, ask #843; relay sim rule 14's 14 days is not used).
+// RetireIfDone ends it sooner. An epoch that began on the relay is erased once
+// it ends (EraseExpired). A var only so the relaystaging build
+// (rotation_staging.go) can shorten it; nothing else writes it.
+var PreviousEpochGrace = 7 * 24 * time.Hour
+
+// relayRotationAge: on the relay the epoch rotates when it is this old
+// (relay client Phase 5, ask #1077). Only the relaystaging build changes it.
+var relayRotationAge = 7 * 24 * time.Hour
+
+// Rotation constants (spec §2.2, D10), the Swift HubKeyring's values.
 const (
-	// PreviousEpochGrace: the retired epoch's relay envelopes are accepted,
-	// and keyboxes carry its keys, this long after it was retired.
-	PreviousEpochGrace = 7 * 24 * time.Hour
-	// RotationAge: the epoch rotates when it is this old.
+	// RotationAge: off the relay the epoch rotates when it is this old.
 	RotationAge = 90 * 24 * time.Hour
+	// ServingNobodyHold: how long after relay_serving_nobody_since the hub
+	// keeps its relay keys (the relay mailbox's TTL); then it rotates once and
+	// clears every offer and relay-key row (asks #1077, #1081).
+	ServingNobodyHold = 14 * 24 * time.Hour
 	// RotationSeqCap: … or when it has used this many envelope seqs.
 	RotationSeqCap uint64 = 1 << 28
 	// seqBlock is the SeqAllocator reservation over envelope_seq_ceiling.
@@ -46,6 +60,9 @@ const (
 	ReasonCap    Reason = "cap"
 	ReasonUnlink Reason = "unlink"
 	ReasonManual Reason = "manual"
+	// ReasonTransportSwitch: every accepted transport switch begins an
+	// epoch (relay sim rule 11, internal/hub/switcher).
+	ReasonTransportSwitch Reason = "transport_switch"
 )
 
 var (
@@ -71,10 +88,21 @@ var (
 // The sidecar AADs (pinned with the Swift HubKeyring; phase 3 adopts its
 // sealed keys with the same wrap key).
 const (
-	metaAADLabel  = "wt/hub-meta/v1"
-	epochAADLabel = "wt/hub-epoch/v1"
-	localAADLabel = "wt/hub-local/v1"
+	metaAADLabel       = "wt/hub-meta/v1"
+	epochAADLabel      = "wt/hub-epoch/v1"
+	localAADLabel      = "wt/hub-local/v1"
+	epochRelayAADLabel = "wt/hub-epoch-relay/v1"
 )
+
+// The erasure's two sidecar calls, seams only so a test can count them.
+var (
+	secureDeleteTx  = (*state.Store).WithSecureDeleteTx
+	checkpointStore = (*state.Store).Checkpoint
+)
+
+// sealRelayFault, when set (tests only), fails the rotation's seal of a
+// phone's relay keys.
+var sealRelayFault func(device secure.ID) error
 
 // Keyring is the hub's secure.KeySource and relay secure.RollbackGuard over
 // the sidecar: K_meta (hub_meta.k_meta_sealed, base64 of the sealed bytes)
@@ -91,20 +119,33 @@ type Keyring struct {
 	now func() time.Time
 	seq *secure.SeqAllocator
 
-	// mu guards relay and unusable; relay material is only read under it.
+	// mu guards relay, unusable and checkpointOwed; relay material is only read
+	// under it.
 	mu       sync.Mutex
 	relay    map[secure.ID]*relayMaterial
 	unusable map[secure.ID]string // last unusable row logged per device
+
+	// relayRule, when set, says whether the hub runs on the relay, in the
+	// caller's transaction (SetRelayRule); held, when set, whether the hub
+	// is held (SetHeld). Both are set once, before the hub runs.
+	relayRule func(*sql.Tx) (bool, error)
+	held      func() bool
+
+	// checkpointOwed (under mu): an erasure's checkpoint has not completed.
+	checkpointOwed bool
 }
 
 // relayMaterial is one phone's relay inputs, checked once, and the keys
-// derived from them so far ("p2h/1" → key).
+// derived from them so far ("p2h/1" → key) with, per slot, the sealed
+// epoch_relay_keys row it came from (nil: the static wt/relay/v1/ key), so a
+// row cleared or replaced since is never answered from the cache.
 type relayMaterial struct {
 	agreementKey []byte
 	linkNonce    string
 	peer         *ecdh.PublicKey
 	nonce        []byte
 	keys         map[string][]byte
+	from         map[string][]byte
 }
 
 // wipe zeroes the derived keys and the nonce and drops them, so a stale
@@ -114,8 +155,89 @@ func (m *relayMaterial) wipe() {
 		clear(k)
 	}
 	clear(m.nonce)
-	m.keys, m.nonce, m.peer = nil, nil, nil
+	m.keys, m.from, m.nonce, m.peer = nil, nil, nil, nil
 	m.agreementKey, m.linkNonce = nil, ""
+}
+
+// SetRelayRule sets how the keyring tells that the hub runs on the relay, read
+// in the rotation's own transaction (the cadence, the on_relay mark, the
+// derivation): a hub without a switcher (headless) passes its transport's
+// kind, so a stale hub_meta.transport is ignored (the processor's rule,
+// actions.onRelayTx). Unset (a desktop hub, an offline unlink), the current
+// epoch's on_relay decides, hub_meta.transport only for an epoch from before
+// it existed (OnRelayTx). Called once, before the hub runs.
+func (k *Keyring) SetRelayRule(rule func(*sql.Tx) (bool, error)) { k.relayRule = rule }
+
+// SetHeld sets the hub's held state (paused or unvouched on the relay): while
+// it is held on the relay no age rotation runs, as nothing could be
+// published. Called once, before the hub runs.
+func (k *Keyring) SetHeld(held func() bool) { k.held = held }
+
+// OnRelayTx is the relay rule in tx. Unset (SetRelayRule), the current
+// epoch's on_relay decides: every transport change begins an epoch toward its
+// target, so after a switch's rotation the current epoch already says where
+// the hub runs, while hub_meta.transport changes only at its announce (an
+// unlink in between must not mark an iCloud epoch as a relay one, ask #1066).
+// hub_meta.transport decides only for a current epoch with no on_relay: one
+// from before sidecar migration 00016 that no hub start has stamped yet
+// (StampCurrentEpoch).
+func (k *Keyring) OnRelayTx(tx *sql.Tx) (bool, error) {
+	if k.relayRule != nil {
+		return k.relayRule(tx)
+	}
+	epochs, err := state.EpochsTx(tx)
+	if err != nil {
+		return false, err
+	}
+	if n := len(epochs); n > 0 && epochs[n-1].OnRelay != nil {
+		return *epochs[n-1].OnRelay, nil
+	}
+	v, ok, err := state.MetaTx(tx, state.MetaTransport)
+	if err != nil {
+		return false, err
+	}
+	return ok && v == transportRelay, nil
+}
+
+// transportRelay is hub_meta.transport's value for the relay (transport.KindRelay).
+const transportRelay = "relay"
+
+// OnRelay reports whether the hub runs on the relay, by the relay rule
+// (SetRelayRule).
+func (k *Keyring) OnRelay() (bool, error) {
+	var on bool
+	err := k.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+		var err error
+		on, err = k.OnRelayTx(tx)
+		return err
+	})
+	return on, err
+}
+
+// StampCurrentEpoch gives the current epoch an on_relay value when it has
+// none, from the relay rule: the hub's start calls it once the rule is set
+// (SetRelayRule, or the switcher's stored transport), so epoch 1 of a new
+// sidecar, inserted before the hub knows its transport, begins on the relay
+// or on iCloud like any later epoch (erased at its retention end on the
+// relay), and a later rule-less keyring (an offline unlink) reads it. Retired
+// epochs with no on_relay (from before sidecar migration 00016) stay as they
+// are and are never erased (ask #1066).
+func (k *Keyring) StampCurrentEpoch() error {
+	return k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		epochs, err := state.EpochsTx(tx)
+		if err != nil {
+			return err
+		}
+		n := len(epochs)
+		if n == 0 || epochs[n-1].OnRelay != nil {
+			return nil
+		}
+		on, err := k.OnRelayTx(tx)
+		if err != nil {
+			return err
+		}
+		return state.StampEpochOnRelay(tx, epochs[n-1].Epoch, on)
+	})
 }
 
 // NewKeyring opens the keyring over st, creating in one transaction what is
@@ -165,7 +287,7 @@ func NewKeyring(id Identity, st *state.Store, now func() time.Time) (*Keyring, e
 			return err
 		}
 		if len(epochs) == 0 {
-			return k.insertEpoch(tx, 1, k.now())
+			return k.insertEpoch(tx, 1, k.now(), "", nil)
 		}
 		return nil
 	})
@@ -195,8 +317,8 @@ func NewKeyring(id Identity, st *state.Store, now func() time.Time) (*Keyring, e
 }
 
 // insertEpoch seals fresh K_data ‖ K_alert for epoch and inserts it with
-// first_seq = the seq ceiling now, in tx.
-func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time) error {
+// first_seq = the seq ceiling now and why it began ("" for epoch 1), in tx.
+func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time, r Reason, onRelay *bool) error {
 	keys := randomKey(64)
 	defer clear(keys)
 	sealed, err := k.seal(keys, k.epochAAD(epoch))
@@ -211,7 +333,7 @@ func (k *Keyring) insertEpoch(tx *sql.Tx, epoch uint32, at time.Time) error {
 	if err != nil {
 		return err
 	}
-	return state.InsertEpoch(tx, state.Epoch{Epoch: epoch, SealedKeys: sealed, CreatedAt: at, FirstSeq: first})
+	return state.InsertEpoch(tx, state.Epoch{Epoch: epoch, SealedKeys: sealed, CreatedAt: at, FirstSeq: first, Reason: string(r), OnRelay: onRelay})
 }
 
 // HubID is the hub's id.
@@ -308,6 +430,9 @@ func (k *Keyring) epochKeys(epoch uint32) ([]byte, error) {
 }
 
 func (k *Keyring) openEpoch(e state.Epoch) ([]byte, error) {
+	if len(e.SealedKeys) == 0 {
+		return nil, fmt.Errorf("%w: epoch %d was erased", ErrUnknownEpoch, e.Epoch)
+	}
 	plain, err := k.open(e.SealedKeys, k.epochAAD(e.Epoch))
 	if err != nil || len(plain) != 64 {
 		clear(plain)
@@ -316,34 +441,159 @@ func (k *Keyring) openEpoch(e state.Epoch) ([]byte, error) {
 	return plain, nil
 }
 
-// window is the current epoch and, while its grace runs, the retired one
-// before it (nil otherwise).
-func (k *Keyring) window() (current state.Epoch, previous *state.Epoch, err error) {
+// retainedEpochs is the current epoch last, after every retired epoch whose
+// relay-lane keys are still accepted (oldest first).
+func (k *Keyring) retainedEpochs() ([]state.Epoch, error) {
 	epochs, err := k.st.Epochs()
+	if err != nil {
+		return nil, err
+	}
+	if len(epochs) == 0 {
+		return nil, ErrKeysUnavailable
+	}
+	now := k.now()
+	out := make([]state.Epoch, 0, len(epochs))
+	for i, e := range epochs[:len(epochs)-1] {
+		if now.Before(retireAfter(e, epochs[i+1])) {
+			out = append(out, e)
+		}
+	}
+	return append(out, epochs[len(epochs)-1]), nil
+}
+
+// retireAfter is when retired epoch e's keys stop being accepted: its
+// retire_after, or — on a row retired before sidecar migration 00010 —
+// PreviousEpochGrace after it was retired (the next epoch's start when even
+// retired_at is missing).
+func retireAfter(e, next state.Epoch) time.Time {
+	if e.RetireAfter != nil {
+		return *e.RetireAfter
+	}
+	at := next.CreatedAt
+	if e.RetiredAt != nil {
+		at = *e.RetiredAt
+	}
+	return at.Add(PreviousEpochGrace)
+}
+
+// window is the current epoch and the newest retired one still retained
+// (nil when none is).
+func (k *Keyring) window() (current state.Epoch, previous *state.Epoch, err error) {
+	kept, err := k.retainedEpochs()
 	if err != nil {
 		return state.Epoch{}, nil, err
 	}
-	if len(epochs) == 0 {
-		return state.Epoch{}, nil, ErrKeysUnavailable
-	}
-	current = epochs[len(epochs)-1]
-	if len(epochs) >= 2 {
-		retired := epochs[len(epochs)-2]
-		at := current.CreatedAt
-		if retired.RetiredAt != nil {
-			at = *retired.RetiredAt
-		}
-		if k.now().Sub(at) < PreviousEpochGrace {
-			previous = &retired
-		}
+	current = kept[len(kept)-1]
+	if len(kept) >= 2 {
+		previous = &kept[len(kept)-2]
 	}
 	return current, previous, nil
 }
 
-// KeyboxKeys are the keys a linked phone's keybox carries (spec §2.3): the
-// current epoch's K_data and K_alert and K_meta, plus the retired epoch's
-// while its grace runs. Strings are unpadded base64url.
-func (k *Keyring) KeyboxKeys() (wire.KeyboxKeys, error) {
+// Retained is every epoch whose relay-lane keys are still accepted, oldest
+// first, the current one last: each retired epoch for PreviousEpochGrace
+// after its retirement unless RetireIfDone ended it sooner.
+func (k *Keyring) Retained() ([]uint32, error) {
+	kept, err := k.retainedEpochs()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint32, len(kept))
+	for i, e := range kept {
+		out[i] = e.Epoch
+	}
+	return out, nil
+}
+
+// RetireIfDone is relay sim rule 14 with the 7-day cap: a retired epoch
+// still retained ends now when every linked phone acked a newer epoch
+// (acked: device id → its acked epoch) and nothing sealed in it is held or
+// queued: heldIn (the caller's view) and, in the retiring transaction,
+// state.SealedIn over held_actions and control_queue. The current epoch is
+// never retired here; a retention is only ever shortened.
+func (k *Keyring) RetireIfDone(acked map[string]uint32, heldIn map[uint32]bool) error {
+	kept, err := k.retainedEpochs()
+	if err != nil {
+		return err
+	}
+	var candidates []uint32
+	for _, e := range kept[:len(kept)-1] {
+		if heldIn[e.Epoch] {
+			continue
+		}
+		all := true
+		for _, a := range acked {
+			if a <= e.Epoch {
+				all = false
+				break
+			}
+		}
+		if all {
+			candidates = append(candidates, e.Epoch)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	now := k.now()
+	var done []uint32
+	err = k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		done = done[:0]
+		for _, e := range candidates {
+			// Checked with the write: a held action or a queued write
+			// (an owed echo, a control) sealed in e keeps its keys.
+			used, err := state.SealedIn(tx, e)
+			if err != nil {
+				return err
+			}
+			if used {
+				continue
+			}
+			if err := state.EndRetention(tx, e, now); err != nil {
+				return err
+			}
+			done = append(done, e)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, e := range done {
+		log.Printf("hub: epoch %d retired: every phone acked a newer one", e)
+	}
+	return nil
+}
+
+// RetireOld is RetireIfDone over the sidecar: every linked phone's acked
+// epoch (devices.acked_epoch, a phone that never acked counts as 0); the
+// held actions and queued writes are checked inside the retiring
+// transaction (state.SealedIn). The runtime's housekeeping is its one
+// caller.
+func (k *Keyring) RetireOld() error {
+	devices, err := k.st.Devices()
+	if err != nil {
+		return err
+	}
+	acked := make(map[string]uint32, len(devices))
+	for _, d := range devices {
+		acked[d.ID] = d.AckedEpoch
+	}
+	return k.RetireIfDone(acked, nil)
+}
+
+// KeyboxKeysFor are the keys device's keybox carries (spec §2.3): the
+// current epoch's K_data and K_alert and K_meta, plus the newest retired
+// epoch's while it is retained (the keybox has room for one). Strings are
+// unpadded base64url. relay_kx names the pair of the epoch's wt/relay/v2/
+// relay keys for this phone and previous_relay_kx the previous epoch's
+// (relay client Phase 5); none means that epoch is static for it. A keybox
+// sealed to dev_kx (the phone holds no offer) omits the previous epoch
+// altogether when that epoch has relay keys for the phone: the phone has
+// moved on from its ephemeral state (a switch to iCloud cleared its offer),
+// and the keybox, the one truth for an epoch's keys, never names a pair it
+// cannot open.
+func (k *Keyring) KeyboxKeysFor(device secure.ID) (wire.KeyboxKeys, error) {
 	current, previous, err := k.window()
 	if err != nil {
 		return wire.KeyboxKeys{}, err
@@ -358,45 +608,130 @@ func (k *Keyring) KeyboxKeys() (wire.KeyboxKeys, error) {
 		return wire.KeyboxKeys{}, err
 	}
 	defer clear(meta)
+	row, linked, err := k.st.Device(device.String())
+	if err != nil {
+		return wire.KeyboxKeys{}, err
+	}
 	b64 := base64.RawURLEncoding.EncodeToString
 	out := wire.KeyboxKeys{Epoch: current.Epoch, DataKey: b64(keys[:32]), AlertKey: b64(keys[32:]), MetaKey: b64(meta)}
-	if previous != nil {
-		prev, err := k.openEpoch(*previous)
-		if err != nil {
-			return wire.KeyboxKeys{}, err
-		}
-		defer clear(prev)
-		epoch, data, alert := previous.Epoch, b64(prev[:32]), b64(prev[32:])
-		out.PreviousEpoch, out.PreviousDataKey, out.PreviousAlertKey = &epoch, &data, &alert
+	if out.RelayKX, err = k.relayKX(current.Epoch, device); err != nil {
+		return wire.KeyboxKeys{}, err
 	}
+	if previous == nil {
+		return out, nil
+	}
+	prevKX, err := k.relayKX(previous.Epoch, device)
+	if err != nil {
+		return wire.KeyboxKeys{}, err
+	}
+	if prevKX != nil && (!linked || row.KXOffer == nil) {
+		return out, nil
+	}
+	prev, err := k.openEpoch(*previous)
+	if err != nil {
+		return wire.KeyboxKeys{}, err
+	}
+	defer clear(prev)
+	epoch, data, alert := previous.Epoch, b64(prev[:32]), b64(prev[32:])
+	out.PreviousEpoch, out.PreviousDataKey, out.PreviousAlertKey = &epoch, &data, &alert
+	out.PreviousRelayKX = prevKX
 	return out, nil
 }
 
-// AcceptsRelayEpoch accepts the current epoch, and the previous one until
-// PreviousEpochGrace after it was retired (D10). false for a device without
-// usable relay material.
+// relayKX is the keybox's name for device's relay-key pair of epoch, nil when
+// it has none (static).
+func (k *Keyring) relayKX(epoch uint32, device secure.ID) (*wire.KeyboxRelayKX, error) {
+	row, ok, err := k.st.EpochRelayKeys(epoch, device.String())
+	if err != nil || !ok {
+		return nil, err
+	}
+	b64 := base64.RawURLEncoding.EncodeToString
+	return &wire.KeyboxRelayKX{HubPub: b64(row.HubPub), DevicePub: b64(row.DevicePub)}, nil
+}
+
+// AckedEpochRetained is the epoch dev acked while the hub still retains it and
+// it is older than the current one, else 0 (the current epoch): an epoch
+// whose keys the phone is known to hold.
+func (k *Keyring) AckedEpochRetained(dev state.Device) (uint32, error) {
+	if dev.AckedEpoch == 0 {
+		return 0, nil
+	}
+	kept, err := k.retainedEpochs()
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range kept[:len(kept)-1] {
+		if e.Epoch == dev.AckedEpoch {
+			return e.Epoch, nil
+		}
+	}
+	return 0, nil
+}
+
+// PhoneEpoch is the epoch the hub seals a phone's echoes and controls in: for
+// a phone that offered a relay key, its acked epoch while retained (a keybox
+// for a newer one may not have reached it, and its keys for that one cannot be
+// derived without it); else 0, the current epoch, today's sealing.
+//
+// Only while the current epoch holds relay keys for the phone: with none, the
+// current epoch is static for it and it can open it. That keeps an ack read
+// after the rotation (the keybox reached the phone first, and an echo was
+// sealed in the current epoch) from moving a later overwrite of that echo back
+// to the acked epoch, which the phone's rollback guard (epoch first) would
+// drop as older.
+func (k *Keyring) PhoneEpoch(dev state.Device) (uint32, error) {
+	if dev.KXOffer == nil {
+		return 0, nil
+	}
+	current, err := k.CurrentEpoch()
+	if err != nil {
+		return 0, err
+	}
+	if _, ok, err := k.st.EpochRelayKeys(current, dev.ID); err != nil || !ok {
+		return 0, err
+	}
+	return k.AckedEpochRetained(dev)
+}
+
+// AcceptsRelayEpoch accepts the current epoch and every retained one
+// (Retained: each retired epoch at most PreviousEpochGrace after it was
+// retired, D10 and ask #843). false for a device without usable relay
+// material.
 func (k *Keyring) AcceptsRelayEpoch(epoch uint32, device secure.ID) (bool, error) {
 	usable, err := k.hasMaterial(device)
 	if err != nil || !usable {
 		return false, err
 	}
-	current, previous, err := k.window()
+	kept, err := k.retainedEpochs()
 	if errors.Is(err, ErrKeysUnavailable) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return epoch == current.Epoch || (previous != nil && epoch == previous.Epoch), nil
+	for _, e := range kept {
+		if e.Epoch == epoch {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-// RelayKey is the pairwise relay key for one phone, epoch and direction.
-// The caller owns the returned slice; the cache keeps its own copy. The
-// material is checked against the row, the key derived or read from the
-// cache and copied out under one hold of k.mu, so a concurrent re-link or
-// removal (which wipes the old material) can never hand out wiped bytes.
+// RelayKey is the pairwise relay key for one phone, epoch and direction: the
+// epoch's sealed wt/relay/v2/ key of the phone when the rotation derived one
+// (epoch_relay_keys), else the static wt/relay/v1/ key. The caller owns the
+// returned slice; the cache keeps its own copy, tagged with the row it came
+// from, so a row cleared (a lapse, a lost reader) or erased since is never
+// answered from it. The material is checked against the row, the key derived
+// or read from the cache and copied out under one hold of k.mu, so a
+// concurrent re-link or removal (which wipes the old material) can never hand
+// out wiped bytes.
 func (k *Keyring) RelayKey(dir secure.Direction, device secure.ID, epoch uint32) ([]byte, error) {
 	row, ok, err := k.st.Device(device.String())
+	if err != nil {
+		return nil, err
+	}
+	eph, hasEph, err := k.st.EpochRelayKeys(epoch, device.String())
 	if err != nil {
 		return nil, err
 	}
@@ -407,9 +742,24 @@ func (k *Keyring) RelayKey(dir secure.Direction, device secure.ID, epoch uint32)
 	if m == nil {
 		return nil, ErrUnknownDevice
 	}
+	var from []byte
+	if hasEph {
+		from = eph.SealedKeys
+	}
 	key, cached := m.keys[slot]
+	if cached && (hasEph != (m.from[slot] != nil) || !bytes.Equal(m.from[slot], from)) {
+		clear(key)
+		delete(m.keys, slot)
+		delete(m.from, slot)
+		cached = false
+	}
 	if !cached {
-		if key, err = secure.RelayKey(k.id.Agreement, m.peer, m.nonce, k.hub, device, epoch, dir); err != nil {
+		if hasEph {
+			key, err = k.openRelayKeys(eph, device, dir)
+		} else {
+			key, err = secure.RelayKey(k.id.Agreement, m.peer, m.nonce, k.hub, device, epoch, dir)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("identity: deriving a relay key: %w", err)
 		}
 	}
@@ -418,7 +768,22 @@ func (k *Keyring) RelayKey(dir secure.Direction, device secure.ID, epoch uint32)
 		return nil, ErrUnknownDevice
 	}
 	m.keys[slot] = key
+	m.from[slot] = bytes.Clone(from)
 	return bytes.Clone(key), nil
+}
+
+// openRelayKeys opens a relay-key row's sealed p2h ‖ h2p and returns dir's.
+func (k *Keyring) openRelayKeys(row state.EpochRelayKeys, device secure.ID, dir secure.Direction) ([]byte, error) {
+	plain, err := k.open(row.SealedKeys, k.epochRelayAAD(row.Epoch, device))
+	if err != nil || len(plain) != 64 {
+		clear(plain)
+		return nil, fmt.Errorf("%w: relay keys of epoch %d", ErrSealedKeyUnreadable, row.Epoch)
+	}
+	defer clear(plain)
+	if dir == secure.HubToPhone {
+		return bytes.Clone(plain[32:]), nil
+	}
+	return bytes.Clone(plain[:32]), nil
 }
 
 func allZero(b []byte) bool {
@@ -542,14 +907,23 @@ func (k *Keyring) makeMaterial(row state.Device) *relayMaterial {
 	}
 	return &relayMaterial{
 		agreementKey: bytes.Clone(row.AgreementKey), linkNonce: row.LinkNonce,
-		peer: peer, nonce: nonce, keys: map[string][]byte{},
+		peer: peer, nonce: nonce, keys: map[string][]byte{}, from: map[string][]byte{},
 	}
 }
 
-// KeyboxRecipient is the agreement key a keybox for device is sealed to: a
-// linked, pending, revoked or refused device's (F5). ErrNoKeyboxRecipient
-// when none is stored or it does not parse.
+// KeyboxRecipient is the key a keybox for device is sealed to: a linked
+// phone's relay key offer when it holds one (relay client Phase 5), else the
+// agreement key of a linked, pending, revoked or refused device (F5).
+// ErrNoKeyboxRecipient when none is stored or it does not parse.
 func (k *Keyring) KeyboxRecipient(device secure.ID) (*ecdh.PublicKey, error) {
+	if row, linked, err := k.st.Device(device.String()); err != nil {
+		return nil, err
+	} else if linked && row.KXOffer != nil {
+		if pub, err := ecdh.X25519().NewPublicKey(row.KXOffer); err == nil {
+			return pub, nil
+		}
+		log.Printf("hub: stored relay key offer of device %s does not parse", device)
+	}
 	raw, err := k.st.KeyboxRecipientKey(device.String())
 	if err != nil {
 		return nil, err
@@ -590,7 +964,8 @@ func (k *Keyring) Record(wireName string, sender secure.ID, epoch uint32, seq ui
 // current epoch retired, the new one inserted (first_seq = the seq ceiling
 // now), the slice hashes wiped and the work alerts moved to the bumped sync
 // generation (state.MoveWorkAlertsForRotation), in one transaction. The
-// previous epoch stays readable for PreviousEpochGrace.
+// retired epoch stays readable for PreviousEpochGrace at most (Retained).
+// Toward the relay or iCloud as the relay rule says (RotateWith).
 func (k *Keyring) Rotate(r Reason) error { return k.RotateWith(r, nil) }
 
 // ErrSkipRotation is returned by RotateWith's also to end the rotation with
@@ -604,86 +979,413 @@ var ErrSkipRotation = errors.New("identity: rotation skipped")
 // device never leaves without the rotation or the other way round. also
 // must only write through tx and stay short (it holds the write lock).
 // ErrSkipRotation from also writes nothing and returns nil; any other error
-// writes nothing and is returned.
+// writes nothing and is returned. The new epoch is on the relay when the
+// relay rule (SetRelayRule) says the hub runs there, read in the same
+// transaction (RotateToward).
 func (k *Keyring) RotateWith(r Reason, also func(*sql.Tx) error) error {
-	switch r {
-	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual:
-	default:
+	return k.rotate(r, nil, also)
+}
+
+// RotateToward is RotateWith toward a known transport (a switch passes its
+// target): the epoch is inserted with on_relay = onRelay. Toward the relay,
+// every linked phone holding a relay key offer gets this epoch's wt/relay/v2/
+// keys, from a fresh hub_eph each, sealed under the wrap key; the private
+// halves are never stored. Toward iCloud no key is derived, every offer is
+// dropped and relay_serving_nobody_since goes. One transaction: a failure
+// anywhere writes nothing.
+func (k *Keyring) RotateToward(r Reason, onRelay bool, also func(*sql.Tx) error) error {
+	return k.rotate(r, &onRelay, also)
+}
+
+func (k *Keyring) rotate(r Reason, toward *bool, also func(*sql.Tx) error) error {
+	if !validReason(r) {
 		return fmt.Errorf("identity: unknown rotation reason %q", r)
 	}
-	var next uint32
+	var b begun
 	err := k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
 		if also != nil {
 			if err := also(tx); err != nil {
 				return err
 			}
 		}
-		epochs, err := state.EpochsTx(tx)
-		if err != nil {
-			return err
+		var onRelay bool
+		if toward != nil {
+			onRelay = *toward
+		} else {
+			var err error
+			if onRelay, err = k.OnRelayTx(tx); err != nil {
+				return err
+			}
 		}
-		if len(epochs) == 0 {
-			return ErrKeysUnavailable
-		}
-		current := epochs[len(epochs)-1].Epoch
-		if current == ^uint32(0) {
-			return ErrEpochOverflow
-		}
-		next = current + 1
-		at := k.now()
-		if err := state.RetireEpoch(tx, current, at); err != nil {
-			return err
-		}
-		if err := k.insertEpoch(tx, next, at); err != nil {
-			return err
-		}
-		if err := state.WipeSliceHashes(tx); err != nil {
-			return err
-		}
-		return state.MoveWorkAlertsForRotation(tx)
+		var err error
+		b, err = k.rotateTx(tx, r, onRelay, false)
+		return err
 	})
+	return b.done(r, err)
+}
+
+func validReason(r Reason) bool {
+	switch r {
+	case ReasonAge, ReasonCap, ReasonUnlink, ReasonManual, ReasonTransportSwitch:
+		return true
+	}
+	return false
+}
+
+// begun is what one rotation did, for its log line.
+type begun struct {
+	epoch          uint32
+	holdEnd        bool
+	ephemeral, all int
+}
+
+// done logs a committed rotation (numbers only) and maps ErrSkipRotation to
+// nil.
+func (b begun) done(r Reason, err error) error {
 	if errors.Is(err, ErrSkipRotation) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	log.Printf("hub: epoch %d begun (%s)", next, r)
+	why := string(r)
+	if b.holdEnd {
+		why += ", the relay hold's end"
+	}
+	log.Printf("hub: epoch %d begun (%s): %d ephemeral, %d static", b.epoch, why, b.ephemeral, b.all-b.ephemeral)
 	return nil
 }
 
-// rotationDue: the current epoch is RotationAge old (ReasonAge) or has used
-// RotationSeqCap seqs (ReasonCap). Read from the committed state, so a hub
-// restarted after a rotation never rotates twice.
-func (k *Keyring) rotationDue() (Reason, bool, error) {
-	current, _, err := k.window()
+// rotateTx is the rotation in tx: the current epoch retired, the next one
+// inserted on or off the relay, the slice hashes wiped, the work alerts moved,
+// and the relay keys: toward iCloud every offer dropped (and the serving-nobody
+// mark), at the hold's end every offer and relay-key row dropped and none
+// derived, else each offering phone's keys derived for the new epoch.
+func (k *Keyring) rotateTx(tx *sql.Tx, r Reason, onRelay, holdEnd bool) (begun, error) {
+	epochs, err := state.EpochsTx(tx)
 	if err != nil {
-		return "", false, err
+		return begun{}, err
 	}
-	if k.now().Sub(current.CreatedAt) >= RotationAge {
-		return ReasonAge, true, nil
+	if len(epochs) == 0 {
+		return begun{}, ErrKeysUnavailable
 	}
-	ceiling, err := k.seqCeiling()
+	current := epochs[len(epochs)-1].Epoch
+	if current == ^uint32(0) {
+		return begun{}, ErrEpochOverflow
+	}
+	b := begun{epoch: current + 1, holdEnd: holdEnd}
+	at := k.now()
+	if err := state.RetireEpoch(tx, current, at, at.Add(PreviousEpochGrace)); err != nil {
+		return begun{}, err
+	}
+	if err := k.insertEpoch(tx, b.epoch, at, r, &onRelay); err != nil {
+		return begun{}, err
+	}
+	if err := state.WipeSliceHashes(tx); err != nil {
+		return begun{}, err
+	}
+	if err := state.MoveWorkAlertsForRotation(tx); err != nil {
+		return begun{}, err
+	}
+	devices, err := state.DevicesTx(tx)
 	if err != nil {
-		return "", false, err
+		return begun{}, err
 	}
-	if ceiling >= current.FirstSeq && ceiling-current.FirstSeq >= RotationSeqCap {
-		return ReasonCap, true, nil
+	b.all = len(devices)
+	switch {
+	case !onRelay:
+		if err := state.ClearKXOffers(tx); err != nil {
+			return begun{}, err
+		}
+		return b, state.DeleteMetaTx(tx, state.MetaServingNobodySince)
+	case holdEnd:
+		return b, state.ClearAllRelayKeys(tx)
 	}
-	return "", false, nil
+	for _, d := range devices {
+		if d.KXOffer == nil {
+			continue
+		}
+		ok, err := k.deriveRelayKeys(tx, d, b.epoch)
+		if err != nil {
+			return begun{}, err
+		}
+		if ok {
+			b.ephemeral++
+		}
+	}
+	return b, nil
 }
 
-// RotateIfDue rotates when the epoch is 90 days old or used 2^28 seqs; true
-// when it did.
-func (k *Keyring) RotateIfDue() (bool, error) {
-	r, due, err := k.rotationDue()
-	if err != nil || !due {
+// deriveRelayKeys draws a hub_eph for d's offer, derives both directions of
+// epoch's wt/relay/v2/ keys and stores them sealed with the two publics, in
+// tx; false (nothing written, logged) for a row whose static material or
+// offer is unusable, which stays static.
+func (k *Keyring) deriveRelayKeys(tx *sql.Tx, d state.Device, epoch uint32) (bool, error) {
+	device, err := secure.ParseID(d.ID)
+	if err != nil {
+		log.Printf("hub: a linked device id is not a UUID")
+		return false, nil
+	}
+	m := k.makeMaterial(d)
+	if m != nil {
+		defer m.wipe()
+	}
+	devEph, perr := ecdh.X25519().NewPublicKey(d.KXOffer)
+	if m == nil || perr != nil {
+		log.Printf("hub: relay material of device %s is unusable: its epoch %d stays static", device, epoch)
+		return false, nil
+	}
+	seed := randomKey(32)
+	hubEph, err := ecdh.X25519().NewPrivateKey(seed)
+	clear(seed)
+	if err != nil {
+		return false, fmt.Errorf("identity: drawing a hub_eph: %w", err)
+	}
+	pair, err := k.ephemeralPair(hubEph, devEph, m.peer, m.nonce, device, epoch)
+	if err != nil {
 		return false, err
 	}
-	if err := k.Rotate(r); err != nil {
+	defer clear(pair)
+	if sealRelayFault != nil {
+		if err := sealRelayFault(device); err != nil {
+			return false, err
+		}
+	}
+	sealed, err := k.seal(pair, k.epochRelayAAD(epoch, device))
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return true, state.InsertEpochRelayKeys(tx, state.EpochRelayKeys{
+		Epoch: epoch, DeviceID: d.ID, HubPub: hubEph.PublicKey().Bytes(), DevicePub: devEph.Bytes(), SealedKeys: sealed,
+	})
+}
+
+// ephemeralPair is p2h ‖ h2p of the wt/relay/v2/ keys between hubEph and
+// devEph (64 bytes; the caller clears it). The transcript publics are taken
+// from those two keys themselves, never passed separately, so they always
+// name the keys the exchange used (secure.EphemeralRelayKey does not check
+// that).
+func (k *Keyring) ephemeralPair(hubEph *ecdh.PrivateKey, devEph, devKX *ecdh.PublicKey, nonce []byte, device secure.ID, epoch uint32) ([]byte, error) {
+	hubPub, devPub := hubEph.PublicKey().Bytes(), devEph.Bytes()
+	out := make([]byte, 0, 64)
+	for _, dir := range []secure.Direction{secure.PhoneToHub, secure.HubToPhone} {
+		key, err := secure.EphemeralRelayKey(hubEph, devEph, k.id.Agreement, devKX, hubPub, devPub, nonce, k.hub, device, epoch, dir)
+		if err != nil {
+			clear(out)
+			return nil, fmt.Errorf("identity: deriving relay keys: %w", err)
+		}
+		out = append(out, key...)
+		clear(key)
+	}
+	return out, nil
+}
+
+// due is what the rotation check found: the reason, whether the hub runs on
+// the relay, and whether this is the end of the serving-nobody hold.
+type due struct {
+	reason  Reason
+	onRelay bool
+	holdEnd bool
+}
+
+// rotationDueTx: off the relay the current epoch is RotationAge old
+// (ReasonAge) or has used RotationSeqCap seqs (ReasonCap); on the relay it is
+// relayRotationAge old, or used the cap, unless the hub is held or
+// relay_serving_nobody_since is set: then nothing is due but the hold's end,
+// once ServingNobodyHold has passed since the mark and the current epoch began
+// before that (so it rotates once, across a restart too). Read from the
+// committed state, so a hub restarted after a rotation never rotates twice.
+func (k *Keyring) rotationDueTx(tx *sql.Tx) (due, bool, error) {
+	onRelay, err := k.OnRelayTx(tx)
+	if err != nil {
+		return due{}, false, err
+	}
+	epochs, err := state.EpochsTx(tx)
+	if err != nil {
+		return due{}, false, err
+	}
+	if len(epochs) == 0 {
+		return due{}, false, ErrKeysUnavailable
+	}
+	current, now := epochs[len(epochs)-1], k.now()
+	age := RotationAge
+	if onRelay {
+		since, set, err := servingNobodySince(tx)
+		if err != nil {
+			return due{}, false, err
+		}
+		if set {
+			end := since.Add(ServingNobodyHold)
+			if !now.Before(end) && current.CreatedAt.Before(end) {
+				return due{reason: ReasonAge, onRelay: true, holdEnd: true}, true, nil
+			}
+			return due{}, false, nil
+		}
+		if k.held != nil && k.held() {
+			return due{}, false, nil
+		}
+		age = relayRotationAge
+	}
+	if now.Sub(current.CreatedAt) >= age {
+		return due{reason: ReasonAge, onRelay: onRelay}, true, nil
+	}
+	text, _, err := state.MetaTx(tx, state.MetaSeqCeiling)
+	if err != nil {
+		return due{}, false, err
+	}
+	ceiling, err := parseCeiling(text)
+	if err != nil {
+		return due{}, false, err
+	}
+	if ceiling >= current.FirstSeq && ceiling-current.FirstSeq >= RotationSeqCap {
+		return due{reason: ReasonCap, onRelay: onRelay}, true, nil
+	}
+	return due{}, false, nil
+}
+
+// servingNobodySince reads relay_serving_nobody_since (unix seconds).
+func servingNobodySince(tx *sql.Tx) (time.Time, bool, error) {
+	v, ok, err := state.MetaTx(tx, state.MetaServingNobodySince)
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	secs, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return time.Time{}, false, errors.New("identity: relay_serving_nobody_since is not a number")
+	}
+	return time.Unix(secs, 0), true, nil
+}
+
+// RotateIfDue rotates when a rotation is due (rotationDueTx): every 7 days on
+// the relay (relayRotationAge), every 90 days elsewhere, or at the seq cap;
+// on the relay not while the hub is held or serves nobody, except the hold's
+// end, which derives nothing and clears every offer and relay-key row. The
+// check is made again in the rotation's own transaction, after also (the
+// runtime's: ErrSkipRotation while a switch runs). true when it rotated.
+func (k *Keyring) RotateIfDue(also func(*sql.Tx) error) (bool, error) {
+	var (
+		first due
+		ok    bool
+	)
+	err := k.st.ReadTx(context.Background(), func(tx *sql.Tx) error {
+		var err error
+		first, ok, err = k.rotationDueTx(tx)
+		return err
+	})
+	if err != nil || !ok {
+		return false, err
+	}
+	var b begun
+	rotated := false
+	err = k.st.WithTx(context.Background(), func(tx *sql.Tx) error {
+		if also != nil {
+			if err := also(tx); err != nil {
+				return err
+			}
+		}
+		d, ok, err := k.rotationDueTx(tx)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrSkipRotation // another writer rotated or changed the state first
+		}
+		if b, err = k.rotateTx(tx, d.reason, d.onRelay, d.holdEnd); err != nil {
+			return err
+		}
+		first, rotated = d, true
+		return nil
+	})
+	if err := b.done(first.reason, err); err != nil {
+		return false, err
+	}
+	return rotated, nil
+}
+
+// EraseExpired erases every epoch that began on the relay (on_relay = 1) and
+// whose retention has ended (retire_after passed): its sealed K_data ‖
+// K_alert and its relay-key rows, in one transaction on a connection set to
+// secure_delete, then a best-effort wal_checkpoint(TRUNCATE) so no copy stays
+// in the log. An iCloud epoch, or one with no on_relay (from before sidecar
+// migration 00016: the hub's start stamps every later one, StampCurrentEpoch),
+// keeps its keys (ask #1066). With nothing to erase it issues neither pragma.
+// The relay-key cache drops the erased epochs. It returns how many it erased.
+func (k *Keyring) EraseExpired() (int, error) {
+	epochs, err := k.st.Epochs()
+	if err != nil {
+		return 0, err
+	}
+	now := k.now()
+	var expired []uint32
+	for i := 0; i+1 < len(epochs); i++ {
+		e := epochs[i]
+		if e.OnRelay == nil || !*e.OnRelay || len(e.SealedKeys) == 0 || e.RetiredAt == nil {
+			continue
+		}
+		if !now.Before(retireAfter(e, epochs[i+1])) {
+			expired = append(expired, e.Epoch)
+		}
+	}
+	if len(expired) == 0 {
+		k.checkpointIfOwed()
+		return 0, nil
+	}
+	if err := secureDeleteTx(k.st, context.Background(), func(tx *sql.Tx) error {
+		for _, e := range expired {
+			if err := state.EraseEpoch(tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	k.forgetEpochs(expired)
+	log.Printf("hub: %d relay epoch(s) erased at the end of their retention", len(expired))
+	k.mu.Lock()
+	k.checkpointOwed = true
+	k.mu.Unlock()
+	k.checkpointIfOwed()
+	return len(expired), nil
+}
+
+// checkpointIfOwed runs the wal_checkpoint(TRUNCATE) an erasure owes, until
+// one completes: a reader blocking it (busy) or an error leaves it owed for the
+// next housekeeping, so the erased pages do not stay in the log. In memory: a
+// restart owes nothing, and the next start's checkpoints copy the log anyway.
+func (k *Keyring) checkpointIfOwed() {
+	k.mu.Lock()
+	owed := k.checkpointOwed
+	k.mu.Unlock()
+	if !owed {
+		return
+	}
+	if err := checkpointStore(k.st); err != nil {
+		log.Printf("hub: the hub state was not checkpointed after an erasure: retried at the next housekeeping")
+		return
+	}
+	k.mu.Lock()
+	k.checkpointOwed = false
+	k.mu.Unlock()
+}
+
+// forgetEpochs drops every cached relay key of the given epochs.
+func (k *Keyring) forgetEpochs(epochs []uint32) {
+	gone := map[string]bool{}
+	for _, e := range epochs {
+		gone[strconv.FormatUint(uint64(e), 10)] = true
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, m := range k.relay {
+		for slot, key := range m.keys {
+			if _, e, _ := strings.Cut(slot, "/"); gone[e] {
+				clear(key)
+				delete(m.keys, slot)
+				delete(m.from, slot)
+			}
+		}
+	}
 }
 
 // SealLocal seals a sidecar content value under the wrap key:
@@ -718,6 +1420,14 @@ func (k *Keyring) metaAAD() []byte {
 func (k *Keyring) epochAAD(epoch uint32) []byte {
 	aad := append([]byte(epochAADLabel), k.hub[:]...)
 	return binary.BigEndian.AppendUint32(aad, epoch)
+}
+
+// epochRelayAAD binds a relay-key row's sealed keys to the hub, its epoch and
+// its phone: "wt/hub-epoch-relay/v1" ‖ hub_id ‖ epoch u32 BE ‖ device_id.
+func (k *Keyring) epochRelayAAD(epoch uint32, device secure.ID) []byte {
+	aad := append([]byte(epochRelayAADLabel), k.hub[:]...)
+	aad = binary.BigEndian.AppendUint32(aad, epoch)
+	return append(aad, device[:]...)
 }
 
 func (k *Keyring) localAAD(label string) []byte {

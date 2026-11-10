@@ -64,14 +64,22 @@ type SaveItem struct {
 // record's uploaded asset, or "". ServerAt is the transport's time of the
 // last write where it has one; on the hosted relay, which keeps none, it is
 // the writer's client_modified_at_ms, so a writer's skewed clock skews it —
-// never order records by it across writers.
+// never order records by it across writers. Creator is, on CloudKit, the
+// user record name of the iCloud user who created the record, as CloudKit
+// reports it (CurrentUserCreator for the Mac's own user); "" where the
+// transport gives none (the hosted relay, memfake by default).
 type Stored struct {
 	Zone, Name   string
 	Envelope     []byte
 	RecordSeq    uint64
 	ServerAt     time.Time
 	AttachmentID string
+	Creator      string
 }
+
+// CurrentUserCreator is CloudKit's creator name for the current user's own
+// records (CKCurrentUserDefaultName): on the Mac, the owner.
+const CurrentUserCreator = "__defaultOwner__"
 
 // Outcome is one item's result, in the order of the items. Saved is true when
 // the write (or delete) took effect, with the record's new RecordSeq (a
@@ -117,10 +125,15 @@ const (
 	SlotRemoved
 	PairingOpened
 	SessionExpired
+	// SlotAdded: a phone put the hub into a slot (best effort; Detail is
+	// the phone's relay device id). It may repeat.
+	SlotAdded
 )
 
 // Control is a server control event; Detail is the kind's detail (a device id,
-// a pairing slot id, or empty).
+// a pairing slot id, or empty). An EntitlementExpired sent to the Mac names
+// the lapsed phone's relay device id there (ruling R31); the switcher acts
+// on it as on that phone's transport_switch (relay sim rule 16).
 type Control struct {
 	Kind   ControlKind
 	Detail string
@@ -131,13 +144,27 @@ type Control struct {
 // runtime should see (the connection is gone, a login failed). Resync marks
 // a zone event that may stand for missed changes (the hosted relay's marker
 // after a reconnect or a folded overflow): the runtime republishes what the
-// phones wait for. Events are best effort: a consumer still pulls on its own
-// backstop timer.
+// phones wait for. PullNow means a silent push reached the CloudKit bridge:
+// pull every zone now. AccountChanged means the Mac's iCloud account
+// changed (the CloudKit bridge): the runtime calls link.Center.AccountChanged
+// and republishes into the new account's zones. ZonesRecreated means the
+// CloudKit bridge created the hub's zones again after CloudKit said one was
+// gone (deleted on the server): the runtime republishes everything.
+// Seq is the zone's seq after the change the event announces (the hosted
+// relay's ZoneChanged; 0 = not known, pull). Inline is that change as a
+// one-record page (NewSeq = Seq) when the relay carried the record in the
+// event: a consumer whose cursor is right below it needs no read.
+// Events are best effort: a consumer still pulls on its own backstop timer.
 type Event struct {
-	Zone    string
-	Control *Control
-	Err     error
-	Resync  bool
+	Zone           string
+	Control        *Control
+	Err            error
+	Resync         bool
+	PullNow        bool
+	AccountChanged bool
+	ZonesRecreated bool
+	Seq            uint64
+	Inline         *Batch
 }
 
 // Transport is the record store under the sealer.
@@ -162,4 +189,60 @@ type Transport interface {
 	// zone to dst, a hub-owned path (written 0600, replaced whole). The
 	// caller names the zone from the record it holds.
 	Download(ctx context.Context, zone, attachmentID, dst string) error
+}
+
+// The optional capabilities below are type-asserted by callers.
+
+// Alerts is the capability of a transport that pushes alerts itself (the
+// hosted relay's send_alert). The only bytes it hands the relay are a
+// secure.Push the Sealer built; an unsealed Push is refused with
+// secure.ErrUnsealed before any I/O. A transport without it (CloudKit, where
+// the hub writes signals instead) is never asked to push.
+type Alerts interface {
+	SendAlert(ctx context.Context, phoneRelayID string, p secure.Push) error
+}
+
+// SharedMailbox names the zone a phone's mailbox lives in. On CloudKit every
+// phone of a hub shares the one RelayZone (records are routed by sender); on
+// the hosted relay each phone has its own MailboxZone.
+type SharedMailbox interface {
+	MailboxFor(hub, phone string) string
+}
+
+// Account is the iCloud account state the CloudKit bridge reports.
+type Account string
+
+// The account states.
+const (
+	AccountAvailable              Account = "available"
+	AccountNoAccount              Account = "no_account"
+	AccountRestricted             Account = "restricted"
+	AccountTemporarilyUnavailable Account = "temporarily_unavailable"
+	AccountNoEntitlement          Account = "no_entitlement"
+)
+
+// Shares is CloudKit's linking surface (today's ShareService): the account
+// state, the zone shares a phone accepts, the share's public link and its
+// participants.
+type Shares interface {
+	AccountStatus(ctx context.Context) (Account, error)
+	// EnsureShares creates the data and relay zone shares if missing and
+	// returns their URLs (opaque: never parsed or logged).
+	EnsureShares(ctx context.Context) (dataURL, relayURL string, err error)
+	// SetPublicLink opens or closes the shares' public read-write link.
+	SetPublicLink(ctx context.Context, open bool) error
+	Participants(ctx context.Context, zone string) ([]Participant, error)
+	RemoveParticipants(ctx context.Context, zone string, userRecordNames []string) error
+}
+
+// CloudUser is the CloudKit bridge's iCloud user: the Mac's own user record
+// name (CKContainer.userRecordID), "" when the account has none yet.
+type CloudUser interface {
+	OwnerUser(ctx context.Context) (string, error)
+}
+
+// Participant is one participant of a zone share.
+type Participant struct {
+	UserRecordName string
+	Accepted       bool
 }

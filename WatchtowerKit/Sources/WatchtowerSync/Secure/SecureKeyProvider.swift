@@ -42,12 +42,22 @@ public protocol SecureKeyProvider: Sendable {
     func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey
     /// Phone only: the hub's signing key (`hub_sig`), which signs every keybox.
     func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey
+    /// Phone only: the private keys a keybox may be sealed to, in the order to try them (relay client Phase 5):
+    /// the offered ephemeral key, the current one, then `dev_kx`.
+    func keyboxRecipients() throws -> [Curve25519.KeyAgreement.PrivateKey]
+    /// Phone only: the static `wt/relay/v1/` key of `epoch`, whatever the link holds for it (relay client Phase 5:
+    /// the one exception to the key rule, which opens `hub_on_relay` alone).
+    func staticRelayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey
 }
 
 extension SecureKeyProvider {
-    /// A hub provider has neither (relay client Phase 3 added them for the phone's switch keybox).
+    /// A hub provider has none of these (relay client Phase 3 added the first two for the phone's switch keybox).
     public func deviceAgreement() throws -> Curve25519.KeyAgreement.PrivateKey { throw SecureTransportError.wrongRole }
     public func hubSigningPublicKey() throws -> Curve25519.Signing.PublicKey { throw SecureTransportError.wrongRole }
+    public func keyboxRecipients() throws -> [Curve25519.KeyAgreement.PrivateKey] { throw SecureTransportError.wrongRole }
+    public func staticRelayKey(_ direction: RelayDirection, deviceID: UUID, epoch: UInt32) throws -> SymmetricKey {
+        throw SecureTransportError.wrongRole
+    }
 }
 
 public enum SecureTransportError: Error, Equatable {
@@ -55,6 +65,11 @@ public enum SecureTransportError: Error, Equatable {
     case wrongRole
     /// The keys exist but cannot be read now (locked device), or are not there yet: keep the token, retry.
     case keysUnavailable
+    /// Phone, ephemeral link: a relay epoch at or below the newest held that this phone holds no keys for (retired,
+    /// or never sent to it). They never will come: the record is unopenable.
+    case epochKeysGone
+    /// Phone, ephemeral link: a relay epoch above the newest held. Its keybox may yet come: keep the token, retry.
+    case epochKeysPending
     /// A plain kind this role does not seal.
     case unknownKind(String)
     /// A keybox (plain record name) for a device the hub has no agreement key for.

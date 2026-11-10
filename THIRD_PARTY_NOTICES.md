@@ -3,7 +3,8 @@
 Third-party code compiled into the Watchtower CLI beyond ordinary Go module
 dependencies: the tree-sitter runtime and the grammars the code index
 (`internal/codeindex`) parses with, and the SQLite engine (§ SQLite engine at
-the end, which also covers the engine the Desktop app ships). Each grammar module comes from
+the end, which also covers the engine the Desktop app ships), plus the Go
+modules listed under § Other Go modules. Each grammar module comes from
 [go-sitter-forest](https://github.com/alexaandru/go-sitter-forest), which
 wraps the upstream grammar's generated `parser.c` (and `scanner.c` where the
 grammar has one) in a Go package; the upstream grammar's own licence applies
@@ -25,6 +26,16 @@ adds a component to this file.
 | go-tree-sitter (Go binding, vendors the tree-sitter C library) | `github.com/tree-sitter/go-tree-sitter` | v0.25.0 | MIT | https://github.com/tree-sitter/go-tree-sitter |
 | tree-sitter C library (vendored in the binding's `src/`) | — | as vendored by go-tree-sitter v0.25.0 | MIT | https://github.com/tree-sitter/tree-sitter |
 | ICU subset (vendored in the binding's `src/unicode/`) | — | as vendored by go-tree-sitter v0.25.0 | Unicode / ICU licence (ICU 58 and later) | https://github.com/unicode-org/icu |
+
+## Other Go modules
+
+Go modules whose licence notice we carry by owner ruling; the version is the
+one `go.mod` requires, and a module joins this table in the same change that
+adds it to `go.mod`.
+
+| Component | Go module | Version | Licence | Upstream |
+|---|---|---|---|---|
+| go-qrcode (the QR code `watchtower hub pair` prints in a terminal) | `github.com/skip2/go-qrcode` | v0.0.0-20200617195104-da1b6568686e | MIT | https://github.com/skip2/go-qrcode |
 
 ## Grammars
 
@@ -89,6 +100,8 @@ wrapper adds the forest's own MIT notice, from each module's `LICENSE`:
   - Copyright (c) 2024 Amaan Qureshi <amaanq12@gmail.com> <!-- leak-check:allow -->
 - **tree-sitter C library** (MIT), from the upstream LICENSE:
   - Copyright (c) 2018 Max Brunsfeld
+- **go-qrcode** (MIT), from the module's `LICENSE`:
+  - Copyright (c) 2014 Tom Harwood
 - **ICU subset**: see "Unicode / ICU licence" below.
 - **Bash**, from the upstream LICENSE:
   - Copyright (c) 2017 Max Brunsfeld
@@ -164,9 +177,9 @@ wrapper adds the forest's own MIT notice, from each module's `LICENSE`:
 
 ## MIT License
 
-The text of the MIT licence that the tree-sitter runtime, every grammar's Go
-wrapper and every grammar marked MIT above are under, each with its
-copyright line above (reproduced from the forest modules' `LICENSE`):
+The text of the MIT licence that the tree-sitter runtime, go-qrcode, every
+grammar's Go wrapper and every grammar marked MIT above are under, each with
+its copyright line above (reproduced from the forest modules' `LICENSE`):
 
 ```text
 Permission is hereby granted, free of charge, to any person obtaining a copy

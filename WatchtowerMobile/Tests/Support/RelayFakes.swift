@@ -157,6 +157,7 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
         var promoteAppliesThenThrows: (any Error)?
         var parking: Set<String> = []
         var parked: [String: [CheckedContinuation<Void, Never>]] = [:]
+        var proofs = 0
     }
 
     /// The next calls of `op` wait until `release(op)` (an op still running when the screen is shot).
@@ -282,6 +283,35 @@ final class FakeRelayOps: RelayLinkOps, @unchecked Sendable {
         try call("removeSlot", mac)
         lock.withLock { state.slots.removeAll { $0 == mac } }
     }
+
+    /// `add_slot`: the Mac joins the slots (`SLOT_LIMIT` past 3), unless an error was queued with `fail("addSlot")`.
+    func addSlot(mac: String) async throws {
+        try call("addSlot", mac)
+        try lock.withLock {
+            if state.slots.count >= 3, !state.slots.contains(mac) { throw HostedRelayPairing.Refusal.slotsFull(macs: state.slots) }
+            if !state.slots.contains(mac) { state.slots.append(mac) }
+        }
+    }
+
+    /// The phone's `relay_auth` key from a fixed seed (`Self.relayKey`).
+    func relayIDProof(hubID: UUID, deviceID: UUID) throws -> RelayIDClaim {
+        lock.withLock { state.proofs += 1 }
+        let key = Self.relayKey
+        let proof = try RelayIDProof.sign(
+            authPub: key.publicKey.rawRepresentation, hubID: hubID, deviceID: deviceID) { try key.signature(for: $0) }
+        return RelayIDClaim(relayDeviceID: proof.relayDeviceID, authPub: proof.authPub, sig: proof.sig)
+    }
+
+    /// How many device-record proofs were signed.
+    var proofs: Int { lock.withLock { state.proofs } }
+
+    /// The phone's relay key in these tests.
+    static let relayKey: Curve25519.Signing.PrivateKey = {
+        guard let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: Data(repeating: 0x50, count: 32)) else {
+            preconditionFailure("test key")
+        }
+        return key
+    }()
 }
 
 /// A Mac's relay identity from a fixed seed, for v4 codes.
