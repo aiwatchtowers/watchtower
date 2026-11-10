@@ -181,22 +181,26 @@ package enum InboxFolderQueries {
 
     /// The `waiting-for-me` built-in as the root's composition needs it.
     /// A dry run never counts as its last run (`newestEndedRuns(dryRuns:
-    /// false)`): a dry run commits no outputs. Turned off (`enabled` 0 with
-    /// no `disabled_reason`: the owner turned attention detection off,
-    /// `turnOffBuiltinsOfDisabled`) nothing is shown and nothing counts;
-    /// stopped by the daemon (a `disabled_reason`) it is a failed run: the
-    /// Messages entry stands in.
-    package static func waitingForMe(_ db: Database) throws -> WaitingForMeState {
+    /// false)`): a dry run commits no outputs. Turned off nothing is shown
+    /// and nothing counts: `featureOn` false (the owner turned attention
+    /// detection off — the config key is the on/off truth, Go
+    /// `builtin.Entry.Enabled`), or `enabled` 0 with no `disabled_reason`
+    /// (`turnOffBuiltinsOfDisabled` before the feature list is read). The
+    /// owner's off wins over a stop: `SetBuiltinEnabled` leaves a row the
+    /// daemon stopped unchanged, `disabled_reason` included. Stopped by the
+    /// daemon (a `disabled_reason`) while the feature is on it is a failed
+    /// run: the Messages entry stands in.
+    package static func waitingForMe(_ db: Database, featureOn: Bool = true) throws -> WaitingForMeState {
         do {
             guard let row = try Row.fetchOne(
                 db, sql: "SELECT id, enabled, disabled_reason FROM automations WHERE builtin_id = ?",
                 arguments: [waitingForMeBuiltinID]) else {
-                return WaitingForMeState(automationID: nil, messagesStandIn: true)
+                return WaitingForMeState(automationID: nil, messagesStandIn: featureOn, turnedOff: !featureOn)
             }
             let automationID: Int64 = row["id"]
             let enabled: Bool = row["enabled"] ?? true
             let stopped = !((row["disabled_reason"] as String?) ?? "").isEmpty
-            if !enabled, !stopped {
+            if !featureOn || (!enabled && !stopped) {
                 return WaitingForMeState(automationID: automationID, messagesStandIn: false, turnedOff: true)
             }
             if stopped { return WaitingForMeState(automationID: automationID, messagesStandIn: true) }
@@ -210,7 +214,7 @@ package enum InboxFolderQueries {
             // A missing table stands in. A missing `builtin_id` column (a
             // file from before 00150) is not caught: it cannot happen, the
             // Desktop runs `db migrate` at launch before it opens the file.
-            return WaitingForMeState(automationID: nil, messagesStandIn: true)
+            return WaitingForMeState(automationID: nil, messagesStandIn: featureOn, turnedOff: !featureOn)
         }
     }
 
@@ -253,12 +257,14 @@ package enum InboxFolderQueries {
 
     /// The Messages legacy entry stands in for Waiting for me: see
     /// `WaitingForMeState.messagesStandIn`.
-    package static func messagesStandIn(_ db: Database) throws -> Bool {
-        try waitingForMe(db).messagesStandIn
+    package static func messagesStandIn(_ db: Database, featureOn: Bool = true) throws -> Bool {
+        try waitingForMe(db, featureOn: featureOn).messagesStandIn
     }
 
     /// The `waiting-for-me` built-in's id (`builtin.Entry`, Go).
     package static let waitingForMeBuiltinID = "waiting-for-me"
+    /// Its feature (`builtin.Entry.FeatureIDs`, Go): attention detection.
+    package static let waitingForMeFeatureID = "secretary-inbox"
 
     /// The `idea-finder` built-in is indexed: Idea finder stays in the root
     /// with no ideas yet (its New idea and Find Ideas in Past Messages…).

@@ -1,6 +1,7 @@
 import XCTest
 import GRDB
 import Observation
+import os
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -592,7 +593,44 @@ final class HomeFeedActionTests: XCTestCase {
         try await performer.perform(.hide, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
         try await performer.perform(.done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
         let expected = ReminderApprovalHook.arguments(id)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while runner.invocations.count < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(runner.invocations, [expected, expected])
+    }
+
+    /// Done never waits on the `inbox approvals changed` child: it is fired
+    /// after the write, so a slow CLI never holds Home's action (the hook
+    /// still runs, and its failure is only logged).
+    func testReminderDoneReturnsBeforeTheApprovalsHookFinishes() async throws {
+        let pool = try makePool()
+        let id = try insertReminder(pool)
+        let runner = FakeCLIRunner()
+        let (gate, open) = AsyncStream<Void>.makeStream()
+        runner.onRun = { _ in for await _ in gate { return } }
+        defer { open.finish() }
+        let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
+        let returned = OSAllocatedUnfairLock(initialState: false)
+        Task { @MainActor in
+            _ = try? await performer.perform(
+                .done, on: .reminder(id), contentHash: "", now: Date(), calendar: .current)
+            returned.withLock { $0 = true }
+        }
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !returned.withLock({ $0 }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(returned.withLock { $0 }, "Done returned while the hook still runs")
+        let status = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM reminders WHERE id = ?", arguments: [id])
+        }
+        XCTAssertEqual(status, "done")
+        while runner.invocations.isEmpty, ContinuousClock.now < deadline + .seconds(3) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(runner.invocations, [ReminderApprovalHook.arguments(id)], "the hook still runs")
+        open.yield()
     }
 
     func testTargetDoneAndHide() async throws {

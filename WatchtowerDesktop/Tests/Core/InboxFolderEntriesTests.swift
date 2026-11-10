@@ -160,6 +160,41 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertEqual(vm.folderEntries.map(\.id), ["messages"], "stopped: the Messages entry stands in")
     }
 
+    /// The owner's off wins over the daemon's stop: attention detection
+    /// turned off on a row the daemon already stopped (`SetBuiltinEnabled`
+    /// leaves it unchanged, `disabled_reason` included) shows and counts
+    /// nothing — neither the card nor the Messages stand-in, in the Inbox
+    /// or in the badge.
+    func testWaitingForMeStoppedThenTurnedOffShowsAndCountsNothing() async throws {
+        let pool = try pool()
+        let ids = try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
+            let waiting = try self.waitingForMe(db, status: "failed")
+            try db.execute(sql: "UPDATE automations SET enabled = 0, disabled_reason = 'run would not end' WHERE id = ?",
+                           arguments: [waiting.automation])
+            return (root: folders.root, automation: waiting.automation)
+        }
+        let vm = NeedsApprovalFixtures.viewModel(pool, suite: suite)
+        vm.disabledFeatures = [InboxFolderQueries.waitingForMeFeatureID]
+        await vm.refresh()
+        vm.selectFolder(ids.root)
+        XCTAssertEqual(vm.folderEntries.map(\.id), [], "turned off: nothing is shown")
+        XCTAssertEqual(vm.folderMenu.snapshot.counts[ids.root] ?? 0, 0, "nothing counts")
+        XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.turnedOff)
+        let badge = try await pool.read { db in
+            try ActionStripViewModel.badgeCount(
+                db, nowUTC: "2026-11-06T10:00:00Z", disabledFeatures: [InboxFolderQueries.waitingForMeFeatureID])
+        }
+        XCTAssertEqual(badge, 0, "the badge counts no stand-in either")
+
+        await vm.folderMenu.reload()
+        XCTAssertTrue(vm.folderMenu.snapshot.waitingForMe.turnedOff, "the menu's own read keeps the switch")
+
+        vm.disabledFeatures = []
+        await vm.refresh()
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["messages"], "turned on again, the stop stands in")
+    }
+
     /// An approved or executing proposal is not closed: Needs approval keeps
     /// it on its native card, after the open approvals (spec A, a stuck row's
     /// "Didn't finish" and Try again), and never counts it; an applied one

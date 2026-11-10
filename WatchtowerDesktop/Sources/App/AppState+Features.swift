@@ -5,6 +5,7 @@ extension AppState {
         featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
             featureVisibility.disabledFeatureIDs = ids
             featureVisibility.isLoaded = true
+            self?.sidebarCountsViewModel?.disabledFeatures = ids
             self?.syncAutomationSessionCenter()
             self?.syncPlanUsageFeatureState()
         }

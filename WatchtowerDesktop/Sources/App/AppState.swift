@@ -834,7 +834,8 @@ final class AppState {
                 // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
                     initAutomations(dbPool: manager.dbPool)
-                    sidebarCountsViewModel = await SidebarCountsViewModel.started(dbPool: manager.dbPool)
+                    sidebarCountsViewModel = await SidebarCountsViewModel.started(
+                        dbPool: manager.dbPool, disabledFeatures: featureVisibility.disabledFeatureIDs)
                 }
                 isLoading = false
                 // During onboarding only the account view models run (above):
@@ -1278,7 +1279,10 @@ final class AppState {
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
         if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
-            sidebarCountsSetup = Task { sidebarCountsViewModel = await SidebarCountsViewModel.started(dbPool: pool) }
+            sidebarCountsSetup = Task {
+                sidebarCountsViewModel = await SidebarCountsViewModel.started(
+                    dbPool: pool, disabledFeatures: featureVisibility.disabledFeatureIDs)
+            }
         }
         if let pool = databaseManager?.dbPool {
             initAutomations(dbPool: pool)

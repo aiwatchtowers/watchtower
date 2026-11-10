@@ -51,8 +51,11 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                     case .hide: try ReminderQueries.snooze(db, id: id, until: until)
                     }
                 }
-                // As the Inbox's Done/Snooze: Needs approval redraws now, not at the sweep.
-                await ReminderApprovalHook.changed(id, runner: self.runner)
+                // As the Inbox's Done/Snooze: Needs approval redraws now,
+                // not at the sweep. Fired after the write, never awaited: a
+                // slow CLI must not hold Home's action (a failure is only logged).
+                let runner = self.runner
+                Task { await ReminderApprovalHook.changed(id, runner: runner) }
             }
         case .target(let id):
             let until = Self.tomorrowNine(now: now, calendar: calendar)

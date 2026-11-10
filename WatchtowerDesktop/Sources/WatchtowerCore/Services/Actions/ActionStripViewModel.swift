@@ -95,6 +95,7 @@ package final class ActionStripViewModel {
     package var disabledFeatures: Set<String> = [] {
         didSet {
             folderMenu.approvalsEnabled = !disabledFeatures.contains(Self.approvalsFeatureID)
+            folderMenu.disabledFeatures = disabledFeatures
             if disabledFeatures != oldValue { Task { await refresh() } }
         }
     }
@@ -165,9 +166,13 @@ package final class ActionStripViewModel {
     /// 1 per unread one, or its rows that wait on the owner. Track cards
     /// stay unread dots only. Each source tolerates a schema that predates
     /// it (its table missing counts 0); any other read error is thrown,
-    /// never folded into 0.
-    nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
-        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC)
+    /// never folded into 0. `disabledFeatures` as in
+    /// `InboxFolderMenuSnapshot.read` (attention detection off counts no
+    /// Waiting for me and no Messages stand-in).
+    nonisolated package static func badgeCount(
+        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = []
+    ) throws -> Int {
+        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
         return InboxFolderCounts.badge(counts: snapshot.counts, tree: snapshot.tree)
     }
 
@@ -282,7 +287,7 @@ package final class ActionStripViewModel {
                     tasks: tasks,
                     labels: Self.labels(for: feed.proposals, runLabels: runLabels),
                     lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands"),
-                    folders: try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC)
+                    folders: try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
                 )
             }
             let before = sections
