@@ -97,10 +97,12 @@ func ownerWrite(args []string) bool {
 // needs. PlacedCwd and PlacedBranch are the row's folder_path and
 // worktree_branch when Watchtower placed it in a worktree it created (board
 // #229), both "" otherwise.
+// Kind is the row's kind (claude, codex, shell).
 type SessionInfo struct {
 	ID, WorkbenchID         int64
 	CreatedAt               time.Time
 	PlacedCwd, PlacedBranch string
+	Kind                    string
 }
 
 // SessionActivity is one terminal session, of any workbench, as the in-use
@@ -124,6 +126,12 @@ type Store interface {
 	// SessionTargetBranches is the non-empty `branch` of every target the
 	// session linked (terminal_session_targets, PROJ-14).
 	SessionTargetBranches(ctx context.Context, sessionID int64) ([]string, error)
+	// AgentSessionIDs is every agent session id the row has had (history
+	// plus the current claude_session_id), each with when the row acquired it.
+	AgentSessionIDs(ctx context.Context, sessionID int64) ([]db.AgentSessionID, error)
+	// AgentSessionIDOwners maps each uuid to every terminal session row
+	// whose history or current id holds it.
+	AgentSessionIDOwners(ctx context.Context, uuids []string) (map[string][]int64, error)
 	WorkbenchFolder(ctx context.Context, workbenchID int64) (string, error)
 	// WorkbenchFolders is every workbench's folder_path.
 	WorkbenchFolders(ctx context.Context) ([]string, error)

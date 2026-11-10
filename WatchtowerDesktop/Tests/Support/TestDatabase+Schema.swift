@@ -2456,6 +2456,10 @@ CREATE TABLE IF NOT EXISTS inbox_folder_routes (
     automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
     folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
 );
+CREATE TABLE IF NOT EXISTS agent_session_tombstones (
+    agent_session_id TEXT PRIMARY KEY,
+    deleted_at       TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -3217,6 +3221,15 @@ END;
 CREATE TRIGGER IF NOT EXISTS review_reviewer_threads_ad AFTER DELETE ON review_reviewer_threads
 BEGIN
   DELETE FROM chat_conversations WHERE id = OLD.conversation_id AND context_type = 'review_reviewer';
+END;
+CREATE TRIGGER IF NOT EXISTS agent_session_tombstones_bd BEFORE DELETE ON terminal_sessions
+BEGIN
+    INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+    SELECT agent_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM terminal_session_agent_sessions WHERE terminal_session_id = OLD.id;
+    INSERT OR IGNORE INTO agent_session_tombstones (agent_session_id, deleted_at)
+    SELECT OLD.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE OLD.claude_session_id IS NOT NULL;
 END;
 """#
 }
