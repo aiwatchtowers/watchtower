@@ -1862,7 +1862,7 @@ main's `TestAgentlog0*_Codex…` ones included, stays green unchanged), `interna
 **Files:**
 - Modify: `internal/agentlog/codex.go` (`codexUsage.CacheWrite` with tag `cache_write_input_tokens`; `codexParser.tokens`)
 - Modify: `internal/agentlog/claude.go` (`ParseResult.CodexUsageMismatch int`; `const CodexParserVersion = 5` beside `ParserVersion = 4`; `func parserVersionFor(agent string) int`)
-- Modify: `internal/agentlog/scan.go` (`resumePoint` and the slice's `File.ParserVersion` use `parserVersionFor(tf.Agent)`)
+- Modify: `internal/agentlog/scan.go` (all four sites use `parserVersionFor(tf.Agent)`: the slice's `File.ParserVersion` stamp, both checks in `resumePoint`, and the offset check before a slice is stored)
 - Modify: `internal/agentlog/scan.go` (`Result.CodexUsageMismatch int \`json:"codex_usage_mismatch"\``; `addSlice` sums it)
 - Modify: `internal/daemon/agent_analytics.go` (one log line per workbench per cycle when above 0)
 - Test: `internal/agentlog/codex_test.go`, `internal/agentlog/scan_test.go`, `internal/daemon/agent_analytics_test.go`
@@ -1879,6 +1879,7 @@ main's `TestAgentlog0*_Codex…` ones included, stays green unchanged), `interna
   - `TestScan_CodexUsageMismatchSummed` (scan_test.go, main's codex fixture helpers): a workbench rollout with one negative line → `res.CodexUsageMismatch == 1`; `json.Marshal(res)` has the key `codex_usage_mismatch`
   - `TestPhaseAgentAnalytics_LogsCodexUsageMismatch`: the log line appears once for a cycle with a mismatch and not for one without
   - `TestScan_CodexReReadOnceUnderNewParserVersion`: a Codex file stored with version 4 and rows with the old split (fresh including the cache write) → one scan re-reads it from 0, the rows' `input_tokens`/`cache_write_5m_tokens`/`cost_usd` are corrected, the event count is unchanged and the file row carries 5; a Claude file stored with 4 is reported `unchanged` and not opened (counting adapter); a second scan re-reads nothing
+  - `TestParserVersionComparedOnlyThroughHelper`: a source scan of the package's non-test `.go` files finds `ParserVersion` compared (`== ParserVersion`, `!= ParserVersion`) or stamped (`ParserVersion: ParserVersion`) nowhere but inside `parserVersionFor`; the four sites in `scan.go` (the slice stamp, both `resumePoint` checks, the pre-store offset check) use the helper
   - `TestScan_CodexReReadStoppedResumes`: the re-read stopped by the budget after the first slice → the file row has version 5 and the slice's offset; the next scan resumes there (no read from 0), and every row ends corrected
   - Main's `TestParseCodex_TokenCountPerResponse` and every `TestAgentlog02_Codex…` guard run unchanged.
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog -run 'ParseCodex_(CacheWrite|NegativeFresh|KeyUnchanged)|CodexUsageMismatch|CodexReRead'`; `go test ./internal/daemon -run LogsCodexUsageMismatch`.
@@ -1946,7 +1947,7 @@ main's `TestAgentlog0*_Codex…` ones included, stays green unchanged), `interna
   - `TestAgentlog05_CodexReadOnly` gains the child and grandchild (every file's mode, mtime and hash unchanged)
   - `TestApplyAgentLogBatch_SpawnedAgentIDFilledOnConflict` (agentlogdb)
   - `TestFeed_CodexSubagentsListed` and every `internal/sessionfeed` test stay unchanged.
-  - `TestAgentlog_CodexParentTotalsExcludeChildren`: a parent with one `token_count` and a child with one → two `api_call` rows under the root, the root's cost is their sum; a child whose rollout first replays the parent's `token_count` line (a forked history) and then has its own → the replayed line keeps the parent's content key and only the child's own call is added (spec §4.7, D59: each thread reports its own calls)
+  - `TestAgentlog_CodexParentTotalsExcludeChildren`: a parent with one response (`last_token_usage` A) whose cumulative `total_token_usage` already includes the child's tokens, and a child with one response (`last_token_usage` B) → two `api_call` rows under the root with A's and B's tokens, the root's cost = cost(A) + cost(B), never the parent's total; a child whose rollout first replays the parent's `token_count` line (a forked history) and then has its own → the replayed line keeps the parent's content key and only the child's own call is added (spec §4.7, D59)
 - [ ] **Step 2: Run, expect FAIL** — `go test ./internal/agentlog ./internal/sessionagent ./internal/agentlogdb -run 'Codex(Child|Grandchild|SpawnRow|Killed|Unnamed|ParentTotals)|ChildImportFile|SpawnedAgentID'`.
 - [ ] **Step 3: Implement.** `go test ./internal/transporttest` too: if the contract suite's `session-analytics` cells list the `Transcript` methods, add `ChildImportFile` for both agents there (regenerate `matrix.golden` only when the cell list changes).
 - [ ] **Step 4: Run, expect PASS** — `go test ./internal/agentlog ./internal/agentlogdb ./internal/agentreport ./internal/sessionagent ./internal/sessionfeed ./internal/transporttest`; `make lint-diff`.
@@ -2386,6 +2387,7 @@ The note on Claude-only blocks stays main's caption **Not measured for Codex ses
   - `AgentAnalyticsCenterTests.testAgentFilterAddsFlag`: `.codex` → args end `["--days","7","--agent","codex"]`; `.all` → no `--agent`; changing only the agent reruns the overview.
   - `AgentAnalyticsCenterTests.testOlderCLIRefusingAgentResetsToAll`: the runner fails `--agent codex` with a usage error → the pane shows the report's existing error line with **Retry** and the workbench's filter is back to `.all`.
   - `AgentAnalyticsCenterTests.testStaleFilterAnswerDropped`: start `.claude`, switch to `.codex` before it returns → the `.claude` answer is dropped (the request's `(period, agent)` no longer matches) and only the `.codex` overview is shown.
+  - `AgentAnalyticsFormatTests.testAgentHelp`: `AgentAnalyticsFormat.agentHelp == "Codex sessions count when they were started from a Watchtower workbench terminal"` and the picker view applies it as `.help` (D57, ask #1144; a tooltip, so no shot shows it).
   - `AgentAnalyticsFormatTests.testPickerShownOnlyWithBothAgents`: `agentFilter ["claude","codex"]` → true; no `agentFilter` + filter `.all` → false; no `agentFilter` + filter `.codex` → true (a chosen filter keeps its picker).
   - `AgentAnalyticsPaneViewTests.testCodexCaptionStaysMains`: an overview with a Claude and a Codex session → the Context block shows `AgentAnalyticsCodexShare.notMeasuredLine` and no text `"Claude Code only"`; with filter `.codex` the caption replaces the block's state.
 - [ ] **Step 2: Run, expect FAIL** — `make test-swift FILTER='AgentReportDecodingTests|AgentAnalyticsCenterTests|AgentAnalyticsFormatTests|AgentAnalyticsPaneViewTests|CoachCenterTests'`.
