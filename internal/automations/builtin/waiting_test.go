@@ -407,7 +407,9 @@ func TestWaitingForMe_UnparsableStampHasNoBadge(t *testing.T) {
 }
 
 // TestWaitingForMe_WebLinkKeepsOnlyLinksTheBlocksAdmit: a permalink the
-// blocks would refuse is dropped so it cannot fail the whole run.
+// blocks would refuse is dropped so it cannot fail the whole run, and so is
+// an in-app watchtower-nav:// link the blocks admit: a source permalink is a
+// web link, never an in-app jump.
 func TestWaitingForMe_WebLinkKeepsOnlyLinksTheBlocksAdmit(t *testing.T) {
 	long := "https://acme.example.com/" + strings.Repeat("a", blocks.MaxLinkBytes)
 	cases := map[string]string{
@@ -415,6 +417,8 @@ func TestWaitingForMe_WebLinkKeepsOnlyLinksTheBlocksAdmit(t *testing.T) {
 		"HTTP://acme.example.com/x":               "HTTP://acme.example.com/x",
 		"":                                        "",
 		"ftp://acme.example.com/x":                "",
+		"watchtower-nav://inbox":                  "",
+		"WATCHTOWER-NAV://home/x":                 "",
 		"https:///no-host":                        "",
 		"javascript:alert(1)":                     "",
 		"%zz":                                     "",

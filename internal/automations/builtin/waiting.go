@@ -194,11 +194,17 @@ func waitingWhere(o db.OpenInboxItem) string {
 }
 
 // webLink is raw when the blocks admit it as a row's link (blocks.CheckURL:
-// a web link with a host, at most MaxLinkBytes), else "": a row with a link
-// the blocks would refuse would fail the whole run.
+// a link with a host, at most MaxLinkBytes) and it is a web link (http or
+// https, any case), else "": a row with a link the blocks would refuse would
+// fail the whole run, and a source permalink is never an in-app
+// watchtower-nav:// jump.
 func webLink(raw string) string {
 	link, err := blocks.CheckURL("waiting", "link", raw)
 	if err != nil {
+		return ""
+	}
+	lower := strings.ToLower(link)
+	if !strings.HasPrefix(lower, "https://") && !strings.HasPrefix(lower, "http://") {
 		return ""
 	}
 	return link
