@@ -515,7 +515,9 @@ final class OnboardingAgentChoiceTests: XCTestCase {
     func testTerminalRunsTheLocatedExecutable() {
         var signedOut = choice(.signedOut, .ready)
         signedOut.pick(.claude)
-        signedOut.installs = [.claude: .init(path: "/Users/acme/.local/share/claude/versions/1", kind: .native, executable: "/Users/acme/.local/bin/claude")]
+        signedOut.installs = [.claude: .init(
+            path: "/Users/acme/.local/share/claude/versions/1", kind: .native, executable: "/Users/acme/.local/bin/claude"
+        )]
         XCTAssertEqual(signedOut.terminalCommand, "'/Users/acme/.local/bin/claude' auth login")
         XCTAssertEqual(signedOut.setup?.steps.map(\.command), ["'/Users/acme/.local/bin/claude' auth login"])
 
@@ -524,7 +526,9 @@ final class OnboardingAgentChoiceTests: XCTestCase {
 
         var old = choice(.signedOut, .ready)
         old.pick(.claude)
-        old.installs = [.claude: .init(path: "/Users/acme/.local/share/claude/versions/1", kind: .native, executable: "/Users/acme/.local/bin/claude")]
+        old.installs = [.claude: .init(
+            path: "/Users/acme/.local/share/claude/versions/1", kind: .native, executable: "/Users/acme/.local/bin/claude"
+        )]
         old.applyLoginProbe(outdated: [.claude])
         XCTAssertEqual(old.terminalCommand, "'/Users/acme/.local/bin/claude' update")
 

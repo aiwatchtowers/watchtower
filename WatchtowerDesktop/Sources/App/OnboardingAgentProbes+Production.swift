@@ -108,7 +108,9 @@ extension OnboardingAgentProbes {
         }
         // No killpg here: the child is reaped, its pid may be recycled. A
         // straggler holding the pipe would have blocked EOF until the deadline.
-        return String(decoding: data, as: UTF8.self)
+        // Lossy fallback for invalid UTF-8: non-ASCII bytes become "?", the help stays searchable.
+        return String(bytes: data, encoding: .utf8)
+            ?? String(bytes: data.map { $0 < 0x80 ? $0 : 0x3F }, encoding: .utf8) ?? ""
     }
 
     /// The timeout path: the whole group dies, the child is reaped, nil.
