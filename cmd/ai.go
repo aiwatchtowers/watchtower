@@ -782,9 +782,17 @@ func isExecutableFile(p string) bool {
 	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
+// overrideTakesPrecedence mirrors claude.FindBinary / codex.FindBinary: a
+// configured path that exists and is not a directory wins over any lookup.
+func overrideTakesPrecedence(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
+
 // runAIWhich prints the agent binary Go would run. found is false when the
 // lookup returned the bare fallback name, nothing, an error, or a path that
-// is not an executable file; path is then "".
+// is not an executable file — a configured override that is not executable
+// included, since Go would run it rather than fall back; path is then "".
 func runAIWhich(cmd *cobra.Command, _ []string) error {
 	provider := flagProvider
 	if provider != "claude" && provider != "codex" {
@@ -799,7 +807,9 @@ func runAIWhich(cmd *cobra.Command, _ []string) error {
 		override, bare = cfg.CodexPath, "codex"
 	}
 	path := ""
-	if override != "" && isExecutableFile(override) {
+	if override != "" && overrideTakesPrecedence(override) {
+		// FindBinary returns any non-directory override, executable or not:
+		// report what the daemon would run, never a PATH binary instead.
 		path = override
 	} else if provider == "claude" {
 		path = claudeFindBinary()

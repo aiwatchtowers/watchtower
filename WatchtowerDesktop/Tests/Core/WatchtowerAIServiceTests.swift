@@ -303,8 +303,19 @@ extension WatchtowerAIServiceTests {
     }
 
     func testWhichDecodes() {
-        XCTAssertEqual(WatchtowerAIService.decodeWhich(#"{"provider":"codex","path":"/x/codex","found":true}"#), "/x/codex")
-        XCTAssertNil(WatchtowerAIService.decodeWhich(#"{"provider":"codex","path":"","found":false}"#))
-        XCTAssertNil(WatchtowerAIService.decodeWhich("not json"))
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex","path":"/x/codex","found":true}"#)), .found("/x/codex"))
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex","path":"","found":false}"#)), .notFound)
+    }
+
+    /// M2: a CLI that could not answer is a failure, never "not installed".
+    func testWhichFailureIsNotNotFound() {
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out("not json")), .failed(nil))
+        XCTAssertEqual(
+            WatchtowerAIService.decodeWhich(out("", exit: 1, stderr: "loading config: permission denied\n")),
+            .failed("loading config: permission denied")
+        )
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out("", exit: -1, stderr: "no such file")), .failed("no such file"))
+        // A JSON object without `found` is not a clean answer either.
+        XCTAssertEqual(WatchtowerAIService.decodeWhich(out(#"{"provider":"codex"}"#)), .failed(nil))
     }
 }

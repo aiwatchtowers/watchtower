@@ -13,6 +13,15 @@ package struct OnboardingAgentTestResult: Equatable, Sendable {
     }
 }
 
+/// Go's answer to "which executable would run this agent" (`ai which`).
+package enum AgentLookup: Equatable, Sendable {
+    case found(String)
+    /// The CLI answered `found:false`.
+    case notFound
+    /// The CLI could not answer (launch, exit, output); the CLI's stderr.
+    case failed(String?)
+}
+
 /// The side effects of the per-agent check, injected so the check itself is
 /// pure ordering and mapping (#1521).
 package struct OnboardingAgentProbes: Sendable {
@@ -20,8 +29,8 @@ package struct OnboardingAgentProbes: Sendable {
     package var configuredProvider: String?
     /// The managed policy's `AllowedAIProviders`.
     package var allowed: @Sendable (OnboardingAgentChoice.Agent) -> Bool
-    /// Go's own binary lookup (`ai which`); nil = not found.
-    package var locate: @Sendable (OnboardingAgentChoice.Agent) async -> String?
+    /// Go's own binary lookup (`ai which`).
+    package var locate: @Sendable (OnboardingAgentChoice.Agent) async -> AgentLookup
     /// The path with symlinks followed, for `InstallKind`.
     package var resolve: @Sendable (String) -> String
     /// The login help text of an executable; nil = the probe timed out.
@@ -33,7 +42,7 @@ package struct OnboardingAgentProbes: Sendable {
     package init(
         configuredProvider: String?,
         allowed: @escaping @Sendable (OnboardingAgentChoice.Agent) -> Bool,
-        locate: @escaping @Sendable (OnboardingAgentChoice.Agent) async -> String?,
+        locate: @escaping @Sendable (OnboardingAgentChoice.Agent) async -> AgentLookup,
         resolve: @escaping @Sendable (String) -> String,
         help: @escaping @Sendable (OnboardingAgentChoice.Agent, String) async -> String?,
         test: @escaping @Sendable (String?, String?) async -> OnboardingAgentTestResult,
@@ -115,8 +124,15 @@ package enum OnboardingAgentCheck {
         guard probes.allowed(agent) else {
             return AgentOutcome(agent: agent, status: .forbidden, install: nil, outdated: false)
         }
-        guard let executable = await probes.locate(agent) else {
+        let executable: String
+        switch await probes.locate(agent) {
+        case .found(let path):
+            executable = path
+        case .notFound:
             return AgentOutcome(agent: agent, status: .notInstalled, install: nil, outdated: false)
+        case .failed(let error):
+            let line = OnboardingAgentChoice.lookupFailureMessage(agent, error: error)
+            return AgentOutcome(agent: agent, status: .failed(line), install: nil, outdated: false)
         }
         let resolved = probes.resolve(executable)
         let install = OnboardingAgentChoice.Install(

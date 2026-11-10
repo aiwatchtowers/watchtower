@@ -413,6 +413,47 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertTrue(model.canContinue)
     }
 
+    /// I1: right after a sign-in exits 0, until the recheck lands, the
+    /// section shows checking — no stale "not signed in", no enabled Sign
+    /// in again, no Continue hint.
+    func testRecheckAfterSignInShowsChecking() async throws {
+        let gate = GatedCheck()
+        let model = makeModel { await gate.runCheck() }
+        let first = Task { await model.prepareGoalsStep(configuredLanguage: nil) }
+        await yieldALot()
+        gate.release(0, with: OnboardingAgentCheckResult(statuses: [.claude: .signedOut, .codex: .notInstalled]))
+        await first.value
+        XCTAssertFalse(model.isCheckingAgents)
+
+        model.signInStarted()
+        let ended = Task { await model.signInEnded(exitCode: 0) }
+        await yieldALot()
+        XCTAssertEqual(gate.calls, 2)
+        XCTAssertTrue(model.isCheckingAgents)
+        XCTAssertEqual(model.agentChoice.tile(.claude).status, "Checking…")
+        let panel = try XCTUnwrap(model.agentChoice.setup)
+        XCTAssertTrue(panel.busy)
+        XCTAssertEqual(panel.signInNote, "Checking Claude Code again…")
+        XCTAssertNil(model.agentChoice.continueHint)
+        XCTAssertFalse(model.canContinue)
+
+        gate.release(1, with: Self.claudeReady)
+        await ended.value
+        XCTAssertFalse(model.isCheckingAgents)
+        XCTAssertEqual(model.agentChoice.tile(.claude).status, "Ready · signed in")
+        XCTAssertTrue(model.canContinue)
+    }
+
+    /// M5: leaving the step mid sign-in is not the owner's Stop.
+    func testSignInLeftIsIdleNotStopped() async {
+        spy.cliResult = OnboardingAgentCheckResult(statuses: [.claude: .signedOut, .codex: .notInstalled])
+        let model = await readyModel()
+        model.signInStarted()
+        model.signInLeft()
+        XCTAssertEqual(model.agentChoice.signIn, .idle)
+        XCTAssertEqual(model.agentChoice.setup?.signInNote, OnboardingAgentChoice.pressToSignIn)
+    }
+
     /// A failed check is not rerun by the step re-appearing; Check again
     /// runs it.
     func testReappearingDoesNotRerunAFailedCheck() async {

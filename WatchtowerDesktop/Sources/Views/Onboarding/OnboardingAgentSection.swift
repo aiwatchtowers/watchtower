@@ -107,6 +107,7 @@ struct OnboardingAgentSection: View {
             HStack(spacing: Spacing.medium) {
                 Button(OnboardingAgentChoice.Setup.checkAgain, action: onCheckAgain)
                     .buttonStyle(.kitSecondary)
+                    .disabled(setup.busy)
                 if let docsURL = setup.docsURL, let url = URL(string: docsURL) {
                     Link(OnboardingAgentChoice.Setup.docsLink, destination: url)
                         .font(.caption)
@@ -114,6 +115,7 @@ struct OnboardingAgentSection: View {
                 if setup.showsManualPath {
                     Button(OnboardingAgentChoice.Setup.manualPath) { onChoosePath(setup.agent) }
                         .buttonStyle(.kitQuiet)
+                        .disabled(setup.busy)
                 }
                 Spacer(minLength: 0)
             }
@@ -128,10 +130,15 @@ struct OnboardingAgentSection: View {
     @ViewBuilder
     private func signInBlock(_ setup: OnboardingAgentChoice.Setup) -> some View {
         if let note = setup.signInNote {
-            Text(note)
-                .font(.caption)
-                .foregroundStyle(setup.signInNoteWarns ? Tone.warning : .secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Spacing.compact) {
+                if setup.busy, choice.signIn != .running {
+                    ProgressView().controlSize(.mini)
+                }
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(setup.signInNoteWarns ? Tone.warning : .secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         if choice.signIn == .running {
             signInTerminal()
@@ -141,9 +148,12 @@ struct OnboardingAgentSection: View {
                 .buttonStyle(.kitSecondary)
                 .controlSize(.small)
         } else {
+            // Disabled while a check runs: its result may close the panel,
+            // and a press now would start a second login.
             Button(choice.retryLabel, action: onSignIn)
                 .buttonStyle(.kitSecondary)
                 .controlSize(.small)
+                .disabled(setup.busy)
         }
     }
 

@@ -147,24 +147,28 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         )
     }
 
-    /// Go's own lookup of an agent executable (`ai which --json`): the path,
-    /// or nil when not found or the CLI could not answer. A fresh process per
-    /// call, nothing cached.
-    package static func which(provider: String, watchtower: String? = nil) async -> String? {
-        guard let binary = watchtower ?? Constants.findCLIPath() else { return nil }
+    /// Go's own lookup of an agent executable (`ai which --json`). A fresh
+    /// process per call, nothing cached. Only a clean `found:false` is
+    /// `.notFound`; a CLI that could not answer (missing, crashed, an
+    /// unreadable config) is `.failed`, never read as "not installed".
+    package static func which(provider: String, watchtower: String? = nil) async -> AgentLookup {
+        guard let binary = watchtower ?? Constants.findCLIPath() else { return .failed("Watchtower CLI not found") }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binary)
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = ["ai", "which", "--provider", provider, "--json"]
-        let output = await ProcessPipes.run(process)
-        return decodeWhich(output.stdout)
+        return decodeWhich(await ProcessPipes.run(process))
     }
 
-    package static func decodeWhich(_ stdout: String) -> String? {
-        guard let json = try? JSONSerialization.jsonObject(with: Data(stdout.utf8)) as? [String: Any],
-              json["found"] as? Bool == true,
-              let path = json["path"] as? String, !path.isEmpty else { return nil }
-        return path
+    package static func decodeWhich(_ output: ProcessOutput) -> AgentLookup {
+        guard output.exitCode == 0,
+              let json = try? JSONSerialization.jsonObject(with: Data(output.stdout.utf8)) as? [String: Any],
+              let found = json["found"] as? Bool else {
+            let detail = CLILog.detail(output.stderr)
+            return .failed(detail.isEmpty ? nil : detail)
+        }
+        guard found, let path = json["path"] as? String, !path.isEmpty else { return .notFound }
+        return .found(path)
     }
 
     // MARK: - Private

@@ -137,3 +137,44 @@ func TestAIWhich_JSONFlagThroughCobra(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &o))
 	assert.Equal(t, whichOut{Provider: "claude"}, o)
 }
+
+// TestAIWhich_NonExecutableOverride: FindBinary returns any non-directory
+// override, so a configured path without an execute bit is what the daemon
+// would run — which must report found:false, never fall back to PATH.
+func TestAIWhich_NonExecutableOverride(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	broken := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(broken, []byte("#!/bin/sh\n"), 0o644))
+	f, err := os.OpenFile(flagConfig, os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = f.WriteString("claude_path: " + broken + "\ncodex_path: " + broken + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	exe := tempExe(t)
+	stubSeams(t, exe, exe, nil)
+
+	for _, p := range []string{"claude", "codex"} {
+		o, _, err := runWhich(t, p)
+		require.NoError(t, err)
+		assert.Equal(t, whichOut{Provider: p}, o, p)
+	}
+}
+
+// TestAIWhich_MissingOverrideFallsBack: an override that does not exist is
+// skipped by FindBinary too, so the lookup's path is reported.
+func TestAIWhich_MissingOverrideFallsBack(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	f, err := os.OpenFile(flagConfig, os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = f.WriteString("claude_path: " + filepath.Join(t.TempDir(), "gone") + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	exe := tempExe(t)
+	stubSeams(t, exe, exe, nil)
+
+	o, _, err := runWhich(t, "claude")
+	require.NoError(t, err)
+	assert.Equal(t, whichOut{Provider: "claude", Path: exe, Found: true}, o)
+}

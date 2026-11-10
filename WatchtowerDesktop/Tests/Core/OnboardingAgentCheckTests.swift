@@ -21,6 +21,7 @@ final class OnboardingAgentCheckTests: XCTestCase {
         configured: String? = nil,
         allowed: @escaping @Sendable (Agent) -> Bool = { _ in true },
         located: [Agent: String] = [.claude: "/opt/bin/claude", .codex: "/opt/bin/codex"],
+        lookupFailed: [Agent: String] = [:],
         resolve: @escaping @Sendable (String) -> String = { $0 },
         help: @escaping @Sendable (Agent, String) async -> String? = { _, _ in nil },
         calls: Calls,
@@ -29,7 +30,11 @@ final class OnboardingAgentCheckTests: XCTestCase {
         OnboardingAgentProbes(
             configuredProvider: configured,
             allowed: allowed,
-            locate: { agent in await calls.locate(agent.rawValue); return located[agent] },
+            locate: { agent in
+                await calls.locate(agent.rawValue)
+                if let failed = lookupFailed[agent] { return .failed(failed) }
+                return located[agent].map { .found($0) } ?? .notFound
+            },
             resolve: resolve,
             help: { agent, exe in await calls.help(agent.rawValue); return await help(agent, exe) },
             test: { provider, exe in await calls.test(provider ?? "<configured>"); return await test(provider, exe) },
@@ -53,6 +58,23 @@ final class OnboardingAgentCheckTests: XCTestCase {
         XCTAssertEqual(result.statuses[.codex], .notInstalled)
         let tested = await calls.tested
         XCTAssertEqual(tested, ["claude"])
+    }
+
+    /// M2: a lookup the CLI could not answer is Check failed with its own
+    /// line and no test, never Not installed.
+    func testLookupFailureIsFailedNotNotInstalled() async {
+        let calls = Calls()
+        let result = await OnboardingAgentCheck.run(probes(
+            lookupFailed: [.claude: "loading config: permission denied"],
+            calls: calls
+        ) { _, _ in Result(ok: true) })
+        XCTAssertEqual(
+            result.statuses[.claude],
+            .failed(OnboardingAgentChoice.lookupFailureMessage(.claude, error: "loading config: permission denied"))
+        )
+        XCTAssertEqual(result.statuses[.codex], .ready)
+        let tested = await calls.tested
+        XCTAssertEqual(tested, ["codex"])
     }
 
     func testStatusFromTheTest() async {

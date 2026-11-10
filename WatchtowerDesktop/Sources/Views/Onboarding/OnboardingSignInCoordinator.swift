@@ -134,8 +134,16 @@ final class OnboardingSignInCoordinator {
         stop()
     }
 
-    /// Ends the process only (leaving the step, Cancel, app quit): the model
-    /// is not told, nothing shows the terminal any more.
+    /// Leaving the step: the process ends and the model stops reading as
+    /// running — on return it shows an opened sign-in waiting for a press,
+    /// never the owner's Stop warning.
+    func leave() {
+        stop()
+        model.signInLeft()
+    }
+
+    /// Ends the process only (Cancel, app quit, a tile switch, a settled
+    /// check): the model is not told.
     func stop() {
         generation += 1
         session?.stop()

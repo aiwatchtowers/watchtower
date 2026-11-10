@@ -131,13 +131,19 @@ final class OnboardingGoalsStepTests: XCTestCase {
         withExtendedLifetime(coordinator) {}
     }
 
-    /// Leaving the step (onDisappear, Cancel of a re-run) ends the process
-    /// only: the model is not told (controller ruling, Task 5).
+    /// Leaving the step (onDisappear) ends the process and the model's
+    /// running state (M5) — idle and already opened, not the owner's Stop:
+    /// on return nothing opens by itself and no Stop warning shows.
     func testLeavingTheStepStopsSignIn() async throws {
         let (coordinator, session) = try await runningSignIn()
-        coordinator.stop()
+        coordinator.leave()
         XCTAssertEqual(session.stops, 1)
         XCTAssertFalse(session.isRunning)
+        XCTAssertEqual(coordinator.model.agentChoice.signIn, .idle)
+        XCTAssertEqual(coordinator.model.agentChoice.setup?.signInNote, Choice.pressToSignIn)
+        XCTAssertEqual(coordinator.model.agentChoice.setup?.signInNoteWarns, false)
+        await coordinator.openIfNeeded()
+        XCTAssertEqual(fakes.sessions.count, 1, "returning to the step opens nothing by itself")
     }
 
     func testStopByOwnerEndsTheSignIn() async throws {
@@ -211,7 +217,7 @@ final class OnboardingGoalsStepTests: XCTestCase {
         fakes.result.outdated = []
         session.exit(0)
         while !fakes.isHolding { await Task.yield() }
-        coordinator.stop()
+        coordinator.leave()
         fakes.releaseCheck()
         await coordinator.exitHandling?.value
         XCTAssertEqual(fakes.sessions.count, 1)

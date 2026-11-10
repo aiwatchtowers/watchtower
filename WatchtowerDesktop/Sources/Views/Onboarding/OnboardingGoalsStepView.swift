@@ -64,8 +64,9 @@ struct OnboardingGoalsStepView: View {
             Task { await model.windowBecameActive() }
         }
         // Leaving the step (Continue, Cancel of a re-run, the window going)
-        // ends the terminal's process; app quit is the coordinator's own.
-        .onDisappear { signIn?.stop() }
+        // ends the terminal's process and the model's running state; app
+        // quit is the coordinator's own.
+        .onDisappear { signIn?.leave() }
     }
 
     private var goals: some View {
