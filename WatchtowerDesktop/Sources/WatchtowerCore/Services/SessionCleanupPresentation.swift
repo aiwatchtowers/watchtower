@@ -88,13 +88,20 @@ package enum SessionCleanupPresentation {
         return counts + sizeSuffix(items)
     }
 
-    private static func countText(_ items: [Item]) -> String? {
-        let parts = nouns.compactMap { noun -> String? in
+    /// "2 worktrees, 3 branches" over `items`; nil when none is of a known kind.
+    package static func countText(_ items: [Item]) -> String? {
+        let parts = countParts(items)
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+
+    /// ["2 worktrees", "3 branches"]: one count per known kind present, in
+    /// worktree, branch, process, LaunchServices order.
+    package static func countParts(_ items: [Item]) -> [String] {
+        nouns.compactMap { noun -> String? in
             let count = items.filter { $0.kind == noun.kind }.count
             guard count > 0 else { return nil }
             return count == 1 ? "1 \(noun.one)" : "\(count) \(noun.many)"
         }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     /// " (~12 GB)", " (size unknown)", " (~12 GB, some sizes unknown)", or
