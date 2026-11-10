@@ -22,4 +22,8 @@ final class ReleaseLinksTests: XCTestCase {
     func testRepository() {
         XCTAssertEqual(ReleaseLinks.repository.absoluteString, "https://github.com/aiwatchtowers/watchtower")
     }
+
+    func testDiscussions() {
+        XCTAssertEqual(ReleaseLinks.discussions.absoluteString, "https://github.com/aiwatchtowers/watchtower/discussions")
+    }
 }

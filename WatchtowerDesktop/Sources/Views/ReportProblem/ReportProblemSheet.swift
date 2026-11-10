@@ -12,11 +12,18 @@ struct ReportProblemSheetHost: ViewModifier {
 
     func body(content: Content) -> some View {
         content.sheet(item: presented) { model in
-            ReportProblemSheet(model: model) { appState.closeReportProblem(model) }
-                // The mockups' width; the buttons stack when it is narrower.
-                .frame(minWidth: 360, idealWidth: 600, maxWidth: 600)
-                .onDisappear { appState.closeReportProblem(model) }
+            Self.sheet(for: model, appState: appState)
         }
+    }
+
+    /// The presented sheet with both of its close paths: the Cancel/Done
+    /// button (Esc presses it) and `onDisappear` when the window goes away
+    /// under it. Internal so the dismissal tests host exactly this view.
+    static func sheet(for model: ReportProblemModel, appState: AppState) -> some View {
+        ReportProblemSheet(model: model) { appState.closeReportProblem(model) }
+            // The mockups' width; the buttons stack when it is narrower.
+            .frame(minWidth: 360, idealWidth: 600, maxWidth: 600)
+            .onDisappear { appState.closeReportProblem(model) }
     }
 
     /// Internal for the dismissal test.
@@ -36,6 +43,8 @@ struct ReportProblemSheetHost: ViewModifier {
 struct ReportProblemSheet: View {
     let model: ReportProblemModel
     let close: () -> Void
+    /// The window's link gate (`AllowedURLSchemes`), as `Link`s use it.
+    @Environment(\.openURL) private var openURL
 
     private typealias Copy = ReportProblemCopy
 
@@ -54,9 +63,7 @@ struct ReportProblemSheet: View {
             if !model.isCorp {
                 VStack(alignment: .leading, spacing: Spacing.small) {
                     Text(Copy.publicNote).font(.caption).foregroundStyle(.secondary)
-                    Button(Copy.discussionsLink) {
-                        NSWorkspace.shared.open(ReleaseLinks.repository.appendingPathComponent("discussions"))
-                    }
+                    Button(Copy.discussionsLink) { openURL(ReleaseLinks.discussions) }
                     .buttonStyle(.kitQuiet)
                 }
             }
@@ -79,6 +86,7 @@ struct ReportProblemSheet: View {
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $model.text)
                     .font(.body)
+                    .accessibilityLabel(Copy.fieldLabel)
                     .scrollContentBackground(.hidden)
                     .frame(height: 72)
                 if model.text.isEmpty {

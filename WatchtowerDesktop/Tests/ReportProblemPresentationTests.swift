@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ViewInspector
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -151,26 +152,59 @@ final class ReportProblemPresentationTests: XCTestCase {
         XCTAssertTrue(appState.reportProblemModel === current)
     }
 
-    /// Every dismissal path of the hosted sheet: the binding SwiftUI clears
-    /// (Esc, a programmatic dismiss), the Cancel/Done button, and the sheet
-    /// going away with its window.
-    func testEveryDismissalPathCancels() throws {
-        let appState = try makeAppState()
+    /// Opens the sheet over a run that never answers.
+    private func openCollecting(_ appState: AppState) throws -> ReportProblemModel {
         appState.openMainWindow = {}
-        for path in ["binding", "button", "disappear"] {
-            let runner = blockingRunner()
-            appState.reportProblem(windows: [], activate: {}, runner: runner, buildFlavor: nil)
-            let model = try XCTUnwrap(appState.reportProblemModel)
-            _ = waitForInvocation(runner)
-            let host = ReportProblemSheetHost(appState: appState)
-            switch path {
-            case "binding": host.presented.wrappedValue = nil
-            case "button": ReportProblemSheet(model: model) { appState.closeReportProblem(model) }.close()
-            default: appState.closeReportProblem(model) // the host's onDisappear
-            }
-            XCTAssertNil(appState.reportProblemModel, path)
-            XCTAssertNil(model.collection, "\(path): the run is cancelled")
+        let runner = blockingRunner()
+        appState.reportProblem(windows: [], activate: {}, runner: runner, buildFlavor: nil)
+        let model = try XCTUnwrap(appState.reportProblemModel)
+        _ = waitForInvocation(runner)
+        XCTAssertNotNil(model.collection)
+        return model
+    }
+
+    /// Esc or a programmatic dismiss: SwiftUI clears the host's binding.
+    func testBindingClearedCancels() throws {
+        let appState = try makeAppState()
+        let model = try openCollecting(appState)
+        ReportProblemSheetHost(appState: appState).presented.wrappedValue = nil
+        XCTAssertNil(appState.reportProblemModel)
+        XCTAssertNil(model.collection, "the run is cancelled")
+    }
+
+    /// Cancel (Esc presses it too) on the very view the host presents.
+    func testCancelButtonCancels() throws {
+        let appState = try makeAppState()
+        let model = try openCollecting(appState)
+        let sheet = ReportProblemSheetHost.sheet(for: model, appState: appState)
+        try sheet.inspect().find(button: ReportProblemCopy.cancel).tap()
+        XCTAssertNil(appState.reportProblemModel)
+        XCTAssertNil(model.collection, "the run is cancelled")
+    }
+
+    /// The window closes under the sheet: the presented view leaves the
+    /// hierarchy and its `onDisappear` closes it. The window is never
+    /// ordered in.
+    func testSheetLeavingTheWindowCancels() throws {
+        let appState = try makeAppState()
+        let model = try openCollecting(appState)
+        let host = NSHostingView(rootView: AnyView(ReportProblemSheetHost.sheet(for: model, appState: appState)))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 700)
+        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.close() }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertTrue(appState.reportProblemModel === model, "on screen: nothing closed yet")
+        host.rootView = AnyView(EmptyView())
+        host.layoutSubtreeIfNeeded()
+        let deadline = Date().addingTimeInterval(2)
+        while appState.reportProblemModel != nil, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
+        XCTAssertNil(appState.reportProblemModel)
+        XCTAssertNil(model.collection, "the run is cancelled")
     }
 
     func testMissingCLIFailsAsMissing() async throws {
