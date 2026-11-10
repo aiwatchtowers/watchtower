@@ -222,7 +222,7 @@ enum TuningChatTexts {
     static let turnError = "The model stopped: overloaded — the service is busy. Nothing was proposed."
     static let accepted = "Accepted · measuring for 14 days"
     /// The folded line of an accepted workbench repository file (§4.3a).
-    static let acceptedRepo = "Accepted · wrote CLAUDE.md — commit it yourself · measuring for 14 days"
+    static let acceptedRepo = "Accepted · wrote CLAUDE.md on main — commit it yourself"
     static let showAccepted = "Show in Accepted edits"
     static let skillAsk = "The review-pr skill makes the agent read every changed file. Can we fix that?"
     static let skillAnswer = "In 9 of 12 review sessions the agent opened every changed file in full before "

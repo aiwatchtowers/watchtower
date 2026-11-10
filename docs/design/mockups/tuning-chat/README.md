@@ -24,7 +24,7 @@ sections (`CoachSectionsView`) and the Statistics blocks. All data is synthetic.
 | Proposal: accepting (buttons disabled while Accept runs) | §4.4 | `tuning-chat-proposal-accepting-{light,dark}.png` |
 | Proposal: accepted, folded to one line, "Show in Accepted edits" | §4.4 | `tuning-chat-proposal-accepted-{light,dark}.png` |
 | Proposal: stale (the card's current error line) | §4.4 | `tuning-chat-proposal-stale-{light,dark}.png` |
-| Proposal: accepted edit of the workbench folder's CLAUDE.md, folded to "Accepted · wrote CLAUDE.md — commit it yourself · measuring for 14 days" (ask #1165) | §4.3a, §4.4 | `tuning-chat-proposal-accepted-repo-{light,dark}.png` |
+| Proposal: accepted edit of the workbench folder's CLAUDE.md, folded to "Accepted · wrote CLAUDE.md on main — commit it yourself" (asks #1165, #1170) | §4.3a, §4.4 | `tuning-chat-proposal-accepted-repo-{light,dark}.png` |
 | No tools (ollama): Open Settings | §4.1, §4.4 | `tuning-chat-no-tools-{light,dark}.png` |
 | No tools midway: provider switched to ollama mid-conversation, the open card keeps Accept / Decline, no-tools line above the composer | §4.1, §4.4 | `tuning-chat-no-tools-midway-{light,dark}.png` |
 | Narrow: panel at 360 pt, evidence above the buttons | §4.4 | `tuning-chat-narrow-{light,dark}.png` |
