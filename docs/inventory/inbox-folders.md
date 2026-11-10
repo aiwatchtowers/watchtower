@@ -45,6 +45,8 @@
 
 ## Changelog
 
+- 2026-11-10 (Inbox builder final review, board #919; owner approval in ask #610): APPROVAL-01 amended — below the open approvals, Needs approval also draws the actions the owner already approved that are still `approved` or `executing` (applied in the background, stuck or still running), natively and uncounted: they are not open approvals, so neither the folder count nor the Inbox badge includes them, and they leave the folder once applied, failed or dismissed. Supporting: `InboxFolderEntriesTests::testNeedsApprovalKeepsApprovedAndExecutingRowsUncounted`.
+
 - 2026-11-08 (Inbox builder B Task 12, board #1400; owner approval in ask #451): APPROVAL-01 added — Needs approval's native fallback and render-time check (`NeedsApprovalSelection`, `InboxFolderEntries`, the `needs-approval` cards taken out of every folder's artifact list in `InboxFolderMenuSnapshot.read`). New guards `Approval01Tests` (three), supporting `NeedsApprovalSelectionTests`, `InboxFolderEntriesTests`.
 
 - 2026-11-06: file created with FOLDER-01, introduced by the Inbox builder's folders (sub-project B, board #1400; owner approval in ask #451).
