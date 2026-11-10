@@ -62,6 +62,28 @@ enum TuningChatSurface {
             """, arguments: [contextType, String(workbenchID), recentLimit])
     }
 
+    /// The conversation's automatic title, once: the first owner message's
+    /// first `titleLimit` characters, written only while the title is empty.
+    static func setTitleIfEmpty(_ db: Database, conversationID: Int64) throws {
+        guard let text = try String.fetchOne(db, sql: """
+            SELECT text FROM chat_messages WHERE conversation_id = ? AND role = 'user' ORDER BY id LIMIT 1
+            """, arguments: [conversationID]) else { return }
+        let title = String(text.split(whereSeparator: \.isNewline).joined(separator: " ").prefix(titleLimit))
+            .trimmingCharacters(in: .whitespaces)
+        guard !title.isEmpty else { return }
+        try db.execute(sql: "UPDATE chat_conversations SET title = ? WHERE id = ? AND title = ''",
+                       arguments: [title, conversationID])
+    }
+
+    static let titleLimit = 60
+
+    /// The conversation's tuning proposals (`origin = 'chat'`), oldest first.
+    static func proposals(_ db: Database, conversationID: Int64) throws -> [CoachProposal] {
+        let rows = try Row.fetchAll(db, sql: "SELECT * FROM coach_proposals WHERE conversation_id = ?",
+                                    arguments: [conversationID])
+        return CoachProposal.forChat(rows.map(CoachProposal.init(row:)), conversationID: conversationID)
+    }
+
     // MARK: - Spec
 
     /// The chat of one conversation. `period` is read at each turn (the
@@ -74,7 +96,19 @@ enum TuningChatSurface {
         period: @escaping @MainActor () -> AgentAnalyticsCenter.Period,
         onWillSend: @escaping @MainActor () -> Void
     ) -> ChatSurfaceSpec {
-        let tools = toolsAvailable(provider: provider)
+        spec(workbenchID: workbenchID, conversationID: conversationID, tools: toolsAvailable(provider: provider),
+             period: period, onWillSend: onWillSend)
+    }
+
+    /// The same chat with the tool access already decided (`TuningChat`'s
+    /// `decideTools`).
+    @MainActor static func spec(
+        workbenchID: Int64,
+        conversationID: Int64,
+        tools: Bool,
+        period: @escaping @MainActor () -> AgentAnalyticsCenter.Period,
+        onWillSend: @escaping @MainActor () -> Void
+    ) -> ChatSurfaceSpec {
         // Every turn, draft-only too, is a `tuning.chat` call (D53).
         let runOptions = { @MainActor () -> ChatRunOptions in ChatRunOptions(purpose: purpose) }
         return ChatSurfaceSpec(

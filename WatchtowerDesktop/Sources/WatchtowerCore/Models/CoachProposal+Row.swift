@@ -3,10 +3,10 @@ import GRDB
 
 extension CoachProposal {
     /// A `coach_proposals` row, for the readers that go to the table rather
-    /// than the CLI (Home). `workbench_id` NULL (global) reads as 0, the CLI's
+    /// than the CLI (Home, the tuning chat). `workbench_id` NULL (global) reads as 0, the CLI's
     /// form; the evidence is not read (nothing there shows it), and
     /// `folderBranch` is the CLI's list-time read, never a column.
-    init(row: Row) {
+    package init(row: Row) {
         self.init(
             id: row["id"], title: row["title"], why: row["why"], destination: row["destination"],
             workbenchID: (row["workbench_id"] as Int64?) ?? 0, promptID: row["prompt_id"],
