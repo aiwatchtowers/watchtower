@@ -209,19 +209,28 @@ struct AutomationsView: View {
         case .empty:
             emptyPanel
         case let .card(id):
-            if let item = vm.items.first(where: { $0.id == id }), item.automation.isBuiltin {
-                builtinCard(item)
-            } else if let item = vm.items.first(where: { $0.id == id }) {
-                AutomationCardView(
-                    vm: vm,
-                    item: item,
-                    actions: actions,
-                    workbenchName: item.automation.projectID.flatMap(workbenchName),
-                    now: Date()
-                ) { vm.showEditor(.existing(id)) }
-                .id(id)
-            } else {
-                emptyPanel
+            VStack(alignment: .leading, spacing: 0) {
+                if let failure = vm.routeFailures[id] {
+                    InboxFolderSaveFailureLine(reason: failure.reason, isRetrying: vm.routeRetrying.contains(id)) {
+                        Task { await vm.retryRoute(id) }
+                    }
+                    .padding(.horizontal, Spacing.page)
+                    .padding(.vertical, Spacing.regular)
+                }
+                if let item = vm.items.first(where: { $0.id == id }), item.automation.isBuiltin {
+                    builtinCard(item)
+                } else if let item = vm.items.first(where: { $0.id == id }) {
+                    AutomationCardView(
+                        vm: vm,
+                        item: item,
+                        actions: actions,
+                        workbenchName: item.automation.projectID.flatMap(workbenchName),
+                        now: Date()
+                    ) { vm.showEditor(.existing(id)) }
+                    .id(id)
+                } else {
+                    emptyPanel
+                }
             }
         case let .new(flow):
             AutomationNewPanel(flow: flow, scopes: hooks.scopes, templates: vm.templates,
@@ -234,7 +243,8 @@ struct AutomationsView: View {
                 AutomationTemplatePanel(
                     model: model,
                     onAdjustInChat: { text in
-                        vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: text))
+                        vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: text),
+                                      route: vm.templateRoute(name: name, scope: scope))
                     },
                     onDone: { id in vm.templateFinished(name: name, scope: scope, firstID: id) }
                 )
@@ -253,6 +263,7 @@ struct AutomationsView: View {
                     workspaceDir: hooks.workspaceDir,
                     composerPrefill: vm.composerPrefill,
                     turnOnBuiltin: turnOnBuiltin(target),
+                    workbenchName: workbenchName,
                     onSaved: { vm.showCard($0) },
                     onDiscardDraft: discardHandler(target)
                 )
@@ -336,13 +347,13 @@ struct AutomationsView: View {
         switch start {
         case .words:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
-                          composerPrefill: flow.composerPrefill)
+                          composerPrefill: flow.composerPrefill, route: flow.route)
         case .watch:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
-                          composerPrefill: watchPrefill)
+                          composerPrefill: watchPrefill, route: flow.route)
         case let .template(name):
             guard hooks.startTemplate(name, scope) != nil else { return }
-            vm.showTemplate(name: name, scope: scope)
+            vm.showTemplate(name: name, scope: scope, route: flow.route)
         }
     }
 

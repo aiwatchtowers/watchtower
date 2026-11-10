@@ -464,7 +464,8 @@ func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
 	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
 		path := writeRecipe(t, t.TempDir(), "digest", text)
 		wantKeys(t, runAutomationsJSON(t, "validate", path), "ok", "errors", "slug", "name", "scope",
-			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known", "fields")
+			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known", "fields",
+			"adds_llm")
 	}
 }
 
@@ -816,6 +817,21 @@ func TestAutomationsCLI_ValidateAgainstReportsChangesSinceConfirmed(t *testing.T
 	assert.Equal(t, []any{map[string]any{"field": "script", "old": "", "new": ""}}, v["changes"])
 }
 
+// TestAutomationsCLI_ValidateAgainstReportsArtifactsChange: feed → living is
+// a hashed change, listed like any other (AUTO-06, D26).
+func TestAutomationsCLI_ValidateAgainstReportsArtifactsChange(t *testing.T) {
+	c := newAutoCLI(t)
+	text := strings.Replace(autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000), "outputs: [report]", "outputs: [inbox]", 1)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash)
+
+	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "outputs: [inbox]", "outputs: [inbox]\nartifacts: living", 1))
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	require.Equal(t, true, v["ok"], v["errors"])
+	assert.Equal(t, true, v["changes_known"])
+	assert.Equal(t, []any{map[string]any{"field": "artifacts", "old": "feed", "new": "living"}}, v["changes"])
+}
+
 func TestAutomationsCLI_ValidateAgainstUnchangedHasEmptyChanges(t *testing.T) {
 	c := newAutoCLI(t)
 	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
@@ -876,6 +892,65 @@ func TestAutomationsCLI_ValidateAgainstUnconfirmedWidensEverything(t *testing.T)
 	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "tokens: 1000", "tokens: 2000", 1))
 	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
 	assert.Equal(t, []any{"jira:read@PAY"}, v["widening"])
+}
+
+// adds_llm without --against treats the text as new: any llm() call site or
+// any llm: permission is an added AI step; a parse error is false.
+func TestAutomationsCLI_ValidateAddsLLMForANewRecipe(t *testing.T) {
+	newAutoCLI(t)
+	for _, tc := range []struct {
+		name, text string
+		want       bool
+	}{
+		{"llm permission, no call", autoCLIRecipeText(`return 1`), true},
+		{"no llm permission, no call", autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000), false},
+		{"call in a comment only", strings.Replace(autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000),
+			"return 1", "// llm('light', 'x')\nreturn 1", 1), false},
+		{"call without the permission", strings.Replace(autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000),
+			"return 1", "return llm('light', 'x')", 1), true},
+		{"does not parse", "broken", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "digest", tc.text))
+			assert.Equal(t, tc.want, v["adds_llm"])
+		})
+	}
+}
+
+// adds_llm with --against compares with the confirmed text: a moved call is
+// not an added step, an added call or a new llm: permission is.
+func TestAutomationsCLI_ValidateAgainstAddsLLM(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeText("const a = llm('light', 'x')\nconst b = 2\nreturn a")
+	a := c.confirmedRecipe(t, "digest", text)
+	plain := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	p := c.confirmedRecipe(t, "pay", plain)
+	strong := strings.Replace(text, "llm:light", "llm:strong", 1)
+	s := c.confirmedRecipe(t, "strong", strong)
+	callNoPerm := strings.Replace(plain, "return 1", "return llm('light', 'x')", 1)
+	u := c.indexRecipe(t, "unconfirmed", callNoPerm) // never confirmed: validated as new
+
+	for _, tc := range []struct {
+		name, slug, text string
+		id               int64
+		want             bool
+	}{
+		{"unchanged", "digest", text, a.ID, false},
+		{"call moved", "digest", autoCLIRecipeText("const b = 2\nconst a = llm('light', 'x')\nreturn a"), a.ID, false},
+		{"call removed", "digest", autoCLIRecipeText("return 1"), a.ID, false},
+		{"call added", "digest", autoCLIRecipeText("const a = llm('light', 'x')\nconst b = llm('light', 'y')\nreturn a + b"), a.ID, true},
+		{"llm permission added", "pay", strings.Replace(plain, "  - jira:read@PAY\n", "  - jira:read@PAY\n  - llm:light\n", 1), p.ID, true},
+		{"other change", "pay", strings.Replace(plain, "tokens: 1000", "tokens: 2000", 1), p.ID, false},
+		{"llm:light to llm:strong", "digest", strings.Replace(text, "llm:light", "llm:strong", 1), a.ID, true},
+		{"llm:strong to llm:light", "strong", text, s.ID, false},
+		{"unconfirmed with a call", "unconfirmed", callNoPerm, u.ID, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), tc.slug, tc.text), "--against", idArg(tc.id))
+			require.Equal(t, true, v["ok"], v["errors"])
+			assert.Equal(t, tc.want, v["adds_llm"])
+		})
+	}
 }
 
 func TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad(t *testing.T) {
@@ -1108,10 +1183,14 @@ func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
 			path := writeRecipe(t, t.TempDir(), "acme", recipe(c.trigger))
 			v := runAutomationsJSON(t, "validate", path)
 			require.Equal(t, true, v["ok"], "%v", v["errors"])
-			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2",
+			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2", "artifacts": "feed",
 				"budget": map[string]any{"tokens": float64(50000), "minutes": float64(3)}}, v["fields"])
 		})
 	}
+	living := "---\nname: Acme\ntrigger:\n  manual: true\noutputs: [inbox]\nartifacts: living\n---\n```js\nreturn 1\n```\n"
+	lv := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", living))
+	require.Equal(t, true, lv["ok"], "%v", lv["errors"])
+	assert.Equal(t, "living", lv["fields"].(map[string]any)["artifacts"])
 	bad := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", "broken"))
 	assert.Equal(t, map[string]any{}, bad["fields"])
 }

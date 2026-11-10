@@ -19,7 +19,11 @@ type CommitBuffer struct {
 	touched bool
 	encoded json.RawMessage // the whole state as of the last successful Set
 	outputs []db.AutomationOutput
-	loadErr error
+	// removals are the living keys output.remove deletes, in call order.
+	// A key is never both here and on a buffered output: the later of the
+	// two calls wins (AddOutput, RemoveOutput).
+	removals []string
+	loadErr  error
 }
 
 // NewCommitBuffer starts from the automation's committed state (a JSON
@@ -128,7 +132,10 @@ func (b *CommitBuffer) All() map[string]any {
 }
 
 // AddOutput buffers an output; a body beyond MaxOutputBodyBytes is
-// ResultTooLarge, an output past MaxOutputsPerRun a ValidationError.
+// ResultTooLarge, an output past MaxOutputsPerRun a ValidationError. A
+// living output (OutputKey set) replaces an earlier buffered output of its
+// key and cancels a buffered removal of it — the later call wins — so the
+// cap counts each kept output once.
 func (b *CommitBuffer) AddOutput(o db.AutomationOutput) error {
 	if len(o.Body) > MaxOutputBodyBytes {
 		return &SDKError{Name: ErrNameResultTooLarge,
@@ -136,12 +143,45 @@ func (b *CommitBuffer) AddOutput(o db.AutomationOutput) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if o.OutputKey != "" {
+		if i := b.outputIndex(o.OutputKey); i >= 0 {
+			b.outputs[i] = o
+			return nil
+		}
+	}
 	if len(b.outputs) >= MaxOutputsPerRun {
 		return &SDKError{Name: ErrNameValidation,
 			Message: fmt.Sprintf("this run already made %d outputs; the limit is %d per run", len(b.outputs), MaxOutputsPerRun)}
 	}
+	if o.OutputKey != "" {
+		b.removals = slices.DeleteFunc(b.removals, func(k string) bool { return k == o.OutputKey })
+	}
 	b.outputs = append(b.outputs, o)
 	return nil
+}
+
+// RemoveOutput buffers the removal of the living output key: it drops an
+// earlier buffered output of the key (the later call wins) and records the
+// key once. An empty key is a ValidationError.
+func (b *CommitBuffer) RemoveOutput(key string) error {
+	if key == "" {
+		return &SDKError{Name: ErrNameValidation, Message: "a removal needs a key"}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if i := b.outputIndex(key); i >= 0 {
+		b.outputs = slices.Delete(b.outputs, i, i+1)
+	}
+	if !slices.Contains(b.removals, key) {
+		b.removals = append(b.removals, key)
+	}
+	return nil
+}
+
+// outputIndex is the index of the buffered living output key, or -1. The
+// caller holds b.mu.
+func (b *CommitBuffer) outputIndex(key string) int {
+	return slices.IndexFunc(b.outputs, func(o db.AutomationOutput) bool { return o.OutputKey == key })
 }
 
 // Outputs returns the buffered outputs in order.
@@ -151,12 +191,20 @@ func (b *CommitBuffer) Outputs() []db.AutomationOutput {
 	return append([]db.AutomationOutput(nil), b.outputs...)
 }
 
+// Removals returns the buffered living-key removals in order.
+func (b *CommitBuffer) Removals() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.removals...)
+}
+
 // Commit is what a succeeded run commits: StateJSON is nil when the run set
 // nothing (the committed state stays as it is).
 func (b *CommitBuffer) Commit() *db.RunCommit {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	c := &db.RunCommit{Outputs: append([]db.AutomationOutput(nil), b.outputs...)}
+	c := &db.RunCommit{Outputs: append([]db.AutomationOutput(nil), b.outputs...),
+		Removals: append([]string(nil), b.removals...)}
 	if b.touched {
 		c.StateJSON = append(json.RawMessage(nil), b.encoded...)
 	}

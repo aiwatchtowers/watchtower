@@ -198,8 +198,8 @@ final class InboxFeedQueriesTests: XCTestCase {
         }
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
         // 1 proposal + 1 proposed idea (a decision never counts) + 2 unread messages
-        // + the latest briefing + 1 due reminder; outputs and tracks are dots only.
-        XCTAssertEqual(badge, 6)
+        // + the latest briefing + 1 due reminder; track cards are dots only.
+        XCTAssertEqual(badge, 9, "+ 3 unread automation artifacts (inbox builder B's folder sum)")
 
         // + a built-in's failed move (C2); a move that is done counts nothing.
         try await pool.write { db in
@@ -207,7 +207,7 @@ final class InboxFeedQueriesTests: XCTestCase {
             try self.builtinMigration(db, "done-one", status: "done")
         }
         let withNotice = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        XCTAssertEqual(withNotice, 7)
+        XCTAssertEqual(withNotice, 10)
     }
 
     private func builtinMigration(_ db: Database, _ id: String, status: String) throws {

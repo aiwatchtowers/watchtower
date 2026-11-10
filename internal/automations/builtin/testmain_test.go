@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -142,6 +143,8 @@ func newFixture(t *testing.T) *fixture {
 		f.c3[name] = &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
 		prims[name] = f.c3[name].fn
 	}
+	maps.Copy(prims, WaitingPrimitives(f.d, f.clock.Now))
+	maps.Copy(prims, ApprovalsPrimitives(f.d, f.clock.Now))
 	b := automations.Backends{DB: f.d, Clock: f.clock,
 		Primitives: prims,
 		DefaultPrompt: func(builtinID, name, role string) (string, error) {
@@ -255,12 +258,26 @@ func withShipped(t *testing.T, data []byte) {
 func isNotRunnable(err error) bool { return errors.Is(err, automations.ErrNotRunnable) }
 
 // runOnce runs built-in id once, inline: a Run Now, or — for one that
-// offers none (Reactions) — a sync run, as its slot would queue it.
+// offers none (Reactions) — a sync run, as its slot would queue it. A
+// built-in with no slot (Needs approval) runs a manual run as the executor's
+// poll would take it.
 func (f *fixture) runOnce(t *testing.T, id string) *db.AutomationRun {
 	t.Helper()
 	e, ok := Lookup(id)
 	if !ok {
 		t.Fatalf("no built-in %q", id)
+	}
+	if e.Slot == "" {
+		runID, _, err := f.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: f.rowOf(t, id).ID,
+			Trigger: db.TriggerManual, Now: f.clock.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run, err := f.exec.ExecuteInline(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("executing %s's manual run: %v", id, err)
+		}
+		return run
 	}
 	if e.RunNow {
 		run, err := f.runner.RunNow(context.Background(), id, automations.BuiltinInput{})

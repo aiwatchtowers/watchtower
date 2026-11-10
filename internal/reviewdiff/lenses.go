@@ -166,8 +166,17 @@ func LoadLenses(workbenchFolder string) (lenses []Lens, notes []string) {
 	return lenses, notes
 }
 
-// readLensFile returns the file bytes (nil when absent) or a refusal note.
+// readLensFile returns review.md's bytes (nil when absent) or a refusal note.
 func readLensFile(folder string) ([]byte, string) {
+	return ReadWatchtowerFile(folder, "review.md")
+}
+
+// ReadWatchtowerFile reads <folder>/.watchtower/<name> under the lens-file
+// rules: .watchtower must be a real directory and the file a regular file
+// (lstat, opened O_NOFOLLOW|O_NONBLOCK, fstat re-checked), at most
+// MaxLensFileBytes of UTF-8. It returns the bytes (nil when either is absent,
+// with no note) or a refusal note.
+func ReadWatchtowerFile(folder, name string) ([]byte, string) {
 	dir := filepath.Join(folder, ".watchtower")
 	di, err := os.Lstat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -179,7 +188,7 @@ func readLensFile(folder string) ([]byte, string) {
 	if !di.IsDir() {
 		return nil, ".watchtower is not a real directory"
 	}
-	path := filepath.Join(dir, "review.md")
+	path := filepath.Join(dir, name)
 	before, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, ""

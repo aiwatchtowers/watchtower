@@ -6,7 +6,7 @@ import WatchtowerCore
 /// Search is gone, the boards are in Connections → Jira). A stored raw value
 /// of theirs decodes to nil (a `sidebar.hiddenItems` entry is ignored), and a
 /// `watchtower-nav://` link naming one of the first four opens the matching
-/// Inbox filter (`InboxRoute.aliasHosts`); the other two are not links.
+/// legacy entry of the Inbox's root (`InboxRoute.aliasHosts`); the other two are not links.
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case home
     case chat
@@ -85,7 +85,8 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     /// Calendar sits right under them (board #206; it was in FOCUS before): a root
     /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
     /// hiding it in FOCUS is ignored and the tab shows again. Tracks left the
-    /// root with the one Inbox (C1): its cards are the Inbox's Tracks filter.
+    /// root with the one Inbox (C1): its cards are the Inbox root's Track my
+    /// threads entry (inbox builder B).
     static var rootItems: [Self] {
         [.home, .targets, .workbench, .automations, .calendar]
     }

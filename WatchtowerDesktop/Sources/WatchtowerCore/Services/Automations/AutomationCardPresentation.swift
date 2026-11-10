@@ -242,7 +242,9 @@ package enum AutomationCardPresentation {
         "plan.compose": "Plan your day",
         "tracks.extract": "Update your tracks from Slack digests",
         "ideas.consolidate": "Find ideas and decisions in your messages",
-        "reaction.compose": "Turn your reactions into proposals"
+        "reaction.compose": "Turn your reactions into proposals",
+        "attention.waiting": "Read the messages waiting on you",
+        "approvals.list": "Read the actions and reminders that wait for you"
     ]
 
     /// `tool:`, `mcp:`, `shell:` and `builtin:` entries.

@@ -955,3 +955,72 @@ final class AutomationsViewModelTests: XCTestCase {
     }
 
 }
+
+// MARK: - Call results (inbox builder B Task 14: the Inbox's artifact ⋯ shares these verbs)
+
+extension AutomationsViewModelTests {
+    func testRunNowFromSecondCallerWhileBusyReturnsBusy() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        runner.on("run") { _ in Self.json(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#) }
+        runner.hold("run")
+        let vm = makeViewModel()
+        let first = Task { await vm.runNow(id) }
+        await waitUntil { self.runner.isHolding }
+        let second = await vm.runNow(id)
+        XCTAssertEqual(second, .busy)
+        XCTAssertNil(vm.lastError, "busy is not a failure")
+        runner.release()
+        let firstResult = await first.value
+        XCTAssertEqual(firstResult, .done)
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    func testDeleteWhileBusyReturnsBusyAndCallsOnce() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        runner.hold("delete")
+        let vm = makeViewModel()
+        let first = Task { await vm.delete(id) }
+        await waitUntil { self.runner.isHolding }
+        let second = await vm.delete(id)
+        XCTAssertEqual(second, .busy)
+        runner.release()
+        _ = await first.value
+        XCTAssertEqual(runner.invocations.filter { $0.count > 1 && $0[1] == "delete" }.count, 1)
+    }
+
+    func testDeleteDiscardsTheEditorDraft() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        let vm = makeViewModel()
+        var discarded: [Int64] = []
+        vm.discardEditorDraft = { discarded.append($0) }
+        vm.showEditor(.existing(id))
+
+        runner.on("delete") { _ in throw Self.failure }
+        await vm.delete(id)
+        XCTAssertEqual(discarded, [], "a failed delete keeps the draft")
+        XCTAssertEqual(vm.panel, .editor(.existing(id)))
+
+        runner.on("delete") { _ in Data() }
+        await vm.delete(id)
+        XCTAssertEqual(discarded, [id])
+        XCTAssertEqual(vm.panel, .empty)
+    }
+
+    func testCallResultsCarryTheMessage() async throws {
+        let id = try await pool.write { db in try TestDatabase.insertAutomation(db) }
+        runner.on("run") { _ in throw Self.failure }
+        runner.on("disable") { _ in throw Self.failure }
+        runner.on("delete") { _ in throw Self.failure }
+        let vm = makeViewModel()
+        let run = await vm.runNow(id)
+        let disable = await vm.setEnabled(id, false)
+        let delete = await vm.delete(id)
+        for result in [run, disable, delete] {
+            XCTAssertEqual(result, .failed("automation 7 is not runnable: disabled"))
+            XCTAssertEqual(result, vm.lastError.map(AutomationCallResult.failed), "the same text as the tab's line")
+        }
+        runner.on("enable") { _ in Data() }
+        let enabled = await vm.setEnabled(id, true)
+        XCTAssertEqual(enabled, .done)
+    }
+}

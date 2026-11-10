@@ -175,21 +175,70 @@ final class AgentActionQueriesTests: XCTestCase {
         XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
     }
 
+    /// The Inbox's one-press tool (`apply_track_action`, proposed and approved
+    /// by the same press) leaves no decision: neither strip nor badge.
     func testStripAndBadgeLeaveOutInboxPressRows() throws {
         let dbq = try TestDatabase.create()
         try dbq.write { db in
             _ = try TestDatabase.insertAgentAction(
-                db, surface: "inbox", turnID: "inbox-applied", status: "applied",
+                db, tool: "apply_track_action", surface: "inbox", turnID: "inbox-applied", status: "applied",
                 createdAt: "2026-09-04T13:00:00Z", decidedAt: "2026-09-04T13:00:05Z", appliedAt: "2026-09-04T13:00:05Z"
             )
             _ = try TestDatabase.insertAgentAction(
-                db, surface: "inbox", turnID: "inbox-failed", status: "failed", createdAt: "2026-09-04T13:01:00Z"
+                db, tool: "apply_track_action", surface: "inbox", turnID: "inbox-failed", status: "failed",
+                createdAt: "2026-09-04T13:01:00Z"
             )
             _ = try TestDatabase.insertAgentAction(db, turnID: "normal-pending", status: "pending")
         }
         let rows = try dbq.read { try AgentActionQueries.fetchStrip($0, terminalSince: "2026-09-04T00:00:00Z") }
         XCTAssertEqual(rows.map(\.turnID), ["normal-pending"])
         XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
+    }
+
+    /// STRIP-01 narrowing (ask #451): a Reply from an Inbox row is proposed on
+    /// the `inbox` surface without `--approve` and waits for the owner's
+    /// Approve — it shows on the strip and counts in the badge.
+    func testStripShowsInboxReplyProposals() throws {
+        let dbq = try TestDatabase.create()
+        try dbq.write { db in
+            for (tool, turn, created) in [
+                ("send_slack_message", "reply-slack", "2026-09-04T13:02:00Z"),
+                ("add_jira_comment", "reply-jira", "2026-09-04T13:01:00Z"),
+                ("add_linear_comment", "reply-linear", "2026-09-04T13:00:00Z")
+            ] {
+                _ = try TestDatabase.insertAgentAction(
+                    db, tool: tool, external: true, surface: "inbox", conversationID: 0,
+                    contextType: "inbox_item", contextID: "5", turnID: turn, status: "pending", createdAt: created
+                )
+            }
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "apply_track_action", surface: "inbox", turnID: "press", status: "failed",
+                createdAt: "2026-09-04T13:03:00Z"
+            )
+        }
+        let rows = try dbq.read { try AgentActionQueries.fetchStrip($0, terminalSince: "2026-09-04T00:00:00Z") }
+        XCTAssertEqual(rows.map(\.turnID), ["reply-slack", "reply-jira", "reply-linear"])
+        XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 3)
+    }
+
+    /// STRIP-01 narrowing: an Inbox card's target button proposes
+    /// `create_target` on the `inbox` surface and waits for the owner's
+    /// Approve (A Task 15) — strip and badge show it.
+    func testStripShowsInboxTargetButtonProposals() throws {
+        let dbq = try TestDatabase.create()
+        try dbq.write { db in
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "create_target", surface: "inbox", conversationID: 0, turnID: "target-pending",
+                status: "pending", createdAt: "2026-09-04T13:01:00Z"
+            )
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "create_target", surface: "inbox", conversationID: 0, turnID: "target-failed",
+                status: "failed", createdAt: "2026-09-04T13:00:00Z"
+            )
+        }
+        let rows = try dbq.read { try AgentActionQueries.fetchStrip($0, terminalSince: "2026-09-04T00:00:00Z") }
+        XCTAssertEqual(rows.map(\.turnID), ["target-pending", "target-failed"])
+        XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 2)
     }
 
     /// #166: a Slack send proposed from a workbench terminal is External and

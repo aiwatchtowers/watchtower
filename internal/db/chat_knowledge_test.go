@@ -128,6 +128,9 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 	// 2026-10-02 §9.4): its turns are never mined.
 	codeConv := insertChatConversation(t, d, "code_question", "4:main.go")
 	insertChatMessage(t, d, codeConv, "user", "we decided to inline this helper", at(-time.Hour))
+	// Branch review's reviewer quotes the folder's code too (board #1025).
+	reviewerConv := insertChatConversation(t, d, "review_reviewer", "4:feature/a")
+	insertChatMessage(t, d, reviewerConv, "user", "we decided the fallback stays fixed", at(-time.Hour))
 	second := insertChatMessage(t, d, plain, "assistant", "agreed", at(0))
 	insertChatMessage(t, d, plain, "tool", "noise", at(-time.Minute))
 	failed := insertChatMessage(t, d, plain, "assistant", "half an error", at(-time.Minute))

@@ -260,6 +260,14 @@ package struct ReviewEnvelope: Decodable, Sendable {
     /// `review start`: the session's worktree was removed; the open round stays
     /// on the folder it was opened on (board #1012).
     package let placeMissing: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// `review overview`: the chapters the overview could not see (tech spec §3.4).
+    package let incomplete: [String]?
+    /// `review overview`: the failure's class (`timeout|provider|parse|cancelled|too_large|busy|missing_parts`,
+    /// tech spec §3.6); `error` is then the owner's sentence and `detail` the provider's own text.
+    package let errorClass: String?
+    package let detail: String?
+    /// `review map`: the round's map.
+    package let map: ReviewMap?
 
     /// The hunk an undo reverted.
     package struct RevertInfo: Decodable, Equatable, Sendable {
@@ -306,6 +314,19 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
         package let item: String
         package let status: Status
         package let `where`: [String]
+        /// Where the item comes from (tech spec §3.1); nil on an overview cached before it
+        /// existed (an unknown value reads as nil too).
+        package let source: Source?
+
+        package enum Source: String, Decodable, Sendable { case session, lane }
+
+        package init(index: Int, item: String, status: Status, where: [String], source: Source? = nil) {
+            self.index = index
+            self.item = item
+            self.status = status
+            self.where = `where`
+            self.source = source
+        }
     }
 
     package struct Risk: Decodable, Equatable, Sendable {
@@ -317,10 +338,33 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
     }
 
     package struct Chapter: Decodable, Equatable, Sendable {
+        /// The map chapter's key, level and description (tech spec §3.4); nil on an
+        /// overview cached before the map existed. An undescribed chapter's empty `what` reads as nil.
+        package let key: String?
         package let title: String
+        package let level: ReviewDangerLevel?
         package let paths: [String]
         package let core: Bool
+        package let what: String?
         package let lenses: [String]
+
+        package init(
+            key: String? = nil,
+            title: String,
+            level: ReviewDangerLevel? = nil,
+            paths: [String],
+            core: Bool,
+            what: String? = nil,
+            lenses: [String]
+        ) {
+            self.key = key
+            self.title = title
+            self.level = level
+            self.paths = paths
+            self.core = core
+            self.what = what
+            self.lenses = lenses
+        }
     }
 
     package let summary: String
@@ -328,8 +372,10 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
     package let outOfScope: [String]
     package let risk: [Risk]
     package let chapters: [Chapter]
+    /// The chapters the overview could not see; `[]` when complete or cached before the key existed.
+    package let incomplete: [String]
 
-    private enum CodingKeys: String, CodingKey { case summary, coverage, outOfScope, risk, chapters }
+    private enum CodingKeys: String, CodingKey { case summary, coverage, outOfScope, risk, chapters, incomplete }
 
     /// Go omits empty lists (`null` or absent): they read as `[]`.
     package init(from decoder: Decoder) throws {
@@ -339,12 +385,13 @@ package struct ReviewOverview: Decodable, Equatable, Sendable {
         outOfScope = try c.decodeIfPresent([String].self, forKey: .outOfScope) ?? []
         risk = try c.decodeIfPresent([Risk].self, forKey: .risk) ?? []
         chapters = try c.decodeIfPresent([Chapter].self, forKey: .chapters) ?? []
+        incomplete = try c.decodeIfPresent([String].self, forKey: .incomplete) ?? []
     }
 }
 
 // The decoding inits live in extensions so the memberwise inits stay.
 extension ReviewOverview.Coverage {
-    private enum CodingKeys: String, CodingKey { case index, item, status, `where` }
+    private enum CodingKeys: String, CodingKey { case index, item, status, `where`, source }
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -352,20 +399,24 @@ extension ReviewOverview.Coverage {
             index: try c.decodeIfPresent(Int.self, forKey: .index) ?? 0,
             item: try c.decode(String.self, forKey: .item),
             status: try c.decode(Status.self, forKey: .status),
-            where: try c.decodeIfPresent([String].self, forKey: .where) ?? []
+            where: try c.decodeIfPresent([String].self, forKey: .where) ?? [],
+            source: try c.decodeIfPresent(String.self, forKey: .source).flatMap(Source.init(rawValue:))
         )
     }
 }
 
 extension ReviewOverview.Chapter {
-    private enum CodingKeys: String, CodingKey { case title, paths, core, lenses }
+    private enum CodingKeys: String, CodingKey { case key, title, level, paths, core, what, lenses }
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
+            key: try c.decodeIfPresent(String.self, forKey: .key),
             title: try c.decode(String.self, forKey: .title),
+            level: try c.decodeIfPresent(ReviewDangerLevel.self, forKey: .level),
             paths: try c.decodeIfPresent([String].self, forKey: .paths) ?? [],
             core: try c.decodeIfPresent(Bool.self, forKey: .core) ?? false,
+            what: try c.decodeIfPresent(String.self, forKey: .what).flatMap { $0.isEmpty ? nil : $0 },
             lenses: try c.decodeIfPresent([String].self, forKey: .lenses) ?? []
         )
     }
