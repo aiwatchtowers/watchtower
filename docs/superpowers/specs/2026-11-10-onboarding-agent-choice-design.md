@@ -201,6 +201,7 @@ Onboarding writing only at Continue is the owner's decision (ask #1157). Every w
 - Signed out → the sign-in terminal opens right in the step: owner, ask #1157 (note). Auto-open once, `claude auth login`/`codex login`, recheck on exit 0: agent decided.
 - Ollama failing its check brings the tiles back; only the owner's pick plus Continue replaces `ai.provider`, Check again keeps Ollama: agent decided (shown to the owner in this review).
 - One binary for every path: Go's lookup through `ai which`, the terminal runs that path (plan review, ask #1176): agent decided.
+- Per-agent setup data (install, sign-in, update, docs, path key, help probe, native roots) lives in each harness's Swift session adapter (`AgentSetup`), not in onboarding switches; the other provider's name is `AIModelCatalog.fallbackDisplayName` ("Ollama / Local"): owner, ask #1211 (LLMTRANSPORT-01, no baseline entries).
 - A help probe timeout counts as outdated (plan review, ask #1176): agent decided.
 - An outdated CLI updates in the same terminal before signing in: agent decided. Detected from the help text and updated the way it was installed, no update loop: owner, ask #1163.
 - Failed line chosen by `error_code`: agent decided.

@@ -250,6 +250,44 @@
 - [ ] **Step 2: Run** — `go test ./docs/guide/...` → PASS (8 KB section cap, links).
 - [ ] **Step 3: Commit** — `docs(onboarding): agent choice in the flow, feature note and guide (#1521)`.
 
+### Task 7: Agent setup data in the harness registry (LLMTRANSPORT-01)
+
+**Depends on:** Task 5 (added after the owner's decision in ask #1211: "в реестр харнессов", no baseline entries)
+
+The Swift guard `LLMTransportGuardTests::testLLMTRANSPORT01NoProviderNamesInConsumers` reports 19 provider-name checks added by Tasks 1–3: the per-agent switches in `OnboardingAgentChoice.Agent` (`name`, `installCommand`, `signInCommand`, `installDocsURL`, `pathKey`, `updateCommand`, `loginSupported`), `InstallKind.of`, `providerName("ollama")` and the help arguments in `OnboardingAgentProbes+Production.swift`. On the Desktop, the harness registry is `AgentKind` plus each kind's session adapter (`WatchtowerCore/SessionAgent/`, the one exhaustive switch in `AgentKind.session`; `docs/features/adding-a-harness.md` step 9). Only an adapter may know its transport, so the onboarding data moves there.
+
+**Files:**
+- Modify: `WatchtowerDesktop/Sources/WatchtowerCore/SessionAgent/SessionAgent.swift` (protocol gains `var setup: AgentSetup { get }`), `ClaudeSessionAgent.swift`, `CodexSessionAgent.swift`
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/SessionAgent/AgentSetup.swift`
+- Modify: `OnboardingAgentChoice.swift`, `OnboardingAgentCheck.swift`, `Sources/App/OnboardingAgentProbes+Production.swift`, the step/section views and the DesignShot fixture where they name `Agent`
+- Modify: `docs/features/adding-a-harness.md` step 9 (a new kind fills its `AgentSetup`)
+- Test: `OnboardingAgentChoiceTests`, `OnboardingAgentCheckTests`, `AgentKindRegistryTests` (completeness), `LLMTransportGuardTests` (must pass with **no** new baseline entry)
+
+**Interfaces:**
+- Produces:
+  ```swift
+  package struct AgentSetup: Equatable, Sendable {
+      package var productName: String            // "Claude Code", "Codex CLI" (tile title; AgentKind.displayName stays as is)
+      package var installCommand: String
+      package var signInArguments: [String]      // ["auth", "login"] / ["login"]
+      package var loginHelpArguments: [String]   // ["auth", "--help"] / ["login", "--help"]
+      package var installDocsURL: String
+      package var pathKey: String                // "claude_path" / "codex_path"
+      package var nativeRoots: [String]          // relative to home: [".claude/local/", ".local/share/claude/"] / [".codex/packages/standalone/"]
+      package var updates: [OnboardingAgentChoice.InstallKind: AgentUpdate]
+      package func loginSupported(help: String) -> Bool
+  }
+  package enum AgentUpdate: Equatable, Sendable { case runExecutable([String]) /* `<exe> update` */, literal(String) }
+  ```
+  `OnboardingAgentChoice.Agent` becomes `AgentKind` (`typealias Agent = AgentKind` or replaced outright); every per-agent value reads `agent.session.setup`. `InstallKind.of(_:resolvedPath:home:)` reads `setup.nativeRoots`. The other provider's display name is `AIModelCatalog.fallbackDisplayName(id)` (already `permanent:` in the baseline; the copy then reads "Ollama / Local", owner-accepted in ask #1211). `providerName(_:)` is removed.
+- Values: every string and command exactly as today's `OnboardingAgentChoice` (the existing copy tests stay green unchanged, except the Ollama name).
+
+- [ ] **Step 1: Failing test** `AgentKindRegistryTests.testEveryKindHasSetup` (each `AgentKind.allCases` adapter's `setup` has non-empty productName, installCommand, signInArguments, loginHelpArguments, pathKey, installDocsURL, nativeRoots and an update for `.native`) and the guard test as is.
+- [ ] **Step 2: Run** `make test-swift FILTER='AgentKindRegistryTests|LLMTransportGuardTests'` → FAIL.
+- [ ] **Step 3: Implement**; remove the three `cliName` baseline rows only if not already removed; add **no** baseline entry.
+- [ ] **Step 4: Run** `make test-swift FILTER='AgentKindRegistryTests|LLMTransportGuardTests|OnboardingAgentChoiceTests|OnboardingAgentCheckTests|OnboardingAgentProbesTests|OnboardingGoalsStepTests'` → PASS; the onboarding-agent shots still render.
+- [ ] **Step 5: Commit** — `refactor(onboarding): agent setup data in the harness adapters (LLMTRANSPORT-01, #1521)`.
+
 ### Gate (controller, once)
 
 - [ ] `make test-swift` and `make lint-all` green; `go test ./docs/guide/...` green.
