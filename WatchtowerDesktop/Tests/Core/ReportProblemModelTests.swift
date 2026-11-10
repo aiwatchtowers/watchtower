@@ -21,10 +21,14 @@ final class ReportProblemModelTests: XCTestCase {
         private(set) var timeouts: [TimeInterval] = []
         private(set) var cancelled = 0
         let gated: Bool
+        /// A gated run that keeps waiting for `release(_:)` after a cancel,
+        /// like a child that answers before it is terminated.
+        let ignoresCancel: Bool
 
-        init(_ outcome: Outcome, gated: Bool = false) {
+        init(_ outcome: Outcome, gated: Bool = false, ignoresCancel: Bool = false) {
             self.outcome = outcome
             self.gated = gated
+            self.ignoresCancel = ignoresCancel
         }
 
         func run(args: [String]) async throws -> Data {
@@ -47,6 +51,7 @@ final class ReportProblemModelTests: XCTestCase {
                 } onCancel: {
                     lock.withLock {
                         cancelled += 1
+                        guard !ignoresCancel else { return }
                         pending.forEach { $0.resume(returning: .failure(CancellationError())) }
                         pending = []
                     }
@@ -259,6 +264,35 @@ final class ReportProblemModelTests: XCTestCase {
         XCTAssertTrue(opened.isEmpty)
     }
 
+    func testAnswerAfterCancelChangesNothing() async {
+        let runner = FakeRunner(.answer(Fixture.json()), gated: true, ignoresCancel: true)
+        let model = makeModel(runner)
+        model.text = "It crashed."
+        model.start()
+        await runner.waitUntilWaiting()
+        let task = model.collection
+        model.cancel()
+        XCTAssertEqual(runner.cancelCount, 1)
+        runner.release(.answer(Fixture.json()))
+        await task?.value
+        XCTAssertEqual(model.phase, .collecting)
+        XCTAssertNil(model.collection)
+        XCTAssertEqual(model.notice, .none)
+        XCTAssertEqual(model.diagnosticsText, "")
+        XCTAssertTrue(written.isEmpty)
+        XCTAssertTrue(pasteboard.isEmpty)
+        XCTAssertTrue(opened.isEmpty)
+    }
+
+    func testRunnerCancellationWithoutCancelFails() async {
+        let (model, runner) = await collected(.failure(CancellationError()))
+        XCTAssertEqual(model.phase, .failed(.unreadable))
+        XCTAssertNil(model.collection)
+        model.retry()
+        await model.collection?.value
+        XCTAssertEqual(runner.runCount, 2)
+    }
+
     // MARK: - Open GitHub Issue
 
     func testOpenNeedsTextInEveryState() async {
@@ -389,6 +423,55 @@ final class ReportProblemModelTests: XCTestCase {
             userText: "The sync stopped.", answer: Fixture.answer, appVersion: "0.27.0", macOS: "15.5"
         )
         XCTAssertEqual(pasteboard, [model.report, link.url.absoluteString])
+    }
+
+    func testCopyButtonsNeedTheirInputs() async {
+        let runner = FakeRunner(.answer(Fixture.json()), gated: true)
+        let collecting = makeModel(runner)
+        collecting.text = "The sync stopped."
+        collecting.start()
+        await runner.waitUntilWaiting()
+        collecting.copyReport()
+        collecting.copyLink()
+        XCTAssertTrue(pasteboard.isEmpty)
+        XCTAssertEqual(collecting.notice, .none)
+        collecting.cancel()
+
+        let (ready, _) = await collected(.answer(Fixture.json()))
+        ready.text = "  \n"
+        ready.copyLink()
+        XCTAssertTrue(pasteboard.isEmpty)
+        XCTAssertEqual(ready.notice, .none)
+    }
+
+    func testSaveKeepsTheOpenNoticeAndItsCopyButtons() async {
+        let long = DiagnosticsAnswer(
+            text: String(repeating: "Database: ok\n", count: 600), version: "0.27.0", macos: "15.5",
+            chip: "Apple M3", provider: "Claude", flavor: "default", sources: [], partial: false
+        )
+        let (model, _) = await collected(.answer(Fixture.json(long)))
+        model.text = "The sync stopped."
+        openResult = false
+        model.openIssue()
+        XCTAssertEqual(model.notice, .browserFailed)
+        let url = URL(fileURLWithPath: "/tmp/watchtower-diagnostics.txt")
+
+        // A successful save leaves the Open's notice alone.
+        model.save(to: url)
+        XCTAssertEqual(model.notice, .browserFailed)
+
+        // A failed save shows its reason; the next successful one returns to
+        // the Open's notice. The Copy buttons stay offered throughout.
+        writeError = WriteFailure()
+        model.save(to: url)
+        XCTAssertEqual(model.notice, .saveFailed("The disk is full."))
+        XCTAssertTrue(model.offersCopyLink)
+        XCTAssertTrue(model.offersCopyReport)
+        writeError = nil
+        model.save(to: url)
+        XCTAssertEqual(model.notice, .browserFailed)
+        XCTAssertTrue(model.offersCopyLink)
+        XCTAssertTrue(model.offersCopyReport)
     }
 
     // MARK: - Report and Save

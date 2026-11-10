@@ -48,6 +48,8 @@ package final class ReportProblemModel {
     }
 
     private var typed = ""
+    /// What the last Open said; a save failure's notice gives way back to it.
+    private var openNotice: Notice = .none
 
     /// The running diagnostics collection, nil when none runs.
     @ObservationIgnored package private(set) var collection: Task<Void, Never>?
@@ -156,33 +158,32 @@ package final class ReportProblemModel {
         guard canOpen else { return }
         let link = makeLink()
         afterOpen = true
-        if openURL(link.url) {
-            offersCopyLink = false
-            offersCopyReport = link.shortened
-            notice = link.shortened ? .tooLong : .opened
-        } else {
-            offersCopyLink = true
-            offersCopyReport = link.shortened
-            notice = .browserFailed
-        }
+        let reached = openURL(link.url)
+        offersCopyLink = !reached
+        offersCopyReport = link.shortened
+        openNotice = reached ? (link.shortened ? .tooLong : .opened) : .browserFailed
+        notice = openNotice
     }
 
     package func copyReport() {
+        guard !isCollecting else { return }
         writePasteboard(report)
         notice = .copied(.report)
     }
 
     package func copyLink() {
-        guard !isCorp else { return }
+        guard canOpen else { return }
         writePasteboard(makeLink().url.absoluteString)
         notice = .copied(.link)
     }
 
+    /// A successful save only takes back its own failure notice, returning to
+    /// what the last Open said (the Copy buttons it offered stay).
     package func save(to url: URL) {
         guard canSave else { return }
         do {
             try writeFile(report, url)
-            if case .saveFailed = notice { notice = .none }
+            if case .saveFailed = notice { notice = openNotice }
         } catch {
             notice = .saveFailed(error.localizedDescription)
         }
@@ -211,19 +212,21 @@ package final class ReportProblemModel {
         let args = arguments
         collection = Task { [weak self] in
             let result = await Self.run(runner, args: args)
-            guard !Task.isCancelled, let self, let result else { return }
+            // A cancelled run (the sheet closed) changes nothing, even when
+            // the runner still answers.
+            guard !Task.isCancelled, let self else { return }
             self.phase = result
             self.collection = nil
         }
     }
 
-    /// The run's outcome; nil when the run was cancelled.
-    private static func run(_ runner: any CLIRunnerProtocol, args: [String]) async -> Phase? {
+    private static func run(_ runner: any CLIRunnerProtocol, args: [String]) async -> Phase {
         let stdout: Data
         do {
             stdout = try await runner.run(args: args, timeout: timeout)
         } catch is CancellationError {
-            return nil
+            // The runner gave up without our cancel: there is no answer to read.
+            return .failed(.unreadable)
         } catch let CLIRunnerError.nonZeroExit(code, _) {
             // `ProcessCLIRunner` reports its own timeout as exit -1.
             return .failed(code == -1 ? .timedOut : .exit(code))
