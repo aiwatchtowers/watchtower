@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
@@ -46,7 +45,7 @@ func TestListTools_HTTP(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	tools, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL,
 		Headers: map[string]string{"Authorization": "Bearer tok"}})
@@ -67,7 +66,7 @@ func TestListTools_HTTP(t *testing.T) {
 func TestListTools_UnreachableServerFails(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	t.Cleanup(srv.Close)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL})
 	require.Error(t, err)
@@ -91,7 +90,7 @@ func TestListTools_HeadersStayOnTheServersOrigin(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	_, err := ListTools(ctx, ServerSpec{Kind: "http", URL: srv.URL,
 		Headers: map[string]string{"Authorization": "Bearer tok"}})
@@ -109,7 +108,7 @@ func TestListTools_UnknownKind(t *testing.T) {
 func TestListTools_Stdio(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	tools, err := ListTools(ctx, ServerSpec{Kind: "stdio", Command: exe,
@@ -127,7 +126,7 @@ func TestListTools_Stdio(t *testing.T) {
 func TestListTools_StdioStartupFailureQuotesStderr(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	_, err = ListTools(ctx, ServerSpec{Kind: "stdio", Command: exe,

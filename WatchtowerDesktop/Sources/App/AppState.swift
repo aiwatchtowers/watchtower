@@ -536,7 +536,10 @@ final class AppState {
         learnOnboardingFinishedAtLaunch = onboarding.currentStep == .complete
         self.workbenchDefaults = workbenchDefaults
         codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
-        self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
+        self.onboardingGoals = onboardingGoals ?? .production(
+            defaults: onboardingDefaults,
+            featureManager: features
+        ) { [managedPolicy] in managedPolicy.policy }
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.migrateDatabase = migrateDatabase
         self.openDatabase = openDatabase

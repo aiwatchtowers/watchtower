@@ -65,6 +65,25 @@ final class AgentKindRegistryTests: XCTestCase {
         }
     }
 
+    /// Onboarding's AI agent section reads each kind's install, sign-in and
+    /// update from its adapter (LLMTRANSPORT-01, ask #1211): a new kind fills
+    /// its `AgentSetup` or this fails.
+    func testEveryKindHasSetup() {
+        for kind in AgentKind.allCases {
+            let setup = kind.session.setup
+            let id = kind.rawValue
+            XCTAssertFalse(setup.productName.isEmpty, "\(id): no productName")
+            XCTAssertFalse(setup.installCommand.isEmpty, "\(id): no installCommand")
+            XCTAssertFalse(setup.signInArguments.isEmpty, "\(id): no signInArguments")
+            XCTAssertFalse(setup.loginHelpArguments.isEmpty, "\(id): no loginHelpArguments")
+            XCTAssertFalse(setup.pathKey.isEmpty, "\(id): no pathKey")
+            XCTAssertFalse(setup.installDocsURL.isEmpty, "\(id): no installDocsURL")
+            XCTAssertFalse(setup.nativeRoots.isEmpty, "\(id): no nativeRoots")
+            XCTAssertNotNil(setup.updates[.native], "\(id): no update for its own installer")
+            XCTAssertNil(setup.updates[.unknown], "\(id): an unknown install gets no update command")
+        }
+    }
+
     // MARK: - A kind this build does not know
 
     func testAnUnknownKindDecodesAsUnsupported() throws {

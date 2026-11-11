@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"watchtower/internal/config"
 
 	"watchtower/internal/agentkind"
 	"watchtower/internal/claudesession"
@@ -203,4 +204,8 @@ func (claudeTranscript) Open(path string) (io.ReadCloser, bool, error) {
 		return nil, false, err
 	}
 	return f, false, nil
+}
+
+func (claudeAdapter) Binary(cfg *config.Config, f Finders) (string, string) {
+	return resolveBinary(cfg.ClaudePath, func() (string, error) { return f.Claude(), nil }), "claude"
 }

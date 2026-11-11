@@ -213,3 +213,34 @@ func TestDiagnostics_FormatTime(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+// Pos orders the parts of one line whatever stage they ran in; StopLabel
+// titles a runner replacement (panic, hard stop) only.
+func TestDiagnostics_RunPosAndStopLabel(t *testing.T) {
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	stages := []Stage{
+		{Name: "first", Parts: []Slot{
+			{Line: 1, Pos: 2, Part: fixed("iPhone companion on", "")},
+			{Line: 2, StopLabel: "Recent errors: ", Part: fixed(RecentErrorsNone, "")},
+			{Line: 3, StopLabel: "Recent errors: ", Part: func(context.Context) (string, string) { panic("bug") }},
+		}},
+		{Name: "second", Parts: []Slot{
+			{Line: 1, Pos: 1, Label: "Sources: ", Part: fixed("Slack 1 ok", "")},
+			{Line: 4, StopLabel: "Recent errors: ", Part: func(context.Context) (string, string) { <-block; return "", "" }},
+		}},
+	}
+	b := DefaultBudgets
+	b.HardStop = 50 * time.Millisecond
+	r := Run(context.Background(), b, stages)
+	want := strings.Join([]string{
+		"Sources: Slack 1 ok · iPhone companion on",
+		"Recent errors: none",
+		"Recent errors: unknown (internal error)",
+		"Recent errors: unknown (timed out)",
+		"Partial report: timed out at 8 s",
+	}, "\n")
+	if r.Text() != want {
+		t.Fatalf("text =\n%s\nwant\n%s", r.Text(), want)
+	}
+}
