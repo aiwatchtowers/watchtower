@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 
@@ -25,33 +24,12 @@ const maxReportDays = 90
 // tool error.
 var ErrNotFound = errors.New("not found")
 
-// Deps are the readers the tuning tools need beyond the database. cmd fills
-// them (Task 3.11); tests pass fakes.
-//
-// The coach environment (Home, CodexHome and the RepoState seam) the proposal
-// tool hands to ValidateChatProposal is added as a CoachEnv field with that
-// tool, once coach.Env exists (Task 2.4).
-type Deps struct {
-	// Store is the prompt store over the executing database.
-	Store func(d *db.DB) *prompts.Store
-	// AgentReport is `agents report --workbench wb --days days --agent agent
-	// --json` (days 0 = the whole retention, agent "" = both agents).
-	AgentReport func(ctx context.Context, wb int64, days int, agent string) (any, error)
-	// AgentSession is `agents report --workbench wb --session uuid --json`;
-	// an unknown session wraps ErrNotFound.
-	AgentSession func(ctx context.Context, wb int64, uuid string) (any, error)
-	// LLMUsage is `usage llm --since period --json` (today, 7d or 30d).
-	LLMUsage func(ctx context.Context, period string) (any, error)
-	// Home is the owner's home folder (the skill and instruction reads).
-	Home func() (string, error)
-	Now  func() time.Time
-}
-
-// ReadTools are the tuning chat's analytics, usage and prompt reads. Every
+// ReadTools are the tuning chat's analytics, usage, prompt, skill,
+// instruction and proposal reads. Every
 // one returns the owner's content, so every one is CompanyData and counts
 // against the read budget (READ-01); none writes anything.
 func ReadTools(deps Deps) []*tools.Tool {
-	return []*tools.Tool{
+	return append([]*tools.Tool{
 		readTool[reportArgs]("get_agent_report",
 			"Read the agent analytics report of one workbench (agents report JSON): totals, time split, models, "+
 				"commands, context, skills, trouble, tasks, hints and the session list. days 0 = the whole retention, "+
@@ -112,7 +90,7 @@ func ReadTools(deps Deps) []*tools.Tool {
 			func(_ context.Context, d *db.DB, _ tools.Binding, a promptArgs) (any, error) {
 				return getPrompt(d, deps, a.PromptID)
 			}),
-	}
+	}, skillTools(deps)...)
 }
 
 type reportArgs struct {
