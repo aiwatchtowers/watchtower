@@ -47,6 +47,8 @@ type fixture struct {
 	UploadEcho        []contractCase `json:"upload_echo"`
 	TransportSwitched []contractCase `json:"transport_switched"`
 	SwitchRejected    []contractCase `json:"transport_switch_rejected"`
+	Action            []contractCase `json:"action"`
+	Control           []contractCase `json:"control"`
 	EpochAck          []contractCase `json:"epoch_ack"`
 	Keybox            []contractCase `json:"keybox"`
 	DevicePayload     []struct {
@@ -524,6 +526,37 @@ func TestHubContractFixture_KeyboxRelayKX(t *testing.T) {
 			require.NotNil(t, kb.Keys)
 			pair(t, c.Kit["relay_kx"], kb.Keys.RelayKX)
 			pair(t, c.Kit["previous_relay_kx"], kb.Keys.PreviousRelayKX)
+		})
+	}
+}
+
+// TestHubContractFixture_ActionControl pins the action and control sections:
+// each case's json decodes, and Go's re-encoding is the case's expect bytes
+// (unknown keys dropped). The phone's reading (kit) is the Swift side's.
+func TestHubContractFixture_ActionControl(t *testing.T) {
+	raw, err := os.ReadFile("../../../WatchtowerKit/Tests/Fixtures/link/hub_contract_cases.json")
+	require.NoError(t, err)
+	var f fixture
+	require.NoError(t, json.Unmarshal(raw, &f))
+	require.Equal(t, []string{"ordered_pending", "legacy_pending", "ordered_echo_applied", "unknown_future_key"}, names(f.Action))
+	require.Equal(t, []string{"skip_to", "resend_from", "transport_switch_rejected",
+		"transport_switched_with_keybox", "unknown_kind"}, names(f.Control))
+	for _, c := range f.Action {
+		t.Run("action/"+c.Name, func(t *testing.T) {
+			var a wire.ActionRequest
+			require.NoError(t, json.Unmarshal(c.JSON, &a))
+			out, err := wire.Marshal(a)
+			require.NoError(t, err)
+			require.JSONEq(t, string(c.Expect), string(out))
+		})
+	}
+	for _, c := range f.Control {
+		t.Run("control/"+c.Name, func(t *testing.T) {
+			var ctl wire.Control
+			require.NoError(t, json.Unmarshal(c.JSON, &ctl))
+			out, err := wire.Marshal(ctl)
+			require.NoError(t, err)
+			require.JSONEq(t, string(c.Expect), string(out))
 		})
 	}
 }

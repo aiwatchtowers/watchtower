@@ -28,6 +28,10 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "list_emails", args: #"{"query":"invoice"}"#), "Searched email: invoice")
     }
 
+    func testTuningToolsUseTuningLines() {
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_prompt", args: #"{"prompt_id":"digest.channel"}"#), "Read prompt digest.channel")
+    }
+
     func testWebSearchStep() {
         XCTAssertEqual(ChatToolCatalog.label(name: "WebSearch", args: #"{"query":"swift 6 concurrency"}"#),
                        "Searched the web: swift 6 concurrency")

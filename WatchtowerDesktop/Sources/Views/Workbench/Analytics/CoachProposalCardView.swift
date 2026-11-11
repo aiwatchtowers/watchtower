@@ -75,18 +75,20 @@ struct CoachProposalCardView: View {
             if let error = coach.cardErrors[proposal.id] {
                 Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(Tone.warning)
             }
-            HStack(spacing: Spacing.regular) {
-                evidence
-                Spacer(minLength: Spacing.regular)
-                // Disabled apart from the evidence links, which stay live.
+            // One line when it fits; a narrow panel puts the evidence above the buttons.
+            ViewThatFits(in: .horizontal) {
                 HStack(spacing: Spacing.regular) {
-                    Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
-                    if Self.hasEdit(proposal) {
-                        Button("Edit…", action: onEdit).buttonStyle(.kitSecondary)
-                    }
-                    acceptButton
+                    evidence
+                    Spacer(minLength: Spacing.regular)
+                    verbs(busy: busy)
                 }
-                .disabled(busy)
+                VStack(alignment: .leading, spacing: Spacing.regular) {
+                    evidence
+                    HStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        verbs(busy: busy)
+                    }
+                }
             }
         }
         .padding(Spacing.medium)
@@ -100,6 +102,19 @@ struct CoachProposalCardView: View {
         }
     }
 
+    /// Disabled apart from the evidence links, which stay live.
+    private func verbs(busy: Bool) -> some View {
+        HStack(spacing: Spacing.regular) {
+            Button("Decline") { confirmDecline = true }.buttonStyle(.kitSecondary)
+            if Self.hasEdit(proposal) {
+                Button("Edit…", action: onEdit).buttonStyle(.kitSecondary)
+            }
+            acceptButton
+        }
+        .fixedSize()
+        .disabled(busy)
+    }
+
     @ViewBuilder private var acceptButton: some View {
         if isFirst {
             Button("Accept") { Task { await coach.accept(proposal.id, editedText: nil) } }.buttonStyle(.kitPrimary)
@@ -110,7 +125,7 @@ struct CoachProposalCardView: View {
 
     private func diffBlock(_ diff: [CoachDiffLine]) -> some View {
         VStack(alignment: .leading, spacing: Spacing.tight) {
-            Text([proposal.destinationLabel, proposal.sizeLine].compactMap { $0 }.joined(separator: " · "))
+            Text(proposal.diffCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ForEach(Array(diff.prefix(Self.maxDiffLines).enumerated()), id: \.offset) { _, line in

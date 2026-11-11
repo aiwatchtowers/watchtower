@@ -62,7 +62,7 @@ func newRig(t *testing.T, opts ...bridgefake.Option) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	r := &rig{t: t, ctx: ctx, dir: dir, hub: kr.HubID().String(), st: st, ident: ident, kr: kr, sealer: secure.NewSealer(kr)}
 	r.fake = bridgefake.Serve(t, dir, opts...)
@@ -127,17 +127,11 @@ func (r *rig) lastSave() *pb.Save {
 	return nil
 }
 
-func (r *rig) nextEvent(what string, ok func(transport.Event) bool) transport.Event {
+func (r *rig) nextEvent(_ string, ok func(transport.Event) bool) transport.Event {
 	r.t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e := <-r.c.Events():
-			if ok(e) {
-				return e
-			}
-		case <-deadline:
-			r.t.Fatalf("no %s event", what)
+		if e := <-r.c.Events(); ok(e) {
+			return e
 		}
 	}
 }
@@ -654,5 +648,33 @@ func TestLargeSavesSplitIntoFramesUnderTheCap(t *testing.T) {
 	}
 	if saves < 2 {
 		t.Fatalf("%d save frames, want the items split", saves)
+	}
+}
+
+// TestAHeldCallReturnsWhenItsContextEnds: a request the bridge holds (a slow
+// CloudKit call) ends with its ctx: the client gives up on the socket read,
+// which is what bounds the switcher's old side on CloudKit. No clock: the
+// ctx is cancelled once the bridge holds the request.
+func TestAHeldCallReturnsWhenItsContextEnds(t *testing.T) {
+	r := newRig(t)
+	rec := r.data("workbench-1", []byte("{}"))
+	calls := map[string]func(ctx context.Context) error{
+		"changes": func(ctx context.Context) error { _, err := r.c.Changes(ctx, dataZone, 0); return err },
+		"save": func(ctx context.Context) error {
+			_, err := r.c.Save(ctx, []transport.SaveItem{{Record: rec}})
+			return err
+		},
+	}
+	for op, call := range calls {
+		arrived, release := r.fake.Block(op)
+		ctx, cancel := context.WithCancel(r.ctx)
+		errc := make(chan error, 1)
+		go func() { errc <- call(ctx) }()
+		<-arrived
+		cancel()
+		if err := <-errc; !errors.Is(err, context.Canceled) {
+			t.Errorf("%s held by the bridge, its ctx cancelled: %v", op, err)
+		}
+		release()
 	}
 }

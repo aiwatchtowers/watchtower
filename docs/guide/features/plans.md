@@ -10,7 +10,7 @@ text: **Usage → Plans** shows each subscription's usage history and forecast b
 area: setup
 level: next
 kind: feature
-since: next
+since: 0.28.0
 action: nav:usage
 requires: feature:claude-plan-limits
 replaces: [ai-plan-limits]
@@ -32,7 +32,7 @@ The menu bar keeps Claude's five-hour and weekly counters. Codex shows one quota
 
 Stale Codex numbers disappear from the bar; the popup keeps the provider's status and retry action.
 
-Claude's existing system notifications warn once per limit and window. Their switch is **Claude plan limits** in **Settings → Features → Notifications**. Codex information stays on Plans and in the menu.
+Claude's system notifications warn once per limit and window: when the 5-hour or weekly limit is forecast to run out before it resets, and when any limit reaches 90%. Their switch is **Claude plan limits** in **Settings → Features → Notifications**. Codex information stays on Plans and in the menu.
 
 Follow a service restriction message even when a quota's forecast stays below its limit.
 

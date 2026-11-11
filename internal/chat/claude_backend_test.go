@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -15,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -23,59 +23,64 @@ import (
 	"watchtower/internal/providers"
 )
 
-type fakeFiles struct{ argv, stdin, pid, childPID, mark, cwd, workDir string }
+type fakeFiles struct {
+	argv, stdin, pid, mark, cwd, workDir string
+	// cli is the in-process fake the options run (fakeCLI); a test of the
+	// process wiring itself switches to the script with useRealProcess.
+	cli *fakeCLI
+}
 
 // fakeClaude installs testdata/fake_claude.sh as an executable `claude` and
-// returns backend options pointing at it. It also registers a t.Cleanup
-// (assertNoProcessSurvives) so every test built on it is checked, after its
-// own teardown has run, for a leaked stub process — the class of bug where a
-// test bails out (assertion failure, t.Fatal) before it reaches its manual
-// Close() call and the stub, parked in its own process group, is reparented
-// to PID 1 and never reaped.
+// returns backend options pointing at it, run in process by a fakeCLI (the
+// script's protocol in Go, over channel pipes), so the test can run inside
+// testing/synctest. It also registers a t.Cleanup — it runs last — that
+// fails the test when a fake child is still running after the test's own
+// teardown: the in-process twin of a leaked stub process.
 func fakeClaude(t *testing.T, mode string) (ClaudeOptions, fakeFiles) {
 	t.Helper()
 	dir := t.TempDir()
-	assertNoProcessSurvives(t, dir)
+	cli := &fakeCLI{}
+	t.Cleanup(func() {
+		for i, k := range cli.children() {
+			assert.False(t, k.alive(), "fake claude child %d still runs after the test", i)
+		}
+	})
 	script, err := os.ReadFile(filepath.Join("testdata", "fake_claude.sh"))
 	require.NoError(t, err)
 	bin := filepath.Join(dir, "claude")
 	require.NoError(t, os.WriteFile(bin, script, 0o755))
 	f := fakeFiles{
 		argv: filepath.Join(dir, "argv"), stdin: filepath.Join(dir, "stdin"),
-		pid: filepath.Join(dir, "pid"), childPID: filepath.Join(dir, "child"), mark: filepath.Join(dir, "mark"),
-		cwd: filepath.Join(dir, "cwd"), workDir: filepath.Join(dir, "workdir"),
+		pid: filepath.Join(dir, "pid"), mark: filepath.Join(dir, "mark"),
+		cwd: filepath.Join(dir, "cwd"), workDir: filepath.Join(dir, "workdir"), cli: cli,
 	}
 	return ClaudeOptions{
 		Binary: bin, Model: "fake-model", SystemPrompt: "SYSTEM-PROMPT-SECRET",
 		MCPConfig: `{"mcpServers":{}}`, AllowedTools: "mcp__watchtower", DisallowedTools: "Bash",
 		WorkDir: f.workDir,
 		Env: []string{"FAKE_MODE=" + mode, "FAKE_ARGV=" + f.argv, "FAKE_STDIN=" + f.stdin,
-			"FAKE_PID=" + f.pid, "FAKE_CHILD_PID=" + f.childPID, "FAKE_MARK=" + f.mark, "FAKE_CWD=" + f.cwd},
+			"FAKE_PID=" + f.pid, "FAKE_MARK=" + f.mark, "FAKE_CWD=" + f.cwd},
 		InterruptGrace: 300 * time.Millisecond,
 		CloseGrace:     200 * time.Millisecond,
+		start:          cli.start,
 	}, f
 }
 
-// assertNoProcessSurvives registers a t.Cleanup — it runs last (fakeClaude
-// calls it before anything else in the test registers its own cleanup, and
-// t.Cleanup runs last-registered-first) — that fails the test if any process
-// whose argv mentions dir (the fake claude's own temp dir, so its path is
-// unique per test) is still alive. This is the proof that a test's backend
-// Close()/session teardown actually reaped the stub and its whole process
-// group, not just asked it to go away.
-func assertNoProcessSurvives(t *testing.T, dir string) {
+// useRealProcess makes opts start testdata/fake_claude.sh as a real child
+// process: only for the tests of the process wiring itself (spawn, the
+// payload pipes, process-group kill), which wait on process events only.
+// Called before the test registers its own teardown, it also registers a
+// cleanup — run after that teardown — that fails the test when any process
+// whose argv names the stub's folder is still alive: one look, no polling
+// (the teardown reaped the stub; a grandchild a test watches is seen gone on
+// its FIFO first).
+func useRealProcess(t *testing.T, opts *ClaudeOptions) {
 	t.Helper()
+	opts.start = nil
+	dir := filepath.Dir(opts.Binary)
 	t.Cleanup(func() {
-		// Reaping by launchd is an event of another process: polled, with go
-		// test -timeout as the only bound — a leak hangs the run there, its
-		// goroutine dump naming this cleanup.
-		for {
-			out, _ := exec.Command("pgrep", "-f", dir).Output()
-			if len(strings.TrimSpace(string(out))) == 0 {
-				return
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		out, _ := exec.Command("pgrep", "-f", dir).Output()
+		assert.Empty(t, strings.TrimSpace(string(out)), "a fake claude process outlived the test")
 	})
 }
 
@@ -97,116 +102,118 @@ func argvRuns(t *testing.T, path string) [][]string {
 	return runs
 }
 
-// waitRuns polls until the fake has logged at least n process runs.
-func waitRuns(t *testing.T, path string, n int) {
-	t.Helper()
-	for {
-		if data, err := os.ReadFile(path); err == nil && strings.Count(string(data), "\n--\n") >= n {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
 func contains(list []string, s string) bool {
 	return slices.Contains(list, s)
 }
 
-func readPIDFile(t *testing.T, path string) int {
+// childFIFO makes the FIFO a real fake's grandchild (stubborn and grandchild
+// modes) writes its pid to, set in opts. The returned started waits for that
+// line — the grandchild runs — and returns its pid; waitProcessExit then
+// waits for its end. Process events only, never a poll. (EOF on the FIFO is
+// not used: macOS was seen to leave a reader blocked after its SIGKILLed
+// writer was gone.)
+func childFIFO(t *testing.T, opts *ClaudeOptions) (started func() int) {
 	t.Helper()
-	for {
-		if b, err := os.ReadFile(path); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
-				return pid
+	path := filepath.Join(t.TempDir(), "child.fifo")
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	opts.Env = append(opts.Env, "FAKE_CHILD_FIFO="+path)
+	return func() int {
+		f, err := os.Open(path) // blocks until the grandchild opens it
+		require.NoError(t, err)
+		defer func() { _ = f.Close() }()
+		var line []byte
+		b := make([]byte, 1)
+		for {
+			_, err := f.Read(b)
+			require.NoError(t, err, "the grandchild's pid line")
+			if b[0] == '\n' {
+				break
 			}
+			line = append(line, b[0])
 		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// waitGone polls until pid no longer exists (reaped): an event of another
-// process, so only polling sees it; go test -timeout ends a run it never comes.
-func waitGone(t *testing.T, pid int) {
-	t.Helper()
-	for {
-		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+		pid, err := strconv.Atoi(string(line))
+		require.NoError(t, err)
+		return pid
 	}
 }
 
 func TestClaudeBackend_MultiTurnInOneWarmProcess(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
-	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
-	u := h.next(EventUsage)
-	assert.Equal(t, 3, u.TokensIn)
-	done := h.next(EventTurnDone)
-	assert.Equal(t, StatusComplete, done.Status)
-	assert.Equal(t, "sess-fake", done.SessionID)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
+		assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
+		u := h.next(EventUsage)
+		assert.Equal(t, 3, u.TokensIn)
+		done := h.next(EventTurnDone)
+		assert.Equal(t, StatusComplete, done.Status)
+		assert.Equal(t, "sess-fake", done.SessionID)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again"})
-	assert.Equal(t, "turn 2", h.next(EventTextDelta).Text, "the second turn reaches the same process")
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again"})
+		assert.Equal(t, "turn 2", h.next(EventTextDelta).Text, "the second turn reaches the same process")
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	assert.Len(t, argvRuns(t, f.argv), 1, "one claude process for the whole conversation")
+		assert.Len(t, argvRuns(t, f.argv), 1, "one claude process for the whole conversation")
+	})
 }
 
 func TestClaudeBackend_CancelInterruptsAndProcessStaysWarm(t *testing.T) {
-	opts, f := fakeClaude(t, "slow")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "slow")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long answer please"})
-	assert.Equal(t, "partial", h.next(EventTextDelta).Text)
-	h.send(Command{Type: CommandCancel})
-	done := h.next(EventTurnDone)
-	assert.Equal(t, "t1", done.TurnID)
-	assert.Equal(t, StatusInterrupted, done.Status)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long answer please"})
+		assert.Equal(t, "partial", h.next(EventTextDelta).Text)
+		h.send(Command{Type: CommandCancel})
+		done := h.next(EventTurnDone)
+		assert.Equal(t, "t1", done.TurnID)
+		assert.Equal(t, StatusInterrupted, done.Status)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
-	assert.Equal(t, "turn 2", h.next(EventTextDelta).Text)
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+		assert.Equal(t, "turn 2", h.next(EventTextDelta).Text)
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		require.NoError(t, h.finish())
 
-	stdin, err := os.ReadFile(f.stdin)
-	require.NoError(t, err)
-	assert.Contains(t, string(stdin), `"subtype":"interrupt"`, "cancel sends the interrupt control request")
-	assert.Len(t, argvRuns(t, f.argv), 1)
+		stdin, err := os.ReadFile(f.stdin)
+		require.NoError(t, err)
+		assert.Contains(t, string(stdin), `"subtype":"interrupt"`, "cancel sends the interrupt control request")
+		assert.Len(t, argvRuns(t, f.argv), 1)
+	})
 }
 
 func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnReplays(t *testing.T) {
-	opts, f := fakeClaude(t, "ignore_interrupt")
-	opts.Replay = func(string, []Attachment) (string, error) {
-		return replayHeader + "\nOwner: long\n" + replayFooter + "\n\n", nil
-	}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "ignore_interrupt")
+		opts.Replay = func(string, []Attachment) (string, error) {
+			return replayHeader + "\nOwner: long\n" + replayFooter + "\n\n", nil
+		}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long"})
-	h.next(EventTextDelta)
-	h.send(Command{Type: CommandCancel})
-	done := h.next(EventTurnDone)
-	assert.Equal(t, StatusInterrupted, done.Status, "no result within the grace → killed, still reported as interrupted")
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long"})
+		h.next(EventTextDelta)
+		h.send(Command{Type: CommandCancel})
+		done := h.next(EventTurnDone)
+		assert.Equal(t, StatusInterrupted, done.Status, "no result within the grace → killed, still reported as interrupted")
 
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
-	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text, "a fresh process answers")
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+		assert.Equal(t, "turn 1", h.next(EventTextDelta).Text, "a fresh process answers")
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 2)
-	assert.False(t, contains(runs[1], "--resume"), "nothing to resume: no session is stored")
-	assert.True(t, contains(runs[1], "--no-session-persistence"))
-	lines := stdinLines(t, f.stdin)
-	last := lines[len(lines)-1]
-	assert.Contains(t, last, "CONVERSATION SO FAR", "the new child gets the history replayed")
-	assert.Contains(t, last, "next")
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 2)
+		assert.False(t, contains(runs[1], "--resume"), "nothing to resume: no session is stored")
+		assert.True(t, contains(runs[1], "--no-session-persistence"))
+		lines := stdinLines(t, f.stdin)
+		last := lines[len(lines)-1]
+		assert.Contains(t, last, "CONVERSATION SO FAR", "the new child gets the history replayed")
+		assert.Contains(t, last, "next")
+	})
 }
 
 // A replaced child's late line must not change the session id the turn
@@ -226,61 +233,67 @@ func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
 // The claude backend hands the turn's attachments to the Replay hook, so a
 // file sent again with the turn is left out of the replay.
 func TestClaudeBackend_ReplayGetsTheTurnsAttachments(t *testing.T) {
-	opts, _ := fakeClaude(t, "normal")
-	p := writeAttachmentFixture(t, "a.csv", []byte("a,b"))
-	var got []Attachment
-	opts.Replay = func(_ string, current []Attachment) (string, error) {
-		got = current
-		return "", nil
-	}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	att := Attachment{Path: p, Mime: "text/csv", Name: "a.csv"}
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x", Attachments: []Attachment{att}})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
-	assert.Equal(t, []Attachment{att}, got)
+	synctest.Test(t, func(t *testing.T) {
+		opts, _ := fakeClaude(t, "normal")
+		p := writeAttachmentFixture(t, "a.csv", []byte("a,b"))
+		var got []Attachment
+		opts.Replay = func(_ string, current []Attachment) (string, error) {
+			got = current
+			return "", nil
+		}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		att := Attachment{Path: p, Mime: "text/csv", Name: "a.csv"}
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x", Attachments: []Attachment{att}})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+		assert.Equal(t, []Attachment{att}, got)
+	})
 }
 
 // TestClaudeBackend_RespawnReplays (#604 Review Focus 2): the child dies
 // mid-conversation; the next turn goes to a new child carrying the replayed
 // history, never to a blank session.
 func TestClaudeBackend_RespawnReplays(t *testing.T) {
-	opts, f := fakeClaude(t, "crash_once")
-	var replayed []string
-	opts.Replay = func(turnID string, _ []Attachment) (string, error) {
-		replayed = append(replayed, turnID)
-		return replayHeader + "\nOwner: x\n" + replayFooter + "\n\n", nil
-	}
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "crash_once")
+		var replayed []string
+		opts.Replay = func(turnID string, _ []Attachment) (string, error) {
+			replayed = append(replayed, turnID)
+			return replayHeader + "\nOwner: x\n" + replayFooter + "\n\n", nil
+		}
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
-	e := h.next(EventError)
-	assert.Equal(t, "t1", e.TurnID)
-	assert.Equal(t, CodeInternal, e.Code)
-	assert.True(t, e.Retryable)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+		e := h.next(EventError)
+		assert.Equal(t, "t1", e.TurnID)
+		assert.Equal(t, CodeInternal, e.Code)
+		assert.True(t, e.Retryable)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
-	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
-	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
+		assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
+		assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+		require.NoError(t, h.finish())
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 2)
-	assert.False(t, contains(runs[1], "--resume"))
-	lines := stdinLines(t, f.stdin)
-	last := lines[len(lines)-1]
-	assert.Contains(t, last, replayHeader, "the new child's first message starts with the replayed history")
-	assert.Contains(t, last, "Owner: x", "it carries the earlier turn")
-	assert.Contains(t, last, "retry")
-	assert.Equal(t, []string{"t1", "t2"}, replayed, "every new child's first turn replays")
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 2)
+		assert.False(t, contains(runs[1], "--resume"))
+		lines := stdinLines(t, f.stdin)
+		last := lines[len(lines)-1]
+		assert.Contains(t, last, replayHeader, "the new child's first message starts with the replayed history")
+		assert.Contains(t, last, "Owner: x", "it carries the earlier turn")
+		assert.Contains(t, last, "retry")
+		assert.Equal(t, []string{"t1", "t2"}, replayed, "every new child's first turn replays")
+	})
 }
 
 // Every spawn gets fresh pipes: the child that replaces a crashed one reads
 // the system prompt and the MCP config again (#604 G7).
+// A real process (the script): the payload pipes are what is under test.
 func TestClaudeBackend_RespawnReadsPromptPipesAgain(t *testing.T) {
 	opts, f := fakeClaude(t, "crash_once")
+	useRealProcess(t, &opts)
 	read := filepath.Join(t.TempDir(), "read")
 	opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
 	h := startSession(t, NewClaudeBackend(opts), nil)
@@ -311,22 +324,23 @@ func indexOf(list []string, s string) int {
 }
 
 func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	opts.Replay = func(string, []Attachment) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	// Let the warm process actually start (a fresh script can take longer
-	// than CloseGrace to exec) so its replacement is observable in argv.
-	waitRuns(t, f.argv, 1)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "edited question", Replay: true})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		opts.Replay = func(string, []Attachment) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		// Let the warm process actually start (a fresh script can take longer
+		// than CloseGrace to exec) so its replacement is observable in argv.
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "edited question", Replay: true})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 2, "the warm process is replaced by a fresh one")
-	for _, run := range runs {
-		assert.False(t, contains(run, "--resume"))
-	}
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 2, "the warm process is replaced by a fresh one")
+		for _, run := range runs {
+			assert.False(t, contains(run, "--resume"))
+		}
+	})
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
@@ -336,8 +350,11 @@ func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
 // — no temp file holds them, not even while the child runs), the text on
 // stdin — in claude.ai mode too.
 func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
-	forEachClaudeAIMode(t, func(t *testing.T, mode ClaudeAIMode) {
+	// The real fake process: the prompt and the config are read from the
+	// inherited pipes the spawn hands over, end to end.
+	forEachClaudeAIModeReal(t, func(t *testing.T, mode ClaudeAIMode) {
 		opts, f := fakeClaude(t, "normal")
+		useRealProcess(t, &opts)
 		opts.ClaudeAI = mode
 		tmp := t.TempDir()
 		t.Setenv("TMPDIR", tmp)
@@ -403,35 +420,37 @@ func assertNoWTTemp(t *testing.T, dir string) {
 // Important I1) — a real, accepted attachment must still complete the turn,
 // with its base64 content on stdin and its path on neither argv nor stdin.
 func TestChat04_ClaudeSendsRealAttachmentAsContentBlock(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	// The attachment's directory name carries the CHAT-04 sentinel: if the
-	// path ever reached argv or stdin (instead of just the file's base64
-	// content), this would catch it the same way the rejection test does.
-	dir := filepath.Join(t.TempDir(), "ATTACHMENT-PATH-SECRET")
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-	imgPath := filepath.Join(dir, "shot.png")
-	require.NoError(t, os.WriteFile(imgPath, fixturePNG, 0o600))
+		// The attachment's directory name carries the CHAT-04 sentinel: if the
+		// path ever reached argv or stdin (instead of just the file's base64
+		// content), this would catch it the same way the rejection test does.
+		dir := filepath.Join(t.TempDir(), "ATTACHMENT-PATH-SECRET")
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		imgPath := filepath.Join(dir, "shot.png")
+		require.NoError(t, os.WriteFile(imgPath, fixturePNG, 0o600))
 
-	h.send(Command{Type: CommandTurn, TurnID: "t0", Text: "what is in this image?",
-		Attachments: []Attachment{{Path: imgPath, Mime: "image/png", Name: "shot.png"}}})
-	done := h.next(EventTurnDone)
-	assert.Equal(t, StatusComplete, done.Status)
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t0", Text: "what is in this image?",
+			Attachments: []Attachment{{Path: imgPath, Mime: "image/png", Name: "shot.png"}}})
+		done := h.next(EventTurnDone)
+		assert.Equal(t, StatusComplete, done.Status)
+		require.NoError(t, h.finish())
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 1)
-	assert.NotContains(t, strings.Join(runs[0], "\n"), "ATTACHMENT-PATH-SECRET")
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 1)
+		assert.NotContains(t, strings.Join(runs[0], "\n"), "ATTACHMENT-PATH-SECRET")
 
-	stdin, err := os.ReadFile(f.stdin)
-	require.NoError(t, err)
-	stdinStr := string(stdin)
-	assert.NotContains(t, stdinStr, "ATTACHMENT-PATH-SECRET", "the attachment path never travels on stdin")
-	assert.Contains(t, stdinStr, `"type":"image"`)
-	assert.Contains(t, stdinStr, `"media_type":"image/png"`)
-	assert.Contains(t, stdinStr, base64.StdEncoding.EncodeToString(fixturePNG), "the file's content, base64-encoded, does travel on stdin")
+		stdin, err := os.ReadFile(f.stdin)
+		require.NoError(t, err)
+		stdinStr := string(stdin)
+		assert.NotContains(t, stdinStr, "ATTACHMENT-PATH-SECRET", "the attachment path never travels on stdin")
+		assert.Contains(t, stdinStr, `"type":"image"`)
+		assert.Contains(t, stdinStr, `"media_type":"image/png"`)
+		assert.Contains(t, stdinStr, base64.StdEncoding.EncodeToString(fixturePNG), "the file's content, base64-encoded, does travel on stdin")
+	})
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
@@ -476,8 +495,18 @@ func TestChat04_ClaudeArgsNeverResume(t *testing.T) {
 	})
 }
 
-// forEachClaudeAIMode runs f as a subtest with claude.ai mode off and on.
+// forEachClaudeAIMode runs f as a subtest with claude.ai mode off and on,
+// each inside a testing/synctest bubble.
 func forEachClaudeAIMode(t *testing.T, f func(t *testing.T, mode ClaudeAIMode)) {
+	t.Helper()
+	forEachClaudeAIModeReal(t, func(t *testing.T, mode ClaudeAIMode) {
+		synctest.Test(t, func(t *testing.T) { f(t, mode) })
+	})
+}
+
+// forEachClaudeAIModeReal is forEachClaudeAIMode outside a bubble, for a
+// test that runs the real fake process (useRealProcess).
+func forEachClaudeAIModeReal(t *testing.T, f func(t *testing.T, mode ClaudeAIMode)) {
 	t.Helper()
 	for _, c := range []struct {
 		name string
@@ -517,26 +546,28 @@ func lastIndexOf(args []string, s string) int {
 // no project CLAUDE.md from an inherited cwd leaks into the session and
 // --resume finds the session again on the next spawn.
 func TestClaudeBackend_StrictMCPAndNeutralWorkDir(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hi"})
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hi"})
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 1)
-	assert.True(t, contains(runs[0], "--strict-mcp-config"))
-	assert.True(t, contains(runs[0], "--mcp-config"), "Watchtower's own servers still come through --mcp-config")
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 1)
+		assert.True(t, contains(runs[0], "--strict-mcp-config"))
+		assert.True(t, contains(runs[0], "--mcp-config"), "Watchtower's own servers still come through --mcp-config")
 
-	cwd, err := os.ReadFile(f.cwd)
-	require.NoError(t, err)
-	want, err := filepath.EvalSymlinks(f.workDir)
-	require.NoError(t, err)
-	assert.Equal(t, want, strings.TrimSpace(string(cwd)), "the child runs in WorkDir, created on demand")
-	entries, err := os.ReadDir(f.workDir)
-	require.NoError(t, err)
-	assert.Empty(t, entries, "the work dir holds nothing claude could load as project instructions")
+		cwd, err := os.ReadFile(f.cwd)
+		require.NoError(t, err)
+		want, err := filepath.EvalSymlinks(f.workDir)
+		require.NoError(t, err)
+		assert.Equal(t, want, strings.TrimSpace(string(cwd)), "the child runs in WorkDir, created on demand")
+		entries, err := os.ReadDir(f.workDir)
+		require.NoError(t, err)
+		assert.Empty(t, entries, "the work dir holds nothing claude could load as project instructions")
+	})
 }
 
 func TestNeutralWorkDir_IsStableUnderTheTempDir(t *testing.T) {
@@ -558,20 +589,22 @@ func TestClaudeBackend_RefusesAWorkDirThatIsNotPrivate(t *testing.T) {
 		"file":    func(p string) error { return os.WriteFile(p, nil, 0o600) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			opts, f := fakeClaude(t, "normal")
-			require.NoError(t, setup(f.workDir))
-			b, ok := NewClaudeBackend(opts).(*claudeBackend)
-			require.True(t, ok)
-			b.mu.Lock()
-			p, err := b.spawnLocked()
-			b.mu.Unlock()
-			require.Error(t, err)
-			assert.Nil(t, p)
-			var we *WorkDirError
-			require.ErrorAs(t, err, &we)
-			assert.Contains(t, err.Error(), "Watchtower's chat folder "+f.workDir+" isn't private")
-			assert.Contains(t, err.Error(), "delete it and try again")
-			assert.NoFileExists(t, f.argv, "the claude child must never start in that directory")
+			synctest.Test(t, func(t *testing.T) {
+				opts, f := fakeClaude(t, "normal")
+				require.NoError(t, setup(f.workDir))
+				b, ok := NewClaudeBackend(opts).(*claudeBackend)
+				require.True(t, ok)
+				b.mu.Lock()
+				p, err := b.spawnLocked()
+				b.mu.Unlock()
+				require.Error(t, err)
+				assert.Nil(t, p)
+				var we *WorkDirError
+				require.ErrorAs(t, err, &we)
+				assert.Contains(t, err.Error(), "Watchtower's chat folder "+f.workDir+" isn't private")
+				assert.Contains(t, err.Error(), "delete it and try again")
+				assert.NoFileExists(t, f.argv, "the claude child must never start in that directory")
+			})
 		})
 	}
 }
@@ -579,19 +612,21 @@ func TestClaudeBackend_RefusesAWorkDirThatIsNotPrivate(t *testing.T) {
 // A work dir of our own that is only group/other-writable (an old umask) is
 // narrowed to 0700 and used, with one warning line — not a dead chat.
 func TestClaudeBackend_NarrowsItsOwnGroupWritableWorkDir(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	require.NoError(t, os.Mkdir(f.workDir, 0o700))
-	require.NoError(t, os.Chmod(f.workDir, 0o777))
-	var warn bytes.Buffer
-	opts.Warn = &warn
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		require.NoError(t, os.Mkdir(f.workDir, 0o700))
+		require.NoError(t, os.Chmod(f.workDir, 0o777))
+		var warn bytes.Buffer
+		opts.Warn = &warn
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		require.NoError(t, h.finish())
 
-	info, err := os.Stat(f.workDir)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
-	assert.Equal(t, 1, strings.Count(warn.String(), "narrowed it to 0700"), warn.String())
+		info, err := os.Stat(f.workDir)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+		assert.Equal(t, 1, strings.Count(warn.String(), "narrowed it to 0700"), warn.String())
+	})
 }
 
 // A group-writable work dir may already hold what another user planted while
@@ -621,22 +656,24 @@ func TestClaudeBackend_RefusesAGroupWritableWorkDirWithOpenContents(t *testing.T
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			opts, f := fakeClaude(t, "normal")
-			require.NoError(t, os.Mkdir(f.workDir, 0o700))
-			require.NoError(t, plant(f.workDir))
-			require.NoError(t, os.Chmod(f.workDir, 0o777))
-			b, ok := NewClaudeBackend(opts).(*claudeBackend)
-			require.True(t, ok)
-			b.mu.Lock()
-			p, err := b.spawnLocked()
-			b.mu.Unlock()
-			assert.Nil(t, p)
-			var we *WorkDirError
-			require.ErrorAs(t, err, &we)
-			assert.NoFileExists(t, f.argv, "the claude child must never start in that directory")
-			info, err := os.Stat(f.workDir)
-			require.NoError(t, err)
-			assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "narrowed before the contents were judged")
+			synctest.Test(t, func(t *testing.T) {
+				opts, f := fakeClaude(t, "normal")
+				require.NoError(t, os.Mkdir(f.workDir, 0o700))
+				require.NoError(t, plant(f.workDir))
+				require.NoError(t, os.Chmod(f.workDir, 0o777))
+				b, ok := NewClaudeBackend(opts).(*claudeBackend)
+				require.True(t, ok)
+				b.mu.Lock()
+				p, err := b.spawnLocked()
+				b.mu.Unlock()
+				assert.Nil(t, p)
+				var we *WorkDirError
+				require.ErrorAs(t, err, &we)
+				assert.NoFileExists(t, f.argv, "the claude child must never start in that directory")
+				info, err := os.Stat(f.workDir)
+				require.NoError(t, err)
+				assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "narrowed before the contents were judged")
+			})
 		})
 	}
 }
@@ -645,36 +682,40 @@ func TestClaudeBackend_RefusesAGroupWritableWorkDirWithOpenContents(t *testing.T
 // swapped for a symlink meanwhile fails that turn as workdir_unsafe, with no
 // Retry.
 func TestClaudeBackend_RespawnIntoAnUnsafeWorkDirFailsTheTurn(t *testing.T) {
-	opts, f := fakeClaude(t, "crash_once")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
-	h.next(EventError)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "crash_once")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+		h.next(EventError)
 
-	require.NoError(t, os.RemoveAll(f.workDir))
-	require.NoError(t, os.Symlink(t.TempDir(), f.workDir))
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again"})
-	e := h.next(EventError)
-	assert.Equal(t, "t2", e.TurnID)
-	assert.Equal(t, CodeWorkDirUnsafe, e.Code)
-	assert.False(t, e.Retryable)
-	assert.Contains(t, e.Message, f.workDir)
-	require.NoError(t, h.finish())
-	assert.Len(t, argvRuns(t, f.argv), 1, "no child started in the swapped folder")
+		require.NoError(t, os.RemoveAll(f.workDir))
+		require.NoError(t, os.Symlink(t.TempDir(), f.workDir))
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "again"})
+		e := h.next(EventError)
+		assert.Equal(t, "t2", e.TurnID)
+		assert.Equal(t, CodeWorkDirUnsafe, e.Code)
+		assert.False(t, e.Retryable)
+		assert.Contains(t, e.Message, f.workDir)
+		require.NoError(t, h.finish())
+		assert.Len(t, argvRuns(t, f.argv), 1, "no child started in the swapped folder")
+	})
 }
 
 // A refused work dir reaches the Desktop as its own non-retryable code with
 // the folder in the message — not provider_unavailable with a Retry that can
 // never succeed.
 func TestClaudeBackend_UnsafeWorkDirIsItsOwnNonRetryableCode(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	require.NoError(t, os.Symlink(t.TempDir(), f.workDir))
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	e := h.next(EventError)
-	assert.Equal(t, CodeWorkDirUnsafe, e.Code)
-	assert.False(t, e.Retryable)
-	assert.Contains(t, e.Message, f.workDir)
-	assert.NoFileExists(t, f.argv)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		require.NoError(t, os.Symlink(t.TempDir(), f.workDir))
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		e := h.next(EventError)
+		assert.Equal(t, CodeWorkDirUnsafe, e.Code)
+		assert.False(t, e.Retryable)
+		assert.Contains(t, e.Message, f.workDir)
+		assert.NoFileExists(t, f.argv)
+	})
 }
 
 // BEHAVIOR CHAT-03 — see docs/inventory/chat.md
@@ -683,20 +724,31 @@ func TestClaudeBackend_UnsafeWorkDirIsItsOwnNonRetryableCode(t *testing.T) {
 // The escalation is bounded by construction, checked step by step instead of
 // by wall clock: exactly two CloseGrace waits (after EOF, after TERM), which
 // the test runs out itself, then KILL — the only signal that ends this child.
+//
+// A real process (the script): the signals, the process group and the
+// reaping are what is under test. It waits on process events only — the
+// grandchild's FIFO opening and reaching EOF.
 func TestChat03_CloseReapsStubbornChild(t *testing.T) {
 	opts, f := fakeClaude(t, "stubborn")
+	useRealProcess(t, &opts)
+	grandchild := childFIFO(t, &opts)
 	b := NewClaudeBackend(opts)
+	t.Cleanup(func() { _ = b.Close() })
 	steps := controlGrace(b, 2)
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
-	leader := readPIDFile(t, f.pid)
-	child := readPIDFile(t, f.childPID)
+	child := grandchild() // the stubborn child trapped TERM and its own child runs
+	pidText, err := os.ReadFile(f.pid)
+	require.NoError(t, err)
+	leader, err := strconv.Atoi(strings.TrimSpace(string(pidText)))
+	require.NoError(t, err)
 
 	require.NoError(t, b.Close())
 	assert.Equal(t, []time.Duration{opts.CloseGrace, opts.CloseGrace}, steps(),
 		"EOF, TERM, then KILL — two grace steps, nothing else waited on")
-	waitGone(t, leader)
-	waitGone(t, child)
+	// Close returns only once the leader was reaped.
+	assert.ErrorIs(t, syscall.Kill(leader, 0), syscall.ESRCH, "the stubborn child is gone")
+	waitProcessExit(t, child) // the grandchild is gone too (it would sleep a day)
 }
 
 // controlGrace takes over b's CloseGrace timer: the first fired steps run
@@ -724,66 +776,78 @@ func controlGrace(b Backend, fired int) func() []time.Duration {
 	}
 }
 
+// A real process (the script): the sweep of the child's process group is
+// what is under test, seen through the grandchild's FIFO.
 func TestClaudeBackend_StdinEOFEndsSessionAndSweepsGroup(t *testing.T) {
-	opts, f := fakeClaude(t, "grandchild")
+	opts, _ := fakeClaude(t, "grandchild")
+	useRealProcess(t, &opts)
+	grandchild := childFIFO(t, &opts)
 	inR, inW := io.Pipe()
+	t.Cleanup(func() { _ = inW.Close() }) // ends the session if the test stops early
 	s := NewSession(NewClaudeBackend(opts), NewEventWriter(io.Discard))
 	done := make(chan error, 1)
 	go func() { done <- s.Run(context.Background(), inR) }()
 
-	// Wait for the grandchild first: a freshly written script can take longer
-	// than CloseGrace to exec on macOS, and a fake killed before it spawned
-	// its child proves nothing about the sweep.
-	child := readPIDFile(t, f.childPID)
+	// The grandchild first: a fake ended before it spawned its child proves
+	// nothing about the sweep.
+	child := grandchild()
 	require.NoError(t, inW.Close())
 	err := <-done
 	assert.NoError(t, err)
-	waitGone(t, child)
+	waitProcessExit(t, child) // swept with the group (it would sleep a day)
 }
 
 func TestClaudeBackend_ContextCancelEndsSession(t *testing.T) {
-	opts, f := fakeClaude(t, "grandchild")
-	inR, inW := io.Pipe()
-	defer func() { _ = inW.Close() }()
-	ctx, cancel := context.WithCancel(context.Background())
-	s := NewSession(NewClaudeBackend(opts), NewEventWriter(io.Discard))
-	done := make(chan error, 1)
-	go func() { done <- s.Run(ctx, inR) }()
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		inR, inW := io.Pipe()
+		defer func() { _ = inW.Close() }()
+		ctx, cancel := context.WithCancel(context.Background())
+		s := NewSession(NewClaudeBackend(opts), NewEventWriter(io.Discard))
+		done := make(chan error, 1)
+		go func() { done <- s.Run(ctx, inR) }()
 
-	child := readPIDFile(t, f.childPID)
-	cancel()
-	err := <-done
-	assert.NoError(t, err)
-	waitGone(t, child)
+		synctest.Wait()
+		child := f.cli.last()
+		require.NotNil(t, child, "the session started its child")
+		cancel()
+		err := <-done
+		assert.NoError(t, err)
+		assert.False(t, child.alive(), "the session's end reaped the child")
+	})
 }
 
 func TestClaudeBackend_MissingBinaryIsProviderUnavailable(t *testing.T) {
-	opts, _ := fakeClaude(t, "normal")
-	opts.Binary = filepath.Join(t.TempDir(), "no-such-claude")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	e := h.next(EventError)
-	assert.Equal(t, CodeProviderUnavailable, e.Code)
-	assert.True(t, e.Retryable)
+	synctest.Test(t, func(t *testing.T) {
+		opts, _ := fakeClaude(t, "normal")
+		opts.Binary = filepath.Join(t.TempDir(), "no-such-claude")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		e := h.next(EventError)
+		assert.Equal(t, CodeProviderUnavailable, e.Code)
+		assert.True(t, e.Retryable)
+	})
 }
 
 // ToolSearch never surfaces as a step through the whole backend either, and
 // is not hidden from the model (it must stay usable to load MCP tools).
 func TestClaudeBackend_InternalToolsAreNotSteps(t *testing.T) {
-	opts, f := fakeClaude(t, "internal_tool")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "targets?"})
-	start := h.next(EventToolStart)
-	assert.Equal(t, "list_targets", start.Name)
-	h.next(EventTurnDone)
-	require.NoError(t, h.finish())
-	for e := range h.events {
-		assert.NotEqual(t, EventToolStart, e.Type)
-	}
-	runs := argvRuns(t, f.argv)
-	i := indexOf(runs[0], "--disallowedTools")
-	require.GreaterOrEqual(t, i, 0)
-	assert.NotContains(t, runs[0][i+1], "ToolSearch")
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "internal_tool")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "targets?"})
+		start := h.next(EventToolStart)
+		assert.Equal(t, "list_targets", start.Name)
+		h.next(EventTurnDone)
+		require.NoError(t, h.finish())
+		for e := range h.events {
+			assert.NotEqual(t, EventToolStart, e.Type)
+		}
+		runs := argvRuns(t, f.argv)
+		i := indexOf(runs[0], "--disallowedTools")
+		require.GreaterOrEqual(t, i, 0)
+		assert.NotContains(t, runs[0][i+1], "ToolSearch")
+	})
 }
 
 // blockingReplay returns a Replay func that signals entry and then blocks
@@ -803,70 +867,74 @@ func blockingReplay() (replay func(string, []Attachment) (string, error), entere
 // sits between restartFresh and the respawn must not spawn a claude after
 // Close — it would run the turn unreaped (review Important #1).
 func TestChat03_CloseDuringReplayNeverRespawns(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	var entered, release chan struct{}
-	opts.Replay, entered, release = blockingReplay()
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	waitRuns(t, f.argv, 1)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		var entered, release chan struct{}
+		opts.Replay, entered, release = blockingReplay()
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "edited", Replay: true})
-	<-entered
-	require.NoError(t, h.in.Close()) // the app went away mid-turn
-	time.Sleep(300 * time.Millisecond)
-	close(release)
-	err := <-h.done
-	require.NoError(t, err)
-	time.Sleep(300 * time.Millisecond) // a late spawn would log its argv by now
-	assert.Len(t, argvRuns(t, f.argv), 1, "no claude is spawned after Close")
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "edited", Replay: true})
+		<-entered
+		require.NoError(t, h.in.Close()) // the app went away mid-turn
+		synctest.Wait()                  // the Close lands while the turn is parked
+		close(release)
+		err := <-h.done
+		require.NoError(t, err)
+		synctest.Wait() // a late spawn would have logged its argv by now
+		assert.Len(t, argvRuns(t, f.argv), 1, "no claude is spawned after Close")
+	})
 }
 
 // A closed backend refuses to spawn even when the turn's ctx is still live.
 // BEHAVIOR CHAT-03 — see docs/inventory/chat.md
 func TestChat03_ClosedBackendRefusesToSpawn(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	b := NewClaudeBackend(opts)
-	_, err := b.Start(context.Background())
-	require.NoError(t, err)
-	waitRuns(t, f.argv, 1)
-	require.NoError(t, b.Close())
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		b := NewClaudeBackend(opts)
+		_, err := b.Start(context.Background())
+		require.NoError(t, err)
+		require.NoError(t, b.Close())
 
-	var got []Event
-	err = b.Turn(context.Background(), Command{Type: CommandTurn, TurnID: "t1", Text: "x"}, func(e Event) { got = append(got, e) })
-	require.ErrorIs(t, err, errBackendClosed)
-	assert.Empty(t, got)
-	time.Sleep(300 * time.Millisecond)
-	assert.Len(t, argvRuns(t, f.argv), 1)
+		var got []Event
+		err = b.Turn(context.Background(), Command{Type: CommandTurn, TurnID: "t1", Text: "x"}, func(e Event) { got = append(got, e) })
+		require.ErrorIs(t, err, errBackendClosed)
+		assert.Empty(t, got)
+		synctest.Wait()
+		assert.Len(t, argvRuns(t, f.argv), 1)
+	})
 }
 
 // A cancel that lands before the owner's message reaches claude ends the turn
 // as interrupted — not lost, not an internal error — sends nothing, and does
 // not leak into the next turn.
 func TestClaudeBackend_CancelBeforeMessageIsSentIsInterrupted(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	var entered, release chan struct{}
-	opts.Replay, entered, release = blockingReplay()
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	synctest.Test(t, func(t *testing.T) {
+		opts, f := fakeClaude(t, "normal")
+		var entered, release chan struct{}
+		opts.Replay, entered, release = blockingReplay()
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "NEVER-SENT", Replay: true})
-	<-entered
-	h.send(Command{Type: CommandCancel})
-	time.Sleep(100 * time.Millisecond) // let the cancel reach the backend
-	close(release)
-	done := h.next(EventTurnDone)
-	assert.Equal(t, "t1", done.TurnID)
-	assert.Equal(t, StatusInterrupted, done.Status)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "NEVER-SENT", Replay: true})
+		<-entered
+		h.send(Command{Type: CommandCancel})
+		synctest.Wait() // let the cancel reach the backend
+		close(release)
+		done := h.next(EventTurnDone)
+		assert.Equal(t, "t1", done.TurnID)
+		assert.Equal(t, StatusInterrupted, done.Status)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
-	next := h.next(EventTurnDone)
-	assert.Equal(t, "t2", next.TurnID)
-	assert.Equal(t, StatusComplete, next.Status, "the cancel does not leak into the next turn")
-	require.NoError(t, h.finish())
+		h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+		next := h.next(EventTurnDone)
+		assert.Equal(t, "t2", next.TurnID)
+		assert.Equal(t, StatusComplete, next.Status, "the cancel does not leak into the next turn")
+		require.NoError(t, h.finish())
 
-	stdin, _ := os.ReadFile(f.stdin)
-	assert.NotContains(t, string(stdin), "NEVER-SENT")
-	assert.NotContains(t, string(stdin), `"subtype":"interrupt"`, "nothing was in flight to interrupt")
+		stdin, _ := os.ReadFile(f.stdin)
+		assert.NotContains(t, string(stdin), "NEVER-SENT")
+		assert.NotContains(t, string(stdin), `"subtype":"interrupt"`, "nothing was in flight to interrupt")
+	})
 }
 
 // BEHAVIOR CHAT-03 — see docs/inventory/chat.md
@@ -874,8 +942,12 @@ func TestClaudeBackend_CancelBeforeMessageIsSentIsInterrupted(t *testing.T) {
 // leaves the turn's write blocked on a full pipe. Close must still get
 // through (its SIGTERM/SIGKILL escalation exists for exactly this child) and
 // the blocked write must fail instead of hanging the turn.
+//
+// A real process (the script): a write blocked on a real, full pipe is what
+// is under test; the in-process fakes cannot show the kernel failing it.
 func TestChat03_CloseUnblocksAStuckWrite(t *testing.T) {
-	opts, f := fakeClaude(t, "noread")
+	opts, _ := fakeClaude(t, "noread")
+	useRealProcess(t, &opts)
 	b := NewClaudeBackend(opts)
 	// Close is idempotent (closeOnce), so this is a no-op once the test's own
 	// Close() call below runs; it's the guarantee that the stub still gets
@@ -887,7 +959,6 @@ func TestChat03_CloseUnblocksAStuckWrite(t *testing.T) {
 	steps := controlGrace(b, 1)
 	_, err := b.Start(context.Background())
 	require.NoError(t, err)
-	waitRuns(t, f.argv, 1)
 
 	// The turn's message write is seen entering the child's stdin; nothing
 	// reads that pipe, so an 8 MB write cannot complete.
@@ -933,25 +1004,26 @@ func (w *enteredWriter) Write(p []byte) (int, error) {
 // A cancel while the message write is stuck returns at once (the session
 // loop keeps serving commands), and the grace kill ends the turn interrupted.
 func TestClaudeBackend_CancelDuringStuckWriteEndsInterrupted(t *testing.T) {
-	opts, _ := fakeClaude(t, "noread")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: strings.Repeat("x", 4<<20)})
-	h.next(EventTurnStart)
-	time.Sleep(300 * time.Millisecond)
-	h.send(Command{Type: CommandCancel})
-	done := h.next(EventTurnDone)
-	assert.Equal(t, "t1", done.TurnID)
-	assert.Equal(t, StatusInterrupted, done.Status)
-	require.NoError(t, h.finish())
+	synctest.Test(t, func(t *testing.T) {
+		opts, _ := fakeClaude(t, "noread")
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: strings.Repeat("x", 4<<20)})
+		h.next(EventTurnStart)
+		synctest.Wait() // the write is stuck on the full pipe
+		h.send(Command{Type: CommandCancel})
+		done := h.next(EventTurnDone)
+		assert.Equal(t, "t1", done.TurnID)
+		assert.Equal(t, StatusInterrupted, done.Status)
+		require.NoError(t, h.finish())
+	})
 }
 
 // runOneTurn starts b, runs turn t1 and returns its events.
 func runOneTurn(t *testing.T, b Backend) []Event {
 	t.Helper()
 	t.Cleanup(func() { _ = b.Close() })
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	t.Cleanup(cancel)
+	ctx := context.Background()
 	_, err := b.Start(ctx)
 	require.NoError(t, err)
 	var events []Event
@@ -1000,10 +1072,12 @@ func TestClaudeBackend_CleanExitWithoutResultIsInvalidOutput(t *testing.T) {
 		{"API Error: 429 slow down", "claude ended the turn without a result: API Error: 429 slow down", providers.RateLimit},
 	} {
 		t.Run(tc.wantMsg, func(t *testing.T) {
-			opts, _ := fakeClaude(t, "exit_clean")
-			opts.Env = append(opts.Env, "FAKE_STDERR="+tc.stderr)
-			last := requireTypedTurnError(t, runOneTurn(t, NewClaudeBackend(opts)), tc.want)
-			assert.Equal(t, tc.wantMsg, last.Message)
+			synctest.Test(t, func(t *testing.T) {
+				opts, _ := fakeClaude(t, "exit_clean")
+				opts.Env = append(opts.Env, "FAKE_STDERR="+tc.stderr)
+				last := requireTypedTurnError(t, runOneTurn(t, NewClaudeBackend(opts)), tc.want)
+				assert.Equal(t, tc.wantMsg, last.Message)
+			})
 		})
 	}
 }
@@ -1013,46 +1087,49 @@ func TestClaudeBackend_CleanExitWithoutResultIsInvalidOutput(t *testing.T) {
 // output and ends the child, so the next turn gets a fresh one, which
 // replays.
 func TestClaudeBackend_OverlongProtocolLineFailsTheTurn(t *testing.T) {
-	old := maxWarmLine
-	maxWarmLine = 64 << 10
-	t.Cleanup(func() { maxWarmLine = old })
-	opts, f := fakeClaude(t, "long_line")
-	opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10), "FAKE_LONG_TYPE=result")
-	b := NewClaudeBackend(opts)
-	events := runOneTurn(t, b)
-	last := events[len(events)-1]
-	require.Equal(t, EventError, last.Type)
-	var failure *providers.Failure
-	require.ErrorAs(t, last.Cause, &failure)
-	assert.Equal(t, providers.InvalidOutput, failure.Category)
-	assert.Contains(t, last.Message, "reading claude output")
-	waitGone(t, readPIDFile(t, f.pid)) // the child whose result line could not be read
+	synctest.Test(t, func(t *testing.T) {
+		old := maxWarmLine
+		maxWarmLine = 64 << 10
+		t.Cleanup(func() { maxWarmLine = old })
+		opts, f := fakeClaude(t, "long_line")
+		opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10), "FAKE_LONG_TYPE=result")
+		b := NewClaudeBackend(opts)
+		events := runOneTurn(t, b)
+		last := events[len(events)-1]
+		require.Equal(t, EventError, last.Type)
+		var failure *providers.Failure
+		require.ErrorAs(t, last.Cause, &failure)
+		assert.Equal(t, providers.InvalidOutput, failure.Category)
+		assert.Contains(t, last.Message, "reading claude output")
+		assert.False(t, f.cli.last().alive(), "the child whose result line could not be read is gone")
+	})
 }
 
 // A stdout line over maxWarmLine (a huge tool result) is skipped and
 // counted, as every other CLI reader does (streamline, spec §3.1/§3.4): the
 // turn goes on, completes, and the child stays up for the next turn.
 func TestClaudeBackend_OverlongLineIsSkipped(t *testing.T) {
-	old := maxWarmLine
-	maxWarmLine = 64 << 10
-	t.Cleanup(func() { maxWarmLine = old })
-	opts, f := fakeClaude(t, "long_line")
-	opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10))
-	var warn bytes.Buffer
-	opts.Warn = &warn
-	b := NewClaudeBackend(opts)
-	events := runOneTurn(t, b)
-	var text strings.Builder
-	for _, e := range events {
-		require.NotEqual(t, EventError, e.Type, "the turn must not fail: %+v", e)
-		if e.Type == EventTextDelta {
-			text.WriteString(e.Text)
+	synctest.Test(t, func(t *testing.T) {
+		old := maxWarmLine
+		maxWarmLine = 64 << 10
+		t.Cleanup(func() { maxWarmLine = old })
+		opts, f := fakeClaude(t, "long_line")
+		opts.Env = append(opts.Env, "FAKE_LONG_BYTES="+strconv.Itoa(256<<10))
+		var warn bytes.Buffer
+		opts.Warn = &warn
+		b := NewClaudeBackend(opts)
+		events := runOneTurn(t, b)
+		var text strings.Builder
+		for _, e := range events {
+			require.NotEqual(t, EventError, e.Type, "the turn must not fail: %+v", e)
+			if e.Type == EventTextDelta {
+				text.WriteString(e.Text)
+			}
 		}
-	}
-	assert.Equal(t, "before after", text.String())
-	assert.Equal(t, EventTurnDone, events[len(events)-1].Type)
-	assert.Contains(t, warn.String(), "chat: skipped 1 claude output line(s) over 65536 bytes")
-	assert.NotContains(t, warn.String(), "xxxx", "the skipped line's content never reaches the log")
-	pid := readPIDFile(t, f.pid)
-	assert.NoError(t, syscall.Kill(pid, 0), "the child is still up for the next turn")
+		assert.Equal(t, "before after", text.String())
+		assert.Equal(t, EventTurnDone, events[len(events)-1].Type)
+		assert.Contains(t, warn.String(), "chat: skipped 1 claude output line(s) over 65536 bytes")
+		assert.NotContains(t, warn.String(), "xxxx", "the skipped line's content never reaches the log")
+		assert.True(t, f.cli.last().alive(), "the child is still up for the next turn")
+	})
 }

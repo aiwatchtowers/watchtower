@@ -10,7 +10,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 // asHostEnv makes the test binary run as `session-host --socket PATH`, so
@@ -32,7 +31,9 @@ func runTestHost(args []string) int {
 	if err != nil {
 		return 1
 	}
-	if err := NewServer(Options{IdleExit: 2 * time.Second}).Serve(context.Background(), l); err != nil {
+	// No idle exit: the test's cleanup kills the host's group, so a slow
+	// test never finds it gone.
+	if err := NewServer(Options{}).Serve(context.Background(), l); err != nil {
 		return 1
 	}
 	return 0

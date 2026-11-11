@@ -18,9 +18,10 @@ struct WorkbenchSessionView: View {
             let drawerAsk = vm.asks.drawerAsk(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
             let waiting = vm.asks.stack(projectID: projectID).asks.filter { $0.sessionID == sessionID }
             let notices = vm.asks.quickNotices(projectID: projectID).filter { $0.ask.sessionID == sessionID }
-            OwnerAskDrawerHost(vm: vm, ask: drawerAsk) {
+            let closedList = vm.asks.drawerClosedList(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
+            OwnerAskDrawerHost(vm: vm, ask: drawerAsk, closedList: closedList) {
                 VStack(spacing: 0) {
-                    if drawerAsk == nil, !waiting.isEmpty || !notices.isEmpty {
+                    if drawerAsk == nil, closedList == nil, !waiting.isEmpty || !notices.isEmpty {
                         OwnerAskBanner(asks: waiting, notices: notices, vm: vm)
                         Divider()
                     }

@@ -169,10 +169,12 @@ type Center struct {
 	sweep     Sweep
 	ck        ckState
 	retired   retiredCode
-	// issueMu lets one IssueCloudKit run at a time: the only lock held
+	// issueSem lets one IssueCloudKit run at a time: the only lock held
 	// across a bridge call (the public link has its one writer, setLink);
-	// LinkUrgent and Sharing never take it.
-	issueMu sync.Mutex
+	// LinkUrgent and Sharing never take it. A one-slot channel rather than a
+	// mutex: a second issue waiting on it is a durable block, so the tests can
+	// see it waiting (synctest.Wait) instead of sleeping.
+	issueSem chan struct{}
 	// shareTimeout bounds every share call and a wait for the public-link
 	// writer: ShareTimeout (tests shorten it).
 	shareTimeout time.Duration
@@ -206,6 +208,7 @@ func NewCenter(c Config) *Center {
 		publish: c.Publish, events: make(chan PairEvent, eventBuffer),
 		sealer: secure.NewSealer(c.Keys), pairs: map[string]*pairSlot{},
 		container: c.Container, sweep: c.Sweep, shareTimeout: ShareTimeout, keysInZone: c.KeysInZone,
+		issueSem: make(chan struct{}, 1),
 	}
 }
 

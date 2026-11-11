@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -146,18 +147,24 @@ func (rp *runtimePush) raise(keys ...string) {
 	}
 }
 
-func (rp *runtimePush) call(within time.Duration) (string, bool) {
+// call is the next send_alert.
+func (rp *runtimePush) call() string { return <-rp.rel.send.calls }
+
+// noCall settles the bubble (every goroutine waits) and reports a
+// send_alert made by then, if any.
+func (rp *runtimePush) noCall() (string, bool) {
+	synctest.Wait()
 	select {
 	case k := <-rp.rel.send.calls:
 		return k, true
-	case <-time.After(within):
+	default:
 		return "", false
 	}
 }
 
 func (rp *runtimePush) waitLog(line string) {
 	rp.t.Helper()
-	eventually(rp.t, 5*time.Second, line, func() bool { return strings.Contains(rp.logs.String(), line) })
+	eventually(rp.t, line, func() bool { return strings.Contains(rp.logs.String(), line) })
 }
 
 // TestReconnectWakesUnavailableRetries: the relay answered UNAVAILABLE (its
@@ -166,24 +173,24 @@ func (rp *runtimePush) waitLog(line string) {
 // it; the relay's WebSocket connect, through the hook newPusher set, does:
 // the push is sent again at once.
 func TestReconnectWakesUnavailableRetries(t *testing.T) {
-	unavailable := fmt.Errorf("relay: send_alert: %w", relay.MapError(&client.Error{E: &relayv1.Error{
-		Code: relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, Message: "unavailable",
-	}}))
-	rp := newRuntimePush(t, &scriptedAlerts{answers: []error{unavailable}, calls: make(chan string, 64)})
-	rp.raise("ask-1")
-	if _, ok := rp.call(5 * time.Second); !ok {
-		t.Fatal("no first send_alert")
-	}
-	// The 300 ms also let the sender reach its wait before the connect.
-	rp.h.onEvent(context.Background(), transport.Event{Zone: pushZone, Resync: true})
-	if k, ok := rp.call(300 * time.Millisecond); ok {
-		t.Fatalf("a zone marker woke the push of %s", k)
-	}
-	rp.rel.connected()
-	if k, ok := rp.call(5 * time.Second); !ok || k != "ask-1" {
-		t.Fatalf("the connect did not wake the push (%q, %v)", k, ok)
-	}
-	rp.waitLog("push of ask-1 to " + rp.device + ": accepted after 2 attempts")
+	bubble(t, func(t *testing.T) {
+		unavailable := fmt.Errorf("relay: send_alert: %w", relay.MapError(&client.Error{E: &relayv1.Error{
+			Code: relayv1.ErrorCode_ERROR_CODE_UNAVAILABLE, Message: "unavailable",
+		}}))
+		rp := newRuntimePush(t, &scriptedAlerts{answers: []error{unavailable}, calls: make(chan string, 64)})
+		rp.raise("ask-1")
+		rp.call()
+		// The settle also lets the sender reach its wait before the connect.
+		rp.h.onEvent(context.Background(), transport.Event{Zone: pushZone, Resync: true})
+		if k, ok := rp.noCall(); ok {
+			t.Fatalf("a zone marker woke the push of %s", k)
+		}
+		rp.rel.connected()
+		if k := rp.call(); k != "ask-1" {
+			t.Fatalf("the connect woke the push of %q", k)
+		}
+		rp.waitLog("push of ask-1 to " + rp.device + ": accepted after 2 attempts")
+	})
 }
 
 // TestPushTargetsFollowTheReadersSet: a paying phone the hub has not yet
@@ -191,20 +198,23 @@ func TestReconnectWakesUnavailableRetries(t *testing.T) {
 // gets no push, and no ledger row, so the alert is not settled forbidden;
 // once the readers include it, the next alert reaches it.
 func TestPushTargetsFollowTheReadersSet(t *testing.T) {
-	rp := newRuntimePush(t, &scriptedAlerts{calls: make(chan string, 64)})
-	rp.rel.setReaders()
-	rp.raise("ask-1")
-	if k, ok := rp.call(300 * time.Millisecond); ok {
-		t.Fatalf("pushed %s to a phone not among the readers", k)
-	}
-	if began, err := rp.h.st.BeginAlertPush("ask-1", rp.device, time.Now()); err != nil || !began {
-		t.Fatalf("a ledger row exists for the phone that was no target: %v, %v", began, err)
-	}
-	rp.rel.setReaders(runtimePhone)
-	rp.raise("ask-1", "ask-2")
-	if k, ok := rp.call(5 * time.Second); !ok || k != "ask-2" {
-		t.Fatalf("the next alert was not pushed (%q, %v)", k, ok)
-	}
+	bubble(t, func(t *testing.T) {
+		rp := newRuntimePush(t, &scriptedAlerts{calls: make(chan string, 64)})
+		rp.rel.setReaders()
+		rp.raise("ask-1")
+		if k, ok := rp.noCall(); ok {
+			t.Fatalf("pushed %s to a phone not among the readers", k)
+		}
+		if began, err := rp.h.st.BeginAlertPush("ask-1", rp.device, time.Now()); err != nil || !began {
+			t.Fatalf("a ledger row exists for the phone that was no target: %v, %v", began, err)
+		}
+		rp.rel.setReaders(runtimePhone)
+		time.Sleep(hubslices.RelaySpacing) // the kind's next save is due
+		rp.raise("ask-1", "ask-2")
+		if k := rp.call(); k != "ask-2" {
+			t.Fatalf("the next alert pushed was %q, want ask-2", k)
+		}
+	})
 }
 
 // TestRuntimeAlertConfigCarriesTheHooks: the publisher config the runtime
@@ -212,33 +222,33 @@ func TestPushTargetsFollowTheReadersSet(t *testing.T) {
 // owner-away input; the switcher config's OnSwitched drops the queued pushes
 // on a switch to CloudKit.
 func TestRuntimeAlertConfigCarriesTheHooks(t *testing.T) {
-	rp := newRuntimePush(t, &scriptedAlerts{err: rateLimited(30), calls: make(chan string, 64)})
-	var c hubslices.Config
-	rp.h.withAlerts(&c)
-	if c.OnAlertSaved == nil || c.Away == nil {
-		t.Fatal("the publisher config misses OnAlertSaved or Away")
-	}
-	rp.away.mu.Lock()
-	rp.away.away = false
-	rp.away.mu.Unlock()
-	if away, err := c.Away.Away(); err != nil || away {
-		t.Fatalf("the publisher's Away is not the runtime's input: %v, %v", away, err)
-	}
-	rp.away.mu.Lock()
-	rp.away.away = true
-	rp.away.mu.Unlock()
+	bubble(t, func(t *testing.T) {
+		rp := newRuntimePush(t, &scriptedAlerts{err: rateLimited(30), calls: make(chan string, 64)})
+		var c hubslices.Config
+		rp.h.withAlerts(&c)
+		if c.OnAlertSaved == nil || c.Away == nil {
+			t.Fatal("the publisher config misses OnAlertSaved or Away")
+		}
+		rp.away.mu.Lock()
+		rp.away.away = false
+		rp.away.mu.Unlock()
+		if away, err := c.Away.Away(); err != nil || away {
+			t.Fatalf("the publisher's Away is not the runtime's input: %v, %v", away, err)
+		}
+		rp.away.mu.Lock()
+		rp.away.away = true
+		rp.away.mu.Unlock()
 
-	rp.raise("ask-1", "ask-2")
-	if _, ok := rp.call(5 * time.Second); !ok {
-		t.Fatal("no first send_alert")
-	}
-	sc := rp.h.switcherConfig(actions.Config{})
-	if sc.OnSwitched == nil {
-		t.Fatal("the switcher config has no OnSwitched")
-	}
-	sc.OnSwitched(transport.KindCloudKit)
-	rp.waitLog("push of ask-1 to " + rp.device + ": expired (switched)")
-	rp.waitLog("push of ask-2 to " + rp.device + ": expired (switched)")
+		rp.raise("ask-1", "ask-2")
+		rp.call()
+		sc := rp.h.switcherConfig(actions.Config{})
+		if sc.OnSwitched == nil {
+			t.Fatal("the switcher config has no OnSwitched")
+		}
+		sc.OnSwitched(transport.KindCloudKit)
+		rp.waitLog("push of ask-1 to " + rp.device + ": expired (switched)")
+		rp.waitLog("push of ask-2 to " + rp.device + ": expired (switched)")
+	})
 }
 
 // TestRestartPushesAnAlertSavedAtOnce: after a restart the relay transport
@@ -246,20 +256,23 @@ func TestRuntimeAlertConfigCarriesTheHooks(t *testing.T) {
 // its first publish, so an alert that cycle saves at once reaches the phone
 // that is a reader, exactly once.
 func TestRestartPushesAnAlertSavedAtOnce(t *testing.T) {
-	pr := startPushRig(t)
-	if err := pr.stop(); err != nil {
-		t.Fatal(err)
-	}
-	pr.src.set(t, workAlert("ask-9")) // new to the zone: the first cycle saves it
-	r2 := &vouchRig{rig: newRig(t, pr.dir), srv: pr.srv, clock: pr.clock}
-	o := r2.options()
-	o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, pr.srv.URL, pr.clock.Now, time.Hour
-	o.away = alwaysAway{}
-	o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{pr.src} }
-	r2.start(o)
-	eventually(t, 15*time.Second, "the push after the restart", func() bool { return len(pr.srv.Alerts()) == 1 })
-	time.Sleep(200 * time.Millisecond) // a second push would have gone by now
-	if sent := pr.sendAlerts(); len(sent) != 1 || sent[0].GetPhoneDeviceId() != pr.phone {
-		t.Fatalf("send_alert requests %v, want one to the reader", sent)
-	}
+	bubble(t, func(t *testing.T) {
+		pr := startPushRig(t)
+		if err := pr.stop(); err != nil {
+			t.Fatal(err)
+		}
+		pr.src.set(t, workAlert("ask-9")) // new to the zone: the first cycle saves it
+		r2 := &vouchRig{rig: newRelayRig(t, pr.dir, pr.srv), srv: pr.srv, clock: pr.clock}
+		o := r2.options()
+		o.newTransport, o.RelayOrigin, o.Clock, o.linkEvery = nil, pr.srv.URL, pr.clock.Now, time.Hour
+		o.away = alwaysAway{}
+		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{pr.src} }
+		r2.start(o)
+		eventually(t, "the push after the restart", func() bool { return len(pr.srv.Alerts()) == 1 })
+		time.Sleep(200 * time.Millisecond) // a second push would have gone by now
+		synctest.Wait()
+		if sent := pr.sendAlerts(); len(sent) != 1 || sent[0].GetPhoneDeviceId() != pr.phone {
+			t.Fatalf("send_alert requests %v, want one to the reader", sent)
+		}
+	})
 }

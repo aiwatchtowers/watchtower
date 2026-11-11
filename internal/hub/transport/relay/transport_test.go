@@ -140,27 +140,15 @@ func (h *harness) sealAsset(t *testing.T, dir, zone string) (secure.Record, stri
 // nextEvent waits for the next transport event.
 func nextEvent(t *testing.T, tr *Transport) transport.Event {
 	t.Helper()
-	select {
-	case ev := <-tr.Events():
-		return ev
-	case <-time.After(5 * time.Second):
-		t.Fatal("no event")
-		return transport.Event{}
-	}
+	return <-tr.Events()
 }
 
 // waitZoneEvent waits for a zone event of zone, skipping others.
 func waitZoneEvent(t *testing.T, tr *Transport, zone string) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
 	for {
-		select {
-		case ev := <-tr.Events():
-			if ev.Zone == zone && ev.Err == nil {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("no zone event for %s", zone)
+		if ev := <-tr.Events(); ev.Zone == zone && ev.Err == nil {
+			return
 		}
 	}
 }
@@ -451,13 +439,7 @@ func TestRelayTransport_ZoneChangedWithoutRecordMeansPull(t *testing.T) {
 	if ev.Zone != h.data || ev.Control != nil || ev.Err != nil || !ev.Resync {
 		t.Fatalf("event: %+v", ev)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for len(h.relay.Requests("get_account_state")) == states {
-		if time.Now().After(deadline) {
-			t.Fatal("account state not re-read after a record-less ZoneChanged")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	h.relay.WaitRequests("get_account_state", states+1) // re-read after a record-less ZoneChanged
 	// A ZoneChanged with a record carries its seq and the record as a
 	// one-record page (PullEvent decides whether it saves a read).
 	h.relay.Push(t, &relayv1.Event{Kind: &relayv1.Event_ZoneChanged{ZoneChanged: &relayv1.ZoneChanged{

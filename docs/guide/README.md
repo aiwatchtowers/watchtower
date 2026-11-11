@@ -83,6 +83,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
 - [Agent coach](features/agent-coach.md) — weekly suggestions to improve your instructions, prompts and agent settings, each applied only when you accept it
+- [Tuning chat](features/tuning-chat.md) — ask why your agents or Watchtower's prompts cost or fail, and accept the edit the chat proposes to a prompt, skill or instruction file
 
 ## Automations & AI
 

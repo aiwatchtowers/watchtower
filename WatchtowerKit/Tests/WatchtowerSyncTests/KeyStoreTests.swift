@@ -485,6 +485,24 @@ final class KeyStoreTests: XCTestCase {
         XCTAssertEqual(backend.writes.filter { $0.account == "hub.hub-1" }.count, hubWrites, "an unchanged item is not rewritten")
     }
 
+    /// `JSONEncoder` does not fix an object's key order, so a stored item can hold the same value in other bytes
+    /// (an older write, another process). Such an item is unchanged and is not rewritten.
+    func testAnItemHoldingTheSameValueInOtherKeyOrderIsNotRewritten() throws {
+        let backend = FakeKeychainBackend()
+        let store = makeStore(backend)
+        try store.saveHubLink(link())
+        let sorted = JSONEncoder()
+        sorted.outputFormatting = [.sortedKeys]
+        let hub = try XCTUnwrap(try store.hubLink("hub-1"))
+        let alert = try XCTUnwrap(try store.alertMaterial("hub-1"))
+        backend.plant("hub.hub-1", try sorted.encode(hub), group: privateGroup)
+        backend.plant("alert.hub-1", try sorted.encode(alert), group: alertGroup)
+        let writes = backend.writes.count
+        try store.saveHubLink(link())
+        _ = try store.updateHubLink("hub-1") { $0 }
+        XCTAssertEqual(backend.writes.count, writes, "an unchanged item is not rewritten")
+    }
+
     func testOldItemDecodesWithNoEphemeralState() throws {
         let backend = FakeKeychainBackend()
         // As a build before Phase 5 wrote it: no currentKX/offeredKX, no relayKeys on the epochs.

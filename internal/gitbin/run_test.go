@@ -268,63 +268,67 @@ func TestExecFetch_NoPromptEnvironment(t *testing.T) {
 	}
 }
 
-// A fetch cut off by its context is killed with its whole process group:
-// a child it started does not outlive it.
-func TestExecFetch_KillsTheProcessGroup(t *testing.T) {
-	pidFile := filepath.Join(t.TempDir(), "child")
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-	_, _, err := ExecFetch(ctx, t.TempDir(), false, "/bin/sh", "-c", `sleep 30 & echo $! > '`+pidFile+`'; wait`)
-	if err == nil {
-		t.Fatal("want the cut-off run to fail")
+// startedChild runs call(ctx, script) in the background, where script starts
+// a long sleep in the background, hands its pid over a FIFO and waits for
+// it. It returns the sleep's pid once the script has started it, the cancel
+// that ends ctx, and the call's error.
+func startedChild(t *testing.T, ctx context.Context, call func(ctx context.Context, script, fifo string) error) (pid int, cancel context.CancelFunc, result <-chan error) {
+	t.Helper()
+	fifo := filepath.Join(t.TempDir(), "pid")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	b, err := os.ReadFile(pidFile)
+	ctx, cancel = context.WithCancel(ctx)
+	t.Cleanup(cancel)
+	done := make(chan error, 1)
+	go func() { done <- call(ctx, `sleep 1000000 & echo $! > "$1"; wait`, fifo) }()
+	raw, err := os.ReadFile(fifo) // opens once the script does, ends at its close
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	pid, err = strconv.Atoi(strings.TrimSpace(string(raw)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
-	deadline := time.Now().Add(2 * time.Second)
+	return pid, cancel, done
+}
+
+// waitGone returns once pid no longer exists (killed and reaped by init).
+// A child that outlived its group's kill sleeps on, and this hangs until go
+// test -timeout.
+func waitGone(pid int) {
 	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("child %d outlived the fetch", pid)
-		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// Under WithProcessGroup a timed-out Exec kills the whole group — a child
-// the process started included — and waits, so nothing outlives the call.
+// A fetch cut off by its context is killed with its whole process group:
+// a child it started does not outlive it.
+func TestExecFetch_KillsTheProcessGroup(t *testing.T) {
+	pid, cancel, result := startedChild(t, context.Background(), func(ctx context.Context, script, fifo string) error {
+		_, _, err := ExecFetch(ctx, t.TempDir(), false, "/bin/sh", "-c", script, "sh", fifo)
+		return err
+	})
+	cancel()
+	if err := <-result; err == nil {
+		t.Fatal("want the cut-off run to fail")
+	}
+	waitGone(pid)
+}
+
+// Under WithProcessGroup an Exec whose context ends kills the whole group —
+// a child the process started included — and waits, so nothing outlives the
+// call. A group left alive would keep the shell's wait, and Exec, running.
 func TestExec_WithProcessGroupReapsChildrenOnTimeout(t *testing.T) {
 	dir := t.TempDir()
-	pidFile := filepath.Join(dir, "child.pid")
-	ctx, cancel := context.WithTimeout(WithProcessGroup(context.Background()), 300*time.Millisecond)
-	defer cancel()
-	start := time.Now()
-	_, _, err := Exec(ctx, dir, nil, "/bin/sh", "-c", `sleep 30 & echo $! > "$1"; wait`, "sh", pidFile)
-	if err == nil {
-		t.Fatal("a timed-out run reported success")
+	pid, cancel, result := startedChild(t, WithProcessGroup(context.Background()), func(ctx context.Context, script, fifo string) error {
+		_, _, err := Exec(ctx, dir, nil, "/bin/sh", "-c", script, "sh", fifo)
+		return err
+	})
+	cancel()
+	if err := <-result; err == nil {
+		t.Fatal("a cut-off run reported success")
 	}
-	if took := time.Since(start); took > 5*time.Second {
-		t.Fatalf("Exec returned after %v: the group was not killed", took)
-	}
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for syscall.Kill(pid, 0) == nil {
-		if time.Now().After(deadline) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-			t.Fatalf("child %d outlived the timed-out run", pid)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitGone(pid)
 }

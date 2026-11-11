@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"strings"
@@ -13,6 +14,11 @@ import (
 // band (PRIO_DARWIN_BG): that band also throttles disk I/O and starves its
 // processes under load, and the helpers run under fixed timeouts.
 const helperNice = 10
+
+// helperDeadline bounds one helper run (the OCR helper, the PDF parser):
+// context.WithTimeout, which a test replaces to end a running helper's
+// deadline on a process event instead of a real clock.
+var helperDeadline = context.WithTimeout
 
 // RunHelper runs a helper subprocess (the PDF parser, the OCR helper) like
 // cmd.Run, but lowers its CPU priority to helperNice right after it starts.

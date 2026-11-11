@@ -177,7 +177,11 @@ type Options struct {
 	httpClient   *http.Client // the relay client's and the attachments' (nil = their own)
 	openStore    func(dir string) (*state.Store, error)
 	report       func(Status)
-	peerUID      func(*net.UnixConn) (int, error)
+	peerUID      func(net.Conn) (int, error) // nil = unixPeerUID
+	// listen binds the control socket (nil = listenControl). A test in a
+	// synctest bubble hands an in-memory listener: a goroutine in a real
+	// Accept is not durably blocked and would stop the bubble's clock.
+	listen       func(path string) (net.Listener, error)
 	mobileSync   func() string
 	lockRetry    time.Duration
 	lockWindow   time.Duration
@@ -194,7 +198,6 @@ type Options struct {
 	runnerGap    time.Duration       // 0 = the runners' standard 5 s
 	liveEvery    time.Duration       // 0 = livenessEvery
 	away         platform.Away       // nil = platform.NewAway(), the console's state
-	sendBuffer   int                 // SO_SNDBUF of each accepted control connection (0 = the OS default)
 	// payTimer is the PayingWatch's poll timer (nil = a real one).
 	payTimer func(time.Duration) (<-chan time.Time, func())
 	// soonTimer is the link check's short retry after a link change (nil =
@@ -231,7 +234,10 @@ func (o Options) withDefaults() Options {
 		o.openStore = state.Open
 	}
 	if o.peerUID == nil {
-		o.peerUID = platform.PeerUID
+		o.peerUID = unixPeerUID
+	}
+	if o.listen == nil {
+		o.listen = listenControl
 	}
 	if o.mobileSync == nil {
 		o.mobileSync = policy.MobileSync

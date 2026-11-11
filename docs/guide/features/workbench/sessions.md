@@ -16,14 +16,16 @@ Updating Watchtower never stops your sessions, and quitting asks you. See [Updat
 
 ### Session states
 <!-- learn
-id: sessions-states
+id: sessions-states-idle
 title: Read a session's state at a glance
-text: The caption under each session says whether it works, needs approval, waits for you or has finished.
+text: The caption says whether a session works, runs a background task, waits for you, has finished or is **Idle**.
 area: development
 level: basics
 kind: tip
-since: 0.24.0
+since: 0.28.0
 action: nav:projects
+replaces: [sessions-states]
+changed: A background command keeps a session working, and a turn that ended reads **Idle** instead of Stopped.
 -->
 
 A caption under the session name says what the agent is doing. When several apply, the first row wins.
@@ -33,8 +35,8 @@ A caption under the session name says what the agent is doing. When several appl
 | **Needs approval** | orange | The agent asks for a permission. It returns to working once you allow it. |
 | **Error: …** | red | The turn stopped on an error. The caption names it, for example "Error: rate limit". |
 | **Working** | green | The agent works on your prompt. |
-| **Agents working** (or **N agents working**) | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
-| **Background task running** | green, pulsing | The turn is over but a background command runs, such as a CI wait; then the agent resumes. Up to 2 hours. |
+| **Agents working** (or **N agents working**) | green, pulsing | Its turn is over but helpers it started (or their own helpers) still work; wins over a background task. |
+| **Background task running** (or **N …**) | green, pulsing | The turn is over but a background command runs, such as a CI wait; then the agent resumes. Up to 2 hours. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
 | **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
@@ -107,7 +109,7 @@ action: hotkey:go-to
 <!-- learn
 id: sessions-quick-delete
 title: Clear finished sessions in one click
-text: Hover a finished or stopped session and click **✕**; **Undo** in the bar brings it back.
+text: Hover a finished or idle session and click **✕**; **Undo** in the bar brings it back.
 area: development
 level: next
 kind: tip
@@ -121,7 +123,7 @@ action: nav:projects
 - Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
 - Hover a session that is finished, idle, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
-- If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.
+- Quitting before the bar goes away still deletes; a busy database can hold the quit a few seconds ("Finishing session deletes…").
 - When you delete a workbench session the dialog first checks what it left behind and may offer **Delete and Clean Up**. See [Worktrees and cleanup](worktrees-and-cleanup.md).
 
 ### Read a session's report and analytics

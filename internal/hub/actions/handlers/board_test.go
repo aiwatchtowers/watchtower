@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/db"
@@ -355,20 +356,23 @@ func TestAFailedCreateIsWriteFailed(t *testing.T) {
 // The write waits on the database lock: the handler's own timeout answers
 // outcome_unknown; the write is never cut and lands once the lock goes.
 func TestAHungCreateIsCutByTheHandlersTimeout(t *testing.T) {
-	e := newEnv(t)
-	wb, _ := e.seedTarget("todo", "medium")
-	e.h.d.Timeout = 50 * time.Millisecond
-	tx, err := e.db.Begin() // holds the only connection and the write lock
-	if err != nil {
-		t.Fatal(err)
-	}
+	// The handler's 50 ms deadline runs out on a synctest bubble's clock.
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		wb, _ := e.seedTarget("todo", "medium")
+		e.h.d.Timeout = 50 * time.Millisecond
+		tx, err := e.db.Begin() // holds the only connection and the write lock
+		if err != nil {
+			t.Fatal(err)
+		}
 
-	got := e.board(e.createAction(wb, "Task", 0, ""))
-	_ = tx.Rollback()
+		got := e.board(e.createAction(wb, "Task", 0, ""))
+		_ = tx.Rollback()
 
-	if got.Status != wire.StatusFailed || got.Reason != reasonOutcomeUnknown || got.Message != boardTimeoutMessage {
-		t.Fatalf("outcome = %+v", got)
-	}
+		if got.Status != wire.StatusFailed || got.Reason != reasonOutcomeUnknown || got.Message != boardTimeoutMessage {
+			t.Fatalf("outcome = %+v", got)
+		}
+	})
 }
 
 func TestEveryKindForADeletedWorkbenchIsNotFound(t *testing.T) {

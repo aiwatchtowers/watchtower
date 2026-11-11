@@ -2297,30 +2297,6 @@ CREATE TABLE IF NOT EXISTS "spec_review_marks" (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (ask_id, item_key)
 );
-CREATE TABLE IF NOT EXISTS coach_proposals (
-    id            INTEGER PRIMARY KEY,
-    fingerprint   TEXT NOT NULL UNIQUE,
-    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
-    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user')),
-    workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
-    prompt_id     TEXT NOT NULL DEFAULT '',
-    title         TEXT NOT NULL,
-    why           TEXT NOT NULL,
-    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
-    before_text   TEXT NOT NULL DEFAULT '', -- the whole destination text before
-    after_text    TEXT NOT NULL DEFAULT '', -- the whole destination text after
-    evidence      TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
-    sources       INTEGER NOT NULL,         -- distinct sources, recomputed in Go
-    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','declined','superseded','rolled_back')),
-    reverts_id    INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL, -- a cut of an earlier no-effect edit
-    created_at    TEXT NOT NULL,
-    decided_at    TEXT NOT NULL DEFAULT '',
-    baseline      REAL,
-    baseline_n    INTEGER NOT NULL DEFAULT 0,
-    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
-    verdict_value REAL,
-    verdict_at    TEXT NOT NULL DEFAULT ''
-);
 CREATE TABLE IF NOT EXISTS prompt_additions (
     id          INTEGER PRIMARY KEY,
     prompt_id   TEXT NOT NULL,
@@ -2456,6 +2432,44 @@ CREATE TABLE IF NOT EXISTS inbox_folder_state (
 CREATE TABLE IF NOT EXISTS inbox_folder_routes (
     automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
     folder_id     INTEGER NOT NULL REFERENCES inbox_folders(id)
+);
+CREATE TABLE IF NOT EXISTS "coach_proposals" (
+    id            INTEGER PRIMARY KEY,
+    fingerprint   TEXT NOT NULL UNIQUE,
+    kind          TEXT NOT NULL CHECK (kind IN ('add','cut','replace')),
+    destination   TEXT NOT NULL CHECK (destination IN ('session','procedure','chat','prompt_addition','claude_settings_allow','claude_md_user',
+                  'claude_skill_user','codex_skill_user','pack_overlay','codex_agents_md_user','codex_rules_allow',
+                  'repo_claude_md','repo_agents_md','repo_claude_skill','repo_codex_skill','repo_workflow')),
+    workbench_id  INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
+    prompt_id     TEXT NOT NULL DEFAULT '',
+    title         TEXT NOT NULL,
+    why           TEXT NOT NULL,
+    metric        TEXT NOT NULL CHECK (metric IN ('corrections','task_cost','owner_loop','review_findings')),
+    before_text   TEXT NOT NULL DEFAULT '', -- the whole destination text before
+    after_text    TEXT NOT NULL DEFAULT '', -- the whole destination text after
+    evidence      TEXT NOT NULL DEFAULT '[]', -- JSON [{kind,ref}]
+    sources       INTEGER NOT NULL,         -- distinct sources, recomputed in Go
+    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','declined','superseded','rolled_back')),
+    reverts_id    INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL, -- a cut of an earlier no-effect edit
+    created_at    TEXT NOT NULL,
+    decided_at    TEXT NOT NULL DEFAULT '',
+    baseline      REAL,
+    baseline_n    INTEGER NOT NULL DEFAULT 0,
+    verdict       TEXT NOT NULL DEFAULT '' CHECK (verdict IN ('','works','no_effect','too_little_data')),
+    verdict_value REAL,
+    verdict_at    TEXT NOT NULL DEFAULT '',
+    origin          TEXT NOT NULL DEFAULT 'weekly' CHECK (origin IN ('weekly','chat')),
+    skill           TEXT NOT NULL DEFAULT '',
+    conversation_id INTEGER REFERENCES chat_conversations(id) ON DELETE SET NULL,
+    written_branch  TEXT NOT NULL DEFAULT '',
+    measure_from    TEXT
+);
+CREATE TABLE IF NOT EXISTS skill_pack_overlays (
+    id          INTEGER PRIMARY KEY,
+    skill       TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    proposal_id INTEGER REFERENCES coach_proposals(id) ON DELETE SET NULL,
+    created_at  TEXT NOT NULL
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2815,6 +2829,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_outputs_key ON automation_outpu
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_changed ON automation_outputs(kind, changed_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_folders_one_root ON inbox_folders(kind) WHERE kind IN ('root','approvals');
 CREATE INDEX IF NOT EXISTS idx_inbox_folders_parent ON inbox_folders(parent_id, position);
+CREATE INDEX IF NOT EXISTS coach_proposals_conversation ON coach_proposals(conversation_id);
+CREATE INDEX IF NOT EXISTS skill_pack_overlays_skill ON skill_pack_overlays(skill, id);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;

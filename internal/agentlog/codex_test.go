@@ -412,7 +412,12 @@ func TestAgentlog02_CodexForkedRolloutCountsOnce(t *testing.T) {
 
 func TestAgentlog05_CodexReadOnly(t *testing.T) {
 	f := newFixture(t)
-	f.writeRollout(cxParent, cxSession(t, cxParent, f.folder))
+	// The parent spawns a child, which spawns a grandchild (ask #1132): the
+	// sub-agent rollouts are read and left untouched too.
+	f.writeRollout(cxParent, cxSession(t, cxParent, f.folder)+cxSpawn(t, "13.000", "call-spawn-1", cxChild))
+	f.writeRollout(cxChild, cxChildMeta(t, "19.000", cxChild, cxParent, f.folder)+cxChildBody(t, cxChild, 9000)+
+		cxSpawn(t, "23.000", "call-spawn-2", cxGrand))
+	f.writeRollout(cxGrand, cxChildMeta(t, "24.000", cxGrand, cxChild, f.folder)+cxChildBody(t, cxGrand, 9100))
 	var buf bytes.Buffer
 	enc, err := zstd.NewWriter(&buf)
 	require.NoError(t, err)
@@ -426,6 +431,8 @@ func TestAgentlog05_CodexReadOnly(t *testing.T) {
 	r := f.scan()
 	require.Zero(t, r.FailedFiles, "%v", r.FirstFailure)
 	require.Len(t, f.sessionUUIDs(), 2)
+	require.NotEmpty(t, f.lane(cxChild), "the child was read")
+	require.NotEmpty(t, f.lane(cxGrand), "the grandchild was read")
 	assert.Equal(t, before, treeSnapshot(t, f.codex), "no file under CODEX_HOME is written, moved, added or removed")
 }
 

@@ -1,8 +1,8 @@
 package relaytest_test
 
 import (
+	"slices"
 	"testing"
-	"time"
 
 	"watchtower/internal/hub/relaytest"
 	"watchtower/internal/hub/transport/relay/relayv1"
@@ -28,12 +28,12 @@ func TestOneZoneChangedPerWriteCall(t *testing.T) {
 		}
 	}
 	save("a")
-	zc := readFrame(t, ws, 5*time.Second).GetEvent().GetZoneChanged()
+	zc := readFrame(t, ws).GetEvent().GetZoneChanged()
 	if zc.GetSeq() != 1 || zc.GetRecord().GetName() != "a" || zc.GetRecord().GetRecordSeq() != 1 {
 		t.Fatalf("single save: %v", zc)
 	}
 	save("b", "c")
-	zc = readFrame(t, ws, 5*time.Second).GetEvent().GetZoneChanged()
+	zc = readFrame(t, ws).GetEvent().GetZoneChanged()
 	if zc.GetSeq() != 3 || zc.GetRecord() != nil {
 		t.Fatalf("two-record save: %v", zc)
 	}
@@ -42,12 +42,12 @@ func TestOneZoneChangedPerWriteCall(t *testing.T) {
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	zc = readFrame(t, ws, 5*time.Second).GetEvent().GetZoneChanged()
+	zc = readFrame(t, ws).GetEvent().GetZoneChanged()
 	if zc.GetSeq() != 5 || zc.GetRecord() != nil {
 		t.Fatalf("delete: %v", zc)
 	}
-	// Last: a read that times out ends the socket.
-	if fr := readFrame(t, ws, 300*time.Millisecond); fr != nil {
-		t.Fatalf("a second event for one call: %v", fr)
+	// One event per call: the relay queued them inside each call.
+	if got, _ := srv.EventsQueuedFor(p.RelayDeviceID()); !slices.Equal(got, []int{3}) {
+		t.Fatalf("events queued %v; want [3], one per call", got)
 	}
 }

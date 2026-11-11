@@ -50,7 +50,7 @@ func TestDaemonRoutingJobCapturesActualSyncBoundaryAndKeepsCheckpoint(t *testing
 	})
 	probe := &routingMailProbe{seen: make(chan string, 4), release: make(chan struct{}, 2)}
 	d.imapSyncers = []mailSyncer{probe}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	first := d.startCycle(ctx, false)
 	defer func() { cancel(); <-first.done }()
@@ -93,7 +93,7 @@ func TestDaemonRoutingWatchStopsWithSamePIDOwner(t *testing.T) {
 			}
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- d.Run(ctx) }()
 	defer func() { cancel(); <-stopped }()

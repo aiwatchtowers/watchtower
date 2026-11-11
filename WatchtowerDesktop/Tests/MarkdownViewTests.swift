@@ -47,6 +47,7 @@ final class MarkdownViewTests: XCTestCase {
 
     func testRendersATable() throws {
         let view = MarkdownView(text: "| A | B |\n|---|---|\n| 1 | 2 |")
-        XCTAssertNoThrow(try view.inspect().find(ViewType.Grid.self))
+        XCTAssertNoThrow(try view.inspect().find(MarkdownTableView.self))
+        XCTAssertNoThrow(try view.inspect().find(text: "B"))
     }
 }

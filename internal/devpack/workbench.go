@@ -91,6 +91,14 @@ type WorkbenchInstallOptions struct {
 	// fails (a leftover registration at a reused path): each claude run
 	// costs about a second of the session start.
 	NewFolder bool
+	// Overlays: the owner's approved lines per pack skill, rendered into
+	// the core and preset copies (spec 2026-11-03 §4.3); nil = none.
+	// OverlaysUnread: the overlays could not be read, so an existing core
+	// or preset copy is reported, not written — a copy never loses the
+	// owner's lines over a database error (a missing one is installed
+	// plain).
+	Overlays       Overlays
+	OverlaysUnread bool
 }
 
 // WorkbenchInstallReport is what InstallWorkbench did; Excluded holds the
@@ -305,11 +313,11 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 func installWorkbenchFiles(o WorkbenchInstallOptions, rep *WorkbenchInstallReport, hadLegacyHooks bool) []error {
 	var errs []error
 	var err error
-	if err = skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), flowSkill(), legacySkill()); err != nil {
+	if err = skillDirsInside(o.Folder, o.skillsDir(), o.coreSkill(), o.flowSkill(), legacySkill()); err != nil {
 		errs = append(errs, err)
 	} else {
 		var pairErrs []error
-		rep.Skill, rep.Flow, rep.SingleFileLayout, pairErrs = installSkillPair(o.skillsDir(), o.PresetNone)
+		rep.Skill, rep.Flow, rep.SingleFileLayout, pairErrs = installSkillPair(o.skillsDir(), o)
 		errs = append(errs, pairErrs...)
 		if rep.LegacySkill, err = removeSkill(o.skillsDir(), legacySkill()); err != nil {
 			errs = append(errs, err)
@@ -405,11 +413,11 @@ func refusedFileReported(reported []error, err error) bool {
 // and the pre-rename one —, unless the skills directory leads outside the
 // folder: then nothing is removed and that refusal is returned (PROJ-04).
 func removeWorkbenchSkills(o WorkbenchInstallOptions) error {
-	if err := skillDirsInside(o.Folder, o.skillsDir(), workbenchSkill(), flowSkill(), legacySkill()); err != nil {
+	if err := skillDirsInside(o.Folder, o.skillsDir(), o.coreSkill(), o.flowSkill(), legacySkill()); err != nil {
 		return err
 	}
 	var errs []error
-	for _, s := range []Skill{workbenchSkill(), flowSkill(), legacySkill()} {
+	for _, s := range []Skill{o.coreSkill(), o.flowSkill(), legacySkill()} {
 		if _, err := removeSkill(o.skillsDir(), s); err != nil {
 			errs = append(errs, err)
 		}
@@ -429,8 +437,10 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	ps := WorkbenchStatus{ClaudeFound: true}
 	var errs []error
 	var err error
-	if ps.Skill, err = statusSkill(o.skillsDir(), workbenchSkill()); err != nil {
+	if ps.Skill, err = statusSkill(o.skillsDir(), o.coreSkill()); err != nil {
 		errs = append(errs, err)
+	} else if o.OverlaysUnread {
+		ps.Skill = keptState(ps.Skill)
 	}
 	if ps.LegacySkill, err = statusLegacySkill(o.skillsDir()); err != nil {
 		errs = append(errs, err)

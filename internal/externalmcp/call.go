@@ -24,7 +24,7 @@ func (e *ToolError) Error() string { return "tool error: " + e.Message }
 // server is started for the call in its own process group, and the group is
 // stopped before CallTool returns.
 func CallTool(ctx context.Context, spec ServerSpec, tool string, args json.RawMessage) (json.RawMessage, error) {
-	transport, stderr, err := discoveryTransport(ctx, spec)
+	transport, stderr, err := serverTransport(ctx, spec)
 	if err != nil {
 		return nil, err
 	}

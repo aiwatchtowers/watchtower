@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/logcanary"
@@ -41,64 +42,69 @@ func (f *fakeLister) answer(runs map[int64]time.Time, err error) {
 // With no phone linked the poll never lists the host, however often it is
 // kicked or ticks; the view stays the empty one.
 func TestLivenessDoesNotPollWithoutALinkedPhone(t *testing.T) {
-	f := &fakeLister{runs: map[int64]time.Time{1: time.Now()}}
-	var linked atomic.Bool
-	l := newLiveness(f, linked.Load, 10*time.Millisecond, nil)
-	l.gap = time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { defer close(done); l.run(ctx) }()
-	for range 20 {
-		l.kick()
-		time.Sleep(5 * time.Millisecond)
-	}
-	if n := f.calls.Load(); n != 0 {
-		t.Fatalf("the host was listed %d times with no phone linked", n)
-	}
-	if live := l.get(); live.Settled || len(live.Runs) != 0 {
-		t.Fatalf("liveness %+v with no phone linked", live)
-	}
-	linked.Store(true)
-	eventually(t, 5*time.Second, "a list once a phone is linked", func() bool { return len(l.get().Runs) == 1 })
-	cancel()
-	<-done
+	bubble(t, func(t *testing.T) {
+		f := &fakeLister{runs: map[int64]time.Time{1: time.Now()}}
+		var linked atomic.Bool
+		l := newLiveness(f, linked.Load, 10*time.Millisecond, nil)
+		l.gap = time.Millisecond
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); l.run(ctx) }()
+		for range 20 {
+			l.kick()
+			time.Sleep(5 * time.Millisecond)
+			synctest.Wait()
+		}
+		if n := f.calls.Load(); n != 0 {
+			t.Fatalf("the host was listed %d times with no phone linked", n)
+		}
+		if live := l.get(); live.Settled || len(live.Runs) != 0 {
+			t.Fatalf("liveness %+v with no phone linked", live)
+		}
+		linked.Store(true)
+		eventually(t, "a list once a phone is linked", func() bool { return len(l.get().Runs) == 1 })
+		cancel()
+		<-done
+	})
 }
 
 // A host that does not answer is logged once per transition, not per
 // refresh, and its recovery once; each failed refresh clears the view at
 // once (nothing live, not settled).
 func TestLivenessLogsAnUnreachableHostOnceAndClearsAtOnce(t *testing.T) {
-	sink := logcanary.Capture(t)
-	at := time.Now()
-	f := &fakeLister{runs: map[int64]time.Time{7: at}}
-	changes := 0
-	l := newLiveness(f, nil, time.Hour, func() { changes++ })
-	ctx := context.Background()
-	l.refresh(ctx)
-	if live := l.get(); !live.Settled || !live.Runs[7].Equal(at) {
-		t.Fatalf("liveness %+v", live)
-	}
-	f.answer(nil, fmt.Errorf("%w: dial", sessionstart.ErrHostNotRunning))
-	for range 50 {
+	bubble(t, func(t *testing.T) {
+		sink := logcanary.Capture(t)
+		at := time.Now()
+		f := &fakeLister{runs: map[int64]time.Time{7: at}}
+		changes := 0
+		l := newLiveness(f, nil, time.Hour, func() { changes++ })
+		ctx := context.Background()
 		l.refresh(ctx)
-	}
-	if live := l.get(); live.Settled || len(live.Runs) != 0 {
-		t.Fatalf("a failed list left %+v", live)
-	}
-	f.answer(nil, errors.New("protocol"))
-	l.refresh(ctx)
-	l.refresh(ctx)
-	f.answer(map[int64]time.Time{7: at}, nil)
-	l.refresh(ctx)
-	l.refresh(ctx)
-	out := sink.String()
-	if n := strings.Count(out, "listing the running sessions failed"); n != 2 {
-		t.Errorf("%d failure lines, want one per transition (2):\n%s", n, out)
-	}
-	if n := strings.Count(out, "lists again"); n != 1 {
-		t.Errorf("%d recovery lines, want 1:\n%s", n, out)
-	}
-	if changes != 3 { // listed, cleared, listed again
-		t.Errorf("onChange ran %d times, want 3", changes)
-	}
+		if live := l.get(); !live.Settled || !live.Runs[7].Equal(at) {
+			t.Fatalf("liveness %+v", live)
+		}
+		f.answer(nil, fmt.Errorf("%w: dial", sessionstart.ErrHostNotRunning))
+		for range 50 {
+			l.refresh(ctx)
+		}
+		if live := l.get(); live.Settled || len(live.Runs) != 0 {
+			t.Fatalf("a failed list left %+v", live)
+		}
+		f.answer(nil, errors.New("protocol"))
+		l.refresh(ctx)
+		l.refresh(ctx)
+		f.answer(map[int64]time.Time{7: at}, nil)
+		l.refresh(ctx)
+		l.refresh(ctx)
+		out := sink.String()
+		if n := strings.Count(out, "listing the running sessions failed"); n != 2 {
+			t.Errorf("%d failure lines, want one per transition (2):\n%s", n, out)
+		}
+		if n := strings.Count(out, "lists again"); n != 1 {
+			t.Errorf("%d recovery lines, want 1:\n%s", n, out)
+		}
+		if changes != 3 { // listed, cleared, listed again
+			t.Errorf("onChange ran %d times, want 3", changes)
+		}
+	})
 }
