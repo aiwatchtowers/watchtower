@@ -139,7 +139,9 @@ struct SpacingPage: View {
 
     static let paneWidths = [
         Step(name: "sideListMin", value: PaneWidth.sideListMin), Step(name: "sideListIdeal", value: PaneWidth.sideListIdeal),
-        Step(name: "sideListMax", value: PaneWidth.sideListMax), Step(name: "detailMin", value: PaneWidth.detailMin),
+        Step(name: "sideListMax", value: PaneWidth.sideListMax),
+        Step(name: "inboxListMin", value: PaneWidth.inboxListMin), Step(name: "inboxListIdeal", value: PaneWidth.inboxListIdeal),
+        Step(name: "inboxListMax", value: PaneWidth.inboxListMax), Step(name: "detailMin", value: PaneWidth.detailMin),
         Step(name: "narrowPage", value: PaneWidth.narrowPage), Step(name: "gridCardMin", value: PaneWidth.gridCardMin)
     ]
 
@@ -418,7 +420,8 @@ struct IconsPage: View {
         (Step(name: "chevron", value: IconSize.chevron), "chevron.down", "a menu label's chevron"),
         (Step(name: "header", value: IconSize.header), "rectangle.split.2x1", "header and toolbar glyphs"),
         (Step(name: "composer", value: IconSize.composer), "paperclip", "the composer's buttons"),
-        (Step(name: "composerLarge", value: IconSize.composerLarge), "arrow.up.circle.fill", "the composer's send")
+        (Step(name: "composerLarge", value: IconSize.composerLarge), "arrow.up.circle.fill", "the composer's send"),
+        (Step(name: "listTile", value: IconSize.listTile), "tray", "a list row's kind tile (the Inbox list)")
     ]
 
     var body: some View {

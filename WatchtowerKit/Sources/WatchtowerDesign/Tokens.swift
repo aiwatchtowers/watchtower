@@ -77,6 +77,10 @@ public enum PaneWidth {
     public static let sideListMin: CGFloat = 170
     public static let sideListIdeal: CGFloat = 220
     public static let sideListMax: CGFloat = 360
+    /// The Inbox's list column: a fixed range, the reading pane takes the rest.
+    public static let inboxListMin: CGFloat = 320
+    public static let inboxListIdeal: CGFloat = 372
+    public static let inboxListMax: CGFloat = 460
     public static let detailMin: CGFloat = 260
     public static let narrowPage: CGFloat = 420
     /// The least width of a card in an adaptive grid (the Connections overview).
@@ -111,6 +115,8 @@ public enum IconSize {
     public static let composerLarge: CGFloat = 24
     /// An icon on a soft square tile (Home's Learn cards).
     public static let tile: CGFloat = 26
+    /// A list row's kind tile (the Inbox list).
+    public static let listTile: CGFloat = 30
 }
 
 /// Letter spacing, in points.
