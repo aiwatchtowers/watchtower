@@ -28,14 +28,29 @@ jobs:
   # for that run and goes ahead without it; any gh/API error also lets the
   # run go ahead (fail-open). See scripts/ci-dedupe-gate.sh.
   # On a pull request it also says which jobs the change can affect:
-  #   code   — anything but docs: Go and Swift test each other (Swift Test
-  #            builds the CLI, Go tests read Swift sources and the generated
-  #            test schema), so one switch covers both and the linters;
-  #            docs/guide/reference/keyboard-shortcuts.md counts as code, since
-  #            KeyboardShortcutCatalogTests reads it.
+  #   go     — Go Test, Go Lint, the Go builds and the code index: anything
+  #            but docs and the three Swift trees, plus the Swift files Go
+  #            and shell tests read (the Desktop's Sources, which several
+  #            guards scan; the shared fixtures; the generated test schema;
+  #            the phone's release config), docs/inventory (its guard) and
+  #            any deleted or renamed Swift file (the inventory guard checks
+  #            the Swift guard tests exist). docs/guide is Guide Check's.
+  #   swift  — Swift Lint + Kit Test and Swift Test: the Swift trees, the
+  #            Makefile, scripts/ and this file, plus the Go-side files Swift
+  #            tests read (shared testdata, schema.sql, contract files, the
+  #            Go packages dual-path tests list, keyboard-shortcuts.md, the
+  #            issue form) and what the CLI they build runs
+  #            (CodeNavRealCLITests: `code index|search`; SQLCipherInteropTests:
+  #            internal/sqlcipher/cmd/interop) with go.mod/go.sum. The CLI's
+  #            shared internal packages (config, auditlog, …) are left out on
+  #            purpose: Go Test covers them, and a push to main runs every
+  #            job as the backstop.
+  #            scripts/tests/test-ci-path-filters.sh fails when a test starts
+  #            reading a path across the line that its filter misses.
   #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
   # A push (main included) and workflow_dispatch always run everything; the
-  # nightly schedule runs only the race pass (code, mobile and guide false).
+  # nightly schedule runs only the race pass (go, swift, mobile and guide
+  # false).
   # It also picks where the jobs run (scripts/ci-pick-runner.sh): the
   # owner's Mac when its self-hosted wt-general runners are online (set up by
   # scripts/ci-runner/setup-mac-runner.sh), else the GitHub-hosted runners —
@@ -54,7 +69,8 @@ jobs:
       pull-requests: read
     outputs:
       run: ${{ steps.check.outputs.run }}
-      code: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' || steps.filter.outputs.guide_input == 'true') }}
+      go: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.go == 'true' || steps.scope.outputs.go_input == 'true') }}
+      swift: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.scope.outputs.swift == 'true') }}
       mobile: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true') }}
       guide: ${{ github.event_name != 'schedule' && (github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true') }}
       linux: ${{ steps.pick.outputs.linux || '"ubuntu-24.04"' }}
@@ -68,16 +84,80 @@ jobs:
         with:
           predicate-quantifier: every
           filters: |
-            code:
+            go:
               - '**'
               - '!docs/**'
               - '!*.md'
-            guide_input:
-              - 'docs/guide/reference/keyboard-shortcuts.md'
+              - '!WatchtowerDesktop/**'
+              - '!WatchtowerKit/**'
+              - '!WatchtowerMobile/**'
             mobile:
               - '{WatchtowerMobile/**,WatchtowerKit/**,Makefile,.github/workflows/ci.yml}'
             guide:
               - 'docs/guide/**'
+
+      # The cross-read lists (outputs: go = filter.go or scope.go_input,
+      # swift = scope.swift), matched with `some`, the default: a file
+      # counts when it matches any line. scripts/tests/test-ci-path-filters.sh
+      # checks them against what the tests read across the Go/Swift line.
+      - id: scope
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            go_input:
+              - 'WatchtowerDesktop/Sources/**'
+              - 'WatchtowerDesktop/Tests/Core/Fixtures/**'
+              - 'WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift'
+              - 'WatchtowerKit/Sources/WatchtowerKit/Resources/agent_capabilities.json'
+              - 'WatchtowerKit/Sources/WatchtowerSync/Link/LinkPayload.swift'
+              - 'WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift'
+              - 'WatchtowerKit/Tests/Fixtures/**'
+              # scripts/tests (Go Test's make test-scripts): the GRDB pin
+              # in the licence notices, the bridge's signing files, the
+              # relay proto pin.
+              - 'WatchtowerDesktop/Package.swift'
+              - 'WatchtowerDesktop/Resources/WatchtowerCloudBridge/**'
+              - 'WatchtowerKit/Sources/WatchtowerRelayProto/**'
+              - 'WatchtowerMobile/*'
+              - 'WatchtowerMobile/WatchtowerMobile.xcodeproj/**'
+              - deleted|renamed: '{WatchtowerDesktop,WatchtowerKit,WatchtowerMobile}/**/*.swift'
+              # docs/ Go tests read: the inventory (its guard). The guide is
+              # Guide Check's, which runs the packages that read its pages.
+              - 'docs/inventory/**'
+            swift:
+              - 'WatchtowerDesktop/**'
+              - 'WatchtowerKit/**'
+              - 'WatchtowerMobile/**'
+              - 'Makefile'
+              - '.github/workflows/ci.yml'
+              - 'scripts/**'
+              - 'docs/guide/reference/keyboard-shortcuts.md'
+              - 'cmd/testdata/**'
+              - 'internal/{asks,automations,automations/blocks,automations/builtin,chat,codewalk,codex,db,ideas,inbox,instructions,planusage,policy,reviewdiff,sessionhost,sessionstart,sessionstate,skills,specreview}/testdata/**'
+              - 'internal/hub/{identity,secure,transport/cloudkit}/testdata/**'
+              - 'internal/db/schema.sql'
+              - 'internal/chat/{artifacts_examples,questions_contract}.md'
+              - 'internal/features/registry.go'
+              - 'internal/inboxfolders/icons.json'
+              - 'internal/providers/{registry,capabilities,capabilities_test}.go'
+              - 'internal/sessionagent/agent_capabilities.json'
+              - '.github/ISSUE_TEMPLATE/**'
+              # Dual-path tests that list a package's Go files (daemon
+              # digest gates, session cleanup reasons).
+              - 'internal/{daemon,sessioncleanup}/**'
+              # The CLI CodeNavRealCLITests builds and runs: every command
+              # goes through these.
+              - 'main.go'
+              - 'cmd/{process_role,llmusage_wiring,audit_cli}.go'
+              - 'go.mod'
+              - 'go.sum'
+              - 'cmd/root.go'
+              - 'cmd/code*.go'
+              # Go builds and tests on Linux; Swift Test's `go build .` is
+              # the only PR-time compile of the darwin-only files.
+              - '**/*_darwin.go'
+              - 'internal/{codeindex,codesearch,codewalk,gitbin,sqlcipher}/**'
 
       # Only the gate scripts: the job stays a few seconds long.
       - uses: actions/checkout@v4
@@ -108,7 +188,7 @@ jobs:
 
   # The user guide is a Go package (docs/guide): its links, anchors and page
   # sizes are checked by its tests. Runs on its own, so a guide-only PR gets
-  # just this and the leak check.
+  # just this and the leak check (plus Swift for keyboard-shortcuts.md).
   guide-check:
     name: Guide Check
     needs: gate
@@ -132,14 +212,17 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Guide check
-        # internal/chat pins guide.Map() in the prompt golden and internal/kb
-        # searches every guide page, so a guide-only PR must run both.
-        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/
+        # internal/chat pins guide.Map() in the prompt golden, internal/kb
+        # searches every guide page and internal/learn validates the Learn
+        # cards, so a guide-only PR must run them (cmd and internal/hub
+        # import only guide.Version). scripts/tests/test-ci-path-filters.sh
+        # keeps this list in step with the guide's importers.
+        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/ ./internal/learn/
 
   go-lint:
     name: Go Lint
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     steps:
       - uses: actions/checkout@v4
@@ -232,7 +315,7 @@ jobs:
   go-build-linux:
     name: Go Build (Linux)
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -251,7 +334,7 @@ jobs:
   go-test:
     name: Go Test
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
     # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
@@ -307,7 +390,7 @@ jobs:
   go-linux-arm64:
     name: Go (linux/arm64)
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
@@ -385,7 +468,7 @@ jobs:
   codeindex-changes:
     name: Code index changes
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.go == 'true'
     runs-on: ${{ fromJSON(needs.gate.outputs.linux) }}
     permissions:
       contents: read
@@ -447,7 +530,7 @@ jobs:
   swift-lint:
     name: Swift Lint + Kit Test
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.swift == 'true'
     # macos-26 + Xcode 26.4.1 in the cloud, the Mac's Xcode (DEVELOPER_DIR in
     # its runners' .env) there: the Kit tests run on Swift Test's toolchain.
     runs-on: ${{ fromJSON(needs.gate.outputs.macos) }}
@@ -474,6 +557,12 @@ jobs:
       - name: Kit lint guard
         run: bash ../scripts/kit-lint-guard.sh
 
+      # The gate's go/swift path filters against the tests' cross-reads.
+      # Go Test runs it too (make test-scripts); here it also covers a
+      # Swift-only PR, which skips Go Test.
+      - name: Path filter guard
+        run: bash ../scripts/tests/test-ci-path-filters.sh
+
       - name: SwiftLint
         run: swiftlint lint --strict --baseline .swiftlint-baseline.json
 
@@ -496,7 +585,7 @@ jobs:
   swift-test:
     name: Swift Test
     needs: gate
-    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.swift == 'true'
     # macos-26: its image carries Xcode 26.4+ (Swift 6.3). The pinned mlx-swift
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
