@@ -193,11 +193,12 @@ func (c *Client) GetProfile(ctx context.Context) (*Profile, error) {
 // (e.g. "{in:inbox in:sent} newer_than:7d" or "{in:inbox in:sent}
 // after:1720519200", the sync's listScope). Gmail paginates list results
 // (nextPageToken); this walks all pages, accumulating IDs, until either the
-// pages are exhausted or maxResults IDs have been collected. Pass maxResults <= 0 to collect every ID in the query window
-// (walk pages until nextPageToken is empty) — messages.list is quota-cheap
-// compared to messages.get, so callers that need the full window before
-// deciding what to process (see Sync) should not cap the list phase.
-// Results come back newest-first per Gmail's default ordering.
+// pages are exhausted or maxResults IDs have been collected. Pass
+// maxResults <= 0 to collect every ID in the query window (walk pages until
+// nextPageToken is empty) — messages.list is quota-cheap compared to
+// messages.get, so callers that need the full window before deciding what to
+// process (see Sync) should not cap the list phase. Results come back
+// newest-first per Gmail's default ordering.
 func (c *Client) ListInboxMessageIDs(ctx context.Context, query string, maxResults int) ([]string, error) {
 	unlimited := maxResults <= 0
 	var ids []string
