@@ -177,7 +177,7 @@ func checkRepoChat(d *db.DB, env Env, e ChatEdit) error {
 // the refusal naming why not.
 func PromptAdditionRefusal(id string) error {
 	if _, ok := prompts.Defaults[id]; !ok {
-		return refuse("unknown prompt %s", id)
+		return refuse("prompt %s not found", id)
 	}
 	if _, moved := prompts.MovedToBuiltin[id]; moved {
 		return refuse("%s belongs to a built-in automation", id)

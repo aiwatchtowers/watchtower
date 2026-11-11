@@ -85,7 +85,7 @@ func TestValidateChatProposal_Refusals(t *testing.T) {
 		{"no such workbench", with(func(e *ChatEdit) { e.Destination, e.Skill, e.WorkbenchID = DestSession, "", 999 }),
 			"workbench 999 not found"},
 		{"unknown prompt", with(func(e *ChatEdit) { e.Destination, e.Skill, e.PromptID = DestPromptAdd, "", "no.such" }),
-			"unknown prompt no.such"},
+			"prompt no.such not found"},
 		{"built-in prompt", with(func(e *ChatEdit) {
 			e.Destination, e.Skill, e.PromptID = DestPromptAdd, "", prompts.BriefingDaily
 		}), prompts.BriefingDaily + " belongs to a built-in automation"},

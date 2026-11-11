@@ -35,6 +35,7 @@ type fixture struct {
 	home    string
 	reports []reportCall
 	report  any // what the fake AgentReport returns
+	deps    Deps
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -67,6 +68,7 @@ func newFixture(t *testing.T) *fixture {
 	for _, tl := range ReadTools(deps) {
 		require.NoError(t, f.reg.Register(tl))
 	}
+	f.deps = deps
 	return f
 }
 
