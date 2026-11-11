@@ -10,7 +10,7 @@ import (
 
 // These tests run in a synctest bubble: the handles open inside it, so
 // database/sql's idle cleaner runs on the bubble's clock, and idling is a
-// sleep that passes at once once everything else waits.
+// sleep that passes at once when everything else waits.
 
 // idle lets every handle of the bubble sit idle for well past
 // idleCloseAfter (database/sql's cleaner closes a connection on the first
