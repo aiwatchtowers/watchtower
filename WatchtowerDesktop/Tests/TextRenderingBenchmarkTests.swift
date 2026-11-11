@@ -5,11 +5,11 @@ import XCTest
 import WatchtowerCore
 
 /// Reproducible numbers for the large-text hot paths (#167): a streamed
-/// answer's per-delta re-render and the parses that feed it. Each case
-/// prints `BENCH …` lines (medians over interleaved samples, so a loaded
-/// machine skews both sides alike); the assertions only pin the direction
-/// of a measured win, never an absolute time. The print-only cases run
-/// only with `WT_BENCH=1` in the environment.
+/// answer's per-delta re-render and the parses that feed it. The timed
+/// cases print `BENCH …` lines and run only with `WT_BENCH=1` in the
+/// environment. The regressions they once measured are pinned without a
+/// clock (the source of the markdown views, the parse cache's content), so
+/// a loaded machine cannot fail them.
 @MainActor
 final class TextRenderingBenchmarkTests: XCTestCase {
     /// Chat-shaped markdown of at least `chars` UTF-16 units: headings,
@@ -63,7 +63,24 @@ final class TextRenderingBenchmarkTests: XCTestCase {
     /// Before: `MarkdownView` re-applied `.environment(\.openURL, …)` on every
     /// body pass. An `OpenURLAction` cannot be compared, so each streamed
     /// delta invalidated every `Text` of the message and re-laid it all out.
-    func testStreamedDeltaNoLongerRelaysTheWholeMessage() {
+    /// Pinned on the source, not on a clock (the timed gap shrank to ~10 %,
+    /// inside a loaded machine's noise): no view in `MarkdownView.swift`
+    /// installs an `openURL` action; doc comments may still name it.
+    func testMarkdownViewsInstallNoOpenURLAction() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Views/Chat/MarkdownView.swift")
+        let code = try String(contentsOf: source, encoding: .utf8)
+            .split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+        XCTAssertTrue(code.contains { $0.contains("struct MarkdownView: View") }, "the file still holds the view")
+        XCTAssertFalse(code.contains { $0.contains(#".environment(\.openURL"#) }, "an openURL action is back in the markdown views")
+    }
+
+    /// The re-render cost of a streamed delta before and after #167, printed.
+    func testStreamedDeltaNoLongerRelaysTheWholeMessage() throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["WT_BENCH"] == "1", "benchmark only")
         let text = Self.markdown(chars: 10_000, seed: 7)
         _ = mount(MarkdownView(text: Self.markdown(chars: 2_000, seed: 3))) // warm-up
         var before: [Duration] = []
@@ -73,23 +90,19 @@ final class TextRenderingBenchmarkTests: XCTestCase {
             after += streamSamples(base: text, deltas: 5) { MarkdownView(text: $0) }
         }
         print("BENCH streamed delta, 10k-char message: before \(median(before)), after \(median(after))")
-        XCTAssertLessThan(median(after), median(before))
     }
 
     /// The streamed row parses its text in `AssistantMessageBody.body` and
     /// again in `ChatViewModel.updateLiveArtifacts` per published delta; the
     /// second parse (and every finished row's re-parse on a scroll rebuild)
-    /// is now a cache hit.
+    /// is now a cache hit — read from the cache itself, not timed.
     func testRepeatArtifactParseIsACacheHit() {
         let text = Self.markdown(chars: 50_000, seed: 11)
-        let clock = ContinuousClock()
-        var first: ParsedMessage?
-        var second: ParsedMessage?
-        let cold = clock.measure { first = ArtifactParser.parse(text, final: false) }
-        let warm = clock.measure { second = ArtifactParser.parse(text, final: false) }
-        print("BENCH ArtifactParser.parse 50k chars: cold \(cold), repeat \(warm)")
-        XCTAssertLessThan(warm, cold)
-        XCTAssertEqual(first, second)
+        XCTAssertNil(ArtifactParser.cached(text, final: false), "a text never parsed is not cached")
+        let first = ArtifactParser.parse(text, final: false)
+        XCTAssertEqual(ArtifactParser.cached(text, final: false), first, "the parse is kept for the repeat")
+        XCTAssertNil(ArtifactParser.cached(text, final: true), "the final flag is part of the key")
+        XCTAssertEqual(ArtifactParser.parse(text, final: false), first)
         XCTAssertNotEqual(ArtifactParser.parse(text, final: true), ArtifactParser.parse(text + "x", final: true),
                           "the key is the whole text, not a prefix")
     }

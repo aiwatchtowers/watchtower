@@ -98,26 +98,41 @@ final class SQLCipherInteropTests: XCTestCase {
     }
 
     /// A timed-out process is stopped with its whole group: a child it
-    /// started (as `go build` starts compilers) does not outlive it.
+    /// started (as `go build` starts compilers) does not outlive it. Driven
+    /// by events, not a clock: the script hands over its child's pid through
+    /// a FIFO once the child runs, and the child's exit arrives as a kqueue
+    /// `NOTE_EXIT` (a zombie waiting for launchd to reap it has exited).
     func testTimeoutReapsTheWholeGroup() throws {
-        let pidFile = tempDir.appendingPathComponent("child.pid")
-        XCTAssertThrowsError(try Self.runProcess(
-            URL(fileURLWithPath: "/bin/sh"), ["-c", "sleep 30 & echo $! > \"$0\"; wait", pidFile.path],
-            cwd: tempDir, env: nil, timeout: 1))
-        let child = try XCTUnwrap(pid_t(String(contentsOf: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)))
-        // The group's SIGKILL is delivered, but the orphaned grandchild lingers
-        // as a zombie until launchd reaps it: poll for it to go, bounded.
-        let deadline = Date().addingTimeInterval(5)
-        var alive = kill(child, 0)
-        var err = errno
-        while alive == 0, Date() < deadline {
-            usleep(20_000)
-            alive = kill(child, 0)
-            err = errno
-        }
-        XCTAssertEqual(alive, -1, "the grandchild still runs 5 s after the timeout")
-        XCTAssertEqual(err, ESRCH)
+        let fifo = tempDir.appendingPathComponent("child.pid")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0, "mkfifo: \(String(cString: strerror(errno)))")
+        let process = try GroupProcess.spawn(
+            URL(fileURLWithPath: "/bin/sh"), ["-c", "sleep 30 & echo $! > \"$0\"; wait", fifo.path],
+            cwd: tempDir, env: ProcessInfo.processInfo.environment,
+            stdout: tempDir.appendingPathComponent("out"), stderr: tempDir.appendingPathComponent("err"))
+        Self.live.add(process)
+        defer { Self.live.remove(process) }
+        // Opening the FIFO waits for the script to open it for writing.
+        let reader = try FileHandle(forReadingFrom: fifo)
+        defer { try? reader.close() }
+        let written = try XCTUnwrap(String(bytes: try reader.readToEnd() ?? Data(), encoding: .utf8))
+        let child = try XCTUnwrap(pid_t(written.trimmingCharacters(in: .whitespacesAndNewlines)))
+
+        let queue = kqueue()
+        XCTAssertGreaterThanOrEqual(queue, 0)
+        defer { close(queue) }
+        var watch = kevent(
+            ident: UInt(child), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
+            fflags: NOTE_EXIT, data: 0, udata: nil)
+        XCTAssertEqual(kevent(queue, &watch, 1, nil, 0, nil), 0, "the grandchild runs until the timeout")
+        XCTAssertTrue(process.isRunning, "the script still waits for its child")
+
+        process.terminateGroup() // what `runProcess` does on its timeout
+
+        var exited = kevent()
+        var hangGuard = timespec(tv_sec: 120, tv_nsec: 0) // a hang guard only, never reached on a pass
+        XCTAssertEqual(kevent(queue, nil, 0, &exited, 1, &hangGuard), 1, "the grandchild outlived its group")
+        XCTAssertEqual(exited.ident, UInt(child))
+        XCTAssertNotEqual(exited.fflags & NOTE_EXIT, 0)
     }
 
     /// Go writes, GRDB searches and writes, Go reads GRDB's table back.

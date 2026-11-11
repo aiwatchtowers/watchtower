@@ -495,7 +495,7 @@ jobs:
       # classes (see the script): serially the suite took ~5 min (2026-10-13).
       # LANE_TIMEOUT: the script kills a lane hung past it and prints its log
       # (the step's own timeout would kill the script with every log unread).
-      # Two phases (shards, then the timing-bound classes) fit the step's 25.
+      # One phase of lanes; a lane's 10 minutes fit the step's 25.
       - name: Test
         timeout-minutes: 25
         env:

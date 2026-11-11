@@ -212,7 +212,7 @@ final class RecordingUploaderTests: XCTestCase {
         let second = try await register(uploader, file: try makeAudioFile(name: "two.m4a"))
 
         let passA = Task { try await uploader.uploadPending() }
-        try await eventually { await spy.heldCount == 1 }
+        await spy.untilHeld(1)
         let passB = Task { try await uploader.uploadPending() }
         // A pass that does not wait for A reaches the transport at once.
         _ = try? await eventually(timeout: 0.5) { await spy.heldCount > 1 }
@@ -235,7 +235,7 @@ final class RecordingUploaderTests: XCTestCase {
         let recording = try await register(uploader, file: try makeAudioFile())
 
         let pass = Task { try await uploader.uploadPending() }
-        try await eventually { await spy.heldCount == 1 }
+        await spy.untilHeld(1)
         try await uploader.applyEcho(echo(for: recording, status: .received))
         XCTAssertEqual(try store.phoneRecording(id: recording.id)?.state, .delivered)
         await spy.release()
@@ -1372,10 +1372,7 @@ final class RecordingUploaderTests: XCTestCase {
 
         await spy.holdSaves()
         let retry = Task { try await uploader.retryFailed(id: recording.id) }
-        for _ in 0 ..< 500 {
-            if await spy.heldCount > 0 { break }
-            try await Task.sleep(for: .milliseconds(2))
-        }
+        await spy.untilHeld(1)
         let held = await spy.heldCount
         XCTAssertEqual(held, 1, "the re-seal's save is in flight")
         // The Mac rotated again meanwhile: the in-flight envelope (epoch 2) is now stale.
@@ -1978,9 +1975,18 @@ private actor SpyTransport: CloudSyncTransport {
     private var holding = false
     private var held: [CheckedContinuation<Void, Never>] = []
 
+    private var heldWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
     var heldCount: Int { held.count }
 
     func holdSaves() { holding = true }
+
+    /// Returns once `count` saves are held: a test waits for the save
+    /// itself, not for a clock.
+    func untilHeld(_ count: Int) async {
+        guard held.count < count else { return }
+        await withCheckedContinuation { heldWaiters.append((count, $0)) }
+    }
 
     /// While true every save is recorded, then throws (a transient failure).
     private(set) var failing = false
@@ -2001,7 +2007,12 @@ private actor SpyTransport: CloudSyncTransport {
                 asset: record.assetFileURL.flatMap { try? Data(contentsOf: $0) }, file: record.assetFileURL?.lastPathComponent)
         }
         if holding {
-            await withCheckedContinuation { held.append($0) }
+            await withCheckedContinuation { continuation in
+                held.append(continuation)
+                let reached = heldWaiters.filter { $0.count <= held.count }
+                heldWaiters.removeAll { $0.count <= held.count }
+                reached.forEach { $0.continuation.resume() }
+            }
         }
         if failing { throw SaveFailed() }
     }

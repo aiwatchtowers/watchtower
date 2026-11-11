@@ -18,9 +18,12 @@ extension WorkbenchesViewModel {
     func automationRecipesChanged(workbenchID: Int64) {
         automationRescanTimers[workbenchID]?.cancel()
         let delay = automationRescanDelay
+        let sleep = automationRescanSleep
         automationRescanTimers[workbenchID] = Task { [weak self] in
-            do { try await Task.sleep(for: delay) } catch { return }
-            guard let self else { return }
+            do { try await sleep(delay) } catch { return }
+            // A later change replaced this wait (a sleep that ignores the
+            // cancel, as a test's may, must not rescan too).
+            guard !Task.isCancelled, let self else { return }
             // Out of the map first: a later change must not cancel the
             // rescan itself (the runner would kill its process).
             automationRescanTimers[workbenchID] = nil

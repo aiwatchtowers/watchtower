@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs the already-built WatchtowerDesktop test bundle as SHARDS concurrent
 # xctest processes over disjoint round-robin slices of its XCTest classes,
-# next to one `swift test` process for the Swift Testing tests, then the
-# timing-bound classes (SERIAL_CLASSES) alone.
+# next to one `swift test` process for the Swift Testing tests. No class
+# runs alone: a test that measures the CPU compares interleaved runs on the
+# same machine, never an absolute time, so a loaded runner does not fail it.
 #
 # Why: the suite is ~7 000 short tests (~43 ms each, measured 2026-10-13) run
 # serially in one xctest process, ~5 min on a CI runner. `swift test --parallel`
@@ -39,17 +40,6 @@ if ! [[ $LANE_TIMEOUT =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
-# Classes that assert how fast the CPU does something: they run after the
-# shards, alone, since three concurrent shards share the runner's cores
-# (CommentAnchorTests measured 4.2 s against its 5 s bound on 2026-10-14).
-# A bounded-wait assertion ("does not hang past N s") stays in the shards.
-SERIAL_CLASSES=(
-    WatchtowerCoreTests.CommentAnchorTests
-    WatchtowerCoreTests.WorkbenchCodeIndexTests
-    WatchtowerDesktopTests.OwnerAskReviewPerformanceTests
-    WatchtowerDesktopTests.TextRenderingBenchmarkTests
-)
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/WatchtowerDesktop"
 
@@ -73,14 +63,6 @@ if [[ ! -s "$WORK/all-classes" ]]; then
     echo "swift-test-sharded: no XCTest classes listed" >&2
     exit 1
 fi
-printf '%s\n' "${SERIAL_CLASSES[@]}" | sort -u > "$WORK/serial"
-# A renamed or deleted class must not silently drop out of the run.
-missing="$(comm -23 "$WORK/serial" "$WORK/all-classes")"
-if [[ -n "$missing" ]]; then
-    echo "swift-test-sharded: SERIAL_CLASSES names classes the bundle does not have: $missing" >&2
-    exit 1
-fi
-comm -23 "$WORK/all-classes" "$WORK/serial" > "$WORK/classes"
 
 # Each background job gets its own process group, so the watchdog can kill a
 # hung lane together with the processes it started (xcrun -> xctest,
@@ -209,7 +191,7 @@ print_summary() {
 # NSUnbufferedIO: what swift test sets for xctest — a lane that crashes or
 # hangs still leaves its last "Test Case ... started" line in its log.
 for ((s = 0; s < SHARDS; s++)); do
-    classes="$(awk -v n="$SHARDS" -v i="$s" 'NR % n == i' "$WORK/classes" | paste -sd, -)"
+    classes="$(awk -v n="$SHARDS" -v i="$s" 'NR % n == i' "$WORK/all-classes" | paste -sd, -)"
     start_lane "XCTest shard $((s + 1))/$SHARDS" \
         env WATCHTOWER_TEST_SHARD="$s" NSUnbufferedIO=YES xcrun xctest -XCTest "$classes" "$BUNDLE"
 done
@@ -218,11 +200,6 @@ if grep -q '(' "$WORK/list"; then
         env WATCHTOWER_TEST_SHARD="swift-testing" swift test --skip-build --disable-xctest
 fi
 supervise 0
-
-serial_first=${#pids[@]}
-start_lane "XCTest timing-bound classes (alone)" \
-    env WATCHTOWER_TEST_SHARD="serial" NSUnbufferedIO=YES xcrun xctest -XCTest "$(paste -sd, - < "$WORK/serial")" "$BUNDLE"
-supervise "$serial_first"
 
 print_summary
 exit "$status"
