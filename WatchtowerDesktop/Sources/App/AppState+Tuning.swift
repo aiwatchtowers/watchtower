@@ -20,9 +20,7 @@ extension AppState {
         await chat.refreshCards()
         return chat
     }
-}
 
-extension AppState {
     /// What a removed workbench takes with it: its code questions and
     /// usages, its review, its tuning panel and the panel's chat engines.
     func wireWorkbenchRemoved(_ vm: WorkbenchesViewModel) {

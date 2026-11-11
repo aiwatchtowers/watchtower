@@ -21,19 +21,19 @@ struct AgentAnalyticsHeaderView: View {
                 labels
                 Spacer(minLength: Spacing.regular)
                 agentPicker
-                periodControls
+                trailingControls
             }
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 labels
                 HStack(spacing: Spacing.regular) {
                     agentPicker
-                    periodControls
+                    trailingControls
                 }
             }
             VStack(alignment: .leading, spacing: Spacing.regular) {
                 labels
                 agentPicker
-                periodControls
+                trailingControls
             }
         }
         .controlSize(.small)
@@ -63,7 +63,7 @@ struct AgentAnalyticsHeaderView: View {
         }
     }
 
-    private var periodControls: some View {
+    private var trailingControls: some View {
         HStack(alignment: .center, spacing: Spacing.regular) {
             KitSegmentedPicker(title: "Period", selection: $period, segments: [
                 KitSegment(value: AgentAnalyticsCenter.Period.day, title: "1 day"),
@@ -75,6 +75,7 @@ struct AgentAnalyticsHeaderView: View {
                 .frame(width: IconSize.stateDot, height: IconSize.stateDot)
                 .help("Agent analytics is on for this workbench")
                 .accessibilityLabel("Analytics on")
+            // The pane owns the open state: the toggle only asks it to flip.
             Toggle(isOn: Binding(get: { tuneOn }, set: { _ in onTune() })) {
                 Label(TuningChatTexts.tune, systemImage: TuningChatTexts.tuneIcon)
             }

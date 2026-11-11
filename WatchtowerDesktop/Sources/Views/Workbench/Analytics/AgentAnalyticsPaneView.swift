@@ -30,12 +30,10 @@ struct AgentAnalyticsPaneView: View {
                 inputs: tuningInputs,
                 actions: coachActions,
                 onClose: closeTuning,
-                onOpenSettings: { [appState] in
-                    appState?.settingsTab = .system
-                    appState?.openSettingsWindow?()
-                },
-                onShowAccepted: { _ in vm.analyticsScroll[project.id] = CoachSectionsView.acceptedID }
-            )
+                onOpenSettings: openSettings
+            ) { _ in
+                vm.showAnalyticsSection(CoachSectionsView.acceptedID, projectID: project.id)
+            }
             .panelBackground()
             .onExitCommand(perform: closeTuning)
         }
@@ -71,7 +69,9 @@ struct AgentAnalyticsPaneView: View {
         .onAppear {
             center?.show(workbench: project.id, period: period.wrappedValue, agent: agent.wrappedValue)
             syncCoach()
-            if analyticsOff { vm.tuningOpen.remove(project.id) }
+            // `tuningShown` already hides the panel; this also forgets it,
+            // so turning analytics back on does not reopen it.
+            if analyticsOff { closeTuning() }
         }
         .onDisappear {
             center?.hide(workbench: project.id)
@@ -83,7 +83,7 @@ struct AgentAnalyticsPaneView: View {
         }
         .onChange(of: analyticsOn) { _, _ in syncCoach() }
         .onChange(of: analyticsOff) { _, off in
-            if off { vm.tuningOpen.remove(project.id) }
+            if off { closeTuning() }
         }
     }
 
@@ -93,9 +93,22 @@ struct AgentAnalyticsPaneView: View {
     /// The report says analytics is off: the panel is not offered (§4.4).
     private var analyticsOff: Bool { vm.agentAnalytics?.overviews[project.id]?.value?.enabled == false }
 
-    private var tuningShown: Bool { vm.tuningOpen.contains(project.id) && !analyticsOff }
+    /// Only while the report says analytics is on: no chat is built (nor a
+    /// conversation created) for a workbench whose report has not answered.
+    private var tuningShown: Bool { vm.tuningOpen.contains(project.id) && analyticsOn }
 
     private func closeTuning() { vm.tuningOpen.remove(project.id) }
+
+    private func toggleTuning() {
+        if vm.tuningOpen.contains(project.id) { closeTuning() } else { vm.tuningOpen.insert(project.id) }
+    }
+
+    private var openSettings: () -> Void {
+        { [appState] in
+            appState?.settingsTab = .system
+            appState?.openSettingsWindow?()
+        }
+    }
 
     private func syncCoach() {
         if analyticsOn {
@@ -123,7 +136,7 @@ struct AgentAnalyticsPaneView: View {
         CoachActions(
             openAsk: { id in Task { await vm.showAsk(id, projectID: project.id) } },
             openTerminalSession: { id in Task { await vm.showSession(id: id) } },
-            scrollToStatistics: { vm.analyticsScroll[project.id] = AgentAnalyticsOverviewView.statisticsID }
+            scrollToStatistics: { vm.showAnalyticsSection(AgentAnalyticsOverviewView.statisticsID, projectID: project.id) }
         )
     }
 
@@ -164,95 +177,11 @@ struct AgentAnalyticsPaneView: View {
                 Task { await vm.openFile(path, root: root, preview: false) }
             },
             openAsks: { Task { await vm.showWaitingForYou(projectID: id) } },
-            tune: {
-                if vm.tuningOpen.contains(id) { vm.tuningOpen.remove(id) } else { vm.tuningOpen.insert(id) }
-            },
+            tune: toggleTuning,
             tuneOn: vm.tuningOpen.contains(id),
             retry: { center?.retry(workbench: id) },
             asksWaiting: !vm.asks.stack(projectID: id).asks.isEmpty
         )
-    }
-}
-
-/// What the tuning panel shows from the pane's report and the coach's
-/// status: the figures line, the starters and whether the report is still
-/// loading for the pane's period and agent.
-struct TuningPanelInputs: Equatable {
-    var figures: TuningChatTexts.Figures?
-    var starters: [ChatStarterPrompt]
-    var loading: Bool
-
-    static func make(
-        overview: AgentReportOverview?,
-        status: CoachStatus?,
-        query: AgentAnalyticsCenter.Query
-    ) -> Self {
-        guard let overview, AgentAnalyticsFormat.period(of: overview) == query.period,
-              AgentAnalyticsFormat.agent(of: overview) == query.agent else {
-            return Self(figures: nil, starters: [], loading: true)
-        }
-        let cost = status?.metrics.taskCostUSD
-        let perTask = cost?.known == true ? cost?.value : nil
-        let previous = perTask == nil ? nil : cost?.previous
-        let figures = TuningChatTexts.Figures(
-            days: query.period.rawValue, sessions: overview.totals.sessions,
-            tasks: overview.tasks.count + (overview.tasksMore ?? 0), costUSD: overview.totals.costUSD,
-            perTaskUSD: perTask, previousPerTaskUSD: previous
-        )
-        let grew = perTask.flatMap { value in previous.map { value > $0 } } ?? false
-        let starters = TuningChatTexts.starters(.init(costPerTaskGrew: grew, topHintFinding: overview.hints.first?.finding))
-        return Self(figures: figures, starters: starters, loading: false)
-    }
-}
-
-/// The tuning panel's host: builds the workbench's `TuningChat` once (the
-/// engine lives in the embedded-chat center, so a turn outlives the panel)
-/// and closes its view of it when the panel goes.
-struct TuningPanelHost: View {
-    typealias MakeChat = @MainActor (Int64) async throws -> TuningChat?
-
-    let workbenchID: Int64
-    let makeChat: MakeChat
-    let coach: CoachCenter?
-    let inputs: TuningPanelInputs
-    let actions: CoachActions
-    let onClose: () -> Void
-    let onOpenSettings: () -> Void
-    let onShowAccepted: (Int64) -> Void
-    @State private var chat: TuningChat?
-    @State private var error: String?
-
-    var body: some View {
-        Group {
-            if let chat {
-                TuningPanelView(chat: chat, coach: coach, figures: inputs.figures, starters: inputs.starters,
-                                loading: inputs.loading, actions: actions, onClose: onClose,
-                                onOpenSettings: onOpenSettings, onShowAccepted: onShowAccepted)
-            } else if let error {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(Tone.warning)
-                    .padding(Spacing.medium)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                ProgressView().controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .task(id: workbenchID) {
-            chat?.close()
-            chat = nil
-            error = nil
-            do {
-                chat = try await makeChat(workbenchID)
-            } catch {
-                self.error = TuningChatTexts.newChatFailed(error.localizedDescription)
-            }
-        }
-        .onDisappear {
-            chat?.close()
-            chat = nil
-        }
     }
 }
 

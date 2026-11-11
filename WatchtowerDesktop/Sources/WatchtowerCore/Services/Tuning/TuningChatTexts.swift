@@ -22,6 +22,15 @@ package enum TuningChatTexts {
 
     // MARK: Load errors
 
+    /// The panel could not open the workbench's tuning chat.
+    package static func openFailed(_ reason: String) -> String { "Couldn't open the tuning chat: \(reason)" }
+
+    /// The panel has no database to open the chat on yet.
+    package static let notReady = "The tuning chat opens once the database is ready."
+
+    /// The panel's open error offers it again.
+    package static let retry = "Retry"
+
     /// **New** could not create the conversation.
     package static func newChatFailed(_ reason: String) -> String { "Couldn't start a new tuning chat: \(reason)" }
 

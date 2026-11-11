@@ -474,11 +474,53 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         }
     }
 
-    /// A pane of workbench 3 with the report fixture loaded (analytics on,
+    /// What a hosted pane's tuning panel built: the workbench's chats, from
+    /// a real pool and embedded-chat center. `hold` keeps each build waiting
+    /// until `release()`.
+    @MainActor
+    private final class ChatFactory {
+        let pool: DatabasePool
+        let center: EmbeddedChatCenter
+        var made: [TuningChat] = []
+        var hold = false
+        private var waiting: [CheckedContinuation<Void, Never>] = []
+
+        init(pool: DatabasePool) {
+            self.pool = pool
+            center = EmbeddedChatCenter(idleTTL: 1, clock: Date.init) { spec, gate in
+                makeSurfaceEngine(spec, dbPool: pool, ai: ScriptedAIService(), gate: gate)
+            }
+        }
+
+        /// As `AppState.makeTuningChat`: the chat is made (and marked shown),
+        /// then a read that ignores cancellation (`refreshCards`) is awaited.
+        func make(_ workbenchID: Int64) async throws -> TuningChat? {
+            let conv = try await TuningChatSurface.latestOrNewConversation(dbPool: pool, workbenchID: workbenchID)
+            let chat = TuningChat(workbenchID: workbenchID, conversationID: conv, dbPool: pool, center: center,
+                                  coach: nil, decideTools: { false }, period: { .week })
+            made.append(chat)
+            if hold { await withCheckedContinuation { waiting.append($0) } }
+            return chat
+        }
+
+        func release() {
+            waiting.forEach { $0.resume() }
+            waiting = []
+        }
+
+        /// Whether a panel still shows `chat`: a closed one's engine is
+        /// released by a sweep past the idle time.
+        func isShown(_ chat: TuningChat) -> Bool {
+            center.sweep(now: Date().addingTimeInterval(3600))
+            return center.loaded(chat.engine.spec.key) != nil
+        }
+    }
+
+    /// A pane of a workbench with the report fixture loaded (analytics on,
     /// or off with `off`), hosted in a window so its lifecycle runs.
     private func hostedPane(
-        off: Bool = false, open: Bool, made: @escaping (Int64) -> Void = { _ in }
-    ) async throws -> (WorkbenchesViewModel, NSWindow, () -> Void) {
+        off: Bool = false, open: Bool, hold: Bool = false
+    ) async throws -> (WorkbenchesViewModel, Int64, ChatFactory, () -> Void) {
         let (pool, path) = try TestDatabase.createPool()
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "AgentAnalyticsTune-\(UUID().uuidString)"))
         let projectID = try await pool.write { d in try TestDatabase.insertWorkbench(d, folder: "/tmp/acme") }
@@ -489,18 +531,24 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
                                       terminalCenter: nil)
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
         json["enabled"] = !off
-        let data = try JSONSerialization.data(withJSONObject: json)
-        let center = AgentAnalyticsCenter(runner: FakeCLIRunner(stdout: data), interval: .seconds(3600))
+        let center = AgentAnalyticsCenter(runner: FakeCLIRunner(stdout: try JSONSerialization.data(withJSONObject: json)),
+                                          interval: .seconds(3600))
         vm.agentAnalytics = center
+        // The fixture is a 7-day report.
+        vm.analyticsPeriod[projectID] = .week
         if open { vm.tuningOpen.insert(projectID) }
-        let pane = AgentAnalyticsPaneView(vm: vm, project: project) { id in made(id); return nil }
+        let factory = ChatFactory(pool: pool)
+        factory.hold = hold
+        let pane = AgentAnalyticsPaneView(vm: vm, project: project, makeTuningChat: factory.make)
         let host = NSHostingView(rootView: pane)
         host.frame = NSRect(x: 0, y: 0, width: 1000, height: 600)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = host
-        return (vm, window, {
+        return (vm, projectID, factory, {
+            factory.release()
             window.close()
+            factory.made.forEach { $0.close() }
             center.stop()
             TestDatabase.cleanup(path: path)
         })
@@ -512,27 +560,55 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
 
+    /// Pumps the run loop until `condition` holds (5 s at most).
+    private func until(_ condition: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     func testPanelOpensAndClosesWithTune() async throws {
-        var made: [Int64] = []
-        let (vm, _, cleanup) = try await hostedPane(open: true) { made.append($0) }
+        let (vm, id, factory, cleanup) = try await hostedPane(open: true)
         defer { cleanup() }
-        await settle()
-        let id = try XCTUnwrap(vm.tuningOpen.first)
-        XCTAssertEqual(made, [id], "the open panel builds the workbench's chat once")
+        await until { !factory.made.isEmpty }
+        XCTAssertEqual(factory.made.map(\.workbenchID), [id], "the open panel builds the workbench's chat once")
+        let first = try XCTUnwrap(factory.made.first)
+        XCTAssertTrue(factory.isShown(first))
 
         vm.tuningOpen.remove(id)
-        await settle()
+        await until { !factory.isShown(first) }
+        XCTAssertFalse(factory.isShown(first), "a closed panel stops showing its chat")
         vm.tuningOpen.insert(id)
+        await until { factory.made.count == 2 }
+        XCTAssertEqual(factory.made.count, 2, "a reopened panel builds it again")
         await settle()
-        XCTAssertEqual(made, [id, id], "a reopened panel builds it again")
+        XCTAssertEqual(factory.made.count, 2, "once")
+        XCTAssertTrue(factory.isShown(factory.made[1]))
+    }
+
+    /// Closed while the chat was still being built: the late chat is closed
+    /// at once, not left marked as shown.
+    func testPanelClosedWhileBuildingClosesTheLateChat() async throws {
+        let (vm, id, factory, cleanup) = try await hostedPane(open: true, hold: true)
+        defer { cleanup() }
+        await until { !factory.made.isEmpty }
+        let late = try XCTUnwrap(factory.made.first)
+        vm.tuningOpen.remove(id)
+        await settle()
+        factory.release()
+        await until { !factory.isShown(late) }
+        XCTAssertFalse(factory.isShown(late))
     }
 
     func testAnalyticsOffClosesThePanel() async throws {
-        var made: [Int64] = []
-        let (vm, _, cleanup) = try await hostedPane(off: true, open: true) { made.append($0) }
+        let (vm, _, factory, cleanup) = try await hostedPane(off: true, open: true)
         defer { cleanup() }
+        await until { vm.tuningOpen.isEmpty }
         await settle()
         XCTAssertTrue(vm.tuningOpen.isEmpty, "analytics off: the panel is not offered")
+        XCTAssertTrue(factory.made.isEmpty, "no tuning chat is built for a workbench whose analytics is off")
     }
 
     func testPanelInputsFollowThePanesQuery() throws {
@@ -572,6 +648,15 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
     }
 
     func testShowInAcceptedEditsScrolls() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "TuneScroll-\(UUID().uuidString)"))
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        vm.analyticsSession[3] = "u-1"
+        vm.showAnalyticsSection(CoachSectionsView.acceptedID, projectID: 3)
+        XCTAssertNil(vm.analyticsSession[3], "an open session detail goes back to the overview")
+        XCTAssertEqual(vm.analyticsScroll[3], CoachSectionsView.acceptedID)
+
         let coach = await loadedCoach()
         defer { coach.stop() }
         var request: String? = CoachSectionsView.acceptedID

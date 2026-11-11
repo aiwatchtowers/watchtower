@@ -151,6 +151,13 @@ final class WorkbenchesViewModel {
     /// (`CoachSectionsView.acceptedID` from the panel's Show in Accepted
     /// edits); the overview clears it after scrolling.
     var analyticsScroll: [Int64: String] = [:]
+
+    /// The Analytics overview, scrolled to the section `id` (a session
+    /// detail open beside the tuning panel goes back to the overview first).
+    func showAnalyticsSection(_ id: String, projectID: Int64) {
+        analyticsSession[projectID] = nil
+        analyticsScroll[projectID] = id
+    }
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
     /// Clean Up screen. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete
