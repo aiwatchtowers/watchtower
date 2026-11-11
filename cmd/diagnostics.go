@@ -131,10 +131,11 @@ type diagTriple struct{ a, b, c string }
 // machine values (then early closes), the config and workspace resolution,
 // the AI line and the start of the database read (then done closes). Each
 // step falls back to `unknown (internal error)` on a panic. Fields are read
-// only after their channel closed.
+// only after their channel closed. stopped closes when the report stopped
+// waiting, so a late resolution starts no database read.
 type diagPrep struct {
-	early, done          chan struct{}
-	version, flavor      string
+	early, done, stopped chan struct{}
+	version              string
 	machine, macos, chip string
 	res                  diagnostics.Resolved
 	resolved             bool // false: Resolve panicked
@@ -172,21 +173,21 @@ func currentDiagInputs() diagInputs {
 }
 
 func startDiagPrep(ctx context.Context, in diagInputs, env diagnostics.Env) *diagPrep {
-	p := &diagPrep{early: make(chan struct{}), done: make(chan struct{})}
+	p := &diagPrep{early: make(chan struct{}), done: make(chan struct{}), stopped: make(chan struct{})}
 	go func() {
 		defer close(p.done)
 		closeEarly := sync.OnceFunc(func() { close(p.early) })
 		defer closeEarly()
 
-		v := diagSafe(diagPair{diagnostics.UnknownInternal, ""}, func() diagPair {
-			text, flavor := diagnostics.VersionLine(in.build)
-			return diagPair{text, flavor}
+		version := diagSafe(diagnostics.UnknownInternal, func() string {
+			text, _ := diagnostics.VersionLine(in.build) // the JSON flavor is set by collectDiagnostics
+			return text
 		})
 		m := diagSafe(diagTriple{diagnostics.UnknownInternal, "", diagnostics.ChipOther}, func() diagTriple {
 			text, macos, chip := diagnostics.MachineLine(in.sysctl)
 			return diagTriple{text, macos, chip}
 		})
-		p.version, p.flavor = v.a, v.b
+		p.version = version
 		p.machine, p.macos, p.chip = m.a, m.b, m.c
 		closeEarly()
 
@@ -205,7 +206,8 @@ func startDiagPrep(ctx context.Context, in diagInputs, env diagnostics.Env) *dia
 			})
 			p.ai, p.provider = ai.a, ai.b
 		}
-		if p.res.Workspace != "" {
+		// A resolution that finished after the report stopped reads nothing.
+		if p.res.Workspace != "" && ctx.Err() == nil && !isClosed(p.stopped) {
 			p.dir = filepath.Join(p.res.Root, p.res.Workspace)
 			p.dbPath = filepath.Join(p.dir, "watchtower.db")
 			p.db = startDBRead(ctx, in, p.dbPath)
@@ -312,6 +314,7 @@ func collectDiagnostics(ctx context.Context, env diagnostics.Env) diagnostics.Re
 	in := currentDiagInputs()
 	b := in.budgets
 	p := startDiagPrep(ctx, in, env)
+	defer close(p.stopped)
 	iphone := diagnostics.IPhonePart(in.iphone)
 	reasonOnly := func(reason string) string { return reason }
 
@@ -378,9 +381,9 @@ func collectDiagnostics(ctx context.Context, env diagnostics.Env) diagnostics.Re
 
 	// The JSON values of the up-front work that finished; the defaults
 	// (empty, chip Other) for what the hard stop cut off.
-	r.Version, r.Chip = in.build.Version, diagnostics.ChipOther
+	r.Version, r.Flavor, r.Chip = in.build.Version, diagnostics.Flavor(in.build.Flavor), diagnostics.ChipOther
 	if isClosed(p.early) {
-		r.MacOS, r.Chip, r.Flavor = p.macos, p.chip, p.flavor
+		r.MacOS, r.Chip = p.macos, p.chip
 	}
 	if isClosed(p.done) {
 		r.Provider = p.provider

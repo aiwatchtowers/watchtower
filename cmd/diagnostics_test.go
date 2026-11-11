@@ -1032,7 +1032,7 @@ func TestDiagnostics_HardStopCoversResolve(t *testing.T) {
 	}
 	jsonOut, _ := runDiag(t, diagArgs(in.cfgPath, "", "--json", "--iphone", "off")...)
 	obj := lastJSON(t, jsonOut)
-	if obj["provider"] != "" || obj["partial"] != true || fmt.Sprint(obj["sources"]) != "[]" {
+	if obj["provider"] != "" || obj["partial"] != true || fmt.Sprint(obj["sources"]) != "[]" || obj["flavor"] != diagnostics.FlavorDefault {
 		t.Errorf("json %v", obj)
 	}
 }
@@ -1137,5 +1137,35 @@ func TestDiagnostics_HealthyNoErrors(t *testing.T) {
 	lineWith(t, out, diagnostics.RecentErrorsNone)
 	if strings.Contains(out, diagnostics.RecentErrorsTitle) || strings.Contains(out, "Partial report") {
 		t.Errorf("unexpected:\n%s", out)
+	}
+}
+
+// A sysctl that hangs past the hard stop: the machine line times out, the
+// JSON keeps its defaults, and flavor stays one of its pinned values.
+func TestDiagnostics_HardStopCoversSysctl(t *testing.T) {
+	in := newDiagInstall(t)
+	diagSeams(t)
+	BuildFlavor = "acme"
+	diagnosticsBudgets.HardStop = 50 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	diagnosticsSysctl = func(string) (string, error) {
+		<-release
+		return "", fmt.Errorf("released")
+	}
+	// After the test: no workspace, so nothing more is read.
+	diagnosticsResolve = func(diagnostics.Env) diagnostics.Resolved {
+		return diagnostics.Resolved{ConfigLine: diagnostics.ConfigNone, WorkspaceReason: diagnostics.UnknownNoConfig}
+	}
+	out, code := runDiag(t, diagArgs(in.cfgPath, "", "--json")...)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	obj := lastJSON(t, out)
+	if obj["flavor"] != diagnostics.FlavorCorp || obj["chip"] != diagnostics.ChipOther || obj["macos"] != "" || obj["partial"] != true {
+		t.Errorf("json %v", obj)
+	}
+	if lines := strings.Split(fmt.Sprint(obj["text"]), "\n"); lines[0] != diagnostics.UnknownTimedOut || lines[1] != diagnostics.UnknownTimedOut {
+		t.Errorf("text:\n%s", obj["text"])
 	}
 }
