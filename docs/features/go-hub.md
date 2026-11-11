@@ -153,7 +153,7 @@ baseline's own columns, checked by the canary test.
 
 The host (`internal/sessionhost`) answers v1 and v2 hellos; a v2 client refuses a v1 host and never replaces it. v2 adds
 operations that never bind the connection to a session, so the hub never takes a run over from the app's window:
-`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc; never the owner's draft), `Deliver`
+`List`, `InputTo` (bytes into one run and launch — the phone's Interrupt Esc, the Desktop pane's terminal replies and app input (#1743); never the owner's draft), `Deliver`
 (PROJ-12's typed-never-submitted delivery inside the host: bracketed paste, the settle pause, `DeliverCheck` before
 the Return, `hold_if_prompt_text` for PROJ-16 lines; outcomes `submitted`, `typed`, `held`, `no_paste_mode`,
 `no_session`), `PromptHint` and `Stop` (the exit carries `requested`, so no PROJ-18 cleanup follows). Every launch of a

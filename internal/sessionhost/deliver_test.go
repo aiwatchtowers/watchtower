@@ -529,6 +529,27 @@ func TestWithoutHoldIfPromptTextALineBesideTheDraftIsTyped(t *testing.T) {
 	}
 }
 
+// #1743: the Desktop pane sends its terminal's own replies (a window focus
+// change's ESC[O / ESC[I, a device-attributes answer) and the app's own bytes
+// as InputTo on its attached connection, so they never read as the owner's
+// draft and an answer's Return still goes. Sent as Input they would hold it.
+func TestProj12_TerminalRepliesAsInputToKeepTheAnswersReturn(t *testing.T) {
+	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	cl := st.hub()
+	replies := []byte("\x1b[O\x1b[I\x1b[?1;2c")
+	st.desktop.send(InputTo, InputToReq{Row: 1, Run: "r1", Launch: st.info.Launch, Data: replies})
+	st.desktop.expectNoError()
+	wantBytes(t, st.written(), replies, "the replies")
+	out := st.deliver(cl, st.req("Ask #7 answered"), nil)
+	wantOutcome(t, out, OutcomeSubmitted, "")
+	wantBytes(t, st.written(), cat(paste("Ask #7 answered"), []byte{0x0D}), "the answer and its Return")
+
+	// The same bytes as the pane's Input are the owner's keys: a draft.
+	st.desktop.typeChunks(replies)
+	wantBytes(t, st.written(), replies, "the replies as Input")
+	wantOutcome(t, st.deliver(cl, st.req("next"), noCheck(t)), OutcomeTyped, TypedBesideText)
+}
+
 // Review Focus 2: the requesting connection never answers the re-check.
 // No Return follows, the pending Return clears, and the line counts as left
 // typed for the next delivery.

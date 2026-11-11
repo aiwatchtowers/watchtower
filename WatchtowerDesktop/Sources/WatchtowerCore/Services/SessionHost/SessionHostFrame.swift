@@ -18,8 +18,9 @@ package enum SessionHostFrameType: UInt8, Sendable {
     case listed = 0x86
     case forget = 0x07
     case forgot = 0x87
-    // Protocol v2 (Go `sessionhost.ProtocolVersion` 2): the host's
-    // delivery, the dialog hint and a requested stop.
+    // Protocol v2 (Go `sessionhost.ProtocolVersion` 2): input that is not
+    // the owner's, the host's delivery, the dialog hint and a requested stop.
+    case inputTo = 0x08
     case deliver = 0x09
     case delivered = 0x89
     case deliverCheck = 0x8A

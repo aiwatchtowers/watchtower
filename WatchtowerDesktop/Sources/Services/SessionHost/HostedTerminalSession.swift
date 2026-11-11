@@ -102,7 +102,7 @@ final class HostedTerminalSession: TerminalSessionProcess {
         self.watch = watch
         terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        terminal.hostInput = { [weak self] bytes in self?.sendToHost(bytes) }
+        terminal.hostInput = { [weak self] bytes, owner in self?.sendToHost(bytes, owner: owner) }
         terminal.hostResize = { [weak self] cols, rows in self?.resizeHost(cols: cols, rows: rows) }
     }
 
@@ -449,16 +449,37 @@ final class HostedTerminalSession: TerminalSessionProcess {
         bound = false
     }
 
-    /// Owner input and the terminal's replies, split into frames the host
-    /// accepts.
-    private func sendToHost(_ bytes: [UInt8]) {
+    /// The most bytes of one `inputTo` frame: base64 grows them by a third,
+    /// `JSONEncoder` may write each base64 `/` as `\/` (at worst twice that),
+    /// and the JSON around them stays well under the 4 KiB left over.
+    static let inputToChunk = (SessionHostFrame.maxPayload - 4096) / 8 * 3
+
+    /// The bytes for the run, split into frames the host accepts. Owner
+    /// keystrokes and pastes go as `input`: the host counts them as the
+    /// owner's draft in the prompt (PROJ-12). The terminal's own replies
+    /// (focus reports, device attributes, mouse reports) and the app's input
+    /// go as `inputTo`, which writes the PTY and leaves the prompt alone —
+    /// as `input` a window's focus change read as a draft, and an ask's
+    /// answer then waited for the owner's Return (#1743). Before the host
+    /// reported the launch, or to a v1 host (no `inputTo`; it never
+    /// delivers either), they go as `input` too: before Launched an Error
+    /// frame would read as the launch failing. The one connection keeps
+    /// both kinds in order.
+    private func sendToHost(_ bytes: [UInt8], owner: Bool) {
         guard let transport, requested, !exited else { return }
-        var start = 0
-        while start < bytes.count {
-            let end = min(start + SessionHostFrame.maxPayload, bytes.count)
-            transport.send(SessionHostFrame(type: .input, payload: Array(bytes[start..<end])))
-            start = end
+        if !owner, client.speaksV2, let key, bound, launch > 0 {
+            for chunk in Self.chunks(bytes, of: Self.inputToChunk) {
+                transport.send(.json(.inputTo, SessionHostInputTo(row: key.row, run: key.run, launch: launch, data: Data(chunk))))
+            }
+            return
         }
+        for chunk in Self.chunks(bytes, of: SessionHostFrame.maxPayload) {
+            transport.send(SessionHostFrame(type: .input, payload: Array(chunk)))
+        }
+    }
+
+    private static func chunks(_ bytes: [UInt8], of size: Int) -> [ArraySlice<UInt8>] {
+        stride(from: 0, to: bytes.count, by: size).map { bytes[$0..<min($0 + size, bytes.count)] }
     }
 
     private func resizeHost(cols: Int, rows: Int) {

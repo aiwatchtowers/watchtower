@@ -77,6 +77,10 @@ final class SessionHostFrameTests: XCTestCase {
         XCTAssertEqual(try keys(DeliverCheckReply(id: "d1", fresh: true, canSubmit: false)), ["id", "fresh", "can_submit", "answers_dialog"])
         XCTAssertEqual(try keys(SessionHostPromptHint(row: 1, run: "r", dialog: true)), ["row", "run", "dialog"])
         XCTAssertEqual(try keys(SessionHostStopRequest(row: 1, run: "r", launch: 2)), ["row", "run", "launch"])
+        // Go `InputToReq.Data` is a `[]byte`: base64 in the JSON, as `Data` encodes.
+        let inputTo = SessionHostInputTo(row: 1, run: "r", launch: 2, data: Data([0x1B, 0x5B, 0x49]))
+        XCTAssertEqual(try keys(inputTo), ["row", "run", "launch", "data"])
+        XCTAssertEqual(String(bytes: try JSONEncoder().encode(inputTo.data), encoding: .utf8), #""G1tJ""#)
 
         let reply = #"{"id":"d1","fresh":true,"can_submit":true}"#
         XCTAssertEqual(try JSONDecoder().decode(DeliverCheckReply.self, from: Data(reply.utf8)),
@@ -99,7 +103,7 @@ final class SessionHostFrameTests: XCTestCase {
     /// The v2 frame types keep Go's bytes (`frame.go`).
     func testV2FrameTypeBytes() {
         let pairs: [(SessionHostFrameType, UInt8)] = [
-            (.deliver, 0x09), (.delivered, 0x89), (.deliverCheck, 0x8A), (.deliverCheckReply, 0x0A),
+            (.inputTo, 0x08), (.deliver, 0x09), (.delivered, 0x89), (.deliverCheck, 0x8A), (.deliverCheckReply, 0x0A),
             (.promptHint, 0x0B), (.deliveryEvent, 0x8B), (.stop, 0x0C), (.stopping, 0x8C)
         ]
         for (type, byte) in pairs { XCTAssertEqual(type.rawValue, byte, "\(type)") }

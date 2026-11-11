@@ -1746,11 +1746,13 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     }
 
     /// Every byte for the process: keystrokes and pastes are the owner's.
-    /// A hosted session's bytes go to the session host instead.
+    /// A hosted session's bytes go to the session host instead, marked
+    /// whether they are the owner's (the host counts only those as a draft).
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        if !forwardingAppInput { onOwnerInput?(Array(data)) }
+        let owner = !forwardingAppInput
+        if owner { onOwnerInput?(Array(data)) }
         if let hostInput {
-            hostInput(Array(data))
+            hostInput(Array(data), owner)
             return
         }
         super.send(source: source, data: data)
@@ -1759,8 +1761,9 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     // MARK: Session host (board #496)
 
     /// Set for a hosted session: the bytes for the process go here, not
-    /// to the (never started) local process.
-    var hostInput: (([UInt8]) -> Void)?
+    /// to the (never started) local process. `owner` is false for the
+    /// terminal's own replies and the app's input (`forwardingAppInput`).
+    var hostInput: ((_ bytes: [UInt8], _ owner: Bool) -> Void)?
     /// Set for a hosted session: the terminal's new columns and rows.
     var hostResize: ((_ cols: Int, _ rows: Int) -> Void)?
     /// While set, the terminal's own replies (`send(source: Terminal, …)`)
