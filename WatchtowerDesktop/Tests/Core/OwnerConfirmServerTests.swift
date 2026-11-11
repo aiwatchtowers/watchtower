@@ -7,7 +7,16 @@ import XCTest
 final class OwnerConfirmServerTests: XCTestCase {
     private var dir: String = ""
     private var server: OwnerConfirmServer?
-    private var prompts: [OwnerConfirmPrompt] = []
+    private var prompts: [OwnerConfirmPrompt] = [] {
+        didSet {
+            let due = promptWaiters.filter { $0.count <= prompts.count }
+            promptWaiters.removeAll { $0.count <= prompts.count }
+            due.forEach { $0.continuation.resume() }
+        }
+    }
+    private var promptWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    /// Counts the connections the server admitted.
+    private let admitted = AdmitCount()
     private var socketPath: String { dir + "/s.sock" }
 
     override func setUp() async throws {
@@ -24,11 +33,15 @@ final class OwnerConfirmServerTests: XCTestCase {
     /// No cooldown by default: every request here comes from this one pid.
     private func start(
         grants: OwnerConfirmGrants = OwnerConfirmGrants(),
-        timeout: Duration = .seconds(30),
-        cooldown: Duration = .zero
+        cooldown: Duration = .zero,
+        lineTimeout: TimeInterval = OwnerConfirmServer.readTimeout,
+        sleep: @escaping (Duration) async -> Void = { _ in await parkUntilCancelled() }
     ) throws {
-        let server = OwnerConfirmServer(path: socketPath, grants: grants, timeout: timeout,
-                                        cooldown: cooldown) { [weak self] in
+        let admitted = admitted
+        let onAdmit: @Sendable (Int) -> Void = { admitted.reached($0) }
+        let server = OwnerConfirmServer(path: socketPath, grants: grants, cooldown: cooldown,
+                                        lineTimeout: lineTimeout, sleep: sleep,
+                                        onAdmit: onAdmit) { [weak self] in
             self?.prompts.append($0)
         }
         try server.start()
@@ -37,18 +50,21 @@ final class OwnerConfirmServerTests: XCTestCase {
 
     /// One CLI round trip on a background thread; the reply, or nil when the
     /// connection closed without one.
-    private func ask(_ request: OwnerConfirmRequest, hangUpAfter: TimeInterval? = nil) -> Task<OwnerConfirmReply?, Never> {
+    /// With `hangUp`, the client closes once it is signalled instead of
+    /// reading the reply.
+    private func ask(_ request: OwnerConfirmRequest, hangUp: DispatchSemaphore? = nil) -> Task<OwnerConfirmReply?, Never> {
         let path = socketPath
         let line = try? JSONEncoder().encode(request)
         return Task.detached {
-            UnixLineClient.roundTrip(path: path, line: line, hangUpAfter: hangUpAfter)
+            UnixLineClient.roundTrip(path: path, line: line, hangUp: hangUp)
                 .flatMap { try? JSONDecoder().decode(OwnerConfirmReply.self, from: $0) }
         }
     }
 
+    /// Returns once `count` windows were presented — no clock.
     private func waitForPrompt(count: Int = 1) async throws {
-        for _ in 0..<200 where prompts.count < count {
-            try await Task.sleep(for: .milliseconds(20))
+        if prompts.count < count {
+            await withCheckedContinuation { promptWaiters.append((count, $0)) }
         }
         XCTAssertEqual(prompts.count, count)
     }
@@ -138,13 +154,15 @@ final class OwnerConfirmServerTests: XCTestCase {
 
     func testAHangUpWithdrawsTheWindow() async throws {
         try start()
-        let gone = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]), hangUpAfter: 0.6)
+        let hangUp = DispatchSemaphore(value: 0)
+        let gone = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]), hangUp: hangUp)
         try await waitForPrompt()
-        var withdrawn = false
-        prompts[0].onWithdraw = { withdrawn = true }
+        let prompt = prompts[0]
+        await withCheckedContinuation { (withdrawn: CheckedContinuation<Void, Never>) in
+            prompt.onWithdraw = { withdrawn.resume() }
+            hangUp.signal()
+        }
         _ = await gone.value
-        for _ in 0..<100 where !withdrawn { try await Task.sleep(for: .milliseconds(20)) }
-        XCTAssertTrue(withdrawn)
         // The slot is free again.
         let next = ask(OwnerConfirmRequest(verb: "b", args: ["actions", "approve", "2"]))
         try await waitForPrompt(count: 2)
@@ -153,16 +171,21 @@ final class OwnerConfirmServerTests: XCTestCase {
     }
 
     func testTheWaitRunsOut() async throws {
-        try start(timeout: .milliseconds(200))
-        let reply = await ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"])).value
+        let wait = OpenOnce()
+        try start { _ in await wait.wait() }
+        let pending = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]))
+        try await waitForPrompt()
+        wait.open()
+        let reply = await pending.value
         XCTAssertEqual(reply?.decision, OwnerConfirmReply.denied)
     }
 
-    /// F11: a connection that sends no line is closed after the read timeout.
+    /// F11: a connection that sends no line is closed after the read timeout
+    /// (none here, so it runs out at once).
     func testASilentConnectionIsClosed() async throws {
-        try start()
+        try start(lineTimeout: 0)
         let path = socketPath
-        let closed = await Task.detached { UnixLineClient.closedWithoutAnswer(path: path, within: 8) }.value
+        let closed = await Task.detached { UnixLineClient.closedWithoutAnswer(path: path) }.value
         XCTAssertTrue(closed)
         XCTAssertTrue(prompts.isEmpty)
     }
@@ -174,7 +197,7 @@ final class OwnerConfirmServerTests: XCTestCase {
         let fds = (0..<OwnerConfirmServer.maxConnections).compactMap { _ in UnixLineClient.connect(path: path) }
         defer { fds.forEach { close($0) } }
         XCTAssertEqual(fds.count, OwnerConfirmServer.maxConnections)
-        try await Task.sleep(for: .milliseconds(200))
+        await admitted.until(OwnerConfirmServer.maxConnections)
         let reply = await ask(OwnerConfirmRequest(verb: "a", args: ["x"])).value
         XCTAssertNil(reply, "the extra connection was closed")
         XCTAssertTrue(prompts.isEmpty)
@@ -189,7 +212,7 @@ final class OwnerConfirmServerTests: XCTestCase {
         let fds = (0..<OwnerConfirmServer.maxConnections).compactMap { _ in UnixLineClient.connect(path: path) }
         defer { fds.forEach { close($0) } }
         XCTAssertEqual(fds.count, OwnerConfirmServer.maxConnections)
-        try await Task.sleep(for: .milliseconds(200))
+        await admitted.until(OwnerConfirmServer.maxConnections)
         grants.register(["actions", "approve", "9"], pid: getpid())
         let reply = await ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "9"])).value
         XCTAssertEqual(reply?.decision, OwnerConfirmReply.confirmed)
@@ -311,27 +334,25 @@ private enum UnixLineClient {
         return fd
     }
 
-    /// Sends `line` + "\n" and reads one reply line; with `hangUpAfter`,
-    /// closes after that many seconds instead.
-    static func roundTrip(path: String, line: Data?, hangUpAfter: TimeInterval?) -> Data? {
+    /// Sends `line` + "\n" and reads one reply line; with `hangUp`, closes
+    /// once it is signalled instead.
+    static func roundTrip(path: String, line: Data?, hangUp: DispatchSemaphore?) -> Data? {
         guard let line, let fd = connect(path: path) else { return nil }
         defer { close(fd) }
         let payload = line + Data([UInt8(ascii: "\n")])
         _ = payload.withUnsafeBytes { write(fd, $0.baseAddress, payload.count) }
-        if let hangUpAfter {
-            Thread.sleep(forTimeInterval: hangUpAfter)
+        if let hangUp {
+            hangUp.wait()
             return nil
         }
         return readLine(fd)
     }
 
     /// Connects, sends nothing, and reports whether the server closed the
-    /// connection within `within` seconds.
-    static func closedWithoutAnswer(path: String, within: TimeInterval) -> Bool {
+    /// connection unanswered (the read blocks until it does).
+    static func closedWithoutAnswer(path: String) -> Bool {
         guard let fd = connect(path: path) else { return false }
         defer { close(fd) }
-        var tv = timeval(tv_sec: Int(within), tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         var byte: UInt8 = 0
         return read(fd, &byte, 1) == 0
     }
@@ -348,4 +369,59 @@ private enum UnixLineClient {
         guard let end = out.firstIndex(of: UInt8(ascii: "\n")) else { return nil }
         return out[..<end]
     }
+}
+
+/// Counts the connections the server admitted; `until` returns once the
+/// count reached `n`.
+private final class AdmitCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var open = 0
+    private var waiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func reached(_ count: Int) {
+        let due: [CheckedContinuation<Void, Never>] = lock.withLock {
+            open = max(open, count)
+            let due = waiters.filter { $0.count <= open }.map(\.continuation)
+            waiters.removeAll { $0.count <= open }
+            return due
+        }
+        due.forEach { $0.resume() }
+    }
+
+    func until(_ count: Int) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let now: Bool = lock.withLock {
+                if open >= count { return true }
+                waiters.append((count, continuation))
+                return false
+            }
+            if now { continuation.resume() }
+        }
+    }
+}
+
+/// A wait the test ends by hand, once.
+@MainActor
+private final class OpenOnce {
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let woken = waiting
+        waiting = []
+        woken.forEach { $0.resume() }
+    }
+}
+
+/// A sleep that never returns on its own: it parks until its task is cancelled.
+private func parkUntilCancelled() async {
+    let (stream, continuation) = AsyncStream<Never>.makeStream()
+    for await _ in stream {}
+    withExtendedLifetime(continuation) {}
 }

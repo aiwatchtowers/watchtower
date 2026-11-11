@@ -23,6 +23,7 @@ final class OwnerConfirmIO: @unchecked Sendable {
     func listen(
         path: String,
         pastCap: @escaping @Sendable (Int32) -> Bool,
+        onAdmit: (@Sendable (Int) -> Void)? = nil,
         serve: @escaping @Sendable (Int32) -> Void
     ) throws {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -40,7 +41,7 @@ final class OwnerConfirmIO: @unchecked Sendable {
         }
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: acceptQueue)
-        source.setEventHandler { [weak self] in self?.acceptAll(fd, pastCap: pastCap, serve: serve) }
+        source.setEventHandler { [weak self] in self?.acceptAll(fd, pastCap: pastCap, onAdmit: onAdmit, serve: serve) }
         source.setCancelHandler { close(fd) }
         lock.lock()
         listenFD = fd
@@ -61,6 +62,7 @@ final class OwnerConfirmIO: @unchecked Sendable {
     private func acceptAll(
         _ fd: Int32,
         pastCap: @Sendable (Int32) -> Bool,
+        onAdmit: (@Sendable (Int) -> Void)?,
         serve: @escaping @Sendable (Int32) -> Void
     ) {
         while true {
@@ -82,7 +84,9 @@ final class OwnerConfirmIO: @unchecked Sendable {
             if admitted {
                 lock.lock()
                 connections += 1
+                let open = connections
                 lock.unlock()
+                onAdmit?(open)
             }
             guard admitted else {
                 close(conn)
