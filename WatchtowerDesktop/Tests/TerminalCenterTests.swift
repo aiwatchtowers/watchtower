@@ -1346,7 +1346,8 @@ final class TerminalCenterTests: XCTestCase {
             ("Option+a (ESC a)", Array("\u{1B}a".utf8)),
             ("Up arrow", Array("\u{1B}[A".utf8)),
             ("Esc Esc in one chunk", [0x1B, 0x1B]),
-            ("Ctrl+C after text", Array("a".utf8) + [0x03])
+            ("Ctrl+C after text", Array("a".utf8) + [0x03]),
+            ("Shift+Tab, then text", Array("\u{1B}[Za".utf8))
         ]
         for (name, bytes) in drafts {
             XCTAssertFalse(TerminalCenter.isNonTextKey(bytes), name)

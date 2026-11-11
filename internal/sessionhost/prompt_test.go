@@ -400,7 +400,8 @@ func TestBracketedPasteModeFollowsTheOutput(t *testing.T) {
 // no text into the prompt, so it leaves the draft state as it was — no
 // draft over an empty prompt, still one over a draft — under both profiles.
 // Esc then a byte (Option+key) and the cursor keys stay drafts. Twin of
-// TerminalCenterSubmitTests' testProj12_NonTextKeysKeepTheDraftState.
+// TerminalCenterTests' testProj12_NonTextKeysKeepTheAnswersReturn (Codex:
+// TerminalCenterSubmitTests' testCodexNonTextKeysKeepTheDraftState).
 func TestProj12_NonTextKeysKeepTheDraftState(t *testing.T) {
 	keys := []struct {
 		name string
