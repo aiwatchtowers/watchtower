@@ -68,7 +68,7 @@ func TestRuntimeRecordsLatencySamples(t *testing.T) {
 			t.Fatal(err)
 		}
 		sent++
-		eventually(t, 15*time.Second, "the latency_test action applied", func() bool {
+		eventually(t, "the latency_test action applied", func() bool {
 			if _, err := e.phone.Sync(); err != nil {
 				t.Fatal(err)
 			}
@@ -88,7 +88,7 @@ func TestRuntimeRecordsLatencySamples(t *testing.T) {
 	// The two probes and every latency_test are timed read → applied; only
 	// latency_test nudges a slice, and each credited save writes
 	// applied_saved and read_saved together.
-	eventually(t, 5*time.Second, "a read_applied sample per action", func() bool {
+	eventually(t, "a read_applied sample per action", func() bool {
 		s = steps()
 		return s[state.StepReadApplied] >= 2+sent
 	})

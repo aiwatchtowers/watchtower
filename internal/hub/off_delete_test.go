@@ -31,7 +31,7 @@ func ownerOffRig(t *testing.T) (*rig, string) {
 		t.Fatal(err)
 	}
 	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
+	eventually(t, "the heartbeat published", func() bool {
 		return slices.Contains(liveRecords(t, r.fake, data), "heartbeat")
 	})
 	return r, data
@@ -65,7 +65,7 @@ func TestOwnerOffDeletesWhatWasPublished(t *testing.T) {
 	if got := liveRecords(t, r.fake, data); len(got) != 0 {
 		t.Fatalf("the data zone still holds %v after the owner's off", got)
 	}
-	eventually(t, 10*time.Second, "off_delete ok, no phones", func() bool {
+	eventually(t, "off_delete ok, no phones", func() bool {
 		s := r.rec.last()
 		return s.OffDelete.State == OffDeleteOK && s.OffDelete.At != "" && s.Phones == 0
 	})
@@ -158,7 +158,7 @@ func TestOwnerOffUnlinksWhileNoHubRuns(t *testing.T) {
 	r := newRig(t, dir)
 	r.start(r.options())
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 10*time.Second, "no phones", func() bool { return r.rec.last().Phones == 0 })
+	eventually(t, "no phones", func() bool { return r.rec.last().Phones == 0 })
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func TestOwnerOffThenOnPairsAgain(t *testing.T) {
 	r, _ := ownerOffRig(t)
 	disableHub(t, r.dir)
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 10*time.Second, "no phones", func() bool { return r.rec.last().Phones == 0 })
+	eventually(t, "no phones", func() bool { return r.rec.last().Phones == 0 })
 	switchHub(t, r.dir, OpEnable)
 	r.waitState(StateRunning, "")
 	c, err := Dial(r.dir)
@@ -206,7 +206,7 @@ func TestOwnerOffThenOnPairsAgain(t *testing.T) {
 	}
 	defer func() { _ = c.Close() }()
 	pairOverMemfake(t, r, c, r.rec.last().RelayDeviceID) // its keys are in the pair zone
-	eventually(t, 10*time.Second, "the new phone linked", func() bool { return r.rec.last().Phones == 1 })
+	eventually(t, "the new phone linked", func() bool { return r.rec.last().Phones == 1 })
 }
 
 // TestOwnerOffRetriesAFailedDelete: a wipe that fails reads failed in
@@ -221,13 +221,13 @@ func TestOwnerOffRetriesAFailedDelete(t *testing.T) {
 	r.fake.FailNext("delete", transport.ErrUnavailable)
 	disableHub(t, r.dir)
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 10*time.Second, "off_delete failed", func() bool {
+	eventually(t, "off_delete failed", func() bool {
 		return r.rec.last().OffDelete.State == OffDeleteFailed
 	})
 	if got := liveRecords(t, r.fake, data); len(got) == 0 {
 		t.Fatal("the failed delete deleted anyway")
 	}
-	eventually(t, 10*time.Second, "the retry deleted it", func() bool {
+	eventually(t, "the retry deleted it", func() bool {
 		return len(liveRecords(t, r.fake, data)) == 0 && r.rec.last().OffDelete.State == OffDeleteOK
 	})
 }

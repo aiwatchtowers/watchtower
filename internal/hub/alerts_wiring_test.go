@@ -288,7 +288,7 @@ func (w *pushWorld) settledLine(key, outcome string) string {
 
 func (w *pushWorld) waitLog(line string) {
 	w.t.Helper()
-	eventually(w.t, 5*time.Second, line, func() bool { return strings.Contains(w.logs.String(), line) })
+	eventually(w.t, line, func() bool { return strings.Contains(w.logs.String(), line) })
 }
 
 // signalled is which of keys have a signal record in the zone.
@@ -466,7 +466,7 @@ func startPushRig(t *testing.T) *pushRig {
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 10*time.Second, "the phone a hub reader", func() bool {
+	eventually(t, "the phone a hub reader", func() bool {
 		rs := pr.srv.Readers()
 		return len(rs) > 0 && slices.Contains(rs[len(rs)-1], pr.phone)
 	})
@@ -506,7 +506,7 @@ func TestE2ECanary_AlertPushCarriesNoPlaintext(t *testing.T) {
 		Title: logcanary.Text("alert.title"), Body: logcanary.Text("alert.body"),
 	}
 	pr.raise(a)
-	eventually(t, 15*time.Second, "the relay accepted the push", func() bool { return len(pr.srv.Alerts()) == 1 })
+	eventually(t, "the relay accepted the push", func() bool { return len(pr.srv.Alerts()) == 1 })
 	sent := pr.sendAlerts()
 	if len(sent) != 1 || sent[0].GetPhoneDeviceId() != pr.phone {
 		t.Fatalf("send_alert requests %v, want one to %s", sent, pr.phone)
@@ -543,7 +543,7 @@ func TestAccountRefreshUpdatesTargets(t *testing.T) {
 	pr := startPushRig(t)
 	reads := pr.accountReads()
 	pr.srv.SetPaying(pr.phone, false) // ENTITLEMENT_EXPIRED to the hub: it reads the account
-	eventually(t, 10*time.Second, "the account read after the control", func() bool { return pr.accountReads() > reads })
+	eventually(t, "the account read after the control", func() bool { return pr.accountReads() > reads })
 	pr.raise(workAlert("ask-1"))
 	time.Sleep(time.Second) // the nudged cycle and its enqueue
 	if n := len(pr.sendAlerts()); n != 0 {
@@ -554,9 +554,9 @@ func TestAccountRefreshUpdatesTargets(t *testing.T) {
 		Kind: relayv1.ControlKind_CONTROL_KIND_SLOT_ADDED, Detail: pr.phone,
 	}}})
 	reads = pr.accountReads()
-	eventually(t, 10*time.Second, "the account read after SLOT_ADDED", func() bool { return pr.accountReads() > reads })
+	eventually(t, "the account read after SLOT_ADDED", func() bool { return pr.accountReads() > reads })
 	pr.raise(workAlert("ask-1"), workAlert("ask-2"))
-	eventually(t, 15*time.Second, "the push of the next alert", func() bool { return len(pr.srv.Alerts()) == 1 })
+	eventually(t, "the push of the next alert", func() bool { return len(pr.srv.Alerts()) == 1 })
 	if sent := pr.sendAlerts(); len(sent) != 1 || sent[0].GetPhoneDeviceId() != pr.phone {
 		t.Fatalf("send_alert requests %v", sent)
 	}
@@ -575,7 +575,7 @@ func TestWorkAlertsOffOnTheRelayStopsSendAlert(t *testing.T) {
 			UpdatedAt: wire.Time{Time: pr.clock.Now()}}, ""); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, 15*time.Second, "the device record applied", func() bool { return pr.device(t).Name == name })
+		eventually(t, "the device record applied", func() bool { return pr.device(t).Name == name })
 	}
 	off := true
 	record(&off, "Switch off")
@@ -583,7 +583,7 @@ func TestWorkAlertsOffOnTheRelayStopsSendAlert(t *testing.T) {
 		t.Fatal("the switch was not stored")
 	}
 	pr.raise(workAlert("ask-off"))
-	eventually(t, 15*time.Second, "the phone's action reached the source", func() bool {
+	eventually(t, "the phone's action reached the source", func() bool {
 		items, err := pr.src.Items(t.Context())
 		return err == nil && len(items) == 1
 	})
@@ -593,7 +593,7 @@ func TestWorkAlertsOffOnTheRelayStopsSendAlert(t *testing.T) {
 	}
 	record(nil, "Switch on")
 	pr.raise(workAlert("ask-on"))
-	eventually(t, 15*time.Second, "the push after the switch came on", func() bool { return len(pr.srv.Alerts()) == 1 })
+	eventually(t, "the push after the switch came on", func() bool { return len(pr.srv.Alerts()) == 1 })
 	if sent := pr.sendAlerts(); len(sent) != 1 {
 		t.Fatalf("send_alert %v, want one", sent)
 	}
@@ -612,13 +612,13 @@ func TestAnAlertOpenWhenTheSwitchComesBackOnIsNotPushed(t *testing.T) {
 			UpdatedAt: wire.Time{Time: pr.clock.Now()}}, ""); err != nil {
 			t.Fatal(err)
 		}
-		eventually(t, 15*time.Second, "the device record applied", func() bool { return pr.device(t).Name == name })
+		eventually(t, "the device record applied", func() bool { return pr.device(t).Name == name })
 	}
 	off := true
 	record(&off, "Switch off")
 	open := workAlert("ask-open")
 	pr.raise(open)
-	eventually(t, 15*time.Second, "the phone's action reached the source", func() bool {
+	eventually(t, "the phone's action reached the source", func() bool {
 		items, err := pr.src.Items(t.Context())
 		return err == nil && len(items) == 1
 	})
@@ -660,7 +660,7 @@ func TestFarewellOverTheRelay(t *testing.T) {
 		pr := startPushRig(t)
 		pr.srv.EnforceMailboxRead()
 		farewell(t, pr)
-		eventually(t, 15*time.Second, "the row gone", func() bool { return devices(t, pr) == 0 })
+		eventually(t, "the row gone", func() bool { return devices(t, pr) == 0 })
 	})
 	t.Run("the slot gone first", func(t *testing.T) {
 		pr := startPushRig(t)

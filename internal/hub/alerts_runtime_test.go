@@ -157,7 +157,7 @@ func (rp *runtimePush) call(within time.Duration) (string, bool) {
 
 func (rp *runtimePush) waitLog(line string) {
 	rp.t.Helper()
-	eventually(rp.t, 5*time.Second, line, func() bool { return strings.Contains(rp.logs.String(), line) })
+	eventually(rp.t, line, func() bool { return strings.Contains(rp.logs.String(), line) })
 }
 
 // TestReconnectWakesUnavailableRetries: the relay answered UNAVAILABLE (its
@@ -257,7 +257,7 @@ func TestRestartPushesAnAlertSavedAtOnce(t *testing.T) {
 	o.away = alwaysAway{}
 	o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{pr.src} }
 	r2.start(o)
-	eventually(t, 15*time.Second, "the push after the restart", func() bool { return len(pr.srv.Alerts()) == 1 })
+	eventually(t, "the push after the restart", func() bool { return len(pr.srv.Alerts()) == 1 })
 	time.Sleep(200 * time.Millisecond) // a second push would have gone by now
 	if sent := pr.sendAlerts(); len(sent) != 1 || sent[0].GetPhoneDeviceId() != pr.phone {
 		t.Fatalf("send_alert requests %v, want one to the reader", sent)

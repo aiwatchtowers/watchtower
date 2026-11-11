@@ -73,7 +73,7 @@ func TestDesktopWatchStreamsRecordingQueued(t *testing.T) {
 	if _, err := e.phone.WriteUpload("u1", upload, &desc, sealed); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 20*time.Second, "the upload received", func() bool {
+	eventually(t, "the upload received", func() bool {
 		if _, err := e.phone.Sync(); err != nil {
 			t.Fatal(err)
 		}

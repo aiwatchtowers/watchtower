@@ -84,7 +84,7 @@ func TestSharedMailboxEventRunsAPass(t *testing.T) {
 	g.gate()
 	// The startup's events, already forwarded, are consumed (each may run a
 	// pass) before the count is taken.
-	eventually(t, 10*time.Second, "the startup events consumed", func() bool { return len(g.out) == 0 })
+	eventually(t, "the startup events consumed", func() bool { return len(g.out) == 0 })
 	settled := passes.Load()
 	for {
 		time.Sleep(100 * time.Millisecond)
@@ -105,7 +105,7 @@ func TestSharedMailboxEventRunsAPass(t *testing.T) {
 		t.Fatalf("a pass ran without an event (%d passes, echo %q): the test proves nothing", n-settled, e.phone.Echoes[seq].Status)
 	}
 	g.out <- transport.Event{Zone: transport.SharedMailboxZone(status.RelayDeviceID)}
-	eventually(t, 10*time.Second, "the echo after the shared mailbox event", func() bool {
+	eventually(t, "the echo after the shared mailbox event", func() bool {
 		if _, err := e.phone.Sync(); err != nil {
 			t.Fatal(err)
 		}

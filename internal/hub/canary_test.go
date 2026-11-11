@@ -316,7 +316,7 @@ VALUES (?, ?, 'question', ?, '{}', 'open', ?)`, c.project, c.session, mAlert, ti
 		t.Fatal(err)
 	}
 
-	eventually(t, 20*time.Second, "an answer to every action and the upload", func() bool {
+	eventually(t, "an answer to every action and the upload", func() bool {
 		if _, err := phone.Sync(); err != nil {
 			t.Fatal(err)
 		}

@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"watchtower/internal/policy/policytest"
 )
@@ -18,7 +17,7 @@ func TestControlRecordingsSwitch(t *testing.T) {
 	r := newRig(t, dir)
 	r.start(r.options())
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 5*time.Second, "the control socket", func() bool {
+	eventually(t, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
 		return err == nil
 	})

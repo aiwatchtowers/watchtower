@@ -195,7 +195,7 @@ type linkedPhone struct {
 func (r *vouchRig) link() linkedPhone {
 	r.t.Helper()
 	t := r.t
-	eventually(t, 10*time.Second, "the hub up, not vouched", func() bool { return r.rec.last().Reason == ReasonNotVouched })
+	eventually(t, "the hub up, not vouched", func() bool { return r.rec.last().Reason == ReasonNotVouched })
 	c, err := Dial(r.dir)
 	if err != nil {
 		t.Fatal(err)
@@ -244,7 +244,7 @@ func (r *vouchRig) link() linkedPhone {
 	}
 	next(link.EventSAS)
 	var awaiting wire.Keybox
-	eventually(t, 10*time.Second, "the awaiting keybox", func() bool {
+	eventually(t, "the awaiting keybox", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		awaiting = kb
 		return err == nil && ok && kb.Grant.ConfirmNonce != nil
@@ -256,7 +256,7 @@ func (r *vouchRig) link() linkedPhone {
 		t.Fatal(err)
 	}
 	next(link.EventLinked)
-	eventually(t, 10*time.Second, "the keys in the pair zone", func() bool {
+	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		return err == nil && ok && kb.Keys != nil
 	})
@@ -278,7 +278,7 @@ func (r *vouchRig) admit(l linkedPhone) {
 	// only a fresh read reopens the gate; let one window pass per half
 	// second, as production time would.
 	tick := 0
-	eventually(r.t, 10*time.Second, "running/", func() bool {
+	eventually(r.t, "running/", func() bool {
 		if s := r.rec.last(); s.State == StateRunning && s.Reason == "" {
 			return true
 		}
@@ -366,7 +366,7 @@ func TestUnvouchedHubPollsTheAccountStateAtMostEvery30s(t *testing.T) {
 		t.Fatalf("%d account-state reads inside one poll window", n)
 	}
 	r.clock.Advance(unvouchedPoll)
-	eventually(t, 5*time.Second, "one read after the window", func() bool { return r.accountReads() > base })
+	eventually(t, "one read after the window", func() bool { return r.accountReads() > base })
 	time.Sleep(200 * time.Millisecond)
 	if n := r.accountReads() - base; n != 1 {
 		t.Fatalf("%d account-state reads after one window, want 1", n)
@@ -381,7 +381,7 @@ func TestVouchAcceptedAdmitsTheHub(t *testing.T) {
 	l := r.link()
 	r.admit(l)
 	data := transport.DataZone(l.lp.RelayDeviceID)
-	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
+	eventually(t, "the device_grant in the data zone", func() bool {
 		kb, ok, err := l.phone.ReadKeybox(data)
 		return err == nil && ok && kb.Grant.Linked
 	})
@@ -411,7 +411,7 @@ func (r *vouchRig) readsToOpenTheGate() int {
 	r.t.Helper()
 	var ops []string
 	from, to := -1, -1
-	eventually(r.t, 10*time.Second, "set_hub_readers after promote_pairing", func() bool {
+	eventually(r.t, "set_hub_readers after promote_pairing", func() bool {
 		ops = r.srv.Ops()
 		from, to = -1, -1
 		for i, op := range ops {
@@ -481,7 +481,7 @@ func TestHubNotVouchedAfterAdmissionIsRevoked(t *testing.T) {
 	l := r.link()
 	r.admit(l)
 	data := transport.DataZone(l.lp.RelayDeviceID)
-	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
+	eventually(t, "the device_grant in the data zone", func() bool {
 		kb, ok, err := l.phone.ReadKeybox(data)
 		return err == nil && ok && kb.Grant.Linked
 	})
@@ -596,7 +596,7 @@ func TestHubStartedVouchedStampsItsPhonesAtOnce(t *testing.T) {
 
 	r2 := r.restart(t)
 	r2.waitState(StateRunning, "")
-	eventually(t, 5*time.Second, "the phone stamped from the start's account state", func() bool {
+	eventually(t, "the phone stamped from the start's account state", func() bool {
 		return !r2.device(t).RelayAdmittedAt.IsZero()
 	})
 	r2.srv.RemoveSlot(l.phone.RelayDeviceID(), l.lp.RelayDeviceID)

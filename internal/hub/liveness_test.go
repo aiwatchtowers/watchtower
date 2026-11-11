@@ -59,7 +59,7 @@ func TestLivenessDoesNotPollWithoutALinkedPhone(t *testing.T) {
 		t.Fatalf("liveness %+v with no phone linked", live)
 	}
 	linked.Store(true)
-	eventually(t, 5*time.Second, "a list once a phone is linked", func() bool { return len(l.get().Runs) == 1 })
+	eventually(t, "a list once a phone is linked", func() bool { return len(l.get().Runs) == 1 })
 	cancel()
 	<-done
 }

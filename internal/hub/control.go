@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/hub/actions/handlers"
 	"watchtower/internal/hub/adopt"
 	"watchtower/internal/hub/link"
+	"watchtower/internal/hub/platform"
 	"watchtower/internal/hub/slices"
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/wire"
@@ -193,7 +194,7 @@ type ControlAnswer struct {
 // without it: CLI writes then fail.
 func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 	path := filepath.Join(s.o.Dir, SocketName)
-	l, err := listenControl(path)
+	l, err := s.o.listen(path)
 	if err != nil {
 		log.Printf("hub: control socket not served (%s)", errClass(err))
 		return func() {}
@@ -210,18 +211,13 @@ func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 			if err != nil {
 				return
 			}
-			uc, ok := c.(*net.UnixConn)
-			if !ok {
-				_ = c.Close()
-				continue
-			}
-			uid, err := s.o.peerUID(uc)
+			uid, err := s.o.peerUID(c)
 			if err != nil || uid != os.Getuid() {
 				log.Printf("hub: control socket: a client of another user refused")
 				_ = c.Close()
 				continue
 			}
-			if s.o.sendBuffer > 0 {
+			if uc, ok := c.(*net.UnixConn); ok && s.o.sendBuffer > 0 {
 				if err := uc.SetWriteBuffer(s.o.sendBuffer); err != nil {
 					log.Printf("hub: control socket: send buffer not set (%s)", errClass(err))
 				}
@@ -250,6 +246,16 @@ func (s *supervisor) serveControl(ctx context.Context) (stop func()) {
 		wg.Wait()
 		_ = os.Remove(path)
 	}
+}
+
+// unixPeerUID is the peer's uid on a unix connection; any other
+// connection is refused.
+func unixPeerUID(c net.Conn) (int, error) {
+	uc, ok := c.(*net.UnixConn)
+	if !ok {
+		return 0, errors.New("hub: control socket: not a unix connection")
+	}
+	return platform.PeerUID(uc)
 }
 
 // listenControl binds path 0600, replacing a stale socket (Run holds the

@@ -514,7 +514,7 @@ func TestStatusFileHasNoContent(t *testing.T) {
 	r := newRig(t, dir)
 	r.start(r.options())
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the relay indicators", func() bool { return r.rec.last().Relay != nil })
+	eventually(t, "the relay indicators", func() bool { return r.rec.last().Relay != nil })
 	raw, err := os.ReadFile(filepath.Join(dir, statusFileName))
 	if err != nil {
 		t.Fatal(err)

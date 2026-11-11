@@ -30,18 +30,18 @@ func TestRelayIndicatorsWiredToTheRealTransport(t *testing.T) {
 	r.srv.FailNextSaveIn(data, relayv1.ErrorCode_ERROR_CODE_HUB_QUOTA_EXCEEDED)
 	r.admit(l)
 
-	eventually(t, 10*time.Second, "connected", func() bool {
+	eventually(t, "connected", func() bool {
 		s := r.rec.last()
 		return s.Relay != nil && s.Relay.State == RelayConnected
 	})
-	eventually(t, 15*time.Second, "the quota flag from a refused data-zone save", func() bool {
+	eventually(t, "the quota flag from a refused data-zone save", func() bool {
 		return r.statusSeen(func(s Status) bool { return s.Relay != nil && s.Relay.QuotaHub })
 	})
-	eventually(t, 15*time.Second, "the flag cleared and the save stamped by the next save", func() bool {
+	eventually(t, "the flag cleared and the save stamped by the next save", func() bool {
 		s := r.rec.last()
 		return s.Relay != nil && !s.Relay.QuotaHub && s.Relay.LastSavedAt != ""
 	})
-	eventually(t, 10*time.Second, "the paying phone", func() bool {
+	eventually(t, "the paying phone", func() bool {
 		return slices.Equal(r.rec.last().PayingPhones, []string{dev.ID})
 	})
 }
@@ -53,18 +53,18 @@ func TestRelayReconnectIsAStatusEvent(t *testing.T) {
 	r := startOnRelay(t, false)
 	l := r.link()
 	r.admit(l)
-	eventually(t, 10*time.Second, "connected", func() bool {
+	eventually(t, "connected", func() bool {
 		s := r.rec.last()
 		return s.Relay != nil && s.Relay.State == RelayConnected
 	})
 	r.srv.SetWebSocketDown(true)
-	eventually(t, 10*time.Second, "connecting", func() bool {
+	eventually(t, "connecting", func() bool {
 		s := r.rec.last()
 		return s.Relay != nil && s.Relay.State == RelayConnecting
 	})
 	next := watchLines(t, r.dir)
 	r.srv.SetWebSocketDown(false)
-	eventually(t, 15*time.Second, "connected again", func() bool {
+	eventually(t, "connected again", func() bool {
 		s := r.rec.last()
 		return s.Relay != nil && s.Relay.State == RelayConnected
 	})

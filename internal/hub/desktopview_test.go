@@ -199,7 +199,7 @@ func TestAHeartbeatGoingStaleRepublishesTheView(t *testing.T) {
 	r.beat(t)
 	r.setView(t, ControlRequest{Hidden: []int64{4}})
 	n := r.viewPublishes()
-	eventually(t, 5*time.Second, "the stale check republished", func() bool { return r.viewPublishes() > n })
+	eventually(t, "the stale check republished", func() bool { return r.viewPublishes() > n })
 }
 
 // TestAHeartbeatDuringAFreshnessReadIsNotCachedOver: a heartbeat that lands

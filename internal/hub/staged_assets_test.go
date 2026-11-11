@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"watchtower/internal/hub/state"
 	"watchtower/internal/hub/transport"
@@ -78,7 +77,7 @@ func TestOwnerOffRemovesTheStagedAssetsAndTheirDescriptors(t *testing.T) {
 	seedStagedAssets(t, r.dir)
 	disableHub(t, r.dir)
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 10*time.Second, "the staged assets gone", func() bool {
+	eventually(t, "the staged assets gone", func() bool {
 		file, row := stagedLeft(t, r.dir)
 		return !file && !row && assetDirEmpty(t, r.dir)
 	})
@@ -102,7 +101,7 @@ func TestAnICloudAccountChangeRemovesTheStagedAssets(t *testing.T) {
 	h := startCloudKitHub(t, nil, nil)
 	seedStagedAssets(t, h.dir)
 	h.ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, 5*time.Second, "the staged assets gone", func() bool {
+	eventually(t, "the staged assets gone", func() bool {
 		file, row := stagedLeft(t, h.dir)
 		return !file && !row && assetDirEmpty(t, h.dir)
 	})

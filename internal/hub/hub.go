@@ -177,7 +177,11 @@ type Options struct {
 	httpClient   *http.Client // the relay client's and the attachments' (nil = their own)
 	openStore    func(dir string) (*state.Store, error)
 	report       func(Status)
-	peerUID      func(*net.UnixConn) (int, error)
+	peerUID      func(net.Conn) (int, error) // nil = unixPeerUID
+	// listen binds the control socket (nil = listenControl). A test in a
+	// synctest bubble hands an in-memory listener: a goroutine in a real
+	// Accept is not durably blocked and would stop the bubble's clock.
+	listen       func(path string) (net.Listener, error)
 	mobileSync   func() string
 	lockRetry    time.Duration
 	lockWindow   time.Duration
@@ -231,7 +235,10 @@ func (o Options) withDefaults() Options {
 		o.openStore = state.Open
 	}
 	if o.peerUID == nil {
-		o.peerUID = platform.PeerUID
+		o.peerUID = unixPeerUID
+	}
+	if o.listen == nil {
+		o.listen = listenControl
 	}
 	if o.mobileSync == nil {
 		o.mobileSync = policy.MobileSync

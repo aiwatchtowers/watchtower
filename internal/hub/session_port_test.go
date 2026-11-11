@@ -96,7 +96,7 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 	if err := e.phone.Send(seq); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 15*time.Second, "session_stop applied", func() bool {
+	eventually(t, "session_stop applied", func() bool {
 		if _, err := e.phone.Sync(); err != nil {
 			t.Fatal(err)
 		}

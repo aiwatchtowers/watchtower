@@ -119,10 +119,10 @@ func TestHubPublishesTheDatabaseSourcesOnChange(t *testing.T) {
 	}
 	data := transport.DataZone(s.RelayDeviceID)
 	count := func() int { return len(liveRecords(t, r.fake, data)) }
-	eventually(t, 10*time.Second, "the target published", func() bool { return count() >= 4 }) // grant, heartbeat, workbench, target
+	eventually(t, "the target published", func() bool { return count() >= 4 }) // grant, heartbeat, workbench, target
 	before := count()
 	addTarget(t, d, project, "Second")
-	eventually(t, 10*time.Second, "the second target published by the watch", func() bool { return count() == before+1 })
+	eventually(t, "the second target published by the watch", func() bool { return count() == before+1 })
 
 	for _, p := range leftovers {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -372,7 +372,7 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 		DataZone: "data/hubtest-acme", Sources: w.set.Sources,
 	})
 	runWiring(t, h, w)
-	eventually(t, 5*time.Second, "the start cycle", func() bool { _, ok := h.pub.LastPublishAt(); return ok })
+	eventually(t, "the start cycle", func() bool { _, ok := h.pub.LastPublishAt(); return ok })
 	hashes := func(kind string) map[string]state.SliceRecord {
 		got, err := h.st.SliceHashes(kind)
 		if err != nil {
@@ -394,13 +394,13 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 	// 60 s hubslices.FullDiffEvery the result waited for before.
 	const prompt = 3 * time.Second
 	reportGate.open()
-	eventually(t, prompt, "the first report published", func() bool { return len(hashes("session_report")) == 1 })
+	eventually(t, "the first report published", func() bool { return len(hashes("session_report")) == 1 })
 	first := hashes("session_report")
 
 	if !w.set.Report.RequestReport(session) {
 		t.Fatal("the request was refused")
 	}
-	eventually(t, prompt, "the requested report published", func() bool {
+	eventually(t, "the requested report published", func() bool {
 		for name, r := range hashes("session_report") {
 			if r.Hash != first[name].Hash {
 				return true
@@ -415,7 +415,7 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 	mu.Unlock()
 
 	gitGate.open()
-	eventually(t, prompt, "the workbench republished with its git status", func() bool {
+	eventually(t, "the workbench republished with its git status", func() bool {
 		for name, r := range hashes("workbench") {
 			if r.Hash != workbench[name].Hash {
 				return true
@@ -470,7 +470,7 @@ func TestAFailedSeedGatesTheTimelineUntilARetrySucceeds(t *testing.T) {
 	if err := w.lane.observe(context.Background(), time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 5*time.Second, "the retried seed", w.isSeeded)
+	eventually(t, "the retried seed", w.isSeeded)
 	if _, err := timeline.Items(context.Background()); err != nil {
 		t.Fatalf("timeline Items after the seed = %v", err)
 	}
@@ -533,9 +533,9 @@ VALUES (?, 'claude', 'Session', '/tmp/hubtest-acme', '00000000-0000-4000-8000-00
 		}
 		return e.phone.Echoes[seq]
 	}
-	eventually(t, 15*time.Second, "the line held", func() bool { return echo().Status == wire.StatusHeld })
+	eventually(t, "the line held", func() bool { return echo().Status == wire.StatusHeld })
 	allow(false)
-	eventually(t, 5*time.Second, "the held line failed device_not_allowed", func() bool {
+	eventually(t, "the held line failed device_not_allowed", func() bool {
 		got := echo()
 		return got.Status == wire.StatusFailed && got.Reason != nil && *got.Reason == "device_not_allowed"
 	})
@@ -595,7 +595,7 @@ VALUES (?, ?, 'Bash', ?, 'pending', ?)`, session, project, summary, time.Now().U
 		Store: h.st, Transport: fake, Sealer: secure.NewSealer(h.kr), DataZone: "data/hubtest-acme", Sources: w.set.Sources,
 	})
 	runWiring(t, h, w)
-	eventually(t, 5*time.Second, "the permission request published", func() bool {
+	eventually(t, "the permission request published", func() bool {
 		got, err := h.st.SliceHashes("permission_request")
 		return err == nil && len(got) == 1
 	})

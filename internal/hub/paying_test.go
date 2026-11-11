@@ -426,7 +426,7 @@ func (r *relayOnly) settled() {
 	r.barrier++
 	slot := fmt.Sprintf("barrier%d", r.barrier)
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: slot}})
-	eventually(r.t, 10*time.Second, "the worker to reach "+slot, func() bool {
+	eventually(r.t, "the worker to reach "+slot, func() bool {
 		return r.ct.readsOf(transport.PairZone(slot)) > 0
 	})
 }
@@ -485,7 +485,7 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.PairingOpened, Detail: "slot1"}})
 	next(link.EventSAS)
 	var awaiting wire.Keybox
-	eventually(t, 10*time.Second, "the awaiting keybox in the pair zone", func() bool {
+	eventually(t, "the awaiting keybox in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -503,7 +503,7 @@ func (r *relayOnly) pair(promote func()) (*hubtest.Phone, wire.LinkPayload) {
 		t.Fatal(err)
 	}
 	next(link.EventLinked)
-	eventually(t, 10*time.Second, "the keys in the pair zone", func() bool {
+	eventually(t, "the keys in the pair zone", func() bool {
 		kb, ok, err := phone.ReadKeybox(pair)
 		if err != nil {
 			t.Fatal(err)
@@ -545,7 +545,7 @@ func (r *relayOnly) grantInDataZone(phone *hubtest.Phone) bool {
 func TestRelayOnlyRulesOffNeverPause(t *testing.T) {
 	r := startRelayOnly(t, false, notPaying(), true, nil)
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
+	eventually(t, "the heartbeat published", func() bool {
 		return slices.Contains(liveRecords(t, r.fake, r.dataZone()), "heartbeat")
 	})
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
@@ -592,7 +592,7 @@ func TestPairingWorksWhilePaused(t *testing.T) {
 		t.Fatalf("link code transports %v", lp.Transports)
 	}
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the device_grant in the data zone", func() bool {
+	eventually(t, "the device_grant in the data zone", func() bool {
 		return r.grantInDataZone(phone)
 	})
 }
@@ -630,7 +630,7 @@ func TestPausedHubKeepsStateAndRunsNoHandler(t *testing.T) {
 	}
 	r.clock.Advance(NeedsRelayPoll)
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the applied echo", func() bool {
+	eventually(t, "the applied echo", func() bool {
 		if _, err := phone.Sync(); err != nil {
 			t.Fatal(err)
 		}
@@ -647,12 +647,12 @@ func TestPausedHubKeepsStateAndRunsNoHandler(t *testing.T) {
 func TestOnePayingPhoneKeepsTheHubPublishing(t *testing.T) {
 	r := startRelayOnly(t, true, onePaying(), true, nil)
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
+	eventually(t, "the heartbeat published", func() bool {
 		return slices.Contains(liveRecords(t, r.fake, r.dataZone()), "heartbeat")
 	})
 	reads := r.fake.AccountStateReads()
 	r.fake.SendEvent(transport.Event{Control: &transport.Control{Kind: transport.EntitlementExpired}})
-	eventually(t, 10*time.Second, "the account state re-read", func() bool {
+	eventually(t, "the account state re-read", func() bool {
 		return r.fake.AccountStateReads() > reads
 	})
 	r.settled()
@@ -687,7 +687,7 @@ func TestResumePublishesOneFullDiff(t *testing.T) {
 	r.fake.SetAccountState(onePaying())
 	r.clock.Advance(NeedsRelayPoll)
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the full diff", func() bool {
+	eventually(t, "the full diff", func() bool {
 		got := liveRecords(t, r.fake, r.dataZone())
 		return slices.Contains(got, "heartbeat") && len(got) >= 2
 	})
@@ -707,7 +707,7 @@ func TestHeadlessHubNeverUsesCloudKit(t *testing.T) {
 		t.Fatalf("link code transports %v", lp.Transports)
 	}
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "a relay-only device_grant", func() bool {
+	eventually(t, "a relay-only device_grant", func() bool {
 		kb, ok, err := phone.ReadKeybox(r.dataZone())
 		if err != nil {
 			t.Fatal(err)
@@ -718,7 +718,7 @@ func TestHeadlessHubNeverUsesCloudKit(t *testing.T) {
 	if _, err := phone.WriteControl(wire.Control{Kind: wire.ControlSwitch, Target: &target}); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, 10*time.Second, "transport_switch_rejected", func() bool {
+	eventually(t, "transport_switch_rejected", func() bool {
 		if _, err := phone.Sync(); err != nil {
 			t.Fatal(err)
 		}
@@ -761,7 +761,7 @@ func TestPublisherSaveInactiveRereadsAtOnce(t *testing.T) {
 		o.Sources = func(*state.Store) []hubslices.Source { return []hubslices.Source{src} }
 	})
 	r.waitState(StateRunning, "")
-	eventually(t, 10*time.Second, "the first publish", func() bool {
+	eventually(t, "the first publish", func() bool {
 		return len(liveRecords(t, r.fake, r.dataZone())) >= 2
 	})
 	r.settled()
@@ -796,7 +796,7 @@ func TestPhonePromotedAfterItsLinkIsSeenWithinSeconds(t *testing.T) {
 	r.fake.SetAccountState(&relayv1.AccountState{Phones: []*relayv1.SlotHolder{
 		{PhoneDeviceId: phone.RelayDeviceID(), Paying: true},
 	}})
-	eventually(t, 10*time.Second, "the hub resumed by the short link retry", func() bool {
+	eventually(t, "the hub resumed by the short link retry", func() bool {
 		soon.Advance(linkSoonEvery)
 		s, err := ReadStatus(r.dir)
 		return err == nil && s.State == StateRunning && s.Reason == ""
@@ -854,7 +854,7 @@ func TestUnpromotedPhoneCostsOneReadPerTick(t *testing.T) {
 	// The pairing's link and soon kicks consumed, and the worker past the
 	// work they started: nothing else kicks either while the phone waits.
 	h := rt.Load()
-	eventually(t, 10*time.Second, "the pairing's kicks consumed", func() bool {
+	eventually(t, "the pairing's kicks consumed", func() bool {
 		r.settled()
 		r.settled()
 		return len(h.linkKick) == 0 && len(h.soonKick) == 0

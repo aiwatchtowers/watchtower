@@ -135,19 +135,19 @@ func TestMeasure_RelayIndicatorAcrossAnOutage(t *testing.T) {
 		}
 		return s.Relay.State
 	}
-	eventually(t, stepWait, "relay.state connected", func() bool { return relayState() == RelayConnected })
+	eventually(t, "relay.state connected", func() bool { return relayState() == RelayConnected })
 	logCLI(t, h.dir, "hub", "status", "--json")
 	if err := syscall.Kill(*relayCtlPID, syscall.SIGUSR1); err != nil {
 		t.Fatalf("signalling the interop script: %v", err)
 	}
 	down := time.Now()
-	eventually(t, 3*time.Minute, "relay.state unavailable", func() bool { return relayState() == RelayUnavailable })
+	eventually(t, "relay.state unavailable", func() bool { return relayState() == RelayUnavailable })
 	t.Logf("measure: relay.state unavailable %s after the stop was asked", time.Since(down).Round(time.Second))
 	if since := time.Since(down); since < 60*time.Second {
 		t.Fatalf("unavailable after %s, before the 60 s threshold", since)
 	}
 	logCLI(t, h.dir, "hub", "status", "--json")
-	eventually(t, restartWait, "relay.state connected again", func() bool { return relayState() == RelayConnected })
+	eventually(t, "relay.state connected again", func() bool { return relayState() == RelayConnected })
 	t.Logf("measure: relay.state connected again %s after the stop was asked", time.Since(down).Round(time.Second))
 	logCLI(t, h.dir, "hub", "status", "--json")
 }

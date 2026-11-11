@@ -217,7 +217,7 @@ func startCloudKitHub(t *testing.T, before func(dir string, ck *ckShares), confi
 	}
 	r.start(o)
 	r.waitState(StateOff, ReasonDisabled)
-	eventually(t, 5*time.Second, "the control socket", func() bool {
+	eventually(t, "the control socket", func() bool {
 		_, err := os.Stat(filepath.Join(dir, SocketName))
 		return err == nil
 	})
@@ -374,7 +374,7 @@ func TestCloudKitWorkerPassesOnTheCadence(t *testing.T) {
 		t.Fatal("idle: no pass 30 s after the last")
 	}
 	h.ck.inject(transport.Event{Zone: transport.SharedMailboxZone(h.status.RelayDeviceID)}) // a phone wrote
-	eventually(t, 5*time.Second, "the pass of the phone's write", func() bool { return h.passes.Load() > 0 })
+	eventually(t, "the pass of the phone's write", func() bool { return h.passes.Load() > 0 })
 	h.settle()
 	for i := range 5 {
 		if !h.tickPasses(f, CloudKitActivePass) {
@@ -427,7 +427,7 @@ func TestCloudKitConfirmCloseKeepsTheParticipantsForTheGrace(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.next(link.EventLinked)
-	eventually(t, 5*time.Second, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
+	eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
 	h.settle()
 	reads := h.ck.count("participants")
 	for _, d := range []time.Duration{CloudKitActivePass, CloudKitActivePass, time.Minute} {
@@ -441,7 +441,7 @@ func TestCloudKitConfirmCloseKeepsTheParticipantsForTheGrace(t *testing.T) {
 	if !h.tickPasses(f, link.DefaultSweep.AnswerGrace) {
 		t.Fatal("no pass at the grace's end")
 	}
-	eventually(t, 5*time.Second, "the sweep after the grace", func() bool { return h.sweepMark() == "0" })
+	eventually(t, "the sweep after the grace", func() bool { return h.sweepMark() == "0" })
 	for _, z := range zones {
 		if got := h.ck.members(z); len(got) != 0 {
 			t.Errorf("%s still has %v", z, got)
@@ -464,7 +464,7 @@ func TestIssuingACodeRunsAPassAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.next(link.EventQR)
-	eventually(t, 2*time.Second, "a pass after the code", func() bool { return h.passes.Load() > settled })
+	eventually(t, "a pass after the code", func() bool { return h.passes.Load() > settled })
 }
 
 func TestPullNowRunsAPassAtOnce(t *testing.T) {
@@ -488,7 +488,7 @@ func TestPullNowRunsAPassAtOnce(t *testing.T) {
 	mu.Unlock()
 	h.ck.inject(transport.Event{PullNow: true})
 	// A pass at once, and the link check's pass after it (the relay's resync).
-	eventually(t, 2*time.Second, "two passes after the push", func() bool { return h.passes.Load() >= settled+2 })
+	eventually(t, "two passes after the push", func() bool { return h.passes.Load() >= settled+2 })
 	mu.Lock()
 	defer mu.Unlock()
 	if !urgent {
@@ -501,7 +501,7 @@ func TestPullNowRunsAPassAtOnce(t *testing.T) {
 // swept, the mark clears.
 func TestCloudKitHubClosesALinkLeftOpenAtStart(t *testing.T) {
 	h := startCloudKitHub(t, func(dir string, _ *ckShares) { setMeta(t, dir, link.MetaShareSweepPending, "1") }, nil)
-	eventually(t, 5*time.Second, "the restart close", func() bool { return h.sweepMark() == "0" })
+	eventually(t, "the restart close", func() bool { return h.sweepMark() == "0" })
 	if h.ck.count("set_public_link:close") == 0 || h.ck.count("participants") == 0 {
 		t.Fatalf("no restart close")
 	}
@@ -532,7 +532,7 @@ func leftOpenFailingOnce(t *testing.T) func(string, *ckShares) {
 // waitFailedRestartClose waits for the restart close that failed.
 func (h *ckHub) waitFailedRestartClose() {
 	h.t.Helper()
-	eventually(h.t, 5*time.Second, "the failed restart close", func() bool { return h.ck.count("set_public_link:close") == 1 })
+	eventually(h.t, "the failed restart close", func() bool { return h.ck.count("set_public_link:close") == 1 })
 	if h.sweepMark() != "1" {
 		h.t.Fatal("the failed restart close cleared the mark")
 	}
@@ -544,7 +544,7 @@ func TestCloudKitAccountChangedClosesTheLink(t *testing.T) {
 	h := startCloudKitHub(t, leftOpenFailingOnce(t), nil)
 	h.waitFailedRestartClose()
 	h.ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, 5*time.Second, "the close after the account change", func() bool { return h.sweepMark() == "0" })
+	eventually(t, "the close after the account change", func() bool { return h.sweepMark() == "0" })
 	if n := h.ck.count("set_public_link:close"); n != 2 {
 		t.Fatalf("%d public-link closes, want 2", n)
 	}
@@ -578,7 +578,7 @@ func TestCloudKitHelloInTheRelayZoneLinksAndTheConfirmClosesTheLink(t *testing.T
 		t.Fatal(err)
 	}
 	h.next(link.EventLinked)
-	eventually(t, 5*time.Second, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
+	eventually(t, "the close after the confirm", func() bool { return h.ck.count("set_public_link:close") == 2 })
 	if n := h.ck.count("remove_participants"); n != 0 {
 		t.Fatalf("participants swept before the answer grace (%d calls)", n)
 	}
@@ -642,7 +642,7 @@ func TestCloudKitConfirmAndRemoveNeverWaitOnTheBridge(t *testing.T) {
 			}
 		}
 	})
-	eventually(t, 5*time.Second, "the held close", func() bool { return h.ck.count("set_public_link:close") == 2 })
+	eventually(t, "the held close", func() bool { return h.ck.count("set_public_link:close") == 2 })
 	answered("unlink", func() ControlAnswer {
 		a, err := c2.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID})
 		if err != nil {
@@ -650,7 +650,7 @@ func TestCloudKitConfirmAndRemoveNeverWaitOnTheBridge(t *testing.T) {
 		}
 		return a
 	})
-	eventually(t, 5*time.Second, "the held removal", func() bool {
+	eventually(t, "the held removal", func() bool {
 		return h.ck.count("remove_participants:"+h.zones()[0]+":_colleague-a") == 1
 	})
 	start := time.Now()
@@ -673,7 +673,7 @@ func TestCloudKitRemoveTakesThePhonesParticipant(t *testing.T) {
 		t.Fatalf("unlink: %+v, %v", a, err)
 	}
 	for _, zone := range h.zones() {
-		eventually(t, 5*time.Second, "the removal from "+zone, func() bool {
+		eventually(t, "the removal from "+zone, func() bool {
 			return h.ck.count("remove_participants:"+zone+":_colleague-a") > 0 && len(h.ck.members(zone)) == 0
 		})
 	}
@@ -697,7 +697,7 @@ func TestCloudKitAFailedRemovalIsLeftToTheSweep(t *testing.T) {
 	if a, err := h.c.Do(ControlRequest{Op: OpUnlink, Device: sharedPhoneID}); err != nil || a.Error != ErrClassNoDevice {
 		t.Fatalf("a second unlink: %+v, %v", a, err)
 	}
-	eventually(t, 10*time.Second, "the sweep's removal", func() bool {
+	eventually(t, "the sweep's removal", func() bool {
 		if h.ck.count(removal) >= 2 && h.sweepMark() == "0" {
 			return true
 		}

@@ -107,7 +107,7 @@ func TestNoICloudAccountHoldsCloudKitUntilItReturns(t *testing.T) {
 
 	ck.acct.Store(transport.AccountAvailable)
 	r.tick <- struct{}{} // the daemon cycle reads the account again
-	eventually(t, 10*time.Second, "the full diff and the pass after the account came back", func() bool {
+	eventually(t, "the full diff and the pass after the account came back", func() bool {
 		return src.reads.Load() > reads && ck.reads.Load() > mbox
 	})
 	r.waitStatus("running again with the account", func(s Status) bool {
@@ -129,11 +129,11 @@ func TestNoICloudAccountOnTheRelayHoldsOnlyCloudKitsMailbox(t *testing.T) {
 	}
 	reads := src.reads.Load()
 	ck.inject(transport.Event{PullNow: true})
-	eventually(t, 10*time.Second, "the relay side publishing", func() bool { return src.reads.Load() > reads })
+	eventually(t, "the relay side publishing", func() bool { return src.reads.Load() > reads })
 
 	ck.acct.Store(transport.AccountAvailable)
 	r.tick <- struct{}{}
-	eventually(t, 10*time.Second, "CloudKit's mailbox read after the account came back", func() bool {
+	eventually(t, "CloudKit's mailbox read after the account came back", func() bool {
 		ck.inject(transport.Event{Zone: transport.SharedMailboxZone(rid)})
 		return ck.reads.Load() > mbox
 	})
@@ -243,7 +243,7 @@ func TestAnICloudAccountChangeWipesHashesAndTokenButKeepsTheLedger(t *testing.T)
 	h.seedPublished()
 	gen := h.generation()
 	h.ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, 5*time.Second, "the published state wiped", func() bool {
+	eventually(t, "the published state wiped", func() bool {
 		n, token, _, _, _ := h.published()
 		return n == 0 && token == 0 && h.generation() == gen+1
 	})
@@ -268,7 +268,7 @@ func TestRecreatedZonesWipeHashesButKeepTheMailboxTokenAndTheLedger(t *testing.T
 	h.seedPublished()
 	gen := h.generation()
 	h.ck.inject(transport.Event{ZonesRecreated: true})
-	eventually(t, 5*time.Second, "the published state and the staged assets wiped", func() bool {
+	eventually(t, "the published state and the staged assets wiped", func() bool {
 		n, _, _, _, _ := h.published()
 		file, row := stagedLeft(t, h.dir)
 		return n == 0 && !file && !row && h.generation() == gen+1
@@ -296,7 +296,7 @@ func TestAFailedCloudKitWipeIsRetriedAtTheNextCycle(t *testing.T) {
 	}
 	h.exec(`ALTER TABLE work_alerts_away RENAME TO work_alerts`)
 	tick <- struct{}{}
-	eventually(t, 5*time.Second, "the retried wipe", func() bool {
+	eventually(t, "the retried wipe", func() bool {
 		n, _, _, _, _ := h.published()
 		return n == 0 && h.generation() == gen+1
 	})
@@ -313,7 +313,7 @@ func TestAnICloudAccountChangeOnTheRelayRewindsOnlyCloudKitsMailbox(t *testing.T
 		t.Fatal(err)
 	}
 	defer func() { _ = st.Close() }()
-	eventually(t, 10*time.Second, "the relay side published", func() bool {
+	eventually(t, "the relay side published", func() bool {
 		hashes, err := st.SliceHashes("owner_ask")
 		return err == nil && len(hashes) > 0
 	})
@@ -325,7 +325,7 @@ func TestAnICloudAccountChangeOnTheRelayRewindsOnlyCloudKitsMailbox(t *testing.T
 		t.Fatal(err)
 	}
 	ck.inject(transport.Event{AccountChanged: true})
-	eventually(t, 5*time.Second, "CloudKit's mailbox rewound", func() bool {
+	eventually(t, "CloudKit's mailbox rewound", func() bool {
 		token, err := st.ZoneToken(mailbox)
 		return err == nil && token == 0
 	})

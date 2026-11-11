@@ -144,7 +144,7 @@ func (g *g2Rig) poll() {
 // would make, a failed one tried again) until the host runs on CloudKit.
 func (g *g2Rig) onCloudKit(t *testing.T) {
 	t.Helper()
-	eventually(t, 10*time.Second, "the host on CloudKit", func() bool {
+	eventually(t, "the host on CloudKit", func() bool {
 		_ = g.h.sw.Step(context.Background())
 		return g.h.sw.IsActive(transport.KindCloudKit)
 	})

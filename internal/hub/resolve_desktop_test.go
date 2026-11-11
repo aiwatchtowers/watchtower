@@ -155,7 +155,7 @@ func lockHeld(t *testing.T, dir string) bool {
 
 func (r *deskRig) waitStatus(what string, cond func(Status) bool) {
 	r.t.Helper()
-	eventually(r.t, 10*time.Second, what, func() bool { return cond(r.rec.last()) })
+	eventually(r.t, what, func() bool { return cond(r.rec.last()) })
 }
 
 // TestDesktopHostOffUntilAdopted: beside the Swift hub's state the hub stays
@@ -319,7 +319,7 @@ func TestDesktopHostStaysOffBesideSwiftStateWhateverTheSidecarSays(t *testing.T)
 	r.waitState(StateRunning, "")
 	r.writeSwiftState()
 	r.waitState(StateOff, ReasonSwiftBesideGo)
-	eventually(t, 10*time.Second, "the lock let go", func() bool { return !lockHeld(t, r.dir) })
+	eventually(t, "the lock let go", func() bool { return !lockHeld(t, r.dir) })
 }
 
 // TestGoHubFirstThenSwiftSidecarIsSwiftBesideGo pins owner ask #949's
@@ -694,7 +694,7 @@ func TestDesktopHostWiresTheRelayBeforeTheSwitch(t *testing.T) {
 		t.Fatalf("Paying by device id: %v %v", paying, err)
 	}
 	mailbox := transport.MailboxZone(r.rec.last().RelayDeviceID, pdev.RelayDeviceID)
-	eventually(t, 10*time.Second, "the phone's mailbox subscribed", func() bool { return w.watched(mailbox) })
+	eventually(t, "the phone's mailbox subscribed", func() bool { return w.watched(mailbox) })
 }
 
 // watchFake is the relay fake with zone subscriptions (zoneWatcher).
@@ -783,7 +783,7 @@ func TestPolicy03_DesktopHostWipesWhileTheBridgeRuns(t *testing.T) {
 		t.Fatalf("active %q", s.Transport)
 	}
 	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, 10*time.Second, "the heartbeat published on CloudKit", func() bool {
+	eventually(t, "the heartbeat published on CloudKit", func() bool {
 		return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
 	})
 	policytest.Set(t, map[string]any{"MobileSync": "off"})
@@ -824,7 +824,7 @@ func TestPolicy03_StoppedDesktopHostWipesWithTheRecordedStore(t *testing.T) {
 		t.Fatalf("identity store %q", s.Identity)
 	}
 	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, 10*time.Second, "the heartbeat published on CloudKit", func() bool {
+	eventually(t, "the heartbeat published on CloudKit", func() bool {
 		return slices.Contains(liveRecords(t, r.ck, data), "heartbeat")
 	})
 	if err := r.stop(); err != nil { // stopped with its records in place
@@ -837,8 +837,8 @@ func TestPolicy03_StoppedDesktopHostWipesWithTheRecordedStore(t *testing.T) {
 	policytest.Set(t, map[string]any{"MobileSync": "off"})
 	r.start(keychain(r.options()))
 	r.waitState(StateOff, ReasonPolicyOff)
-	eventually(t, 10*time.Second, "the stopped hub's wipe", func() bool { return len(liveRecords(t, r.ck, data)) == 0 })
-	eventually(t, 10*time.Second, "the wipe's bridge stopped", func() bool { return !r.bridgeAlive() })
+	eventually(t, "the stopped hub's wipe", func() bool { return len(liveRecords(t, r.ck, data)) == 0 })
+	eventually(t, "the wipe's bridge stopped", func() bool { return !r.bridgeAlive() })
 	if _, err := os.Stat(filepath.Join(r.dir, identity.FileName)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatal("an identity file was made beside the Keychain store")
 	}
@@ -898,7 +898,7 @@ func TestPolicy03_OffStopsDesktopHostHubKeepsSetting(t *testing.T) {
 		active = r.ck
 	}
 	data := transport.DataZone(s.RelayDeviceID)
-	eventually(t, 10*time.Second, "the heartbeat published", func() bool {
+	eventually(t, "the heartbeat published", func() bool {
 		return slices.Contains(liveRecords(t, active, data), "heartbeat")
 	})
 
