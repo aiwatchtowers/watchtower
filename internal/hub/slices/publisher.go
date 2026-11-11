@@ -152,6 +152,10 @@ type Publisher struct {
 	mono  func() time.Time
 	timer func(d time.Duration) (<-chan time.Time, func())
 
+	// cycleBlocked, set by tests only, runs when a Cycle finds another one
+	// in progress, before it waits for it.
+	cycleBlocked func()
+
 	cycleMu sync.Mutex // one cycle at a time; guards the fields below
 	// lastWrite is when each kind last saved or deleted a record.
 	lastWrite map[Kind]time.Time
@@ -541,7 +545,12 @@ func (p *Publisher) Run(ctx context.Context) error {
 // once per payload); a source error skips its kind. A transport or state
 // failure fails the cycle with what it did so far.
 func (p *Publisher) Cycle(ctx context.Context, kinds []Kind) (CycleReport, error) {
-	p.cycleMu.Lock()
+	if !p.cycleMu.TryLock() {
+		if p.cycleBlocked != nil {
+			p.cycleBlocked()
+		}
+		p.cycleMu.Lock()
+	}
 	defer p.cycleMu.Unlock()
 	rep := CycleReport{Deferred: map[Kind]time.Time{}}
 	p.mu.Lock()

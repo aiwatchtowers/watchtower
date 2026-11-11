@@ -407,6 +407,8 @@ type fakeTime struct {
 	timers map[int]fakeTimer
 	nextID int
 	armed  int
+	// armedCh is closed (and replaced) on every arm: waitArmed blocks on it.
+	armedCh chan struct{}
 }
 
 type fakeTimer struct {
@@ -415,7 +417,7 @@ type fakeTimer struct {
 }
 
 func newFakeTime() *fakeTime {
-	return &fakeTime{now: time.Unix(1_800_000_000, 0).UTC(), timers: map[int]fakeTimer{}}
+	return &fakeTime{now: time.Unix(1_800_000_000, 0).UTC(), timers: map[int]fakeTimer{}, armedCh: make(chan struct{})}
 }
 
 func (f *fakeTime) Now() time.Time {
@@ -431,6 +433,8 @@ func (f *fakeTime) Timer(d time.Duration) (<-chan time.Time, func()) {
 	id := f.nextID
 	f.nextID++
 	f.armed++
+	close(f.armedCh)
+	f.armedCh = make(chan struct{})
 	if d <= 0 {
 		ch <- f.now
 	} else {
@@ -447,6 +451,20 @@ func (f *fakeTime) armedCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.armed
+}
+
+// waitArmed blocks until more than n timers were armed (an event wait: a
+// hang is bounded by go test -timeout).
+func (f *fakeTime) waitArmed(n int) {
+	for {
+		f.mu.Lock()
+		armed, ch := f.armed, f.armedCh
+		f.mu.Unlock()
+		if armed > n {
+			return
+		}
+		<-ch
+	}
 }
 
 // advance moves the clock and fires the timers due; true when one fired.
@@ -492,16 +510,9 @@ func (r *rig) runFake(sources ...Source) *runner {
 	return ru
 }
 
-// settle waits (bounded) until Run armed more than n timers.
+// settle waits until Run armed more than n timers.
 func (ru *runner) settle(n int) {
-	ru.t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for ru.ft.armedCount() <= n {
-		if time.Now().After(deadline) {
-			ru.t.Fatal("Run never went back to sleep")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	ru.ft.waitArmed(n)
 }
 
 func (ru *runner) publishSoon(k Kind) {
