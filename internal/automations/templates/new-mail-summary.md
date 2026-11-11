@@ -21,6 +21,8 @@ up. A mailbox that gets well over a thousand messages in two days remembers
 its oldest ones by time instead, and then late mail older than those is
 skipped.
 
+Your own sent mail (`sent` in `list_emails`) is not summed up.
+
 It covers Gmail and IMAP mailboxes alike. A run without a sync event (by
 hand with `watchtower automations run <its id>`, or on a schedule) has no
 event to say which mailboxes got mail, so it sums up the mailboxes whose
@@ -143,6 +145,7 @@ function newMail(account, box, old) {
       if (listed[m.id]) continue;
       listed[m.id] = true;
       added++;
+      if (m.sent) continue; // the owner's own sent mail is not news to sum up
       if (box.done[m.id] !== undefined || (box.floor !== undefined && minute(m.date) < box.floor)) continue;
       const at = Date.parse(m.date);
       if (old && (at < oldAt || (at === oldAt && oldIDs.indexOf(m.id) >= 0))) {
