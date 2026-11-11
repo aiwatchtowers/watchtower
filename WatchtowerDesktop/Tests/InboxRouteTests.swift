@@ -136,8 +136,8 @@ final class InboxRouteTests: XCTestCase {
             state.openNavLink(NavLink.url(raw))
             XCTAssertEqual(state.selectedDestination, .inbox, raw)
         }
-        // A hidden-items entry naming one is ignored: FOCUS shows Catch Up and Inbox.
-        XCTAssertEqual(SidebarSection.today.partition(hidden: Set(expected.keys)).visible, [.catchUp, .inbox])
+        // A hidden-items entry naming one is ignored: FOCUS shows Catch Up and Targets.
+        XCTAssertEqual(SidebarSection.today.partition(hidden: Set(expected.keys)).visible, [.catchUp, .targets])
     }
 
     /// With no source connected the Inbox still shows (no gate since C1),

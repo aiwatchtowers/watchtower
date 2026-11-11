@@ -39,11 +39,12 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     }
 
     /// Whether the section starts collapsed on first launch. FOCUS holds the
-    /// everyday tabs (Catch Up, Targets — the Inbox moved to the root in
-    /// the 2026-11 redesign, #1076) and starts expanded; EXECUTION and INSIGHTS are used less often and
-    /// start collapsed — the owner expands what they need, and their own
-    /// choice (persisted in UserDefaults, see `SidebarView.loadCollapsedSections`)
-    /// always wins over this default once they've toggled a section.
+    /// everyday tabs (Catch Up, Targets — the Inbox moved to the root in the
+    /// 2026-11 redesign, #1076) and starts expanded; EXECUTION and INSIGHTS
+    /// are used less often and start collapsed — the owner expands what they
+    /// need, and their own choice (persisted in UserDefaults, see
+    /// `SidebarView.loadCollapsedSections`) always wins over this default
+    /// once they've toggled a section.
     var collapsedByDefault: Bool { self != .today }
 
     /// Splits this section's items into the currently visible ones and the ones

@@ -316,18 +316,33 @@ struct SidebarView: View {
         )
     }
 
-    /// Color of the collapsed-header badge: red if any visible child is a red source
-    /// (digests/statistics/catch-up), otherwise blue. The Inbox is not
-    /// one: its badge counts the action strip, and the high-priority inbox_items
-    /// that used to turn it red are no longer shown on that tab.
+    /// Color of the collapsed-header badge: red if any visible child has a red
+    /// count — unread digests, Statistics recommendations, Catch Up, or
+    /// overdue Targets (the expanded row is red then too) — otherwise blue.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
         let visible = Self.visibleItems(
             in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures, connected: connectedSources
         )
-        if visible.contains(.digests), digestsBadgeCount > 0 { return .red }
-        if visible.contains(.statistics), recommendationCount > 0 { return .red }
-        if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }
-        return .blue
+        return Self.sectionBadgeColor(visible: visible, redCount: redCount(for:))
+    }
+
+    /// The count that turns an item's badge red, 0 for an item that never does.
+    private func redCount(for item: SidebarDestination) -> Int {
+        switch item {
+        case .digests: digestsBadgeCount
+        case .statistics: recommendationCount
+        case .catchUp: catchUpTotalCount
+        case .targets: overdueTaskCount
+        default: 0
+        }
+    }
+
+    /// Pure rule behind `sectionBadgeColor(_:)`: red when any visible item
+    /// has a red count, else blue.
+    static func sectionBadgeColor(
+        visible: [SidebarDestination], redCount: (SidebarDestination) -> Int
+    ) -> Color {
+        visible.contains { redCount($0) > 0 } ? .red : .blue
     }
 
     /// A collapsed-sections map with `destination`'s section expanded, or nil

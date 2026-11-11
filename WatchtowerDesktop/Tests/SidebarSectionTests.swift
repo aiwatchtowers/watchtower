@@ -422,6 +422,16 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertTrue(itemIcons.isDisjoint(with: groupIcons), "a group icon must not read as a tab")
     }
 
+    /// Targets sit in FOCUS: overdue targets turn a collapsed FOCUS header
+    /// red, as the expanded row is; a count that is not overdue stays blue.
+    func testCollapsedFocusIsRedWithOverdueTargets() {
+        let visible = SidebarSection.today.items
+        XCTAssertEqual(SidebarView.sectionBadgeColor(visible: visible) { $0 == .targets ? 3 : 0 }, .red)
+        XCTAssertEqual(SidebarView.sectionBadgeColor(visible: visible) { _ in 0 }, .blue)
+        XCTAssertEqual(SidebarView.sectionBadgeColor(visible: [.catchUp]) { $0 == .targets ? 3 : 0 }, .blue,
+                       "a hidden Targets row does not colour the header")
+    }
+
     /// The menu capsule's colour rule, shared by the rail dot.
     func testBadgeColorRule() {
         XCTAssertEqual(SidebarView.badgeColor(for: .memory, overdue: false), .orange)
