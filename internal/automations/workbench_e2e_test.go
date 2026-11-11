@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/automations"
@@ -52,6 +53,9 @@ type wbE2E struct {
 
 func newWbE2E(t *testing.T, res automations.ShellResult) *wbE2E {
 	t.Helper()
+	// Bubble only (drive settles it): the bubble's clock starts in 2000; the
+	// scripts read it (Date.now), so move it to the fixture's start.
+	time.Sleep(time.Until(exStart))
 	w := &wbE2E{shell: &automationstest.FakeShell{Result: res}}
 	w.exFixture = newExFixture(t, exOpts{fileDB: true, backends: func(f *exFixture, b *automations.Backends) {
 		b.Shell = w.shell
@@ -85,20 +89,23 @@ func (w *wbE2E) seedRecipe(t *testing.T, slug string) db.Automation {
 func (w *wbE2E) drive(t *testing.T, id int64) *db.AutomationRun {
 	t.Helper()
 	w.stepNoWait(t, 1)
-	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if _, err := w.desk.Poll(); err != nil {
-			t.Fatalf("desk: %v", err)
-		}
+		synctest.Wait() // the run went as far as it can without the desk
 		r := w.run(t, id)
 		if !slices.Contains([]string{db.RunQueued, db.RunRunning, db.RunWaiting}, r.Status) {
 			w.e.Wait()
 			return r
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("run %d never ended (is %s/%s)", id, r.Status, r.WaitingReason)
+		// The sessions take a while: the bubble's clock moves (the recipe's
+		// review marks must come after its round's start).
+		time.Sleep(time.Second)
+		n, err := w.desk.Poll()
+		if err != nil {
+			t.Fatalf("desk: %v", err)
 		}
-		time.Sleep(5 * time.Millisecond)
+		if n == 0 {
+			t.Fatalf("run %d is stuck: %s/%s with nothing for the desk", id, r.Status, r.WaitingReason)
+		}
 	}
 }
 
@@ -199,44 +206,46 @@ const prList = `[
 const lastRound = "2026-10-14T08:00:00.000Z"
 
 func TestPRReviewRounds_E2E(t *testing.T) {
-	w := newWbE2E(t, automations.ShellResult{Stdout: prList})
-	w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "2 findings filed, 1 comment posted"}, {AgentError: "overloaded_error"}}
-	a := w.seedRecipe(t, "pr-review-rounds")
-	w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
-	id := w.enqueue(t, a, db.TriggerSchedule)
+	synctest.Test(t, func(t *testing.T) {
+		w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+		w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "2 findings filed, 1 comment posted"}, {AgentError: "overloaded_error"}}
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+		id := w.enqueue(t, a, db.TriggerSchedule)
 
-	r := w.drive(t, id)
-	if r.Status != db.RunSucceeded {
-		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-	}
-	if calls := w.shell.Calls(); len(calls) != 1 || calls[0].Cmd != prListCmd || calls[0].Dir != w.folder {
-		t.Fatalf("shell calls = %+v; want one %q in %s", calls, prListCmd, w.folder)
-	}
-	launches := w.desk.Launches()
-	checkReviewLaunches(t, launches, id)
-	if steps := w.stepsOfKind(t, id, automations.StepKindSession); len(steps) != 2 || steps[0].SessionID != launches[0].SessionID ||
-		steps[1].SessionID != launches[1].SessionID {
-		t.Fatalf("session steps = %+v; want two, in launch order", steps)
-	}
+		r := w.drive(t, id)
+		if r.Status != db.RunSucceeded {
+			t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+		}
+		if calls := w.shell.Calls(); len(calls) != 1 || calls[0].Cmd != prListCmd || calls[0].Dir != w.folder {
+			t.Fatalf("shell calls = %+v; want one %q in %s", calls, prListCmd, w.folder)
+		}
+		launches := w.desk.Launches()
+		checkReviewLaunches(t, launches, id)
+		if steps := w.stepsOfKind(t, id, automations.StepKindSession); len(steps) != 2 || steps[0].SessionID != launches[0].SessionID ||
+			steps[1].SessionID != launches[1].SessionID {
+			t.Fatalf("session steps = %+v; want two, in launch order", steps)
+		}
 
-	// #15's session ended with an error: it is retried next round, so
-	// last_round stays and only #14 is marked reviewed (board #562).
-	st := w.state(t, a)
-	if got, _ := st["last_round"].(string); got != lastRound {
-		t.Fatalf("last_round = %q; want it kept at %s while #15 waits for a retry", got, lastRound)
-	}
-	if rev, _ := st["reviewed"].(map[string]any); len(rev) != 1 || rev["14"] == nil {
-		t.Fatalf("reviewed = %v; want only #14", rev)
-	}
-	rep := w.onlyReport(t)
-	mustContain(t, "report title", rep.Title, "2 pull requests")
-	for _, want := range []string{"#14 Add the export (https://example.com/acme/pull/14): finished — 2 findings filed, 1 comment posted",
-		"#15 Retry the sync (https://example.com/acme/pull/15): error — overloaded_error"} {
-		mustContain(t, "report body", rep.Body, want)
-	}
-	if strings.Contains(rep.Body, "#12") {
-		t.Fatalf("report names #12, which did not change since the last round:\n%s", rep.Body)
-	}
+		// #15's session ended with an error: it is retried next round, so
+		// last_round stays and only #14 is marked reviewed (board #562).
+		st := w.state(t, a)
+		if got, _ := st["last_round"].(string); got != lastRound {
+			t.Fatalf("last_round = %q; want it kept at %s while #15 waits for a retry", got, lastRound)
+		}
+		if rev, _ := st["reviewed"].(map[string]any); len(rev) != 1 || rev["14"] == nil {
+			t.Fatalf("reviewed = %v; want only #14", rev)
+		}
+		rep := w.onlyReport(t)
+		mustContain(t, "report title", rep.Title, "2 pull requests")
+		for _, want := range []string{"#14 Add the export (https://example.com/acme/pull/14): finished — 2 findings filed, 1 comment posted",
+			"#15 Retry the sync (https://example.com/acme/pull/15): error — overloaded_error"} {
+			mustContain(t, "report body", rep.Body, want)
+		}
+		if strings.Contains(rep.Body, "#12") {
+			t.Fatalf("report names #12, which did not change since the last round:\n%s", rep.Body)
+		}
+	})
 }
 
 // checkReviewLaunches checks the round launched one review session for
@@ -270,67 +279,73 @@ func mustParseTime(t *testing.T, s string) time.Time {
 }
 
 func TestPRReviewRounds_NoUpdatedPRsStartsNoSession(t *testing.T) {
-	w := newWbE2E(t, automations.ShellResult{Stdout: prList})
-	a := w.seedRecipe(t, "pr-review-rounds")
-	w.setState(t, a, `{"last_round":"2026-10-15T08:00:00.000Z"}`)
-	id := w.enqueue(t, a, db.TriggerSchedule)
+	synctest.Test(t, func(t *testing.T) {
+		w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"2026-10-15T08:00:00.000Z"}`)
+		id := w.enqueue(t, a, db.TriggerSchedule)
 
-	if r := w.drive(t, id); r.Status != db.RunSucceeded {
-		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-	}
-	if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
-		t.Fatalf("%d sessions launched; want none", n)
-	}
-	if n := w.count(t, "terminal_sessions"); n != 0 {
-		t.Fatalf("terminal_sessions = %d; want none", n)
-	}
-	mustContain(t, "report body", w.onlyReport(t).Body, "No open pull request changed since the last round.")
+		if r := w.drive(t, id); r.Status != db.RunSucceeded {
+			t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+		}
+		if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
+			t.Fatalf("%d sessions launched; want none", n)
+		}
+		if n := w.count(t, "terminal_sessions"); n != 0 {
+			t.Fatalf("terminal_sessions = %d; want none", n)
+		}
+		mustContain(t, "report body", w.onlyReport(t).Body, "No open pull request changed since the last round.")
+	})
 }
 
 func TestRelease_E2E(t *testing.T) {
 	for _, b := range buttonRecipes {
 		t.Run(b.slug+" succeeds", func(t *testing.T) {
-			w := newWbE2E(t, automations.ShellResult{Stdout: "built v1.2.3\npublished v1.2.3\n"})
-			w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "healthy: v1.2.3 answers"}}
-			id := w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton)
+			synctest.Test(t, func(t *testing.T) {
+				w := newWbE2E(t, automations.ShellResult{Stdout: "built v1.2.3\npublished v1.2.3\n"})
+				w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "healthy: v1.2.3 answers"}}
+				id := w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton)
 
-			r := w.drive(t, id)
-			if r.Status != db.RunSucceeded {
-				t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-			}
-			if calls := w.shell.Calls(); len(calls) != 1 || calls[0].Cmd != b.cmd {
-				t.Fatalf("shell calls = %+v; want one %q", calls, b.cmd)
-			}
-			launches := w.desk.Launches()
-			if len(launches) != 1 || launches[0].Title != "⚙ "+b.label+" check"+runLabelOf(id) {
-				t.Fatalf("launches = %+v; want one %s check", launches, b.label)
-			}
-			mustContain(t, "check prompt", launches[0].Prompt, "healthy")
-			mustContain(t, "check prompt", launches[0].Prompt, b.cmd)
-			rep := w.onlyReport(t)
-			mustContain(t, "report title", rep.Title, b.label+": finished")
-			mustContain(t, "report body", rep.Body, "published v1.2.3")
-			mustContain(t, "report body", rep.Body, "healthy: v1.2.3 answers")
+				r := w.drive(t, id)
+				if r.Status != db.RunSucceeded {
+					t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+				}
+				if calls := w.shell.Calls(); len(calls) != 1 || calls[0].Cmd != b.cmd {
+					t.Fatalf("shell calls = %+v; want one %q", calls, b.cmd)
+				}
+				launches := w.desk.Launches()
+				if len(launches) != 1 || launches[0].Title != "⚙ "+b.label+" check"+runLabelOf(id) {
+					t.Fatalf("launches = %+v; want one %s check", launches, b.label)
+				}
+				mustContain(t, "check prompt", launches[0].Prompt, "healthy")
+				mustContain(t, "check prompt", launches[0].Prompt, b.cmd)
+				rep := w.onlyReport(t)
+				mustContain(t, "report title", rep.Title, b.label+": finished")
+				mustContain(t, "report body", rep.Body, "published v1.2.3")
+				mustContain(t, "report body", rep.Body, "healthy: v1.2.3 answers")
+			})
 		})
 		t.Run(b.slug+" fails", func(t *testing.T) {
-			w := newWbE2E(t, automations.ShellResult{ExitCode: 2, Stdout: "building\n", Stderr: "error: the tag v1.2.3 exists\n"})
-			id := w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton)
+			synctest.Test(t, func(t *testing.T) {
+				w := newWbE2E(t, automations.ShellResult{ExitCode: 2, Stdout: "building\n", Stderr: "error: the tag v1.2.3 exists\n"})
+				id := w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton)
 
-			r := w.drive(t, id)
-			if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindScript {
-				t.Fatalf("run = %s/%s (%s); want failed/script", r.Status, r.ErrorKind, r.Error)
-			}
-			mustContain(t, "run error", r.Error, "exited 2")
-			mustContain(t, "run error", r.Error, "error: the tag v1.2.3 exists")
-			if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
-				t.Fatalf("%d sessions launched; want none after a failed command", n)
-			}
-			if outs := w.stepsOfKind(t, id, automations.StepKindOutput); len(outs) != 0 {
-				t.Fatalf("output steps = %+v; want none after the throw", outs)
-			}
-			if n := w.count(t, "automation_outputs"); n != 0 {
-				t.Fatalf("automation_outputs = %d; a failed run commits none (AUTO-04)", n)
-			}
+				r := w.drive(t, id)
+				if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindScript {
+					t.Fatalf("run = %s/%s (%s); want failed/script", r.Status, r.ErrorKind, r.Error)
+				}
+				mustContain(t, "run error", r.Error, "exited 2")
+				mustContain(t, "run error", r.Error, "error: the tag v1.2.3 exists")
+				if n := len(w.desk.Launches()); n != 0 || len(w.stepsOfKind(t, id, automations.StepKindSession)) != 0 {
+					t.Fatalf("%d sessions launched; want none after a failed command", n)
+				}
+				if outs := w.stepsOfKind(t, id, automations.StepKindOutput); len(outs) != 0 {
+					t.Fatalf("output steps = %+v; want none after the throw", outs)
+				}
+				if n := w.count(t, "automation_outputs"); n != 0 {
+					t.Fatalf("automation_outputs = %d; a failed run commits none (AUTO-04)", n)
+				}
+			})
 		})
 	}
 }
@@ -404,48 +419,50 @@ func manyPRs(n int) string {
 // last_round mark, so the next round reviews the rest — every pull request
 // gets one session, none two (board #562).
 func TestPRReviewRounds_MorePRsThanTheSessionCap(t *testing.T) {
-	total := automations.MaxSessionCalls + 2
-	w := newWbE2E(t, automations.ShellResult{Stdout: manyPRs(total)})
-	a := w.seedRecipe(t, "pr-review-rounds")
-	w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+	synctest.Test(t, func(t *testing.T) {
+		total := automations.MaxSessionCalls + 2
+		w := newWbE2E(t, automations.ShellResult{Stdout: manyPRs(total)})
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
 
-	first := w.enqueue(t, a, db.TriggerSchedule)
-	if r := w.drive(t, first); r.Status != db.RunSucceeded {
-		t.Fatalf("round 1 = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-	}
-	if n := len(w.desk.Launches()); n != automations.MaxSessionCalls {
-		t.Fatalf("round 1 launched %d sessions; want %d", n, automations.MaxSessionCalls)
-	}
-	if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
-		t.Fatalf("last_round = %q after a round that left pull requests; want it kept at %s", got, lastRound)
-	}
-	mustContain(t, "round 1 report", w.onlyReport(t).Body, "2 pull requests left for the next round")
-
-	second := w.enqueue(t, a, db.TriggerSchedule)
-	if r := w.drive(t, second); r.Status != db.RunSucceeded {
-		t.Fatalf("round 2 = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-	}
-	seen := map[string]int{}
-	for _, l := range w.desk.Launches() {
-		seen[strings.SplitN(l.Title, " review", 2)[0]]++
-	}
-	if len(seen) != total {
-		t.Fatalf("reviewed %d distinct pull requests over two rounds (%v); want %d", len(seen), seen, total)
-	}
-	for title, n := range seen {
-		if n != 1 {
-			t.Fatalf("%s got %d sessions; want one", title, n)
+		first := w.enqueue(t, a, db.TriggerSchedule)
+		if r := w.drive(t, first); r.Status != db.RunSucceeded {
+			t.Fatalf("round 1 = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
 		}
-	}
-	st := w.state(t, a)
-	if got, _ := st["last_round"].(string); got == "" || !mustParseTime(t, got).After(mustParseTime(t, lastRound)) {
-		t.Fatalf("last_round stayed %s after the round that reviewed the rest; want it advanced", got)
-	}
-	// last_round is round 2's start: only the marks of round 2's reviews
-	// (#11, #12) are newer, so round 1's are pruned.
-	if rev, _ := st["reviewed"].(map[string]any); len(rev) != 2 || rev["11"] == nil || rev["12"] == nil {
-		t.Fatalf("reviewed = %v; want only #11 and #12 once last_round advanced", rev)
-	}
+		if n := len(w.desk.Launches()); n != automations.MaxSessionCalls {
+			t.Fatalf("round 1 launched %d sessions; want %d", n, automations.MaxSessionCalls)
+		}
+		if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
+			t.Fatalf("last_round = %q after a round that left pull requests; want it kept at %s", got, lastRound)
+		}
+		mustContain(t, "round 1 report", w.onlyReport(t).Body, "2 pull requests left for the next round")
+
+		second := w.enqueue(t, a, db.TriggerSchedule)
+		if r := w.drive(t, second); r.Status != db.RunSucceeded {
+			t.Fatalf("round 2 = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+		}
+		seen := map[string]int{}
+		for _, l := range w.desk.Launches() {
+			seen[strings.SplitN(l.Title, " review", 2)[0]]++
+		}
+		if len(seen) != total {
+			t.Fatalf("reviewed %d distinct pull requests over two rounds (%v); want %d", len(seen), seen, total)
+		}
+		for title, n := range seen {
+			if n != 1 {
+				t.Fatalf("%s got %d sessions; want one", title, n)
+			}
+		}
+		st := w.state(t, a)
+		if got, _ := st["last_round"].(string); got == "" || !mustParseTime(t, got).After(mustParseTime(t, lastRound)) {
+			t.Fatalf("last_round stayed %s after the round that reviewed the rest; want it advanced", got)
+		}
+		// last_round is round 2's start: only the marks of round 2's reviews
+		// (#11, #12) are newer, so round 1's are pruned.
+		if rev, _ := st["reviewed"].(map[string]any); len(rev) != 2 || rev["11"] == nil || rev["12"] == nil {
+			t.Fatalf("reviewed = %v; want only #11 and #12 once last_round advanced", rev)
+		}
+	})
 }
 
 // prsUpdated is gh's JSON for the pull requests nums, each updated at the
@@ -497,43 +514,49 @@ func (w *wbE2E) round(t *testing.T, a db.Automation, list string) {
 func TestPRReviewRounds_CarryOverEdgeCases(t *testing.T) {
 	total := 2*automations.MaxSessionCalls + 2
 	t.Run("updated after its review", func(t *testing.T) {
-		w := newWbE2E(t, automations.ShellResult{})
-		a := w.seedRecipe(t, "pr-review-rounds")
-		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
-		w.round(t, a, prsUpdated(prRange(1, total), nil))
-		w.round(t, a, prsUpdated(prRange(1, total), map[int]string{3: "2099-01-01T00:00:00Z"}))
-		if n := w.sessionsPerPR()["PR #3"]; n != 2 {
-			t.Fatalf("PR #3 got %d sessions; want 2 (it changed after its review)", n)
-		}
-		if n := w.sessionsPerPR()["PR #4"]; n != 1 {
-			t.Fatalf("PR #4 got %d sessions; want 1", n)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{})
+			a := w.seedRecipe(t, "pr-review-rounds")
+			w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+			w.round(t, a, prsUpdated(prRange(1, total), nil))
+			w.round(t, a, prsUpdated(prRange(1, total), map[int]string{3: "2099-01-01T00:00:00Z"}))
+			if n := w.sessionsPerPR()["PR #3"]; n != 2 {
+				t.Fatalf("PR #3 got %d sessions; want 2 (it changed after its review)", n)
+			}
+			if n := w.sessionsPerPR()["PR #4"]; n != 1 {
+				t.Fatalf("PR #4 got %d sessions; want 1", n)
+			}
+		})
 	})
 	t.Run("closed between rounds", func(t *testing.T) {
-		w := newWbE2E(t, automations.ShellResult{})
-		a := w.seedRecipe(t, "pr-review-rounds")
-		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
-		w.round(t, a, prsUpdated(prRange(1, total), nil))
-		w.round(t, a, prsUpdated(prRange(2, total), nil)) // #1 closed; #21 and #22 still left over
-		rev, _ := w.state(t, a)["reviewed"].(map[string]any)
-		if rev["1"] != nil || rev["2"] == nil || rev["20"] == nil || len(rev) != 2*automations.MaxSessionCalls-1 {
-			t.Fatalf("reviewed = %v; want #2..#20, without the closed #1", rev)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{})
+			a := w.seedRecipe(t, "pr-review-rounds")
+			w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+			w.round(t, a, prsUpdated(prRange(1, total), nil))
+			w.round(t, a, prsUpdated(prRange(2, total), nil)) // #1 closed; #21 and #22 still left over
+			rev, _ := w.state(t, a)["reviewed"].(map[string]any)
+			if rev["1"] != nil || rev["2"] == nil || rev["20"] == nil || len(rev) != 2*automations.MaxSessionCalls-1 {
+				t.Fatalf("reviewed = %v; want #2..#20, without the closed #1", rev)
+			}
+		})
 	})
 	t.Run("session() throws", func(t *testing.T) {
-		w := newWbE2E(t, automations.ShellResult{})
-		w.desk.Outcomes = []automationstest.SessionOutcome{{LaunchFailed: "the workbench folder is gone"}}
-		a := w.seedRecipe(t, "pr-review-rounds")
-		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
-		w.round(t, a, prsUpdated([]int{1, 2}, nil))
-		mustContain(t, "round 1 report", w.onlyReport(t).Body, "#1 Change 1 (https://example.com/acme/pull/1): not started")
-		if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
-			t.Fatalf("last_round = %q; want it kept while #1 waits for a retry", got)
-		}
-		w.round(t, a, prsUpdated([]int{1, 2}, nil))
-		if seen := w.sessionsPerPR(); seen["PR #1"] != 2 || seen["PR #2"] != 1 {
-			t.Fatalf("sessions = %v; want #1 tried again (2) and #2 once", seen)
-		}
+		synctest.Test(t, func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{})
+			w.desk.Outcomes = []automationstest.SessionOutcome{{LaunchFailed: "the workbench folder is gone"}}
+			a := w.seedRecipe(t, "pr-review-rounds")
+			w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+			w.round(t, a, prsUpdated([]int{1, 2}, nil))
+			mustContain(t, "round 1 report", w.onlyReport(t).Body, "#1 Change 1 (https://example.com/acme/pull/1): not started")
+			if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
+				t.Fatalf("last_round = %q; want it kept while #1 waits for a retry", got)
+			}
+			w.round(t, a, prsUpdated([]int{1, 2}, nil))
+			if seen := w.sessionsPerPR(); seen["PR #1"] != 2 || seen["PR #2"] != 1 {
+				t.Fatalf("sessions = %v; want #1 tried again (2) and #2 once", seen)
+			}
+		})
 	})
 }
 
@@ -544,38 +567,42 @@ func TestPRReviewRounds_CarryOverEdgeCases(t *testing.T) {
 func TestTemplates_SessionWaitersHandleNotWatched(t *testing.T) {
 	for _, b := range buttonRecipes {
 		t.Run(b.slug, func(t *testing.T) {
-			w := newWbE2E(t, automations.ShellResult{Stdout: "published v1.2.3\n"})
-			w.desk.Outcomes = []automationstest.SessionOutcome{{WatchIssue: "compressed"}}
-			r := w.drive(t, w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton))
-			if r.Status != db.RunSucceeded {
-				t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-			}
-			rep := w.onlyReport(t)
-			mustContain(t, "report title", rep.Title, b.label+": not_watched")
-			mustContain(t, "report body", rep.Body, "Check (not_watched): not watched (compressed): the outcome is unknown")
-			if strings.Contains(rep.Body, "no summary") {
-				t.Fatalf("a not-watched check reads as an empty success:\n%s", rep.Body)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				w := newWbE2E(t, automations.ShellResult{Stdout: "published v1.2.3\n"})
+				w.desk.Outcomes = []automationstest.SessionOutcome{{WatchIssue: "compressed"}}
+				r := w.drive(t, w.enqueue(t, w.seedRecipe(t, b.slug), db.TriggerButton))
+				if r.Status != db.RunSucceeded {
+					t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+				}
+				rep := w.onlyReport(t)
+				mustContain(t, "report title", rep.Title, b.label+": not_watched")
+				mustContain(t, "report body", rep.Body, "Check (not_watched): not watched (compressed): the outcome is unknown")
+				if strings.Contains(rep.Body, "no summary") {
+					t.Fatalf("a not-watched check reads as an empty success:\n%s", rep.Body)
+				}
+			})
 		})
 	}
 	t.Run("pr-review-rounds", func(t *testing.T) {
-		w := newWbE2E(t, automations.ShellResult{Stdout: prList})
-		w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "1 finding filed"}, {WatchIssue: "missing"}}
-		a := w.seedRecipe(t, "pr-review-rounds")
-		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
-		r := w.drive(t, w.enqueue(t, a, db.TriggerSchedule))
-		if r.Status != db.RunSucceeded {
-			t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
-		}
-		st := w.state(t, a)
-		if got, _ := st["last_round"].(string); got != lastRound {
-			t.Fatalf("last_round = %q; want it kept while #15 waits for the next round", got)
-		}
-		if rev, _ := st["reviewed"].(map[string]any); len(rev) != 1 || rev["14"] == nil {
-			t.Fatalf("reviewed = %v; want only #14 (the not-watched #15 is never marked reviewed)", rev)
-		}
-		rep := w.onlyReport(t)
-		mustContain(t, "report body", rep.Body, "#15 Retry the sync (https://example.com/acme/pull/15): not_watched (missing): the session may still be reviewing it; left for the next round")
-		mustContain(t, "report body", rep.Body, "1 pull request left for the next round.")
+		synctest.Test(t, func(t *testing.T) {
+			w := newWbE2E(t, automations.ShellResult{Stdout: prList})
+			w.desk.Outcomes = []automationstest.SessionOutcome{{Summary: "1 finding filed"}, {WatchIssue: "missing"}}
+			a := w.seedRecipe(t, "pr-review-rounds")
+			w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+			r := w.drive(t, w.enqueue(t, a, db.TriggerSchedule))
+			if r.Status != db.RunSucceeded {
+				t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+			}
+			st := w.state(t, a)
+			if got, _ := st["last_round"].(string); got != lastRound {
+				t.Fatalf("last_round = %q; want it kept while #15 waits for the next round", got)
+			}
+			if rev, _ := st["reviewed"].(map[string]any); len(rev) != 1 || rev["14"] == nil {
+				t.Fatalf("reviewed = %v; want only #14 (the not-watched #15 is never marked reviewed)", rev)
+			}
+			rep := w.onlyReport(t)
+			mustContain(t, "report body", rep.Body, "#15 Retry the sync (https://example.com/acme/pull/15): not_watched (missing): the session may still be reviewing it; left for the next round")
+			mustContain(t, "report body", rep.Body, "1 pull request left for the next round.")
+		})
 	})
 }
