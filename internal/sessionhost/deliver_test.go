@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -35,12 +36,43 @@ type stubSession struct {
 	sess    *session
 	from    int // ring offset up to which bytes were read
 	marks   int
+	pauses  *pauseLog
+	exited  <-chan struct{} // a receive per recorded exit (Options.exitRecorded)
+}
+
+// pauseLog is the stub host's Options.settle: it records each delivery's
+// settle pause instead of sleeping it.
+type pauseLog struct {
+	mu sync.Mutex
+	ds []time.Duration
+}
+
+func (p *pauseLog) record(d time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ds = append(p.ds, d)
+}
+
+func (p *pauseLog) all() []time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]time.Duration(nil), p.ds...)
 }
 
 func newStub(t *testing.T, opts Options, agent, script string) *stubSession {
 	t.Helper()
+	pauses := &pauseLog{}
+	if opts.settle == nil {
+		opts.settle = pauses.record
+	}
+	var exited <-chan struct{}
+	if opts.exitRecorded == nil {
+		opts.exitRecorded, exited = exitsRecorded()
+	}
 	path, srv := startHost(t, opts)
-	return launchStub(t, srv, path, 1, agent, script)
+	st := launchStub(t, srv, path, 1, agent, script)
+	st.pauses, st.exited = pauses, exited
+	return st
 }
 
 func launchStub(t *testing.T, srv *Server, path string, row int64, agent, script string) *stubSession {
@@ -68,14 +100,22 @@ func (st *stubSession) ring() []byte {
 	return st.sess.ring.Snapshot()
 }
 
+// waitRing returns the ring once it holds want, woken by each output.
 func (st *stubSession) waitRing(want string) []byte {
 	st.t.Helper()
 	for {
-		r := st.ring()
+		st.sess.mu.Lock()
+		r := st.sess.ring.Snapshot()
 		if bytes.Contains(r, []byte(want)) {
+			st.sess.mu.Unlock()
 			return r
 		}
-		time.Sleep(5 * time.Millisecond)
+		if st.sess.ringWritten == nil {
+			st.sess.ringWritten = make(chan struct{})
+		}
+		written := st.sess.ringWritten
+		st.sess.mu.Unlock()
+		<-written
 	}
 }
 
@@ -165,16 +205,13 @@ func (st *stubSession) hint(dialog bool) {
 func (st *stubSession) relaunch(agent string) *stubSession {
 	st.t.Helper()
 	_ = syscall.Kill(-st.info.Pid, syscall.SIGKILL)
+	<-st.exited
 	ctl := dial(st.t, st.path)
-	for {
-		if l := ctl.list(); len(l) == 1 && l[0].Exited {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
 	ctl.send(Forget, AttachReq{Row: st.info.Row, Run: st.info.Run})
 	ctl.expect(Forgot)
-	return launchStub(st.t, st.srv, st.path, st.info.Row, agent, rawEchoAgent)
+	next := launchStub(st.t, st.srv, st.path, st.info.Row, agent, rawEchoAgent)
+	next.pauses, next.exited = st.pauses, st.exited
+	return next
 }
 
 // pauseHook is an Options.inPause whose body a test sets once its stub is
@@ -195,11 +232,10 @@ func (h *pauseHook) opts() Options {
 func TestProj12_AnAnswerLineIsPastedAsOneLineThenSubmittedWithItsOwnReturn(t *testing.T) {
 	st := newStub(t, Options{}, "claude", rawEchoAgent)
 	line := "Ask #7 answered (choice: yes)\n— read it\twith get_ask 7"
-	start := time.Now()
 	var atCheck []byte
 	out := st.deliver(st.hub(), st.req(line+"\r\n\x1bmore"), func(context.Context) DeliverCheckReplyMsg {
-		if el := time.Since(start); el < testSettle*time.Millisecond {
-			t.Errorf("re-check after %v, before the pause ended", el)
+		if got := st.pauses.all(); len(got) != 1 || got[0] != testSettle*time.Millisecond {
+			t.Errorf("pauses before the re-check = %v, want one of %dms", got, testSettle)
 		}
 		atCheck = st.waitRing(string(pasteEnd))[st.from:] // the paste echoed
 		return okCheck(context.Background())
@@ -318,13 +354,8 @@ func TestProj12_ARelaunchDuringThePauseGetsNoReturn(t *testing.T) {
 	var next *stubSession
 	out := st.deliver(st.hub(), st.req("answer"), func(context.Context) DeliverCheckReplyMsg {
 		_ = syscall.Kill(-st.info.Pid, syscall.SIGKILL)
+		<-st.exited
 		ctl := dial(t, st.path)
-		for {
-			if l := ctl.list(); len(l) == 1 && l[0].Exited {
-				break
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
 		ctl.send(Forget, AttachReq{Row: 1, Run: "r1"})
 		ctl.expect(Forgot)
 		next = launchStub(t, st.srv, st.path, 1, "claude", rawEchoAgent)
@@ -381,10 +412,9 @@ func TestProj12_CodexSubmitIsBracketedPasteThenCR(t *testing.T) {
 	st := newStub(t, Options{}, "codex", rawEchoAgent)
 	r := st.req("Fix the flaky test")
 	r.SettleMs = 0 // the profile's pasteSettle
-	start := time.Now()
 	out := st.deliver(st.hub(), r, func(context.Context) DeliverCheckReplyMsg {
-		if el := time.Since(start); el < ProfileFor("codex").PasteSettle {
-			t.Errorf("re-check after %v, before codex's pasteSettle", el)
+		if got := st.pauses.all(); len(got) != 1 || got[0] != ProfileFor("codex").PasteSettle {
+			t.Errorf("pauses before the re-check = %v, want one of codex's pasteSettle", got)
 		}
 		return okCheck(context.Background())
 	})
@@ -548,21 +578,20 @@ func TestDeliverCheckTimeoutLeavesLineTyped(t *testing.T) {
 // The hub crashes during the pause: its connection drops, no Return
 // follows and the pending Return clears.
 func TestADroppedRequesterDuringThePauseLeavesTheLineTyped(t *testing.T) {
-	st := newStub(t, Options{}, "claude", rawEchoAgent)
+	finished := make(chan struct{}, 1)
+	st := newStub(t, Options{delivered: func() { finished <- struct{}{} }}, "claude", rawEchoAgent)
 	raw := dial(t, st.path)
 	r := st.req("answer")
 	r.ID = "x1"
 	raw.send(Deliver, r)
 	raw.expect(DeliverCheck)
 	_ = raw.nc.Close()
-	for {
-		st.sess.mu.Lock()
-		pending, left := st.sess.prompt.pendingReturn, st.sess.prompt.leftTyped
-		st.sess.mu.Unlock()
-		if !pending && left {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	<-finished // the delivery ended, its outcome sent nowhere
+	st.sess.mu.Lock()
+	pending, left := st.sess.prompt.pendingReturn, st.sess.prompt.leftTyped
+	st.sess.mu.Unlock()
+	if pending || !left {
+		t.Fatalf("pendingReturn = %v, leftTyped = %v; want false, true", pending, left)
 	}
 	wantBytes(t, st.written(), paste("answer"), "no Return after the hub dropped")
 }

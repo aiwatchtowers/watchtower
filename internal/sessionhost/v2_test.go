@@ -144,8 +144,28 @@ func TestLaunchCounterSurvivesClientReconnect(t *testing.T) {
 	}
 }
 
+// stopTimers is an Options.stopTimer that hands each kill timer's duration
+// and body to the test instead of starting it.
+type stopTimers struct {
+	grace chan time.Duration
+	kill  chan func()
+}
+
+func newStopTimers() *stopTimers {
+	return &stopTimers{grace: make(chan time.Duration, 4), kill: make(chan func(), 4)}
+}
+
+func (s *stopTimers) start(d time.Duration, f func()) *time.Timer {
+	s.grace <- d
+	s.kill <- f
+	tm := time.NewTimer(time.Hour) // only ever stopped
+	tm.Stop()
+	return tm
+}
+
 func TestRequestedStopExitCarriesRequested(t *testing.T) {
-	path := startServer(t, Options{})
+	timers := newStopTimers()
+	path := startServer(t, Options{stopTimer: timers.start})
 	a := dial(t, path)
 	// The shell and its sleeps ignore SIGHUP, so only the SIGKILL after
 	// stopGrace ends them; a.launch's cleanup reaps the group either way.
@@ -153,9 +173,12 @@ func TestRequestedStopExitCarriesRequested(t *testing.T) {
 	a.outputUntil(func(s string) bool { return strings.Contains(s, "ready") })
 
 	b := dial(t, path)
-	start := time.Now()
 	b.send(Stop, StopReq{Row: 1, Run: "r1", Launch: info.Launch})
 	b.expect(Stopping)
+	if d := <-timers.grace; d != stopGrace {
+		t.Fatalf("kill timer = %v, want stopGrace %v", d, stopGrace)
+	}
+	(<-timers.kill)() // the grace has passed: only this SIGKILL ends the shell
 
 	var exit ExitMsg
 	for {
@@ -169,9 +192,6 @@ func TestRequestedStopExitCarriesRequested(t *testing.T) {
 			}
 			break
 		}
-	}
-	if elapsed := time.Since(start); elapsed < stopGrace-500*time.Millisecond {
-		t.Fatalf("exit after %v, want the SIGKILL after about %v", elapsed, stopGrace)
 	}
 	if !exit.Requested || exit.Code != nil {
 		t.Fatalf("exit = %+v, want requested with a signal (nil) code", exit)
