@@ -28,6 +28,16 @@ var ErrCodexTrustUnavailable = errors.New("codex hook trust unavailable")
 // var so a test can shorten it.
 var appServerBudget = 10 * time.Second
 
+// SetAppServerBudgetForTest replaces the app-server budget until restore
+// runs: another package's test that drives a fake app-server (the test
+// binary itself) lifts it to a hang guard, so a loaded machine starting
+// that binary slowly cannot fail the test. Not for concurrent use.
+func SetAppServerBudgetForTest(d time.Duration) (restore func()) {
+	old := appServerBudget
+	appServerBudget = d
+	return func() { appServerBudget = old }
+}
+
 // sessionFlagsSource is the hooks/list source of a hook passed as a launch
 // flag (-c hooks.<Event>=…). Its trust key is the same for every folder.
 const sessionFlagsSource = "sessionFlags"

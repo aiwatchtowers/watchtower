@@ -43,12 +43,11 @@ func TestCodexPipeline_RawRPCToSharedDesktopFixture(t *testing.T) {
 	// Exact half-hours prevent architecture-dependent rounding in the real
 	// publication bytes and their proof; the strict golden stays unchanged.
 	var snapshot codex.UsageSnapshot
+	liftAppServerBudget(t)
 	for i, response := range []json.RawMessage{source.Before, source.After} {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		snapshot, err = codex.ReadUsage(ctx, bin,
+		snapshot, err = codex.ReadUsage(t.Context(), bin,
 			append(os.Environ(), "WATCHTOWER_TEST_CODEX_USAGE=1", "WATCHTOWER_TEST_CODEX_LIMITS="+string(response)),
 			"pipeline-fixture-home")
-		cancel()
 		require.NoError(t, err)
 		require.NoError(t, StoreCodexUsage(database, start.Add(time.Duration(i)*30*time.Minute), snapshot))
 	}

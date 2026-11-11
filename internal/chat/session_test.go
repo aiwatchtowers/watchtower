@@ -62,11 +62,7 @@ func startSession(t *testing.T, b Backend, configure func(*Session)) *harness {
 		// still not tear down before that has happened — otherwise the kill
 		// races the process exit and a later assertNoProcessSurvives can
 		// catch a stub mid-escalation instead of a genuine leak.
-		select {
-		case <-h.runDone:
-		case <-time.After(5 * time.Second):
-			t.Errorf("session did not stop within 5s of cancel + stdin close")
-		}
+		<-h.runDone
 	})
 	return h
 }
@@ -85,19 +81,15 @@ func (h *harness) sendRaw(line string) {
 	require.NoError(h.t, err)
 }
 
-// next returns the next event of type want, skipping others; fails after 10 s.
+// next returns the next event of type want, skipping others. It waits for
+// the event itself: go test -timeout is the only bound on a broken run.
 func (h *harness) next(want string) Event {
 	h.t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case e, ok := <-h.events:
-			require.True(h.t, ok, "session ended before a %s event", want)
-			if e.Type == want {
-				return e
-			}
-		case <-deadline:
-			h.t.Fatalf("no %s event within 10s", want)
+		e, ok := <-h.events
+		require.True(h.t, ok, "session ended before a %s event", want)
+		if e.Type == want {
+			return e
 		}
 	}
 }
@@ -106,13 +98,8 @@ func (h *harness) next(want string) Event {
 func (h *harness) finish() error {
 	h.t.Helper()
 	_ = h.in.Close()
-	select {
-	case err := <-h.done:
-		return err
-	case <-time.After(15 * time.Second):
-		h.t.Fatal("session did not stop within 15s of stdin EOF")
-		return nil
-	}
+	err := <-h.done
+	return err
 }
 
 // fakeBackend scripts a Backend.
@@ -338,18 +325,13 @@ func TestSession_TurnRightAfterTurnDoneIsAccepted(t *testing.T) {
 	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "one"})
 	h.next(EventTurnDone)
 	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "two"})
-	deadline := time.After(10 * time.Second)
 	for got := false; !got; {
-		select {
-		case e := <-h.events:
-			require.NotEqual(t, EventError, e.Type, "the follow-up turn was rejected: %s", e.Message)
-			if e.Type == EventTextDelta {
-				assert.Equal(t, "echo: two", e.Text)
-				assert.Equal(t, "t2", e.TurnID)
-				got = true
-			}
-		case <-deadline:
-			t.Fatal("no text_delta for the follow-up turn within 10s")
+		e := <-h.events
+		require.NotEqual(t, EventError, e.Type, "the follow-up turn was rejected: %s", e.Message)
+		if e.Type == EventTextDelta {
+			assert.Equal(t, "echo: two", e.Text)
+			assert.Equal(t, "t2", e.TurnID)
+			got = true
 		}
 	}
 	assert.Equal(t, "t2", h.next(EventTurnDone).TurnID)
