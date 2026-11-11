@@ -172,42 +172,59 @@ final class InboxFeedQueriesTests: XCTestCase {
         XCTAssertEqual(titles, ["N", "I", "D", "R"])
     }
 
-    func testBadgeCountsDecisionsUnreadMessagesLatestUnreadDayAndDueReminders() async throws {
+    /// The STRIP badge rule (Inbox redesign phase 1, ask #634): Needs
+    /// approval's open approvals + people waiting today (open messages whose
+    /// `MAX(created_at, mentioned_at)` is from today, read or not). Ideas,
+    /// briefings, artifacts in the root or an owner folder and tracks never
+    /// count.
+    func testBadgeCountsApprovalsAndPeopleWaitingToday() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         try await pool.write { db in
+            let folders = try InboxFolderFixtures.seed(db)
             try TestDatabase.insertAgentAction(db, status: "pending")
-            try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
-            try TestDatabase.insertIdea(db, kind: "decision", status: "proposed")
-            _ = try self.message(db, 1)
-            _ = try self.message(db, 2)
-            _ = try self.message(db, 3, readAt: "2026-10-22T07:30:00Z")
-            try TestDatabase.insertBriefing(db, date: "2026-10-20")
-            try TestDatabase.insertBriefing(db, date: "2026-10-21")
-            try db.execute(sql: "UPDATE briefings SET created_at = date || 'T05:00:00Z'")
             try db.execute(sql: """
                 INSERT INTO reminders (message_ref, note, remind_at, status)
                 VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
                 """)
+            _ = try self.message(db, 1, created: "2026-10-22T07:00:00Z")
+            _ = try self.message(db, 2, created: "2026-10-22T00:00:00Z")
+            let mentioned = try self.message(db, 3, created: "2026-10-21T15:00:00Z")
+            try db.execute(sql: "UPDATE inbox_items SET mentioned_at = '2026-10-22T06:00:00Z' WHERE id = ?",
+                           arguments: [mentioned])
+            _ = try self.message(db, 4, created: "2026-10-21T23:59:59Z")
+            _ = try self.message(db, 5, created: "2026-10-22T05:00:00Z", readAt: "2026-10-22T07:30:00Z")
+            try TestDatabase.insertIdea(db, kind: "idea", status: "proposed")
+            try TestDatabase.insertBriefing(db, date: "2026-10-21")
+            try TestDatabase.insertBriefing(db, date: "2026-10-22")
+            try db.execute(sql: "UPDATE briefings SET created_at = date || 'T05:00:00Z'")
             let automation = try TestDatabase.insertAutomation(db, slug: "s", name: "S")
             let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
             for _ in 0..<3 { _ = try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run) }
+            let owner = try InboxFolderFixtures.folder(db, parent: folders.root, slug: "a", position: 1)
+            let routed = try TestDatabase.insertAutomation(db, slug: "routed", name: "Routed")
+            try InboxFolderFixtures.route(db, automation: routed, folder: owner)
+            let routedRun = try TestDatabase.insertAutomationRun(db, automationID: routed)
+            _ = try TestDatabase.insertAutomationOutput(db, automationID: routed, runID: routedRun)
             _ = try TestDatabase.insertTrack(db)
             _ = try TestDatabase.insertTrack(db)
             try db.execute(sql: "UPDATE tracks SET read_at = NULL, has_updates = 1")
         }
-        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        // 1 proposal + 1 proposed idea (a decision never counts) + 2 unread messages
-        // + the latest briefing + 1 due reminder; track cards are dots only.
-        XCTAssertEqual(badge, 9, "+ 3 unread automation artifacts (inbox builder B's folder sum)")
+        let utc = try InboxTodayFixture.calendar("UTC")
+        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now, calendar: utc) }
+        // 1 proposal + 1 due reminder + 4 people today (2 created today, 1
+        // mentioned today, 1 read today: the term is "waiting", not "unread").
+        XCTAssertEqual(badge, 6, "approvals + people waiting today; ideas, briefings, artifacts and tracks never count")
 
         // + a built-in's failed move (C2); a move that is done counts nothing.
         try await pool.write { db in
             try self.builtinMigration(db, "morning-brief", status: "failed")
             try self.builtinMigration(db, "done-one", status: "done")
         }
-        let withNotice = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        XCTAssertEqual(withNotice, 10)
+        let withNotice = try await pool.read {
+            try ActionStripViewModel.badgeCount($0, nowUTC: self.now, calendar: utc)
+        }
+        XCTAssertEqual(withNotice, 7, "a failed built-in move is an approval")
     }
 
     private func builtinMigration(_ db: Database, _ id: String, status: String) throws {
@@ -244,7 +261,7 @@ final class InboxFeedQueriesTests: XCTestCase {
             try db.execute(sql: "DROP TABLE tracks")
         }
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
-        XCTAssertEqual(badge, 2, "the proposal and the unread briefing; the missing tables count 0")
+        XCTAssertEqual(badge, 1, "the proposal; a briefing is not a badge term and the missing tables count 0")
         let snapshot = try await pool.read {
             try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30)
         }

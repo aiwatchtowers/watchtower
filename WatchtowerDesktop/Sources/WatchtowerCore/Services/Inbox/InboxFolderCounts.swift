@@ -1,17 +1,21 @@
 import Foundation
 
-/// The menu's numbers and the sidebar's Inbox badge (spec "Unread counts and
-/// the sidebar badge"): one rule the owner can check by adding the menu's
-/// numbers. Pure; `ActionStripViewModel.badgeCount` feeds it from one read.
+/// The menu's numbers (spec "Counts"). Pure; `InboxFolderMenuSnapshot.read`
+/// feeds it from one read. The sidebar badge is not their sum: it is
+/// Needs approval's approvals + people waiting today
+/// (`InboxFolderMenuSnapshot.badge`), so an owner folder's count never
+/// reaches it.
 package enum InboxFolderCounts {
     /// Each folder's own count (not its children's), for every folder of
     /// `tree`; a folder with nothing is 0.
     /// - An artifact whose document has no row ref counts 1 while unread.
     /// - An artifact with row refs counts its rows that wait on the owner
     ///   (`refState`), whatever its read state.
-    /// - `legacy` adds the counts the folder shows outside artifacts: today's
-    ///   terms (ideas to judge, unread messages, the unread briefing in the
-    ///   root; proposals, due reminders and notices in Needs approval).
+    /// - An artifact of an automation in `uncounted` counts nothing: Waiting
+    ///   for me's, whose people `legacy` already counts as people today.
+    /// - `legacy` adds the counts the folder shows outside artifacts: people
+    ///   waiting today and today's unread brief in the root; proposals, due
+    ///   reminders and notices in Needs approval.
     /// Needs approval counts the approvals it shows, whether a recipe card
     ///   or a native one draws each: only its `legacy` count, never its
     ///   artifacts' rows, which are those same approvals.
@@ -21,14 +25,16 @@ package enum InboxFolderCounts {
         artifacts: [Int64: [AutomationOutputCard]],
         refs: [Int64: [InboxRef]],
         refState: InboxRefState,
-        legacy: [Int64: Int]
+        legacy: [Int64: Int],
+        uncounted: Set<Int64> = []
     ) -> [Int64: Int] {
         var out: [Int64: Int] = [:]
         for folder in tree.folders {
             var count = legacy[folder.id] ?? 0
             if folder.kind != .approvals {
-                count += (artifacts[folder.id] ?? []).reduce(0) {
-                    $0 + artifactCount($1, refs: refs[$1.id] ?? [], refState: refState)
+                count += (artifacts[folder.id] ?? []).reduce(0) { sum, card in
+                    uncounted.contains(card.automationID)
+                        ? sum : sum + artifactCount(card, refs: refs[card.id] ?? [], refState: refState)
                 }
             }
             out[folder.id] = count
@@ -48,11 +54,5 @@ package enum InboxFolderCounts {
         var out: [Int64: [InboxRef]] = [:]
         for card in artifacts.values.joined() { out[card.id] = InboxRef.refs(blocksJSON: card.blocksJSON) }
         return out
-    }
-
-    /// The sidebar badge: the sum over the folders the menu shows (a hidden
-    /// folder and everything below it leave the badge).
-    package static func badge(counts: [Int64: Int], tree: InboxFolderTree) -> Int {
-        tree.folders.filter { tree.isVisible($0.id) }.reduce(0) { $0 + (counts[$1.id] ?? 0) }
     }
 }

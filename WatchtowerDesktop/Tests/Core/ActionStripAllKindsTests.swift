@@ -645,6 +645,22 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertEqual(badge, 0)
     }
 
+    /// "Today" (the people count, today's brief) moves with no database
+    /// write: a day, zone or wake signal re-reads.
+    func testADayChangeSignalReReads() async throws {
+        let center = NotificationCenter()
+        let vm = ActionStripViewModel(
+            dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults,
+            dayChangeSignals: InboxDayChangeObserver.systemSignals(center: center))
+        let read = expectation(description: "a read after the time-zone change")
+        vm.onFeedRefreshed = { read.fulfill() }
+
+        center.post(name: .NSSystemTimeZoneDidChange, object: nil)
+
+        await fulfillment(of: [read], timeout: 5)
+        XCTAssertTrue(vm.hasRead)
+    }
+
     // MARK: - Polling (board #731)
 
     func testPollSkipsWhileOffScreen() async throws {

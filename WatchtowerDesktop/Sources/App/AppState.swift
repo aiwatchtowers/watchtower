@@ -1757,10 +1757,16 @@ final class AppState {
             cli: AutomationsCLI(runner: runner),
             direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
-        let vm = ActionStripViewModel(dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls) {
-            guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
-            try await AutomationsCLI(runner: runner).wake()
-        }
+        // "Today" also moves on a wake past midnight, with no database write.
+        let dayChanges = InboxDayChangeObserver.systemSignals() + [InboxDayChangeObserver.Signal(
+            center: NSWorkspace.shared.notificationCenter, name: NSWorkspace.didWakeNotification)]
+        let vm = ActionStripViewModel(
+            dbPool: dbPool, cliRunner: cliRunner, customTrackControls: controls,
+            automationsWake: {
+                guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
+                try await AutomationsCLI(runner: runner).wake()
+            },
+            dayChangeSignals: dayChanges)
         // The badge counts the rows this read lists, and the daemon's writes
         // to them never fire the counts VM's observation; resolved at call time.
         vm.onFeedRefreshed = { [weak self] in

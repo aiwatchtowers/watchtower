@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GRDB
 import WatchtowerCore
@@ -19,8 +20,10 @@ final class SidebarCountsViewModel {
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
-    /// The Inbox badge (`ActionStripViewModel.badgeCount`): the sum of the
-    /// counts of every folder the Inbox menu shows.
+    /// The Inbox badge (`ActionStripViewModel.badgeCount`): Needs approval's
+    /// open approvals + people waiting today. "Today" moves at local
+    /// midnight with no database write, so it is also re-read then, after a
+    /// wake, a day change and a time-zone change (`startObserving`).
     var inboxStripCount: Int = 0
     /// The feature ids the owner turned off (AppState's feature
     /// visibility): the Inbox badge counts no Waiting for me while
@@ -60,17 +63,51 @@ final class SidebarCountsViewModel {
     /// The wait before a restart; seamed so a test reads the pauses.
     private let pause: @Sendable (Duration) async -> Void
     private var observationTask: Task<Void, Never>?
+    /// The moment and the zone the counts are read at; seamed so a test moves
+    /// them. The zone is `.autoupdatingCurrent`'s, so a time-zone change moves
+    /// "today" with it.
+    private let clock: @Sendable () -> Date
+    private let calendar: @Sendable () -> Calendar
+    /// Waits until a moment (the next midnight's recount); seamed so a test
+    /// never waits in real time.
+    private let sleepUntil: @Sendable (Date) async -> Void
+    /// Where the day change and the time-zone change are posted, and where
+    /// the wake is.
+    private let notificationCenter: NotificationCenter
+    private let workspaceNotificationCenter: NotificationCenter
+    /// The recount at the next local midnight, rescheduled by each one.
+    @ObservationIgnored nonisolated(unsafe) private var midnightTask: Task<Void, Never>?
+    @ObservationIgnored private var dayChangeObserver: InboxDayChangeObserver?
 
     init(
         dbPool: DatabasePool,
         changes: @escaping Changes = SidebarCountsViewModel.tableChanges,
         backoff: RestartBackoff = RestartBackoff(),
-        pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        pause: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        clock: @escaping @Sendable () -> Date = { Date() },
+        calendar: @escaping @Sendable () -> Calendar = { .autoupdatingCurrent },
+        sleepUntil: @escaping @Sendable (Date) async -> Void = { await SidebarCountsViewModel.sleepUntil($0) },
+        notificationCenter: NotificationCenter = .default,
+        workspaceNotificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
     ) {
         self.dbPool = dbPool
         self.changes = changes
         self.backoff = backoff
         self.pause = pause
+        self.clock = clock
+        self.calendar = calendar
+        self.sleepUntil = sleepUntil
+        self.notificationCenter = notificationCenter
+        self.workspaceNotificationCenter = workspaceNotificationCenter
+    }
+
+    deinit { midnightTask?.cancel() }
+
+    /// Sleeps until `date` on the wall clock; returns early when cancelled.
+    nonisolated static func sleepUntil(_ date: Date) async {
+        let wait = date.timeIntervalSinceNow
+        guard wait > 0 else { return }
+        try? await Task.sleep(for: .seconds(wait))
     }
 
     /// A view model with its counts loaded and its observation started;
@@ -115,6 +152,7 @@ final class SidebarCountsViewModel {
     /// delivers one, so an error right after each start keeps doubling.
     func startObserving() {
         guard observationTask == nil else { return }
+        startDayChangeRecounts()
         let pool = dbPool
         let changes = changes
         let pause = pause
@@ -147,6 +185,43 @@ final class SidebarCountsViewModel {
     func stopObserving() {
         observationTask?.cancel()
         observationTask = nil
+        midnightTask?.cancel()
+        midnightTask = nil
+        dayChangeObserver = nil
+    }
+
+    /// The Inbox badge counts people waiting today, and "today" changes with
+    /// no database write, which the table observation never sees: a recount
+    /// one second after the next local midnight (rescheduled by each), and
+    /// one after a day change, a time-zone change or a wake — a timer alone
+    /// misses a Mac asleep past midnight and a new zone.
+    private func startDayChangeRecounts() {
+        scheduleMidnightRecount()
+        let signals = InboxDayChangeObserver.systemSignals(center: notificationCenter) + [
+            InboxDayChangeObserver.Signal(center: workspaceNotificationCenter, name: NSWorkspace.didWakeNotification)
+        ]
+        dayChangeObserver = InboxDayChangeObserver(signals: signals) { [weak self] in
+            Task { await self?.recountForANewDay() }
+        }
+    }
+
+    private func scheduleMidnightRecount() {
+        midnightTask?.cancel()
+        let at = InboxToday.nextMidnight(after: clock(), calendar: calendar()).addingTimeInterval(1)
+        let sleepUntil = sleepUntil
+        midnightTask = Task { [weak self] in
+            await sleepUntil(at)
+            guard !Task.isCancelled else { return }
+            await self?.recountForANewDay()
+        }
+    }
+
+    /// Re-reads the counts, then schedules the next midnight from the clock
+    /// as it is now (a wake or a new zone moved it).
+    private func recountForANewDay() async {
+        await refresh()
+        guard dayChangeObserver != nil else { return }
+        scheduleMidnightRecount()
     }
 
     /// Observe row counts of every source table so any write (including
@@ -161,8 +236,8 @@ final class SidebarCountsViewModel {
             // output's Done/Dismiss changes no count, but GRDB re-fetches
             // on any write to a tracked table and nothing drops
             // duplicates, so it still refreshes the badge.
-            // inbox_items is the badge's Messages term (C1, a message's
-            // read_at re-fires it); day_plans is the Day cards' other half;
+            // inbox_items is the badge's people-waiting-today term; day_plans
+            // is the Day cards' other half;
             // builtin_migrations is the built-in upgrade notices' term (C2);
             // automations is Waiting for me / Needs approval turned on or off.
             let tables = ["tracks", "briefings", "targets", "digests",
@@ -219,6 +294,8 @@ final class SidebarCountsViewModel {
 
     private func fetch() async -> Counts {
         let disabledFeatures = disabledFeatures
+        let now = clock()
+        let calendar = calendar()
         do {
             return try await dbPool.read { db -> Counts in
                 // A ready recap still waiting for "I'm caught up". Computed
@@ -227,13 +304,12 @@ final class SidebarCountsViewModel {
                 // pre-catchup_recaps schema like the reads below it.
                 let hasWaitingRecap = (try? CatchUpQueries.hasUnacknowledgedReady(db)) ?? false
                 let waitingRecap = hasWaitingRecap ? 1 : 0
-                // The Inbox badge: the visible folders' counts summed,
+                // The Inbox badge: approvals + people waiting today,
                 // user-independent and tolerant of a schema predating any of
                 // its sources (a missing table counts 0; any other read error
                 // fails the fetch).
-                let nowUTC = ISO8601DateFormatter().string(from: Date())
                 let stripCount = try ActionStripViewModel.badgeCount(
-                    db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                    db, nowUTC: AutomationDates.format(now), disabledFeatures: disabledFeatures, calendar: calendar)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
                 // Digests-tab feed counts, tolerant of a pre-stream/ideas schema.

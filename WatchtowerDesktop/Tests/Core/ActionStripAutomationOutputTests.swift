@@ -145,7 +145,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertEqual(vm.outputRows.first?.isUnread, false)
         let badgeAfter = try await badge()
-        XCTAssertEqual(badgeAfter, badgeBefore - 1, "an opened plain artifact leaves the badge (inbox builder B)")
+        XCTAssertEqual(badgeAfter, badgeBefore, "artifacts left the badge, redesign phase 1: opening one moves nothing")
         XCTAssertNil(vm.lastError)
 
         await vm.select(nil)
@@ -343,7 +343,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(badge, 0)
     }
 
-    func testInboxBadgeCountsUnreadOutputs() async throws {
+    func testInboxBadgeLeavesOutputsOut() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let seed = try await seedAutomation(pool)
@@ -367,9 +367,9 @@ final class ActionStripAutomationOutputTests: XCTestCase {
 
         let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
 
-        // 1 proposal + 1 due reminder + 2 unread outputs (inbox builder B: the
-        // folder sum adds unread artifacts); read and done ones count nothing.
-        XCTAssertEqual(badge, 4)
+        // 1 proposal + 1 due reminder: the badge is approvals + people waiting
+        // today (redesign phase 1); no output counts, unread or not.
+        XCTAssertEqual(badge, 2, "artifacts are not a badge term")
     }
 
     /// J13: a source whose table is missing (an older schema) counts 0; any

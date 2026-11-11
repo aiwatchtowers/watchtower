@@ -94,12 +94,14 @@ package enum BriefingQueries {
         )
     }
 
-    /// 1 when the newest briefing is unread, else 0: the Inbox badge's day-card term.
-    package static func latestUnreadCount(_ db: Database) throws -> Int {
+    /// 1 when `date`'s briefing (its newest, `fetchByDate`'s pick) exists
+    /// and is unread, else 0: the Inbox root count's brief term (today's).
+    package static func unreadCount(_ db: Database, date: String) throws -> Int {
         try Int.fetchOne(db, sql: """
-            SELECT COUNT(*) FROM (SELECT read_at FROM briefings ORDER BY created_at DESC, id DESC LIMIT 1)
-            WHERE read_at IS NULL OR read_at = ''
-            """) ?? 0
+            SELECT COUNT(*) FROM (
+                SELECT read_at FROM briefings WHERE date = ? ORDER BY created_at DESC, id DESC LIMIT 1
+            ) WHERE read_at IS NULL OR read_at = ''
+            """, arguments: [date]) ?? 0
     }
 
     package static func markRead(_ db: Database, id: Int) throws {

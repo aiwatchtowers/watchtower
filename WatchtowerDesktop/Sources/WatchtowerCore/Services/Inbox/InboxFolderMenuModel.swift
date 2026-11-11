@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// What one read of the menu sees: the tree, each folder's own count (the
-/// numbers the menu shows, whose visible sum is the sidebar badge), how
+/// numbers the menu shows), the sidebar badge's two terms (`badge`), how
 /// many open artifacts each folder holds (Delete…'s summary), and what the
 /// folder's entries are composed from (`InboxFolderEntries`): each folder's
 /// artifacts with their row refs and the render-time check, Waiting for me's
@@ -30,6 +30,17 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
     package let openActions: Set<Int64>
     /// The `idea-finder` built-in is indexed (`InboxFolderQueries.ideaFinderPresent`).
     package let ideaFinderPresent: Bool
+    /// Open messages from today (`InboxQueries.openMessageCount` since
+    /// `InboxToday`'s local midnight), read or not; 0 while Waiting for me
+    /// is turned off. Phase 1: every open item from today, mail included.
+    package let peopleWaitingToday: Int
+    /// Needs approval's count: its open approvals (`ActionStripViewModel
+    /// .approvalCount`), the same terms in the root on a tree without it.
+    package let approvalsCount: Int
+
+    /// The sidebar's Inbox badge (spec "Counts"): Needs approval + people
+    /// waiting today. No folder's artifacts reach it.
+    package var badge: Int { approvalsCount + peopleWaitingToday }
 
     package init(
         tree: InboxFolderTree,
@@ -42,7 +53,9 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         needsApproval: NeedsApprovalState = .absent,
         approvalArtifacts: [String: AutomationOutputCard] = [:],
         openActions: Set<Int64> = [],
-        ideaFinderPresent: Bool = false
+        ideaFinderPresent: Bool = false,
+        peopleWaitingToday: Int = 0,
+        approvalsCount: Int = 0
     ) {
         self.tree = tree
         self.counts = counts
@@ -55,13 +68,20 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         self.approvalArtifacts = approvalArtifacts
         self.openActions = openActions
         self.ideaFinderPresent = ideaFinderPresent
+        self.peopleWaitingToday = peopleWaitingToday
+        self.approvalsCount = approvalsCount
     }
 
     /// One read, nothing written. Each source tolerates a schema that
     /// predates it; any other error is thrown. `disabledFeatures` are the
     /// feature ids the owner turned off (attention detection off hides
     /// Waiting for me and its stand-in, `InboxFolderQueries.waitingForMe`).
-    package static func read(_ db: Database, nowUTC: String, disabledFeatures: Set<String> = []) throws -> Self {
+    /// `calendar` is the zone "today" is in (`InboxToday`); the app passes
+    /// `.autoupdatingCurrent` so a time-zone change moves it.
+    package static func read(
+        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
+    ) throws -> Self {
+        let now = AutomationDates.parse(nowUTC) ?? Date()
         let tree = try InboxFolderQueries.tree(db)
         let waitingForMe = try InboxFolderQueries.waitingForMe(
             db, featureOn: !disabledFeatures.contains(InboxFolderQueries.waitingForMeFeatureID))
@@ -82,15 +102,28 @@ package struct InboxFolderMenuSnapshot: Equatable, Sendable {
         let approvalRefs = approvalArtifacts.values.flatMap { InboxRef.refs(blocksJSON: $0.blocksJSON) }
         let refState = try InboxRefState.read(
             db, refs: Array(refs.values.joined()) + approvalRefs, nowUTC: nowUTC)
+        let peopleWaitingToday = waitingForMe.turnedOff ? 0 : try ActionStripViewModel.zeroIfTableMissing {
+            try InboxQueries.openMessageCount(
+                db, nowUTC: nowUTC, sinceUTC: InboxToday.sinceUTC(now: now, calendar: calendar))
+        }
         let legacy = try ActionStripViewModel.legacyCounts(
-            db, nowUTC: nowUTC, tree: tree, messagesStandIn: waitingForMe.messagesStandIn)
+            db, nowUTC: nowUTC, today: HomeFeedBuilder.dayString(now, calendar: calendar), tree: tree,
+            peopleWaitingToday: peopleWaitingToday)
+        // Needs approval's legacy count is its approvals alone; on a tree
+        // without the folder they sit in the root's sum, so read them apart.
+        let approvalsCount = try tree.approvals.map { legacy[$0.id] ?? 0 }
+            ?? ActionStripViewModel.approvalCount(db, nowUTC: nowUTC)
+        // Waiting for me's artifacts list the people `peopleWaitingToday`
+        // already counts.
         let counts = InboxFolderCounts.counts(
-            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy)
+            tree: tree, artifacts: artifacts, refs: refs, refState: refState, legacy: legacy,
+            uncounted: Set([waitingForMe.automationID].compactMap { $0 }))
         let openActions = Set(try openActionIDs(db))
         return Self(tree: tree, counts: counts, artifacts: artifacts.mapValues(\.count), cards: artifacts,
                     refs: refs, refState: refState, waitingForMe: waitingForMe, needsApproval: needsApproval,
                     approvalArtifacts: approvalArtifacts, openActions: openActions,
-                    ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db))
+                    ideaFinderPresent: try InboxFolderQueries.ideaFinderPresent(db),
+                    peopleWaitingToday: peopleWaitingToday, approvalsCount: approvalsCount)
     }
 
     /// The ids of the actions that wait on the owner; none on a database
@@ -204,7 +237,8 @@ package final class InboxFolderMenuModel {
         let disabledFeatures = disabledFeatures
         do {
             receive(try await dbPool.read { db in
-                try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                try InboxFolderMenuSnapshot.read(
+                    db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: .autoupdatingCurrent)
             })
         } catch {
             receiveFailure(error.localizedDescription)

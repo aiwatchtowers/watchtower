@@ -121,6 +121,8 @@ package final class ActionStripViewModel {
     /// The refresh under way; a call meanwhile waits for it and asks for one more read.
     private var refreshTask: Task<Void, Never>?
     private var refreshAgain = false
+    /// Re-reads on a day, zone or wake change (set once in `init`).
+    @ObservationIgnored private var dayChangeObserver: InboxDayChangeObserver?
 
     /// The folder the owner last picked in the menu, remembered per viewer;
     /// one that no longer exists opens the root.
@@ -136,6 +138,9 @@ package final class ActionStripViewModel {
     /// `customTrackControls` nil = C1's direct writes (`DirectCustomTrackControls`).
     /// `findCLI` is how the folder menu (and so the rows' writes) finds the
     /// binary when `cliRunner` is nil; tests pass `{ nil }` for a missing one.
+    /// `dayChangeSignals`: each one re-reads (`refresh()`), since "today"
+    /// (the people count, today's brief) moves with no database write; the
+    /// app adds the wake from sleep to the system's two.
     package init(
         dbPool: DatabasePool,
         cliRunner: CLIRunnerProtocol? = nil,
@@ -143,7 +148,8 @@ package final class ActionStripViewModel {
         defaults: UserDefaults = .standard,
         automationsWake: (() async throws -> Void)? = nil,
         clock: @escaping @Sendable () -> Date = { Date() },
-        findCLI: @escaping @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }
+        findCLI: @escaping @MainActor () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
+        dayChangeSignals: [InboxDayChangeObserver.Signal] = InboxDayChangeObserver.systemSignals()
     ) {
         self.dbPool = dbPool
         self.clock = clock
@@ -154,48 +160,52 @@ package final class ActionStripViewModel {
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
         self.folderMenu = InboxFolderMenuModel(
             dbPool: dbPool, runner: { cliRunner ?? findCLI() }, clock: clock)
+        self.dayChangeObserver = InboxDayChangeObserver(signals: dayChangeSignals) { [weak self] in
+            Task { await self?.refresh() }
+        }
     }
 
-    /// The Inbox sidebar badge: the sum of the counts of every folder the
-    /// menu shows (inbox builder B, `InboxFolderCounts`). It keeps every
-    /// term of the 2026-10-18 badge as a folder's legacy count — Needs
-    /// approval: proposals awaiting the owner, due reminders, built-in
-    /// upgrade notices (C2); the root: ideas awaiting a verdict, unread
-    /// Messages (while that entry stands in for Waiting for me) and 1 when
-    /// the latest briefing is unread — and adds the automation artifacts:
-    /// 1 per unread one, or its rows that wait on the owner. Track cards
-    /// stay unread dots only. Each source tolerates a schema that predates
-    /// it (its table missing counts 0); any other read error is thrown,
-    /// never folded into 0. `disabledFeatures` as in
-    /// `InboxFolderMenuSnapshot.read` (attention detection off counts no
-    /// Waiting for me and no Messages stand-in).
+    /// The Inbox sidebar badge (spec "Counts", STRIP badge amendment, ask
+    /// #634): Needs approval's open approvals (proposals awaiting the owner,
+    /// due reminders, built-in upgrade notices) + people waiting today (open
+    /// messages whose `MAX(created_at, mentioned_at)` is at or after local
+    /// midnight in `calendar`, `InboxToday`; 0 while Waiting for me is turned
+    /// off). Ideas, briefings, Messages' unread count and every automation
+    /// artifact, root or owner folder, stay out of it. One read, writing
+    /// nothing; each source tolerates a schema that predates it (its table
+    /// missing counts 0), any other read error is thrown, never folded into
+    /// 0. `disabledFeatures` as in `InboxFolderMenuSnapshot.read`.
     nonisolated package static func badgeCount(
-        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = []
+        _ db: Database, nowUTC: String, disabledFeatures: Set<String> = [], calendar: Calendar = .current
     ) throws -> Int {
-        let snapshot = try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
-        return InboxFolderCounts.badge(counts: snapshot.counts, tree: snapshot.tree)
+        try InboxFolderMenuSnapshot.read(
+            db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: calendar).badge
     }
 
-    /// The badge's terms from before the folders, by the folder that shows
-    /// them now: Needs approval (the root on a database without it) and the
-    /// root.
+    /// The counts each folder shows outside its artifacts, by the folder
+    /// that shows them: the root's people waiting today (`peopleWaitingToday`)
+    /// + 1 while `today`'s briefing is unread; Needs approval's approvals
+    /// (`approvalCount`), in the root on a tree without Needs approval.
+    /// Ideas, unread messages and older briefings are not among them.
     nonisolated package static func legacyCounts(
         _ db: Database,
         nowUTC: String,
+        today: String,
         tree: InboxFolderTree,
-        messagesStandIn: Bool
+        peopleWaitingToday: Int
     ) throws -> [Int64: Int] {
-        let approvals = try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
+        let root = try peopleWaitingToday + zeroIfTableMissing { try BriefingQueries.unreadCount(db, date: today) }
+        var out: [Int64: Int] = [tree.root.id: root]
+        out[tree.approvals?.id ?? tree.root.id, default: 0] += try approvalCount(db, nowUTC: nowUTC)
+        return out
+    }
+
+    /// Needs approval's open approvals: proposals awaiting the owner, due
+    /// reminders, built-in upgrade notices (C2).
+    nonisolated package static func approvalCount(_ db: Database, nowUTC: String) throws -> Int {
+        try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
             + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
             + zeroIfTableMissing { try BuiltinUpgradeNotice.load(db).count }
-        let messages = messagesStandIn
-            ? try zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) } : 0
-        let root = try zeroIfTableMissing { try IdeaQueries.countForReview(db) }
-            + messages
-            + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
-        var out: [Int64: Int] = [tree.root.id: root]
-        out[tree.approvals?.id ?? tree.root.id, default: 0] += approvals
-        return out
     }
 
     /// `count()`, or 0 when its table does not exist yet (an older schema).
@@ -287,7 +297,8 @@ package final class ActionStripViewModel {
                     tasks: tasks,
                     labels: Self.labels(for: feed.proposals, runLabels: runLabels),
                     lastCheck: try PipelineRunQueries.lastSuccessfulFinish(db, pipeline: "reaction-commands"),
-                    folders: try InboxFolderMenuSnapshot.read(db, nowUTC: nowUTC, disabledFeatures: disabledFeatures)
+                    folders: try InboxFolderMenuSnapshot.read(
+                        db, nowUTC: nowUTC, disabledFeatures: disabledFeatures, calendar: .autoupdatingCurrent)
                 )
             }
             let before = sections

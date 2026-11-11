@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 import GRDB
 import os
@@ -71,11 +72,12 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.catchUpTotalCount, 0, "only a finished recap asks to be read")
     }
 
-    /// The Inbox badge follows R1 (C1): proposals awaiting the owner (pending
-    /// + failed), due reminders and unread open messages (`inbox_items`, the
-    /// Messages cards since C1). The frozen situations backlog has no screen,
-    /// so it is inserted here to prove it contributes zero; an applied
-    /// proposal and a reminder not yet due count zero too.
+    /// The Inbox badge (redesign phase 1): Needs approval's open approvals
+    /// (proposals awaiting the owner, pending + failed, and due reminders) +
+    /// people waiting today (open `inbox_items` from today; the message is
+    /// written now). The frozen situations backlog has no screen, so it is
+    /// inserted here to prove it contributes zero; an applied proposal and a
+    /// reminder not yet due count zero too.
     func testInboxBadgeCountsTheInboxCards() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -99,7 +101,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
 
-        XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 unread message")
+        XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 person waiting today")
     }
 
     /// A message written out of this pool's sight (another connection, as
@@ -154,6 +156,205 @@ final class SidebarCountsViewModelTests: XCTestCase {
             UPDATE automations SET origin = 'builtin', builtin_id = 'waiting-for-me', path = 'builtin:waiting-for-me',
                 enabled = ?, disabled_reason = ? WHERE id = ?
             """, arguments: [enabled, disabledReason, id])
+    }
+
+    // MARK: - "Today" moves with no database write
+
+    /// One open message created at `createdAt`.
+    nonisolated private static func insertOpenMessage(_ db: Database, createdAt: String) throws {
+        let id = try TestDatabase.insertInboxItem(db)
+        try db.execute(sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?", arguments: [createdAt, id])
+    }
+
+    nonisolated private static func date(_ text: String) -> Date {
+        ISO8601DateFormatter().date(from: text) ?? .distantPast
+    }
+
+    nonisolated private static func calendar(_ zone: String) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: zone) ?? .gmt
+        return calendar
+    }
+
+    /// The wall clock and zone a day test moves by hand.
+    private final class FakeTime: Sendable {
+        private let state: OSAllocatedUnfairLock<(now: Date, zone: String)>
+
+        init(_ now: String, zone: String) {
+            state = OSAllocatedUnfairLock(initialState: (SidebarCountsViewModelTests.date(now), zone))
+        }
+
+        var now: Date { state.withLock { $0.now } }
+        var calendar: Calendar { SidebarCountsViewModelTests.calendar(state.withLock { $0.zone }) }
+        func set(_ now: String) { state.withLock { $0.now = SidebarCountsViewModelTests.date(now) } }
+        func set(zone: String) { state.withLock { $0.zone = zone } }
+    }
+
+    /// A sleeper that never waits in real time: each call is recorded and
+    /// returns on `fire()` or when its task is cancelled.
+    private final class FakeSleeper: Sendable {
+        private struct State: Sendable {
+            var calls: [Date] = []
+            var pending: [Int: CheckedContinuation<Void, Never>] = [:]
+            var cancelled: Set<Int> = []
+            var nextID = 0
+        }
+
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        var calls: [Date] { state.withLock { $0.calls } }
+
+        func sleep(until date: Date) async {
+            let id = state.withLock { state -> Int in
+                state.nextID += 1
+                return state.nextID
+            }
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    let cancelled = state.withLock { state -> Bool in
+                        state.calls.append(date)
+                        guard !state.cancelled.contains(id) else { return true }
+                        state.pending[id] = continuation
+                        return false
+                    }
+                    if cancelled { continuation.resume() }
+                }
+            } onCancel: {
+                let continuation = state.withLock { state -> CheckedContinuation<Void, Never>? in
+                    state.cancelled.insert(id)
+                    return state.pending.removeValue(forKey: id)
+                }
+                continuation?.resume()
+            }
+        }
+
+        /// Ends every pending sleep, as the moment it waited for arriving.
+        func fire() {
+            let all = state.withLock { state -> [CheckedContinuation<Void, Never>] in
+                defer { state.pending = [:] }
+                return Array(state.pending.values)
+            }
+            for continuation in all { continuation.resume() }
+        }
+    }
+
+    /// A view model on `time` and `sleeper` whose table observation stays
+    /// quiet: only the day recounts re-read.
+    private func dayViewModel(
+        _ pool: DatabasePool,
+        _ time: FakeTime,
+        _ sleeper: FakeSleeper,
+        center: NotificationCenter = NotificationCenter(),
+        workspace: NotificationCenter = NotificationCenter()
+    ) -> SidebarCountsViewModel {
+        SidebarCountsViewModel(
+            dbPool: pool,
+            changes: { _ in AsyncThrowingStream { _ in } },
+            clock: { time.now },
+            calendar: { time.calendar },
+            sleepUntil: { await sleeper.sleep(until: $0) },
+            notificationCenter: center,
+            workspaceNotificationCenter: workspace
+        )
+    }
+
+    /// Waits (bounded) until the sleeper has `count` calls and `done` holds.
+    private func waitFor(_ sleeper: FakeSleeper, calls count: Int, _ done: () -> Bool = { true }) async throws {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while sleeper.calls.count < count || !done(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    func testInboxBadgeRecountsAtMidnight() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { try Self.insertOpenMessage($0, createdAt: "2026-11-11T20:00:00Z") }
+        let time = FakeTime("2026-11-11T23:59:00Z", zone: "UTC")
+        let sleeper = FakeSleeper()
+        let vm = dayViewModel(manager.dbPool, time, sleeper)
+        await vm.loadInitial()
+        XCTAssertEqual(vm.inboxStripCount, 1)
+
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        try await waitFor(sleeper, calls: 1)
+        XCTAssertEqual(sleeper.calls, [Self.date("2026-11-12T00:00:01Z")], "one second after the next midnight")
+
+        time.set("2026-11-12T00:00:01Z")
+        sleeper.fire()
+        try await waitFor(sleeper, calls: 2) { vm.inboxStripCount == 0 }
+
+        XCTAssertEqual(vm.inboxStripCount, 0, "yesterday evening's message is no longer today's, with no write")
+        XCTAssertEqual(sleeper.calls.last, Self.date("2026-11-13T00:00:01Z"), "the next midnight is scheduled")
+    }
+
+    func testInboxBadgeRecountsAfterWakePastMidnight() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { try Self.insertOpenMessage($0, createdAt: "2026-11-11T20:00:00Z") }
+        let time = FakeTime("2026-11-11T23:00:00Z", zone: "UTC")
+        let sleeper = FakeSleeper()
+        let workspace = NotificationCenter()
+        let vm = dayViewModel(manager.dbPool, time, sleeper, workspace: workspace)
+        await vm.loadInitial()
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        try await waitFor(sleeper, calls: 1)
+        XCTAssertEqual(vm.inboxStripCount, 1)
+
+        // Asleep for 9 hours: the midnight timer never fired.
+        time.set("2026-11-12T08:00:00Z")
+        workspace.post(name: NSWorkspace.didWakeNotification, object: nil)
+        try await waitFor(sleeper, calls: 2) { vm.inboxStripCount == 0 }
+
+        XCTAssertEqual(vm.inboxStripCount, 0)
+        XCTAssertEqual(sleeper.calls.last, Self.date("2026-11-13T00:00:01Z"), "rescheduled from the clock after the wake")
+    }
+
+    func testInboxBadgeRecountsOnCalendarDayChange() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { try Self.insertOpenMessage($0, createdAt: "2026-11-11T20:00:00Z") }
+        let time = FakeTime("2026-11-11T23:00:00Z", zone: "UTC")
+        let sleeper = FakeSleeper()
+        let center = NotificationCenter()
+        let vm = dayViewModel(manager.dbPool, time, sleeper, center: center)
+        await vm.loadInitial()
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        try await waitFor(sleeper, calls: 1)
+        XCTAssertEqual(vm.inboxStripCount, 1)
+
+        time.set("2026-11-12T00:00:00Z")
+        center.post(name: .NSCalendarDayChanged, object: nil)
+        try await waitFor(sleeper, calls: 2) { vm.inboxStripCount == 0 }
+
+        XCTAssertEqual(vm.inboxStripCount, 0)
+    }
+
+    /// A message from 23:30 in Kyiv (21:30 UTC), read at 00:30 in Kyiv: from
+    /// today in UTC, from yesterday once the zone is Kyiv.
+    func testInboxBadgeRecountsOnTimeZoneChange() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try await manager.dbPool.write { try Self.insertOpenMessage($0, createdAt: "2026-11-11T21:30:00Z") }
+        let time = FakeTime("2026-11-11T22:30:00Z", zone: "UTC")
+        let sleeper = FakeSleeper()
+        let center = NotificationCenter()
+        let vm = dayViewModel(manager.dbPool, time, sleeper, center: center)
+        await vm.loadInitial()
+        vm.startObserving()
+        defer { vm.stopObserving() }
+        try await waitFor(sleeper, calls: 1)
+        XCTAssertEqual(vm.inboxStripCount, 1, "UTC: counted")
+
+        time.set(zone: "Europe/Kyiv")
+        center.post(name: .NSSystemTimeZoneDidChange, object: nil)
+        try await waitFor(sleeper, calls: 2) { vm.inboxStripCount == 0 }
+
+        XCTAssertEqual(vm.inboxStripCount, 0, "Kyiv: not counted")
+        XCTAssertEqual(sleeper.calls.last, Self.date("2026-11-12T22:00:01Z"), "the next midnight in Kyiv")
     }
 
     func testInboxBadgeIsZeroOnEmptyDB() async throws {
