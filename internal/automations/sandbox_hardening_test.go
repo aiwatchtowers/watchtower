@@ -95,6 +95,19 @@ func TestSandbox_CatastrophicMatchEndsByItsOwnTimeout(t *testing.T) {
 	}
 }
 
+// enteredModule defines entered(), which closes the returned channel on its
+// first call: a script marks the point the test's interrupt must land after.
+func enteredModule() (Module, <-chan struct{}) {
+	ch := make(chan struct{})
+	var once sync.Once
+	return funcModule{name: "entered", fns: map[string]SDKFunc{
+		"entered": func(*Env, goja.FunctionCall, *goja.Runtime) (any, error) {
+			once.Do(func() { close(ch) })
+			return nil, nil
+		},
+	}}, ch
+}
+
 // useRegexClock replaces the regex timer's clock for one test.
 func useRegexClock(t *testing.T, now func() int64) {
 	t.Helper()
@@ -182,9 +195,14 @@ func TestSandbox_StuckNativeIsAbandonedAfterGrace(t *testing.T) {
 func TestSandbox_HugeJoinEndsWithinDeadlinePlusGrace(t *testing.T) {
 	clock := newSBClock()
 	start := clock.Now()
-	sb, _ := newTestSandbox(t, `var a = new Array(16e6); while (true) { a.join("") }`,
-		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
+	// The first element's toString runs as the first join starts: the
+	// deadline then passes with the 16e6-element join under way.
+	inside, entered := enteredModule()
+	sb, _ := newTestSandbox(t, `var a = new Array(16e6); a[0] = { toString: function () { entered(); return "" } };
+		while (true) { a.join("") }`,
+		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock, modules: []Module{testModule(), inside}})
 	res := runAsync(sb)
+	<-entered
 	clock.expireDeadline(start, 1)
 	r := <-res // the grace never expires: the capped join itself ended
 	wantInterrupt(t, r.err, InterruptTimeout)
@@ -220,9 +238,15 @@ func TestSandbox_RepeatCapped(t *testing.T) {
 func TestSandbox_ReturnValueSerialisedUnderInterrupt(t *testing.T) {
 	clock := newSBClock()
 	start := clock.Now()
-	sb, _ := newTestSandbox(t, `return { get x() { while (true) {} } }`,
+	// No SDK call may run once the script returned, so the getter marks
+	// its start through the regex timer's clock (a timed test() reads it).
+	entered := make(chan struct{})
+	var once sync.Once
+	useRegexClock(t, func() int64 { once.Do(func() { close(entered) }); return 0 })
+	sb, _ := newTestSandbox(t, `return { get x() { /a/.test("a"); while (true) {} } }`,
 		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
 	res := runAsync(sb)
+	<-entered // the return value is being serialised
 	clock.expireDeadline(start, 1)
 	r := <-res
 	wantInterrupt(t, r.err, InterruptTimeout)
@@ -576,9 +600,12 @@ func TestSandbox_AllocationCapsRound3(t *testing.T) {
 func TestSandbox_SortWithComparatorStaysInterruptible(t *testing.T) {
 	clock := newSBClock()
 	start := clock.Now()
+	inside, entered := enteredModule()
 	sb, _ := newTestSandbox(t, `var a = []; for (var i = 0; i < 1500000; i++) { a.push(i % 7) }
-		a.sort(function (x, y) { while (true) {} })`, sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock})
+		a.sort(function (x, y) { entered(); while (true) {} })`,
+		sbOpts{budget: Budget{Tokens: 1000, Minutes: 1}, clock: clock, modules: []Module{testModule(), inside}})
 	res := runAsync(sb)
+	<-entered // inside the comparator
 	clock.expireDeadline(start, 1)
 	err := (<-res).err
 	var ri *RunInterrupted
