@@ -17,6 +17,11 @@ import (
 // ("skip"), a reader that treats a row as knowledge keeps them ("keep"),
 // the auto-resolve predicate reads only the owner's sent rows ("answer"),
 // and writers, deletes and purges are "lifecycle".
+//
+// The guard sees only Go files that name the table. Readers that reach the
+// rows only through tools (list_emails/get_email callers such as the
+// automation templates and the create-automation skill's examples) are
+// outside its reach and are checked by hand against the same rule.
 var gmailReaderSides = map[string]string{
 	// detectGmailAccount (via GmailMessagesSyncedAfter).
 	"internal/inbox/gmail_detector.go": "skip",
@@ -87,6 +92,13 @@ func TestInbox02_EveryGmailReaderHasASide(t *testing.T) {
 		}))
 	}
 
+	validSides := map[string]bool{"skip": true, "answer": true, "keep": true, "lifecycle": true}
+	for f, side := range gmailReaderSides {
+		if !validSides[side] {
+			t.Errorf("%s has side %q: want skip, keep, answer or lifecycle (docs/inventory/inbox-pulse.md INBOX-02)", f, side)
+		}
+	}
+
 	var unclassified, stale []string
 	for f := range found {
 		if _, ok := gmailReaderSides[f]; !ok {
@@ -101,7 +113,7 @@ func TestInbox02_EveryGmailReaderHasASide(t *testing.T) {
 	sort.Strings(unclassified)
 	sort.Strings(stale)
 	for _, f := range unclassified {
-		t.Errorf("classify %s: skip, keep or lifecycle (docs/inventory/inbox-pulse.md INBOX-02)", f)
+		t.Errorf("classify %s: skip, keep, answer or lifecycle (docs/inventory/inbox-pulse.md INBOX-02)", f)
 	}
 	for _, f := range stale {
 		t.Errorf("%s no longer names gmail_messages: remove it from gmailReaderSides", f)
