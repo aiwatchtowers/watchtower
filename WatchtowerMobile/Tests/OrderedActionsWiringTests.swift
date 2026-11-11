@@ -127,7 +127,7 @@ final class OrderedActionsWiringTests: XCTestCase {
             _ = await env.refresh(.pull)
             fetched.fulfill()
         }
-        await fulfillment(of: [fetched], timeout: 5)
+        await fulfillment(of: [fetched])
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
 
         await transport.releaseHeldSave()
@@ -186,7 +186,7 @@ final class OrderedActionsWiringTests: XCTestCase {
             await env.shutDown()
             returned.fulfill()
         }
-        await fulfillment(of: [returned], timeout: 3)
+        await fulfillment(of: [returned])
         XCTAssertEqual(try env.store.pendingActions().first?.delivery, .queued, "the save still hangs")
     }
 

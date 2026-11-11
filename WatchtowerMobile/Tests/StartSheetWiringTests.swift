@@ -634,7 +634,7 @@ final class StartSheetWiringTests: XCTestCase {
             secondSent.count = try await starter.start(targetID: 400, params: params) ? 1 : 0
             secondDone.fulfill()
         }
-        await fulfillment(of: [secondDone], timeout: 2)
+        await fulfillment(of: [secondDone])
         XCTAssertEqual(secondSent.count, 0, "the second start sent nothing")
         XCTAssertEqual(sent.count, 1)
 

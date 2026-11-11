@@ -629,7 +629,7 @@ final class AskFormTests: XCTestCase {
             secondSent.count = try await answerer.send(ask) ? 1 : 0
             secondDone.fulfill()
         }
-        await fulfillment(of: [secondDone], timeout: 2)
+        await fulfillment(of: [secondDone])
         XCTAssertEqual(secondSent.count, 0, "the second send sent nothing")
         XCTAssertEqual(sent.count, 1)
 

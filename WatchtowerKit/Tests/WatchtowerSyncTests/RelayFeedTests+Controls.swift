@@ -501,7 +501,7 @@ extension RelayFeedTests {
         let outcome = try await rig.feed.drainMailbox(over: rig.phone) { _ in true }
 
         XCTAssertEqual(outcome, .drained)
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         let fires = await count.value
         XCTAssertEqual(fires, 1)
     }

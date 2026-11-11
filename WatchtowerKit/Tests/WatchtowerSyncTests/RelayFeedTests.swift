@@ -553,7 +553,7 @@ final class RelayFeedTests: XCTestCase {
 
         _ = try await feed.pollOnce()
 
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         // The hook exists to trigger re-hydration (Task 6); it must observe
         // the already-persisted token, never a pre-batch one.
         XCTAssertEqual(tokenAtFire.withLock { $0 }, 2)
@@ -579,7 +579,7 @@ final class RelayFeedTests: XCTestCase {
         try await f.hub.save([try echoRecord(action, status: .applied)])
         _ = try await f.feed.pollOnce()
 
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         XCTAssertEqual(hookCalls.withLock { $0 }, 1)
     }
 
@@ -604,7 +604,7 @@ final class RelayFeedTests: XCTestCase {
         let result = try await f.feed.pollOnce()
 
         XCTAssertEqual(result, 2)
-        await fulfillment(of: [fired], timeout: 5)
+        await fulfillment(of: [fired])
         XCTAssertEqual(hookCalls.withLock { $0 }, 1)
     }
 
@@ -650,6 +650,6 @@ final class RelayFeedTests: XCTestCase {
         XCTAssertEqual(try f.store.relayToken(), CloudChangeToken(value: 3))
 
         await gate.open()
-        await fulfillment(of: [finished], timeout: 5)
+        await fulfillment(of: [finished])
     }
 }

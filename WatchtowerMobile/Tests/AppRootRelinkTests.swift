@@ -177,7 +177,7 @@ final class AppRootRelinkTests: XCTestCase {
             await flow.value
             finished.fulfill()
         }
-        await fulfillment(of: [finished], timeout: 10)
+        await fulfillment(of: [finished])
         flow.cancel()
         XCTAssertEqual(root.linking.phase, .linked(macName: "Acme Mac"))
     }

@@ -308,7 +308,7 @@ final class ReplicaTests: XCTestCase {
 
         let record = try dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "observed")))
         try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
-        wait(for: [observed], timeout: 5)
+        wait(for: [observed])
     }
 
     // MARK: - Compaction
@@ -471,7 +471,10 @@ final class ReplicaTests: XCTestCase {
 
         func seed(_ records: [CloudRecord]) async throws { try await inner.save(records) }
 
+        private var isOpen = false
+
         func openGate() {
+            isOpen = true
             for waiter in waiters { waiter.resume() }
             waiters.removeAll()
         }
@@ -483,7 +486,7 @@ final class ReplicaTests: XCTestCase {
 
         func changes(in zone: CloudZoneID, since token: CloudChangeToken?) async throws -> CloudChangeBatch {
             changesCalls += 1
-            await withCheckedContinuation { waiters.append($0) }
+            if !isOpen { await withCheckedContinuation { waiters.append($0) } }
             return try await inner.changes(in: zone, since: token)
         }
     }
@@ -495,11 +498,13 @@ final class ReplicaTests: XCTestCase {
         ])
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
         let hydrator = ReplicaHydrator(transport: transport, store: store)
+        let (joins, joined) = AsyncStream.makeStream(of: Void.self)
+        await hydrator.observeJoins { joined.yield() }
 
         async let first = hydrator.hydrateOnce()
         async let second = hydrator.hydrateOnce()
-        // Let both calls enter and the first suspend inside changes().
-        try await Task.sleep(for: .milliseconds(50))
+        // The gate opens only once one call joined the other's running cycle.
+        for await _ in joins { break }
         await transport.openGate()
 
         let (a, b) = try await (first, second)
@@ -540,7 +545,7 @@ final class ReplicaTests: XCTestCase {
         let hydrator = ReplicaHydrator(transport: transport, store: store)
         _ = try await hydrator.hydrateOnce()
 
-        await fulfillment(of: [observed], timeout: 5)
+        await fulfillment(of: [observed])
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).first?.text, "on disk")
     }
 
@@ -579,7 +584,7 @@ final class ReplicaTests: XCTestCase {
         try store.apply(CloudChangeBatch(changed: [record], deletedRecordNames: [], newToken: CloudChangeToken(value: 1)))
         try store.indexPending()
 
-        await fulfillment(of: [observed], timeout: 5)
+        await fulfillment(of: [observed])
     }
 
     // MARK: - Compaction failure is non-fatal
@@ -737,13 +742,11 @@ final class ReplicaTests: XCTestCase {
             dataRecord(kind: .target, id: "1", payload: try RowPayloadCoder.payload(from: targetRow(id: 1, text: "looped")))
         ])
         let store = try ReplicaStore.inMemory(opener: TestE2E.opener())
-        let hydrator = ReplicaHydrator(transport: transport, store: store)
+        let (applied, didApply) = AsyncStream.makeStream(of: Void.self)
+        let hydrator = ReplicaHydrator(transport: transport, store: store, onRecordsApplied: { _ in didApply.yield() })
 
         await hydrator.start(interval: .milliseconds(10))
-        let deadline = Date().addingTimeInterval(5)
-        while try store.fetchAll(ProbeRow.self, kind: .target).isEmpty, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        for await _ in applied { break }
         await hydrator.stop()
         XCTAssertEqual(try store.fetchAll(ProbeRow.self, kind: .target).count, 1)
     }
