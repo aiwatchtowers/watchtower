@@ -3,6 +3,7 @@ package coach
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -10,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -307,8 +309,10 @@ func folderFiles(t *testing.T, folder string) map[string]string {
 // RepoState/RepoBranch seams, which have no default there. (b) The tuning
 // paths that fill them — the coach and tuning CLI code, which lives only in
 // cmd/coach*.go and cmd/tuning*.go, the daemon's commit check (in
-// internal/daemon/coach*.go) and internal/tuning — call no workbenchgit
-// helper but PathStatus, ReadStatus and FileAtHead. (c) Those helpers run git
+// internal/daemon/coach*.go) and every file of internal/tuning (matched by
+// package folder, whatever the file name) — call no workbenchgit helper but
+// PathStatus, ReadStatus and FileAtHead, and only those paths name the coach
+// and tuning seams (tuningGitProblems). (c) Those helpers run git
 // only with the read-only verbs status, rev-parse and show (pinned argv by
 // argv in workbenchgit's recording-runner tests: TestPathStatus_RunsOnlyStatus,
 // TestReadStatus_RunsOnlyReadVerbs, TestFileAtHead). Extend the lists with
@@ -328,52 +332,28 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 	}
 
 	// (b)
-	tuningPath := func(name string) bool {
-		base := filepath.Base(name)
-		return strings.HasPrefix(base, "coach") || strings.HasPrefix(base, "tuning")
-	}
-	allowed := map[string]bool{
-		"workbenchgit.PathStatus": true, "workbenchgit.ReadStatus": true, "workbenchgit.FileAtHead": true,
-		// Types, not helpers: they run nothing.
-		"workbenchgit.Options": true, "workbenchgit.Status": true, "workbenchgit.PathState": true,
-		"workbenchgit.StatusFields": true,
-	}
-	seams := []string{"coach.Applier", "coach.Env", "coach.RepoFileState", "tuning.Deps"}
-	pkgs := map[string]string{"watchtower/internal/workbenchgit": "workbenchgit",
-		"watchtower/internal/coach": "coach", "watchtower/internal/tuning": "tuning"}
-	scanned := 0
+	tuningDir := filepath.Join("..", "tuning")
 	files := parseDir(t, filepath.Join("..", "..", "cmd"))
-	if _, err := os.Stat(filepath.Join("..", "tuning")); err == nil {
-		files = append(files, parseDir(t, filepath.Join("..", "tuning"))...)
+	if _, err := os.Stat(tuningDir); err == nil {
+		files = append(files, parseDir(t, tuningDir)...)
 	}
 	// The daemon's coach phase (the daily commit check); its other files are
 	// not tuning paths.
 	daemonGit := 0
 	for _, f := range parseDir(t, filepath.Join("..", "daemon")) {
-		if !tuningPath(f.name) {
+		if !tuningFileName(f.name) {
 			continue
 		}
 		files = append(files, f)
-		for sel := range selectors(f.file, importNames(f.file, pkgs)) {
+		for sel := range selectors(f.file, importNames(f.file, tuningScanPkgs)) {
 			if strings.HasPrefix(sel, "workbenchgit.") {
 				daemonGit++
 			}
 		}
 	}
 	assert.Positive(t, daemonGit, "the scan finds the daemon's commit check (workbenchgit.FileAtHead)")
-	for _, f := range files {
-		inTuning := tuningPath(f.name) || strings.Contains(filepath.ToSlash(f.name), "internal/tuning/")
-		for sel := range selectors(f.file, importNames(f.file, pkgs)) {
-			if !inTuning {
-				assert.NotContains(t, seams, sel, "%s: coach and tuning wiring lives in cmd/coach*.go or cmd/tuning*.go", f.name)
-				continue
-			}
-			if strings.HasPrefix(sel, "workbenchgit.") {
-				scanned++
-				assert.True(t, allowed[sel], "%s calls %s: only the read-only helpers", f.name, sel)
-			}
-		}
-	}
+	problems, scanned := tuningGitProblems(files, tuningDir)
+	assert.Empty(t, problems)
 	assert.Positive(t, scanned, "the scan finds the coach's git reads (coachRepoState, coachRepoBranch)")
 
 	// (c)
@@ -448,6 +428,87 @@ func TestCOACH01_NoGitWrites(t *testing.T) {
 		})
 	}
 	assert.Positive(t, verbs, "the scan finds the helpers' git calls")
+}
+
+// tuningScanPkgs are the packages TestCOACH01_NoGitWrites (b) resolves
+// selectors of.
+var tuningScanPkgs = map[string]string{"watchtower/internal/workbenchgit": "workbenchgit",
+	"watchtower/internal/coach": "coach", "watchtower/internal/tuning": "tuning"}
+
+// tuningFileName is a coach*/tuning* file of cmd or the daemon.
+func tuningFileName(name string) bool {
+	base := filepath.Base(name)
+	return strings.HasPrefix(base, "coach") || strings.HasPrefix(base, "tuning")
+}
+
+// tuningGitProblems is COACH-01 (b) over files: a tuning path — a
+// coach*/tuning* file, or any file of the package in tuningDir (compared by
+// its cleaned folder) — calls no workbenchgit helper but the read-only ones;
+// any other file names none of the coach and tuning seams. scanned counts the
+// workbenchgit selectors seen in tuning paths.
+func tuningGitProblems(files []parsedFile, tuningDir string) (problems []string, scanned int) {
+	allowed := map[string]bool{
+		"workbenchgit.PathStatus": true, "workbenchgit.ReadStatus": true, "workbenchgit.FileAtHead": true,
+		// Types, not helpers: they run nothing.
+		"workbenchgit.Options": true, "workbenchgit.Status": true, "workbenchgit.PathState": true,
+		"workbenchgit.StatusFields": true,
+	}
+	seams := map[string]bool{"coach.Applier": true, "coach.Env": true, "coach.RepoFileState": true, "tuning.Deps": true}
+	tuningDir = filepath.Clean(tuningDir)
+	for _, f := range files {
+		inTuning := tuningFileName(f.name) || filepath.Dir(filepath.Clean(f.name)) == tuningDir
+		for sel := range selectors(f.file, importNames(f.file, tuningScanPkgs)) {
+			switch {
+			case !inTuning && seams[sel]:
+				problems = append(problems, fmt.Sprintf("%s: names %s: coach and tuning wiring lives in cmd/coach*.go, cmd/tuning*.go or internal/tuning", f.name, sel))
+			case inTuning && strings.HasPrefix(sel, "workbenchgit."):
+				scanned++
+				if !allowed[sel] {
+					problems = append(problems, fmt.Sprintf("%s calls %s: only the read-only helpers", f.name, sel))
+				}
+			}
+		}
+	}
+	slices.Sort(problems)
+	return problems, scanned
+}
+
+// The guard's (b) scan sees every file of internal/tuning, whatever its
+// name: a planted workbenchgit write there is caught, and a seam named in a
+// non-tuning file of cmd is caught too.
+func TestCOACH01_NoGitWrites_ScansTheTuningPackage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "internal", "tuning")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "tools_planted.go"), []byte(`package tuning
+
+import (
+	"context"
+
+	"watchtower/internal/coach"
+	"watchtower/internal/workbenchgit"
+)
+
+func planted(env coach.Env) {
+	_ = env
+	_ = workbenchgit.Switch(context.Background(), workbenchgit.Options{}, "main")
+	_, _ = workbenchgit.PathStatus(context.Background(), workbenchgit.Options{}, "CLAUDE.md")
+}
+`), 0o644))
+	other := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(other, "wiring.go"), []byte(`package cmd
+
+import "watchtower/internal/coach"
+
+var _ coach.Env
+`), 0o644))
+	files := append(parseDir(t, dir), parseDir(t, other)...)
+	problems, scanned := tuningGitProblems(files, filepath.Join(dir, "..", "tuning"))
+	assert.Equal(t, 3, scanned, "Switch, Options and PathStatus are scanned")
+	require.Len(t, problems, 2)
+	all := strings.Join(problems, "\n")
+	assert.Contains(t, all, "tools_planted.go calls workbenchgit.Switch")
+	assert.Contains(t, all, "wiring.go: names coach.Env")
+	assert.NotContains(t, all, "tools_planted.go: names", "a seam is allowed anywhere in the tuning package")
 }
 
 type parsedFile struct {
