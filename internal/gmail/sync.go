@@ -29,7 +29,7 @@ type Syncer struct {
 	// start a history backfill.
 	firstSyncFrom time.Time
 
-	// ownEmail is the account's own address, read once (fromOwner).
+	// ownEmail is the account's own address, read once (ownSent).
 	ownEmail string
 
 	// catchUpFailures counts CatchUpSent passes that failed on a message
@@ -110,9 +110,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if watermark == 0 {
 		// The first sync's window already holds the sent mail, so the
 		// one-time sent catch-up (CatchUpSent) has nothing to add.
-		if err := s.db.SetGmailSentCatchUpAt(s.accountID, listedAt); err != nil {
-			s.logger.Printf("gmail: stamping the sent catch-up for account %d: %v", s.accountID, err)
-		}
+		s.stampSentCatchUp(listedAt)
 	}
 	if watermark == 0 && len(ids) > 0 { // an empty inbox has nothing to backfill (R25)
 		// R30: the backfill starts at this Sync, not at its newer_than window
@@ -265,7 +263,7 @@ func (s *Syncer) storeMessage(ctx context.Context, id string, syncedAt func(inte
 		IsUnread: m.IsUnread, Permalink: m.Permalink,
 	}
 	row.SyncedAt = syncedAt(m.InternalDate)
-	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.fromOwner(row.LabelsJSON, m.FromEmail), mediaFound(m.Images)); err != nil {
+	if err := s.db.UpsertGmailMessageMedia(ctx, s.accountID, row, s.ownSent(row.LabelsJSON, m.FromEmail), mediaFound(m.Images)); err != nil {
 		return false, msgUnix, fmt.Errorf("upsert %s: %w", m.ID, err)
 	}
 	return true, msgUnix, nil
@@ -371,11 +369,11 @@ func isoToUnix(iso string) float64 {
 	return float64(t.Unix())
 }
 
-// fromOwner reports whether the message is the owner's own sent mail
+// ownSent reports whether the message is the owner's own sent mail
 // (db.GmailOwnSent: the SENT label, or the account's own address as sender),
 // so its media goes first. A failed account read falls back to the label
 // alone and is retried on the next message.
-func (s *Syncer) fromOwner(labelsJSON, from string) bool {
+func (s *Syncer) ownSent(labelsJSON, from string) bool {
 	if s.ownEmail == "" {
 		acct, err := s.db.GetGoogleAccount(s.accountID)
 		if err != nil {
