@@ -607,25 +607,30 @@ func TestTransportFailureSettlesInFlightNoRetry(t *testing.T) {
 
 // Review Focus 3: a phone that stopped paying since the last account read.
 func TestEntitlementInactiveStopsRetriesAndRefreshesOnce(t *testing.T) {
-	r := newRig(t, "phone-a", "phone-b")
-	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
-	r.start()
-	r.enqueue("ask-1")
-	got := r.nextN(2)
-	want := []settled{{"ask-1", "phone-a", "not_paying", ""}, {"ask-1", "phone-b", "accepted", ""}}
-	if !slices.Equal(got, want) {
-		t.Fatalf("settled %v; want %v", got, want)
-	}
-	r.p.Stop()
-	if n := r.send.count("relay-phone-a"); n != 1 {
-		t.Fatalf("send_alert to the lapsed phone %d times; want 1 (no retry)", n)
-	}
-	if n := r.refreshes(); n != 1 {
-		t.Fatalf("account refreshed %d times; want 1", n)
-	}
-	if len(r.clock.waits) != 0 {
-		t.Fatal("a retry was scheduled")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, "phone-a", "phone-b")
+		r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
+		r.start()
+		r.enqueue("ask-1")
+		got := r.nextN(2)
+		want := []settled{{"ask-1", "phone-a", "not_paying", ""}, {"ask-1", "phone-b", "accepted", ""}}
+		if !slices.Equal(got, want) {
+			t.Fatalf("settled %v; want %v", got, want)
+		}
+		// The refresh starts after the settle the test saw; a Stop before it
+		// would skip it. Settled: every sender is back at its wait.
+		synctest.Wait()
+		r.p.Stop()
+		if n := r.send.count("relay-phone-a"); n != 1 {
+			t.Fatalf("send_alert to the lapsed phone %d times; want 1 (no retry)", n)
+		}
+		if n := r.refreshes(); n != 1 {
+			t.Fatalf("account refreshed %d times; want 1", n)
+		}
+		if len(r.clock.waits) != 0 {
+			t.Fatal("a retry was scheduled")
+		}
+	})
 }
 
 func TestOnePhoneRefusedOthersStillSent(t *testing.T) {
@@ -637,26 +642,29 @@ func TestOnePhoneRefusedOthersStillSent(t *testing.T) {
 		{"hub not vouched", relayErr(relayv1.ErrorCode_ERROR_CODE_HUB_NOT_VOUCHED, "", nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t, "phone-a", "phone-b", "phone-c")
-			r.send.answer("relay-phone-b", tc.err)
-			r.start()
-			r.enqueue("perm-9")
-			got := r.nextN(3)
-			want := []settled{
-				{"perm-9", "phone-a", "accepted", ""},
-				{"perm-9", "phone-b", "forbidden", ""},
-				{"perm-9", "phone-c", "accepted", ""},
-			}
-			if !slices.Equal(got, want) {
-				t.Fatalf("settled %v; want %v", got, want)
-			}
-			r.p.Stop()
-			if n := r.send.count("relay-phone-b"); n != 1 {
-				t.Fatalf("refused phone sent %d times; want 1", n)
-			}
-			if n := r.refreshes(); n != 1 {
-				t.Fatalf("account refreshed %d times; want 1", n)
-			}
+			synctest.Test(t, func(t *testing.T) {
+				r := newRig(t, "phone-a", "phone-b", "phone-c")
+				r.send.answer("relay-phone-b", tc.err)
+				r.start()
+				r.enqueue("perm-9")
+				got := r.nextN(3)
+				want := []settled{
+					{"perm-9", "phone-a", "accepted", ""},
+					{"perm-9", "phone-b", "forbidden", ""},
+					{"perm-9", "phone-c", "accepted", ""},
+				}
+				if !slices.Equal(got, want) {
+					t.Fatalf("settled %v; want %v", got, want)
+				}
+				synctest.Wait() // the refresh after the refused settle has started
+				r.p.Stop()
+				if n := r.send.count("relay-phone-b"); n != 1 {
+					t.Fatalf("refused phone sent %d times; want 1", n)
+				}
+				if n := r.refreshes(); n != 1 {
+					t.Fatalf("account refreshed %d times; want 1", n)
+				}
+			})
 		})
 	}
 }
@@ -919,29 +927,32 @@ func TestStartRefusedTwiceAndAfterStop(t *testing.T) {
 }
 
 func TestRefreshCoalescedAcrossPhones(t *testing.T) {
-	r := newRig(t, "phone-a", "phone-b", "phone-c")
-	r.refreshGate = make(chan struct{})
-	r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, "", nil))
-	r.send.answer("relay-phone-b", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
-	r.send.block["relay-phone-c"] = true
-	r.start()
-	r.enqueue("ask-1")
-	for range 3 {
-		r.call()
-	}
-	r.nextN(2) // a forbidden, b not_paying: one refresh runs, held
-	// Abandon never waits on the refresh.
-	if keys := r.p.Abandon(state.ReasonSwitched); !slices.Equal(keys, []string{"ask-1"}) {
-		t.Fatalf("Abandon = %v", keys)
-	}
-	if s := r.next(); s != (settled{"ask-1", "phone-c", "expired", "in_flight"}) {
-		t.Fatalf("settled %v", s)
-	}
-	close(r.refreshGate)
-	r.p.Stop()
-	if n := r.refreshes(); n != 1 {
-		t.Fatalf("account refreshed %d times; want 1 for the burst", n)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		r := newRig(t, "phone-a", "phone-b", "phone-c")
+		r.refreshGate = make(chan struct{})
+		r.send.answer("relay-phone-a", relayErr(relayv1.ErrorCode_ERROR_CODE_FORBIDDEN, "", nil))
+		r.send.answer("relay-phone-b", relayErr(relayv1.ErrorCode_ERROR_CODE_ENTITLEMENT_INACTIVE, "", nil))
+		r.send.block["relay-phone-c"] = true
+		r.start()
+		r.enqueue("ask-1")
+		for range 3 {
+			r.call()
+		}
+		r.nextN(2)      // a forbidden, b not_paying: one refresh runs, held
+		synctest.Wait() // both answers handed to refresh: the second joined the held one
+		// Abandon never waits on the refresh.
+		if keys := r.p.Abandon(state.ReasonSwitched); !slices.Equal(keys, []string{"ask-1"}) {
+			t.Fatalf("Abandon = %v", keys)
+		}
+		if s := r.next(); s != (settled{"ask-1", "phone-c", "expired", "in_flight"}) {
+			t.Fatalf("settled %v", s)
+		}
+		close(r.refreshGate)
+		r.p.Stop()
+		if n := r.refreshes(); n != 1 {
+			t.Fatalf("account refreshed %d times; want 1 for the burst", n)
+		}
+	})
 }
 
 func TestTooLargeAnswerIsLoggedOnce(t *testing.T) {

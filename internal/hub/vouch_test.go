@@ -290,11 +290,14 @@ func (r *vouchRig) admit(l linkedPhone) {
 // after the slot was added it empties the transport's account state and
 // only a fresh read reopens the gate; let one window pass per half second
 // of the bubble's clock, as production time would.
-func (r *vouchRig) waitAdmitted() {
+func (r *vouchRig) waitAdmitted() { r.t.Helper(); r.waitAfterSlot("") }
+
+// waitAfterSlot is waitAdmitted for running/reason.
+func (r *vouchRig) waitAfterSlot(reason string) {
 	r.t.Helper()
 	tick := 0
-	eventually(r.t, "running/", func() bool {
-		if s := r.rec.last(); s.State == StateRunning && s.Reason == "" {
+	eventually(r.t, "running/"+reason, func() bool {
+		if s := r.rec.last(); s.State == StateRunning && s.Reason == reason {
 			return true
 		}
 		if tick++; tick%50 == 0 {
@@ -652,9 +655,10 @@ func TestPublisherNotVouchedClosesTheGateAtOnce(t *testing.T) {
 		if err := l.store.PromotePairing(t.Context(), l.slot); err != nil {
 			t.Fatal(err)
 		}
-		// The gate opens on SLOT_ADDED, the publisher's first data-zone save is
+		// The gate opens on SLOT_ADDED (or, after a racing HUB_NOT_VOUCHED,
+		// on the next window's read), the publisher's first data-zone save is
 		// refused, and the gate closes again without a new account read.
-		r.waitState(StateRunning, ReasonVouchRevoked)
+		r.waitAfterSlot(ReasonVouchRevoked)
 	})
 }
 
