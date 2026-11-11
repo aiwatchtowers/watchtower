@@ -1,10 +1,12 @@
 package automations_test
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -458,57 +460,68 @@ func startShellRun(t *testing.T, f *exFixture, wb int64, folder, cmd, script, ex
 	return id
 }
 
-// pgidFile is where the long-running test commands write their shell's pid,
-// which Setpgid makes the group id.
-const pgidFile = "shell.pgid"
+// aliveFIFO is the FIFO a long-running test command opens as its fd 3 and
+// writes its shell's pid to (Setpgid makes it the group id). Every process
+// of the group inherits fd 3, so the test's read end sees EOF exactly when
+// the last of them exited: no polling, no clock. The commands' children
+// never exit on their own (foreverCmd), so that EOF can only come from the
+// group being killed; a kill that never comes hangs the test until the
+// package timeout.
+const aliveFIFO = "alive.fifo"
 
-// waitPgid waits for the command's group id; a cleanup kills the group.
-func waitPgid(t *testing.T, folder string) int {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		b, err := os.ReadFile(filepath.Join(folder, pgidFile))
-		if err == nil && strings.HasSuffix(string(b), "\n") {
-			pgid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-			if err != nil || pgid <= 1 {
-				t.Fatalf("pgid file = %q", b)
-			}
-			t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
-			return pgid
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the command never wrote its pgid")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
+// foreverCmd starts two children that run until killed; each says "up" on
+// fd 3 once it exists (a kill sent before a fork finished could miss it).
+const foreverCmd = `(echo up >&3; exec tail -f /dev/null) & (echo up >&3; exec tail -f /dev/null) & wait`
 
-// waitGroupGone fails unless every process of group pgid is gone within d.
-func waitGroupGone(t *testing.T, pgid int, d time.Duration) {
+// openAlive makes folder's FIFO, waits for the command (which writes the
+// pgid, then foreverCmd's two "up" lines) and returns the read end; a
+// cleanup kills the group.
+func openAlive(t *testing.T, folder string, start func()) *os.File {
 	t.Helper()
-	deadline := time.Now().Add(d)
-	for {
-		err := syscall.Kill(-pgid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("process group %d still alive after %s (kill 0 = %v)", pgid, d, err)
-		}
-		time.Sleep(10 * time.Millisecond)
+	path := filepath.Join(folder, aliveFIFO)
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
 	}
+	start()
+	r, err := os.Open(path) // returns once the command opened the write end
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	br := bufio.NewReader(r)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading the pgid: %v", err)
+	}
+	for range 2 { // both children exist
+		if up, err := br.ReadString('\n'); err != nil || up != "up\n" {
+			t.Fatalf("child line = %q, %v; want up", up, err)
+		}
+	}
+	pgid, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || pgid <= 1 {
+		t.Fatalf("pgid line = %q", line)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+	return r
 }
 
 func TestShell_KillsProcessGroupOnInterrupt(t *testing.T) {
-	const cmd = `echo $$ > shell.pgid; sleep 30 & sleep 30; wait`
+	const cmd = `exec 3>` + aliveFIFO + `; echo $$ >&3; ` + foreverCmd
 	f, _, wb, folder := newShellExFixture(t, nil)
-	id := startShellRun(t, f, wb, folder, cmd, fmt.Sprintf("shell(%q)", cmd), "")
-	pgid := waitPgid(t, folder)
+	var id int64
+	alive := openAlive(t, folder, func() {
+		id = startShellRun(t, f, wb, folder, cmd, fmt.Sprintf("shell(%q)", cmd), "")
+	})
 	if ok, err := f.d.CancelAutomationRun(id, f.clock.Now()); err != nil || !ok {
 		t.Fatalf("cancel = (%v, %v)", ok, err)
 	}
 	f.e.Wake()
-	waitGroupGone(t, pgid, 2*time.Second)
+	// EOF once the shell and both children are gone: only the group kill
+	// ends them.
+	if _, err := io.ReadAll(alive); err != nil {
+		t.Fatal(err)
+	}
 	f.e.Wait()
 	f.wantRun(t, id, db.RunCancelled, db.ErrKindCancelled)
 }
@@ -527,22 +540,77 @@ func spendModule(f *exFixture) []automations.Module {
 }
 
 func TestShell_TimeoutIsRemainingActiveBudget(t *testing.T) {
-	const cmd = `echo $$ > shell.pgid; sleep 5`
-	f, sh, wb, folder := newShellExFixture(t, spendModule)
-	start := time.Now()
+	// The runner's own deadline passing (ProcessShellRunner's context error,
+	// TestShell_RunnerPastDeadlineIsDeadlineExceeded) is the run's timeout.
+	sh := &automationstest.FakeShell{Err: context.DeadlineExceeded}
+	f := newExFixture(t, exOpts{modules: spendModule, backends: func(f *exFixture, b *automations.Backends) {
+		b.Shell = sh
+		b.Workbench = automations.NewWorkbenchResolver(f.d, func() string { return "claude" }, func(string) bool { return false })
+	}})
+	wb, folder := newWorkbench(t, f.d)
+	const cmd = `sleep 5`
+	before := time.Now()
 	id := startShellRun(t, f, wb, folder, cmd, fmt.Sprintf("spend(); shell(%q)", cmd), "budget: {minutes: 1}\n")
-	pgid := waitPgid(t, folder)
 	f.e.Wait()
-	if took := time.Since(start); took > 4*time.Second {
-		t.Fatalf("the run took %s; want the command killed after about 1 s", took)
-	}
+	after := time.Now()
 	f.wantRun(t, id, db.RunTimedOut, db.ErrKindTimeout)
-	waitGroupGone(t, pgid, 2*time.Second)
 	calls := sh.Calls()
 	if len(calls) != 1 {
 		t.Fatalf("shell calls = %d; want 1", len(calls))
 	}
-	if left := calls[0].Deadline.Sub(start); left < 900*time.Millisecond || left > 1500*time.Millisecond {
-		t.Fatalf("command deadline = start + %s; want about 1 s (the remaining active budget)", left)
+	// The command's wall-clock deadline is the call's moment plus the 1 s of
+	// active budget left on the run's clock.
+	if d := calls[0].Deadline; d.Before(before.Add(time.Second)) || d.After(after.Add(time.Second)) {
+		t.Fatalf("command deadline = %s, outside [%s, %s] + 1 s (the remaining active budget)", d, before, after)
+	}
+}
+
+func TestShell_RunnerPastDeadlineIsDeadlineExceeded(t *testing.T) {
+	_, err := automations.NewProcessShellRunner().Run(context.Background(),
+		automations.ShellCommand{Cmd: "sleep 30", Dir: t.TempDir(), Deadline: time.Now().Add(-time.Second)})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run = %v; want context.DeadlineExceeded", err)
+	}
+}
+
+// deadlineCtx is a context whose deadline the test passes by hand: Done is
+// closed by pass, after which Err is context.DeadlineExceeded, as for a
+// deadline that passed on the clock.
+type deadlineCtx struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *deadlineCtx) pass()                 { close(c.done) }
+func (c *deadlineCtx) Done() <-chan struct{} { return c.done }
+func (c *deadlineCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+// The deadline passing while the command runs kills its whole group and the
+// call fails with context.DeadlineExceeded (the run's timeout).
+func TestShell_RunnerDeadlineKillsTheGroup(t *testing.T) {
+	folder := t.TempDir()
+	ctx := &deadlineCtx{Context: context.Background(), done: make(chan struct{})}
+	errc := make(chan error, 1)
+	alive := openAlive(t, folder, func() {
+		go func() {
+			_, err := automations.NewProcessShellRunner().Run(ctx, automations.ShellCommand{
+				Cmd: `exec 3>` + aliveFIFO + `; echo $$ >&3; ` + foreverCmd, Dir: folder, Env: []string{"PATH=/usr/bin:/bin"},
+				Deadline: time.Now().Add(time.Hour)})
+			errc <- err
+		}()
+	})
+	ctx.pass()
+	if err := <-errc; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run = %v; want context.DeadlineExceeded", err)
+	}
+	if _, err := io.ReadAll(alive); err != nil { // EOF: every member of the group is gone
+		t.Fatal(err)
 	}
 }

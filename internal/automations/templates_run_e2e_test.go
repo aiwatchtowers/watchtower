@@ -124,7 +124,9 @@ func testRunNewMailSummary(t *testing.T) {
 	state := f.stateDump(t)
 
 	second := f.mailEvent(t, a, "c2")
+	before := time.Now()
 	f.step(t, 1)
+	after := time.Now()
 	f.wantRun(t, second, db.RunSucceeded, "")
 	if n := len(f.outputs(t)); n != 1 {
 		t.Fatalf("outputs after a run without newer mail = %d; want still 1", n)
@@ -136,12 +138,13 @@ func testRunNewMailSummary(t *testing.T) {
 	if len(reads) != 2 || !strings.Contains(reads[0].ArgsJSON, `"limit":1`) {
 		t.Fatalf("second list_emails steps = %+v; want the name probe, then one page", reads)
 	}
-	wantWindowSince(t, reads[1].ArgsJSON)
+	wantWindowSince(t, reads[1].ArgsJSON, before, after)
 }
 
 // wantWindowSince fails unless a list_emails call's since is the start of the
-// two-day window (not the newest message summed up).
-func wantWindowSince(t *testing.T, argsJSON string) {
+// two-day window (not the newest message summed up) of a run that read the
+// clock between before and after.
+func wantWindowSince(t *testing.T, argsJSON string, before, after time.Time) {
 	t.Helper()
 	var args struct {
 		Since string `json:"since"`
@@ -153,9 +156,10 @@ func wantWindowSince(t *testing.T, argsJSON string) {
 	if err != nil {
 		t.Fatalf("list_emails since %q: %v", args.Since, err)
 	}
-	// The window starts at a whole minute, up to a minute before now - 48 h.
-	if d := time.Since(since) - 48*time.Hour; d < -time.Minute || d > 2*time.Minute {
-		t.Fatalf("list_emails since = %s; want two days back", args.Since)
+	// The window starts at the whole minute of the run's now - 48 h.
+	lo, hi := before.Truncate(time.Minute).Add(-48*time.Hour), after.Truncate(time.Minute).Add(-48*time.Hour)
+	if since.Before(lo) || since.After(hi) {
+		t.Fatalf("list_emails since = %s; want two days back, in [%s, %s]", args.Since, lo, hi)
 	}
 }
 

@@ -72,16 +72,101 @@ type ClaudeOptions struct {
 	Warn           io.Writer
 	InterruptGrace time.Duration // default 5 s: kill if no result after an interrupt
 	CloseGrace     time.Duration // default 2 s per step: stdin EOF → SIGTERM → SIGKILL
+
+	// start, a test seam, starts the child; nil = startClaudeProcess. A
+	// test runs an in-process fake CLI behind it.
+	start func(childSpec) (*claudeChild, error)
+}
+
+// childSpec is what spawnLocked starts: the command, its working
+// directory, environment, and the payloads handed over on inherited pipes
+// at fsutil.PayloadPath(i).
+type childSpec struct {
+	name     string
+	args     []string
+	dir      string
+	env      []string
+	payloads []string
+}
+
+// claudeChild is a started child: its stdio and its process group.
+type claudeChild struct {
+	stdin          io.WriteCloser
+	stdout, stderr io.ReadCloser
+	// wait blocks until the child exits (called once) and reports whether
+	// it exited 0, and how it ended ("exit status 3", "signal: killed").
+	wait func() (ok bool, state string)
+	// signal signals the child's whole process group.
+	signal func(syscall.Signal)
+}
+
+// startClaudeProcess starts spec as a real process in its own process
+// group (so Close can reap the MCP servers claude spawns).
+func startClaudeProcess(spec childSpec) (*claudeChild, error) {
+	cmd := exec.Command(spec.name, spec.args...)
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, spec.payloads...)
+	if err != nil {
+		return nil, fmt.Errorf("claude prompt pipes: %w", err)
+	}
+	// After Start below (or a failed one) the child holds its own ends.
+	defer closePayloads()
+	cmd.Dir = spec.dir
+	cmd.Env = spec.env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("claude stdin: %w", err)
+	}
+	// os.Pipe (not StdoutPipe): Wait must not depend on stdout EOF, which a
+	// grandchild holding the pipe would delay.
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("claude stdout: %w", err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		outR.Close()
+		outW.Close()
+		return nil, fmt.Errorf("claude stderr: %w", err)
+	}
+	cmd.Stdout, cmd.Stderr = outW, errW
+	if err := cmd.Start(); err != nil {
+		outR.Close()
+		outW.Close()
+		errR.Close()
+		errW.Close()
+		return nil, fmt.Errorf("starting claude: %w", err)
+	}
+	outW.Close()
+	errW.Close()
+	pgid := cmd.Process.Pid
+	return &claudeChild{
+		stdin: stdin, stdout: outR, stderr: errR,
+		wait: func() (bool, string) {
+			_ = cmd.Wait()
+			return cmd.ProcessState.Success(), cmd.ProcessState.String()
+		},
+		signal: func(sig syscall.Signal) {
+			// Never kill(0) or kill(-1): the caller's group or everything.
+			if pgid > 1 {
+				_ = syscall.Kill(-pgid, sig)
+			}
+		},
+	}, nil
 }
 
 // claudeProc is one running `claude -p --input-format stream-json` child.
 type claudeProc struct {
-	cmd       *exec.Cmd
-	pgid      int
-	stdin     io.WriteCloser
-	writeMu   sync.Mutex
+	child *claudeChild // nil in a test's constructed proc
+	stdin io.WriteCloser
+	// writeLock (one slot) serialises the writes to stdin; a channel, not
+	// a sync.Mutex, so a writer queued behind a stuck write is durably
+	// blocked (testing/synctest can run the grace timer that kills it).
+	writeLock chan struct{}
 	events    chan Event
-	exited    chan struct{} // closed once cmd.Wait returns
+	exited    chan struct{} // closed once the child's wait returns
+	exitOK    bool          // the child exited 0 (set before exited closes)
+	exitState string        // how it ended (set before exited closes)
 	outDone   chan struct{} // closed when stdout reaches EOF
 	errDone   chan struct{} // closed when stderr reaches EOF
 	stop      chan struct{} // closed to release a reader blocked on events
@@ -108,14 +193,17 @@ type readError struct{ err error }
 // load the reader can lag the exit.
 const exitedOutputWait = 5 * time.Second
 
+func (p *claudeProc) lockWrite()   { p.writeLock <- struct{}{} }
+func (p *claudeProc) unlockWrite() { <-p.writeLock }
+
 func (p *claudeProc) write(b []byte) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+	p.lockWrite()
+	defer p.unlockWrite()
 	_, err := p.stdin.Write(b)
 	return err
 }
 
-// closeStdin closes the child's stdin without taking writeMu: a write blocked
+// closeStdin closes the child's stdin without taking writeLock: a write blocked
 // on a child that stopped reading must not block Close. The pipe is
 // pollable, so closing it fails the pending write instead of waiting on it.
 func (p *claudeProc) closeStdin() {
@@ -521,62 +609,33 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 		}
 		name, args = b.opts.ClaudeAI.Sandbox.command(bin, args)
 	}
-	cmd := exec.Command(name, args...)
-	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
-	if err != nil {
-		return nil, fmt.Errorf("claude prompt pipes: %w", err)
+	start := b.opts.start
+	if start == nil {
+		start = startClaudeProcess
 	}
-	// After Start below (or a failed one) the child holds its own ends.
-	defer closePayloads()
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
-	cmd.Dir = dir
-	cmd.Env = claudeEnv(b.opts)
-	// Own process group, so Close can reap the MCP servers claude spawns.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdin, err := cmd.StdinPipe()
+	child, err := start(childSpec{name: name, args: args, dir: dir, env: claudeEnv(b.opts), payloads: payloads})
 	if err != nil {
-		return nil, fmt.Errorf("claude stdin: %w", err)
+		return nil, err
 	}
-	// os.Pipe (not StdoutPipe): Wait must not depend on stdout EOF, which a
-	// grandchild holding the pipe would delay.
-	outR, outW, err := os.Pipe()
-	if err != nil {
-		return nil, fmt.Errorf("claude stdout: %w", err)
-	}
-	errR, errW, err := os.Pipe()
-	if err != nil {
-		outR.Close()
-		outW.Close()
-		return nil, fmt.Errorf("claude stderr: %w", err)
-	}
-	cmd.Stdout, cmd.Stderr = outW, errW
-	if err := cmd.Start(); err != nil {
-		outR.Close()
-		outW.Close()
-		errR.Close()
-		errW.Close()
-		return nil, fmt.Errorf("starting claude: %w", err)
-	}
-	outW.Close()
-	errW.Close()
 
 	p := &claudeProc{
-		cmd: cmd, pgid: cmd.Process.Pid, stdin: stdin,
+		child: child, stdin: child.stdin, writeLock: make(chan struct{}, 1),
 		events: make(chan Event, 256), exited: make(chan struct{}), outDone: make(chan struct{}),
 		errDone: make(chan struct{}), stop: make(chan struct{}),
 		stderr: &boundedBuffer{limit: 64 << 10},
 	}
 	go func() {
-		_ = cmd.Wait()
+		p.exitOK, p.exitState = child.wait()
 		close(p.exited)
 	}()
 	go func() {
-		_, _ = io.Copy(p.stderr, errR)
-		errR.Close()
+		_, _ = io.Copy(p.stderr, child.stderr)
+		child.stderr.Close()
 		close(p.errDone)
 	}()
-	go b.read(p, outR)
+	go b.read(p, child.stdout)
 	b.proc = p
 	if b.catalog != nil {
 		b.watchers.Add(1)
@@ -606,7 +665,7 @@ var skippableLineType = regexp.MustCompile(`^\s*\{\s*"type"\s*:\s*"(?:user|assis
 // (streamline): the turn goes on and ends with the result event, which
 // closes the tool calls whose result may have been that line. A skipped
 // line that may carry the turn's control flow ends the child instead.
-func (b *claudeBackend) read(p *claudeProc, r *os.File) {
+func (b *claudeBackend) read(p *claudeProc, r io.ReadCloser) {
 	defer close(p.outDone)
 	defer r.Close()
 	// The child is gone or replaced: a claimed call's result can no longer
@@ -656,9 +715,7 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 func (b *claudeBackend) failRead(p *claudeProc, err error) {
 	p.readErr.Store(readError{err})
 	fmt.Fprintf(b.warn(), "chat: reading claude output: %v\n", err)
-	if p.pgid > 1 {
-		killGroup(p)
-	}
+	killGroup(p)
 }
 
 // feedLine routes one stdout line; false once the reader must stop (the
@@ -896,7 +953,7 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	stderr := strings.TrimSpace(p.stderr.String())
-	if p.cmd.ProcessState.Success() {
+	if p.exitOK {
 		// A clean exit mid-turn left the answer without its end: never a
 		// blank or partial success (L12), as codex and the batch path. Its
 		// stderr decides the category when it is one of the CLI's own auth
@@ -909,7 +966,7 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	}
 	msg := stderr
 	if msg == "" {
-		msg = "claude exited: " + p.cmd.ProcessState.String()
+		msg = "claude exited: " + p.exitState
 	}
 	return outcome{kind: outcomeExited, msg: msg}
 }
@@ -932,7 +989,7 @@ func readOutcome(err error) outcome {
 // The cancel/closed checks, the spawn and taking the child's write lock
 // happen under b.mu, shared with Cancel and Close: a cancel either finds the
 // message in flight (its interrupt then queues behind the message on
-// writeMu) or stops it being sent, and no child is spawned after Close. The
+// writeLock) or stops it being sent, and no child is spawned after Close. The
 // write itself runs outside b.mu — it can block on a child that stopped
 // reading, and Cancel and Close must still get through to kill it.
 func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, bool, error) {
@@ -941,7 +998,7 @@ func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, boo
 		return nil, false, err
 	}
 	_, werr := p.stdin.Write(line)
-	p.writeMu.Unlock()
+	p.unlockWrite()
 	if werr != nil {
 		b.mu.Lock()
 		closed := b.closed
@@ -954,7 +1011,7 @@ func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, boo
 	return p, true, nil
 }
 
-// claimForSend returns the live child with its writeMu held, or nil when the
+// claimForSend returns the live child with its writeLock held, or nil when the
 // turn was cancelled (nil error) or may not run (closed, ctx done).
 func (b *claudeBackend) claimForSend(ctx context.Context) (*claudeProc, error) {
 	b.mu.Lock()
@@ -970,7 +1027,7 @@ func (b *claudeBackend) claimForSend(ctx context.Context) (*claudeProc, error) {
 		return nil, err
 	}
 	drain(p.events)
-	p.writeMu.Lock()
+	p.lockWrite()
 	b.inFlight = true
 	p.served = true
 	return p, nil
@@ -1065,7 +1122,7 @@ func (b *claudeBackend) Cancel() error {
 	if err != nil {
 		return err
 	}
-	// The interrupt queues behind the message on writeMu, which may be stuck
+	// The interrupt queues behind the message on writeLock, which may be stuck
 	// on a child that stopped reading, so it is written asynchronously; the
 	// grace timer below kills such a child, which also fails the writes.
 	go func() {
@@ -1277,7 +1334,7 @@ func (b *claudeBackend) stopProc(p *claudeProc) {
 	p.stopOnce.Do(func() { close(p.stop) })
 	p.closeStdin()
 	if !b.waitGrace(p.exited) {
-		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+		signalGroup(p, syscall.SIGTERM)
 		if !b.waitGrace(p.exited) {
 			killGroup(p)
 			<-p.exited
@@ -1300,18 +1357,20 @@ func (b *claudeBackend) waitGrace(ch <-chan struct{}) bool {
 	}
 }
 
+// signalGroup signals the child and everything in its process group; a
+// test's constructed proc has no child and is never signalled.
+func signalGroup(p *claudeProc, sig syscall.Signal) {
+	if p.child != nil {
+		p.child.signal(sig)
+	}
+}
+
 // killGroup SIGKILLs the child and everything in its process group.
-func killGroup(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGKILL) }
+func killGroup(p *claudeProc) { signalGroup(p, syscall.SIGKILL) }
 
 // sweep terminates what is left of the child's process group (the MCP
 // servers claude spawned) once claude itself is gone.
-// A pgid that is not a real group (a test's constructed proc) is never
-// signalled: kill(0) or kill(1) would hit the caller's group or init.
-func sweep(p *claudeProc) {
-	if p.pgid > 1 {
-		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
-	}
-}
+func sweep(p *claudeProc) { signalGroup(p, syscall.SIGTERM) }
 
 func waitClosed(ch <-chan struct{}, d time.Duration) bool {
 	select {

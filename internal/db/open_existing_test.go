@@ -42,16 +42,9 @@ func TestOpenExisting_ReadsAndRefusesWrites(t *testing.T) {
 }
 
 // Another process holding the database exclusively: the read waits for the
-// lock, then fails within the busy timeout, never Open's 5 s.
-//
-// The lower bound is a quarter of the timeout, not all of it: on Linux the
-// driver sleeps between lock retries with a raw nanosleep syscall, which any
-// signal reaching the sleeping thread cuts short with EINTR (never
-// restarted), and SQLite's busy handler counts each sleep at its nominal
-// length. So the total wait lands below busy_timeout now and then (measured
-// under -race in a linux container: 35 of 400 runs under 200 ms, the
-// shortest 144 ms). An immediate failure, with no wait at all, takes about
-// 1 ms.
+// lock its own busy timeout, never Open's 5 s, then fails busy. The wait is
+// read off the handle (the engine's busy handler sleeps for real, so the
+// locked read waits 1 ms only).
 func TestOpenExisting_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	holder, err := Open(path)
@@ -59,19 +52,26 @@ func TestOpenExisting_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 	defer holder.Close()
 	_, err = holder.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
+	wantExistingBusyTimeout(t, path, 200*time.Millisecond, OpenExisting)
 	lockExclusively(t, holder)
 
-	start := time.Now()
-	ro, err := OpenExisting(path, 200*time.Millisecond)
+	ro, err := OpenExisting(path, time.Millisecond)
 	if err == nil {
 		defer ro.Close()
 		_, err = ro.GetWorkbench(1)
 	}
 	require.Error(t, err, "the read must fail while the database is locked")
 	assert.Contains(t, err.Error(), "database is locked")
-	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond, "it waited for the lock")
-	assert.Less(t, elapsed, 2*time.Second)
+}
+
+// wantExistingBusyTimeout checks that open's handle on path waits busy for
+// another connection's lock, not Open's 5 s.
+func wantExistingBusyTimeout(t *testing.T, path string, busy time.Duration, open func(string, time.Duration) (*DB, error)) {
+	t.Helper()
+	d, err := open(path, busy)
+	require.NoError(t, err)
+	defer d.Close()
+	wantPragma(t, d, "busy_timeout", busy.Milliseconds())
 }
 
 // lockExclusively makes d hold its database file exclusively until the test
@@ -146,8 +146,8 @@ func TestOpenExistingRWNeverCreatesNeverMigrates(t *testing.T) {
 }
 
 // Another handle holding the database exclusively: a write through the rw
-// opener fails busy within its own timeout, never Open's 5 s. The lower bound
-// is a quarter of the timeout, as in the OpenExisting test above.
+// opener waits its own busy timeout, never Open's 5 s, then fails busy (read
+// off the handle, as in the OpenExisting test above).
 func TestOpenExistingRW_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	holder, err := Open(path)
@@ -155,24 +155,22 @@ func TestOpenExistingRW_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 	t.Cleanup(func() { _ = holder.Close() })
 	_, err = holder.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
+	wantExistingBusyTimeout(t, path, 100*time.Millisecond, OpenExistingRW)
 	lockExclusively(t, holder)
 
-	start := time.Now()
-	rw, err := OpenExistingRW(path, 100*time.Millisecond)
+	rw, err := OpenExistingRW(path, time.Millisecond)
 	if err == nil {
 		t.Cleanup(func() { _ = rw.Close() })
 		_, err = rw.Exec(`UPDATE projects SET name = 'other'`)
 	}
 	require.Error(t, err, "the write must fail while the database is locked")
 	assert.Contains(t, err.Error(), "database is locked")
-	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, 25*time.Millisecond, "it waited for the lock")
-	assert.Less(t, elapsed, 2*time.Second)
 }
 
 // Another handle holding the write lock (RESERVED, readers still allowed):
 // a write transaction on the rw handle begins IMMEDIATE, so BeginTx itself
-// waits for the lock and fails busy; a DEFERRED begin would return at once.
+// waits for the lock (1 ms here) and fails busy; a DEFERRED begin would
+// succeed at once.
 func TestOpenExistingRW_WriteTransactionBeginsImmediate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	holder, err := Open(path)
@@ -186,22 +184,18 @@ func TestOpenExistingRW_WriteTransactionBeginsImmediate(t *testing.T) {
 	_, err = held.Exec(`UPDATE projects SET name = name`)
 	require.NoError(t, err)
 
-	rw, err := OpenExistingRW(path, 100*time.Millisecond)
+	rw, err := OpenExistingRW(path, time.Millisecond)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = rw.Close() })
 	var n int
 	require.NoError(t, rw.QueryRow(`SELECT COUNT(*) FROM projects`).Scan(&n), "a read is not blocked")
 
-	start := time.Now()
 	tx, err := rw.BeginTx(context.Background(), nil)
 	if err == nil {
 		_ = tx.Rollback()
 	}
 	require.Error(t, err, "BEGIN IMMEDIATE must wait for the held write lock and fail")
 	assert.Contains(t, err.Error(), "database is locked")
-	elapsed := time.Since(start)
-	assert.GreaterOrEqual(t, elapsed, 25*time.Millisecond, "it waited for the lock")
-	assert.Less(t, elapsed, 2*time.Second)
 }
 
 // A migration that cannot apply is ErrSchemaSetup; a path that cannot be a
