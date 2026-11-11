@@ -565,11 +565,14 @@ final class ActionStripAllKindsTests: XCTestCase {
                 try TestDatabase.insertBriefing(db, date: String(format: "2026-07-%02d", day))
             }
         }
+        // An owner: today's Morning brief entry is listed (its placeholder).
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1") }
         let vm = makeVM()
 
         await vm.open(folder: nil, select: .card(.day("2026-07-01")))
         XCTAssertEqual(vm.selection, .day("2026-07-01"))
-        XCTAssertEqual(vm.entrySelection, "day:2026-07-01", "its Morning brief entry in the root")
+        // Until Task 8's `showBriefDay`: the root's one brief row is selected.
+        XCTAssertEqual(vm.entrySelection, "day:\(today)", "the Morning brief entry in the root")
         XCTAssertEqual(vm.dayLimit, 90)
 
         await vm.open(folder: nil, select: .card(.day("2020-01-01")))

@@ -66,9 +66,6 @@ package enum InboxFolderEntries {
         package var folders: InboxFolderMenuSnapshot
         /// The `approval-cards` feature is on.
         package var approvalsOn: Bool
-        /// The day the owner has open (`yyyy-MM-dd`): listed while it is
-        /// selected even once read, so it does not vanish while being read.
-        package var selectedDay: String?
         package var now: Date
         package var calendar: Calendar
 
@@ -76,14 +73,12 @@ package enum InboxFolderEntries {
             feed: InboxFeedSnapshot,
             folders: InboxFolderMenuSnapshot,
             approvalsOn: Bool = true,
-            selectedDay: String? = nil,
             now: Date,
             calendar: Calendar = .current
         ) {
             self.feed = feed
             self.folders = folders
             self.approvalsOn = approvalsOn
-            self.selectedDay = selectedDay
             self.now = now
             self.calendar = calendar
         }
@@ -173,16 +168,10 @@ package enum InboxFolderEntries {
         return out
     }
 
-    /// The root's day cards (`InboxListBuilder.rootDays`), one entry per
-    /// date, plus the selected day while it is open (`Inputs.selectedDay`).
+    /// The root's one day card (`InboxListBuilder.rootDays`): today's.
     private static func days(_ inputs: Inputs) -> [InboxDayCard] {
         let today = HomeFeedBuilder.dayString(inputs.now, calendar: inputs.calendar)
-        var days = InboxListBuilder.rootDays(inputs.feed, today: today, now: inputs.now, calendar: inputs.calendar)
-        if let selected = inputs.selectedDay, !days.contains(where: { $0.date == selected }),
-           let card = inputs.feed.days.first(where: { $0.date == selected }) {
-            days.append(card)
-        }
-        return days
+        return InboxListBuilder.rootDays(inputs.feed, today: today, now: inputs.now, calendar: inputs.calendar)
     }
 
     /// The newest track's time, stopped ones included; nil = no track.
@@ -207,56 +196,121 @@ package enum InboxFolderEntries {
 
     /// `entry`'s row in the folder list, with the entry's own ⋯.
     package static func row(_ entry: InboxFolderEntry, _ inputs: Inputs) -> InboxFolderListRow {
-        var row = plainRow(entry, inputs)
-        row.menu = entry.menuEntries
-        return row
+        var isArtifact = false
+        if case .artifact = entry { isArtifact = true }
+        return InboxFolderListRow(
+            id: entry.id, content: content(entry, inputs), menu: entry.menuEntries, isArtifact: isArtifact)
     }
 
-    private static func plainRow(_ entry: InboxFolderEntry, _ inputs: Inputs) -> InboxFolderListRow {
+    /// What `entry`'s row shows (spec "The list", phase 1).
+    package static func content(_ entry: InboxFolderEntry, _ inputs: Inputs) -> InboxRowContent {
         let feed = inputs.feed
         let now = inputs.now
         switch entry {
+        case let .artifact(card) where isWaitingForMe(card, inputs.folders):
+            return peopleWaiting(title: card.title.isEmpty ? card.automationName : card.title, inputs)
+        case .legacyMessages:
+            return peopleWaiting(title: InboxLegacyList.messages.title, inputs)
         case let .artifact(card):
-            let refs = inputs.folders.refs[card.id] ?? []
-            let waiting = waitingCount(card, inputs.folders)
-            return InboxFolderListRow(
-                id: entry.id, kind: .artifact, title: card.title.isEmpty ? card.automationName : card.title,
-                summary: waiting > 0 ? "\(waiting) waiting" : "",
-                detail: card.isLiving ? updated(card.writtenAt, now: now)
-                                      : "run #\(card.runID) · \(ago(card.createdAt, now: now))",
-                unread: refs.isEmpty ? card.isUnread : waiting > 0)
+            return artifact(card, inputs)
         case let .legacyDay(card):
-            let today = HomeFeedBuilder.dayString(now, calendar: inputs.calendar)
-            return InboxFolderListRow(
-                id: entry.id, kind: .legacy, title: "Morning brief", summary: card.date == today ? "today" : "",
-                detail: daySource(card), unread: card.isUnread)
+            return brief(card, inputs)
         case .legacyTracks:
-            let unread = feed.tracks.filter(\.isUnread).count
-            return InboxFolderListRow(
-                id: entry.id, kind: .legacy, title: "Track my threads",
-                summary: unread > 0 ? "\(unread) unread" : "",
-                detail: tracksUpdatedAt(feed).map { updated($0, now: now) } ?? "",
-                unread: unread > 0)
+            let unread = feed.tracks.filter(\.isUnread).sorted { $0.lastEventAt > $1.lastEventAt }
+            let at = tracksUpdatedAt(feed)
+            return InboxRowContent(
+                kind: .threads, title: InboxLegacyList.tracks.title,
+                preview: unread.isEmpty ? "Nothing new in your threads"
+                                        : unread.prefix(2).map(\.track.text).joined(separator: "\n"),
+                meta: at.map { updated($0, now: now) } ?? "", time: at.map { time($0, inputs) } ?? "",
+                pill: pill(unread.count, .news), isUnread: !unread.isEmpty)
         case .legacyIdeas:
-            let judge = feed.ideas.filter(\.awaitsVerdict).count
-            return InboxFolderListRow(
-                id: entry.id, kind: .legacy, title: "Idea finder", summary: judge > 0 ? "\(judge) to judge" : "",
-                detail: ideasUpdatedAt(feed).map { updated($0, now: now) } ?? "", unread: judge > 0)
+            let judge = feed.ideas.filter(\.awaitsVerdict)
+                .sorted { (AutomationDates.parse($0.updatedAt) ?? .distantPast) > (AutomationDates.parse($1.updatedAt) ?? .distantPast) }
+            let at = ideasUpdatedAt(feed)
+            return InboxRowContent(
+                kind: .ideas, title: InboxLegacyList.ideas.title,
+                preview: judge.first.map { "\(judge.count) \(judge.count == 1 ? "idea" : "ideas") to judge. Top one: “\($0.title)”" }
+                    ?? "No ideas wait for a verdict",
+                meta: at.map { updated($0, now: now) } ?? "", time: at.map { time($0, inputs) } ?? "",
+                pill: pill(judge.count, .batch), isUnread: !judge.isEmpty)
         case let .brief(action):
             // A result, not something waiting: never unread, never counted.
-            let applied = AutomationDates.parse(action.appliedAt)
-            return InboxFolderListRow(
-                id: entry.id, kind: .result, title: action.reason.isEmpty ? "Thread brief" : action.reason,
-                detail: applied.map { "Thread brief · \(ago($0, now: now))" } ?? "Thread brief")
-        case .legacyMessages:
-            return InboxFolderListRow(
-                id: entry.id, kind: .legacy, title: "Messages", summary: "\(feed.messages.count) waiting",
-                detail: "Mentions, DMs and replies", unread: feed.messages.contains { $0.item.isUnread })
+            return InboxRowContent(
+                kind: .threads, title: action.reason.isEmpty ? "Thread brief" : action.reason,
+                meta: "Thread brief", time: AutomationDates.parse(action.appliedAt).map { time($0, inputs) } ?? "")
         case let .approval(item):
-            return InboxFolderListRow(id: entry.id, kind: .approval, title: approvalTitle(item), unread: true)
+            return InboxRowContent(kind: .approval, title: approvalTitle(item), isUnread: true)
         case let .builtinNotice(notice):
-            return InboxFolderListRow(id: entry.id, kind: .approval, title: notice.title, unread: true)
+            return InboxRowContent(kind: .approval, title: notice.title, isUnread: true)
         }
+    }
+
+    /// Waiting for me's row (its artifact, or the Messages entry standing in
+    /// for it): the newest open message from today, the older ones' count,
+    /// the people waiting today on the pill.
+    private static func peopleWaiting(title: String, _ inputs: Inputs) -> InboxRowContent {
+        let messages = inputs.feed.messages.sorted { $0.stamp > $1.stamp }
+        let today = messages.filter {
+            InboxToday.isFromToday(createdAt: $0.stamp, mentionedAt: nil, now: inputs.now, calendar: inputs.calendar)
+        }
+        let preview: String
+        if let first = today.first {
+            preview = messageLine(first) + (today.count > 1 ? " · and \(today.count - 1) more today" : "")
+        } else {
+            preview = messages.first.map(messageLine) ?? "Nothing waits on you"
+        }
+        let older = messages.count - today.count
+        let people = inputs.folders.peopleWaitingToday
+        return InboxRowContent(
+            kind: .peopleWaiting, title: title, preview: preview, meta: older > 0 ? "\(older) older" : "",
+            time: messages.first.map { time($0.stamp, inputs) } ?? "",
+            pill: pill(people, .needsYou), isUnread: people > 0)
+    }
+
+    /// "Colleague B in a DM: “Will you approve the budget?”".
+    private static func messageLine(_ row: HomeFeedInboxRow) -> String {
+        let place: String? = switch row.item.triggerType {
+        case "dm": "in a DM"
+        case "email_received": "by mail"
+        default: row.whereText.map { $0.hasPrefix("#") ? "in \($0)" : $0 }
+        }
+        let who = [row.who, place].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+        return "\(who): “\(InboxRowText.preview(row.item.snippet))”"
+    }
+
+    /// The Morning brief's row: its lead, the day it is for.
+    private static func brief(_ card: InboxDayCard, _ inputs: Inputs) -> InboxRowContent {
+        // Task 11 moves the lead to `InboxBriefLayout.lead`.
+        let lead = card.briefing.flatMap { $0.parsedAttention.first?.text ?? $0.parsedYourDay.first?.text }
+        return InboxRowContent(
+            kind: .brief, title: "Morning brief", preview: card.isEmpty ? "Not written yet" : lead ?? "",
+            meta: dayLabel(card), time: card.isEmpty ? "" : time(card.stamp, inputs), isUnread: card.isUnread)
+    }
+
+    /// An owner artifact's row, under its folder's icon.
+    private static func artifact(_ card: AutomationOutputCard, _ inputs: Inputs) -> InboxRowContent {
+        let read = inputs.folders
+        let refs = read.refs[card.id] ?? []
+        let waiting = waitingCount(card, read)
+        let folderID = read.cards.first { $0.value.contains { $0.id == card.id } }?.key
+        let icon = folderID.flatMap { read.tree.folder($0)?.icon } ?? ""
+        return InboxRowContent(
+            kind: .artifact, title: card.title.isEmpty ? card.automationName : card.title,
+            preview: InboxRowText.preview(card.body),
+            meta: card.isLiving ? "Your automation · \(updated(card.writtenAt, now: inputs.now))"
+                                : "Your automation · run #\(card.runID)",
+            time: time(card.changedAt, inputs), pill: refs.isEmpty ? nil : pill(waiting, .needsYou),
+            isUnread: refs.isEmpty ? card.isUnread : waiting > 0, symbol: InboxFolderIcons.symbol(for: icon))
+    }
+
+    /// A pill for `count`, none at 0.
+    private static func pill(_ count: Int, _ tone: InboxRowPill.Tone) -> InboxRowPill? {
+        count > 0 ? InboxRowPill(count: count, tone: tone) : nil
+    }
+
+    private static func time(_ date: Date, _ inputs: Inputs) -> String {
+        InboxRowTime.label(date, now: inputs.now, calendar: inputs.calendar)
     }
 
     private static func approvalTitle(_ item: NeedsApprovalItem) -> String {
@@ -276,10 +330,9 @@ package enum InboxFolderEntries {
         return age < 60 ? "just now" : "\(AutomationCardPresentation.relative(age)) ago"
     }
 
-    /// "Your day · Fri 6 Nov".
-    private static func daySource(_ card: InboxDayCard) -> String {
-        guard let date = dayParser.date(from: card.date) else { return "Your day · \(card.date)" }
-        return "Your day · \(dayFormatter.string(from: date))"
+    /// "Fri 6 Nov".
+    private static func dayLabel(_ card: InboxDayCard) -> String {
+        dayParser.date(from: card.date).map(dayFormatter.string(from:)) ?? card.date
     }
 
     nonisolated(unsafe) private static let dayParser: DateFormatter = {

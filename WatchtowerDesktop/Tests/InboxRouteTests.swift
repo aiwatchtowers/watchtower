@@ -65,8 +65,10 @@ final class InboxRouteTests: XCTestCase {
             Self(list: list, entry: InboxFolderEntry.legacy(list).id, selection: selection)
         }
 
+        /// The root's one Morning brief entry (today's) with `date`'s card
+        /// open (Task 8's `showBriefDay` rewrites these expectations).
         static func day(_ date: String) -> Self {
-            Self(entry: "day:\(date)", selection: .day(date))
+            Self(entry: "day:\(InboxRouteTests.today)", selection: .day(date))
         }
     }
 

@@ -1,39 +1,36 @@
 import Foundation
 
-/// One row of a folder's list (spec "The Inbox screen" 2): an automation
-/// artifact, a legacy entry over today's panes (Morning brief, Track my
-/// threads, Idea finder, Messages), a native approval card in Needs
-/// approval, or a result shown for a while (a thread brief, ask #609).
+/// One row of a folder's list (spec "The list"): an automation artifact,
+/// a legacy entry over today's panes (Morning brief, Track my threads,
+/// Idea finder, Messages), a native approval card in Needs approval, or a
+/// result shown for a while (a thread brief, ask #609), drawn from its
+/// `content`.
 package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
-    package enum Kind: Equatable, Sendable { case artifact, legacy, approval, result }
-
     package let id: String
-    package let kind: Kind
-    package let title: String
-    /// "4 waiting", "today", "2 unread"; empty draws none.
-    package var summary: String
-    /// "updated 6 min ago · after every sync", "run #12 · 2 h ago".
-    package var detail: String
-    package var unread: Bool
+    package var content: InboxRowContent
     /// The row's own ⋯ (and context menu); empty draws none.
     package var menu: [InboxMenuEntry]
+    /// An artifact's row: its context menu is its automation's ⋯.
+    package let isArtifact: Bool
 
-    package init(
-        id: String,
-        kind: Kind,
-        title: String,
-        summary: String = "",
-        detail: String = "",
-        unread: Bool = false,
-        menu: [InboxMenuEntry] = []
-    ) {
+    package init(id: String, content: InboxRowContent, menu: [InboxMenuEntry] = [], isArtifact: Bool = false) {
         self.id = id
-        self.kind = kind
-        self.title = title
-        self.summary = summary
-        self.detail = detail
-        self.unread = unread
+        self.content = content
         self.menu = menu
+        self.isArtifact = isArtifact
+    }
+}
+
+/// One titled section of a folder's list ("Needs you", "Today", …).
+package struct InboxListSection: Identifiable, Equatable, Sendable {
+    package let id: String
+    package let title: String
+    package let rows: [InboxFolderListRow]
+
+    package init(id: String, title: String, rows: [InboxFolderListRow]) {
+        self.id = id
+        self.title = title
+        self.rows = rows
     }
 }
 
@@ -42,7 +39,9 @@ package struct InboxFolderListRow: Identifiable, Equatable, Sendable {
 package struct InboxFolderListContent: Equatable, Sendable {
     package let folderKind: InboxFolderKind
     package let folderTitle: String
-    package var rows: [InboxFolderListRow]
+    package var sections: [InboxListSection]
+    /// The root's line for past briefs; nil elsewhere and with none.
+    package var earlierLine: InboxEarlierLine?
     package var selection: String?
     /// A failed folder read: the previous list stays under today's strip
     /// error line.
@@ -51,16 +50,21 @@ package struct InboxFolderListContent: Equatable, Sendable {
     package init(
         folderKind: InboxFolderKind,
         folderTitle: String,
-        rows: [InboxFolderListRow] = [],
+        sections: [InboxListSection] = [],
+        earlierLine: InboxEarlierLine? = nil,
         selection: String? = nil,
         readError: String? = nil
     ) {
         self.folderKind = folderKind
         self.folderTitle = folderTitle
-        self.rows = rows
+        self.sections = sections
+        self.earlierLine = earlierLine
         self.selection = selection
         self.readError = readError
     }
+
+    /// Every row, sections in order.
+    package var rows: [InboxFolderListRow] { sections.flatMap(\.rows) }
 
     /// The `EmptyStateCopyTable` key of the empty folder (spec "The Inbox
     /// screen" → States): `inbox`, `inboxFolder` or `inboxApprovals`.

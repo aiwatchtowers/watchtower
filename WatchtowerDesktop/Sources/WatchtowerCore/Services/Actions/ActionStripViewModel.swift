@@ -348,22 +348,30 @@ package final class ActionStripViewModel {
     package var entryInputs: InboxFolderEntries.Inputs {
         InboxFolderEntries.Inputs(
             feed: feed, folders: folderMenu.snapshot,
-            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID),
-            selectedDay: entrySelection.flatMap(Self.dayOfEntry), now: clock())
+            approvalsOn: !disabledFeatures.contains(Self.approvalsFeatureID), now: clock())
     }
 
-    /// The date of a day entry's id (`day:<yyyy-MM-dd>`), else nil.
-    private static func dayOfEntry(_ id: String) -> String? {
-        id.hasPrefix("day:") ? String(id.dropFirst("day:".count)) : nil
-    }
-
-    /// The selected folder's list column.
+    /// The selected folder's list column: the root's and an owner folder's
+    /// sections (`InboxRootSections`), the root's Earlier line.
     package var folderList: InboxFolderListContent {
         let folder = folderMenu.tree.folder(folderMenu.selectedFolderID) ?? folderMenu.tree.root
         let inputs = entryInputs
-        let rows = folderEntries.map { InboxFolderEntries.row($0, inputs) }
+        let grouped = InboxRootSections.build(
+            entries: folderEntries, folder: folder.kind,
+            waitingForMeAutomationID: folderMenu.snapshot.waitingForMe.automationID,
+            now: inputs.now, calendar: inputs.calendar)
+        let sections = grouped.map { section, entries in
+            InboxListSection(id: section.rawValue, title: section.title,
+                             rows: entries.map { InboxFolderEntries.row($0, inputs) })
+        }
+        let earlier = folder.kind == .root
+            ? InboxRootSections.earlierLine(
+                days: feed.days, today: HomeFeedBuilder.dayString(inputs.now, calendar: inputs.calendar),
+                now: inputs.now, calendar: inputs.calendar)
+            : nil
         return InboxFolderListContent(
-            folderKind: folder.kind, folderTitle: folder.title, rows: rows, selection: entrySelection)
+            folderKind: folder.kind, folderTitle: folder.title, sections: sections, earlierLine: earlier,
+            selection: entrySelection)
     }
 
     /// The entry the reading pane shows (`InboxFolderEntry.id`); nil = none.
@@ -534,8 +542,9 @@ package final class ActionStripViewModel {
     ///   threads, Idea finder, Messages) over the root with its card
     ///   selected when listed: a stopped track opens the Stopped fold, a
     ///   merged idea the idea it was merged into.
-    /// - A day opens its Morning brief entry in the root; a day past the
-    ///   loaded pages reads older pages until it is there.
+    /// - A day opens the root's Morning brief entry (today's) with that
+    ///   day's card; a day past the loaded pages reads older pages until it
+    ///   is there.
     /// - A thread brief applied in the last 24 hours opens its root entry.
     /// - An automation card opens the folder that lists it; a proposal, a
     ///   reminder, a notice or one of Needs approval's cards opens Needs
@@ -596,10 +605,15 @@ package final class ActionStripViewModel {
                 await showOlderDays().value
                 if feed.days.count == before { break }
             }
-            // A day read but not listed (read, not today) still opens: the
-            // selected day stays listed (`Inputs.selectedDay`).
-            show(tree.root.id, "day:\(date)")
-            if entrySelection != nil { await select(item) }
+            // The root lists today's Morning brief only: a day found opens
+            // under it, its read mark written as before (Task 8's
+            // `showBriefDay` takes this over).
+            guard feedHolds(item) else {
+                show(tree.root.id, nil)
+                return
+            }
+            show(tree.root.id, "day:\(HomeFeedBuilder.dayString(clock(), calendar: .current))")
+            await select(item)
         case .output(let id):
             if folderMenu.snapshot.approvalArtifacts.values.contains(where: { $0.id == id }) {
                 show((tree.approvals ?? tree.root).id, nil)

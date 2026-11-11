@@ -102,24 +102,24 @@ struct InboxFolderListRowView: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
             Circle()
-                .fill(row.unread ? Color.accentColor : .clear)
+                .fill(row.content.isUnread ? Color.accentColor : .clear)
                 .frame(width: IconSize.stateDot, height: IconSize.stateDot)
-                .accessibilityHidden(!row.unread)
+                .accessibilityHidden(!row.content.isUnread)
                 .accessibilityLabel("Unread")
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
-                    Text(row.title)
-                        .font(.callout.weight(row.unread ? .semibold : .regular))
+                    Text(row.content.title)
+                        .font(.callout.weight(row.content.isUnread ? .semibold : .regular))
                         .lineLimit(1)
-                    if !row.summary.isEmpty {
-                        Text("· \(row.summary)")
+                    if let pill = row.content.pill {
+                        Text("· \(pill.count)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 }
-                if !row.detail.isEmpty {
-                    Text(row.detail)
+                if !row.content.meta.isEmpty {
+                    Text(row.content.meta)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -127,7 +127,7 @@ struct InboxFolderListRowView: View {
             }
             if !row.menu.isEmpty {
                 Spacer(minLength: Spacing.small)
-                InboxMoreMenu(entries: row.menu, help: "More for \(row.title)", onCommand: onMenu)
+                InboxMoreMenu(entries: row.menu, help: "More for \(row.content.title)", onCommand: onMenu)
             }
         }
         .padding(.vertical, Spacing.small)

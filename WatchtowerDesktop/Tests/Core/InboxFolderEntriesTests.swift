@@ -57,13 +57,22 @@ final class InboxFolderEntriesTests: XCTestCase {
         let vm = await read(pool, folder: ids.root)
 
         XCTAssertEqual(vm.folderEntries.map(\.id), ["artifact:\(ids.waiting)", "ideas", "artifact:\(ids.weekly)"])
+        // Sections: Waiting for me in Needs you, Idea finder in Running and
+        // the artifact by its day (`.current`, as the view model reads it).
         let rows = vm.folderList.rows
-        XCTAssertEqual(rows.map(\.title), ["Waiting for me", "Idea finder", "Weekly mail roundup"])
-        XCTAssertEqual(rows[0].summary, "1 waiting")
-        XCTAssertEqual(rows[1].summary, "1 to judge")
-        XCTAssertEqual(rows[1].menu.map(\.command), [.findIdeasInPastMessages])
-        XCTAssertEqual(rows[2].detail, "run #\(ids.run) · 30 min ago")
-        XCTAssertTrue(rows.allSatisfy(\.unread))
+        XCTAssertEqual(rows.first?.content.title, "Waiting for me")
+        XCTAssertEqual(rows.first?.content.kind, .peopleWaiting)
+        XCTAssertEqual(rows.first?.isArtifact, true, "its context menu is its automation's")
+        let ideas = try XCTUnwrap(rows.first { $0.id == "ideas" })
+        XCTAssertEqual(ideas.content.pill, InboxRowPill(count: 1, tone: .batch))
+        XCTAssertEqual(ideas.menu.map(\.command), [.findIdeasInPastMessages])
+        XCTAssertTrue(ideas.content.isUnread)
+        let weekly = try XCTUnwrap(rows.first { $0.id == "artifact:\(ids.weekly)" })
+        XCTAssertEqual(weekly.content.meta, "Your automation · run #\(ids.run)")
+        XCTAssertTrue(weekly.content.isUnread)
+        XCTAssertEqual(vm.folderList.sections.first?.title, "Needs you")
+        XCTAssertEqual(vm.folderList.sections.last?.rows.last?.id, "ideas",
+                       "Running: Idea finder, then artifacts older than today (none)")
         XCTAssertFalse(vm.folderEntries.contains(.legacyMessages), "Waiting for me ran: no Messages entry")
     }
 
@@ -128,7 +137,8 @@ final class InboxFolderEntriesTests: XCTestCase {
                 XCTAssertEqual(vm.folderEntries.map(\.id), ["artifact:\(ids.card ?? 0)"], status)
             default:
                 XCTAssertEqual(vm.folderEntries.map(\.id), ["messages"], status)
-                XCTAssertEqual(vm.folderList.rows.first?.summary, "1 waiting", status)
+                XCTAssertEqual(vm.folderList.rows.first?.content.title, "Messages", status)
+                XCTAssertEqual(vm.folderList.rows.first?.content.kind, .peopleWaiting, status)
             }
             TestDatabase.cleanup(path: path)
             path = ""
@@ -236,7 +246,7 @@ final class InboxFolderEntriesTests: XCTestCase {
         }
         let vm = await read(pool, folder: root)
         XCTAssertEqual(vm.folderEntries.map(\.id), ["tracks"])
-        XCTAssertEqual(vm.folderList.rows.first?.summary, "", "nothing unread")
+        XCTAssertNil(vm.folderList.rows.first?.content.pill, "nothing unread")
         await vm.selectEntry("tracks")
         XCTAssertEqual(vm.legacyList, .tracks)
     }
@@ -356,9 +366,9 @@ final class InboxFolderEntriesTests: XCTestCase {
         XCTAssertEqual(after, before, "a poll never marks anything read")
     }
 
-    /// Yesterday's unread brief, opened: its read mark is written, and it
-    /// stays listed while it is selected — it leaves once the selection moves.
-    func testSelectedDayStaysListedOnceRead() async throws {
+    /// One brief row: the root lists today's Morning brief only; an unread
+    /// past day is counted on the Earlier line instead.
+    func testRootListsOnlyTodaysBrief() async throws {
         let today = HomeFeedBuilder.dayString(NeedsApprovalFixtures.now, calendar: .current)
         let yesterday = HomeFeedBuilder.dayString(
             NeedsApprovalFixtures.now.addingTimeInterval(-86400), calendar: .current)
@@ -371,19 +381,9 @@ final class InboxFolderEntriesTests: XCTestCase {
             return folders.root
         }
         let vm = await read(pool, folder: root)
-        XCTAssertTrue(vm.folderEntries.contains { $0.id == "day:\(yesterday)" }, "unread: listed")
-
-        await vm.selectEntry("day:\(yesterday)")
-
-        let unread = try await pool.read {
-            try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM briefings WHERE read_at IS NULL")
-        }
-        XCTAssertEqual(unread, 0, "the read mark is written")
-        XCTAssertEqual(vm.entrySelection, "day:\(yesterday)", "the brief stays open while it is read")
-        XCTAssertTrue(vm.folderEntries.contains { $0.id == "day:\(yesterday)" })
-
-        await vm.selectEntry("day:\(today)")
-        XCTAssertFalse(vm.folderEntries.contains { $0.id == "day:\(yesterday)" }, "read and not selected: gone")
+        XCTAssertEqual(vm.folderEntries.map(\.id), ["day:\(today)"], "yesterday's unread brief is not a row")
+        XCTAssertEqual(vm.folderList.sections.map(\.title), ["Today"])
+        XCTAssertEqual(vm.folderList.earlierLine, InboxEarlierLine(pastThisMonth: 1, notOpened: 1))
     }
 
     /// A route (Home, a notification) opens its list for this session

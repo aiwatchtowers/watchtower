@@ -64,17 +64,30 @@ enum InboxBuilderBShotFixtures {
     // MARK: - Folder lists
 
     private static func rootList(selection: String?, readError: String? = nil) -> InboxFolderListContent {
-        InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
-            InboxFolderListRow(id: "waiting", kind: .artifact, title: "Waiting for me", summary: "4 waiting",
-                               detail: "updated 6 min ago · after every sync", unread: true),
-            InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
-                               detail: "Your day · Fri 6 Nov", unread: true),
-            InboxFolderListRow(id: "tracks", kind: .legacy, title: "Track my threads", summary: "2 unread",
-                               detail: "updated 1 h ago"),
-            InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
-                               detail: "updated 3 h ago"),
-            InboxFolderListRow(id: "weekly", kind: .artifact, title: "Weekly mail roundup", detail: "run #12 · 2 h ago",
-                               unread: true)
+        InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", sections: [
+            InboxListSection(id: "needsYou", title: "Needs you", rows: [
+                InboxFolderListRow(id: "waiting", content: InboxRowContent(
+                    kind: .peopleWaiting, title: "Waiting for me",
+                    preview: "Colleague B in a DM: “Will you approve the budget?” · and 3 more today",
+                    meta: "2 older", time: "08:10", pill: InboxRowPill(count: 4, tone: .needsYou), isUnread: true),
+                    isArtifact: true)
+            ]),
+            InboxListSection(id: "today", title: "Today", rows: [
+                InboxFolderListRow(id: "day", content: InboxRowContent(
+                    kind: .brief, title: "Morning brief", preview: "Answer Colleague B about the budget",
+                    meta: "Fri 6 Nov", time: "07:00", isUnread: true))
+            ]),
+            InboxListSection(id: "running", title: "Running", rows: [
+                InboxFolderListRow(id: "tracks", content: InboxRowContent(
+                    kind: .threads, title: "Track my threads", preview: "Release acme 2.0\nBudget review",
+                    meta: "updated 1 h ago", time: "09:00", pill: InboxRowPill(count: 2, tone: .news))),
+                InboxFolderListRow(id: "ideas", content: InboxRowContent(
+                    kind: .ideas, title: "Idea finder", preview: "1 idea to judge. Top one: “A shared glossary”",
+                    meta: "updated 3 h ago", time: "07:00", pill: InboxRowPill(count: 1, tone: .batch))),
+                InboxFolderListRow(id: "weekly", content: InboxRowContent(
+                    kind: .artifact, title: "Weekly mail roundup", meta: "Your automation · run #12",
+                    time: "yesterday", isUnread: true, symbol: "folder"), isArtifact: true)
+            ])
         ], selection: selection, readError: readError)
     }
 
@@ -264,11 +277,17 @@ enum InboxBuilderBShotFixtures {
     /// entry in its place, and its message card (`InboxMessagePane`) has
     /// Reply… like a row.
     private static func waitingNotRun() -> AnyView {
-        let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", rows: [
-            InboxFolderListRow(id: "messages", kind: .legacy, title: "Messages", summary: "4 waiting",
-                               detail: "Mentions, DMs and replies", unread: true),
-            InboxFolderListRow(id: "day", kind: .legacy, title: "Morning brief", summary: "today",
-                               detail: "Your day · Fri 6 Nov", unread: true)
+        let list = InboxFolderListContent(folderKind: .root, folderTitle: "Inbox", sections: [
+            InboxListSection(id: "needsYou", title: "Needs you", rows: [
+                InboxFolderListRow(id: "messages", content: InboxRowContent(
+                    kind: .peopleWaiting, title: "Messages",
+                    preview: "Colleague A in #acme-release: “Can you check the checklist?”", meta: "4 older",
+                    pill: InboxRowPill(count: 1, tone: .needsYou), isUnread: true))
+            ]),
+            InboxListSection(id: "today", title: "Today", rows: [
+                InboxFolderListRow(id: "day", content: InboxRowContent(
+                    kind: .brief, title: "Morning brief", preview: "Not written yet", meta: "Fri 6 Nov"))
+            ])
         ], selection: "messages")
         let now = Date()
         let values: [String: (any DatabaseValueConvertible)?] = [
@@ -331,8 +350,10 @@ enum InboxBuilderBShotFixtures {
             DesignShot(name: "inbox-b-idea-finder-menu", size: NSSize(width: 620, height: 0)) {
                 AnyView(HStack(alignment: .top, spacing: Spacing.large) {
                     InboxFolderListRowView(row: InboxFolderListRow(
-                        id: "ideas", kind: .legacy, title: "Idea finder", summary: "1 to judge",
-                        detail: "updated 3 h ago", menu: InboxFolderEntry.legacyIdeas.menuEntries))
+                        id: "ideas", content: InboxRowContent(
+                            kind: .ideas, title: "Idea finder", meta: "updated 3 h ago",
+                            pill: InboxRowPill(count: 1, tone: .batch)),
+                        menu: InboxFolderEntry.legacyIdeas.menuEntries))
                         .kitRow(isSelected: true)
                         .frame(width: 280)
                     menuPanel("Idea finder ⋯", InboxFolderEntry.legacyIdeas.menuEntries)

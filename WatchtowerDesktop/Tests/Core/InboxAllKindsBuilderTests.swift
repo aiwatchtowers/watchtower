@@ -97,19 +97,20 @@ final class InboxAllKindsBuilderTests: XCTestCase {
 
         let past = try dayCard("2026-10-21", read: false, stamp: "2026-10-21T05:00:00Z")
         let days = try rootDays(InboxFeedSnapshot(days: [past]))
-        XCTAssertEqual(days.map(\.date), [today, "2026-10-21"])
-        XCTAssertEqual(days.filter(\.isEmpty).map(\.date), [today], "a past date never gets a placeholder")
+        XCTAssertEqual(days.map(\.date), [today], "a past date never gets a placeholder, nor a row")
+        XCTAssertTrue(days[0].isEmpty)
     }
 
-    /// The root lists earlier days only while unread; today's always.
-    func testEarlierDayCardsInTheRootOnlyWhileUnread() throws {
+    /// One brief row: the root lists today's day only, an unread past day
+    /// included (the Earlier line counts it).
+    func testRootDaysAreTodayOnly() throws {
         let read = InboxDayCard(date: "2026-10-20", briefing: try briefing(1, day: "2026-10-20", read: true), plan: nil,
                                 planDone: 0, planTotal: 0, stamp: try date("2026-10-20T05:00:00Z"))
         let unread = InboxDayCard(date: "2026-10-21", briefing: try briefing(2, day: "2026-10-21", read: false), plan: nil,
                                   planDone: 0, planTotal: 0, stamp: try date("2026-10-21T05:00:00Z"))
         let todays = try dayCard(today, read: true, stamp: "2026-10-22T05:00:00Z")
         let feed = InboxFeedSnapshot(days: [todays, read, unread])
-        XCTAssertEqual(try rootDays(feed).map(\.date), [today, "2026-10-21"])
+        XCTAssertEqual(try rootDays(feed).map(\.date), [today])
     }
 
     // MARK: - The legacy lists

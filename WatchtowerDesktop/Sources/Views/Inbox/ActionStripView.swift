@@ -328,7 +328,7 @@ struct ActionStripActionsView: View {
 
     /// An artifact row's context menu: its ⋯.
     private func rowContextMenu(_ row: InboxFolderListRow) -> [InboxMenuEntry] {
-        guard row.kind == .artifact, let artifactMenu, let card = artifactCard(row.id),
+        guard row.isArtifact, let artifactMenu, let card = artifactCard(row.id),
               !artifactMenu.isDisabled(card) else { return [] }
         return artifactMenu.content(for: card).entries
     }

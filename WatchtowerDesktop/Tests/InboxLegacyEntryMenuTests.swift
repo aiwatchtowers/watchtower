@@ -37,9 +37,9 @@ final class InboxLegacyEntryMenuTests: XCTestCase {
 
     /// The list draws the entry's ⋯ on the Idea finder row only.
     func testIdeaFinderRowDrawsItsMenu() throws {
-        let ideas = InboxFolderListRow(id: "ideas", kind: .legacy, title: "Idea finder",
+        let ideas = InboxFolderListRow(id: "ideas", content: InboxRowContent(kind: .ideas, title: "Idea finder"),
                                        menu: InboxFolderEntry.legacyIdeas.menuEntries)
-        let tracks = InboxFolderListRow(id: "tracks", kind: .legacy, title: "Track my threads")
+        let tracks = InboxFolderListRow(id: "tracks", content: InboxRowContent(kind: .threads, title: "Track my threads"))
         var pressed: InboxMenuCommand?
         let row = InboxFolderListRowView(row: ideas) { pressed = $0 }
         XCTAssertNoThrow(try row.inspect().find(InboxMoreMenu.self))
