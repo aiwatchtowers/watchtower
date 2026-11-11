@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 )
 
 // UsageError contains only a stable safe code; transport payloads are never exposed.
@@ -68,20 +69,43 @@ type usageWindow struct {
 // bin must be the resolved CLI path; env is its complete environment. codexHome
 // identifies the config namespace (normally OwnerHome()). No auth files are read.
 // A parse failure can return verified identity metadata alongside the safe error.
-func ReadUsage(ctx context.Context, bin string, env []string, codexHome string) (out UsageSnapshot, err error) {
-	out = UsageSnapshot{Quotas: []UsageQuota{}}
-	budget, cancel := context.WithTimeout(ctx, appServerBudget)
-	defer cancel()
-	if err := ctx.Err(); err != nil {
-		return out, usageFailure(ctx, budget, err)
+func ReadUsage(ctx context.Context, bin string, env []string, codexHome string) (UsageSnapshot, error) {
+	return readUsage(ctx, usageProcess(bin, env), codexHome, appServerBudget)
+}
+
+// errCLIMissing is the launcher's answer for a bin that is not there.
+var errCLIMissing = errors.New("codex CLI missing")
+
+// usageProcess is ReadUsage's app-server: bin, if it exists, started in the
+// neutral temp folder.
+func usageProcess(bin string, env []string) appServerLauncher {
+	return func() (AppServerConn, error) {
+		if _, err := exec.LookPath(bin); err != nil {
+			return nil, errCLIMissing
+		}
+		return appServerProcess(bin, nil, env, os.TempDir())()
 	}
-	if _, err := exec.LookPath(bin); err != nil {
+}
+
+// ReadUsageFrom is ReadUsage over the app-server launch returns, under the
+// same 10 s budget: the seam a test drives an in-process server through.
+func ReadUsageFrom(ctx context.Context, launch func() (AppServerConn, error), codexHome string) (UsageSnapshot, error) {
+	return readUsage(ctx, launch, codexHome, appServerBudget)
+}
+
+func readUsage(ctx context.Context, launch appServerLauncher, codexHome string, limit time.Duration) (out UsageSnapshot, err error) {
+	out = UsageSnapshot{Quotas: []UsageQuota{}}
+	if err := ctx.Err(); err != nil {
+		return out, usageFailure(ctx, ctx, err)
+	}
+	s, err := openAppServer(ctx, launch, limit)
+	if errors.Is(err, errCLIMissing) {
 		return out, &UsageError{Code: "cli_missing"}
 	}
-	s, err := startAppServerProcessInDir(budget, cancel, bin, nil, env, os.TempDir())
 	if err != nil {
-		return out, usageFailure(ctx, budget, err)
+		return out, usageFailure(ctx, ctx, err)
 	}
+	budget := s.budget
 	defer func() {
 		closeErr := s.Close()
 		// Close owns the final bounded phase of this fetch. Its cancellation

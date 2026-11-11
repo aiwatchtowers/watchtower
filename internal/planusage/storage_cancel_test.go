@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/codex"
@@ -45,48 +46,50 @@ func TestCodexPoller_CancelDuringStorageDoesNotPublish(t *testing.T) {
 	for _, point := range []string{"history", "retained"} {
 		for _, deadline := range []bool{false, true} {
 			t.Run(point+"/"+fmtBoolForTest(deadline), func(t *testing.T) {
-				d, err := db.Open(":memory:")
-				require.NoError(t, err)
-				defer d.Close()
-				now := at(10, 0)
-				scope := strings.Repeat("a", 64)
-				reset := now.Add(time.Hour)
-				require.NoError(t, StoreCodexUsage(d, now, testCodexSnapshot(scope, reset, 10)))
-				before, err := d.GetCodexPlanUsageStatus()
-				require.NoError(t, err)
-				store := &pausedCodexStore{DB: d, point: point, entered: make(chan struct{}), release: make(chan struct{})}
-				p := &CodexPoller{Store: store, Now: func() time.Time { return now.Add(time.Minute) }, failures: 3,
-					Read: func(context.Context) (codex.UsageSnapshot, error) {
-						if point == "retained" {
-							return codex.UsageSnapshot{}, &codex.UsageError{Code: "network"}
-						}
-						return testCodexSnapshot(scope, reset, 90), nil
-					}}
-				var ctx context.Context
-				var cancel context.CancelFunc
-				if deadline {
-					ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
-				} else {
-					ctx, cancel = context.WithCancel(context.Background())
-				}
-				defer cancel()
-				done := make(chan error, 1)
-				go func() { _, err := p.PollOnce(ctx); done <- err }()
-				<-store.entered
-				if deadline {
-					<-ctx.Done()
-				} else {
-					cancel()
-				}
-				close(store.release)
-				require.ErrorIs(t, <-done, ctx.Err())
-				after, err := d.GetCodexPlanUsageStatus()
-				require.NoError(t, err)
-				require.Equal(t, before, after)
-				var count int
-				require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM codex_plan_usage_samples`).Scan(&count))
-				require.Equal(t, 1, count)
-				require.Equal(t, 3, p.failures, "a cancelled store does not change backoff")
+				synctest.Test(t, func(t *testing.T) {
+					d, err := db.Open(":memory:")
+					require.NoError(t, err)
+					defer d.Close()
+					now := at(10, 0)
+					scope := strings.Repeat("a", 64)
+					reset := now.Add(time.Hour)
+					require.NoError(t, StoreCodexUsage(d, now, testCodexSnapshot(scope, reset, 10)))
+					before, err := d.GetCodexPlanUsageStatus()
+					require.NoError(t, err)
+					store := &pausedCodexStore{DB: d, point: point, entered: make(chan struct{}), release: make(chan struct{})}
+					p := &CodexPoller{Store: store, Now: func() time.Time { return now.Add(time.Minute) }, failures: 3,
+						Read: func(context.Context) (codex.UsageSnapshot, error) {
+							if point == "retained" {
+								return codex.UsageSnapshot{}, &codex.UsageError{Code: "network"}
+							}
+							return testCodexSnapshot(scope, reset, 90), nil
+						}}
+					var ctx context.Context
+					var cancel context.CancelFunc
+					if deadline {
+						ctx, cancel = context.WithTimeout(context.Background(), 100*time.Millisecond)
+					} else {
+						ctx, cancel = context.WithCancel(context.Background())
+					}
+					defer cancel()
+					done := make(chan error, 1)
+					go func() { _, err := p.PollOnce(ctx); done <- err }()
+					<-store.entered
+					if deadline {
+						<-ctx.Done()
+					} else {
+						cancel()
+					}
+					close(store.release)
+					require.ErrorIs(t, <-done, ctx.Err())
+					after, err := d.GetCodexPlanUsageStatus()
+					require.NoError(t, err)
+					require.Equal(t, before, after)
+					var count int
+					require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM codex_plan_usage_samples`).Scan(&count))
+					require.Equal(t, 1, count)
+					require.Equal(t, 3, p.failures, "a cancelled store does not change backoff")
+				})
 			})
 		}
 	}

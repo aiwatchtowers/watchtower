@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"watchtower/internal/logredact"
 )
@@ -80,17 +79,24 @@ func TestQuerySync_PropagatesNonZeroExit(t *testing.T) {
 // transitively via exec failure paths.
 
 func TestQuerySync_ContextCancel(t *testing.T) {
-	// The script sleeps; a cancelled context should kill it promptly.
+	// The script never ends by itself; cancelling the context once it runs
+	// must kill it — a run that is not killed hangs until go test -timeout.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
-	body := "#!/bin/sh\nsleep 5\n"
+	pidFile := filepath.Join(dir, "pid")
+	body := "#!/bin/sh\necho $$ > '" + pidFile + ".tmp'; mv '" + pidFile + ".tmp' '" + pidFile + "'\nexec sleep 3600\n"
 	if err := os.WriteFile(bin, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { reapGroup(readPID(pidFile)) })
 
 	c := NewClient("gpt-5.4", "", bin)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		waitPID(pidFile)
+		cancel()
+	}()
 
 	_, _, err := c.QuerySync(ctx, "", "x", "")
 	if err == nil {

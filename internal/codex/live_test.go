@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,8 +75,7 @@ func TestCodexLive_ChatToolStepAndUsage(t *testing.T) {
 	c.EmitToolEvents()
 	sys := "You are a connectivity probe. Call the get_nonce tool of the watchtower MCP server exactly once, " +
 		`with the argument label set to "probe". Then reply with only the text the tool returned.`
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 	textCh, errCh, sidCh := c.Query(ctx, sys, "Run the probe.", "")
 	var starts, ends []ai.ToolEvent
 	var usage []ai.TurnUsage
@@ -140,8 +138,7 @@ func TestCodexLive_Batch(t *testing.T) {
 	nonce := liveNonce(t)
 	gen := NewCodexGenerator(model, model, bin)
 	gen.SetIsolatedChild()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 	text, _, _, err := gen.Generate(ctx, "Reply with exactly one word: "+nonce+". Nothing else.", "Reply now.", "")
 	require.NoError(t, err)
 	t.Logf("codex answered: %q", text)
@@ -173,8 +170,7 @@ func liveCodexSetup(t *testing.T) (bin, model string) {
 // liveQuery runs one QuerySync with a 3-minute budget.
 func liveQuery(t *testing.T, c *Client, systemPrompt, userMessage string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
+	ctx := context.Background()
 	text, _, err := c.QuerySync(ctx, systemPrompt, userMessage, "")
 	require.NoError(t, err)
 	t.Logf("codex answered: %q", text)

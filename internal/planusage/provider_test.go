@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/codex"
@@ -99,7 +101,13 @@ func TestProviders_ClocksAndFailuresAreIndependent(t *testing.T) {
 	<-done
 }
 
+// In a synctest bubble: the lock wait and the budgets run out in the
+// bubble's time, never because the machine is slow.
 func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
+	synctest.Test(t, testProviderLockBudgets)
+}
+
+func testProviderLockBudgets(t *testing.T) {
 	var calls, disabled atomic.Int32
 	p := &Provider{Name: "codex", Workspace: t.TempDir(), LockWait: 35 * time.Millisecond, Budget: 10 * time.Second,
 		Poll:         func(context.Context) (time.Duration, error) { calls.Add(1); return pollInterval, nil },
@@ -117,8 +125,6 @@ func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 	cancel()
 	require.Equal(t, "cancelled", ErrorCode(p.Refresh(ctx)))
 	unlock()
-	// The tiny budget above tests timeout only; unrelated off/disable operations
-	// need enough time even while the full suite saturates the machine.
 	p.Budget = 10 * time.Second
 	p.Enabled = func() (bool, error) { return false, nil }
 	require.Equal(t, "feature_disabled", ErrorCode(p.Refresh(context.Background())))
@@ -136,38 +142,44 @@ func TestProvider_LockBudgetsDisableAndStableInode(t *testing.T) {
 func TestCodexPoller_CancelAndDeadlineDoNotPublish(t *testing.T) {
 	for _, deadline := range []bool{false, true} {
 		t.Run(fmt.Sprint(deadline), func(t *testing.T) {
-			d, err := db.Open(":memory:")
-			require.NoError(t, err)
-			defer d.Close()
-			var ctx context.Context
-			var cancel context.CancelFunc
-			if deadline {
-				ctx, cancel = context.WithTimeout(context.Background(), time.Millisecond)
-			} else {
-				ctx, cancel = context.WithCancel(context.Background())
-			}
-			defer cancel()
-			p := &CodexPoller{Store: d, Now: time.Now, Read: func(ctx context.Context) (codex.UsageSnapshot, error) {
-				if !deadline {
-					cancel()
+			synctest.Test(t, func(t *testing.T) {
+				d, err := db.Open(":memory:")
+				require.NoError(t, err)
+				defer d.Close()
+				var ctx context.Context
+				var cancel context.CancelFunc
+				if deadline {
+					ctx, cancel = context.WithTimeout(context.Background(), time.Millisecond)
+				} else {
+					ctx, cancel = context.WithCancel(context.Background())
 				}
-				<-ctx.Done()
-				return codex.UsageSnapshot{}, ctx.Err()
-			}}
-			_, err = p.PollOnce(ctx)
-			require.Error(t, err)
-			st, err := d.GetCodexPlanUsageStatus()
-			require.NoError(t, err)
-			require.Nil(t, st)
-			require.Zero(t, p.failures)
+				defer cancel()
+				p := &CodexPoller{Store: d, Now: time.Now, Read: func(ctx context.Context) (codex.UsageSnapshot, error) {
+					if !deadline {
+						cancel()
+					}
+					<-ctx.Done()
+					return codex.UsageSnapshot{}, ctx.Err()
+				}}
+				_, err = p.PollOnce(ctx)
+				require.Error(t, err)
+				st, err := d.GetCodexPlanUsageStatus()
+				require.NoError(t, err)
+				require.Nil(t, st)
+				require.Zero(t, p.failures)
+			})
 		})
 	}
 }
 
+// noBudget leaves a cross-process lock test without a budget or lock wait:
+// the processes wait only for each other, and a hang is go test -timeout's.
+const noBudget = time.Duration(math.MaxInt64)
+
 // This subprocess exercises actual flock against other daemon/CLI processes.
 func runPlanLockHelper() {
 	dir, name, mode := os.Getenv("WATCHTOWER_TEST_PLAN_DIR"), os.Getenv("WATCHTOWER_TEST_PLAN_NAME"), os.Getenv("WATCHTOWER_TEST_PLAN_MODE")
-	p := &Provider{Name: "codex", Workspace: dir, Budget: 3 * time.Second, LockWait: 2 * time.Second, Poll: func(ctx context.Context) (time.Duration, error) {
+	p := &Provider{Name: "codex", Workspace: dir, Budget: noBudget, LockWait: noBudget, Poll: func(ctx context.Context) (time.Duration, error) {
 		f, err := os.OpenFile(filepath.Join(dir, "events"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
 			return 0, err
@@ -190,7 +202,7 @@ func runPlanLockHelper() {
 		}
 		defer unlock()
 		fmt.Println("ready")
-		<-time.After(time.Hour)
+		select {} // until the test kills it
 	}
 	var err error
 	if mode == "daemon" {
@@ -247,9 +259,11 @@ func TestProvider_ProcessSerializationAndCrashRelease(t *testing.T) {
 	p := &Provider{Name: "codex", Workspace: dir, LockWait: 30 * time.Millisecond, Poll: func(context.Context) (time.Duration, error) { return pollInterval, nil }}
 	before, err := os.Stat(p.lockPath())
 	require.NoError(t, err)
-	require.Equal(t, "busy", ErrorCode(p.Refresh(context.Background())))
-	_, err = p.PollOnce(context.Background())
-	require.Equal(t, "busy", ErrorCode(err))
+	synctest.Test(t, func(t *testing.T) { // the lock wait runs out in the bubble's time
+		require.Equal(t, "busy", ErrorCode(p.Refresh(context.Background())))
+		_, err := p.PollOnce(context.Background())
+		require.Equal(t, "busy", ErrorCode(err))
+	})
 	require.NoError(t, syscall.Kill(-holder.Process.Pid, syscall.SIGKILL))
 	require.Error(t, holder.Wait())
 	require.NoError(t, p.Refresh(context.Background()))
