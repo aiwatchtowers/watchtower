@@ -24,7 +24,7 @@ func TestConfigureChild_AlwaysGroup(t *testing.T) {
 
 	setGroupKillGrace(t, 10*time.Millisecond) // the group ignores SIGINT: the timer ends it
 	g := newGroupFIFO(t)
-	script := "trap '' INT\n" + g.prefix() + "(trap '' INT; exec sleep 60) >/dev/null 2>&1 </dev/null &\nwait\n"
+	script := "trap '' INT\n" + g.open() + "(trap '' INT; echo $$ >&3; exec sleep 2147483647) >/dev/null 2>&1 </dev/null &\nwait\n"
 	c := NewClient("m", "", "") // no process-group setter exists any more
 	c.claudeCmd = writeMockClaude(t, script)
 	ctx, cancel := context.WithCancel(context.Background())

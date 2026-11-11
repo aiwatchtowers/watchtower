@@ -617,6 +617,22 @@ func TestDiagnostics_ReadDBHeldLock(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		path, d := newDBFile(t)
 		ctx := context.Background()
+		b := DefaultBudgets
+		b.DB, b.DBFallback, b.Busy = time.Second, 1500*time.Millisecond, 100*time.Millisecond
+		// The opener gives SQLite the short busy wait. Read back before the
+		// lock is taken: SQLite's own sleep is no clock of the bubble's.
+		r, err := Opener(b.Busy)(ctx, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var busyMS int64
+		if err := r.(*db.DB).QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busyMS); err != nil {
+			t.Fatal(err)
+		}
+		_ = r.(*db.DB).Close()
+		if busyMS != b.Busy.Milliseconds() {
+			t.Errorf("busy_timeout = %d ms, want %d", busyMS, b.Busy.Milliseconds())
+		}
 		conn, err := d.Conn(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -629,15 +645,7 @@ func TestDiagnostics_ReadDBHeldLock(t *testing.T) {
 		}
 		t.Cleanup(func() { _, _ = conn.ExecContext(ctx, `ROLLBACK`) })
 
-		b := DefaultBudgets
-		b.DB, b.DBFallback, b.Busy = time.Second, 1500*time.Millisecond, 100*time.Millisecond
-		start := time.Now()
 		p := ReadDB(ctx, b, path, Opener(b.Busy))
-		// SQLite's busy wait is not the bubble's clock: every part is busy
-		// from SQLITE_BUSY, before the read's own budget.
-		if el := time.Since(start); el >= b.DB {
-			t.Errorf("took %v", el)
-		}
 		if p.Sources != UnknownDatabaseBusy || p.PipelineRuns != PipelineRunsUnknown(UnknownDatabaseBusy) ||
 			p.Schema != SchemaUnknownBecause(UnknownDatabaseBusy) || !slices.Equal(p.Reasons, []string{ReasonDatabaseBusy}) {
 			t.Errorf("got %+v", p)

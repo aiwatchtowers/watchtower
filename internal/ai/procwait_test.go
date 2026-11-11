@@ -49,10 +49,20 @@ func newGroupFIFO(t *testing.T) *groupFIFO {
 	return g
 }
 
-// prefix is the stub script's first lines.
+// prefix is the stub script's first lines: open fd 3, then announce.
 func (g *groupFIFO) prefix() string {
-	return "exec 3>'" + g.path + "'\necho $$ >&3\n"
+	return g.open() + announce
 }
+
+// open is the line that opens the FIFO as fd 3; a script that starts a
+// grandchild puts announce after it, so the test acts only once the
+// grandchild exists.
+func (g *groupFIFO) open() string {
+	return "exec 3>'" + g.path + "'\n"
+}
+
+// announce writes the stub's pid ($$ is the leader's in a subshell too).
+const announce = "echo $$ >&3\n"
 
 // waitPID returns the stub's pid (= its process group id) once it has
 // written it.
@@ -74,6 +84,7 @@ func (g *groupFIFO) waitGone(t *testing.T) {
 	t.Helper()
 	_, err := io.Copy(io.Discard, g.r)
 	require.NoError(t, err)
+	g.pid = 0 // gone: its group id may be someone else's by the cleanup
 }
 
 // setGroupKillGrace replaces ConfigureChild's grace for one test.

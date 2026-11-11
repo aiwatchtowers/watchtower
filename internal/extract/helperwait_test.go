@@ -19,13 +19,19 @@ func readyFIFO(t *testing.T) (path string, wait func()) {
 	t.Helper()
 	path = filepath.Join(t.TempDir(), "ready")
 	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	// The wait runs on a goroutine of the test's, so it reports with
+	// t.Error and returns (no FailNow): the caller's fire or cancel still runs.
 	return path, func() {
 		f, err := os.Open(path) // blocks until the helper opens its end
-		require.NoError(t, err)
+		if err != nil {
+			t.Errorf("open ready FIFO: %v", err)
+			return
+		}
 		defer f.Close()
 		line, err := bufio.NewReader(f).ReadString('\n')
-		require.NoError(t, err)
-		require.Equal(t, "ready\n", line)
+		if err != nil || line != "ready\n" {
+			t.Errorf("ready line = %q, %v", line, err)
+		}
 	}
 }
 

@@ -128,7 +128,7 @@ func runGroupStub(t *testing.T, ctx context.Context, end func()) error {
 	setGroupKillGrace(t, 10*time.Millisecond)
 	g := newGroupFIFO(t)
 	c := NewClient("m", "", "")
-	c.claudeCmd = writeMockClaude(t, g.prefix()+"sleep 60 &\nwait\n")
+	c.claudeCmd = writeMockClaude(t, g.open()+"sleep 2147483647 &\n"+announce+"wait\n")
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := c.QuerySync(ctx, "sys", "hi", "")
@@ -166,7 +166,7 @@ func TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace(t *testing.T) {
 	setGroupKillGrace(t, 10*time.Millisecond)
 	g := newGroupFIFO(t)
 	c := NewClient("m", "", "")
-	c.claudeCmd = writeMockClaude(t, "trap '' INT\n"+g.prefix()+"sleep 60 &\nwait\nsleep 60\n")
+	c.claudeCmd = writeMockClaude(t, "trap '' INT\n"+g.open()+"sleep 2147483647 &\n"+announce+"wait\nsleep 60\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -188,7 +188,8 @@ func TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace(t *testing.T) {
 func TestCLIAgent_GroupReapedWhenWaitReturns(t *testing.T) {
 	setGroupKillGrace(t, time.Hour)
 	g := newGroupFIFO(t)
-	script := "trap 'exit 1' INT\n" + g.prefix() + "(trap '' INT; exec sleep 60) >/dev/null 2>&1 </dev/null &\nwait\n"
+	// The grandchild announces once it ignores SIGINT, so the cancel finds it.
+	script := "trap 'exit 1' INT\n" + g.open() + "(trap '' INT; echo $$ >&3; exec sleep 2147483647) >/dev/null 2>&1 </dev/null &\nwait\n"
 	c := NewClient("m", "", "")
 	c.claudeCmd = writeMockClaude(t, script)
 	ctx, cancel := context.WithCancel(context.Background())

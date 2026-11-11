@@ -507,6 +507,9 @@ func assertInterrupted(c *Cell) error {
 func (c *Cell) groupGone() error {
 	for _, l := range c.O.Launches {
 		for _, pid := range append([]int{l.PID}, l.Grandchildren...) {
+			if pid <= 1 {
+				return fmt.Errorf("launch log has pid %d", pid) // kill(0|1, 0) would never fail
+			}
 			waitPIDGone(pid)
 		}
 	}

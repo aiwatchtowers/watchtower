@@ -27,7 +27,7 @@ func TestIsolateChildKillsTheGroupAndDropsEnv(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+
 		"exec 3>'"+fifo+"'\n"+
 		"env > '"+dir+"/env'\n"+
-		"sleep 60 &\n"+
+		"sleep 2147483647 &\n"+
 		"echo ready >&3\n"+
 		"wait\n"), 0o755); err != nil {
 		t.Fatal(err)

@@ -52,7 +52,7 @@ func TestHelperOCRImageHasNoPagesFlag(t *testing.T) {
 
 func TestHelperOCRTimeout(t *testing.T) {
 	ready, waitReady := readyFIFO(t)
-	helper, _ := fakeHelper(t, "echo ready > '"+ready+"'\nexec sleep 60")
+	helper, _ := fakeHelper(t, "echo ready > '"+ready+"'\nexec sleep 2147483647")
 	fire := manualHelperDeadline(t)
 	go func() {
 		waitReady() // the helper runs
@@ -90,7 +90,7 @@ func TestHelperOCRMalformedOutput(t *testing.T) {
 
 func TestHelperOCRCancelledContext(t *testing.T) {
 	ready, waitReady := readyFIFO(t)
-	helper, _ := fakeHelper(t, "echo ready > '"+ready+"'\nexec sleep 60")
+	helper, _ := fakeHelper(t, "echo ready > '"+ready+"'\nexec sleep 2147483647")
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { waitReady(); cancel() }()
 	_, err := NewHelperOCR(helper, 10*time.Second).Recognize(ctx, "/tmp/x.png", nil)
