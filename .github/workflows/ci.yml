@@ -30,14 +30,16 @@ jobs:
   # On a pull request it also says which jobs the change can affect:
   #   go     — Go Test, Go Lint, the Go builds and the code index: anything
   #            but docs and the three Swift trees, plus the Swift files Go
-  #            tests read (the Desktop's Sources, which several guards scan;
-  #            the shared fixtures; the generated test schema; the phone's
-  #            release config) and any deleted or renamed Swift file (the
+  #            and shell tests read (the Desktop's Sources, which several
+  #            guards scan; the shared fixtures; the generated test schema;
+  #            the phone's release config) and any deleted or renamed Swift
+  #            file (the
   #            inventory guard checks the Swift guard tests exist).
   #   swift  — Swift Lint + Kit Test and Swift Test: the Swift trees, the
   #            Makefile, scripts/ and this file, plus the Go-side files Swift
-  #            tests read (shared testdata, schema.sql, contract files,
-  #            keyboard-shortcuts.md) and what the CLI they build runs
+  #            tests read (shared testdata, schema.sql, contract files, the
+  #            Go packages dual-path tests list, keyboard-shortcuts.md, the
+  #            issue form) and what the CLI they build runs
   #            (CodeNavRealCLITests: `code index|search`; SQLCipherInteropTests:
   #            internal/sqlcipher/cmd/interop) with go.mod/go.sum.
   #            scripts/tests/test-ci-path-filters.sh fails when a test starts
@@ -91,9 +93,10 @@ jobs:
             guide:
               - 'docs/guide/**'
 
-      # some (the default): a file counts when it matches any line. Both
-      # lists are checked against the tests' cross-reads by
-      # scripts/tests/test-ci-path-filters.sh.
+      # The cross-read lists (outputs: go = filter.go or scope.go_input,
+      # swift = scope.swift), matched with `some`, the default: a file
+      # counts when it matches any line. scripts/tests/test-ci-path-filters.sh
+      # checks them against what the tests read across the Go/Swift line.
       - id: scope
         if: github.event_name == 'pull_request'
         uses: dorny/paths-filter@v3
@@ -107,6 +110,12 @@ jobs:
               - 'WatchtowerKit/Sources/WatchtowerSync/Link/LinkPayload.swift'
               - 'WatchtowerKit/Sources/WatchtowerSync/Relay/RelayRecordKind.swift'
               - 'WatchtowerKit/Tests/Fixtures/**'
+              # scripts/tests (Go Test's make test-scripts): the GRDB pin
+              # in the licence notices, the bridge's signing files, the
+              # relay proto pin.
+              - 'WatchtowerDesktop/Package.swift'
+              - 'WatchtowerDesktop/Resources/WatchtowerCloudBridge/**'
+              - 'WatchtowerKit/Sources/WatchtowerRelayProto/**'
               - 'WatchtowerMobile/*'
               - 'WatchtowerMobile/WatchtowerMobile.xcodeproj/**'
               - deleted|renamed: '{WatchtowerDesktop,WatchtowerKit,WatchtowerMobile}/**/*.swift'
@@ -127,11 +136,21 @@ jobs:
               - 'internal/inboxfolders/icons.json'
               - 'internal/providers/{registry,capabilities,capabilities_test}.go'
               - 'internal/sessionagent/agent_capabilities.json'
+              - '.github/ISSUE_TEMPLATE/**'
+              # Dual-path tests that list a package's Go files (daemon
+              # digest gates, session cleanup reasons).
+              - 'internal/{daemon,sessioncleanup}/**'
+              # The CLI CodeNavRealCLITests builds and runs: every command
+              # goes through these.
               - 'main.go'
+              - 'cmd/{process_role,llmusage_wiring,audit_cli}.go'
               - 'go.mod'
               - 'go.sum'
               - 'cmd/root.go'
               - 'cmd/code*.go'
+              # Go builds and tests on Linux; Swift Test's `go build .` is
+              # the only PR-time compile of the darwin-only files.
+              - '**/*_darwin.go'
               - 'internal/{codeindex,codesearch,codewalk,gitbin,sqlcipher}/**'
 
       # Only the gate scripts: the job stays a few seconds long.

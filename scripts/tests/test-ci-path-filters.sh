@@ -5,17 +5,18 @@
 # leave a pull request untested:
 #   1. a Swift test's string literal that names a tracked repo file outside
 #      the three Swift trees (an exact file, an interpolated prefix such as
-#      "internal/x/testdata/\(name)", or a testdata directory) must match a
-#      `swift` glob;
+#      "internal/x/testdata/\(name)", a testdata directory, or — in a test
+#      that walks up to the repo root with #filePath — a directory, whose
+#      files it lists) must match a `swift` glob;
 #   2. a Go test's Swift-tree path (a literal, or filepath.Join's literal
-#      components) must match a `go_input` glob;
-#   3. the Swift tests that build Go code are the two the filter maps
+#      components), or one a shell test names (`make test-scripts` runs in
+#      Go Test), must match a `go_input` glob;
+#   3. the Swift tests that run a Go toolchain are the two the filter maps
 #      (CodeNavRealCLITests, SQLCipherInteropTests), and the Go packages
 #      they build stay inside the `swift` globs (when a Go toolchain that
 #      can load the module is on PATH).
-# Plain directory literals are not followed on the Swift side (they are
-# almost always labels or fake folders); a bare top-level Swift directory on
-# the Go side is a skip list, not a read.
+# Other directory literals in Swift tests are labels or fake folders; a bare
+# top-level Swift directory on the Go side is a skip list, not a read.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -35,7 +36,7 @@ filter_regexes() { # filter_regexes <workflow-file> <name>
     awk -v want="$2" '
         /^            [a-z_]+:$/ { key = $1; sub(/:$/, "", key); next }
         /^              - '\''/ && key == want { g = $0; sub(/^ *- '\''/, "", g); sub(/'\''$/, "", g); print g; next }
-        /^              - / { next }
+        /^              (- |#)/ { next }
         { key = "" }
     ' "$1" | awk '
         {
@@ -90,16 +91,22 @@ SWIFT_TREES='^Watchtower(Desktop|Kit|Mobile)/'
 
 # 1. Swift tests → Go side.
 SWIFT_TESTS=('WatchtowerDesktop/Tests/*.swift' 'WatchtowerKit/Tests/*.swift' 'WatchtowerMobile/Tests/*.swift')
-{ git grep -ohE '"[^"[:space:]]*/[^"[:space:]]*"' -- "${SWIFT_TESTS[@]}" || true; } \
-    | tr -d '"' | sort -u > "$WORK_DIR/swift.lits"
+LIT_RE='"[^"[:space:]]*/[^"[:space:]]*"'
+{ git grep -ohE "$LIT_RE" -- "${SWIFT_TESTS[@]}" || true; } | tr -d '"' | sort -u > "$WORK_DIR/swift.lits"
+# "R <literal>": from a test that walks up to the repo root, where a
+# directory literal is a directory it reads.
+{ git grep -l '#filePath' -- "${SWIFT_TESTS[@]}" || true; } \
+    | while IFS= read -r f; do grep -ohE "$LIT_RE" "$f" || true; done \
+    | tr -d '"' | sed 's#^#R #' | sort -u >> "$WORK_DIR/swift.lits"
 awk 'NR == FNR { tracked[$0] = 1; files[++n] = $0; next }
      {
-         p = $0; interp = 0
+         p = $0; interp = 0; root = 0
+         if (substr(p, 1, 2) == "R ") { p = substr(p, 3); root = 1 }
          i = index(p, "\\("); if (i > 0) { p = substr(p, 1, i - 1); interp = 1 }
          sub(/\/$/, "", p)
-         if (p == "" || p ~ /^[\/.]/) next
+         if (p == "" || p ~ /^(\/|\.\.?\/)/) next
          if (!interp && (p in tracked)) { print p; next }
-         if (interp || p ~ /(^|\/)testdata(\/|$)/)
+         if (interp || root || p ~ /(^|\/)testdata(\/|$)/)
              for (k = 1; k <= n; k++)
                  if (index(files[k], p "/") == 1 || (interp && index(files[k], p) == 1)) print files[k]
      }' "$WORK_DIR/tracked" "$WORK_DIR/swift.lits" | grep -vE "$SWIFT_TREES" | sort -u > "$WORK_DIR/swift.reads" || true
@@ -129,6 +136,8 @@ GO_DATA_ONLY='^internal/reviewmap/'
         sub(/\/$/, "", path)
         if (path != "") print path
     }' | sort -u > "$WORK_DIR/go.lits"
+{ git grep -ohE 'Watchtower(Desktop|Kit|Mobile)/[A-Za-z0-9_./+-]*' -- 'scripts/tests/*.sh' ':!scripts/tests/test-ci-path-filters.sh' || true; } \
+    | sed 's#/$##' | sort -u >> "$WORK_DIR/go.lits"
 awk 'NR == FNR { tracked[$0] = 1; files[++n] = $0; next }
      {
          p = $0
@@ -159,7 +168,7 @@ mutant 'internal/db/schema.sql' swift "$WORK_DIR/swift.reads" "Swift reads schem
 mutant 'WatchtowerKit/Tests/Fixtures/**' go_input "$WORK_DIR/go.reads" "Go reads the Kit fixtures"
 
 # 3. Swift tests that build Go code. Each one's packages are mapped by hand.
-builders="$({ git grep -lF '+ "/go"' -- "${SWIFT_TESTS[@]}" || true; } | sed 's#.*/##' | sort | tr '\n' ' ')"
+builders="$({ git grep -lE '"/go"|env go|"go", *"(build|run|test|list|vet|generate)"' -- "${SWIFT_TESTS[@]}" || true; } | sed 's#.*/##' | sort | tr '\n' ' ')"
 if [ "$builders" = "CodeNavRealCLITests.swift SQLCipherInteropTests.swift " ]; then
     echo "ok: the Swift tests that build Go code are the two the swift filter maps"
 else
