@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"watchtower/internal/db"
 	"watchtower/internal/hub/hubtest"
 	"watchtower/internal/hub/identity"
 	"watchtower/internal/hub/link"
@@ -44,6 +46,7 @@ type world struct {
 	t      *testing.T
 	ctx    context.Context
 	st     *state.Store
+	dir    string // the sidecar's dir
 	keys   *identity.Keyring
 	ident  identity.Identity
 	fake   *memfake.Fake
@@ -72,7 +75,8 @@ func (w *world) clock() time.Time {
 func newWorld(t *testing.T, kind transport.Kind) *world {
 	t.Helper()
 	w := &world{t: t, ctx: context.Background(), now: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)}
-	st, err := state.Open(t.TempDir())
+	w.dir = t.TempDir()
+	st, err := state.Open(w.dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1004,11 +1008,20 @@ func TestRepeatGivesNoSample(t *testing.T) {
 // Flush) never waits on the pass's own write lock.
 func TestRecorderNeverWritesInsideAPassTransaction(t *testing.T) {
 	w := newWorld(t, transport.KindRelay)
-	// tryWrite starts a write transaction that gives up after 300 ms.
+	// tryWrite begins a write transaction on a second connection that never
+	// waits for a lock (busy timeout 0): it fails at once while a write
+	// transaction is open on the store, with no wall-clock wait.
+	probe, err := db.OpenExistingRW(filepath.Join(w.dir, state.FileName), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = probe.Close() })
 	tryWrite := func() error {
-		ctx, cancel := context.WithTimeout(w.ctx, 300*time.Millisecond)
-		defer cancel()
-		return w.st.WithTx(ctx, func(*sql.Tx) error { return nil })
+		tx, err := probe.BeginTx(w.ctx, nil)
+		if err != nil {
+			return err
+		}
+		return tx.Rollback()
 	}
 	// The probe sees an open write transaction: inside one it fails.
 	if err := w.st.WithTx(w.ctx, func(*sql.Tx) error {

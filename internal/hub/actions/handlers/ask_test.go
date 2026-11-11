@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"watchtower/internal/asks"
@@ -750,28 +751,31 @@ func TestAFailedWriteIsWriteFailed(t *testing.T) {
 // MARK: - Timeout
 
 func TestAHungAnswerIsCutByTheHandlersTimeout(t *testing.T) {
-	e := newEnv(t)
-	e.h.d.Timeout = 50 * time.Millisecond
-	s := e.seedAsk(asks.KindQuestion, questions)
-	e.port.start(s.session)
-	release := make(chan struct{})
-	entered := make(chan struct{})
-	e.port.onDeliver = func(DeliverRequest) {
-		close(entered)
-		<-release
-	}
+	// The handler's 50 ms deadline runs out on a synctest bubble's clock.
+	synctest.Test(t, func(t *testing.T) {
+		e := newEnv(t)
+		e.h.d.Timeout = 50 * time.Millisecond
+		s := e.seedAsk(asks.KindQuestion, questions)
+		e.port.start(s.session)
+		release := make(chan struct{})
+		entered := make(chan struct{})
+		e.port.onDeliver = func(DeliverRequest) {
+			close(entered)
+			<-release
+		}
 
-	got := e.h.askAnswer(context.Background(), e.answerAction(s, yes))
+		got := e.h.askAnswer(context.Background(), e.answerAction(s, yes))
 
-	if got.Status != wire.StatusFailed || got.Reason != reasonOutcomeUnknown || got.Message != askTimeoutMessage {
-		t.Fatalf("outcome = %+v", got)
-	}
-	select {
-	case <-entered:
-	default:
-		t.Fatal("the answer was not running when the timeout fired")
-	}
-	close(release)
+		if got.Status != wire.StatusFailed || got.Reason != reasonOutcomeUnknown || got.Message != askTimeoutMessage {
+			t.Fatalf("outcome = %+v", got)
+		}
+		select {
+		case <-entered:
+		default:
+			t.Fatal("the answer was not running when the timeout fired")
+		}
+		close(release)
+	})
 }
 
 func TestAnAnswerFasterThanTheTimeoutIsItsOwnOutcome(t *testing.T) {

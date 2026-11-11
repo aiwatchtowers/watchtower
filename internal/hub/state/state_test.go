@@ -594,6 +594,11 @@ func TestCheckpointBlockedByAReaderIsAnError(t *testing.T) {
 	if err := s.SetMeta("k", "w"); err != nil { // a frame the reader's snapshot pins
 		t.Fatal(err)
 	}
+	// No busy wait on the store's one connection: the blocked checkpoint
+	// answers at once instead of after SQLite's 5 s busy timeout.
+	if _, err := s.db.Exec(`PRAGMA busy_timeout = 0`); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Checkpoint(); !errors.Is(err, ErrCheckpointBusy) {
 		t.Fatalf("Checkpoint under a reader = %v, want ErrCheckpointBusy", err)
 	}
