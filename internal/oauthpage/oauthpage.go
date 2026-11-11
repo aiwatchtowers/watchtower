@@ -42,7 +42,9 @@ const callbackCloseGrace = 500 * time.Millisecond
 // CloseCallbackServer stops a loopback callback server once the callback's
 // page has gone out: it waits for requests still being answered — the browser
 // receiving its success or error page — for at most callbackCloseGrace, then
-// closes whatever is left. With nothing in flight it returns at once.
+// closes whatever is left. With no request in flight it returns once the
+// idle connections are closed (a browser's unused preconnect may hold it
+// for the grace).
 func CloseCallbackServer(server *http.Server) {
 	ctx, cancel := context.WithTimeout(context.Background(), callbackCloseGrace)
 	defer cancel()

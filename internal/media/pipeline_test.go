@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -496,8 +497,13 @@ func (m *manualTimer) fire() {
 // fetched one at a time, so each request takes the timer made for it.
 func TestPipeline_LinkRequestedOnceImageOutlivesPageTimeout(t *testing.T) {
 	timers := make(chan *manualTimer, 4)
+	var armed []time.Duration // under armedMu: each page timer's duration
+	var armedMu sync.Mutex
 	prev := pageTimer
-	pageTimer = func(_ time.Duration, f func()) interface{ Stop() bool } {
+	pageTimer = func(d time.Duration, f func()) interface{ Stop() bool } {
+		armedMu.Lock()
+		armed = append(armed, d)
+		armedMu.Unlock()
 		m := &manualTimer{f: f, stoppedCh: make(chan struct{})}
 		timers <- m
 		return m
@@ -543,6 +549,9 @@ func TestPipeline_LinkRequestedOnceImageOutlivesPageTimeout(t *testing.T) {
 	p := e.row(pageID)
 	assert.Equal(t, "pending", p.Status, "a timed-out page waits for its next attempt")
 	assert.Equal(t, "timeout", p.Error)
+	armedMu.Lock()
+	defer armedMu.Unlock()
+	assert.Equal(t, []time.Duration{linkFetchTimeout, linkFetchTimeout}, armed, "each link's page timer is the link timeout")
 }
 
 func TestPipeline_NoVisionMarksUnavailableWithoutOpening(t *testing.T) {
@@ -1102,7 +1111,7 @@ func TestRunSips_CancelKillsGroup(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
 	script := filepath.Join(dir, "sips")
 	body := "#!/bin/sh\nexec 3>'" + fifo + "'\nsleep 3600 &\nfor a; do last=$a; done\n" +
-		"echo partial > \"$last\"\necho ready >&3\nwait\n"
+		"echo partial > \"$last\"\necho \"ready $$\" >&3\nwait\n"
 	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
 	sipsPath = script
 	work := filepath.Join(dir, "work")
@@ -1128,7 +1137,14 @@ func TestRunSips_CancelKillsGroup(t *testing.T) {
 	ready := bufio.NewReader(f)
 	line, err := ready.ReadString('\n')
 	require.NoError(t, err)
-	require.Equal(t, "ready\n", line)
+	pidText, ok := strings.CutPrefix(strings.TrimSpace(line), "ready ")
+	require.True(t, ok, "ready line %q", line)
+	pid, err := strconv.Atoi(pidText)
+	require.NoError(t, err)
+	require.Greater(t, pid, 1)
+	// Whatever the run under test does, the stub's group (sips runs in its
+	// own) never outlives the test.
+	t.Cleanup(func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 
 	cancel()
 	res := <-done

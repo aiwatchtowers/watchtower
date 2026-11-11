@@ -377,6 +377,7 @@ func TestLoginOutlook_WrongStateCallbackIsIgnored(t *testing.T) {
 	resp, err = http.Get(cbURL.String())
 	require.NoError(t, err)
 	resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode, "the real redirect is the one the login takes (a login the stray had ended answers otherwise)")
 
 	err = <-errCh
 	require.Error(t, err)

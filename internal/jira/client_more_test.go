@@ -16,14 +16,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// makeTestClient constructs a Client wired to the given baseURL and a token
-// store seeded with a valid (non-expired) access token.
 // unthrottledLimiter is a rate limiter that never waits: tests count
 // requests, they do not pace them on the wall clock.
 func unthrottledLimiter() *RateLimiter {
 	return &RateLimiter{tokens: 1000, maxTokens: 1000, refillRate: 1000, lastRefill: time.Now()}
 }
 
+// makeTestClient constructs a Client wired to the given baseURL and a token
+// store seeded with a valid (non-expired) access token.
 func makeTestClient(t *testing.T, baseURL string) *Client {
 	t.Helper()
 	dir := t.TempDir()

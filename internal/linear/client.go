@@ -216,10 +216,6 @@ func (c *Client) getAccessToken(ctx context.Context) (access string, isKey bool,
 	return access, false, err
 }
 
-// refreshIfCurrent refreshes the stored token only if its access token still
-// equals usedToken: racing requests that hit the same 401 must not both spend
-// the rotating refresh token. c.mu and the file lock make the check atomic
-// across goroutines and processes.
 // lockStore takes the token store's cross-process lock.
 func (c *Client) lockStore(ctx context.Context) (func(), error) {
 	if c.beforeTokenLock != nil {
@@ -228,6 +224,10 @@ func (c *Client) lockStore(ctx context.Context) (func(), error) {
 	return c.store.Lock(ctx)
 }
 
+// refreshIfCurrent refreshes the stored token only if its access token still
+// equals usedToken: racing requests that hit the same 401 must not both spend
+// the rotating refresh token. c.mu and the file lock make the check atomic
+// across goroutines and processes.
 func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

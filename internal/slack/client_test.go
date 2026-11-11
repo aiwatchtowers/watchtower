@@ -1197,16 +1197,18 @@ func TestDownloadFile_SharesTier4Gate(t *testing.T) {
 		cancel()
 		require.ErrorIs(t, err, context.DeadlineExceeded)
 		assert.Equal(t, 100*time.Millisecond, time.Since(start), "it waited at the gate until the deadline")
-	})
-	assert.Empty(t, srv.requests())
+		assert.Empty(t, srv.requests())
 
-	c := NewClientWithAPIURL("xoxp-secret", "http://127.0.0.1:0/")
-	fileHosts(t, c, hosts)
-	rc, _, err := c.DownloadFile(context.Background(), "https://files.slack.com/a.png", 1<<20)
-	require.NoError(t, err)
-	_ = rc.Close()
-	counts, _ := c.APIStats()
-	assert.Equal(t, 1, counts[Tier4], "a download counts as a Tier 4 call")
+		// The same client's slots freed: its download goes through.
+		for range cap(c.rateLimiter.gate) {
+			<-c.rateLimiter.gate
+		}
+		rc, _, err := c.DownloadFile(context.Background(), "https://files.slack.com/a.png", 1<<20)
+		require.NoError(t, err)
+		_ = rc.Close()
+		counts, _ := c.APIStats()
+		assert.Equal(t, 1, counts[Tier4], "a download counts as a Tier 4 call")
+	})
 }
 
 func TestDownloadFile_TooLargeAndGone(t *testing.T) {
