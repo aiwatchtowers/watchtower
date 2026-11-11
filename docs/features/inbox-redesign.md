@@ -63,3 +63,7 @@ The rule: a reader that treats a row as something that happened to the owner ski
 - IMAP and Outlook mail are not covered: no Sent folder sync and no thread headers, so those items archive on their own as before (14 days To, 7 days Cc).
 - For an account connected before this release, sent mail older than the catch-up window (`gmail.initial_history_days`, 7 by default) is not fetched: the history backfill already done does not re-run.
 - The ideas and memory floors do not re-mine the catch-up rows: they are dated in the past, below floors that already moved on.
+- Any owner message in the thread newer than the received one closes the item: a forward or a note to a colleague in the same thread counts too.
+- The sent catch-up is one pass per cycle with no per-pass cap and no resume: a pass cut by a cycle cancel restarts and re-fetches. A one-time cost, like `FetchRange`.
+- Sent rows also feed the ideas email pre-digests (`ListGmailThreadsForExtract`), so ideas mining spends more AI on mail (owner decision 8: the owner's words are evidence).
+- Installed copies of the "New mail summary" template made before this release still sum up sent mail: they are confirmed by hash (AUTO-06) and are not upgraded. Reinstall from the gallery to get the skip.
