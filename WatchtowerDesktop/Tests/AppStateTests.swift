@@ -583,7 +583,7 @@ final class AppStateTests: XCTestCase {
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         XCTAssertFalse(appState.onboardingGoals.isCustomizingFeatures)
-        XCTAssertEqual(appState.onboardingGoals.cliCheck, .checking)
+        XCTAssertEqual(appState.onboardingGoals.agentChoice, OnboardingAgentChoice())
         XCTAssertNil(appState.onboardingStepError)
     }
 
@@ -1512,7 +1512,8 @@ final class AppStateTests: XCTestCase {
         OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: "English",
-            checkCLI: { .ready(provider: "claude") },
+            checkAgents: { OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled]) },
+            configuredProvider: { "claude" },
             actions: OnboardingGoalsActions(
                 initWorkspace: {
                     spy.calls.append("workspace init")
@@ -1647,7 +1648,8 @@ final class AppStateTests: XCTestCase {
         OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: "English",
-            checkCLI: { .ready(provider: "claude") },
+            checkAgents: { OnboardingAgentCheckResult(statuses: [.claude: .ready, .codex: .notInstalled]) },
+            configuredProvider: { "claude" },
             actions: OnboardingGoalsActions(
                 initWorkspace: { spy.calls.append("workspace init") },
                 setLanguage: { spy.calls.append("language \($0)") },

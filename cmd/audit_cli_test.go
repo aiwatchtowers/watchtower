@@ -154,6 +154,7 @@ var cliNoContentCommands = map[string]bool{
 	"ai routing-status":                true, // Local provider health/revision metadata only.
 	"ai session":                       true,
 	"ai test":                          true,
+	"ai which":                         true,
 	"auth check-cert":                  true,
 	"auth login":                       true,
 	"auth logout":                      true,
