@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -209,6 +210,13 @@ func TestHelperProcessRecord(t *testing.T) {
 	if dbPath == "" {
 		t.Skip("helper process only")
 	}
+	// The parent holds this stdin open until it has waited for us: EOF means
+	// it is gone (a go test -timeout panic skips its cleanups), so a helper
+	// never outlives it, whatever the clock.
+	go func() {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(3)
+	}()
 	n, _ := strconv.Atoi(os.Getenv(helperCountEnv))
 	resetForTest()
 	SetProcessRole(os.Getenv(helperRoleEnv))
@@ -233,6 +241,11 @@ func TestTwoProcessesNeverInterleave(t *testing.T) {
 			helperRoleEnv+"=cli:helper"+strconv.Itoa(i),
 		)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		// Held open until Wait: the helper exits on its EOF, so it dies
+		// with this process even when the cleanup below never runs.
+		if _, err := cmd.StdinPipe(); err != nil {
+			t.Fatalf("helper stdin: %v", err)
+		}
 		if err := cmd.Start(); err != nil {
 			t.Fatalf("start helper: %v", err)
 		}

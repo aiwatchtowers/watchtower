@@ -597,9 +597,9 @@ func TestRebuildMessagesSearch_EditAboveCursorIndexedOnce(t *testing.T) {
 // The pause between chunks ends early when ctx is cancelled: on the
 // bubble's clock the hour-long gap never ran at all.
 func TestRebuildMessagesSearch_GapHonoursCancel(t *testing.T) {
-	d, _, _ := pendingFillDB(t)
-	ftsRebuildChunkGap = time.Hour // noChunkGap's cleanup restores it
 	synctest.Test(t, func(t *testing.T) {
+		d, _, _ := pendingFillDB(t)    // opened in the bubble, with its pool
+		ftsRebuildChunkGap = time.Hour // noChunkGap's cleanup restores it
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		setChunkHook(t, func(int) { cancel() })
@@ -756,6 +756,7 @@ func TestIsInterruption(t *testing.T) {
 	}})
 	d, err := sql.Open(driverName, ":memory:")
 	require.NoError(t, err)
+	d.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = d.Close() })
 	_, err = d.ExecContext(ctx, `WITH RECURSIVE n(i) AS (SELECT cancel_now() UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n`)
 	require.Error(t, err)

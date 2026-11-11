@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -326,6 +327,12 @@ const (
 	perfMaxGrowth = 3 * perfGrowth
 )
 
+// perfCeiling caps the CPU time of the 150k-event overview (about 1 s
+// measured): a ceiling that holds on any machine, under any load (CPU
+// time does not count the waits for a core), so a regression that makes
+// every size costlier still fails, which the ratio alone would not see.
+const perfCeiling = 10 * time.Second
+
 // BuildOverview stays linear in the events it reads, with the v2 blocks
 // (Context, Skills, Trouble) doing their full work over 150k events. Linear
 // is measured as scaling, not as a wall-clock budget: the process CPU time
@@ -363,6 +370,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 	ratio := float64(fastBig) / float64(max(fastSmall, time.Millisecond))
 	t.Logf("BuildOverview CPU: %v over 150k v3 events, %v over 1/%d of them, x%.2f", fastBig, fastSmall, perfGrowth, ratio)
 	assert.LessOrEqual(t, ratio, float64(perfMaxGrowth), "%d× the sessions cost x%.2f CPU, want at most x%d (linear)", perfGrowth, ratio, perfMaxGrowth)
+	assert.Less(t, fastBig, perfCeiling, "150k-event overview CPU time")
 }
 
 // cpuTime is the user plus system CPU time the process spends running f.
@@ -370,6 +378,7 @@ func TestBuildOverview_Performance(t *testing.T) {
 // machine.
 func cpuTime(t *testing.T, f func()) time.Duration {
 	t.Helper()
+	runtime.GC() // a collection owed by an earlier run is not f's
 	before := processCPU(t)
 	f()
 	return processCPU(t) - before

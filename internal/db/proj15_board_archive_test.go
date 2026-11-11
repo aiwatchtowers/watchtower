@@ -492,13 +492,20 @@ const (
 	boardMaxGrowth = 3 * boardGrowth
 )
 
+// largeBoardReadBound caps the CPU time of one 2000-target board read (~30
+// ms measured): far above it, so any machine passes, yet a read that grows
+// costlier at every size still trips it, which the ratio alone would not
+// see. CPU time does not grow with the machine's load; the race detector
+// scales it.
+const largeBoardReadBound = 3 * time.Second * raceSlowdown
+
 // largeBoardRead seeds a 2000-target board (40 roots × 7 children × 6
 // grandchildren) and one boardGrowth times smaller, each in its own
 // database and put through prepare, and reads both boards three times,
-// interleaved. It returns the large board and how much more CPU time its
-// fastest read took than the small one's — CPU time, so a loaded machine
-// cannot fail the check.
-func largeBoardRead(t *testing.T, prepare func(d *DB, pid int64)) ([]BoardNode, float64) {
+// interleaved. It returns the large board, its fastest read's CPU time and
+// how much more that is than the small one's — CPU time, so a loaded
+// machine cannot fail the check.
+func largeBoardRead(t *testing.T, prepare func(d *DB, pid int64)) ([]BoardNode, time.Duration, float64) {
 	t.Helper()
 	seed := func(roots int) (*DB, int64) {
 		d := openTestDB(t)
@@ -524,17 +531,18 @@ func largeBoardRead(t *testing.T, prepare func(d *DB, pid int64)) ([]BoardNode, 
 	}
 	ratio := float64(fastLarge) / float64(max(fastSmall, time.Millisecond))
 	t.Logf("board read CPU: %v at 2000 targets, %v at %d, x%.2f", fastLarge, fastSmall, 2000/boardGrowth, ratio)
-	return board, ratio
+	return board, fastLarge, ratio
 }
 
 // The view runs on every board read: a 2000-target board must stay cheap
 // (measured ~30 ms locally, the view alone ~12 ms) — linear in the board,
 // never a read that walks it quadratically.
 func TestProj15_LargeBoardReadIsFast(t *testing.T) {
-	board, ratio := largeBoardRead(t, func(*DB, int64) {})
+	board, took, ratio := largeBoardRead(t, func(*DB, int64) {})
 	assert.Len(t, board, 40)
 	// 30 roots × (1 + 7 + 42) archived; the other 10 roots × 7 × 5 closed grandchildren.
 	assert.Equal(t, 30*50+10*7*5, CountArchived(board))
 	assert.LessOrEqual(t, ratio, float64(boardMaxGrowth), "%d× the targets cost x%.2f CPU, want at most x%d (linear)",
 		boardGrowth, ratio, boardMaxGrowth)
+	assert.Less(t, took, largeBoardReadBound, "2000-target board read CPU time")
 }

@@ -304,11 +304,12 @@ func TestMigration00105_ArchivedThroughStartsNull(t *testing.T) {
 // The stamp branch keeps the large-board read cheap: archive_after_days = 0,
 // so only the stamp archives.
 func TestProj15_LargeBoardReadIsFastWithAStamp(t *testing.T) {
-	board, ratio := largeBoardRead(t, func(d *DB, pid int64) {
+	board, took, ratio := largeBoardRead(t, func(d *DB, pid int64) {
 		require.NoError(t, d.SetWorkbenchArchiveDays(pid, 0))
 		require.NoError(t, d.ArchiveWorkbenchClosedNow(pid))
 	})
 	assert.Equal(t, 30*50+10*7*5, CountArchived(board))
 	assert.LessOrEqual(t, ratio, float64(boardMaxGrowth), "%d× the targets cost x%.2f CPU, want at most x%d (linear)",
 		boardGrowth, ratio, boardMaxGrowth)
+	assert.Less(t, took, largeBoardReadBound, "2000-target board read CPU time")
 }

@@ -27,7 +27,7 @@ func interruptQuery(t *testing.T, d *DB) {
 	}
 	defer func() {
 		if got := pragmaInt(t, d, "cache_size"); got == marker {
-			t.Fatal("the interrupted connection was not replaced; the test proves nothing")
+			t.Fatal("the connection was not replaced; the test proves nothing")
 		}
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -35,11 +35,8 @@ func interruptQuery(t *testing.T, d *DB) {
 	var n int64
 	err := d.QueryRowContext(ctx,
 		`WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c`).Scan(&n)
-	if err == nil {
-		t.Fatal("endless query finished")
-	}
-	if !errors.Is(err, context.Canceled) && ctx.Err() == nil {
-		t.Fatalf("query failed for another reason: %v", err)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("query on a cancelled context: want context.Canceled, got %v", err)
 	}
 	d.SetMaxIdleConns(0)
 	d.SetMaxIdleConns(2) // database/sql's default

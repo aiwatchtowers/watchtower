@@ -115,7 +115,9 @@ func TestRunSchemaUpgrade_WaitsForAnotherWriter(t *testing.T) {
 		t.Fatalf("take write lock: %v", err)
 	}
 	// The holder lets go only once the transition is about to begin its
-	// write transaction, on a handle that waits busy_timeout for it.
+	// write transaction, on a handle that waits busy_timeout for it (the
+	// PRAGMA is the deterministic check; whether BEGIN meets the lock still
+	// held or just released is left to the scheduler — both must succeed).
 	released := make(chan struct{})
 	onUpgradeBegin(t, func(raw *sql.DB) {
 		wantUpgradeBusyTimeout(t, raw)

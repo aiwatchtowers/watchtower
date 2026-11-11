@@ -3,6 +3,7 @@ package sessionreport
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -482,21 +483,23 @@ func siblingsBoard(t *testing.T, n int) (*db.DB, []string) {
 
 // siblingsGrowth is how many times more siblings the big group has than
 // the small one, and siblingsMaxGrowth the most mergeRefs's CPU time may
-// grow: linear work grows by about siblingsGrowth, the per-leaf walk or a
-// list scan of the keys by siblingsGrowth² = 64.
+// grow: linear work grows by about siblingsGrowth (measured ×12–×15, from
+// the maps and caches of the larger group), the per-leaf walk or a list
+// scan of the keys by siblingsGrowth² = 64; the cap sits halfway (log
+// scale) between the two.
 const (
 	siblingsGrowth    = 8
-	siblingsMaxGrowth = 3 * siblingsGrowth
+	siblingsMaxGrowth = 4 * siblingsGrowth
 )
 
-// Board #1016: a group of 1000 sibling leaves is walked once, not once per
+// Board #1016: a group of 8000 sibling leaves is walked once, not once per
 // leaf (counted, so the memo is pinned without a clock), and every key is
 // checked in a set — the refs come back in board order, one per not-done
-// leaf, and 8× the siblings cost about 8× the CPU time, not the 64× of a
-// list scan (CPU time, fastest of interleaved runs, so a loaded machine
+// leaf, and 8× the siblings (64000) cost about 8× the CPU time, not the 64×
+// of a list scan (CPU time, fastest of interleaved runs, so a loaded machine
 // cannot fail it).
 func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
-	const n = 1000
+	const n = 8000 // the small group's walk alone takes over a millisecond
 	small, smallWant := siblingsBoard(t, n)
 	big, bigWant := siblingsBoard(t, n*siblingsGrowth)
 	mergeRefs := func(d *db.DB, want []string) time.Duration {
@@ -525,6 +528,7 @@ func TestMergeRefs_ManySiblingsAreLinear(t *testing.T) {
 // machine.
 func cpuTime(t *testing.T, f func()) time.Duration {
 	t.Helper()
+	runtime.GC() // a collection owed by an earlier run is not f's
 	before := processCPU(t)
 	f()
 	return processCPU(t) - before
